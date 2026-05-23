@@ -7,6 +7,7 @@
 
 use acteon_core::{Action, ActionOutcome};
 use acteon_simulation::prelude::*;
+use tracing::info;
 
 const SUPPRESSION_RULE: &str = r#"
 rules:
@@ -45,16 +46,18 @@ rules:
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║             DRY-RUN MODE SIMULATION DEMO                     ║");
-    println!("╚══════════════════════════════════════════════════════════════╝\n");
+    tracing_subscriber::fmt::init();
+
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║             DRY-RUN MODE SIMULATION DEMO                     ║");
+    info!("╚══════════════════════════════════════════════════════════════╝\n");
 
     // =========================================================================
     // DEMO 1: Dry-Run Allow Verdict
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  DEMO 1: DRY-RUN ALLOW VERDICT");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  DEMO 1: DRY-RUN ALLOW VERDICT");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -75,8 +78,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let outcome = harness.dispatch_dry_run(&action).await?;
-    println!("  Action: send_email via email provider");
-    println!("  Outcome: {outcome:?}");
+    info!("  Action: send_email via email provider");
+    info!("  Outcome: {outcome:?}");
     outcome.assert_dry_run();
 
     match &outcome {
@@ -85,9 +88,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             matched_rule,
             would_be_provider,
         } => {
-            println!("  Verdict: {verdict}");
-            println!("  Matched rule: {matched_rule:?}");
-            println!("  Would-be provider: {would_be_provider}");
+            info!("  Verdict: {verdict}");
+            info!("  Matched rule: {matched_rule:?}");
+            info!("  Would-be provider: {would_be_provider}");
             assert_eq!(verdict, "allow");
             assert!(matched_rule.is_none());
             assert_eq!(would_be_provider, "email");
@@ -97,17 +100,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Provider was NOT called.
     harness.provider("email").unwrap().assert_not_called();
-    println!("  Provider calls: 0 (dry-run skips execution)");
-    println!();
+    info!("  Provider calls: 0 (dry-run skips execution)");
+    info!("");
 
     harness.teardown().await?;
 
     // =========================================================================
     // DEMO 2: Dry-Run Suppression Verdict
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  DEMO 2: DRY-RUN SUPPRESSION VERDICT");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  DEMO 2: DRY-RUN SUPPRESSION VERDICT");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -128,8 +131,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let outcome = harness.dispatch_dry_run(&spam_action).await?;
-    println!("  Action: spam via email provider");
-    println!("  Outcome: {outcome:?}");
+    info!("  Action: spam via email provider");
+    info!("  Outcome: {outcome:?}");
     outcome.assert_dry_run();
 
     match &outcome {
@@ -138,8 +141,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             matched_rule,
             ..
         } => {
-            println!("  Verdict: {verdict}");
-            println!("  Matched rule: {matched_rule:?}");
+            info!("  Verdict: {verdict}");
+            info!("  Matched rule: {matched_rule:?}");
             assert_eq!(verdict, "suppress");
             assert_eq!(matched_rule.as_deref(), Some("block-spam"));
         }
@@ -147,17 +150,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     harness.provider("email").unwrap().assert_not_called();
-    println!("  Provider calls: 0 (dry-run skips execution)");
-    println!();
+    info!("  Provider calls: 0 (dry-run skips execution)");
+    info!("");
 
     harness.teardown().await?;
 
     // =========================================================================
     // DEMO 3: Dry-Run Reroute Verdict
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  DEMO 3: DRY-RUN REROUTE VERDICT");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  DEMO 3: DRY-RUN REROUTE VERDICT");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -179,8 +182,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let outcome = harness.dispatch_dry_run(&urgent_action).await?;
-    println!("  Action: alert via email provider (priority=urgent)");
-    println!("  Outcome: {outcome:?}");
+    info!("  Action: alert via email provider (priority=urgent)");
+    info!("  Outcome: {outcome:?}");
     outcome.assert_dry_run();
 
     match &outcome {
@@ -189,9 +192,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             matched_rule,
             would_be_provider,
         } => {
-            println!("  Verdict: {verdict}");
-            println!("  Matched rule: {matched_rule:?}");
-            println!("  Would-be provider: {would_be_provider} (rerouted from email)");
+            info!("  Verdict: {verdict}");
+            info!("  Matched rule: {matched_rule:?}");
+            info!("  Would-be provider: {would_be_provider} (rerouted from email)");
             assert_eq!(verdict, "reroute");
             assert_eq!(matched_rule.as_deref(), Some("reroute-urgent"));
             assert_eq!(would_be_provider, "sms");
@@ -202,18 +205,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Neither provider was called.
     harness.provider("email").unwrap().assert_not_called();
     harness.provider("sms").unwrap().assert_not_called();
-    println!("  Email provider calls: 0");
-    println!("  SMS provider calls: 0");
-    println!();
+    info!("  Email provider calls: 0");
+    info!("  SMS provider calls: 0");
+    info!("");
 
     harness.teardown().await?;
 
     // =========================================================================
     // DEMO 4: Dry-Run vs Normal Dispatch Comparison
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  DEMO 4: DRY-RUN vs NORMAL DISPATCH COMPARISON");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  DEMO 4: DRY-RUN vs NORMAL DISPATCH COMPARISON");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -235,41 +238,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Dry-run: shows "deduplicate" verdict, but does NOT record the dedup key.
     let dry_outcome = harness.dispatch_dry_run(&action).await?;
-    println!("  Dry-run outcome: {dry_outcome:?}");
+    info!("  Dry-run outcome: {dry_outcome:?}");
     dry_outcome.assert_dry_run();
     match &dry_outcome {
         ActionOutcome::DryRun { verdict, .. } => {
-            println!("  Verdict: {verdict}");
+            info!("  Verdict: {verdict}");
             assert_eq!(verdict, "deduplicate");
         }
         _ => panic!("expected DryRun"),
     }
     harness.provider("email").unwrap().assert_not_called();
-    println!("  Provider calls after dry-run: 0");
+    info!("  Provider calls after dry-run: 0");
 
     // Normal dispatch: the action is actually executed (first time with this dedup key).
     let normal_outcome = harness.dispatch(&action).await?;
-    println!("  Normal outcome: {normal_outcome:?}");
+    info!("  Normal outcome: {normal_outcome:?}");
     normal_outcome.assert_executed();
     harness.provider("email").unwrap().assert_called(1);
-    println!("  Provider calls after normal dispatch: 1");
+    info!("  Provider calls after normal dispatch: 1");
 
     // Second normal dispatch: now deduplicated because the key was recorded.
     let dedup_outcome = harness.dispatch(&action).await?;
-    println!("  Second dispatch outcome: {dedup_outcome:?}");
+    info!("  Second dispatch outcome: {dedup_outcome:?}");
     dedup_outcome.assert_deduplicated();
     harness.provider("email").unwrap().assert_called(1);
-    println!("  Provider calls (still 1, second was deduped): 1");
-    println!();
+    info!("  Provider calls (still 1, second was deduped): 1");
+    info!("");
 
     harness.teardown().await?;
 
     // =========================================================================
     // DEMO 5: Batch Dry-Run
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  DEMO 5: BATCH DRY-RUN");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  DEMO 5: BATCH DRY-RUN");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -304,24 +307,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
 
     let outcomes = harness.dispatch_batch_dry_run(&actions).await;
-    println!("  Batch size: {}", actions.len());
+    info!("  Batch size: {}", actions.len());
     for (i, outcome) in outcomes.iter().enumerate() {
         let outcome = outcome.as_ref().unwrap();
-        println!("  Action {i}: {outcome:?}");
+        info!("  Action {i}: {outcome:?}");
         outcome.assert_dry_run();
     }
 
     // No providers were called.
     harness.provider("email").unwrap().assert_not_called();
     harness.provider("sms").unwrap().assert_not_called();
-    println!("  Total provider calls: 0 (batch dry-run)");
-    println!();
+    info!("  Total provider calls: 0 (batch dry-run)");
+    info!("");
 
     harness.teardown().await?;
 
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║                  ALL DEMOS PASSED                            ║");
-    println!("╚══════════════════════════════════════════════════════════════╝");
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║                  ALL DEMOS PASSED                            ║");
+    info!("╚══════════════════════════════════════════════════════════════╝");
 
     Ok(())
 }

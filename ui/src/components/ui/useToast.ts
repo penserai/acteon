@@ -1,13 +1,8 @@
-import { createContext, useContext } from 'react'
-
-export type Severity = 'success' | 'error' | 'warning' | 'info'
-
-export interface ToastContextType {
-  toast: (severity: Severity, title: string, description?: string) => void
-}
-
-export const ToastContext = createContext<ToastContextType>({ toast: () => {} })
+// Re-export from the Zustand toast store so existing consumers keep working.
+import { useToastStore } from '../../stores/toast'
+export type { Severity } from '../../stores/toast'
 
 export function useToast() {
-  return useContext(ToastContext)
+  const toast = useToastStore((s) => s.toast)
+  return { toast }
 }

@@ -20,6 +20,8 @@ use acteon_provider::ProviderRegistry;
 use acteon_rules::{EvalContext, RuleEngine, RuleVerdict};
 use acteon_state::{DistributedLock, KeyKind, StateKey, StateStore};
 
+use crate::task_engine::TaskEngine;
+
 use serde::{Deserialize, Serialize};
 
 use crate::circuit_breaker::CircuitBreakerRegistry;
@@ -126,6 +128,17 @@ pub struct ApprovalStatus {
     pub message: Option<String>,
 }
 
+/// Internal wrapper for all quota policies cached in memory for a
+/// single `(namespace, tenant)` pair. A bucket may hold one generic
+/// policy (`provider: None`) plus any number of provider-scoped
+/// policies — all of them are evaluated together per dispatch, and
+/// the strictest applicable verdict wins.
+#[derive(Debug, Clone)]
+pub(crate) struct CachedPolicy {
+    pub(crate) policies: Vec<acteon_core::QuotaPolicy>,
+    pub(crate) cached_at: chrono::DateTime<Utc>,
+}
+
 /// The central gateway that orchestrates the action dispatch pipeline.
 ///
 /// The dispatch pipeline for each action:
@@ -155,17 +168,68 @@ pub struct Gateway {
     pub(crate) llm_policy: String,
     pub(crate) llm_policies: HashMap<String, String>,
     pub(crate) llm_fail_open: bool,
-    pub(crate) chains: HashMap<String, ChainConfig>,
-    /// Pre-computed step-name-to-index maps for each chain config, built once at
-    /// gateway construction time to avoid repeated `HashMap` allocations during
-    /// chain advancement.
-    pub(crate) chain_step_indices: HashMap<String, HashMap<String, usize>>,
+    pub(crate) chains: parking_lot::RwLock<HashMap<String, ChainConfig>>,
+    /// Pre-computed step-name-to-index maps for each chain config, built at
+    /// gateway construction time (and updated via runtime CRUD) to avoid
+    /// repeated `HashMap` allocations during chain advancement.
+    pub(crate) chain_step_indices: parking_lot::RwLock<HashMap<String, HashMap<String, usize>>>,
     pub(crate) completed_chain_ttl: Option<Duration>,
     pub(crate) embedding: Option<Arc<dyn acteon_rules::EmbeddingEvalSupport>>,
     pub(crate) default_timezone: Option<chrono_tz::Tz>,
     pub(crate) circuit_breakers: Option<crate::circuit_breaker::CircuitBreakerRegistry>,
     /// Broadcast channel for real-time SSE event streaming.
     pub(crate) stream_tx: tokio::sync::broadcast::Sender<StreamEvent>,
+    /// Quota policies indexed by `"namespace:tenant"`.
+    ///
+    /// Wrapped in a `RwLock` so that [`check_quota`](Self::check_quota) can
+    /// lazily cache policies discovered from the state store (hot-reload
+    /// visibility across distributed instances).
+    pub(crate) quota_policies: parking_lot::RwLock<HashMap<String, CachedPolicy>>,
+    /// Optional payload encryptor for encrypting action payloads at rest.
+    pub(crate) payload_encryptor: Option<Arc<acteon_crypto::PayloadEncryptor>>,
+    /// Data retention policies indexed by `"namespace:tenant"`.
+    pub(crate) retention_policies:
+        parking_lot::RwLock<HashMap<String, acteon_core::RetentionPolicy>>,
+    /// Payload templates indexed by `(namespace, tenant)` → `name` → `Template`.
+    pub(crate) templates:
+        parking_lot::RwLock<HashMap<(String, String), HashMap<String, acteon_core::Template>>>,
+    /// Template profiles indexed by `(namespace, tenant)` → `name` → `TemplateProfile`.
+    pub(crate) template_profiles: parking_lot::RwLock<
+        HashMap<(String, String), HashMap<String, acteon_core::TemplateProfile>>,
+    >,
+    /// Active silences indexed by `namespace` → list of silences with
+    /// pre-compiled regex matchers. Evaluated after rule evaluation but
+    /// before provider dispatch.
+    ///
+    /// The cache is keyed by namespace only (not `(namespace, tenant)`)
+    /// so that hierarchical tenant matching works at dispatch time — a
+    /// silence on tenant `acme` correctly covers dispatches to
+    /// `acme.us-east`. The tenant is matched per-silence inside the
+    /// iteration using the [`tenant_matches`](crate::Gateway::check_silence)
+    /// helper.
+    pub(crate) silences:
+        parking_lot::RwLock<HashMap<String, Vec<crate::silence_enforcement::CachedSilence>>>,
+    /// Named time intervals indexed by `namespace` → list. The cache is
+    /// keyed by namespace alone so that hierarchical tenant matching
+    /// works the same way silences do (a parent-tenant interval covers
+    /// child tenants).
+    pub(crate) time_intervals: parking_lot::RwLock<HashMap<String, Vec<acteon_core::TimeInterval>>>,
+    /// Per-provider execution metrics (latency, success/failure counters).
+    pub(crate) provider_metrics: Arc<crate::metrics::ProviderMetrics>,
+    /// Optional WASM plugin runtime for rule condition evaluation.
+    pub(crate) wasm_runtime: Option<Arc<dyn acteon_wasm_runtime::WasmPluginRuntime>>,
+    /// Optional compliance configuration for `SOC2`/`HIPAA` audit mode.
+    pub(crate) compliance_config: Option<acteon_core::ComplianceConfig>,
+    /// Typed reference to the hash chain audit store for chain verification.
+    pub(crate) hash_chain_store: Option<Arc<acteon_audit::HashChainAuditStore>>,
+    /// Pre-dispatch enrichment configurations.
+    pub(crate) enrichments: Vec<acteon_core::EnrichmentConfig>,
+    /// Resource lookup providers for enrichment (keyed by provider name).
+    pub(crate) resource_lookups: HashMap<String, Arc<dyn acteon_provider::ResourceLookup>>,
+    /// Maximum allowed size for a single attachment after `base64` decoding (bytes).
+    pub(crate) max_inline_bytes: u64,
+    /// Maximum number of attachments per action.
+    pub(crate) max_attachments_per_action: usize,
 }
 
 impl std::fmt::Debug for Gateway {
@@ -178,6 +242,149 @@ impl std::fmt::Debug for Gateway {
 }
 
 impl Gateway {
+    /// Returns the WASM plugin runtime, if configured.
+    pub fn wasm_runtime(&self) -> Option<&dyn acteon_wasm_runtime::WasmPluginRuntime> {
+        self.wasm_runtime.as_deref()
+    }
+
+    /// Resolve all attachments on an action into [`ResolvedAttachment`](acteon_core::ResolvedAttachment) instances.
+    ///
+    /// Decodes each attachment's `base64` data and validates size limits.
+    ///
+    /// Returns an error if:
+    /// - The action has more attachments than `max_attachments_per_action`.
+    /// - An attachment exceeds `max_inline_bytes` after decoding.
+    /// - `Base64` decoding fails.
+    pub fn resolve_attachments(
+        &self,
+        action: &Action,
+    ) -> Result<Vec<acteon_core::ResolvedAttachment>, GatewayError> {
+        use base64::Engine;
+
+        if action.attachments.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        if action.attachments.len() > self.max_attachments_per_action {
+            return Err(GatewayError::Attachment(format!(
+                "action has {} attachments, max is {}",
+                action.attachments.len(),
+                self.max_attachments_per_action
+            )));
+        }
+
+        let mut resolved = Vec::with_capacity(action.attachments.len());
+
+        for attachment in &action.attachments {
+            let data = base64::engine::general_purpose::STANDARD
+                .decode(&attachment.data_base64)
+                .map_err(|e| {
+                    GatewayError::Attachment(format!(
+                        "failed to decode base64 for '{}': {e}",
+                        attachment.filename
+                    ))
+                })?;
+
+            let size = data.len() as u64;
+            if size > self.max_inline_bytes {
+                return Err(GatewayError::Attachment(format!(
+                    "attachment '{}' is {size} bytes, max is {}",
+                    attachment.filename, self.max_inline_bytes
+                )));
+            }
+
+            resolved.push(acteon_core::ResolvedAttachment {
+                id: attachment.id.clone(),
+                name: attachment.name.clone(),
+                filename: attachment.filename.clone(),
+                content_type: attachment.content_type.clone(),
+                data,
+            });
+        }
+
+        Ok(resolved)
+    }
+
+    /// Returns the compliance configuration, if set.
+    pub fn compliance_config(&self) -> Option<&acteon_core::ComplianceConfig> {
+        self.compliance_config.as_ref()
+    }
+
+    /// Verify the integrity of the audit hash chain for a `(namespace, tenant)` pair.
+    ///
+    /// Returns `None` if hash chaining is not enabled.
+    pub async fn verify_audit_chain(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        from: Option<chrono::DateTime<Utc>>,
+        to: Option<chrono::DateTime<Utc>>,
+    ) -> Result<Option<acteon_core::HashChainVerification>, GatewayError> {
+        match &self.hash_chain_store {
+            Some(store) => {
+                let result = store
+                    .verify_chain(namespace, tenant, from, to)
+                    .await
+                    .map_err(|e| {
+                        GatewayError::Configuration(format!("chain verification failed: {e}"))
+                    })?;
+                Ok(Some(result))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Returns a reference to the payload encryptor, if configured.
+    pub fn payload_encryptor(&self) -> Option<&acteon_crypto::PayloadEncryptor> {
+        self.payload_encryptor.as_deref()
+    }
+
+    /// Record an audit entry, either synchronously (blocking the pipeline) or
+    /// asynchronously (fire-and-forget), depending on the compliance configuration.
+    ///
+    /// When `sync_audit_writes` is enabled, the caller awaits the write inline
+    /// so the audit record is guaranteed to be persisted before the dispatch
+    /// pipeline returns.
+    async fn emit_audit_record(&self, audit: &Arc<dyn AuditStore>, record: AuditRecord) {
+        let sync = self
+            .compliance_config
+            .as_ref()
+            .is_some_and(|c| c.sync_audit_writes);
+
+        if sync {
+            if let Err(e) = audit.record(record).await {
+                warn!(error = %e, "audit recording failed (sync)");
+            }
+        } else {
+            let audit = Arc::clone(audit);
+            self.audit_tracker.spawn(async move {
+                if let Err(e) = audit.record(record).await {
+                    warn!(error = %e, "audit recording failed");
+                }
+            });
+        }
+    }
+
+    /// Encrypt a state value if a payload encryptor is configured, otherwise passthrough.
+    pub fn encrypt_state_value(&self, value: &str) -> Result<String, GatewayError> {
+        match self.payload_encryptor {
+            Some(ref enc) => enc.encrypt_str(value).map_err(|e| {
+                GatewayError::Configuration(format!("payload encryption failed: {e}"))
+            }),
+            None => Ok(value.to_owned()),
+        }
+    }
+
+    /// Decrypt a state value if a payload encryptor is configured, otherwise passthrough.
+    pub fn decrypt_state_value(&self, value: &str) -> Result<String, GatewayError> {
+        match self.payload_encryptor {
+            Some(ref enc) => enc.decrypt_str(value).map_err(|e| {
+                GatewayError::Configuration(format!("payload decryption failed: {e}"))
+            }),
+            None => Ok(value.to_owned()),
+        }
+    }
+
     /// Dispatch a single action through the full gateway pipeline.
     ///
     /// This acquires a per-action distributed lock, evaluates rules, and
@@ -256,15 +463,172 @@ impl Gateway {
             info!("distributed lock acquired");
         }
 
+        // 2b. Quota check (skip in dry-run mode).
+        //
+        // Degrade outcomes swap the action's provider and
+        // re-enter the quota check so that (a) the fallback
+        // provider's own budget is actually enforced and
+        // (b) the dispatch path continues through rule
+        // evaluation and execution on the fallback instead of
+        // returning a misleading success-like "degraded" outcome
+        // without ever sending the message. The hop limit caps
+        // how many fallbacks a single dispatch can traverse so
+        // a misconfigured chain of degrade policies cannot loop.
+        let mut action = action;
+        if !dry_run {
+            const MAX_QUOTA_DEGRADE_HOPS: usize = 3;
+            let mut hops = 0usize;
+            let mut terminal: Option<ActionOutcome> = None;
+            loop {
+                let outcome = if hops == 0 {
+                    self.check_quota(&action).await?
+                } else {
+                    // After a degrade swap, only re-evaluate
+                    // provider-scoped policies so we do not
+                    // double-charge the generic (tenant-wide)
+                    // budget that already produced the initial
+                    // degrade verdict.
+                    self.check_quota_fallback(&action).await?
+                };
+                let Some(outcome) = outcome else {
+                    break;
+                };
+                match outcome {
+                    ActionOutcome::QuotaExceeded {
+                        ref overage_behavior,
+                        ..
+                    } if overage_behavior.starts_with("degrade:") => {
+                        if hops >= MAX_QUOTA_DEGRADE_HOPS {
+                            warn!(
+                                hops,
+                                "quota degrade hop limit reached — returning QuotaExceeded instead of cascading further"
+                            );
+                            terminal = Some(outcome);
+                            break;
+                        }
+                        if let Some(fallback) = overage_behavior.strip_prefix("degrade:") {
+                            info!(
+                                from = %action.provider,
+                                to = %fallback,
+                                "quota exceeded — degrading to fallback provider"
+                            );
+                            action.provider = fallback.into();
+                            hops += 1;
+                            continue;
+                        }
+                        terminal = Some(outcome);
+                        break;
+                    }
+                    _ => {
+                        terminal = Some(outcome);
+                        break;
+                    }
+                }
+            }
+            if let Some(outcome) = terminal {
+                let dummy_verdict = RuleVerdict::Allow(None);
+                if let Some(ref audit) = self.audit {
+                    let record = build_audit_record(
+                        event_id.clone(),
+                        &action,
+                        &dummy_verdict,
+                        &outcome,
+                        dispatched_at,
+                        start.elapsed(),
+                        self.effective_audit_ttl(&action.namespace, &action.tenant),
+                        self.audit_store_payload,
+                        caller,
+                    );
+                    self.emit_audit_record(audit, record).await;
+                }
+                let stream_event = StreamEvent {
+                    id: event_id,
+                    timestamp: dispatched_at,
+                    event_type: StreamEventType::ActionDispatched {
+                        outcome: sanitize_outcome(&outcome),
+                        provider: action.provider.to_string(),
+                    },
+                    namespace: action.namespace.to_string(),
+                    tenant: action.tenant.to_string(),
+                    action_type: Some(action.action_type.clone()),
+                    action_id: Some(action.id.to_string()),
+                };
+                let _ = self.stream_tx.send(stream_event);
+                if let Some(g) = guard {
+                    let _ = g.release().await;
+                }
+                return Ok(outcome);
+            }
+        }
+
+        // 2c. Apply pre-dispatch enrichments.
+        // Lookups are read-only, so we run them even in dry-run mode to ensure
+        // rule evaluation produces the same verdict as an actual dispatch.
+        if !self.enrichments.is_empty() {
+            crate::enrichment::apply_enrichments(
+                &mut action,
+                &self.enrichments,
+                &self.resource_lookups,
+            )
+            .await?;
+        }
+
+        // 2d. Template rendering.
+        // If the action has a template profile, render it and merge into payload.
+        // This runs before rule evaluation so rules see the rendered payload.
+        if let Some(ref profile_name) = action.template {
+            let profile = self
+                .template_profile_by_scope(&action.namespace, &action.tenant, profile_name)
+                .ok_or_else(|| {
+                    GatewayError::TemplateRender(format!(
+                        "template profile not found: {profile_name}"
+                    ))
+                })?;
+            let scoped_templates = self.templates_for_scope(&action.namespace, &action.tenant);
+            let payload_snapshot = action.payload.clone();
+            let attachments_snapshot = action.attachments.clone();
+
+            let rendered = tokio::task::spawn_blocking(move || {
+                crate::template_engine::render_profile(
+                    &profile,
+                    &scoped_templates,
+                    &payload_snapshot,
+                    &attachments_snapshot,
+                )
+            })
+            .await
+            .map_err(|e| GatewayError::TemplateRender(format!("render task panicked: {e}")))??;
+
+            crate::template_engine::merge_rendered_into_payload(&mut action.payload, &rendered)?;
+            debug!(profile = profile_name, "template profile rendered");
+        }
+
         // 3. Build the evaluation context and evaluate rules.
         let mut eval_ctx = EvalContext::new(&action, self.state.as_ref(), &self.environment);
         if let Some(ref emb) = self.embedding {
             eval_ctx = eval_ctx.with_embedding(Arc::clone(emb));
         }
+        let wasm_counters = if self.wasm_runtime.is_some() {
+            let counters = Arc::new(acteon_rules::WasmEvalCounters::default());
+            eval_ctx = eval_ctx.with_wasm_counters(Arc::clone(&counters));
+            Some(counters)
+        } else {
+            None
+        };
+        if let Some(ref wasm) = self.wasm_runtime {
+            eval_ctx = eval_ctx.with_wasm_runtime(Arc::clone(wasm));
+        }
         if let Some(tz) = self.default_timezone {
             eval_ctx = eval_ctx.with_timezone(tz);
         }
         let verdict = self.engine.evaluate(&eval_ctx).await?;
+
+        // Propagate WASM counters to gateway metrics.
+        if let Some(ref counters) = wasm_counters {
+            self.metrics
+                .add_wasm_invocations(counters.invocation_count());
+            self.metrics.add_wasm_errors(counters.error_count());
+        }
 
         info!(?verdict, "rule evaluation complete");
 
@@ -280,10 +644,123 @@ impl Gateway {
                 _ => action.provider.to_string(),
             };
             return Ok(ActionOutcome::DryRun {
-                verdict: verdict_tag(&verdict).to_owned(),
+                verdict: verdict.as_tag().to_owned(),
                 matched_rule: matched_rule_name(&verdict),
                 would_be_provider,
             });
+        }
+
+        // 3d. Silence check — if the action matches an active silence,
+        //     short-circuit to the Silenced outcome before executing the
+        //     verdict. This preserves the rule verdict in the audit record
+        //     while preventing actual provider delivery.
+        if let Some(silence_id) = self.check_silence(&action) {
+            self.metrics.increment_silenced();
+            let outcome = ActionOutcome::Silenced {
+                silence_id,
+                matched_rule: matched_rule_name(&verdict),
+            };
+
+            // Emit audit + stream events and release the lock, mirroring
+            // the happy-path tail below. We intentionally do not call
+            // `execute_action` or any verdict handler.
+            if let Some(ref audit) = self.audit {
+                let record = build_audit_record(
+                    event_id.clone(),
+                    &action,
+                    &verdict,
+                    &outcome,
+                    dispatched_at,
+                    start.elapsed(),
+                    self.effective_audit_ttl(&action.namespace, &action.tenant),
+                    self.audit_store_payload,
+                    caller,
+                );
+                self.emit_audit_record(audit, record).await;
+            }
+
+            let stream_event = StreamEvent {
+                id: event_id,
+                timestamp: dispatched_at,
+                event_type: StreamEventType::ActionDispatched {
+                    outcome: sanitize_outcome(&outcome),
+                    provider: action.provider.to_string(),
+                },
+                namespace: action.namespace.to_string(),
+                tenant: action.tenant.to_string(),
+                action_type: Some(action.action_type.clone()),
+                action_id: Some(action.id.to_string()),
+            };
+            let _ = self.stream_tx.send(stream_event);
+
+            if let Some(guard) = guard {
+                guard
+                    .release()
+                    .await
+                    .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+            }
+
+            info!(?outcome, "dispatch complete (silenced)");
+            return Ok(outcome);
+        }
+
+        // 3e. Time interval gating — if the matched rule references
+        //     `mute_time_intervals` or `active_time_intervals`, evaluate
+        //     them against the current wall-clock time and short-circuit
+        //     to `Muted` when the schedule says the rule should not fire
+        //     right now.
+        let ti_decision = self.check_time_intervals(
+            action.namespace.as_str(),
+            action.tenant.as_str(),
+            crate::audit_helpers::rule_name_for_lookup(&verdict).as_deref(),
+            Utc::now(),
+        );
+        if let Some(interval_name) = ti_decision.interval_name() {
+            self.metrics.increment_muted();
+            let outcome = ActionOutcome::Muted {
+                interval: interval_name.to_owned(),
+                reason: ti_decision.reason().to_owned(),
+                matched_rule: matched_rule_name(&verdict),
+            };
+
+            if let Some(ref audit) = self.audit {
+                let record = build_audit_record(
+                    event_id.clone(),
+                    &action,
+                    &verdict,
+                    &outcome,
+                    dispatched_at,
+                    start.elapsed(),
+                    self.effective_audit_ttl(&action.namespace, &action.tenant),
+                    self.audit_store_payload,
+                    caller,
+                );
+                self.emit_audit_record(audit, record).await;
+            }
+
+            let stream_event = StreamEvent {
+                id: event_id,
+                timestamp: dispatched_at,
+                event_type: StreamEventType::ActionDispatched {
+                    outcome: sanitize_outcome(&outcome),
+                    provider: action.provider.to_string(),
+                },
+                namespace: action.namespace.to_string(),
+                tenant: action.tenant.to_string(),
+                action_type: Some(action.action_type.clone()),
+                action_id: Some(action.id.to_string()),
+            };
+            let _ = self.stream_tx.send(stream_event);
+
+            if let Some(guard) = guard {
+                guard
+                    .release()
+                    .await
+                    .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+            }
+
+            info!(?outcome, "dispatch complete (muted by time interval)");
+            return Ok(outcome);
         }
 
         // 4. Handle the verdict.
@@ -301,14 +778,12 @@ impl Gateway {
                 target_provider,
             } => self.handle_reroute(&action, target_provider).await?,
             RuleVerdict::Throttle {
-                rule: _,
-                max_count: _,
+                rule,
+                max_count,
                 window_seconds,
             } => {
-                self.metrics.increment_throttled();
-                ActionOutcome::Throttled {
-                    retry_after: Duration::from_secs(*window_seconds),
-                }
+                self.handle_throttle(&action, rule, *max_count, *window_seconds)
+                    .await?
             }
             RuleVerdict::Modify { rule: _, changes } => {
                 let mut modified = action.clone();
@@ -328,6 +803,7 @@ impl Gateway {
                 group_by,
                 group_wait_seconds,
                 group_interval_seconds,
+                repeat_interval_seconds,
                 max_group_size,
                 template: _,
             } => {
@@ -336,6 +812,7 @@ impl Gateway {
                     group_by,
                     *group_wait_seconds,
                     *group_interval_seconds,
+                    *repeat_interval_seconds,
                     *max_group_size,
                 )
                 .await?
@@ -362,7 +839,7 @@ impl Gateway {
             } => self.handle_schedule(&action, *delay_seconds).await?,
         };
 
-        // 5. Emit audit record (tracked async task for graceful shutdown).
+        // 5. Emit audit record (sync when compliance requires it, async otherwise).
         if let Some(ref audit) = self.audit {
             let record = build_audit_record(
                 event_id.clone(),
@@ -371,16 +848,11 @@ impl Gateway {
                 &outcome,
                 dispatched_at,
                 start.elapsed(),
-                self.audit_ttl_seconds,
+                self.effective_audit_ttl(&action.namespace, &action.tenant),
                 self.audit_store_payload,
                 caller,
             );
-            let audit = Arc::clone(audit);
-            self.audit_tracker.spawn(async move {
-                if let Err(e) = audit.record(record).await {
-                    warn!(error = %e, "audit recording failed");
-                }
-            });
+            self.emit_audit_record(audit, record).await;
         }
 
         // 6. Emit SSE stream event (fire-and-forget; no-op if no subscribers).
@@ -448,11 +920,21 @@ impl Gateway {
         // Process actions in parallel with bounded concurrency.
         // The executor already has its own concurrency limits, so we use a
         // reasonable batch concurrency here (e.g., 32 concurrent dispatches).
+        //
+        // `buffered` (as opposed to `buffer_unordered`) still runs up to
+        // BATCH_CONCURRENCY futures concurrently but yields their results
+        // in the same order they were submitted. This ordering guarantee
+        // is part of the public contract — callers (server API batch
+        // dispatch, client SDKs, simulation harness) index the result
+        // vector position-by-position against the input vector. See the
+        // server-side test `dispatch_batch_results_preserve_input_order`
+        // and the gateway-level regression test
+        // `dispatch_batch_preserves_order_under_latency_skew`.
         const BATCH_CONCURRENCY: usize = 32;
 
         stream::iter(actions)
             .map(|action| self.dispatch_inner(action, caller, dry_run))
-            .buffer_unordered(BATCH_CONCURRENCY)
+            .buffered(BATCH_CONCURRENCY)
             .collect()
             .await
     }
@@ -528,9 +1010,29 @@ impl Gateway {
         &self.metrics
     }
 
+    /// Return a shared reference to the gateway's metrics.
+    pub fn metrics_arc(&self) -> Arc<GatewayMetrics> {
+        Arc::clone(&self.metrics)
+    }
+
     /// Return a reference to the circuit breaker registry, if configured.
     pub fn circuit_breakers(&self) -> Option<&crate::circuit_breaker::CircuitBreakerRegistry> {
         self.circuit_breakers.as_ref()
+    }
+
+    /// Return a reference to the per-provider execution metrics.
+    pub fn provider_metrics(&self) -> &crate::metrics::ProviderMetrics {
+        &self.provider_metrics
+    }
+
+    /// Return the list of registered provider names.
+    pub fn provider_names(&self) -> Vec<&str> {
+        self.providers.list()
+    }
+
+    /// Run health checks on all registered providers.
+    pub async fn check_provider_health(&self) -> Vec<acteon_provider::health::HealthStatus> {
+        acteon_provider::health::check_all(&self.providers).await
     }
 
     /// Replace the rule engine's rules with a new set, re-sorting by priority.
@@ -541,6 +1043,45 @@ impl Gateway {
     /// Return a reference to the sorted rules in the engine.
     pub fn rules(&self) -> &[acteon_rules::Rule] {
         self.engine.rules()
+    }
+
+    /// Return the registered chain configurations.
+    pub fn chain_configs(&self) -> Vec<ChainConfig> {
+        self.chains.read().values().cloned().collect()
+    }
+
+    /// Return a single chain config by name.
+    pub fn chain_config(&self, name: &str) -> Option<ChainConfig> {
+        self.chains.read().get(name).cloned()
+    }
+
+    /// Add or replace a chain definition. Validates the config and the full graph
+    /// (cycles, dangling refs) before committing. Returns validation errors if invalid.
+    pub fn set_chain_config(&self, config: ChainConfig) -> Result<(), Vec<String>> {
+        let errors = config.validate();
+        if !errors.is_empty() {
+            return Err(errors);
+        }
+        let name = config.name.clone();
+        let index_map = config.step_index_map();
+        // Validate the full graph including the new/updated chain.
+        {
+            let mut chains = self.chains.write();
+            chains.insert(name.clone(), config);
+            let graph_errors = acteon_core::validate_chain_graph(&chains);
+            if !graph_errors.is_empty() {
+                chains.remove(&name);
+                return Err(graph_errors);
+            }
+        }
+        self.chain_step_indices.write().insert(name, index_map);
+        Ok(())
+    }
+
+    /// Remove a chain definition by name. Returns the removed config, or `None`.
+    pub fn remove_chain_config(&self, name: &str) -> Option<ChainConfig> {
+        self.chain_step_indices.write().remove(name);
+        self.chains.write().remove(name)
     }
 
     /// Enable a rule by name. Returns `true` if the rule was found.
@@ -599,6 +1140,193 @@ impl Gateway {
     pub fn dlq_enabled(&self) -> bool {
         self.dlq.is_some()
     }
+
+    /// Return a flat snapshot of all in-memory quota policies.
+    ///
+    /// Since Phase 3, a single `(namespace, tenant)` pair may hold
+    /// multiple policies (one generic + several provider-scoped), so
+    /// this returns every policy across every bucket.
+    pub fn quota_policies(&self) -> Vec<acteon_core::QuotaPolicy> {
+        self.quota_policies
+            .read()
+            .values()
+            .flat_map(|bucket| bucket.policies.clone())
+            .collect()
+    }
+
+    /// Add or replace a quota policy. Policies are bucketed by
+    /// `"namespace:tenant"`; within a bucket, existing entries with
+    /// the same `id` are replaced in place while new `id`s are
+    /// appended, allowing generic and per-provider policies to
+    /// coexist for the same tenant.
+    pub fn set_quota_policy(&self, policy: acteon_core::QuotaPolicy) {
+        let key = format!("{}:{}", policy.namespace, policy.tenant);
+        let now = Utc::now();
+        let mut map = self.quota_policies.write();
+        let bucket = map.entry(key).or_insert_with(|| CachedPolicy {
+            policies: Vec::new(),
+            cached_at: now,
+        });
+        bucket.cached_at = now;
+        if let Some(slot) = bucket.policies.iter_mut().find(|p| p.id == policy.id) {
+            *slot = policy;
+        } else {
+            bucket.policies.push(policy);
+        }
+    }
+
+    /// Remove a single quota policy from its `(namespace, tenant)`
+    /// bucket by its `id`. Returns the removed policy if it existed.
+    /// The enclosing bucket is dropped if it becomes empty so that
+    /// the cold-path loader re-scans on the next dispatch.
+    pub fn remove_quota_policy_by_id(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        id: &str,
+    ) -> Option<acteon_core::QuotaPolicy> {
+        let key = format!("{namespace}:{tenant}");
+        let mut map = self.quota_policies.write();
+        let bucket = map.get_mut(&key)?;
+        let pos = bucket.policies.iter().position(|p| p.id == id)?;
+        let removed = bucket.policies.remove(pos);
+        if bucket.policies.is_empty() {
+            map.remove(&key);
+        }
+        Some(removed)
+    }
+
+    /// Return a snapshot of the current in-memory retention policies.
+    pub fn retention_policies(&self) -> HashMap<String, acteon_core::RetentionPolicy> {
+        self.retention_policies.read().clone()
+    }
+
+    /// Add or replace a retention policy. Keyed by `"namespace:tenant"`.
+    pub fn set_retention_policy(&self, policy: acteon_core::RetentionPolicy) {
+        let key = format!("{}:{}", policy.namespace, policy.tenant);
+        self.retention_policies.write().insert(key, policy);
+    }
+
+    /// Remove a retention policy by its lookup key (`"namespace:tenant"`).
+    pub fn remove_retention_policy(
+        &self,
+        namespace: &str,
+        tenant: &str,
+    ) -> Option<acteon_core::RetentionPolicy> {
+        let key = format!("{namespace}:{tenant}");
+        self.retention_policies.write().remove(&key)
+    }
+
+    // -- Template management methods moved to template_management.rs ----------
+
+    /// Compute the effective audit TTL for a given namespace and tenant.
+    ///
+    /// Resolution order (most specific wins):
+    /// 1. Per-tenant retention policy with `compliance_hold` → `None` (never expires)
+    /// 2. Per-tenant retention policy with `audit_ttl_seconds` → that value
+    /// 3. Gateway-wide `audit_ttl_seconds` → the global default
+    fn effective_audit_ttl(&self, namespace: &str, tenant: &str) -> Option<u64> {
+        let key = format!("{namespace}:{tenant}");
+        if let Some(policy) = self.retention_policies.read().get(&key)
+            && policy.enabled
+        {
+            if policy.compliance_hold {
+                return None; // Never expires
+            }
+            if let Some(ttl) = policy.audit_ttl_seconds {
+                return Some(ttl);
+            }
+        }
+        self.audit_ttl_seconds
+    }
+
+    /// Rule Playground where users test actions against the current rule set.
+    ///
+    /// **Note:** The Playground reads live production state (throttle counters,
+    /// state-get values, etc.) unless overrides are provided in `mock_state`.
+    /// Its results will change as production state changes. It is not a fully
+    /// sandboxed environment.
+    ///
+    /// When `evaluate_all` is `true`, every enabled rule's condition is
+    /// evaluated even after a match, giving a complete picture of how the
+    /// entire rule set responds.
+    ///
+    /// When `evaluate_at` is `Some`, the provided timestamp overrides the
+    /// evaluation clock, allowing time-travel debugging of time-sensitive
+    /// rules (maintenance windows, weekday restrictions, etc.).
+    pub async fn evaluate_rules(
+        &self,
+        action: &acteon_core::Action,
+        include_disabled: bool,
+        evaluate_all: bool,
+        evaluate_at: Option<chrono::DateTime<chrono::Utc>>,
+        mock_state: HashMap<String, String>,
+    ) -> Result<acteon_rules::RuleEvaluationTrace, GatewayError> {
+        let state_store: Box<dyn acteon_state::StateStore> = if mock_state.is_empty() {
+            // No overrides: use the real store directly.
+            Box::new(BorrowedStateStore(self.state.as_ref()))
+        } else {
+            Box::new(PlaygroundStateStore {
+                inner: self.state.as_ref(),
+                overrides: mock_state,
+            })
+        };
+
+        let mut eval_ctx = EvalContext::new(action, state_store.as_ref(), &self.environment);
+        if let Some(ts) = evaluate_at {
+            eval_ctx = eval_ctx.with_now(ts);
+        }
+        if let Some(ref emb) = self.embedding {
+            eval_ctx = eval_ctx.with_embedding(std::sync::Arc::clone(emb));
+        }
+        if let Some(ref wasm) = self.wasm_runtime {
+            eval_ctx = eval_ctx.with_wasm_runtime(std::sync::Arc::clone(wasm));
+        }
+        if let Some(tz) = self.default_timezone {
+            eval_ctx = eval_ctx.with_timezone(tz);
+        }
+        let mut trace = self
+            .engine
+            .evaluate_with_trace(&eval_ctx, include_disabled, evaluate_all)
+            .await?;
+
+        // If the matched rule is a Modify action, compute the resulting payload
+        // by applying the JSON merge patch so the user can inspect the diff.
+        if trace.verdict == "modify"
+            && let Some(ref matched_name) = trace.matched_rule
+            && let Some(rule) = self.engine.rules().iter().find(|r| &r.name == matched_name)
+            && let acteon_rules::RuleAction::Modify { changes } = &rule.action
+        {
+            let mut patched = action.payload.clone();
+            json_patch::merge(&mut patched, changes);
+            trace.modified_payload = Some(patched);
+        }
+
+        // In evaluate_all mode, compute per-rule modify patches and a running
+        // cumulative payload preview for each matched Modify rule.
+        if evaluate_all {
+            let mut running_payload = action.payload.clone();
+            for entry in &mut trace.trace {
+                if entry.result == acteon_rules::RuleTraceResult::Matched
+                    && entry.action == "modify"
+                    && let Some(rule) = self
+                        .engine
+                        .rules()
+                        .iter()
+                        .find(|r| r.name == entry.rule_name)
+                    && let acteon_rules::RuleAction::Modify { changes } = &rule.action
+                {
+                    entry.modify_patch = Some(changes.clone());
+                    json_patch::merge(&mut running_payload, changes);
+                    entry.modified_payload_preview = Some(running_payload.clone());
+                }
+            }
+        }
+
+        Ok(trace)
+    }
+
+    // -- Quota enforcement methods moved to quota_enforcement.rs ---------------
 
     /// Load rules from a directory using the given frontends, replacing current rules.
     pub fn load_rules_from_directory(
@@ -682,7 +1410,22 @@ impl Gateway {
             fallback = %target_name,
             "circuit open, rerouting to fallback provider"
         );
+        let exec_start = std::time::Instant::now();
         let result = self.executor.execute(action, target.as_ref()).await;
+        let latency_us = u64::try_from(exec_start.elapsed().as_micros()).unwrap_or(u64::MAX);
+
+        // Record per-provider metrics for the fallback provider.
+        match &result {
+            ActionOutcome::Executed(_) => {
+                self.provider_metrics
+                    .record_success(target_name, latency_us);
+            }
+            ActionOutcome::Failed(err) => {
+                self.provider_metrics
+                    .record_failure(target_name, latency_us, &err.message);
+            }
+            _ => {}
+        }
 
         // Record result in the fallback provider's circuit breaker.
         if let Some(fallback_cb) = registry.get(target_name) {
@@ -753,7 +1496,24 @@ impl Gateway {
                 attempts: 0,
             });
         };
-        let result = self.executor.execute(action, provider.as_ref()).await;
+
+        let (result, latency_us) = self.execute_provider(action, provider.as_ref()).await;
+
+        // Record per-provider metrics.
+        match &result {
+            ActionOutcome::Executed(_) => {
+                self.provider_metrics
+                    .record_success(action.provider.as_str(), latency_us);
+            }
+            ActionOutcome::Failed(err) => {
+                self.provider_metrics.record_failure(
+                    action.provider.as_str(),
+                    latency_us,
+                    &err.message,
+                );
+            }
+            _ => {}
+        }
 
         // Record result in circuit breaker.
         // Only retryable failures indicate provider health issues;
@@ -778,6 +1538,48 @@ impl Gateway {
             _ => {}
         }
         result
+    }
+
+    /// Resolve attachments (if any) and execute the provider, returning the
+    /// outcome along with the execution latency in microseconds.
+    async fn execute_provider(
+        &self,
+        action: &Action,
+        provider: &dyn acteon_provider::DynProvider,
+    ) -> (ActionOutcome, u64) {
+        // Resolve attachments and use context-aware execution if applicable.
+        let dispatch_ctx = if !action.attachments.is_empty() && provider.supports_attachments() {
+            match self.resolve_attachments(action) {
+                Ok(resolved) => Some(acteon_provider::DispatchContext {
+                    attachments: resolved,
+                }),
+                Err(e) => {
+                    self.metrics.increment_failed();
+                    return (
+                        ActionOutcome::Failed(acteon_core::ActionError {
+                            code: "ATTACHMENT_ERROR".into(),
+                            message: e.to_string(),
+                            retryable: false,
+                            attempts: 0,
+                        }),
+                        0,
+                    );
+                }
+            }
+        } else {
+            None
+        };
+
+        let exec_start = std::time::Instant::now();
+        let result = if let Some(ref ctx) = dispatch_ctx {
+            self.executor
+                .execute_with_context(action, provider, ctx)
+                .await
+        } else {
+            self.executor.execute(action, provider).await
+        };
+        let latency_us = u64::try_from(exec_start.elapsed().as_micros()).unwrap_or(u64::MAX);
+        (result, latency_us)
     }
 
     /// Handle the deduplication verdict: check state, execute only if new.
@@ -822,7 +1624,23 @@ impl Gateway {
             .get(target_provider)
             .ok_or_else(|| GatewayError::ProviderNotFound(target_provider.to_owned()))?;
 
+        let exec_start = std::time::Instant::now();
         let result = self.executor.execute(action, provider.as_ref()).await;
+        let latency_us = u64::try_from(exec_start.elapsed().as_micros()).unwrap_or(u64::MAX);
+
+        // Record per-provider metrics for the reroute target.
+        match &result {
+            ActionOutcome::Executed(_) => {
+                self.provider_metrics
+                    .record_success(target_provider, latency_us);
+            }
+            ActionOutcome::Failed(err) => {
+                self.provider_metrics
+                    .record_failure(target_provider, latency_us, &err.message);
+            }
+            _ => {}
+        }
+
         match &result {
             ActionOutcome::Executed(resp) => {
                 self.metrics.increment_rerouted();
@@ -837,6 +1655,50 @@ impl Gateway {
                 Ok(result)
             }
             _ => Ok(result),
+        }
+    }
+
+    /// Handle the throttle verdict: counter-based rate limiting.
+    ///
+    /// Uses the state store to maintain a sliding-window counter per rule name
+    /// (scoped to namespace+tenant via [`StateKey`]). If the counter is within
+    /// `max_count`, the action executes; otherwise it is throttled. On state
+    /// store errors the method **fails open** (warns and executes).
+    #[instrument(name = "gateway.handle_throttle", skip(self, action), fields(%rule, %max_count, %window_seconds))]
+    async fn handle_throttle(
+        &self,
+        action: &Action,
+        rule: &str,
+        max_count: u64,
+        window_seconds: u64,
+    ) -> Result<ActionOutcome, GatewayError> {
+        let key = StateKey::new(
+            action.namespace.as_str(),
+            action.tenant.as_str(),
+            KeyKind::RateLimit,
+            rule,
+        );
+        let ttl = Some(Duration::from_secs(window_seconds));
+
+        // Atomic increment; fail-open on state store errors.
+        let new_count = match self.state.increment(&key, 1, ttl).await {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(error = %e, "throttle increment failed (fail-open)");
+                return Ok(self.execute_action(action).await);
+            }
+        };
+
+        #[allow(clippy::cast_sign_loss)]
+        let used = new_count as u64;
+
+        if used <= max_count {
+            Ok(self.execute_action(action).await)
+        } else {
+            self.metrics.increment_throttled();
+            Ok(ActionOutcome::Throttled {
+                retry_after: Duration::from_secs(window_seconds),
+            })
         }
     }
 
@@ -881,8 +1743,9 @@ impl Gateway {
         );
 
         let current_state = match self.state.get(&state_key).await? {
-            Some(val) => {
-                // Parse stored state JSON
+            Some(raw_val) => {
+                // Decrypt if encrypted, then parse stored state JSON.
+                let val = self.decrypt_state_value(&raw_val).unwrap_or(raw_val);
                 if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&val) {
                     parsed
                         .get("state")
@@ -919,16 +1782,15 @@ impl Gateway {
             (current_state.clone(), false)
         };
 
-        // Store updated state
+        // Store updated state (encrypted if encryptor is configured)
         let state_value = serde_json::json!({
             "state": &new_state,
             "fingerprint": &fingerprint,
             "updated_at": Utc::now().to_rfc3339(),
             "action_type": &action.action_type,
         });
-        self.state
-            .set(&state_key, &state_value.to_string(), None)
-            .await?;
+        let state_value_str = self.encrypt_state_value(&state_value.to_string())?;
+        self.state.set(&state_key, &state_value_str, None).await?;
 
         // Update active events index for inhibition lookups
         let active_key = StateKey::new(
@@ -941,9 +1803,8 @@ impl Gateway {
             "state": &new_state,
             "fingerprint": &fingerprint,
         });
-        self.state
-            .set(&active_key, &active_value.to_string(), None)
-            .await?;
+        let active_value_str = self.encrypt_state_value(&active_value.to_string())?;
+        self.state.set(&active_key, &active_value_str, None).await?;
 
         // Create timeout entry if the new state has a configured timeout
         if let Some(timeout_config) = state_machine.get_timeout_for_state(&new_state) {
@@ -965,8 +1826,9 @@ impl Gateway {
                 "created_at": Utc::now().to_rfc3339(),
                 "trace_context": &action.trace_context,
             });
+            let timeout_value_str = self.encrypt_state_value(&timeout_value.to_string())?;
             self.state
-                .set(&timeout_key, &timeout_value.to_string(), None)
+                .set(&timeout_key, &timeout_value_str, None)
                 .await?;
 
             // Add to timeout index for efficient O(log N) queries
@@ -1097,14 +1959,9 @@ impl Gateway {
 
         for key in keys_to_try {
             let expected = Self::compute_approval_sig_with_key(key, ns, tenant, id, expires_at);
-            // Constant-time comparison
-            let is_match = expected.len() == sig.len()
-                && expected
-                    .bytes()
-                    .zip(sig.bytes())
-                    .fold(0u8, |acc, (a, b)| acc | (a ^ b))
-                    == 0;
-            if is_match {
+            // Constant-time comparison — no early return on length
+            // mismatch, no branching on byte values.
+            if subtle::ConstantTimeEq::ct_eq(expected.as_bytes(), sig.as_bytes()).into() {
                 return true;
             }
         }
@@ -1156,6 +2013,7 @@ impl Gateway {
         let record_json = serde_json::to_string(&record).map_err(|e| {
             GatewayError::Configuration(format!("failed to serialize approval: {e}"))
         })?;
+        let record_encrypted = self.encrypt_state_value(&record_json)?;
 
         // Store the approval record keyed by namespace:tenant:approval:id
         let approval_key = StateKey::new(
@@ -1164,7 +2022,9 @@ impl Gateway {
             KeyKind::Approval,
             &id,
         );
-        self.state.set(&approval_key, &record_json, ttl).await?;
+        self.state
+            .set(&approval_key, &record_encrypted, ttl)
+            .await?;
 
         // Store pending approvals index by action ID
         let pending_key = StateKey::new(
@@ -1256,7 +2116,10 @@ impl Gateway {
             let updated_json = serde_json::to_string(&updated).map_err(|e| {
                 GatewayError::Configuration(format!("failed to serialize approval: {e}"))
             })?;
-            self.state.set(&approval_key, &updated_json, ttl).await?;
+            let updated_encrypted = self.encrypt_state_value(&updated_json)?;
+            self.state
+                .set(&approval_key, &updated_encrypted, ttl)
+                .await?;
         }
 
         self.metrics.increment_pending_approval();
@@ -1272,17 +2135,28 @@ impl Gateway {
 
     /// Handle the group verdict: add event to group for batched notification.
     #[instrument(name = "gateway.handle_group", skip_all)]
+    #[allow(clippy::too_many_arguments)]
     async fn handle_group(
         &self,
         action: &Action,
         group_by: &[String],
         group_wait_seconds: u64,
-        _group_interval_seconds: u64,
-        _max_group_size: usize,
+        group_interval_seconds: u64,
+        repeat_interval_seconds: Option<u64>,
+        max_group_size: usize,
     ) -> Result<ActionOutcome, GatewayError> {
         let (group_id, group_key, group_size, notify_at) = self
             .group_manager
-            .add_to_group(action, group_by, group_wait_seconds, self.state.as_ref())
+            .add_to_group(
+                action,
+                group_by,
+                group_wait_seconds,
+                group_interval_seconds,
+                repeat_interval_seconds,
+                max_group_size,
+                self.state.as_ref(),
+                self.payload_encryptor.as_deref(),
+            )
             .await?;
 
         self.emit_stream_event(StreamEvent {
@@ -1390,9 +2264,8 @@ impl Gateway {
             "scheduled_for": scheduled_for.to_rfc3339(),
             "created_at": now.to_rfc3339(),
         });
-        self.state
-            .set(&sched_key, &sched_data.to_string(), ttl)
-            .await?;
+        let sched_value = self.encrypt_state_value(&sched_data.to_string())?;
+        self.state.set(&sched_key, &sched_value, ttl).await?;
 
         // Add to pending scheduled index using the timeout index mechanism.
         let pending_key = StateKey::new(
@@ -1434,7 +2307,7 @@ impl Gateway {
         action: &Action,
         chain_name: &str,
     ) -> Result<ActionOutcome, GatewayError> {
-        let chain_config = self.chains.get(chain_name).ok_or_else(|| {
+        let chain_config = self.chains.read().get(chain_name).cloned().ok_or_else(|| {
             GatewayError::ChainError(format!("chain configuration not found: {chain_name}"))
         })?;
 
@@ -1482,6 +2355,14 @@ impl Gateway {
             cancel_reason: None,
             cancelled_by: None,
             execution_path: vec![first_step.clone()],
+            parent_chain_id: None,
+            parent_step_index: None,
+            child_chain_ids: Vec::new(),
+            task_id: None,
+            parallel_state: None,
+            parallel_sub_results: HashMap::new(),
+            step_attempts: vec![0; total_steps],
+            step_history: vec![Vec::new(); total_steps],
         };
 
         // Persist chain state.
@@ -1494,7 +2375,8 @@ impl Gateway {
         let state_json = serde_json::to_string(&chain_state).map_err(|e| {
             GatewayError::ChainError(format!("failed to serialize chain state: {e}"))
         })?;
-        self.state.set(&chain_key, &state_json, None).await?;
+        let state_encrypted = self.encrypt_state_value(&state_json)?;
+        self.state.set(&chain_key, &state_encrypted, None).await?;
 
         // Add to pending chains index.
         let pending_key = StateKey::new(
@@ -1556,9 +2438,10 @@ impl Gateway {
             .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
 
         // Load current chain state.
-        let state_json = self.state.get(&chain_key).await?.ok_or_else(|| {
+        let state_raw = self.state.get(&chain_key).await?.ok_or_else(|| {
             GatewayError::ChainError(format!("chain state not found: {chain_id}"))
         })?;
+        let state_json = self.decrypt_state_value(&state_raw)?;
         let mut chain_state: ChainState = serde_json::from_str(&state_json).map_err(|e| {
             GatewayError::ChainError(format!("failed to deserialize chain state: {e}"))
         })?;
@@ -1567,8 +2450,11 @@ impl Gateway {
         let pending_key = StateKey::new(namespace, tenant, KeyKind::PendingChains, chain_id);
         self.state.remove_chain_ready_index(&pending_key).await?;
 
-        // Check if chain is still running.
-        if chain_state.status != ChainStatus::Running {
+        // Check if chain is still running (or waiting for a sub-chain/parallel).
+        if chain_state.status != ChainStatus::Running
+            && chain_state.status != ChainStatus::WaitingSubChain
+            && chain_state.status != ChainStatus::WaitingParallel
+        {
             guard
                 .release()
                 .await
@@ -1609,22 +2495,262 @@ impl Gateway {
             return Ok(());
         }
 
-        let chain_config = self.chains.get(&chain_state.chain_name).ok_or_else(|| {
-            GatewayError::ChainError(format!(
-                "chain configuration not found: {}",
-                chain_state.chain_name
-            ))
-        })?;
+        let chain_config = self
+            .chains
+            .read()
+            .get(&chain_state.chain_name)
+            .cloned()
+            .ok_or_else(|| {
+                GatewayError::ChainError(format!(
+                    "chain configuration not found: {}",
+                    chain_state.chain_name
+                ))
+            })?;
 
-        // Use the pre-computed step index map (built once at gateway construction).
-        let empty_index_map = HashMap::new();
+        // Use the pre-computed step index map (built at gateway construction).
         let step_index_map = self
             .chain_step_indices
+            .read()
             .get(&chain_state.chain_name)
-            .unwrap_or(&empty_index_map);
+            .cloned()
+            .unwrap_or_default();
 
         let step_idx = chain_state.current_step;
         let step_config = &chain_config.steps[step_idx];
+
+        // --- Sub-chain step handling ---
+        if step_config.is_sub_chain() {
+            let sub_chain_name = step_config.sub_chain.as_deref().unwrap();
+
+            // Look for an existing child chain for this step.
+            let existing_child = self
+                .find_child_chain_for_step(&chain_state, sub_chain_name, step_idx)
+                .await?;
+
+            match existing_child {
+                None => {
+                    // No child chain yet — start one.
+                    let child_id = self
+                        .start_sub_chain(&mut chain_state, step_idx, sub_chain_name)
+                        .await?;
+
+                    chain_state.status = ChainStatus::WaitingSubChain;
+                    chain_state.updated_at = Utc::now();
+                    self.persist_chain_state(&chain_key, &chain_state, None)
+                        .await?;
+
+                    // Re-index to poll again in 5 seconds.
+                    let ready_at = Utc::now().timestamp_millis() + 5000;
+                    self.state.index_chain_ready(&pending_key, ready_at).await?;
+
+                    debug!(
+                        chain_id = %chain_id,
+                        child_chain_id = %child_id,
+                        sub_chain = %sub_chain_name,
+                        "sub-chain started, parent waiting"
+                    );
+
+                    guard
+                        .release()
+                        .await
+                        .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+                    return Ok(());
+                }
+                Some(child_state) => {
+                    match child_state.status {
+                        ChainStatus::Completed => {
+                            // Sub-chain completed — extract result and continue.
+                            let step_result =
+                                Self::extract_sub_chain_result(sub_chain_name, &child_state);
+                            chain_state.step_results[step_idx] = Some(step_result.clone());
+                            chain_state.status = ChainStatus::Running;
+                            chain_state.updated_at = Utc::now();
+
+                            let next_step_idx = Self::resolve_next_step(
+                                &chain_config,
+                                step_idx,
+                                &step_result,
+                                &step_index_map,
+                            );
+
+                            if let Some(next_idx) = next_step_idx {
+                                chain_state.current_step = next_idx;
+                                chain_state
+                                    .execution_path
+                                    .push(chain_config.steps[next_idx].name.clone());
+                                self.persist_chain_state(&chain_key, &chain_state, None)
+                                    .await?;
+                                let ready_at =
+                                    chain_config.steps[next_idx].delay_seconds.map_or(0, |d| {
+                                        Utc::now().timestamp_millis() + (d.cast_signed() * 1000)
+                                    });
+                                self.state.index_chain_ready(&pending_key, ready_at).await?;
+                            } else {
+                                chain_state.status = ChainStatus::Completed;
+                                self.persist_chain_state(
+                                    &chain_key,
+                                    &chain_state,
+                                    self.completed_chain_ttl,
+                                )
+                                .await?;
+                                self.cleanup_pending_chain(namespace, tenant, chain_id)
+                                    .await?;
+                                self.metrics.increment_chains_completed();
+                                self.emit_chain_terminal_audit(&chain_state, "chain_completed");
+                                info!(chain_id = %chain_id, "chain completed successfully");
+                            }
+
+                            guard
+                                .release()
+                                .await
+                                .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+                            return Ok(());
+                        }
+                        ChainStatus::Failed | ChainStatus::TimedOut | ChainStatus::Cancelled => {
+                            // Sub-chain failed — apply step on_failure policy.
+                            let error_msg =
+                                format!("sub-chain `{sub_chain_name}` {:?}", child_state.status);
+                            let step_result = StepResult {
+                                step_name: format!("sub_chain:{sub_chain_name}"),
+                                success: false,
+                                response_body: None,
+                                error: Some(error_msg.clone()),
+                                completed_at: Utc::now(),
+                                attempt: None,
+                                started_at: None,
+                            };
+                            chain_state.step_results[step_idx] = Some(step_result.clone());
+                            chain_state.status = ChainStatus::Running;
+
+                            let step_policy = step_config
+                                .on_failure
+                                .as_ref()
+                                .unwrap_or(&acteon_core::chain::StepFailurePolicy::Abort);
+
+                            match step_policy {
+                                acteon_core::chain::StepFailurePolicy::Abort => {
+                                    chain_state.status = ChainStatus::Failed;
+                                    chain_state.updated_at = Utc::now();
+                                    self.persist_chain_state(
+                                        &chain_key,
+                                        &chain_state,
+                                        self.completed_chain_ttl,
+                                    )
+                                    .await?;
+                                    self.cleanup_pending_chain(namespace, tenant, chain_id)
+                                        .await?;
+                                    self.metrics.increment_chains_failed();
+                                    self.emit_chain_terminal_audit(&chain_state, "chain_failed");
+                                    warn!(
+                                        chain_id = %chain_id,
+                                        sub_chain = %sub_chain_name,
+                                        "sub-chain failed, aborting parent chain"
+                                    );
+                                }
+                                acteon_core::chain::StepFailurePolicy::Skip => {
+                                    let next_step_idx = Self::resolve_next_step(
+                                        &chain_config,
+                                        step_idx,
+                                        &step_result,
+                                        &step_index_map,
+                                    );
+                                    if let Some(next_idx) = next_step_idx {
+                                        chain_state.current_step = next_idx;
+                                        chain_state.updated_at = Utc::now();
+                                        chain_state
+                                            .execution_path
+                                            .push(chain_config.steps[next_idx].name.clone());
+                                        self.persist_chain_state(&chain_key, &chain_state, None)
+                                            .await?;
+                                        let ready_at = chain_config.steps[next_idx]
+                                            .delay_seconds
+                                            .map_or(0, |d| {
+                                                Utc::now().timestamp_millis()
+                                                    + (d.cast_signed() * 1000)
+                                            });
+                                        self.state
+                                            .index_chain_ready(&pending_key, ready_at)
+                                            .await?;
+                                    } else {
+                                        chain_state.status = ChainStatus::Completed;
+                                        chain_state.updated_at = Utc::now();
+                                        self.persist_chain_state(
+                                            &chain_key,
+                                            &chain_state,
+                                            self.completed_chain_ttl,
+                                        )
+                                        .await?;
+                                        self.cleanup_pending_chain(namespace, tenant, chain_id)
+                                            .await?;
+                                        self.metrics.increment_chains_completed();
+                                        self.emit_chain_terminal_audit(
+                                            &chain_state,
+                                            "chain_completed",
+                                        );
+                                    }
+                                }
+                                acteon_core::chain::StepFailurePolicy::Dlq => {
+                                    chain_state.status = ChainStatus::Failed;
+                                    chain_state.updated_at = Utc::now();
+                                    self.persist_chain_state(
+                                        &chain_key,
+                                        &chain_state,
+                                        self.completed_chain_ttl,
+                                    )
+                                    .await?;
+                                    self.cleanup_pending_chain(namespace, tenant, chain_id)
+                                        .await?;
+                                    self.metrics.increment_chains_failed();
+                                    self.emit_chain_terminal_audit(&chain_state, "chain_failed");
+                                }
+                            }
+
+                            guard
+                                .release()
+                                .await
+                                .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+                            return Ok(());
+                        }
+                        ChainStatus::Running
+                        | ChainStatus::WaitingSubChain
+                        | ChainStatus::WaitingParallel => {
+                            // Still running — re-schedule poll in 5 seconds.
+                            chain_state.status = ChainStatus::WaitingSubChain;
+                            chain_state.updated_at = Utc::now();
+                            self.persist_chain_state(&chain_key, &chain_state, None)
+                                .await?;
+                            let ready_at = Utc::now().timestamp_millis() + 5000;
+                            self.state.index_chain_ready(&pending_key, ready_at).await?;
+
+                            guard
+                                .release()
+                                .await
+                                .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- Parallel step handling ---
+        if step_config.is_parallel() {
+            return self
+                .advance_chain_parallel(
+                    namespace,
+                    tenant,
+                    chain_id,
+                    &chain_key,
+                    &pending_key,
+                    step_idx,
+                    step_config,
+                    &chain_config,
+                    &mut chain_state,
+                    &step_index_map,
+                    guard,
+                )
+                .await;
+        }
 
         // Resolve the payload template.
         let payload = crate::chain::resolve_template(
@@ -1635,10 +2761,11 @@ impl Gateway {
             chain_id,
             step_idx,
             &chain_state.execution_path,
+            &chain_state.parallel_sub_results,
         );
 
         // Build and execute the synthetic action.
-        let step_action = Action::new(
+        let mut step_action = Action::new(
             namespace,
             tenant,
             step_config.provider.as_str(),
@@ -1647,13 +2774,18 @@ impl Gateway {
         );
 
         // Idempotency: ensure this step is not executed twice.
-        // Use step name in the dedup key to handle branching chains where
-        // step indices may not be sequential.
+        // Use step name + attempt number in the dedup key to handle both
+        // branching chains and retries.
+        let next_attempt = if step_idx < chain_state.step_attempts.len() {
+            chain_state.step_attempts[step_idx] + 1
+        } else {
+            1
+        };
         let step_dedup_key = StateKey::new(
             namespace,
             tenant,
             KeyKind::Dedup,
-            format!("chain-step:{chain_id}:{}", step_config.name),
+            format!("chain-step:{chain_id}:{}:a{next_attempt}", step_config.name),
         );
         let dedup_ttl = chain_state.expires_at.map_or(
             Duration::from_secs(86400), // 24h default
@@ -1705,6 +2837,8 @@ impl Gateway {
                 response_body: None,
                 error: Some("step interrupted (duplicate dispatch detected)".to_string()),
                 completed_at: Utc::now(),
+                attempt: None,
+                started_at: None,
             });
             chain_state.status = ChainStatus::Failed;
             chain_state.updated_at = Utc::now();
@@ -1733,26 +2867,155 @@ impl Gateway {
             return Ok(());
         }
 
+        // Enforce tenant quota for each chain step so chains cannot
+        // bypass limits. Degrade outcomes swap the provider and
+        // re-check so the fallback provider's own budget is also
+        // enforced (matching the semantics in `dispatch_inner`).
+        // The hop limit prevents a misconfigured chain of degrade
+        // policies from looping indefinitely.
+        {
+            const MAX_QUOTA_DEGRADE_HOPS: usize = 3;
+            let mut hops = 0usize;
+            let mut blocked: Option<ActionOutcome> = None;
+            loop {
+                let quota_outcome = if hops == 0 {
+                    self.check_quota(&step_action).await?
+                } else {
+                    // Fallback mode: only provider-scoped policies
+                    // are re-evaluated so the generic tenant-wide
+                    // budget is not double-charged on each degrade
+                    // hop.
+                    self.check_quota_fallback(&step_action).await?
+                };
+                let Some(quota_outcome) = quota_outcome else {
+                    break;
+                };
+                match quota_outcome {
+                    ActionOutcome::QuotaExceeded {
+                        ref overage_behavior,
+                        ..
+                    } if overage_behavior.starts_with("degrade:")
+                        && hops < MAX_QUOTA_DEGRADE_HOPS =>
+                    {
+                        if let Some(fallback) = overage_behavior.strip_prefix("degrade:") {
+                            info!(
+                                chain_id = %chain_id,
+                                step = %step_config.name,
+                                from = %step_action.provider,
+                                to = %fallback,
+                                "quota exceeded — degrading chain step to fallback provider"
+                            );
+                            step_action.provider = fallback.into();
+                            hops += 1;
+                            continue;
+                        }
+                        blocked = Some(quota_outcome);
+                        break;
+                    }
+                    ActionOutcome::QuotaExceeded {
+                        ref overage_behavior,
+                        ..
+                    } if overage_behavior == "block"
+                        || overage_behavior.starts_with("degrade:") =>
+                    {
+                        // Block, or a degrade that exhausted the hop limit.
+                        blocked = Some(quota_outcome);
+                        break;
+                    }
+                    _ => {
+                        // Warn / Notify already recorded by check_quota;
+                        // proceed with execution on the current provider.
+                        break;
+                    }
+                }
+            }
+            if let Some(_blocked) = blocked {
+                let now = Utc::now();
+                chain_state.step_results[step_idx] = Some(StepResult {
+                    step_name: step_config.name.clone(),
+                    success: false,
+                    response_body: None,
+                    error: Some("quota exceeded — chain step blocked".to_string()),
+                    completed_at: now,
+                    attempt: None,
+                    started_at: None,
+                });
+                chain_state.status = ChainStatus::Failed;
+                chain_state.updated_at = now;
+                self.persist_chain_state(&chain_key, &chain_state, self.completed_chain_ttl)
+                    .await?;
+                self.cleanup_pending_chain(namespace, tenant, chain_id)
+                    .await?;
+                self.metrics.increment_chains_failed();
+                if let Some(ref sr) = chain_state.step_results[step_idx] {
+                    self.emit_chain_step_audit(
+                        &chain_state,
+                        step_config,
+                        step_idx,
+                        "chain_step_quota_exceeded",
+                        sr,
+                        Duration::ZERO,
+                        None,
+                    );
+                }
+                self.emit_chain_terminal_audit(&chain_state, "chain_failed");
+                let _ = self.state.delete(&step_dedup_key).await;
+                guard
+                    .release()
+                    .await
+                    .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+                return Ok(());
+            }
+        }
+
         let step_payload = step_action.payload.clone();
+
+        // Increment attempt counter before execution (retry-aware).
+        if step_idx < chain_state.step_attempts.len() {
+            chain_state.step_attempts[step_idx] += 1;
+        }
+
+        let step_started_at = Utc::now();
         let step_start = std::time::Instant::now();
         let outcome = self.execute_action(&step_action).await;
         let step_duration = step_start.elapsed();
         let now = Utc::now();
 
+        let current_attempt = if step_idx < chain_state.step_attempts.len() {
+            chain_state.step_attempts[step_idx]
+        } else {
+            1
+        };
+
         match &outcome {
             ActionOutcome::Executed(resp) => {
+                // Record successful attempt in history.
+                if step_idx < chain_state.step_history.len() {
+                    chain_state.step_history[step_idx].push(acteon_core::chain::StepAttempt {
+                        attempt: current_attempt,
+                        started_at: step_started_at,
+                        completed_at: now,
+                        success: true,
+                        response_body: Some(resp.body.clone()),
+                        error: None,
+                        duration_ms: step_duration.as_millis().try_into().unwrap_or(u64::MAX),
+                    });
+                }
+
                 let step_result = StepResult {
                     step_name: step_config.name.clone(),
                     success: true,
                     response_body: Some(resp.body.clone()),
                     error: None,
                     completed_at: now,
+                    attempt: Some(current_attempt),
+                    started_at: Some(step_started_at),
                 };
                 chain_state.step_results[step_idx] = Some(step_result.clone());
 
                 // Determine next step using branch evaluation.
                 let next_step_idx =
-                    Self::resolve_next_step(chain_config, step_idx, &step_result, step_index_map);
+                    Self::resolve_next_step(&chain_config, step_idx, &step_result, &step_index_map);
 
                 if let Some(next_idx) = next_step_idx {
                     // Advance to the next step (may be non-sequential for branching).
@@ -1844,6 +3107,85 @@ impl Gateway {
                 }
             }
             ActionOutcome::Failed(err) => {
+                let current_attempt = if step_idx < chain_state.step_attempts.len() {
+                    chain_state.step_attempts[step_idx]
+                } else {
+                    1
+                };
+
+                // Record this attempt in step history.
+                if step_idx < chain_state.step_history.len() {
+                    chain_state.step_history[step_idx].push(acteon_core::chain::StepAttempt {
+                        attempt: current_attempt,
+                        started_at: step_started_at,
+                        completed_at: now,
+                        success: false,
+                        response_body: None,
+                        error: Some(err.message.clone()),
+                        duration_ms: step_duration.as_millis().try_into().unwrap_or(u64::MAX),
+                    });
+                }
+
+                // Check retry policy before applying on_failure.
+                if let Some(ref retry_policy) = step_config.retry
+                    && current_attempt <= retry_policy.max_retries
+                    && err.retryable
+                {
+                    let delay_ms = retry_policy.compute_delay_ms(current_attempt);
+                    info!(
+                        chain_id = %chain_id,
+                        step = %step_config.name,
+                        attempt = current_attempt,
+                        max_retries = retry_policy.max_retries,
+                        delay_ms = delay_ms,
+                        "step failed, scheduling retry"
+                    );
+
+                    // Clear dedup key so the retry can execute.
+                    let dedup_key = StateKey::new(
+                        namespace,
+                        tenant,
+                        KeyKind::Dedup,
+                        format!(
+                            "chain-step:{chain_id}:{}:a{current_attempt}",
+                            step_config.name
+                        ),
+                    );
+                    let _ = self.state.delete(&dedup_key).await;
+
+                    // Don't record a final step_result yet — leave it as None for re-execution.
+                    chain_state.step_results[step_idx] = None;
+                    chain_state.updated_at = now;
+                    self.persist_chain_state(&chain_key, &chain_state, None)
+                        .await?;
+
+                    let ready_at =
+                        now.timestamp_millis() + i64::try_from(delay_ms).unwrap_or(i64::MAX);
+                    self.state.index_chain_ready(&pending_key, ready_at).await?;
+
+                    // Emit retry audit event.
+                    let retry_result = StepResult {
+                        step_name: step_config.name.clone(),
+                        success: false,
+                        response_body: None,
+                        error: Some(err.message.clone()),
+                        completed_at: now,
+                        attempt: Some(current_attempt),
+                        started_at: Some(step_started_at),
+                    };
+                    self.emit_chain_step_audit(
+                        &chain_state,
+                        step_config,
+                        step_idx,
+                        "chain_step_retrying",
+                        &retry_result,
+                        step_duration,
+                        Some(&step_payload),
+                    );
+
+                    return Ok(());
+                }
+
                 let step_policy = step_config
                     .on_failure
                     .as_ref()
@@ -1855,6 +3197,8 @@ impl Gateway {
                     response_body: None,
                     error: Some(err.message.clone()),
                     completed_at: now,
+                    attempt: Some(current_attempt),
+                    started_at: Some(step_started_at),
                 });
 
                 match step_policy {
@@ -1924,10 +3268,10 @@ impl Gateway {
                             .as_ref()
                             .expect("step result was just set");
                         let next_step_idx = Self::resolve_next_step(
-                            chain_config,
+                            &chain_config,
                             step_idx,
                             skip_result,
-                            step_index_map,
+                            &step_index_map,
                         );
 
                         if let Some(next_idx) = next_step_idx {
@@ -2090,6 +3434,8 @@ impl Gateway {
                     response_body: None,
                     error: Some(format!("unexpected outcome: {outcome:?}")),
                     completed_at: now,
+                    attempt: None,
+                    started_at: None,
                 });
                 chain_state.status = ChainStatus::Failed;
                 chain_state.updated_at = now;
@@ -2150,6 +3496,20 @@ impl Gateway {
             .await
             .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
 
+        // A2A bridge: if this chain backs an A2A Task, project the
+        // chain's current status onto the task. The chain row is
+        // authoritative — load the final state and project best-
+        // effort (a projection hiccup must not unwind the chain
+        // mutation that just succeeded).
+        if let Ok(Some(raw)) = self
+            .state
+            .get(&StateKey::new(namespace, tenant, KeyKind::Chain, chain_id))
+            .await
+            && let Ok(chain) = serde_json::from_str::<ChainState>(&raw)
+        {
+            self.project_chain_to_task(&chain).await;
+        }
+
         Ok(())
     }
 
@@ -2198,6 +3558,1198 @@ impl Gateway {
         }
     }
 
+    /// Find an existing child chain for a sub-chain step.
+    ///
+    /// Scans the parent's `child_chain_ids` to find a child chain whose
+    /// `chain_name` matches the sub-chain reference and whose
+    /// `parent_step_index` matches the current step.
+    async fn find_child_chain_for_step(
+        &self,
+        parent: &ChainState,
+        sub_chain_name: &str,
+        step_idx: usize,
+    ) -> Result<Option<ChainState>, GatewayError> {
+        for child_id in &parent.child_chain_ids {
+            let child_key = StateKey::new(
+                parent.namespace.as_str(),
+                parent.tenant.as_str(),
+                KeyKind::Chain,
+                child_id,
+            );
+            if let Some(raw) = self.state.get(&child_key).await? {
+                let json = self.decrypt_state_value(&raw)?;
+                if let Ok(child_state) = serde_json::from_str::<ChainState>(&json)
+                    && child_state.chain_name == sub_chain_name
+                    && child_state.parent_step_index == Some(step_idx)
+                {
+                    return Ok(Some(child_state));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Handle a parallel step: resolve sub-step payloads, dispatch concurrently,
+    /// aggregate results, and advance the chain.
+    ///
+    /// Extracted from `advance_chain()` to keep the async state machine smaller
+    /// (avoids stack overflows in debug builds).
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    async fn advance_chain_parallel(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        chain_id: &str,
+        chain_key: &StateKey,
+        pending_key: &StateKey,
+        step_idx: usize,
+        step_config: &ChainStepConfig,
+        chain_config: &ChainConfig,
+        chain_state: &mut ChainState,
+        step_index_map: &HashMap<String, usize>,
+        guard: Box<dyn acteon_state::LockGuard>,
+    ) -> Result<(), GatewayError> {
+        let group = step_config.parallel.as_ref().unwrap();
+
+        // Detect whether we are resuming after a crash. If `parallel_state` is
+        // already set for this step, sub-steps that already have results in
+        // `parallel_sub_results` can be skipped.
+        let is_resuming = chain_state
+            .parallel_state
+            .as_ref()
+            .is_some_and(|ps| ps.step_index == step_idx);
+
+        if is_resuming {
+            let completed = chain_state.parallel_sub_results.len();
+            let total = group.steps.len();
+            info!(
+                chain_id = %chain_id,
+                step = %step_config.name,
+                completed,
+                total,
+                "resuming parallel group — dispatching {remaining} pending sub-steps",
+                remaining = total - completed,
+            );
+        }
+
+        // Determine which sub-steps need dispatching (all on first entry,
+        // only missing on resumption).
+        let pending_sub_steps: Vec<&ChainStepConfig> = group
+            .steps
+            .iter()
+            .filter(|s| !chain_state.parallel_sub_results.contains_key(&s.name))
+            .collect();
+
+        // --- Per-sub-step dedup keys (only for pending sub-steps) ---
+        let dedup_ttl = chain_state.expires_at.map_or(
+            Duration::from_secs(86400), // 24h default
+            |ea| {
+                let remaining = ea - Utc::now();
+                Duration::from_secs(remaining.num_seconds().max(1).cast_unsigned())
+            },
+        );
+        let mut sub_dedup_keys = Vec::with_capacity(pending_sub_steps.len());
+        for sub_step in &pending_sub_steps {
+            let key = StateKey::new(
+                namespace,
+                tenant,
+                KeyKind::Dedup,
+                format!(
+                    "chain-step:{chain_id}:{}:{}",
+                    step_config.name, sub_step.name
+                ),
+            );
+            self.state
+                .check_and_set(&key, "dispatched", Some(dedup_ttl))
+                .await?;
+            sub_dedup_keys.push(key);
+        }
+
+        // --- Persist ParallelExecutionState (only on first entry) ---
+        if !is_resuming {
+            let parallel_state = acteon_core::chain::ParallelExecutionState {
+                step_name: step_config.name.clone(),
+                step_index: step_idx,
+                sub_steps: group
+                    .steps
+                    .iter()
+                    .map(|s| {
+                        (
+                            s.name.clone(),
+                            acteon_core::chain::ParallelSubStepStatus::Pending,
+                        )
+                    })
+                    .collect(),
+                started_at: Utc::now(),
+                expires_at: group.timeout_seconds.map(|secs| {
+                    Utc::now() + chrono::Duration::seconds(i64::try_from(secs).unwrap_or(i64::MAX))
+                }),
+            };
+            chain_state.status = ChainStatus::WaitingParallel;
+            chain_state.parallel_state = Some(parallel_state);
+            chain_state.updated_at = Utc::now();
+            self.persist_chain_state(chain_key, chain_state, None)
+                .await?;
+        }
+
+        // Resolve payloads and build futures only for pending sub-steps.
+        // `sub_payloads` is indexed in parallel with `pending_sub_steps`.
+        let mut sub_payloads: Vec<serde_json::Value> = Vec::with_capacity(pending_sub_steps.len());
+        let sub_step_futures: Vec<_> = pending_sub_steps
+            .iter()
+            .map(|sub_step| {
+                let sub_payload = crate::chain::resolve_template(
+                    &sub_step.payload_template,
+                    &chain_state.origin_action,
+                    &chain_state.step_results,
+                    &chain_config.steps,
+                    chain_id,
+                    step_idx,
+                    &chain_state.execution_path,
+                    &chain_state.parallel_sub_results,
+                );
+                sub_payloads.push(sub_payload.clone());
+                let sub_action = Action::new(
+                    namespace,
+                    tenant,
+                    sub_step.provider.as_str(),
+                    &sub_step.action_type,
+                    sub_payload,
+                );
+                let sub_name = sub_step.name.clone();
+                async move {
+                    let start = std::time::Instant::now();
+                    let outcome = self.execute_action(&sub_action).await;
+                    (sub_name, outcome, start.elapsed())
+                }
+            })
+            .collect();
+
+        // On resumption, honour the original deadline rather than starting a
+        // fresh full timeout. Falls back to the configured (or default) value
+        // when there is no persisted expiry.
+        let group_timeout = if is_resuming {
+            chain_state
+                .parallel_state
+                .as_ref()
+                .and_then(|ps| ps.expires_at)
+                .map(|ea| {
+                    let remaining = ea - Utc::now();
+                    Duration::from_secs(remaining.num_seconds().max(1).cast_unsigned())
+                })
+        } else {
+            None
+        }
+        .unwrap_or_else(|| {
+            group
+                .timeout_seconds
+                .map_or(Duration::from_secs(300), Duration::from_secs)
+        });
+
+        let Ok(results) = tokio::time::timeout(
+            group_timeout,
+            self.execute_parallel_group(
+                sub_step_futures,
+                &group.join,
+                &group.on_failure,
+                group.max_concurrency,
+            ),
+        )
+        .await
+        else {
+            // Timeout — mark the parent step as failed.
+            let now = Utc::now();
+            let parent_result = StepResult {
+                step_name: step_config.name.clone(),
+                success: false,
+                response_body: None,
+                error: Some(format!("parallel group timed out after {group_timeout:?}")),
+                completed_at: now,
+                attempt: None,
+                started_at: None,
+            };
+            chain_state.step_results[step_idx] = Some(parent_result.clone());
+            chain_state.status = ChainStatus::Failed;
+            chain_state.parallel_state = None;
+            chain_state.updated_at = now;
+            self.persist_chain_state(chain_key, chain_state, self.completed_chain_ttl)
+                .await?;
+            self.cleanup_pending_chain(namespace, tenant, chain_id)
+                .await?;
+            self.metrics.increment_chains_failed();
+            // Emit parent step audit + stream events for timeout.
+            self.emit_parallel_step_audit(
+                chain_state,
+                step_config,
+                step_idx,
+                "chain_step_failed",
+                &parent_result,
+                group_timeout,
+                None,
+                None,
+            );
+            self.emit_chain_terminal_audit(chain_state, "chain_failed");
+            self.emit_stream_event(StreamEvent {
+                id: uuid::Uuid::now_v7().to_string(),
+                timestamp: now,
+                event_type: StreamEventType::ChainStepCompleted {
+                    chain_id: chain_id.to_string(),
+                    step_name: step_config.name.clone(),
+                    step_index: step_idx,
+                    success: false,
+                    next_step: None,
+                },
+                namespace: namespace.to_string(),
+                tenant: tenant.to_string(),
+                action_type: Some(step_config.action_type.clone()),
+                action_id: Some(chain_state.origin_action.id.to_string()),
+            });
+            self.emit_stream_event(StreamEvent {
+                id: uuid::Uuid::now_v7().to_string(),
+                timestamp: now,
+                event_type: StreamEventType::ChainCompleted {
+                    chain_id: chain_id.to_string(),
+                    status: "failed".to_string(),
+                    execution_path: chain_state.execution_path.clone(),
+                },
+                namespace: namespace.to_string(),
+                tenant: tenant.to_string(),
+                action_type: Some(chain_state.chain_name.clone()),
+                action_id: Some(chain_state.origin_action.id.to_string()),
+            });
+            // Clean up dedup keys.
+            for key in &sub_dedup_keys {
+                let _ = self.state.delete(key).await;
+            }
+            guard
+                .release()
+                .await
+                .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+            return Ok(());
+        };
+
+        // --- Aggregate results and emit sub-step audit records ---
+        let mut merged_body = serde_json::Map::new();
+        let mut all_success = true;
+        let mut any_success = false;
+        let now = Utc::now();
+
+        // Lookup from sub-step name → index into `pending_sub_steps` / `sub_payloads`
+        // (only the freshly-dispatched ones). Used to find the audit payload.
+        let pending_index: HashMap<&str, usize> = pending_sub_steps
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s.name.as_str(), i))
+            .collect();
+
+        // Full config lookup for provider info on any sub-step.
+        let full_config_index: HashMap<&str, &ChainStepConfig> =
+            group.steps.iter().map(|s| (s.name.as_str(), s)).collect();
+
+        // Process freshly-dispatched results.
+        for (sub_name, outcome, elapsed) in &results {
+            let (success, body, error) = match outcome {
+                ActionOutcome::Executed(resp) => (true, Some(resp.body.clone()), None),
+                ActionOutcome::Failed(err) => (false, None, Some(err.message.clone())),
+                other => (false, None, Some(format!("{other:?}"))),
+            };
+
+            let sub_result = StepResult {
+                step_name: sub_name.clone(),
+                success,
+                response_body: body.clone(),
+                error,
+                completed_at: now,
+                attempt: None,
+                started_at: None,
+            };
+            chain_state
+                .parallel_sub_results
+                .insert(sub_name.clone(), sub_result.clone());
+
+            // Emit sub-step audit record (only for freshly dispatched steps).
+            if let Some(sub_config) = full_config_index.get(sub_name.as_str()) {
+                let audit_outcome = if success {
+                    "chain_step_completed"
+                } else {
+                    "chain_step_failed"
+                };
+                let audit_payload = pending_index
+                    .get(sub_name.as_str())
+                    .and_then(|&i| sub_payloads.get(i));
+                self.emit_parallel_step_audit(
+                    chain_state,
+                    sub_config,
+                    step_idx,
+                    audit_outcome,
+                    &sub_result,
+                    *elapsed,
+                    audit_payload,
+                    Some(&step_config.name),
+                );
+            }
+
+            if success {
+                any_success = true;
+                if let Some(b) = body {
+                    merged_body.insert(sub_name.clone(), b);
+                }
+            } else {
+                all_success = false;
+            }
+        }
+
+        // Fold in pre-existing results from a prior run (resumption case).
+        // These were already audited in the previous invocation — no new audit
+        // records are emitted for them.
+        for (sub_name, sr) in &chain_state.parallel_sub_results {
+            // Skip results we just processed above (already in merged_body /
+            // already counted towards all_success / any_success).
+            if results.iter().any(|(name, _, _)| name == sub_name) {
+                continue;
+            }
+            if sr.success {
+                any_success = true;
+                if let Some(ref b) = sr.response_body {
+                    merged_body.insert(sub_name.clone(), b.clone());
+                }
+            } else {
+                all_success = false;
+            }
+        }
+
+        let parent_success = match group.join {
+            acteon_core::chain::ParallelJoinPolicy::All => all_success,
+            acteon_core::chain::ParallelJoinPolicy::Any => any_success,
+        };
+
+        let parent_result = StepResult {
+            step_name: step_config.name.clone(),
+            success: parent_success,
+            response_body: Some(serde_json::Value::Object(merged_body)),
+            error: if parent_success {
+                None
+            } else {
+                Some("one or more parallel sub-steps failed".to_string())
+            },
+            completed_at: now,
+            attempt: None,
+            started_at: None,
+        };
+        chain_state.step_results[step_idx] = Some(parent_result.clone());
+        // Clear parallel execution state now that results are collected.
+        chain_state.parallel_state = None;
+        // Keep a reference to the merged body for the parent audit record so
+        // that downstream branching logic can be debugged from the audit trail.
+        let parent_audit_payload = parent_result.response_body.clone();
+
+        // Compute an approximate parent-step duration from the max sub-step elapsed.
+        let parent_duration = results
+            .iter()
+            .map(|(_, _, d)| *d)
+            .max()
+            .unwrap_or(Duration::ZERO);
+
+        if parent_success {
+            // Evaluate branches on the parent parallel step.
+            let next_step_idx =
+                Self::resolve_next_step(chain_config, step_idx, &parent_result, step_index_map);
+
+            if let Some(next_idx) = next_step_idx {
+                chain_state.current_step = next_idx;
+                chain_state.updated_at = now;
+                chain_state
+                    .execution_path
+                    .push(chain_config.steps[next_idx].name.clone());
+                self.persist_chain_state(chain_key, chain_state, None)
+                    .await?;
+                let ready_at = chain_config.steps[next_idx]
+                    .delay_seconds
+                    .map_or(0, |d| now.timestamp_millis() + (d.cast_signed() * 1000));
+                self.state.index_chain_ready(pending_key, ready_at).await?;
+                // Parent step audit + stream events: success, more steps.
+                self.emit_parallel_step_audit(
+                    chain_state,
+                    step_config,
+                    step_idx,
+                    "chain_step_completed",
+                    &parent_result,
+                    parent_duration,
+                    parent_audit_payload.as_ref(),
+                    None,
+                );
+                self.emit_stream_event(StreamEvent {
+                    id: uuid::Uuid::now_v7().to_string(),
+                    timestamp: now,
+                    event_type: StreamEventType::ChainStepCompleted {
+                        chain_id: chain_id.to_string(),
+                        step_name: step_config.name.clone(),
+                        step_index: step_idx,
+                        success: true,
+                        next_step: Some(chain_config.steps[next_idx].name.clone()),
+                    },
+                    namespace: namespace.to_string(),
+                    tenant: tenant.to_string(),
+                    action_type: Some(step_config.action_type.clone()),
+                    action_id: Some(chain_state.origin_action.id.to_string()),
+                });
+            } else {
+                chain_state.status = ChainStatus::Completed;
+                chain_state.updated_at = now;
+                self.persist_chain_state(chain_key, chain_state, self.completed_chain_ttl)
+                    .await?;
+                self.cleanup_pending_chain(namespace, tenant, chain_id)
+                    .await?;
+                self.metrics.increment_chains_completed();
+                // Parent step audit + stream events: success, chain completed.
+                self.emit_parallel_step_audit(
+                    chain_state,
+                    step_config,
+                    step_idx,
+                    "chain_step_completed",
+                    &parent_result,
+                    parent_duration,
+                    parent_audit_payload.as_ref(),
+                    None,
+                );
+                self.emit_chain_terminal_audit(chain_state, "chain_completed");
+                self.emit_stream_event(StreamEvent {
+                    id: uuid::Uuid::now_v7().to_string(),
+                    timestamp: now,
+                    event_type: StreamEventType::ChainStepCompleted {
+                        chain_id: chain_id.to_string(),
+                        step_name: step_config.name.clone(),
+                        step_index: step_idx,
+                        success: true,
+                        next_step: None,
+                    },
+                    namespace: namespace.to_string(),
+                    tenant: tenant.to_string(),
+                    action_type: Some(step_config.action_type.clone()),
+                    action_id: Some(chain_state.origin_action.id.to_string()),
+                });
+                self.emit_stream_event(StreamEvent {
+                    id: uuid::Uuid::now_v7().to_string(),
+                    timestamp: now,
+                    event_type: StreamEventType::ChainCompleted {
+                        chain_id: chain_id.to_string(),
+                        status: "completed".to_string(),
+                        execution_path: chain_state.execution_path.clone(),
+                    },
+                    namespace: namespace.to_string(),
+                    tenant: tenant.to_string(),
+                    action_type: Some(chain_state.chain_name.clone()),
+                    action_id: Some(chain_state.origin_action.id.to_string()),
+                });
+                info!(chain_id = %chain_id, "chain completed successfully");
+            }
+        } else {
+            // --- Phase 1.3: Respect parent step on_failure policy ---
+            let step_policy = step_config
+                .on_failure
+                .as_ref()
+                .unwrap_or(&acteon_core::chain::StepFailurePolicy::Abort);
+
+            match step_policy {
+                acteon_core::chain::StepFailurePolicy::Abort => {
+                    chain_state.status = ChainStatus::Failed;
+                    chain_state.updated_at = now;
+                    self.persist_chain_state(chain_key, chain_state, self.completed_chain_ttl)
+                        .await?;
+                    self.cleanup_pending_chain(namespace, tenant, chain_id)
+                        .await?;
+                    self.metrics.increment_chains_failed();
+                    self.emit_parallel_step_audit(
+                        chain_state,
+                        step_config,
+                        step_idx,
+                        "chain_step_failed",
+                        &parent_result,
+                        parent_duration,
+                        parent_audit_payload.as_ref(),
+                        None,
+                    );
+                    self.emit_chain_terminal_audit(chain_state, "chain_failed");
+                    self.emit_stream_event(StreamEvent {
+                        id: uuid::Uuid::now_v7().to_string(),
+                        timestamp: now,
+                        event_type: StreamEventType::ChainStepCompleted {
+                            chain_id: chain_id.to_string(),
+                            step_name: step_config.name.clone(),
+                            step_index: step_idx,
+                            success: false,
+                            next_step: None,
+                        },
+                        namespace: namespace.to_string(),
+                        tenant: tenant.to_string(),
+                        action_type: Some(step_config.action_type.clone()),
+                        action_id: Some(chain_state.origin_action.id.to_string()),
+                    });
+                    self.emit_stream_event(StreamEvent {
+                        id: uuid::Uuid::now_v7().to_string(),
+                        timestamp: now,
+                        event_type: StreamEventType::ChainCompleted {
+                            chain_id: chain_id.to_string(),
+                            status: "failed".to_string(),
+                            execution_path: chain_state.execution_path.clone(),
+                        },
+                        namespace: namespace.to_string(),
+                        tenant: tenant.to_string(),
+                        action_type: Some(chain_state.chain_name.clone()),
+                        action_id: Some(chain_state.origin_action.id.to_string()),
+                    });
+                    warn!(
+                        chain_id = %chain_id,
+                        step = %step_config.name,
+                        "parallel step failed, aborting"
+                    );
+                }
+                acteon_core::chain::StepFailurePolicy::Skip => {
+                    let next_step_idx = Self::resolve_next_step(
+                        chain_config,
+                        step_idx,
+                        &parent_result,
+                        step_index_map,
+                    );
+
+                    if let Some(next_idx) = next_step_idx {
+                        chain_state.current_step = next_idx;
+                        chain_state.updated_at = now;
+                        chain_state
+                            .execution_path
+                            .push(chain_config.steps[next_idx].name.clone());
+                        self.persist_chain_state(chain_key, chain_state, None)
+                            .await?;
+                        let ready_at = chain_config.steps[next_idx]
+                            .delay_seconds
+                            .map_or(0, |d| now.timestamp_millis() + (d.cast_signed() * 1000));
+                        self.state.index_chain_ready(pending_key, ready_at).await?;
+                        self.emit_parallel_step_audit(
+                            chain_state,
+                            step_config,
+                            step_idx,
+                            "chain_step_skipped",
+                            &parent_result,
+                            parent_duration,
+                            parent_audit_payload.as_ref(),
+                            None,
+                        );
+                        self.emit_stream_event(StreamEvent {
+                            id: uuid::Uuid::now_v7().to_string(),
+                            timestamp: now,
+                            event_type: StreamEventType::ChainStepCompleted {
+                                chain_id: chain_id.to_string(),
+                                step_name: step_config.name.clone(),
+                                step_index: step_idx,
+                                success: false,
+                                next_step: Some(chain_config.steps[next_idx].name.clone()),
+                            },
+                            namespace: namespace.to_string(),
+                            tenant: tenant.to_string(),
+                            action_type: Some(step_config.action_type.clone()),
+                            action_id: Some(chain_state.origin_action.id.to_string()),
+                        });
+                    } else {
+                        chain_state.status = ChainStatus::Completed;
+                        chain_state.updated_at = now;
+                        self.persist_chain_state(chain_key, chain_state, self.completed_chain_ttl)
+                            .await?;
+                        self.cleanup_pending_chain(namespace, tenant, chain_id)
+                            .await?;
+                        self.metrics.increment_chains_completed();
+                        self.emit_parallel_step_audit(
+                            chain_state,
+                            step_config,
+                            step_idx,
+                            "chain_step_skipped",
+                            &parent_result,
+                            parent_duration,
+                            parent_audit_payload.as_ref(),
+                            None,
+                        );
+                        self.emit_chain_terminal_audit(chain_state, "chain_completed");
+                        self.emit_stream_event(StreamEvent {
+                            id: uuid::Uuid::now_v7().to_string(),
+                            timestamp: now,
+                            event_type: StreamEventType::ChainStepCompleted {
+                                chain_id: chain_id.to_string(),
+                                step_name: step_config.name.clone(),
+                                step_index: step_idx,
+                                success: false,
+                                next_step: None,
+                            },
+                            namespace: namespace.to_string(),
+                            tenant: tenant.to_string(),
+                            action_type: Some(step_config.action_type.clone()),
+                            action_id: Some(chain_state.origin_action.id.to_string()),
+                        });
+                        self.emit_stream_event(StreamEvent {
+                            id: uuid::Uuid::now_v7().to_string(),
+                            timestamp: now,
+                            event_type: StreamEventType::ChainCompleted {
+                                chain_id: chain_id.to_string(),
+                                status: "completed".to_string(),
+                                execution_path: chain_state.execution_path.clone(),
+                            },
+                            namespace: namespace.to_string(),
+                            tenant: tenant.to_string(),
+                            action_type: Some(chain_state.chain_name.clone()),
+                            action_id: Some(chain_state.origin_action.id.to_string()),
+                        });
+                    }
+                }
+                acteon_core::chain::StepFailurePolicy::Dlq => {
+                    // Push a synthetic action representing the parallel step to the DLQ.
+                    if let Some(ref dlq) = self.dlq {
+                        let dlq_action = Action::new(
+                            namespace,
+                            tenant,
+                            step_config.provider.as_str(),
+                            &step_config.action_type,
+                            parent_result
+                                .response_body
+                                .clone()
+                                .unwrap_or(serde_json::Value::Null),
+                        );
+                        dlq.push(
+                            dlq_action,
+                            parent_result.error.clone().unwrap_or_default(),
+                            1,
+                        )
+                        .await;
+                    }
+                    chain_state.status = ChainStatus::Failed;
+                    chain_state.updated_at = now;
+                    self.persist_chain_state(chain_key, chain_state, self.completed_chain_ttl)
+                        .await?;
+                    self.cleanup_pending_chain(namespace, tenant, chain_id)
+                        .await?;
+                    self.metrics.increment_chains_failed();
+                    self.emit_parallel_step_audit(
+                        chain_state,
+                        step_config,
+                        step_idx,
+                        "chain_step_failed",
+                        &parent_result,
+                        parent_duration,
+                        parent_audit_payload.as_ref(),
+                        None,
+                    );
+                    self.emit_chain_terminal_audit(chain_state, "chain_failed");
+                    self.emit_stream_event(StreamEvent {
+                        id: uuid::Uuid::now_v7().to_string(),
+                        timestamp: now,
+                        event_type: StreamEventType::ChainStepCompleted {
+                            chain_id: chain_id.to_string(),
+                            step_name: step_config.name.clone(),
+                            step_index: step_idx,
+                            success: false,
+                            next_step: None,
+                        },
+                        namespace: namespace.to_string(),
+                        tenant: tenant.to_string(),
+                        action_type: Some(step_config.action_type.clone()),
+                        action_id: Some(chain_state.origin_action.id.to_string()),
+                    });
+                    self.emit_stream_event(StreamEvent {
+                        id: uuid::Uuid::now_v7().to_string(),
+                        timestamp: now,
+                        event_type: StreamEventType::ChainCompleted {
+                            chain_id: chain_id.to_string(),
+                            status: "failed".to_string(),
+                            execution_path: chain_state.execution_path.clone(),
+                        },
+                        namespace: namespace.to_string(),
+                        tenant: tenant.to_string(),
+                        action_type: Some(chain_state.chain_name.clone()),
+                        action_id: Some(chain_state.origin_action.id.to_string()),
+                    });
+                }
+            }
+        }
+
+        // Clean up dedup keys after results have been persisted.
+        for key in &sub_dedup_keys {
+            let _ = self.state.delete(key).await;
+        }
+
+        guard
+            .release()
+            .await
+            .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Execute a group of parallel sub-step futures according to join and failure policies.
+    ///
+    /// - `All` + `FailFast`: runs all concurrently, but short-circuits on the first failure
+    ///   (remaining futures are dropped/cancelled).
+    /// - `All` + `BestEffort`: runs all concurrently, collects all results regardless of failures.
+    /// - `Any`: returns as soon as the first success arrives (remaining futures are cancelled).
+    ///
+    /// When `max_concurrency` is `Some(n)`, at most `n` sub-steps execute at a time
+    /// (bounded via `buffer_unordered`).
+    async fn execute_parallel_group<F>(
+        &self,
+        futures: Vec<F>,
+        join_policy: &acteon_core::chain::ParallelJoinPolicy,
+        failure_policy: &acteon_core::chain::ParallelFailurePolicy,
+        max_concurrency: Option<usize>,
+    ) -> Vec<(String, ActionOutcome, Duration)>
+    where
+        F: std::future::Future<Output = (String, ActionOutcome, Duration)> + Send,
+    {
+        use acteon_core::chain::{ParallelFailurePolicy, ParallelJoinPolicy};
+        use futures::stream::StreamExt;
+
+        let concurrency = max_concurrency.unwrap_or(futures.len()).max(1);
+
+        match (join_policy, failure_policy) {
+            (
+                ParallelJoinPolicy::All,
+                ParallelFailurePolicy::BestEffort | ParallelFailurePolicy::FailFast,
+            ) => {
+                let is_fail_fast = matches!(failure_policy, ParallelFailurePolicy::FailFast);
+                let mut stream = futures::stream::iter(futures).buffer_unordered(concurrency);
+                let mut results = Vec::new();
+
+                while let Some(result) = stream.next().await {
+                    let failed = matches!(&result.1, ActionOutcome::Failed(_));
+                    results.push(result);
+                    if is_fail_fast && failed {
+                        break;
+                    }
+                }
+                results
+            }
+            (ParallelJoinPolicy::Any, _) => {
+                let mut stream = futures::stream::iter(futures).buffer_unordered(concurrency);
+                let mut results = Vec::new();
+
+                while let Some(result) = stream.next().await {
+                    let succeeded = matches!(&result.1, ActionOutcome::Executed(_));
+                    results.push(result);
+                    if succeeded {
+                        break;
+                    }
+                }
+                results
+            }
+        }
+    }
+
+    /// Start a sub-chain as a child of the given parent chain.
+    ///
+    /// Creates a new `ChainState` for the child, links it to the parent, and
+    /// persists both. Returns the child chain ID.
+    async fn start_sub_chain(
+        &self,
+        parent: &mut ChainState,
+        step_idx: usize,
+        sub_chain_name: &str,
+    ) -> Result<String, GatewayError> {
+        let sub_config = self
+            .chains
+            .read()
+            .get(sub_chain_name)
+            .cloned()
+            .ok_or_else(|| {
+                GatewayError::ChainError(format!(
+                    "sub-chain configuration not found: {sub_chain_name}"
+                ))
+            })?;
+
+        if sub_config.steps.is_empty() {
+            return Err(GatewayError::ChainError(format!(
+                "sub-chain '{sub_chain_name}' has no steps"
+            )));
+        }
+
+        let child_id = uuid::Uuid::new_v4().to_string();
+        let now = Utc::now();
+        let total_steps = sub_config.steps.len();
+        let first_step = sub_config.steps[0].name.clone();
+
+        // Child timeout: min(parent remaining, sub-chain own timeout).
+        #[allow(clippy::cast_possible_wrap)]
+        let child_timeout = sub_config
+            .timeout_seconds
+            .map(|secs| now + chrono::Duration::seconds(secs as i64));
+        let expires_at = match (parent.expires_at, child_timeout) {
+            (Some(p), Some(c)) => Some(p.min(c)),
+            (Some(p), None) => Some(p),
+            (None, Some(c)) => Some(c),
+            (None, None) => None,
+        };
+
+        let child_state = ChainState {
+            chain_id: child_id.clone(),
+            chain_name: sub_chain_name.to_owned(),
+            origin_action: parent.origin_action.clone(),
+            current_step: 0,
+            total_steps,
+            status: ChainStatus::Running,
+            step_results: vec![None; total_steps],
+            started_at: now,
+            updated_at: now,
+            expires_at,
+            namespace: parent.namespace.clone(),
+            tenant: parent.tenant.clone(),
+            cancel_reason: None,
+            cancelled_by: None,
+            execution_path: vec![first_step],
+            parent_chain_id: Some(parent.chain_id.clone()),
+            parent_step_index: Some(step_idx),
+            child_chain_ids: Vec::new(),
+            task_id: None,
+            parallel_state: None,
+            parallel_sub_results: HashMap::new(),
+            step_attempts: vec![0; total_steps],
+            step_history: vec![Vec::new(); total_steps],
+        };
+
+        // Persist child chain state.
+        let child_key = StateKey::new(
+            parent.namespace.as_str(),
+            parent.tenant.as_str(),
+            KeyKind::Chain,
+            &child_id,
+        );
+        let child_json = serde_json::to_string(&child_state).map_err(|e| {
+            GatewayError::ChainError(format!("failed to serialize child chain state: {e}"))
+        })?;
+        let child_encrypted = self.encrypt_state_value(&child_json)?;
+        self.state.set(&child_key, &child_encrypted, None).await?;
+
+        // Index child chain for processing.
+        let child_pending_key = StateKey::new(
+            parent.namespace.as_str(),
+            parent.tenant.as_str(),
+            KeyKind::PendingChains,
+            &child_id,
+        );
+        let pending_val = serde_json::json!({
+            "chain_id": &child_id,
+            "chain_name": sub_chain_name,
+            "started_at": now.to_rfc3339(),
+            "parent_chain_id": parent.chain_id,
+        });
+        self.state
+            .set(&child_pending_key, &pending_val.to_string(), None)
+            .await?;
+        let ready_at = sub_config.steps[0]
+            .delay_seconds
+            .map_or(0, |d| now.timestamp_millis() + (d.cast_signed() * 1000));
+        self.state
+            .index_chain_ready(&child_pending_key, ready_at)
+            .await?;
+
+        // Link child to parent.
+        parent.child_chain_ids.push(child_id.clone());
+
+        self.metrics.increment_chains_started();
+
+        info!(
+            parent_chain_id = %parent.chain_id,
+            child_chain_id = %child_id,
+            sub_chain = %sub_chain_name,
+            total_steps = total_steps,
+            "sub-chain execution started"
+        );
+
+        Ok(child_id)
+    }
+
+    /// Extract the result from a completed sub-chain to use as the parent
+    /// step's result.
+    fn extract_sub_chain_result(sub_chain_name: &str, child: &ChainState) -> StepResult {
+        // Find the last completed step in the child's execution path.
+        let last_result = child
+            .execution_path
+            .iter()
+            .rev()
+            .find_map(|step_name| {
+                child
+                    .step_results
+                    .iter()
+                    .flatten()
+                    .find(|r| r.step_name == *step_name)
+            })
+            .or_else(|| child.step_results.iter().flatten().last());
+
+        match last_result {
+            Some(child_result) => StepResult {
+                step_name: format!("sub_chain:{sub_chain_name}"),
+                success: child_result.success,
+                response_body: child_result.response_body.clone(),
+                error: child_result.error.clone(),
+                completed_at: child_result.completed_at,
+                attempt: None,
+                started_at: None,
+            },
+            None => StepResult {
+                step_name: format!("sub_chain:{sub_chain_name}"),
+                success: true,
+                response_body: None,
+                error: None,
+                completed_at: Utc::now(),
+                attempt: None,
+                started_at: None,
+            },
+        }
+    }
+
+    /// Build a DAG visualization for a chain configuration, optionally enriched
+    /// with runtime state from a running or completed chain execution.
+    #[allow(clippy::too_many_lines)]
+    pub fn build_chain_dag<'a>(
+        &'a self,
+        chain_name: &'a str,
+        chain_state: Option<&'a ChainState>,
+        depth: usize,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<acteon_core::DagResponse, GatewayError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            const MAX_DEPTH: usize = 10;
+            if depth > MAX_DEPTH {
+                return Err(GatewayError::ChainError(format!(
+                    "sub-chain DAG depth exceeds maximum of {MAX_DEPTH}"
+                )));
+            }
+
+            let chain_config = self.chains.read().get(chain_name).cloned().ok_or_else(|| {
+                GatewayError::ChainError(format!(
+                    "chain configuration not found for DAG: {chain_name}"
+                ))
+            })?;
+
+            let mut nodes = Vec::new();
+            let mut edges = Vec::new();
+            let execution_path = chain_state
+                .map(|s| s.execution_path.clone())
+                .unwrap_or_default();
+            let execution_path_set: std::collections::HashSet<&str> =
+                execution_path.iter().map(String::as_str).collect();
+
+            for (i, step) in chain_config.steps.iter().enumerate() {
+                let step_status = chain_state.map(|s| {
+                    if let Some(ref result) = s.step_results[i] {
+                        if result.success {
+                            "completed".to_string()
+                        } else {
+                            "failed".to_string()
+                        }
+                    } else if s.current_step == i
+                        && (s.status == ChainStatus::Running
+                            || s.status == ChainStatus::WaitingSubChain
+                            || s.status == ChainStatus::WaitingParallel)
+                    {
+                        if step.is_sub_chain() && s.status == ChainStatus::WaitingSubChain {
+                            "waiting_sub_chain".to_string()
+                        } else if step.is_parallel() && s.status == ChainStatus::WaitingParallel {
+                            "waiting_parallel".to_string()
+                        } else {
+                            "running".to_string()
+                        }
+                    } else {
+                        "pending".to_string()
+                    }
+                });
+
+                let (node_type, sub_chain_name) = if step.is_sub_chain() {
+                    ("sub_chain".to_string(), step.sub_chain.clone())
+                } else if step.is_parallel() {
+                    ("parallel".to_string(), None)
+                } else {
+                    ("step".to_string(), None)
+                };
+
+                // For sub-chain steps, recurse into the sub-chain definition.
+                // If a child chain exists at runtime, use its state; otherwise show
+                // the definition-only structure so the hierarchy is always visible.
+                let mut child_chain_id = None;
+                let mut children = None;
+                if step.is_sub_chain() {
+                    let sub_name = step.sub_chain.as_deref().unwrap();
+                    if let Some(state) = chain_state {
+                        if let Ok(Some(child_state)) =
+                            self.find_child_chain_for_step(state, sub_name, i).await
+                        {
+                            child_chain_id = Some(child_state.chain_id.clone());
+                            if let Ok(child_dag) = self
+                                .build_chain_dag(sub_name, Some(&child_state), depth + 1)
+                                .await
+                            {
+                                children = Some(Box::new(child_dag));
+                            }
+                        } else if let Ok(child_dag) =
+                            self.build_chain_dag(sub_name, None, depth + 1).await
+                        {
+                            // No child chain spawned yet — show definition structure.
+                            children = Some(Box::new(child_dag));
+                        }
+                    } else if let Ok(child_dag) =
+                        self.build_chain_dag(sub_name, None, depth + 1).await
+                    {
+                        children = Some(Box::new(child_dag));
+                    }
+                }
+
+                // Build parallel child DagNodes if this is a parallel step.
+                let (parallel_children, parallel_join) = if step.is_parallel() {
+                    let group = step.parallel.as_ref().unwrap();
+                    let p_children: Vec<acteon_core::DagNode> = group
+                        .steps
+                        .iter()
+                        .map(|sub_step| {
+                            let sub_status = chain_state.and_then(|s| {
+                                s.parallel_sub_results.get(&sub_step.name).map(|r| {
+                                    if r.success {
+                                        "completed".to_string()
+                                    } else {
+                                        "failed".to_string()
+                                    }
+                                })
+                            });
+                            acteon_core::DagNode {
+                                name: sub_step.name.clone(),
+                                node_type: "step".to_string(),
+                                provider: if sub_step.provider.is_empty() {
+                                    None
+                                } else {
+                                    Some(sub_step.provider.clone())
+                                },
+                                action_type: if sub_step.action_type.is_empty() {
+                                    None
+                                } else {
+                                    Some(sub_step.action_type.clone())
+                                },
+                                sub_chain_name: None,
+                                status: sub_status,
+                                child_chain_id: None,
+                                children: None,
+                                parallel_children: None,
+                                parallel_join: None,
+                                attempt: None,
+                                max_retries: None,
+                            }
+                        })
+                        .collect();
+                    let join_str = match group.join {
+                        acteon_core::chain::ParallelJoinPolicy::All => "all",
+                        acteon_core::chain::ParallelJoinPolicy::Any => "any",
+                    };
+                    (Some(p_children), Some(join_str.to_string()))
+                } else {
+                    (None, None)
+                };
+
+                // Retry metadata from config + runtime state.
+                let attempt = chain_state
+                    .and_then(|s| s.step_attempts.get(i).copied())
+                    .filter(|&a| a > 0);
+                let max_retries = step.retry.as_ref().map(|r| r.max_retries);
+
+                nodes.push(acteon_core::DagNode {
+                    name: step.name.clone(),
+                    node_type,
+                    provider: if step.provider.is_empty() {
+                        None
+                    } else {
+                        Some(step.provider.clone())
+                    },
+                    action_type: if step.action_type.is_empty() {
+                        None
+                    } else {
+                        Some(step.action_type.clone())
+                    },
+                    sub_chain_name,
+                    status: step_status,
+                    child_chain_id,
+                    children,
+                    parallel_children,
+                    parallel_join,
+                    attempt,
+                    max_retries,
+                });
+
+                // Build edges: sequential edge to next step.
+                if !step.has_branches() && i + 1 < chain_config.steps.len() {
+                    let source = &step.name;
+                    let target = &chain_config.steps[i + 1].name;
+                    let on_path = execution_path_set.contains(source.as_str())
+                        && execution_path_set.contains(target.as_str())
+                        && is_adjacent_in_path(&execution_path, source, target);
+                    edges.push(acteon_core::DagEdge {
+                        source: source.clone(),
+                        target: target.clone(),
+                        label: None,
+                        on_execution_path: on_path,
+                    });
+                }
+
+                // Build edges for branches.
+                for branch in &step.branches {
+                    let label = format!(
+                        "{} {:?} {}",
+                        branch.field,
+                        branch.operator,
+                        branch
+                            .value
+                            .as_ref()
+                            .map_or_else(String::new, std::string::ToString::to_string)
+                    );
+                    let on_path = execution_path_set.contains(step.name.as_str())
+                        && execution_path_set.contains(branch.target.as_str())
+                        && is_adjacent_in_path(&execution_path, &step.name, &branch.target);
+                    edges.push(acteon_core::DagEdge {
+                        source: step.name.clone(),
+                        target: branch.target.clone(),
+                        label: Some(label),
+                        on_execution_path: on_path,
+                    });
+                }
+
+                // Default next edge.
+                if let Some(ref default_next) = step.default_next {
+                    let on_path = execution_path_set.contains(step.name.as_str())
+                        && execution_path_set.contains(default_next.as_str())
+                        && is_adjacent_in_path(&execution_path, &step.name, default_next);
+                    edges.push(acteon_core::DagEdge {
+                        source: step.name.clone(),
+                        target: default_next.clone(),
+                        label: Some("default".to_string()),
+                        on_execution_path: on_path,
+                    });
+                }
+            }
+
+            let status_str = chain_state.map(|s| match s.status {
+                ChainStatus::Running => "running".to_string(),
+                ChainStatus::Completed => "completed".to_string(),
+                ChainStatus::Failed => "failed".to_string(),
+                ChainStatus::Cancelled => "cancelled".to_string(),
+                ChainStatus::TimedOut => "timed_out".to_string(),
+                ChainStatus::WaitingSubChain => "waiting_sub_chain".to_string(),
+                ChainStatus::WaitingParallel => "waiting_parallel".to_string(),
+            });
+
+            Ok(acteon_core::DagResponse {
+                chain_name: chain_name.to_string(),
+                chain_id: chain_state.map(|s| s.chain_id.clone()),
+                status: status_str,
+                nodes,
+                edges,
+                execution_path,
+            })
+        }) // end Box::pin(async move { ... })
+    }
+
     /// Persist chain state to the state store.
     ///
     /// When `ttl` is `Some`, the record will expire after the given duration.
@@ -2212,7 +4764,8 @@ impl Gateway {
         let json = serde_json::to_string(chain_state).map_err(|e| {
             GatewayError::ChainError(format!("failed to serialize chain state: {e}"))
         })?;
-        self.state.set(chain_key, &json, ttl).await?;
+        let encrypted = self.encrypt_state_value(&json)?;
+        self.state.set(chain_key, &encrypted, ttl).await?;
         Ok(())
     }
 
@@ -2230,6 +4783,11 @@ impl Gateway {
     }
 
     /// Emit a step-level audit record for a chain step event.
+    ///
+    /// For parallel parent and sub-step audits, use
+    /// [`emit_parallel_step_audit`] instead — it enriches the record with
+    /// parallel-specific metadata (join policy, parent step name, sub-step
+    /// results).
     #[allow(clippy::too_many_arguments)]
     fn emit_chain_step_audit(
         &self,
@@ -2240,6 +4798,63 @@ impl Gateway {
         step_result: &StepResult,
         step_duration: std::time::Duration,
         step_payload: Option<&serde_json::Value>,
+    ) {
+        self.emit_chain_step_audit_inner(
+            chain_state,
+            step_config,
+            step_idx,
+            outcome,
+            step_result,
+            step_duration,
+            step_payload,
+            None,
+        );
+    }
+
+    /// Emit a step-level audit record for a parallel sub-step or parent
+    /// parallel step.
+    ///
+    /// `parent_step_name` identifies this record as a parallel sub-step audit
+    /// when `Some`. When `None` and `step_config.is_parallel()`, the record
+    /// is identified as a parallel parent step with join policy and sub-step
+    /// result summary.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_parallel_step_audit(
+        &self,
+        chain_state: &ChainState,
+        step_config: &ChainStepConfig,
+        step_idx: usize,
+        outcome: &str,
+        step_result: &StepResult,
+        step_duration: std::time::Duration,
+        step_payload: Option<&serde_json::Value>,
+        parent_step_name: Option<&str>,
+    ) {
+        self.emit_chain_step_audit_inner(
+            chain_state,
+            step_config,
+            step_idx,
+            outcome,
+            step_result,
+            step_duration,
+            step_payload,
+            parent_step_name,
+        );
+    }
+
+    /// Inner implementation shared by [`emit_chain_step_audit`] and
+    /// [`emit_parallel_step_audit`].
+    #[allow(clippy::too_many_arguments)]
+    fn emit_chain_step_audit_inner(
+        &self,
+        chain_state: &ChainState,
+        step_config: &ChainStepConfig,
+        step_idx: usize,
+        outcome: &str,
+        step_result: &StepResult,
+        step_duration: std::time::Duration,
+        step_payload: Option<&serde_json::Value>,
+        parent_step_name: Option<&str>,
     ) {
         if let Some(ref audit) = self.audit {
             let mut outcome_details = serde_json::json!({
@@ -2254,13 +4869,60 @@ impl Gateway {
                 outcome_details["error"] = serde_json::Value::String(err.clone());
             }
 
+            // --- Gap 1 & 4: Parallel sub-step identification ---
+            if let Some(parent_name) = parent_step_name {
+                outcome_details["is_parallel_sub_step"] = serde_json::Value::Bool(true);
+                outcome_details["parent_step_name"] =
+                    serde_json::Value::String(parent_name.to_owned());
+                outcome_details["parent_step_index"] = serde_json::json!(step_idx);
+            }
+
+            // --- Gap 2, 4, 5: Parallel parent step identification ---
+            // Use "parallel" as provider and step name as action_type, include
+            // the join policy, and embed per-sub-step result summary.
+            let (provider, action_type) = if step_config.is_parallel() {
+                outcome_details["is_parallel_step"] = serde_json::Value::Bool(true);
+                if let Some(ref group) = step_config.parallel {
+                    let policy_str = match group.join {
+                        acteon_core::chain::ParallelJoinPolicy::All => "all",
+                        acteon_core::chain::ParallelJoinPolicy::Any => "any",
+                    };
+                    outcome_details["parallel_join_policy"] =
+                        serde_json::Value::String(policy_str.to_owned());
+
+                    // Embed sub-step result summary for self-contained auditing.
+                    let sub_results: serde_json::Value = chain_state
+                        .parallel_sub_results
+                        .iter()
+                        .map(|(name, sr)| {
+                            let mut v = serde_json::json!({
+                                "step_name": name,
+                                "success": sr.success,
+                                "completed_at": sr.completed_at.to_rfc3339(),
+                            });
+                            if let Some(ref err) = sr.error {
+                                v["error"] = serde_json::Value::String(err.clone());
+                            }
+                            v
+                        })
+                        .collect();
+                    outcome_details["parallel_sub_step_results"] = sub_results;
+                }
+                ("parallel".to_owned(), step_config.name.clone())
+            } else {
+                (
+                    step_config.provider.clone(),
+                    step_config.action_type.clone(),
+                )
+            };
+
             #[allow(clippy::cast_possible_truncation)]
             let dispatched_at = step_result.completed_at
                 - chrono::Duration::milliseconds(step_duration.as_millis() as i64);
 
             #[allow(clippy::cast_possible_wrap)]
             let expires_at = self
-                .audit_ttl_seconds
+                .effective_audit_ttl(&chain_state.namespace, &chain_state.tenant)
                 .map(|secs| dispatched_at + chrono::Duration::seconds(secs as i64));
 
             let action_payload = if self.audit_store_payload {
@@ -2275,8 +4937,8 @@ impl Gateway {
                 chain_id: Some(chain_state.chain_id.clone()),
                 namespace: chain_state.namespace.clone(),
                 tenant: chain_state.tenant.clone(),
-                provider: step_config.provider.clone(),
-                action_type: step_config.action_type.clone(),
+                provider,
+                action_type,
                 verdict: "chain".to_owned(),
                 matched_rule: None,
                 outcome: outcome.to_owned(),
@@ -2290,6 +4952,14 @@ impl Gateway {
                 expires_at,
                 caller_id: String::new(),
                 auth_method: String::new(),
+                record_hash: None,
+                previous_hash: None,
+                sequence_number: None,
+                attachment_metadata: Vec::new(),
+                signature: None,
+                signer_id: None,
+                kid: None,
+                canonical_hash: None,
             };
 
             let audit = Arc::clone(audit);
@@ -2302,6 +4972,7 @@ impl Gateway {
     }
 
     /// Emit a terminal summary audit record for a chain lifecycle event.
+    #[allow(clippy::too_many_lines)]
     fn emit_chain_terminal_audit(&self, chain_state: &ChainState, outcome: &str) {
         if let Some(ref audit) = self.audit {
             let now = Utc::now();
@@ -2331,6 +5002,8 @@ impl Gateway {
                 ChainStatus::Failed => "failed",
                 ChainStatus::Cancelled => "cancelled",
                 ChainStatus::TimedOut => "timed_out",
+                ChainStatus::WaitingSubChain => "waiting_sub_chain",
+                ChainStatus::WaitingParallel => "waiting_parallel",
             };
 
             let mut outcome_details = serde_json::json!({
@@ -2347,9 +5020,32 @@ impl Gateway {
                 outcome_details["execution_path"] = serde_json::json!(chain_state.execution_path);
             }
 
+            // --- Gap 3 & 6: Include parallel sub-step results breakdown ---
+            if !chain_state.parallel_sub_results.is_empty() {
+                let sub_results: serde_json::Value = chain_state
+                    .parallel_sub_results
+                    .iter()
+                    .map(|(name, sr)| {
+                        let mut v = serde_json::json!({
+                            "step_name": name,
+                            "success": sr.success,
+                            "completed_at": sr.completed_at.to_rfc3339(),
+                        });
+                        if let Some(ref body) = sr.response_body {
+                            v["response_body"] = body.clone();
+                        }
+                        if let Some(ref err) = sr.error {
+                            v["error"] = serde_json::Value::String(err.clone());
+                        }
+                        v
+                    })
+                    .collect();
+                outcome_details["parallel_sub_results"] = sub_results;
+            }
+
             #[allow(clippy::cast_possible_wrap)]
             let expires_at = self
-                .audit_ttl_seconds
+                .effective_audit_ttl(&chain_state.namespace, &chain_state.tenant)
                 .map(|secs| chain_state.started_at + chrono::Duration::seconds(secs as i64));
 
             let action_payload = if self.audit_store_payload {
@@ -2383,6 +5079,14 @@ impl Gateway {
                 expires_at,
                 caller_id: String::new(),
                 auth_method: String::new(),
+                record_hash: None,
+                previous_hash: None,
+                sequence_number: None,
+                attachment_metadata: Vec::new(),
+                signature: None,
+                signer_id: None,
+                kid: None,
+                canonical_hash: None,
             };
 
             let audit = Arc::clone(audit);
@@ -2403,7 +5107,8 @@ impl Gateway {
     ) -> Result<Option<ChainState>, GatewayError> {
         let chain_key = StateKey::new(namespace, tenant, KeyKind::Chain, chain_id);
         match self.state.get(&chain_key).await? {
-            Some(json) => {
+            Some(raw) => {
+                let json = self.decrypt_state_value(&raw)?;
                 let state: ChainState = serde_json::from_str(&json).map_err(|e| {
                     GatewayError::ChainError(format!("failed to deserialize chain state: {e}"))
                 })?;
@@ -2446,6 +5151,7 @@ impl Gateway {
     /// the gateway pipeline. The notification target is taken from the chain
     /// config's `on_cancel` field, falling back to provider `"webhook"` and
     /// action type `"chain_cancelled"`.
+    #[allow(clippy::too_many_lines)]
     pub async fn cancel_chain(
         &self,
         namespace: &str,
@@ -2463,16 +5169,20 @@ impl Gateway {
             .await
             .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
 
-        let state_json = self
+        let state_raw = self
             .state
             .get(&chain_key)
             .await?
             .ok_or_else(|| GatewayError::ChainError(format!("chain not found: {chain_id}")))?;
+        let state_json = self.decrypt_state_value(&state_raw)?;
         let mut chain_state: ChainState = serde_json::from_str(&state_json).map_err(|e| {
             GatewayError::ChainError(format!("failed to deserialize chain state: {e}"))
         })?;
 
-        if chain_state.status != ChainStatus::Running {
+        if chain_state.status != ChainStatus::Running
+            && chain_state.status != ChainStatus::WaitingSubChain
+            && chain_state.status != ChainStatus::WaitingParallel
+        {
             guard
                 .release()
                 .await
@@ -2508,16 +5218,49 @@ impl Gateway {
             action_id: Some(chain_state.origin_action.id.to_string()),
         });
 
+        // Cascade cancellation to running child chains.
+        let child_ids = chain_state.child_chain_ids.clone();
+
         guard
             .release()
             .await
             .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
 
+        for child_id in &child_ids {
+            match Box::pin(self.cancel_chain(
+                namespace,
+                tenant,
+                child_id,
+                Some(format!("parent chain {chain_id} cancelled")),
+                cancelled_by.clone(),
+            ))
+            .await
+            {
+                Ok(_) => {
+                    debug!(
+                        parent_chain_id = %chain_id,
+                        child_chain_id = %child_id,
+                        "child chain cancelled"
+                    );
+                }
+                Err(e) => {
+                    // Child may already be in a terminal state — that's okay.
+                    debug!(
+                        parent_chain_id = %chain_id,
+                        child_chain_id = %child_id,
+                        error = %e,
+                        "could not cancel child chain (may already be terminal)"
+                    );
+                }
+            }
+        }
+
         info!(chain_id = %chain_id, "chain cancelled");
 
         // Dispatch a cancel notification through the gateway pipeline.
-        let chain_config = self.chains.get(&chain_state.chain_name);
+        let chain_config = self.chains.read().get(&chain_state.chain_name).cloned();
         let (notify_provider, notify_action_type) = chain_config
+            .as_ref()
             .and_then(|c| c.on_cancel.as_ref())
             .map_or(("webhook", "chain_cancelled"), |t| {
                 (t.provider.as_str(), t.action_type.as_str())
@@ -2558,6 +5301,11 @@ impl Gateway {
             }
         }
 
+        // A2A bridge: project the cancel onto a linked task, if any.
+        // `chain_state` is already the post-cancel in-memory state,
+        // so no re-read is needed here.
+        self.project_chain_to_task(&chain_state).await;
+
         Ok(chain_state)
     }
 
@@ -2570,7 +5318,8 @@ impl Gateway {
     ) -> Result<Option<ApprovalRecord>, GatewayError> {
         let approval_key = StateKey::new(namespace, tenant, KeyKind::Approval, id);
         match self.state.get(&approval_key).await? {
-            Some(val) => {
+            Some(raw) => {
+                let val = self.decrypt_state_value(&raw)?;
                 let record: ApprovalRecord = serde_json::from_str(&val).map_err(|e| {
                     GatewayError::Configuration(format!("corrupt approval record: {e}"))
                 })?;
@@ -2597,6 +5346,14 @@ impl Gateway {
     ) -> Result<ActionOutcome, GatewayError> {
         // 1. Verify HMAC signature (includes expires_at to prevent replay after expiry)
         if !self.verify_approval_sig(namespace, tenant, id, expires_at, sig, kid) {
+            return Err(GatewayError::ApprovalNotFound);
+        }
+
+        // 1b. Explicit expiry check — do not rely solely on state store
+        // TTL enforcement, which may be missing (Postgres) or
+        // eventually consistent (DynamoDB). This is the authoritative
+        // server-side gate.
+        if chrono::Utc::now().timestamp() > expires_at {
             return Err(GatewayError::ApprovalNotFound);
         }
 
@@ -2630,11 +5387,12 @@ impl Gateway {
     ) -> Result<ActionOutcome, GatewayError> {
         // 3. Read the approval record
         let approval_key = StateKey::new(namespace, tenant, KeyKind::Approval, id);
-        let val = self
+        let raw = self
             .state
             .get(&approval_key)
             .await?
             .ok_or(GatewayError::ApprovalNotFound)?;
+        let val = self.decrypt_state_value(&raw)?;
         let record: ApprovalRecord = serde_json::from_str(&val)
             .map_err(|e| GatewayError::Configuration(format!("corrupt approval record: {e}")))?;
 
@@ -2649,7 +5407,10 @@ impl Gateway {
         let updated_json = serde_json::to_string(&updated).map_err(|e| {
             GatewayError::Configuration(format!("failed to serialize approval: {e}"))
         })?;
-        self.state.set(&approval_key, &updated_json, None).await?;
+        let updated_encrypted = self.encrypt_state_value(&updated_json)?;
+        self.state
+            .set(&approval_key, &updated_encrypted, None)
+            .await?;
 
         self.emit_stream_event(StreamEvent {
             id: uuid::Uuid::now_v7().to_string(),
@@ -2669,6 +5430,9 @@ impl Gateway {
         let mut eval_ctx = EvalContext::new(action, self.state.as_ref(), &self.environment);
         if let Some(ref emb) = self.embedding {
             eval_ctx = eval_ctx.with_embedding(Arc::clone(emb));
+        }
+        if let Some(ref wasm) = self.wasm_runtime {
+            eval_ctx = eval_ctx.with_wasm_runtime(Arc::clone(wasm));
         }
         if let Some(tz) = self.default_timezone {
             eval_ctx = eval_ctx.with_timezone(tz);
@@ -2690,12 +5454,13 @@ impl Gateway {
                 target_provider,
             } => self.handle_reroute(action, target_provider).await,
             RuleVerdict::Throttle {
-                rule: _,
-                max_count: _,
+                rule,
+                max_count,
                 window_seconds,
-            } => Ok(ActionOutcome::Throttled {
-                retry_after: Duration::from_secs(*window_seconds),
-            }),
+            } => {
+                self.handle_throttle(action, rule, *max_count, *window_seconds)
+                    .await
+            }
             RuleVerdict::Modify { rule: _, changes } => {
                 let mut modified = action.clone();
                 json_patch::merge(&mut modified.payload, changes);
@@ -2724,6 +5489,14 @@ impl Gateway {
     ) -> Result<(), GatewayError> {
         // 1. Verify HMAC signature (includes expires_at to prevent replay after expiry)
         if !self.verify_approval_sig(namespace, tenant, id, expires_at, sig, kid) {
+            return Err(GatewayError::ApprovalNotFound);
+        }
+
+        // 1b. Explicit expiry check — do not rely solely on state store
+        // TTL enforcement, which may be missing (Postgres) or
+        // eventually consistent (DynamoDB). This is the authoritative
+        // server-side gate.
+        if chrono::Utc::now().timestamp() > expires_at {
             return Err(GatewayError::ApprovalNotFound);
         }
 
@@ -2756,11 +5529,12 @@ impl Gateway {
     ) -> Result<(), GatewayError> {
         // 3. Read the approval record
         let approval_key = StateKey::new(namespace, tenant, KeyKind::Approval, id);
-        let val = self
+        let raw = self
             .state
             .get(&approval_key)
             .await?
             .ok_or(GatewayError::ApprovalNotFound)?;
+        let val = self.decrypt_state_value(&raw)?;
         let record: ApprovalRecord = serde_json::from_str(&val)
             .map_err(|e| GatewayError::Configuration(format!("corrupt approval record: {e}")))?;
 
@@ -2775,7 +5549,10 @@ impl Gateway {
         let updated_json = serde_json::to_string(&updated).map_err(|e| {
             GatewayError::Configuration(format!("failed to serialize approval: {e}"))
         })?;
-        self.state.set(&approval_key, &updated_json, None).await?;
+        let updated_encrypted = self.encrypt_state_value(&updated_json)?;
+        self.state
+            .set(&approval_key, &updated_encrypted, None)
+            .await?;
 
         self.emit_stream_event(StreamEvent {
             id: uuid::Uuid::now_v7().to_string(),
@@ -2807,11 +5584,12 @@ impl Gateway {
     ) -> Result<bool, GatewayError> {
         // Read the approval record
         let approval_key = StateKey::new(namespace, tenant, KeyKind::Approval, id);
-        let val = self
+        let raw = self
             .state
             .get(&approval_key)
             .await?
             .ok_or(GatewayError::ApprovalNotFound)?;
+        let val = self.decrypt_state_value(&raw)?;
         let record: ApprovalRecord = serde_json::from_str(&val)
             .map_err(|e| GatewayError::Configuration(format!("corrupt approval record: {e}")))?;
 
@@ -2862,6 +5640,9 @@ impl Gateway {
         let mut eval_ctx = EvalContext::new(&record.action, self.state.as_ref(), &self.environment);
         if let Some(ref emb) = self.embedding {
             eval_ctx = eval_ctx.with_embedding(Arc::clone(emb));
+        }
+        if let Some(ref wasm) = self.wasm_runtime {
+            eval_ctx = eval_ctx.with_wasm_runtime(Arc::clone(wasm));
         }
         if let Some(tz) = self.default_timezone {
             eval_ctx = eval_ctx.with_timezone(tz);
@@ -2918,6 +5699,7 @@ impl Gateway {
         let updated_json = serde_json::to_string(&updated).map_err(|e| {
             GatewayError::Configuration(format!("failed to serialize approval: {e}"))
         })?;
+        let updated_encrypted = self.encrypt_state_value(&updated_json)?;
 
         // Preserve the original TTL by computing remaining time
         let remaining = updated.expires_at - Utc::now();
@@ -2927,7 +5709,9 @@ impl Gateway {
         } else {
             None
         };
-        self.state.set(&approval_key, &updated_json, ttl).await?;
+        self.state
+            .set(&approval_key, &updated_encrypted, ttl)
+            .await?;
 
         info!(approval_id = %id, "approval notification retry succeeded");
         Ok(true)
@@ -2949,10 +5733,11 @@ impl Gateway {
         }
 
         let approval_key = StateKey::new(namespace, tenant, KeyKind::Approval, id);
-        let Some(val) = self.state.get(&approval_key).await? else {
+        let Some(raw) = self.state.get(&approval_key).await? else {
             return Ok(None);
         };
 
+        let val = self.decrypt_state_value(&raw)?;
         let record: ApprovalRecord = serde_json::from_str(&val)
             .map_err(|e| GatewayError::Configuration(format!("corrupt approval record: {e}")))?;
 
@@ -2979,7 +5764,10 @@ impl Gateway {
             .await?;
 
         let mut results = Vec::new();
-        for (_key, val) in entries {
+        for (_key, raw) in entries {
+            let Ok(val) = self.decrypt_state_value(&raw) else {
+                continue;
+            };
             if let Ok(record) = serde_json::from_str::<ApprovalRecord>(&val) {
                 results.push(ApprovalStatus {
                     token: record.token,
@@ -3013,6 +5801,43 @@ impl Gateway {
         &self.state
     }
 
+    /// Get a clone of the audit store, if one is configured.
+    ///
+    /// This is the compliance-decorated store (hash chain / immutable
+    /// audit applied as configured), so callers that record their own
+    /// audit entries — e.g. the [`BackgroundProcessor`](crate::background::BackgroundProcessor)
+    /// stale-task reaper — share the same tamper-evident chain as
+    /// action records.
+    pub fn audit_store(&self) -> Option<Arc<dyn AuditStore>> {
+        self.audit.clone()
+    }
+
+    /// Best-effort A2A bridge hook: if the named chain has a linked
+    /// A2A Task (`ChainState.task_id`), project the chain's current
+    /// status onto the task's state via the
+    /// [`task_chain_bridge`](crate::task_chain_bridge). Logged on
+    /// failure but never propagated — the chain row is authoritative
+    /// and a projection hiccup must not unwind the chain mutation
+    /// that just succeeded.
+    async fn project_chain_to_task(&self, chain: &ChainState) {
+        if chain.task_id.is_none() {
+            return;
+        }
+        let engine = match &self.audit {
+            Some(audit) => TaskEngine::new(self.state.clone()).with_audit(audit.clone()),
+            None => TaskEngine::new(self.state.clone()),
+        };
+        if let Err(e) = crate::task_chain_bridge::project_chain_to_linked_task(&engine, chain).await
+        {
+            warn!(
+                chain_id = %chain.chain_id,
+                task_id = ?chain.task_id,
+                error = %e,
+                "bridge: chain → task projection failed",
+            );
+        }
+    }
+
     /// Get a clone of the broadcast sender for SSE event streaming.
     ///
     /// Callers can use `subscribe()` on the returned sender to create
@@ -3029,228 +5854,260 @@ impl Gateway {
     }
 }
 
-// -- Audit helpers -----------------------------------------------------------
+/// A read-only wrapper for a [`StateStore`] that allows overriding specific keys.
+/// Used by the Rule Playground to simulate different state conditions.
+struct PlaygroundStateStore<'a> {
+    inner: &'a dyn acteon_state::StateStore,
+    overrides: HashMap<String, String>,
+}
 
-/// Extract a string tag from a `RuleVerdict`.
-fn verdict_tag(verdict: &RuleVerdict) -> &'static str {
-    match verdict {
-        RuleVerdict::Allow(_) => "allow",
-        RuleVerdict::Deny(_) => "deny",
-        RuleVerdict::Deduplicate { .. } => "deduplicate",
-        RuleVerdict::Suppress(_) => "suppress",
-        RuleVerdict::Reroute { .. } => "reroute",
-        RuleVerdict::Throttle { .. } => "throttle",
-        RuleVerdict::Modify { .. } => "modify",
-        RuleVerdict::StateMachine { .. } => "state_machine",
-        RuleVerdict::Group { .. } => "group",
-        RuleVerdict::RequestApproval { .. } => "request_approval",
-        RuleVerdict::Chain { .. } => "chain",
-        RuleVerdict::Schedule { .. } => "schedule",
+#[async_trait::async_trait]
+impl acteon_state::StateStore for PlaygroundStateStore<'_> {
+    async fn get(
+        &self,
+        key: &acteon_state::StateKey,
+    ) -> Result<Option<String>, acteon_state::StateError> {
+        // Try the overrides map first.  We check for both the full canonical key
+        // and just the ID part for convenience.
+        if let Some(val) = self.overrides.get(&key.canonical()) {
+            return Ok(Some(val.clone()));
+        }
+        if let Some(val) = self.overrides.get(&key.id) {
+            return Ok(Some(val.clone()));
+        }
+        self.inner.get(key).await
+    }
+
+    async fn get_versioned(
+        &self,
+        key: &acteon_state::StateKey,
+    ) -> Result<Option<(String, u64)>, acteon_state::StateError> {
+        // Overrides expose the value but no version metadata; callers
+        // that go through the playground are expected to read-only,
+        // so version 0 ("never seen a version") is the safe answer.
+        if let Some(val) = self.overrides.get(&key.canonical()) {
+            return Ok(Some((val.clone(), 0)));
+        }
+        if let Some(val) = self.overrides.get(&key.id) {
+            return Ok(Some((val.clone(), 0)));
+        }
+        self.inner.get_versioned(key).await
+    }
+
+    // All other methods are no-ops or errors since the playground is read-only.
+    async fn set(
+        &self,
+        _: &acteon_state::StateKey,
+        _: &str,
+        _: Option<Duration>,
+    ) -> Result<(), acteon_state::StateError> {
+        Err(acteon_state::StateError::Backend(
+            "Playground state store is read-only".into(),
+        ))
+    }
+    async fn check_and_set(
+        &self,
+        _: &acteon_state::StateKey,
+        _: &str,
+        _: Option<Duration>,
+    ) -> Result<bool, acteon_state::StateError> {
+        Err(acteon_state::StateError::Backend(
+            "Playground state store is read-only".into(),
+        ))
+    }
+    async fn delete(&self, _: &acteon_state::StateKey) -> Result<bool, acteon_state::StateError> {
+        Err(acteon_state::StateError::Backend(
+            "Playground state store is read-only".into(),
+        ))
+    }
+    async fn increment(
+        &self,
+        _: &acteon_state::StateKey,
+        _: i64,
+        _: Option<Duration>,
+    ) -> Result<i64, acteon_state::StateError> {
+        Err(acteon_state::StateError::Backend(
+            "Playground state store is read-only".into(),
+        ))
+    }
+    async fn compare_and_swap(
+        &self,
+        _: &acteon_state::StateKey,
+        _: u64,
+        _: &str,
+        _: Option<Duration>,
+    ) -> Result<acteon_state::CasResult, acteon_state::StateError> {
+        Err(acteon_state::StateError::Backend(
+            "Playground state store is read-only".into(),
+        ))
+    }
+    async fn scan_keys(
+        &self,
+        ns: &str,
+        t: &str,
+        k: acteon_state::KeyKind,
+        p: Option<&str>,
+    ) -> Result<Vec<(String, String)>, acteon_state::StateError> {
+        self.inner.scan_keys(ns, t, k, p).await
+    }
+    async fn scan_keys_by_kind(
+        &self,
+        k: acteon_state::KeyKind,
+    ) -> Result<Vec<(String, String)>, acteon_state::StateError> {
+        self.inner.scan_keys_by_kind(k).await
+    }
+    async fn index_timeout(
+        &self,
+        _: &acteon_state::StateKey,
+        _: i64,
+    ) -> Result<(), acteon_state::StateError> {
+        Err(acteon_state::StateError::Backend(
+            "Playground state store is read-only".into(),
+        ))
+    }
+    async fn remove_timeout_index(
+        &self,
+        _: &acteon_state::StateKey,
+    ) -> Result<(), acteon_state::StateError> {
+        Err(acteon_state::StateError::Backend(
+            "Playground state store is read-only".into(),
+        ))
+    }
+    async fn get_expired_timeouts(
+        &self,
+        now: i64,
+    ) -> Result<Vec<String>, acteon_state::StateError> {
+        self.inner.get_expired_timeouts(now).await
+    }
+    async fn index_chain_ready(
+        &self,
+        _: &acteon_state::StateKey,
+        _: i64,
+    ) -> Result<(), acteon_state::StateError> {
+        Err(acteon_state::StateError::Backend(
+            "Playground state store is read-only".into(),
+        ))
+    }
+    async fn remove_chain_ready_index(
+        &self,
+        _: &acteon_state::StateKey,
+    ) -> Result<(), acteon_state::StateError> {
+        Err(acteon_state::StateError::Backend(
+            "Playground state store is read-only".into(),
+        ))
+    }
+    async fn get_ready_chains(&self, now: i64) -> Result<Vec<String>, acteon_state::StateError> {
+        self.inner.get_ready_chains(now).await
     }
 }
 
-/// Extract the matched rule name from a `RuleVerdict`, if any.
-fn matched_rule_name(verdict: &RuleVerdict) -> Option<String> {
-    match verdict {
-        RuleVerdict::Allow(_) | RuleVerdict::Deduplicate { .. } => None,
-        RuleVerdict::Deny(rule)
-        | RuleVerdict::Suppress(rule)
-        | RuleVerdict::Reroute { rule, .. }
-        | RuleVerdict::Throttle { rule, .. }
-        | RuleVerdict::Modify { rule, .. }
-        | RuleVerdict::StateMachine { rule, .. }
-        | RuleVerdict::Group { rule, .. }
-        | RuleVerdict::RequestApproval { rule, .. }
-        | RuleVerdict::Chain { rule, .. }
-        | RuleVerdict::Schedule { rule, .. } => Some(rule.clone()),
+/// Helper to wrap a reference to a [`StateStore`] as a trait object.
+struct BorrowedStateStore<'a>(&'a dyn acteon_state::StateStore);
+
+#[async_trait::async_trait]
+impl acteon_state::StateStore for BorrowedStateStore<'_> {
+    async fn get(
+        &self,
+        k: &acteon_state::StateKey,
+    ) -> Result<Option<String>, acteon_state::StateError> {
+        self.0.get(k).await
+    }
+    async fn get_versioned(
+        &self,
+        k: &acteon_state::StateKey,
+    ) -> Result<Option<(String, u64)>, acteon_state::StateError> {
+        self.0.get_versioned(k).await
+    }
+    async fn set(
+        &self,
+        k: &acteon_state::StateKey,
+        v: &str,
+        d: Option<Duration>,
+    ) -> Result<(), acteon_state::StateError> {
+        self.0.set(k, v, d).await
+    }
+    async fn check_and_set(
+        &self,
+        k: &acteon_state::StateKey,
+        v: &str,
+        d: Option<Duration>,
+    ) -> Result<bool, acteon_state::StateError> {
+        self.0.check_and_set(k, v, d).await
+    }
+    async fn delete(&self, k: &acteon_state::StateKey) -> Result<bool, acteon_state::StateError> {
+        self.0.delete(k).await
+    }
+    async fn increment(
+        &self,
+        k: &acteon_state::StateKey,
+        d: i64,
+        t: Option<Duration>,
+    ) -> Result<i64, acteon_state::StateError> {
+        self.0.increment(k, d, t).await
+    }
+    async fn compare_and_swap(
+        &self,
+        k: &acteon_state::StateKey,
+        ev: u64,
+        nv: &str,
+        t: Option<Duration>,
+    ) -> Result<acteon_state::CasResult, acteon_state::StateError> {
+        self.0.compare_and_swap(k, ev, nv, t).await
+    }
+    async fn scan_keys(
+        &self,
+        ns: &str,
+        t: &str,
+        k: acteon_state::KeyKind,
+        p: Option<&str>,
+    ) -> Result<Vec<(String, String)>, acteon_state::StateError> {
+        self.0.scan_keys(ns, t, k, p).await
+    }
+    async fn scan_keys_by_kind(
+        &self,
+        k: acteon_state::KeyKind,
+    ) -> Result<Vec<(String, String)>, acteon_state::StateError> {
+        self.0.scan_keys_by_kind(k).await
+    }
+    async fn index_timeout(
+        &self,
+        k: &acteon_state::StateKey,
+        e: i64,
+    ) -> Result<(), acteon_state::StateError> {
+        self.0.index_timeout(k, e).await
+    }
+    async fn remove_timeout_index(
+        &self,
+        k: &acteon_state::StateKey,
+    ) -> Result<(), acteon_state::StateError> {
+        self.0.remove_timeout_index(k).await
+    }
+    async fn get_expired_timeouts(&self, n: i64) -> Result<Vec<String>, acteon_state::StateError> {
+        self.0.get_expired_timeouts(n).await
+    }
+    async fn index_chain_ready(
+        &self,
+        k: &acteon_state::StateKey,
+        r: i64,
+    ) -> Result<(), acteon_state::StateError> {
+        self.0.index_chain_ready(k, r).await
+    }
+    async fn remove_chain_ready_index(
+        &self,
+        k: &acteon_state::StateKey,
+    ) -> Result<(), acteon_state::StateError> {
+        self.0.remove_chain_ready_index(k).await
+    }
+    async fn get_ready_chains(&self, n: i64) -> Result<Vec<String>, acteon_state::StateError> {
+        self.0.get_ready_chains(n).await
     }
 }
 
-/// Extract a string tag from an `ActionOutcome`.
-fn outcome_tag(outcome: &ActionOutcome) -> &'static str {
-    match outcome {
-        ActionOutcome::Executed(_) => "executed",
-        ActionOutcome::Deduplicated => "deduplicated",
-        ActionOutcome::Suppressed { .. } => "suppressed",
-        ActionOutcome::Rerouted { .. } => "rerouted",
-        ActionOutcome::Throttled { .. } => "throttled",
-        ActionOutcome::Failed(_) => "failed",
-        ActionOutcome::Grouped { .. } => "grouped",
-        ActionOutcome::StateChanged { .. } => "state_changed",
-        ActionOutcome::PendingApproval { .. } => "pending_approval",
-        ActionOutcome::ChainStarted { .. } => "chain_started",
-        ActionOutcome::DryRun { .. } => "dry_run",
-        ActionOutcome::CircuitOpen { .. } => "circuit_open",
-        ActionOutcome::Scheduled { .. } => "scheduled",
-    }
-}
+// -- Audit helpers (moved to audit_helpers.rs) -------------------------------
 
-/// Enrich serialized action metadata with extra `Action` fields so that
-/// replays can reconstruct the full action. System fields use a `__` prefix
-/// to distinguish them from user-supplied labels.
-fn enrich_audit_metadata(action: &Action) -> serde_json::Value {
-    let mut meta = serde_json::to_value(&action.metadata).unwrap_or_default();
-    if let Some(obj) = meta.as_object_mut() {
-        if let Some(k) = &action.dedup_key {
-            obj.insert("__dedup_key".into(), serde_json::json!(k));
-        }
-        if let Some(f) = &action.fingerprint {
-            obj.insert("__fingerprint".into(), serde_json::json!(f));
-        }
-        if let Some(s) = &action.status {
-            obj.insert("__status".into(), serde_json::json!(s));
-        }
-        if let Some(t) = action.starts_at {
-            obj.insert("__starts_at".into(), serde_json::json!(t));
-        }
-        if let Some(t) = action.ends_at {
-            obj.insert("__ends_at".into(), serde_json::json!(t));
-        }
-    }
-    meta
-}
-
-/// Build an `AuditRecord` from the dispatch context.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-fn build_audit_record(
-    id: String,
-    action: &Action,
-    verdict: &RuleVerdict,
-    outcome: &ActionOutcome,
-    dispatched_at: chrono::DateTime<chrono::Utc>,
-    elapsed: Duration,
-    ttl_seconds: Option<u64>,
-    store_payload: bool,
-    caller: Option<&Caller>,
-) -> AuditRecord {
-    let completed_at = Utc::now();
-    #[allow(clippy::cast_possible_wrap)]
-    let expires_at = ttl_seconds.map(|secs| dispatched_at + chrono::Duration::seconds(secs as i64));
-
-    let action_payload = if store_payload {
-        Some(action.payload.clone())
-    } else {
-        None
-    };
-
-    let outcome_details = match outcome {
-        ActionOutcome::Executed(resp) => serde_json::json!({
-            "status": format!("{:?}", resp.status),
-        }),
-        ActionOutcome::Failed(err) => serde_json::json!({
-            "code": err.code,
-            "message": err.message,
-            "retryable": err.retryable,
-            "attempts": err.attempts,
-        }),
-        ActionOutcome::Suppressed { rule } => serde_json::json!({ "rule": rule }),
-        ActionOutcome::Rerouted {
-            original_provider,
-            new_provider,
-            ..
-        } => serde_json::json!({
-            "original_provider": original_provider,
-            "new_provider": new_provider,
-        }),
-        ActionOutcome::Throttled { retry_after } => {
-            serde_json::json!({ "retry_after_secs": retry_after.as_secs() })
-        }
-        ActionOutcome::Deduplicated => serde_json::json!({}),
-        ActionOutcome::Grouped {
-            group_id,
-            group_size,
-            notify_at,
-        } => serde_json::json!({
-            "group_id": group_id,
-            "group_size": group_size,
-            "notify_at": notify_at.to_rfc3339(),
-        }),
-        ActionOutcome::StateChanged {
-            fingerprint,
-            previous_state,
-            new_state,
-            notify,
-        } => serde_json::json!({
-            "fingerprint": fingerprint,
-            "previous_state": previous_state,
-            "new_state": new_state,
-            "notify": notify,
-        }),
-        ActionOutcome::PendingApproval {
-            approval_id,
-            expires_at,
-            notification_sent,
-            ..
-        } => serde_json::json!({
-            "approval_id": approval_id,
-            "expires_at": expires_at.to_rfc3339(),
-            "notification_sent": notification_sent,
-        }),
-        ActionOutcome::ChainStarted {
-            chain_id,
-            chain_name,
-            total_steps,
-            first_step,
-        } => serde_json::json!({
-            "chain_id": chain_id,
-            "chain_name": chain_name,
-            "total_steps": total_steps,
-            "first_step": first_step,
-        }),
-        ActionOutcome::DryRun {
-            verdict,
-            matched_rule,
-            would_be_provider,
-        } => serde_json::json!({
-            "verdict": verdict,
-            "matched_rule": matched_rule,
-            "would_be_provider": would_be_provider,
-        }),
-        ActionOutcome::CircuitOpen {
-            provider,
-            fallback_chain,
-        } => serde_json::json!({
-            "provider": provider,
-            "fallback_chain": fallback_chain,
-        }),
-        ActionOutcome::Scheduled {
-            action_id,
-            scheduled_for,
-        } => serde_json::json!({
-            "action_id": action_id,
-            "scheduled_for": scheduled_for.to_rfc3339(),
-        }),
-    };
-
-    let chain_id = if let ActionOutcome::ChainStarted { chain_id, .. } = outcome {
-        Some(chain_id.clone())
-    } else {
-        None
-    };
-
-    AuditRecord {
-        id,
-        action_id: action.id.to_string(),
-        chain_id,
-        namespace: action.namespace.to_string(),
-        tenant: action.tenant.to_string(),
-        provider: action.provider.to_string(),
-        action_type: action.action_type.clone(),
-        verdict: verdict_tag(verdict).to_owned(),
-        matched_rule: matched_rule_name(verdict),
-        outcome: outcome_tag(outcome).to_owned(),
-        action_payload,
-        verdict_details: serde_json::json!({ "verdict": verdict_tag(verdict) }),
-        outcome_details,
-        metadata: enrich_audit_metadata(action),
-        dispatched_at,
-        completed_at,
-        duration_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
-        expires_at,
-        caller_id: caller.map_or_else(String::new, |c| c.id.clone()),
-        auth_method: caller.map_or_else(String::new, |c| c.auth_method.clone()),
-    }
-}
+use crate::audit_helpers::{
+    build_audit_record, enrich_audit_metadata, is_adjacent_in_path, matched_rule_name,
+};
 
 #[cfg(test)]
 mod tests {
@@ -3494,16 +6351,27 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_throttle() {
+        let max = 5;
         let rules = vec![Rule::new(
             "rate-limit",
             Expr::Bool(true),
             RuleAction::Throttle {
-                max_count: 100,
+                max_count: max,
                 window_seconds: 60,
             },
         )];
         let gw = build_gateway(rules);
 
+        // First `max` dispatches should execute.
+        for i in 0..max {
+            let outcome = gw.dispatch(test_action(), None).await.unwrap();
+            assert!(
+                matches!(outcome, ActionOutcome::Executed(_)),
+                "dispatch {i} should execute, got {outcome:?}"
+            );
+        }
+
+        // Next dispatch should be throttled.
         let outcome = gw.dispatch(test_action(), None).await.unwrap();
         match outcome {
             ActionOutcome::Throttled { retry_after } => {
@@ -3513,7 +6381,96 @@ mod tests {
         }
 
         let snap = gw.metrics().snapshot();
+        assert_eq!(snap.executed, max);
         assert_eq!(snap.throttled, 1);
+    }
+
+    #[tokio::test]
+    async fn throttle_allows_up_to_max_count() {
+        let max = 3;
+        let rules = vec![Rule::new(
+            "exact-limit",
+            Expr::Bool(true),
+            RuleAction::Throttle {
+                max_count: max,
+                window_seconds: 120,
+            },
+        )];
+        let gw = build_gateway(rules);
+
+        for _ in 0..max {
+            let outcome = gw.dispatch(test_action(), None).await.unwrap();
+            assert!(matches!(outcome, ActionOutcome::Executed(_)));
+        }
+
+        let snap = gw.metrics().snapshot();
+        assert_eq!(snap.executed, max);
+        assert_eq!(snap.throttled, 0);
+    }
+
+    #[tokio::test]
+    async fn throttle_different_rules_have_separate_counters() {
+        let rules_a = vec![Rule::new(
+            "limit-a",
+            Expr::Bool(true),
+            RuleAction::Throttle {
+                max_count: 1,
+                window_seconds: 60,
+            },
+        )];
+        let rules_b = vec![Rule::new(
+            "limit-b",
+            Expr::Bool(true),
+            RuleAction::Throttle {
+                max_count: 1,
+                window_seconds: 60,
+            },
+        )];
+
+        // Two gateways sharing the same state store but with different rule names.
+        let state: Arc<dyn acteon_state::StateStore> = Arc::new(MemoryStateStore::new());
+        let lock: Arc<dyn acteon_state::DistributedLock> = Arc::new(MemoryDistributedLock::new());
+
+        let gw_a = GatewayBuilder::new()
+            .state(Arc::clone(&state))
+            .lock(Arc::clone(&lock))
+            .provider(Arc::new(MockProvider::new("email")))
+            .rules(rules_a)
+            .executor_config(ExecutorConfig {
+                max_retries: 0,
+                execution_timeout: Duration::from_secs(5),
+                max_concurrent: 10,
+                ..ExecutorConfig::default()
+            })
+            .build()
+            .expect("gateway a should build");
+        let gw_b = GatewayBuilder::new()
+            .state(Arc::clone(&state))
+            .lock(Arc::clone(&lock))
+            .provider(Arc::new(MockProvider::new("email")))
+            .rules(rules_b)
+            .executor_config(ExecutorConfig {
+                max_retries: 0,
+                execution_timeout: Duration::from_secs(5),
+                max_concurrent: 10,
+                ..ExecutorConfig::default()
+            })
+            .build()
+            .expect("gateway b should build");
+
+        // Both should allow their first dispatch.
+        let out_a = gw_a.dispatch(test_action(), None).await.unwrap();
+        assert!(matches!(out_a, ActionOutcome::Executed(_)));
+
+        let out_b = gw_b.dispatch(test_action(), None).await.unwrap();
+        assert!(matches!(out_b, ActionOutcome::Executed(_)));
+
+        // Both should throttle the second.
+        let out_a2 = gw_a.dispatch(test_action(), None).await.unwrap();
+        assert!(matches!(out_a2, ActionOutcome::Throttled { .. }));
+
+        let out_b2 = gw_b.dispatch(test_action(), None).await.unwrap();
+        assert!(matches!(out_b2, ActionOutcome::Throttled { .. }));
     }
 
     #[tokio::test]
@@ -3617,6 +6574,97 @@ mod tests {
         let snap = gw.metrics().snapshot();
         assert_eq!(snap.dispatched, 3);
         assert_eq!(snap.executed, 3);
+    }
+
+    /// Regression test for the `buffer_unordered` → `buffered` fix in
+    /// `dispatch_batch_inner`. Submits a batch where earlier actions
+    /// take longer to execute than later ones, then asserts every
+    /// result slot echoes the tag of the action at the same input
+    /// index. If the stream were still unordered, index 0 (the
+    /// slowest) would end up last in completion order and land in
+    /// the wrong slot.
+    #[tokio::test]
+    async fn dispatch_batch_preserves_order_under_latency_skew() {
+        use tokio::time::sleep;
+
+        struct LatencySkewProvider;
+
+        #[async_trait]
+        impl DynProvider for LatencySkewProvider {
+            fn name(&self) -> &str {
+                "email"
+            }
+            async fn execute(&self, action: &Action) -> Result<ProviderResponse, ProviderError> {
+                let delay_ms = action
+                    .payload
+                    .get("delay_ms")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0);
+                let tag = action
+                    .payload
+                    .get("tag")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+                    .to_owned();
+                sleep(Duration::from_millis(delay_ms)).await;
+                Ok(ProviderResponse::success(serde_json::json!({ "tag": tag })))
+            }
+            async fn health_check(&self) -> Result<(), ProviderError> {
+                Ok(())
+            }
+        }
+
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+        let gw = GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .provider(Arc::new(LatencySkewProvider))
+            .executor_config(ExecutorConfig {
+                max_retries: 0,
+                execution_timeout: Duration::from_secs(5),
+                max_concurrent: 10,
+                ..ExecutorConfig::default()
+            })
+            .build()
+            .expect("gateway should build");
+
+        // Delays decrease with index: idx 0 waits 200ms, idx 4 waits 0ms.
+        // In completion order the results would be 4, 3, 2, 1, 0.
+        // Since BATCH_CONCURRENCY=32 is above our batch size of 5,
+        // every action runs concurrently — the skew is the whole
+        // point.
+        let actions: Vec<Action> = (0..5usize)
+            .map(|i| {
+                let delay = (4 - i) * 50;
+                Action::new(
+                    "notifications",
+                    "tenant-1",
+                    "email",
+                    "send_email",
+                    serde_json::json!({
+                        "tag": format!("idx-{i}"),
+                        "delay_ms": delay,
+                    }),
+                )
+            })
+            .collect();
+
+        let results = gw.dispatch_batch(actions, None).await;
+        assert_eq!(results.len(), 5);
+        for (expected_idx, result) in results.iter().enumerate() {
+            let outcome = result.as_ref().expect("action should execute");
+            let ActionOutcome::Executed(resp) = outcome else {
+                panic!("expected Executed, got {outcome:?}");
+            };
+            let actual_tag = resp.body.get("tag").and_then(serde_json::Value::as_str);
+            assert_eq!(
+                actual_tag,
+                Some(format!("idx-{expected_idx}").as_str()),
+                "result at index {expected_idx} carries the wrong tag — \
+                 batch ordering has regressed"
+            );
+        }
     }
 
     #[tokio::test]
@@ -5233,7 +8281,7 @@ mod tests {
             "rate-limit",
             Expr::Bool(true),
             RuleAction::Throttle {
-                max_count: 100,
+                max_count: 0,
                 window_seconds: 60,
             },
         )];
@@ -5664,6 +8712,8 @@ mod tests {
                 response_body: body,
                 error: None,
                 completed_at: Utc::now(),
+                attempt: None,
+                started_at: None,
             }
         }
 
@@ -6005,5 +9055,1166 @@ mod tests {
                 "code 500 should fall through to default_next error_handler"
             );
         }
+
+        #[test]
+        fn branch_with_gt_operator_routes_to_correct_step() {
+            let config = ChainConfig::new("gt-branch")
+                .with_step(
+                    ChainStepConfig::new("check_capacity", "p", "t", serde_json::json!({}))
+                        .with_branch(BranchCondition::new(
+                            "body.desired_capacity",
+                            BranchOperator::Gt,
+                            Some(serde_json::json!(10)),
+                            "abort",
+                        ))
+                        .with_default_next("proceed"),
+                )
+                .with_step(ChainStepConfig::new(
+                    "proceed",
+                    "p",
+                    "t",
+                    serde_json::json!({}),
+                ))
+                .with_step(ChainStepConfig::new(
+                    "abort",
+                    "p",
+                    "t",
+                    serde_json::json!({}),
+                ));
+
+            let map = index_map(&config);
+
+            // desired_capacity = 15 > 10 → branch to "abort" (index 2)
+            let result_high =
+                make_step_result(true, Some(serde_json::json!({"desired_capacity": 15})));
+            assert_eq!(
+                Gateway::resolve_next_step(&config, 0, &result_high, &map),
+                Some(2),
+                "desired_capacity 15 > 10 should route to abort"
+            );
+
+            // desired_capacity = 5 <= 10 → no match, default_next "proceed" (index 1)
+            let result_low =
+                make_step_result(true, Some(serde_json::json!({"desired_capacity": 5})));
+            assert_eq!(
+                Gateway::resolve_next_step(&config, 0, &result_low, &map),
+                Some(1),
+                "desired_capacity 5 <= 10 should fall through to proceed"
+            );
+        }
+    }
+
+    // -- Quota tests ----------------------------------------------------------
+
+    fn make_quota_policy(
+        namespace: &str,
+        tenant: &str,
+        max_actions: u64,
+        window: acteon_core::QuotaWindow,
+        overage_behavior: acteon_core::OverageBehavior,
+        enabled: bool,
+    ) -> acteon_core::QuotaPolicy {
+        acteon_core::QuotaPolicy {
+            id: uuid::Uuid::new_v4().to_string(),
+            namespace: namespace.into(),
+            tenant: tenant.into(),
+            provider: None,
+            max_actions,
+            window,
+            overage_behavior,
+            enabled,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            description: None,
+            labels: HashMap::new(),
+        }
+    }
+
+    fn make_quota_policy_for_provider(
+        namespace: &str,
+        tenant: &str,
+        provider: &str,
+        max_actions: u64,
+        window: acteon_core::QuotaWindow,
+        overage_behavior: acteon_core::OverageBehavior,
+        enabled: bool,
+    ) -> acteon_core::QuotaPolicy {
+        let mut p = make_quota_policy(
+            namespace,
+            tenant,
+            max_actions,
+            window,
+            overage_behavior,
+            enabled,
+        );
+        p.provider = Some(provider.into());
+        p
+    }
+
+    fn build_gateway_with_quota(
+        policies: Vec<acteon_core::QuotaPolicy>,
+    ) -> crate::gateway::Gateway {
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+
+        GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .rules(vec![])
+            .provider(Arc::new(MockProvider::new("email")))
+            .executor_config(ExecutorConfig {
+                max_retries: 0,
+                execution_timeout: Duration::from_secs(5),
+                max_concurrent: 10,
+                ..ExecutorConfig::default()
+            })
+            .quota_policies(policies)
+            .build()
+            .expect("gateway should build")
+    }
+
+    #[tokio::test]
+    async fn quota_blocks_when_exceeded() {
+        let policy = make_quota_policy(
+            "notifications",
+            "tenant-1",
+            3,
+            acteon_core::QuotaWindow::Hourly,
+            acteon_core::OverageBehavior::Block,
+            true,
+        );
+        let gw = build_gateway_with_quota(vec![policy]);
+
+        // First 3 dispatches should succeed.
+        for i in 0..3 {
+            let outcome = gw.dispatch(test_action(), None).await.unwrap();
+            assert!(
+                matches!(outcome, ActionOutcome::Executed(_)),
+                "dispatch {i} should succeed within quota"
+            );
+        }
+
+        // 4th dispatch should be blocked.
+        let outcome = gw.dispatch(test_action(), None).await.unwrap();
+        match outcome {
+            ActionOutcome::QuotaExceeded {
+                tenant,
+                limit,
+                used,
+                overage_behavior,
+            } => {
+                assert_eq!(tenant, "tenant-1");
+                assert_eq!(limit, 3);
+                assert_eq!(used, 4, "post-increment value after atomic increment");
+                assert_eq!(overage_behavior, "block");
+            }
+            other => panic!("expected QuotaExceeded, got {other:?}"),
+        }
+
+        let snap = gw.metrics().snapshot();
+        assert_eq!(snap.executed, 3);
+        assert_eq!(snap.quota_exceeded, 1);
+    }
+
+    #[tokio::test]
+    async fn quota_warns_when_exceeded() {
+        let policy = make_quota_policy(
+            "notifications",
+            "tenant-1",
+            2,
+            acteon_core::QuotaWindow::Hourly,
+            acteon_core::OverageBehavior::Warn,
+            true,
+        );
+        let gw = build_gateway_with_quota(vec![policy]);
+
+        // Dispatch 3 actions — all should succeed because Warn doesn't block.
+        for i in 0..3 {
+            let outcome = gw.dispatch(test_action(), None).await.unwrap();
+            assert!(
+                matches!(outcome, ActionOutcome::Executed(_)),
+                "dispatch {i} should succeed with Warn overage behavior"
+            );
+        }
+
+        let snap = gw.metrics().snapshot();
+        assert_eq!(snap.executed, 3);
+        assert_eq!(
+            snap.quota_warned, 1,
+            "third dispatch should trigger a quota warning"
+        );
+        assert_eq!(
+            snap.quota_exceeded, 0,
+            "Warn behavior should not increment exceeded"
+        );
+    }
+
+    #[tokio::test]
+    async fn quota_allows_when_under_limit() {
+        let policy = make_quota_policy(
+            "notifications",
+            "tenant-1",
+            10,
+            acteon_core::QuotaWindow::Hourly,
+            acteon_core::OverageBehavior::Block,
+            true,
+        );
+        let gw = build_gateway_with_quota(vec![policy]);
+
+        // Dispatch 5 actions — all well under the limit of 10.
+        for i in 0..5 {
+            let outcome = gw.dispatch(test_action(), None).await.unwrap();
+            assert!(
+                matches!(outcome, ActionOutcome::Executed(_)),
+                "dispatch {i} should succeed under quota limit"
+            );
+        }
+
+        let snap = gw.metrics().snapshot();
+        assert_eq!(snap.executed, 5);
+        assert_eq!(snap.quota_exceeded, 0);
+        assert_eq!(snap.quota_warned, 0);
+    }
+
+    #[tokio::test]
+    async fn quota_ignores_disabled_policy() {
+        let policy = make_quota_policy(
+            "notifications",
+            "tenant-1",
+            2,
+            acteon_core::QuotaWindow::Hourly,
+            acteon_core::OverageBehavior::Block,
+            false, // disabled
+        );
+        let gw = build_gateway_with_quota(vec![policy]);
+
+        // Even though max_actions=2, the disabled policy should be ignored.
+        for i in 0..5 {
+            let outcome = gw.dispatch(test_action(), None).await.unwrap();
+            assert!(
+                matches!(outcome, ActionOutcome::Executed(_)),
+                "dispatch {i} should succeed with disabled quota policy"
+            );
+        }
+
+        let snap = gw.metrics().snapshot();
+        assert_eq!(snap.executed, 5);
+        assert_eq!(snap.quota_exceeded, 0);
+    }
+
+    #[tokio::test]
+    async fn quota_independent_per_tenant() {
+        let policy_a = make_quota_policy(
+            "notifications",
+            "tenant-a",
+            2,
+            acteon_core::QuotaWindow::Hourly,
+            acteon_core::OverageBehavior::Block,
+            true,
+        );
+        let policy_b = make_quota_policy(
+            "notifications",
+            "tenant-b",
+            3,
+            acteon_core::QuotaWindow::Hourly,
+            acteon_core::OverageBehavior::Block,
+            true,
+        );
+        let gw = build_gateway_with_quota(vec![policy_a, policy_b]);
+
+        let action_a = || {
+            Action::new(
+                "notifications",
+                "tenant-a",
+                "email",
+                "send_email",
+                serde_json::json!({"to": "a@example.com"}),
+            )
+        };
+        let action_b = || {
+            Action::new(
+                "notifications",
+                "tenant-b",
+                "email",
+                "send_email",
+                serde_json::json!({"to": "b@example.com"}),
+            )
+        };
+
+        // Tenant A: 2 succeed, 3rd blocked.
+        for _ in 0..2 {
+            let outcome = gw.dispatch(action_a(), None).await.unwrap();
+            assert!(matches!(outcome, ActionOutcome::Executed(_)));
+        }
+        let outcome_a3 = gw.dispatch(action_a(), None).await.unwrap();
+        assert!(
+            matches!(outcome_a3, ActionOutcome::QuotaExceeded { .. }),
+            "tenant-a third dispatch should be blocked"
+        );
+
+        // Tenant B should still have quota remaining — 3 succeed, 4th blocked.
+        for _ in 0..3 {
+            let outcome = gw.dispatch(action_b(), None).await.unwrap();
+            assert!(matches!(outcome, ActionOutcome::Executed(_)));
+        }
+        let outcome_b4 = gw.dispatch(action_b(), None).await.unwrap();
+        assert!(
+            matches!(outcome_b4, ActionOutcome::QuotaExceeded { .. }),
+            "tenant-b fourth dispatch should be blocked"
+        );
+
+        let snap = gw.metrics().snapshot();
+        assert_eq!(snap.executed, 5, "2 from tenant-a + 3 from tenant-b");
+        assert_eq!(snap.quota_exceeded, 2, "one block per tenant");
+    }
+
+    #[tokio::test]
+    async fn quota_degrades_when_exceeded() {
+        let policy = make_quota_policy(
+            "notifications",
+            "tenant-1",
+            2,
+            acteon_core::QuotaWindow::Hourly,
+            acteon_core::OverageBehavior::Degrade {
+                fallback_provider: "sms-fallback".into(),
+            },
+            true,
+        );
+        // Need both providers registered so the gateway builds cleanly.
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+        let gw = GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .rules(vec![])
+            .provider(Arc::new(MockProvider::new("email")))
+            .provider(Arc::new(MockProvider::new("sms-fallback")))
+            .executor_config(ExecutorConfig {
+                max_retries: 0,
+                execution_timeout: Duration::from_secs(5),
+                max_concurrent: 10,
+                ..ExecutorConfig::default()
+            })
+            .quota_policies(vec![policy])
+            .build()
+            .expect("gateway should build");
+
+        // First 2 dispatches succeed normally on the primary provider.
+        for i in 0..2 {
+            let outcome = gw.dispatch(test_action(), None).await.unwrap();
+            assert!(
+                matches!(outcome, ActionOutcome::Executed(_)),
+                "dispatch {i} should succeed within quota"
+            );
+        }
+
+        // 3rd dispatch: the quota is exceeded on the primary
+        // provider, but Degrade semantics re-route to the fallback
+        // and actually execute there. The caller sees a regular
+        // Executed outcome, not QuotaExceeded — the fix for the
+        // pre-Phase-3 bug where degraded dispatches were silently
+        // dropped.
+        let outcome = gw.dispatch(test_action(), None).await.unwrap();
+        assert!(
+            matches!(outcome, ActionOutcome::Executed(_)),
+            "degrade should re-dispatch through the fallback provider, got {outcome:?}"
+        );
+
+        let snap = gw.metrics().snapshot();
+        assert_eq!(
+            snap.executed, 3,
+            "2 on primary + 1 on fallback after degrade"
+        );
+        assert_eq!(snap.quota_degraded, 1, "one degrade event recorded");
+        assert_eq!(
+            snap.quota_exceeded, 0,
+            "Degrade does not increment the exceeded counter"
+        );
+    }
+
+    #[tokio::test]
+    async fn quota_passes_through_when_no_policy() {
+        // Build a gateway with no quota policies at all.
+        let gw = build_gateway_with_quota(vec![]);
+
+        // All dispatches should succeed — no quota enforcement.
+        for i in 0..10 {
+            let outcome = gw.dispatch(test_action(), None).await.unwrap();
+            assert!(
+                matches!(outcome, ActionOutcome::Executed(_)),
+                "dispatch {i} should succeed with no quota policy"
+            );
+        }
+
+        let snap = gw.metrics().snapshot();
+        assert_eq!(snap.executed, 10);
+        assert_eq!(snap.quota_exceeded, 0);
+        assert_eq!(snap.quota_warned, 0);
+        assert_eq!(snap.quota_degraded, 0);
+    }
+
+    #[tokio::test]
+    async fn dry_run_skips_quota_check() {
+        let policy = make_quota_policy(
+            "notifications",
+            "tenant-1",
+            1,
+            acteon_core::QuotaWindow::Hourly,
+            acteon_core::OverageBehavior::Block,
+            true,
+        );
+        let gw = build_gateway_with_quota(vec![policy]);
+
+        // Use up the single allowed action.
+        let outcome = gw.dispatch(test_action(), None).await.unwrap();
+        assert!(matches!(outcome, ActionOutcome::Executed(_)));
+
+        // Normal dispatch should now be blocked.
+        let outcome = gw.dispatch(test_action(), None).await.unwrap();
+        assert!(matches!(outcome, ActionOutcome::QuotaExceeded { .. }));
+
+        // Dry-run should bypass quota and return DryRun verdict.
+        let outcome = gw.dispatch_dry_run(test_action(), None).await.unwrap();
+        assert!(
+            matches!(outcome, ActionOutcome::DryRun { .. }),
+            "dry-run should skip quota check and return DryRun, got {outcome:?}"
+        );
+
+        let snap = gw.metrics().snapshot();
+        assert_eq!(
+            snap.quota_exceeded, 1,
+            "only the real dispatch should count"
+        );
+    }
+
+    // -- Per-provider quota tests (Phase 3) ----------------------------------
+
+    fn build_gateway_with_two_providers(
+        policies: Vec<acteon_core::QuotaPolicy>,
+    ) -> crate::gateway::Gateway {
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+        GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .rules(vec![])
+            .provider(Arc::new(MockProvider::new("email")))
+            .provider(Arc::new(MockProvider::new("slack")))
+            .executor_config(ExecutorConfig {
+                max_retries: 0,
+                execution_timeout: Duration::from_secs(5),
+                max_concurrent: 10,
+                ..ExecutorConfig::default()
+            })
+            .quota_policies(policies)
+            .build()
+            .expect("gateway should build")
+    }
+
+    fn action_for_provider(provider: &str) -> Action {
+        Action::new(
+            "notifications",
+            "tenant-1",
+            provider,
+            "send",
+            serde_json::json!({"to": "user@example.com"}),
+        )
+    }
+
+    #[tokio::test]
+    async fn per_provider_quota_scopes_only_matching_provider() {
+        // A slack-scoped policy should not count email dispatches.
+        let slack_policy = make_quota_policy_for_provider(
+            "notifications",
+            "tenant-1",
+            "slack",
+            2,
+            acteon_core::QuotaWindow::Hourly,
+            acteon_core::OverageBehavior::Block,
+            true,
+        );
+        let gw = build_gateway_with_two_providers(vec![slack_policy]);
+
+        // 5 email dispatches — should NOT count against the slack policy.
+        for _ in 0..5 {
+            let outcome = gw
+                .dispatch(action_for_provider("email"), None)
+                .await
+                .unwrap();
+            assert!(
+                matches!(outcome, ActionOutcome::Executed(_)),
+                "email dispatches must ignore a slack-scoped policy"
+            );
+        }
+
+        // 2 slack dispatches succeed (within slack cap).
+        for _ in 0..2 {
+            let outcome = gw
+                .dispatch(action_for_provider("slack"), None)
+                .await
+                .unwrap();
+            assert!(matches!(outcome, ActionOutcome::Executed(_)));
+        }
+
+        // 3rd slack dispatch is blocked.
+        let outcome = gw
+            .dispatch(action_for_provider("slack"), None)
+            .await
+            .unwrap();
+        assert!(matches!(outcome, ActionOutcome::QuotaExceeded { .. }));
+
+        let snap = gw.metrics().snapshot();
+        assert_eq!(snap.executed, 7);
+        assert_eq!(snap.quota_exceeded, 1);
+    }
+
+    #[tokio::test]
+    async fn generic_and_provider_scoped_policies_stack() {
+        // Generic tenant cap of 10, plus an 3/hour burst cap on slack.
+        // Slack dispatches are enforced by both; other providers
+        // only by the generic cap.
+        let generic = make_quota_policy(
+            "notifications",
+            "tenant-1",
+            10,
+            acteon_core::QuotaWindow::Hourly,
+            acteon_core::OverageBehavior::Block,
+            true,
+        );
+        let slack_burst = make_quota_policy_for_provider(
+            "notifications",
+            "tenant-1",
+            "slack",
+            3,
+            acteon_core::QuotaWindow::Hourly,
+            acteon_core::OverageBehavior::Block,
+            true,
+        );
+        let gw = build_gateway_with_two_providers(vec![generic, slack_burst]);
+
+        // 3 slack dispatches ok (slack burst limit met, generic at 3/10).
+        for _ in 0..3 {
+            let outcome = gw
+                .dispatch(action_for_provider("slack"), None)
+                .await
+                .unwrap();
+            assert!(matches!(outcome, ActionOutcome::Executed(_)));
+        }
+
+        // 4th slack dispatch hits the slack burst cap — blocked.
+        let outcome = gw
+            .dispatch(action_for_provider("slack"), None)
+            .await
+            .unwrap();
+        assert!(matches!(outcome, ActionOutcome::QuotaExceeded { .. }));
+
+        // Blocked request should NOT have consumed any budget on the
+        // generic cap (rollback semantics). Email can still dispatch
+        // 7 more times before hitting the generic cap of 10.
+        for _ in 0..7 {
+            let outcome = gw
+                .dispatch(action_for_provider("email"), None)
+                .await
+                .unwrap();
+            assert!(
+                matches!(outcome, ActionOutcome::Executed(_)),
+                "generic cap should not include the blocked slack attempt"
+            );
+        }
+
+        // 11th total dispatch across any provider — generic cap blocks.
+        let outcome = gw
+            .dispatch(action_for_provider("email"), None)
+            .await
+            .unwrap();
+        assert!(
+            matches!(outcome, ActionOutcome::QuotaExceeded { .. }),
+            "generic cap should kick in after 3 slack + 7 email = 10 dispatches"
+        );
+
+        let snap = gw.metrics().snapshot();
+        assert_eq!(snap.executed, 10);
+        assert_eq!(snap.quota_exceeded, 2);
+    }
+
+    #[tokio::test]
+    async fn blocked_dispatch_rolls_back_all_applicable_counters() {
+        // When one policy blocks, every counter incremented during
+        // the call must be rolled back so the blocked dispatch does
+        // not consume any budget on the sibling policies.
+        let generic = make_quota_policy(
+            "notifications",
+            "tenant-1",
+            100,
+            acteon_core::QuotaWindow::Hourly,
+            acteon_core::OverageBehavior::Warn,
+            true,
+        );
+        let slack = make_quota_policy_for_provider(
+            "notifications",
+            "tenant-1",
+            "slack",
+            1,
+            acteon_core::QuotaWindow::Hourly,
+            acteon_core::OverageBehavior::Block,
+            true,
+        );
+        let gw = build_gateway_with_two_providers(vec![generic, slack]);
+
+        // First slack dispatch succeeds.
+        let outcome = gw
+            .dispatch(action_for_provider("slack"), None)
+            .await
+            .unwrap();
+        assert!(matches!(outcome, ActionOutcome::Executed(_)));
+
+        // Second slack dispatch hits the slack block — should roll
+        // back both the slack counter (no effect, since block fires)
+        // AND the generic counter. After this, 99 email dispatches
+        // should still fit under the generic cap of 100.
+        let outcome = gw
+            .dispatch(action_for_provider("slack"), None)
+            .await
+            .unwrap();
+        assert!(matches!(outcome, ActionOutcome::QuotaExceeded { .. }));
+
+        for _ in 0..99 {
+            let outcome = gw
+                .dispatch(action_for_provider("email"), None)
+                .await
+                .unwrap();
+            assert!(matches!(outcome, ActionOutcome::Executed(_)));
+        }
+
+        let snap = gw.metrics().snapshot();
+        // 1 slack + 99 email = 100 executed.
+        assert_eq!(snap.executed, 100);
+        assert_eq!(snap.quota_exceeded, 1, "slack block");
+    }
+
+    #[tokio::test]
+    async fn degrade_fallback_still_enforces_fallback_provider_quota() {
+        // Primary has a degrade-to-fallback policy. The fallback
+        // provider ALSO has its own per-provider block policy.
+        // Without the fallback re-check, a degraded dispatch
+        // would silently bypass the fallback's rate limit; this
+        // test proves it does not.
+        let primary_degrade = make_quota_policy_for_provider(
+            "notifications",
+            "tenant-1",
+            "email",
+            1,
+            acteon_core::QuotaWindow::Hourly,
+            acteon_core::OverageBehavior::Degrade {
+                fallback_provider: "slack".into(),
+            },
+            true,
+        );
+        let fallback_block = make_quota_policy_for_provider(
+            "notifications",
+            "tenant-1",
+            "slack",
+            1,
+            acteon_core::QuotaWindow::Hourly,
+            acteon_core::OverageBehavior::Block,
+            true,
+        );
+        let gw = build_gateway_with_two_providers(vec![primary_degrade, fallback_block]);
+
+        // 1st email dispatch: within primary cap, executes on email.
+        let outcome = gw
+            .dispatch(action_for_provider("email"), None)
+            .await
+            .unwrap();
+        assert!(matches!(outcome, ActionOutcome::Executed(_)));
+
+        // 2nd email dispatch: exceeds primary → degrades to slack.
+        // Slack cap is 1 and has not been used, so it executes on slack.
+        let outcome = gw
+            .dispatch(action_for_provider("email"), None)
+            .await
+            .unwrap();
+        assert!(
+            matches!(outcome, ActionOutcome::Executed(_)),
+            "first degrade should succeed on fallback"
+        );
+
+        // 3rd email dispatch: exceeds primary → degrades to slack,
+        // but slack cap is now also exhausted → block wins.
+        let outcome = gw
+            .dispatch(action_for_provider("email"), None)
+            .await
+            .unwrap();
+        match outcome {
+            ActionOutcome::QuotaExceeded {
+                overage_behavior, ..
+            } => {
+                assert_eq!(
+                    overage_behavior, "block",
+                    "fallback provider's block policy must apply"
+                );
+            }
+            other => panic!("expected the fallback's block policy to fire, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn strictest_policy_wins_block_over_warn() {
+        // Generic warn cap and slack block cap. When a slack dispatch
+        // exceeds both, the block outcome must win over warn.
+        let generic = make_quota_policy(
+            "notifications",
+            "tenant-1",
+            1,
+            acteon_core::QuotaWindow::Hourly,
+            acteon_core::OverageBehavior::Warn,
+            true,
+        );
+        let slack_block = make_quota_policy_for_provider(
+            "notifications",
+            "tenant-1",
+            "slack",
+            1,
+            acteon_core::QuotaWindow::Hourly,
+            acteon_core::OverageBehavior::Block,
+            true,
+        );
+        let gw = build_gateway_with_two_providers(vec![generic, slack_block]);
+
+        // First slack dispatch succeeds.
+        let _ = gw
+            .dispatch(action_for_provider("slack"), None)
+            .await
+            .unwrap();
+
+        // Second slack dispatch exceeds both policies — block wins.
+        let outcome = gw
+            .dispatch(action_for_provider("slack"), None)
+            .await
+            .unwrap();
+        match outcome {
+            ActionOutcome::QuotaExceeded {
+                overage_behavior, ..
+            } => {
+                assert_eq!(overage_behavior, "block");
+            }
+            other => panic!("expected QuotaExceeded (block), got {other:?}"),
+        }
+    }
+
+    // -- Provider metrics integration test -----------------------------------
+
+    /// Provider that succeeds after a delay.
+    struct SlowProvider {
+        name: String,
+        delay_ms: u64,
+    }
+
+    impl SlowProvider {
+        fn new(name: &str, delay_ms: u64) -> Self {
+            Self {
+                name: name.to_owned(),
+                delay_ms,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl DynProvider for SlowProvider {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        async fn execute(&self, _action: &Action) -> Result<ProviderResponse, ProviderError> {
+            tokio::time::sleep(Duration::from_millis(self.delay_ms)).await;
+            Ok(ProviderResponse::success(serde_json::json!({"ok": true})))
+        }
+
+        async fn health_check(&self) -> Result<(), ProviderError> {
+            Ok(())
+        }
+    }
+
+    /// Provider that always fails.
+    struct FailingProvider {
+        name: String,
+    }
+
+    impl FailingProvider {
+        fn new(name: &str) -> Self {
+            Self {
+                name: name.to_owned(),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl DynProvider for FailingProvider {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        async fn execute(&self, _action: &Action) -> Result<ProviderResponse, ProviderError> {
+            Err(ProviderError::ExecutionFailed("intentional failure".into()))
+        }
+
+        async fn health_check(&self) -> Result<(), ProviderError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_metrics_recorded_on_dispatch() {
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+
+        let gw = GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .provider(Arc::new(SlowProvider::new("email", 50)))
+            .provider(Arc::new(FailingProvider::new("sms")))
+            .executor_config(ExecutorConfig {
+                max_retries: 0,
+                execution_timeout: Duration::from_secs(5),
+                max_concurrent: 10,
+                ..ExecutorConfig::default()
+            })
+            .build()
+            .expect("gateway should build");
+
+        // Dispatch successful action to email provider
+        let action1 = Action::new(
+            "notifications",
+            "tenant-1",
+            "email",
+            "send_email",
+            serde_json::json!({"to": "user@example.com"}),
+        );
+        let outcome1 = gw.dispatch(action1, None).await.unwrap();
+        assert!(matches!(outcome1, ActionOutcome::Executed(_)));
+
+        // Dispatch another successful action
+        let action2 = Action::new(
+            "notifications",
+            "tenant-1",
+            "email",
+            "send_email",
+            serde_json::json!({"to": "admin@example.com"}),
+        );
+        let outcome2 = gw.dispatch(action2, None).await.unwrap();
+        assert!(matches!(outcome2, ActionOutcome::Executed(_)));
+
+        // Dispatch failing action to sms provider
+        let action3 = Action::new(
+            "notifications",
+            "tenant-1",
+            "sms",
+            "send_sms",
+            serde_json::json!({"to": "+1234567890"}),
+        );
+        let outcome3 = gw.dispatch(action3, None).await.unwrap();
+        assert!(matches!(outcome3, ActionOutcome::Failed { .. }));
+
+        // Check provider metrics
+        let provider_stats = gw.provider_metrics().snapshot();
+
+        // Email provider should have 2 successes
+        let email_stats = provider_stats
+            .get("email")
+            .expect("email provider should exist");
+        assert_eq!(email_stats.total_requests, 2);
+        assert_eq!(email_stats.successes, 2);
+        assert_eq!(email_stats.failures, 0);
+        assert!((email_stats.success_rate - 100.0).abs() < f64::EPSILON);
+        assert!(
+            email_stats.avg_latency_ms > 0.0,
+            "should have recorded latency"
+        );
+        assert!(email_stats.p50_latency_ms > 0.0, "p50 should be computed");
+        assert!(
+            email_stats.last_request_at.is_some(),
+            "should have timestamp"
+        );
+        assert!(email_stats.last_error.is_none(), "no errors recorded");
+
+        // SMS provider should have 1 failure
+        let sms_stats = provider_stats
+            .get("sms")
+            .expect("sms provider should exist");
+        assert_eq!(sms_stats.total_requests, 1);
+        assert_eq!(sms_stats.successes, 0);
+        assert_eq!(sms_stats.failures, 1);
+        assert!((sms_stats.success_rate - 0.0).abs() < f64::EPSILON);
+        assert!(sms_stats.last_error.is_some(), "should have error message");
+        assert!(
+            sms_stats
+                .last_error
+                .as_ref()
+                .unwrap()
+                .contains("intentional failure")
+        );
+
+        // Gateway metrics should also reflect executions
+        let gateway_snap = gw.metrics().snapshot();
+        assert_eq!(gateway_snap.dispatched, 3);
+        assert_eq!(gateway_snap.executed, 2);
+        assert_eq!(gateway_snap.failed, 1);
+    }
+
+    #[tokio::test]
+    async fn provider_metrics_records_rerouted_provider() {
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+
+        let rules = vec![Rule::new(
+            "reroute-to-sms",
+            Expr::Bool(true),
+            RuleAction::Reroute {
+                target_provider: "sms-fallback".into(),
+            },
+        )];
+
+        let gw = GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .rules(rules)
+            .provider(Arc::new(MockProvider::new("email")))
+            .provider(Arc::new(MockProvider::new("sms-fallback")))
+            .executor_config(ExecutorConfig {
+                max_retries: 0,
+                execution_timeout: Duration::from_secs(5),
+                max_concurrent: 10,
+                ..ExecutorConfig::default()
+            })
+            .build()
+            .expect("gateway should build");
+
+        // Dispatch action that will be rerouted
+        let action = Action::new(
+            "notifications",
+            "tenant-1",
+            "email",
+            "send_email",
+            serde_json::json!({"to": "user@example.com"}),
+        );
+        let outcome = gw.dispatch(action, None).await.unwrap();
+        assert!(matches!(outcome, ActionOutcome::Rerouted { .. }));
+
+        // Provider metrics should record stats for the rerouted provider (sms-fallback), not email
+        let provider_stats = gw.provider_metrics().snapshot();
+
+        // Email provider should have no stats (action was rerouted before execution)
+        assert!(
+            provider_stats.get("email").is_none(),
+            "email provider should not have executed"
+        );
+
+        // SMS fallback provider should have stats
+        let sms_stats = provider_stats
+            .get("sms-fallback")
+            .expect("sms-fallback should exist");
+        assert_eq!(sms_stats.total_requests, 1);
+        assert_eq!(sms_stats.successes, 1);
+    }
+
+    #[tokio::test]
+    async fn provider_metrics_multiple_providers_concurrent() {
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+
+        let gw = GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .provider(Arc::new(MockProvider::new("email")))
+            .provider(Arc::new(MockProvider::new("slack")))
+            .provider(Arc::new(MockProvider::new("pagerduty")))
+            .executor_config(ExecutorConfig {
+                max_retries: 0,
+                execution_timeout: Duration::from_secs(5),
+                max_concurrent: 50,
+                ..ExecutorConfig::default()
+            })
+            .build()
+            .expect("gateway should build");
+
+        // Dispatch actions concurrently to different providers
+        let gw = Arc::new(gw);
+        let mut handles = Vec::new();
+
+        for i in 0..30 {
+            let gw_clone = Arc::clone(&gw);
+            let handle = tokio::spawn(async move {
+                let provider = match i % 3 {
+                    0 => "email",
+                    1 => "slack",
+                    _ => "pagerduty",
+                };
+                let action = Action::new(
+                    "notifications",
+                    "tenant-1",
+                    provider,
+                    "send_notification",
+                    serde_json::json!({"id": i}),
+                );
+                gw_clone.dispatch(action, None).await
+            });
+            handles.push(handle);
+        }
+
+        // Wait for all dispatches to complete
+        for handle in handles {
+            let outcome = handle.await.expect("task should complete").unwrap();
+            assert!(matches!(outcome, ActionOutcome::Executed(_)));
+        }
+
+        // Check that all three providers have stats recorded
+        let provider_stats = gw.provider_metrics().snapshot();
+        assert_eq!(provider_stats.len(), 3, "should have stats for 3 providers");
+
+        for provider in ["email", "slack", "pagerduty"] {
+            let stats = provider_stats.get(provider).expect("provider should exist");
+            assert_eq!(
+                stats.total_requests, 10,
+                "each provider should have 10 requests"
+            );
+            assert_eq!(stats.successes, 10);
+            assert_eq!(stats.failures, 0);
+        }
+
+        // Gateway metrics
+        let gateway_snap = gw.metrics().snapshot();
+        assert_eq!(gateway_snap.dispatched, 30);
+        assert_eq!(gateway_snap.executed, 30);
+    }
+
+    #[test]
+    fn templates_for_scope_is_o1() {
+        let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+
+        let tpl_a = acteon_core::Template {
+            id: "t1".into(),
+            name: "welcome".into(),
+            namespace: "ns1".into(),
+            tenant: "t1".into(),
+            content: "Hello {{ name }}".into(),
+            description: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            labels: HashMap::new(),
+        };
+        let tpl_b = acteon_core::Template {
+            id: "t2".into(),
+            name: "farewell".into(),
+            namespace: "ns1".into(),
+            tenant: "t1".into(),
+            content: "Bye {{ name }}".into(),
+            description: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            labels: HashMap::new(),
+        };
+        let tpl_other = acteon_core::Template {
+            id: "t3".into(),
+            name: "other".into(),
+            namespace: "ns2".into(),
+            tenant: "t2".into(),
+            content: "Other".into(),
+            description: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            labels: HashMap::new(),
+        };
+
+        let gw = GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .template(tpl_a)
+            .template(tpl_b)
+            .template(tpl_other)
+            .build()
+            .unwrap();
+
+        let scope1 = gw.templates_for_scope("ns1", "t1");
+        assert_eq!(scope1.len(), 2);
+        assert!(scope1.contains_key("welcome"));
+        assert!(scope1.contains_key("farewell"));
+
+        let scope2 = gw.templates_for_scope("ns2", "t2");
+        assert_eq!(scope2.len(), 1);
+        assert!(scope2.contains_key("other"));
+
+        let empty = gw.templates_for_scope("ns3", "t3");
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn template_exists_check() {
+        let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+
+        let tpl = acteon_core::Template {
+            id: "t1".into(),
+            name: "welcome".into(),
+            namespace: "ns".into(),
+            tenant: "t".into(),
+            content: "Hello".into(),
+            description: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            labels: HashMap::new(),
+        };
+
+        let gw = GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .template(tpl)
+            .build()
+            .unwrap();
+
+        assert!(gw.template_exists("ns", "t", "welcome"));
+        assert!(!gw.template_exists("ns", "t", "nonexistent"));
+        assert!(!gw.template_exists("other", "t", "welcome"));
+    }
+
+    #[tokio::test]
+    async fn sync_templates_from_store_round_trip() {
+        let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+
+        // Build a gateway with no templates.
+        let gw = GatewayBuilder::new()
+            .state(Arc::clone(&store))
+            .lock(lock)
+            .build()
+            .unwrap();
+
+        assert!(gw.templates_for_scope("ns", "t").is_empty());
+
+        // Write a template to the state store (simulating another node's API write).
+        let tpl = acteon_core::Template {
+            id: "t1".into(),
+            name: "synced".into(),
+            namespace: "ns".into(),
+            tenant: "t".into(),
+            content: "{{ greeting }}".into(),
+            description: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            labels: HashMap::new(),
+        };
+        let key = acteon_state::StateKey::new(
+            "_system",
+            "_templates",
+            acteon_state::KeyKind::Template,
+            "t1",
+        );
+        let data = serde_json::to_string(&tpl).unwrap();
+        store.set(&key, &data, None).await.unwrap();
+
+        // Sync and verify.
+        let count = gw.sync_templates_from_store().await.unwrap();
+        assert_eq!(count, 1);
+        assert!(gw.template_exists("ns", "t", "synced"));
     }
 }

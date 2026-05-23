@@ -2,7 +2,7 @@ import { useState, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { createColumnHelper } from '@tanstack/react-table'
 import { RotateCcw } from 'lucide-react'
-import { useAudit, useReplayAction } from '../api/hooks/useAudit'
+import { useAudit, useAuditRecord, useReplayAction } from '../api/hooks/useAudit'
 import { PageHeader } from '../components/layout/PageHeader'
 import { DataTable } from '../components/ui/DataTable'
 import { Badge } from '../components/ui/Badge'
@@ -15,6 +15,7 @@ import { JsonViewer } from '../components/ui/JsonViewer'
 import { useToast } from '../components/ui/useToast'
 import { relativeTime } from '../lib/format'
 import type { AuditRecord, AuditQuery } from '../types'
+import shared from '../styles/shared.module.css'
 import styles from './Actions.module.css'
 
 const col = createColumnHelper<AuditRecord>()
@@ -28,20 +29,32 @@ export function Actions() {
   const [selected, setSelected] = useState<AuditRecord | null>(null)
   const [detailTab, setDetailTab] = useState('overview')
 
+  const searchId = searchParams.get('action_id') ?? ''
+
   const query: AuditQuery = useMemo(() => ({
     namespace: searchParams.get('namespace') ?? undefined,
     tenant: searchParams.get('tenant') ?? undefined,
     outcome: searchParams.get('outcome') ?? undefined,
     action_type: searchParams.get('action_type') ?? undefined,
+    signer_id: searchParams.get('signer_id') ?? undefined,
+    kid: searchParams.get('kid') ?? undefined,
     limit: 50,
     offset: Number(searchParams.get('offset') ?? 0),
   }), [searchParams])
 
   const { data, isLoading } = useAudit(query)
+  const { data: searchResult, isLoading: searchLoading } = useAuditRecord(searchId || undefined)
+
+  // When searching by ID, show only that record; otherwise show full list
+  const displayRecords = searchId
+    ? (searchResult ? [searchResult] : [])
+    : (data?.records ?? [])
+  const displayLoading = searchId ? searchLoading : isLoading
 
   const setFilter = (key: string, val: string) => {
     const next = new URLSearchParams(searchParams)
-    if (val) next.set(key, val)
+    const trimmed = val.trim()
+    if (trimmed) next.set(key, trimmed)
     else next.delete(key)
     next.delete('offset')
     setSearchParams(next)
@@ -78,7 +91,7 @@ export function Actions() {
     <div>
       <PageHeader title="Audit Trail" />
 
-      <div className={styles.filterBar}>
+      <div className={shared.filterBar}>
         <div className={styles.searchInput}>
           <Input
             placeholder="Search by ID..."
@@ -101,17 +114,27 @@ export function Actions() {
           value={query.tenant ?? ''}
           onChange={(e) => setFilter('tenant', e.target.value)}
         />
+        <Input
+          placeholder="Signer ID"
+          value={query.signer_id ?? ''}
+          onChange={(e) => setFilter('signer_id', e.target.value)}
+        />
+        <Input
+          placeholder="Kid"
+          value={query.kid ?? ''}
+          onChange={(e) => setFilter('kid', e.target.value)}
+        />
       </div>
 
       <DataTable
-        data={data?.records ?? []}
+        data={displayRecords}
         columns={columns}
-        loading={isLoading}
+        loading={displayLoading}
         onRowClick={setSelected}
         emptyTitle="No audit records"
         emptyDescription="Actions are recorded when audit is enabled. Dispatch actions to see records here."
-        serverTotal={data?.total}
-        serverOffset={data?.offset}
+        serverTotal={searchId ? undefined : data?.total}
+        serverOffset={searchId ? undefined : data?.offset}
         onPageChange={(offset) => setFilter('offset', String(offset))}
       />
 
@@ -146,10 +169,16 @@ export function Actions() {
                   'Dispatched': selected.dispatched_at,
                   'Caller': selected.caller_id,
                   'Auth Method': selected.auth_method,
+                  ...(selected.record_hash ? { 'Record Hash': selected.record_hash } : {}),
+                  ...(selected.previous_hash ? { 'Previous Hash': selected.previous_hash } : {}),
+                  ...(selected.sequence_number != null ? { 'Sequence Number': String(selected.sequence_number) } : {}),
+                  ...(selected.signer_id ? { 'Signer': selected.signer_id } : {}),
+                  ...(selected.kid ? { 'Key ID (kid)': selected.kid } : {}),
+                  ...(selected.canonical_hash ? { 'Canonical Hash': selected.canonical_hash } : {}),
                 }).map(([k, v]) => (
-                  <div key={k} className={styles.detailRow}>
-                    <span className={styles.detailLabel}>{k}</span>
-                    <span className={styles.detailValue}>{v}</span>
+                  <div key={k} className={shared.detailRow}>
+                    <span className={shared.detailLabel}>{k}</span>
+                    <span className={shared.detailValue}>{v}</span>
                   </div>
                 ))}
               </div>

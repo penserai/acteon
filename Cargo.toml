@@ -17,13 +17,13 @@ members = [
     "crates/state/postgres",
     "crates/state/redis",
     "crates/state/dynamodb",
-    "crates/state/clickhouse",
 
     # Audit backends
     "crates/audit/audit",
     "crates/audit/memory",
     "crates/audit/postgres",
     "crates/audit/clickhouse",
+    "crates/audit/dynamodb",
     "crates/audit/elasticsearch",
 
     # Rules frontends
@@ -31,17 +31,49 @@ members = [
     "crates/rules/yaml",
     "crates/rules/cel",
 
+    # WASM runtime
+    "crates/wasm-runtime",
+
     # LLM
     "crates/llm",
 
     # Embedding
     "crates/embedding",
 
+    # AWS providers
+    "crates/aws",
+
+    # Azure providers
+    "crates/azure",
+
+    # GCP providers
+    "crates/gcp",
+
     # Integrations
     "crates/integrations/email",
     "crates/integrations/slack",
     "crates/integrations/pagerduty",
+    "crates/integrations/opsgenie",
+    "crates/integrations/victorops",
+    "crates/integrations/pushover",
+    "crates/integrations/telegram",
+    "crates/integrations/wechat",
     "crates/integrations/webhook",
+    "crates/integrations/twilio",
+    "crates/integrations/teams",
+    "crates/integrations/discord",
+
+    # Operations / CLI / MCP
+    "crates/ops",
+    "crates/mcp-server",
+    "crates/cli",
+
+    # Swarm orchestrator
+    "crates/swarm",
+    "crates/swarm-provider",
+
+    # Agentic message bus (Phase 1)
+    "crates/bus",
 ]
 
 [workspace.package]
@@ -68,13 +100,13 @@ acteon-state-memory = { path = "crates/state/memory" }
 acteon-state-postgres = { path = "crates/state/postgres" }
 acteon-state-redis = { path = "crates/state/redis" }
 acteon-state-dynamodb = { path = "crates/state/dynamodb" }
-acteon-state-clickhouse = { path = "crates/state/clickhouse" }
 
 # Audit backends
 acteon-audit = { path = "crates/audit/audit" }
 acteon-audit-memory = { path = "crates/audit/memory" }
 acteon-audit-postgres = { path = "crates/audit/postgres" }
 acteon-audit-clickhouse = { path = "crates/audit/clickhouse" }
+acteon-audit-dynamodb = { path = "crates/audit/dynamodb" }
 acteon-audit-elasticsearch = { path = "crates/audit/elasticsearch" }
 
 # Rules frontends
@@ -82,23 +114,51 @@ acteon-rules = { path = "crates/rules/rules" }
 acteon-rules-yaml = { path = "crates/rules/yaml" }
 acteon-rules-cel = { path = "crates/rules/cel" }
 
+# WASM runtime
+acteon-wasm-runtime = { path = "crates/wasm-runtime" }
+
 # LLM
 acteon-llm = { path = "crates/llm" }
 
 # Embedding
 acteon-embedding = { path = "crates/embedding" }
 
+# AWS providers
+acteon-aws = { path = "crates/aws" }
+
+# Azure providers
+acteon-azure = { path = "crates/azure" }
+
+# GCP providers
+acteon-gcp = { path = "crates/gcp" }
+
 # Integrations
 acteon-email = { path = "crates/integrations/email" }
 acteon-slack = { path = "crates/integrations/slack" }
 acteon-pagerduty = { path = "crates/integrations/pagerduty" }
+acteon-opsgenie = { path = "crates/integrations/opsgenie" }
+acteon-victorops = { path = "crates/integrations/victorops" }
+acteon-pushover = { path = "crates/integrations/pushover" }
+acteon-telegram = { path = "crates/integrations/telegram" }
+acteon-wechat = { path = "crates/integrations/wechat" }
 acteon-webhook = { path = "crates/integrations/webhook" }
+acteon-twilio = { path = "crates/integrations/twilio" }
+acteon-teams = { path = "crates/integrations/teams" }
+acteon-discord = { path = "crates/integrations/discord" }
+
+# Operations / CLI / MCP
+acteon-ops = { path = "crates/ops" }
+acteon-mcp-server = { path = "crates/mcp-server" }
+acteon-cli = { path = "crates/cli" }
+acteon-swarm = { path = "crates/swarm" }
+acteon-swarm-provider = { path = "crates/swarm-provider" }
+acteon-bus = { path = "crates/bus" }
 
 # Parsing
 nom = "7"
 
 # Async runtime
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util", "signal"] }
 tokio-util = { version = "0.7", features = ["rt", "io"] }
 
 # Serialization
@@ -131,15 +191,34 @@ dashmap = "6"
 moka = { version = "0.12", features = ["future"] }
 
 # Redis
-redis = { version = "0.27", features = ["tokio-comp", "connection-manager", "script"] }
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager", "script", "tokio-rustls-comp"] }
 deadpool-redis = "0.18"
 
-# DynamoDB
+# AWS
 aws-sdk-dynamodb = "1"
+aws-sdk-sns = "1"
+aws-sdk-lambda = "1"
+aws-sdk-eventbridge = "1"
+aws-sdk-sqs = "1"
+aws-sdk-sesv2 = "1"
+aws-sdk-s3 = "1"
+aws-sdk-ec2 = "1"
+aws-sdk-autoscaling = "1"
 aws-config = { version = "1", features = ["behavior-version-latest"] }
 
+# Azure
+azure_core = "0.32"
+azure_identity = "0.32"
+azure_storage_blob = "0.9"
+azure_messaging_eventhubs = "0.11"
+
+# GCP
+google-cloud-pubsub = "=0.32.3-preview"
+google-cloud-storage = "1"
+google-cloud-auth = { version = "1", default-features = false }
+
 # PostgreSQL
-sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono", "uuid"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono", "uuid", "tls-rustls"] }
 
 # ClickHouse
 clickhouse = "0.13"
@@ -148,7 +227,10 @@ clickhouse = "0.13"
 lettre = { version = "0.11", features = ["tokio1-native-tls", "smtp-transport"] }
 
 # HTTP client
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "multipart", "stream", "rustls-tls"] }
+
+# URL-encoded forms
+serde_urlencoded = "0.7"
 
 # Regex
 regex = "1"
@@ -156,8 +238,13 @@ regex = "1"
 # JSON patching
 json-patch = "3"
 
+# Templating
+minijinja = { version = "2", features = ["fuel", "loader"] }
+
 # HTTP server
 axum = "0.8"
+hyper = "1"
+hyper-util = { version = "0.1", features = ["tokio", "server-auto", "http1", "http2"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
@@ -178,12 +265,16 @@ clap = { version = "4", features = ["derive"] }
 jsonwebtoken = "9"
 argon2 = "0.5"
 sha2 = "0.10"
+ed25519-dalek = { version = "2", features = ["serde", "zeroize", "rand_core"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
 hmac = "0.12"
+subtle = "2"
 hex = "0.4"
 aes-gcm = "0.10"
 base64 = "0.22"
 secrecy = { version = "0.8", features = ["serde"] }
 zeroize = { version = "1", features = ["derive"] }
+percent-encoding = "2"
 
 # Tracing subscriber
 tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
@@ -194,11 +285,56 @@ opentelemetry_sdk = { version = "0.28", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "0.28", features = ["grpc-tonic", "http-proto"] }
 tracing-opentelemetry = "0.29"
 
+# Cron scheduling
+croner = "2"
+
+# MCP
+rmcp = { version = "0.15", features = ["server", "transport-io"] }
+schemars = "1"
+
+# TLS
+rustls = { version = "0.23", features = ["ring"] }
+rustls-pemfile = "2"
+webpki-roots = "0.26"
+tokio-rustls = "0.26"
+
+# WASM
+wasmtime = "29"
+
 # Benchmarking
 criterion = { version = "0.5", features = ["async_tokio"] }
 
 # Testing
 axum-test = "16"
+proptest = "1"
+
+# ---------------------------------------------------------------------------
+# Build profiles
+# ---------------------------------------------------------------------------
+
+# Optimize heavy dependencies even in dev/test builds.
+# These crates are slow at opt-level 0 (especially wasmtime's JIT compiler
+# and ring's crypto). Compiling them with -O2 makes incremental builds and
+# test runs significantly faster at the cost of a slightly longer clean build.
+[profile.dev.package.wasmtime]
+opt-level = 2
+[profile.dev.package.cranelift-codegen]
+opt-level = 2
+[profile.dev.package.wasmtime-cranelift]
+opt-level = 2
+[profile.dev.package.regalloc2]
+opt-level = 2
+[profile.dev.package.ring]
+opt-level = 2
+[profile.dev.package.rustls]
+opt-level = 2
+[profile.dev.package.webpki-roots]
+opt-level = 1
+
+# Fast proc-macro / build-script compilation
+[profile.dev.build-override]
+opt-level = 0
+codegen-units = 256
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

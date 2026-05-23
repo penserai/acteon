@@ -240,10 +240,6 @@ docker run -d --name acteon-redis -p 6379:6379 redis:7-alpine
 docker run -d --name acteon-postgres -p 5433:5432 \
   -e POSTGRES_PASSWORD=postgres postgres:16-alpine
 
-# ClickHouse
-docker run -d --name acteon-clickhouse -p 8123:8123 \
-  clickhouse/clickhouse-server:latest
-
 # DynamoDB Local
 docker run -d --name acteon-dynamodb -p 8000:8000 \
   amazon/dynamodb-local:latest
@@ -254,7 +250,6 @@ docker run -d --name acteon-dynamodb -p 8000:8000 \
 ```bash
 cargo run -p acteon-simulation --example redis_simulation --features redis
 cargo run -p acteon-simulation --example postgres_simulation --features postgres
-cargo run -p acteon-simulation --example clickhouse_simulation --features clickhouse
 cargo run -p acteon-simulation --example dynamodb_simulation --features dynamodb
 ```
 

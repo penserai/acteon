@@ -72,6 +72,7 @@ pub struct GroupDetailResponse {
     /// Common labels for all events in the group.
     pub labels: std::collections::HashMap<String, String>,
     /// Event fingerprints in this group.
+    #[serde(rename = "events")]
     pub event_fingerprints: Vec<String>,
 }
 

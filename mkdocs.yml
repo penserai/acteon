@@ -9,8 +9,8 @@ docs_dir: docs/book
 
 theme:
   name: material
-  logo: assets/logo.png
-  favicon: assets/logo.png
+  logo: assets/logo.svg
+  favicon: assets/logo.svg
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
@@ -122,11 +122,33 @@ nav:
     - Event Grouping: features/event-grouping.md
     - State Machines: features/state-machines.md
     - Human Approvals: features/approvals.md
+    - Agent2Agent (A2A) Protocol: features/a2a.md
     - Task Chains: features/chains.md
+    - Sub-Chains: features/sub-chains.md
     - LLM Guardrails: features/llm-guardrails.md
     - Semantic Routing: features/semantic-routing.md
     - Audit Trail: features/audit-trail.md
     - Circuit Breaker: features/circuit-breaker.md
+    - Recurring Actions: features/recurring-actions.md
+    - Tenant Quotas: features/tenant-quotas.md
+    - Data Retention: features/data-retention.md
+    - Rule Playground: features/rule-playground.md
+    - Rule Coverage: features/rule-coverage.md
+    - Silences: features/silences.md
+    - Time Intervals: features/time-intervals.md
+    - API Key Scoping: features/api-key-scoping.md
+    - Provider Health: features/provider-health.md
+    - Grafana Dashboards: features/grafana-dashboards.md
+    - WASM Plugins: features/wasm-plugins.md
+    - Native Providers: features/native-providers.md
+    - AWS Providers: features/aws-providers.md
+    - Azure Providers: features/azure-providers.md
+    - GCP Providers: features/gcp-providers.md
+    - OpsGenie: features/opsgenie.md
+    - VictorOps: features/victorops.md
+    - Pushover: features/pushover.md
+    - Telegram: features/telegram.md
+    - WeChat Work: features/wechat.md
   - Backends:
     - backends/index.md
     - State Backends: backends/state-backends.md
@@ -134,7 +156,6 @@ nav:
     - Redis: backends/redis.md
     - PostgreSQL: backends/postgres.md
     - DynamoDB: backends/dynamodb.md
-    - ClickHouse: backends/clickhouse-state.md
     - Audit Backends: backends/audit-backends.md
     - PostgreSQL Audit: backends/postgres-audit.md
     - ClickHouse Audit: backends/clickhouse-audit.md
@@ -142,6 +163,8 @@ nav:
   - API Reference:
     - api/index.md
     - REST API: api/rest-api.md
+    - MCP Server: api/mcp-server.md
+    - CLI: api/cli.md
     - Rust Client: api/rust-client.md
     - Polyglot Clients: api/polyglot-clients.md
     - YAML Rule Reference: api/rule-reference.md
@@ -156,9 +179,38 @@ nav:
     - Basic Usage: examples/basic-usage.md
     - Advanced Patterns: examples/advanced-patterns.md
     - Simulation & Testing: examples/simulation.md
+  - Agent Swarm:
+    - Orchestrator: features/agent-swarm.md
+    - Ambient Swarm Provider: features/swarm-provider.md
+  - Agentic Bus:
+    - User Guide: concepts/agentic-bus.md
+    - Master Plan: concepts/bus-master-plan.md
+    - Phase 1 (Topics + Publish + Subscribe): features/bus-phase-1.md
+    - Phase 2 (Subscriptions + Ack + Lag + DLQ): features/bus-phase-2.md
+    - Phase 3 (Schemas + Publish Validation): features/bus-phase-3.md
+    - Phase 4 (Agents + Shared Inbox + Heartbeat): features/bus-phase-4.md
+    - Phase 5 (Conversations + Threads): features/bus-phase-5.md
+    - Phase 6a (Tool-call envelopes): features/bus-phase-6a.md
+    - Phase 6b (Streaming chunks): features/bus-phase-6b.md
+    - Phase 6c (HITL approvals): features/bus-phase-6c.md
+    - Phase 7 (Admin UI): features/bus-phase-7.md
+    - Phase 8 (Polyglot SDKs): features/bus-phase-8.md
+    - Phase 9 (Docs, migration, demo, benchmarks): features/bus-phase-9.md
+  - Guides:
+    - guides/index.md
+    - AI Agent Swarm Coordination: guides/agent-swarm-coordination.md
+    - AWS Event-Driven Pipeline: guides/aws-event-pipeline.md
+    - Incident Response Pipeline: guides/incident-response-pipeline.md
+    - E-Commerce Order Pipeline: guides/ecommerce-order-pipeline.md
+    - Healthcare Notification Pipeline: guides/healthcare-notification-pipeline.md
+    - Migrating from Alertmanager: guides/migrating-from-alertmanager.md
+    - Migrating to the Agentic Bus: guides/agentic-bus-migration.md
   - Reference:
     - reference/index.md
     - Type Reference: reference/types.md
     - Error Handling: reference/errors.md
+    - ClickHouse State Migration: reference/migration-clickhouse-state.md
     - Performance Guide: reference/performance.md
     - Deployment: reference/deployment.md
+    - Bus Benchmarks: reference/bus-benchmarks.md
+    - Roadmap: reference/roadmap.md

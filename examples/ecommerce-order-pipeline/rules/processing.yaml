@@ -1,0 +1,46 @@
+rules:
+  # Schedule after-hours orders (outside 9-17 Mon-Fri ET)
+  - name: schedule-after-hours
+    priority: 10
+    description: "Queue orders placed outside business hours"
+    timezone: "US/Eastern"
+    condition:
+      all:
+        - field: action.action_type
+          eq: "place_order"
+        - any:
+            - field: time.hour
+              lt: 9
+            - field: time.hour
+              gte: 17
+            - field: time.weekday_num
+              gte: 6
+    action:
+      type: schedule
+      delay_seconds: 30
+
+  # Dedup same order_id within 5 minutes — catches duplicate submissions
+  # before the chain rule so the second copy is rejected, not re-processed.
+  - name: dedup-double-submit
+    priority: 15
+    description: "Prevent double-submit of same order"
+    condition:
+      field: action.action_type
+      eq: "place_order"
+    action:
+      type: deduplicate
+      ttl_seconds: 300
+
+  # Throttle per-merchant order rate — safety net for abuse prevention.
+  # Fires only for orders that passed dedup (i.e. first-time submissions).
+  # Under the limit the order is executed; over the limit it is blocked.
+  - name: throttle-merchant-orders
+    priority: 20
+    description: "Max 10 orders per minute per merchant"
+    condition:
+      field: action.action_type
+      eq: "place_order"
+    action:
+      type: throttle
+      max_count: 10
+      window_seconds: 60

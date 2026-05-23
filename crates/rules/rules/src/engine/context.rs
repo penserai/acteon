@@ -1,5 +1,6 @@
-use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -7,8 +8,90 @@ use chrono_tz::Tz;
 
 use acteon_core::Action;
 use acteon_state::StateStore;
+use acteon_wasm_runtime::WasmPluginRuntime;
 
 use crate::error::RuleError;
+
+/// Keys that were actually accessed during rule evaluation.
+#[derive(Debug, Default)]
+struct AccessedKeys {
+    env_keys: HashSet<String>,
+    state_keys: HashSet<String>,
+}
+
+/// Tracks which environment and state keys are accessed during evaluation.
+///
+/// Shared via `Arc` across timezone-overridden context copies so that a single
+/// tracker captures accesses from all rules in the trace.
+#[derive(Debug, Default)]
+pub struct AccessTracker {
+    inner: Mutex<AccessedKeys>,
+    /// Last semantic match detail captured during evaluation.
+    pub(crate) last_semantic: Mutex<Option<SemanticMatchDetail>>,
+}
+
+impl AccessTracker {
+    /// Record that an environment key was accessed.
+    pub fn record_env_key(&self, key: &str) {
+        if let Ok(mut guard) = self.inner.lock() {
+            guard.env_keys.insert(key.to_owned());
+        }
+    }
+
+    /// Record that a state key was accessed.
+    pub fn record_state_key(&self, key: &str) {
+        if let Ok(mut guard) = self.inner.lock() {
+            guard.state_keys.insert(key.to_owned());
+        }
+    }
+
+    /// Drain the tracked environment keys into a sorted `Vec`.
+    pub fn drain_env_keys(&self) -> Vec<String> {
+        if let Ok(mut guard) = self.inner.lock() {
+            let mut keys: Vec<String> = guard.env_keys.drain().collect();
+            keys.sort();
+            keys
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Drain the tracked state keys into a sorted `Vec`.
+    pub fn drain_state_keys(&self) -> Vec<String> {
+        if let Ok(mut guard) = self.inner.lock() {
+            let mut keys: Vec<String> = guard.state_keys.drain().collect();
+            keys.sort();
+            keys
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Take the last captured semantic match detail, if any.
+    pub fn take_semantic_detail(&self) -> Option<SemanticMatchDetail> {
+        self.last_semantic.lock().ok().and_then(|mut g| g.take())
+    }
+
+    /// Store a semantic match detail.
+    pub fn set_semantic_detail(&self, detail: SemanticMatchDetail) {
+        if let Ok(mut guard) = self.last_semantic.lock() {
+            *guard = Some(detail);
+        }
+    }
+}
+
+/// Detail about a semantic match evaluation, used for explainability.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SemanticMatchDetail {
+    /// The text that was extracted and compared.
+    pub extracted_text: String,
+    /// The topic the text was compared against.
+    pub topic: String,
+    /// The computed similarity score.
+    pub similarity: f64,
+    /// The threshold that was configured on the rule.
+    pub threshold: f64,
+}
 
 /// Trait for providing embedding-based similarity evaluation.
 ///
@@ -22,6 +105,40 @@ pub trait EmbeddingEvalSupport: Send + Sync + std::fmt::Debug {
     ///
     /// Returns a value in `[0.0, 1.0]` where higher means more similar.
     async fn similarity(&self, text: &str, topic: &str) -> Result<f64, RuleError>;
+}
+
+/// Lightweight counters for WASM plugin invocations during rule evaluation.
+///
+/// Shared via `Arc` so the gateway can read totals after evaluation completes
+/// and increment its own metrics accordingly.
+#[derive(Debug, Default)]
+pub struct WasmEvalCounters {
+    /// Total WASM plugin invocations (successful or not).
+    pub invocations: AtomicU64,
+    /// WASM plugin invocations that returned an error.
+    pub errors: AtomicU64,
+}
+
+impl WasmEvalCounters {
+    /// Record a successful WASM invocation.
+    pub fn record_invocation(&self) {
+        self.invocations.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a WASM invocation error.
+    pub fn record_error(&self) {
+        self.errors.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Read the invocation count.
+    pub fn invocation_count(&self) -> u64 {
+        self.invocations.load(Ordering::Relaxed)
+    }
+
+    /// Read the error count.
+    pub fn error_count(&self) -> u64 {
+        self.errors.load(Ordering::Relaxed)
+    }
 }
 
 /// The evaluation context supplied to the rule engine when evaluating expressions.
@@ -48,6 +165,20 @@ pub struct EvalContext<'a> {
     /// context only allocate one `HashMap`.  Uses `OnceLock` (not `OnceCell`)
     /// because `&EvalContext` is held across `.await` points, requiring `Sync`.
     pub(crate) time_map_cache: OnceLock<super::value::Value>,
+    /// Optional WASM plugin runtime for evaluating `WasmCall` expressions.
+    ///
+    /// When set, `Expr::WasmCall` nodes can invoke registered WASM plugins as
+    /// part of rule condition evaluation.
+    pub wasm_runtime: Option<Arc<dyn WasmPluginRuntime>>,
+    /// Optional tracker for recording which keys are accessed during evaluation.
+    ///
+    /// Only populated in playground/trace mode to avoid overhead in the hot path.
+    pub access_tracker: Option<Arc<AccessTracker>>,
+    /// Optional counters for WASM plugin invocations during evaluation.
+    ///
+    /// When set, `eval_wasm_call` increments these counters so the gateway
+    /// can propagate totals to its own metrics after evaluation completes.
+    pub wasm_counters: Option<Arc<WasmEvalCounters>>,
 }
 
 impl<'a> EvalContext<'a> {
@@ -65,6 +196,9 @@ impl<'a> EvalContext<'a> {
             embedding: None,
             timezone: None,
             time_map_cache: OnceLock::new(),
+            wasm_runtime: None,
+            access_tracker: None,
+            wasm_counters: None,
         }
     }
 
@@ -88,6 +222,27 @@ impl<'a> EvalContext<'a> {
     pub fn with_timezone(mut self, tz: Tz) -> Self {
         self.timezone = Some(tz);
         self.time_map_cache = OnceLock::new();
+        self
+    }
+
+    /// Set the WASM plugin runtime for evaluating `WasmCall` expressions.
+    #[must_use]
+    pub fn with_wasm_runtime(mut self, runtime: Arc<dyn WasmPluginRuntime>) -> Self {
+        self.wasm_runtime = Some(runtime);
+        self
+    }
+
+    /// Set the access tracker for recording key accesses.
+    #[must_use]
+    pub fn with_access_tracker(mut self, tracker: Arc<AccessTracker>) -> Self {
+        self.access_tracker = Some(tracker);
+        self
+    }
+
+    /// Set the WASM evaluation counters for metrics propagation.
+    #[must_use]
+    pub fn with_wasm_counters(mut self, counters: Arc<WasmEvalCounters>) -> Self {
+        self.wasm_counters = Some(counters);
         self
     }
 }

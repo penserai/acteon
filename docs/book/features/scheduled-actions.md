@@ -211,3 +211,8 @@ A **24-hour grace period** applies: actions that remain in the "in-flight" state
 - **No cancellation API**: Once an action is scheduled, it cannot be cancelled. A cancellation endpoint is planned for a future release.
 - **Polling latency**: The background processor polls at the configured interval (`scheduled_check_interval`), so actions may be dispatched up to N seconds after their scheduled time, where N is the check interval.
 - **Single processor**: The background processor runs as a single instance. High-availability deployments should use leader election or a distributed lock to prevent duplicate dispatches.
+
+---
+
+!!! tip "See also"
+    For actions that need to fire on a recurring cron schedule (e.g., daily digests, weekly reports), see [Recurring Actions](recurring-actions.md).

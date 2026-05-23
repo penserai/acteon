@@ -11,22 +11,34 @@ cargo fmt --all
 # Lint with clippy (warnings as errors)
 cargo clippy --workspace --no-deps -- -D warnings
 
-# Run all tests
-cargo test --workspace
+# Run all tests (fast — skips doctests which are extremely slow to link)
+cargo test --workspace --lib --bins --tests
+
+# Build everything including examples (catches enum-variant and API
+# signature drift that the test command above silently skips)
+cargo check --all-targets
 
 # Frontend checks
 cd ui && npm run lint && npm run build && cd ..
-
-# Build to catch any remaining issues
-cargo build --workspace
 ```
 
 ## Quick Validation
 
 ```bash
 # One-liner to run all checks (Rust + Frontend)
-cargo fmt --all && cargo clippy --workspace --no-deps -- -D warnings && cargo test --workspace && (cd ui && npm run lint && npm run build)
+cargo fmt --all && cargo clippy --workspace --no-deps -- -D warnings && cargo test --workspace --lib --bins --tests && cargo check --all-targets && (cd ui && npm run lint && npm run build)
 ```
+
+> **Note:** The default build excludes AWS providers. To match CI parity (which tests AWS separately), run:
+> `cargo test -p acteon-aws --features full --lib --tests`
+
+> **Why `cargo check --all-targets`?** The standard `cargo test --workspace --lib --bins --tests` deliberately skips `--examples` (and doctests) for speed. That's fine for most changes but silently misses any example that exhaustively matches on an enum you just extended (`ActionOutcome`, `RuleVerdict`, etc.) or that constructs a struct whose fields have grown. PRs #103 and #105 both shipped because of this gap. The `cargo check --all-targets` line is fast (no test execution, no link) and catches both classes of drift before they hit `main`.
+
+## Testing Notes
+
+- **Default**: Use `--lib --bins --tests` to skip doctest compilation, which re-links the entire dependency tree per doctest and adds minutes of wall-clock time.
+- **Full suite** (CI only): `cargo test --workspace` includes doctests. Only run this before releases or in CI.
+- **Single crate**: `cargo test -p acteon-gateway --lib` for fast iteration on one crate.
 
 ## Running Examples
 
@@ -73,7 +85,16 @@ When implementing a new feature (provider, capability, etc.), follow this layere
 9. **Tests** – Add unit tests in the crate, SDK tests, and simulation framework tests
 10. **Documentation** – Update `docs/book/` pages (concepts, API reference, examples)
 11. **Simulation example** – Add a simulation example in `crates/simulation/examples/`
-12. **Pre-commit checks** – Run `cargo fmt --all && cargo clippy --workspace --no-deps -- -D warnings && cargo test --workspace && (cd ui && npm run lint && npm run build)`
+12. **Pre-commit checks** – Run `cargo fmt --all && cargo clippy --workspace --no-deps -- -D warnings && cargo test --workspace --lib --bins --tests && cargo check --all-targets && (cd ui && npm run lint && npm run build)`
+
+## AWS Feature Gating Convention
+
+AWS providers in `acteon-server` are behind individual feature flags (`aws-sns`, `aws-lambda`, etc.). When adding a new AWS provider:
+
+1. Add a feature to `crates/aws/Cargo.toml` gating the SDK dependency
+2. Add a matching `aws-*` feature to `crates/server/Cargo.toml` forwarding to `acteon-aws/<feature>`
+3. Add it to the `aws-all` feature group in both crates
+4. Guard the provider registration in `main.rs` with `#[cfg(feature = "aws-*")]`
 
 ## Common Clippy Fixes
 

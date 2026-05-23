@@ -1,0 +1,102 @@
+@reference "../../index.css";
+
+.handle {
+  @apply !bg-gray-300 !w-2 !h-2;
+}
+
+.node {
+  @apply px-4 py-3 rounded-lg border-2 border-dashed min-w-[280px] transition-all;
+  @apply shadow-sm hover:shadow-md cursor-pointer;
+}
+
+.nodeCompleted {
+  @apply border-success-500;
+  background: rgb(16 185 129 / 0.05);
+}
+.dark .nodeCompleted {
+  background: rgb(16 185 129 / 0.1);
+}
+
+.nodeFailed {
+  @apply border-error-500;
+  background: rgb(239 68 68 / 0.05);
+}
+.dark .nodeFailed {
+  background: rgb(239 68 68 / 0.1);
+}
+
+.nodeRunning {
+  @apply border-primary-400;
+  background: rgb(96 165 250 / 0.05);
+}
+.dark .nodeRunning {
+  background: rgb(96 165 250 / 0.1);
+}
+
+.nodePending {
+  @apply border-gray-300;
+  background: rgb(148 163 184 / 0.05);
+}
+.dark .nodePending {
+  border-color: var(--color-gray-600);
+}
+
+.nodeActive {
+  @apply ring-4 ring-primary-400/30 animate-pulse;
+}
+
+.header {
+  @apply flex items-center gap-2 mb-2;
+}
+
+.icon {
+  @apply h-4 w-4 text-primary-400 shrink-0;
+}
+
+.label {
+  @apply text-sm font-medium flex-1;
+  color: var(--text-default);
+}
+
+.joinBadge {
+  @apply text-xs px-1.5 py-0.5 rounded font-mono uppercase tracking-wide;
+  background: rgb(96 165 250 / 0.15);
+  color: var(--color-primary-400);
+}
+
+.subStepList {
+  @apply space-y-1 mt-1;
+}
+
+.subStepRow {
+  @apply flex items-center gap-2 text-xs;
+  color: var(--text-secondary, theme(colors.gray.500));
+}
+
+.subStepName {
+  @apply flex-1 truncate;
+}
+
+.subStepError {
+  @apply truncate text-error-500 max-w-[100px];
+}
+
+.statusDot {
+  @apply h-2.5 w-2.5 rounded-full shrink-0;
+}
+
+.dotCompleted {
+  @apply bg-success-500;
+}
+
+.dotFailed {
+  @apply bg-error-500;
+}
+
+.dotRunning {
+  @apply bg-primary-400;
+}
+
+.dotPending {
+  @apply bg-gray-300;
+}

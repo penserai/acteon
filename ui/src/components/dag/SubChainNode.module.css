@@ -1,0 +1,74 @@
+@reference "../../index.css";
+
+.handle {
+  @apply !bg-gray-300 !w-2 !h-2;
+}
+
+.node {
+  @apply px-4 py-3 rounded-lg border-2 border-dashed min-w-[160px] text-center transition-all;
+  @apply shadow-sm hover:shadow-md cursor-pointer;
+}
+
+.nodeCompleted {
+  @apply border-success-500;
+  background: rgb(16 185 129 / 0.05);
+}
+.dark .nodeCompleted {
+  background: rgb(16 185 129 / 0.1);
+}
+
+.nodeFailed {
+  @apply border-error-500;
+  background: rgb(239 68 68 / 0.05);
+}
+.dark .nodeFailed {
+  background: rgb(239 68 68 / 0.1);
+}
+
+.nodeRunning {
+  @apply border-primary-400;
+  background: rgb(96 165 250 / 0.05);
+}
+.dark .nodeRunning {
+  background: rgb(96 165 250 / 0.1);
+}
+
+.nodePending {
+  @apply border-gray-300;
+  background: rgb(148 163 184 / 0.05);
+}
+.dark .nodePending {
+  border-color: var(--color-gray-600);
+}
+
+.nodeActive {
+  @apply ring-4 ring-primary-400/30 animate-pulse;
+}
+
+.header {
+  @apply flex items-center justify-center gap-2;
+}
+
+.icon {
+  @apply h-4 w-4 text-primary-400;
+}
+
+.label {
+  @apply text-sm font-medium;
+  color: var(--text-default);
+}
+
+.subLabel {
+  @apply text-xs mt-1;
+  color: var(--text-secondary, theme(colors.gray.500));
+}
+
+.expandedContainer {
+  @apply mt-2 pt-2 border-t border-dashed;
+  border-color: var(--border-default);
+}
+
+.childCount {
+  @apply text-xs;
+  color: var(--text-secondary, theme(colors.gray.500));
+}

@@ -1,0 +1,183 @@
+@reference "../index.css";
+
+/* ---- Header ---- */
+.headerActions {
+  @apply flex items-center gap-2;
+}
+
+/* ---- Table cells ---- */
+.nameCell {
+  @apply font-mono text-sm font-medium;
+  color: var(--text-default);
+}
+
+.featureBadges {
+  @apply flex flex-wrap gap-1;
+}
+
+/* ---- Step type badges ---- */
+.badgeProvider {
+  @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-medium;
+  background: var(--color-primary-50);
+  color: var(--color-primary-700);
+  border: 1px solid var(--color-primary-200);
+}
+
+.badgeSubChain {
+  @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-medium;
+  background: var(--color-purple-50, #faf5ff);
+  color: var(--color-purple-700, #6d28d9);
+  border: 1px solid var(--color-purple-200, #ddd6fe);
+}
+
+.badgeParallel {
+  @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-medium;
+  background: var(--color-amber-50, #fffbeb);
+  color: var(--color-amber-700, #b45309);
+  border: 1px solid var(--color-amber-200, #fde68a);
+}
+
+/* ---- Detail drawer ---- */
+.detailContent {
+  @apply space-y-3 text-sm;
+}
+
+.detailValueWrap {
+  @apply font-mono text-xs text-right max-w-xs break-all;
+}
+
+.tabContainer {
+  @apply mb-4;
+}
+
+.sectionTitle {
+  @apply text-sm font-semibold mb-2 mt-4;
+  color: var(--text-secondary);
+}
+
+.dagContainer {
+  @apply mt-4 rounded-lg overflow-hidden;
+  height: 300px;
+  border: 1px solid var(--border-default);
+}
+
+/* ---- Step card list ---- */
+.stepList {
+  @apply space-y-2 mt-2;
+}
+
+.stepCard {
+  @apply rounded-lg border overflow-hidden;
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+}
+
+.stepCardHeader {
+  @apply flex items-center gap-2 px-3 py-2 cursor-pointer select-none;
+  background: var(--bg-surface-secondary);
+}
+
+.stepCardHeader:hover {
+  background: var(--bg-surface-hover, var(--bg-surface-secondary));
+}
+
+.stepName {
+  @apply font-mono text-sm font-medium flex-1;
+  color: var(--text-default);
+}
+
+.stepChevron {
+  @apply transition-transform duration-200;
+  color: var(--text-muted);
+}
+
+.stepChevronOpen {
+  transform: rotate(180deg);
+}
+
+.stepCardBody {
+  @apply px-3 py-3 space-y-3 text-sm;
+  border-top: 1px solid var(--border-default);
+}
+
+/* ---- Step reorder buttons ---- */
+.stepReorderGroup {
+  @apply flex items-center gap-1 ml-auto;
+}
+
+.reorderBtn {
+  @apply p-0.5 rounded;
+  color: var(--text-muted);
+}
+
+.reorderBtn:hover:not(:disabled) {
+  background: var(--bg-surface);
+  color: var(--text-default);
+}
+
+.reorderBtn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+/* ---- Add step bar ---- */
+.addStepBar {
+  @apply flex items-center gap-2 mt-3;
+}
+
+/* ---- Branch rows ---- */
+.branchList {
+  @apply space-y-2;
+}
+
+.branchRow {
+  @apply grid gap-2 items-end;
+  grid-template-columns: 1fr 1fr 1fr 1fr auto;
+}
+
+.branchSectionHeader {
+  @apply flex items-center justify-between mb-2;
+}
+
+.collapsibleToggle {
+  @apply flex items-center gap-1 text-xs cursor-pointer select-none;
+  color: var(--text-muted);
+}
+
+.collapsibleToggle:hover {
+  color: var(--text-default);
+}
+
+/* ---- Sub-steps (parallel) ---- */
+.subStepList {
+  @apply space-y-2 mt-2 pl-4;
+  border-left: 2px solid var(--border-default);
+}
+
+/* ---- JSON tab ---- */
+.jsonTextarea {
+  @apply w-full rounded-md border px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2;
+  background: var(--bg-surface);
+  border-color: var(--border-input);
+  color: var(--text-default);
+  min-height: 360px;
+  resize: vertical;
+}
+
+.jsonError {
+  @apply mt-2 text-xs px-3 py-2 rounded;
+  background: var(--color-red-50, #fef2f2);
+  color: var(--color-red-700, #b91c1c);
+  border: 1px solid var(--color-red-200, #fecaca);
+}
+
+/* ---- Modal tabs ---- */
+.modalTabBar {
+  @apply mb-4;
+}
+
+/* ---- Cancel notification collapsible ---- */
+.cancelNotifSection {
+  @apply mt-2 p-3 rounded-lg space-y-3;
+  background: var(--bg-surface-secondary);
+}

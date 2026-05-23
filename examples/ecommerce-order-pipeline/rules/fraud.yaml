@@ -1,0 +1,29 @@
+rules:
+  # Hard deny orders from sanctioned regions
+  - name: deny-sanctioned-regions
+    priority: 1
+    description: "Block orders from sanctioned regions"
+    condition:
+      all:
+        - field: action.action_type
+          eq: "place_order"
+        - field: action.payload.shipping_country
+          in_list: ["NK", "SY", "IR"]
+    action:
+      type: deny
+
+  # Require manager approval for orders over $500
+  - name: approve-high-value
+    priority: 3
+    description: "Orders over $500 require manager approval"
+    condition:
+      all:
+        - field: action.payload.total_cents
+          gte: 50000
+        - field: action.action_type
+          eq: "place_order"
+    action:
+      type: request_approval
+      notify_provider: email-service
+      timeout_seconds: 60
+      message: "High-value order requires manager approval"

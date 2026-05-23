@@ -4,6 +4,8 @@ export interface MetricsResponse {
   executed: number
   deduplicated: number
   suppressed: number
+  silenced?: number
+  muted?: number
   rerouted: number
   throttled: number
   failed: number
@@ -13,7 +15,41 @@ export interface MetricsResponse {
   chains_failed: number
   chains_cancelled: number
   circuit_open?: number
+  circuit_transitions?: number
+  circuit_fallbacks?: number
   scheduled?: number
+  llm_guardrail_allowed?: number
+  llm_guardrail_denied?: number
+  llm_guardrail_errors?: number
+  recurring_dispatched?: number
+  recurring_errors?: number
+  recurring_skipped?: number
+  recurring_active?: number
+  quota_exceeded?: number
+  quota_warned?: number
+  quota_degraded?: number
+  quota_notified?: number
+  retention_deleted_state?: number
+  retention_skipped_compliance?: number
+  retention_errors?: number
+  wasm_invocations?: number
+  wasm_errors?: number
+  // Action signing observability. All optional for backward compat
+  // with older servers that haven't shipped the signing observability
+  // PR yet.
+  signing_verified?: number
+  signing_invalid?: number
+  signing_unknown_signer?: number
+  signing_scope_denied?: number
+  signing_unsigned_rejected?: number
+  signing_unsigned_allowed?: number
+  // Replay protection is independent of signing — this counter
+  // increments whether or not a valid signature was presented.
+  replay_rejected?: number
+  // `true` when the server has `[signing]` configured, even if no
+  // signed traffic has flowed yet. Lets the dashboard show the
+  // signing cards on day zero instead of waiting for the first event.
+  signing_enabled?: boolean
   embedding?: EmbeddingMetrics
 }
 
@@ -31,6 +67,15 @@ export interface HealthResponse {
   metrics: MetricsResponse
 }
 
+// ---- Attachments ----
+export interface Attachment {
+  id: string
+  name: string
+  filename: string
+  content_type: string
+  data_base64: string
+}
+
 // ---- Dispatch ----
 export interface DispatchRequest {
   namespace: string
@@ -44,12 +89,13 @@ export interface DispatchRequest {
   status?: string
   starts_at?: string
   ends_at?: string
+  attachments?: Attachment[]
 }
 
 export interface DispatchResponse {
   action_id: string
   outcome: string
-  details: Record<string, unknown>
+  details: Record<string, unknown> | null
 }
 
 // ---- Rules ----
@@ -58,10 +104,6 @@ export interface RuleSummary {
   priority: number
   description?: string
   enabled: boolean
-  action_type: string
-  action_details: Record<string, unknown>
-  source: string
-  version?: number
 }
 
 // ---- Audit ----
@@ -86,13 +128,32 @@ export interface AuditRecord {
   expires_at?: string
   caller_id: string
   auth_method: string
+  record_hash?: string
+  previous_hash?: string
+  sequence_number?: number
+  attachment_metadata?: Record<string, unknown>[]
+  // Action signing fields — present only when the action was signed.
+  signature?: string
+  signer_id?: string
+  kid?: string
+  canonical_hash?: string
 }
 
 export interface AuditPage {
   records: AuditRecord[]
-  total: number
+  /**
+   * Total matching records, when the backend computed it. Cursor
+   * pagination skips the count, so this is `undefined` after the first
+   * cursor-driven request.
+   */
+  total?: number
   limit: number
   offset: number
+  /**
+   * Opaque cursor pointing at the next page, or `undefined` when this
+   * page is the last. Pass into `AuditQuery.cursor` to resume.
+   */
+  next_cursor?: string
 }
 
 export interface AuditQuery {
@@ -105,10 +166,27 @@ export interface AuditQuery {
   matched_rule?: string
   caller_id?: string
   chain_id?: string
+  /**
+   * Filter by the `signer_id` stamped on signed actions. Unsigned
+   * records never match.
+   */
+  signer_id?: string
+  /**
+   * Filter by the key identifier (`kid`) stamped on signed actions.
+   * Combine with `signer_id` to narrow to a specific `(signer, key)`
+   * pair across a rotation window.
+   */
+  kid?: string
   from?: string
   to?: string
   limit?: number
+  /**
+   * Legacy offset pagination — prefer `cursor` for deep pagination.
+   * Large offsets degrade linearly on every backend.
+   */
   offset?: number
+  /** Opaque pagination cursor returned by the previous page. */
+  cursor?: string
 }
 
 export interface ReplayResult {
@@ -143,6 +221,11 @@ export interface ChainStepStatus {
   response_body?: Record<string, unknown>
   error?: string
   completed_at?: string
+  sub_chain?: string
+  child_chain_id?: string
+  parallel_sub_steps?: ChainStepStatus[]
+  attempt?: number
+  max_retries?: number
 }
 
 export interface ChainDetailResponse {
@@ -160,6 +243,8 @@ export interface ChainDetailResponse {
   cancel_reason?: string
   cancelled_by?: string
   execution_path: string[]
+  parent_chain_id?: string
+  child_chain_ids?: string[]
 }
 
 export interface BranchCondition {
@@ -167,6 +252,23 @@ export interface BranchCondition {
   operator: 'Eq' | 'Neq' | 'Contains' | 'Exists'
   value?: unknown
   target: string
+}
+
+export interface ParallelSubStepConfig {
+  name: string
+  provider: string
+  action_type: string
+  payload_template: Record<string, unknown>
+  on_failure?: string
+  branches: BranchCondition[]
+}
+
+export interface ParallelStepGroup {
+  steps: ParallelSubStepConfig[]
+  join: string
+  on_failure: string
+  timeout_seconds?: number
+  max_concurrency?: number
 }
 
 export interface ChainStepConfig {
@@ -178,24 +280,98 @@ export interface ChainStepConfig {
   delay_seconds?: number
   branches: BranchCondition[]
   default_next?: string
+  sub_chain?: string
+  parallel?: ParallelStepGroup
+}
+
+export interface StepAttemptResponse {
+  attempt: number
+  started_at: string
+  completed_at: string
+  success: boolean
+  duration_ms: number
+  error: string | null
+}
+
+export interface StepHistoryEntry {
+  name: string
+  step_index: number
+  current_attempt: number
+  max_retries: number | null
+  attempts: StepAttemptResponse[]
+}
+
+export interface ChainHistoryResponse {
+  chain_id: string
+  chain_name: string
+  status: string
+  steps: StepHistoryEntry[]
+}
+
+// ---- Chain Definitions ----
+export interface ChainDefinitionSummary {
+  name: string
+  steps_count: number
+  has_branches: boolean
+  has_parallel: boolean
+  has_sub_chains: boolean
+  on_failure: string
+  timeout_seconds?: number
+}
+
+export interface ChainDefinitionListResponse {
+  definitions: ChainDefinitionSummary[]
+}
+
+export interface ChainDefinition {
+  name: string
+  steps: ChainStepConfig[]
+  on_failure: string
+  timeout_seconds?: number
+  on_cancel?: { provider: string; action_type: string }
+}
+
+// ---- Chain DAG ----
+export interface DagNode {
+  name: string
+  node_type: 'step' | 'sub_chain' | 'parallel'
+  provider?: string
+  action_type?: string
+  sub_chain_name?: string
+  status?: string
+  child_chain_id?: string
+  children?: DagResponse
+  parallel_children?: DagNode[]
+  parallel_join?: string
+  attempt?: number
+  max_retries?: number
+}
+
+export interface DagEdge {
+  source: string
+  target: string
+  label?: string
+  on_execution_path: boolean
+}
+
+export interface DagResponse {
+  chain_name: string
+  chain_id?: string
+  status?: string
+  nodes: DagNode[]
+  edges: DagEdge[]
+  execution_path: string[]
 }
 
 // ---- Approvals ----
 export interface ApprovalStatus {
-  approval_id: string
-  action_id: string
+  token: string
   status: string
   rule: string
   message?: string
   created_at: string
   expires_at: string
-  decided_by?: string
   decided_at?: string
-  namespace?: string
-  tenant?: string
-  action_type?: string
-  provider?: string
-  payload?: Record<string, unknown>
 }
 
 // ---- Circuit Breakers ----
@@ -208,6 +384,24 @@ export interface CircuitBreakerStatus {
   fallback_provider?: string
 }
 
+// ---- Provider Health ----
+export interface ProviderHealthStatus {
+  provider: string
+  healthy: boolean
+  health_check_error?: string
+  circuit_breaker_state?: string
+  total_requests: number
+  successes: number
+  failures: number
+  success_rate: number
+  avg_latency_ms: number
+  p50_latency_ms: number
+  p95_latency_ms: number
+  p99_latency_ms: number
+  last_request_at?: number
+  last_error?: string
+}
+
 // ---- DLQ ----
 export interface DlqStats {
   enabled: boolean
@@ -216,31 +410,105 @@ export interface DlqStats {
 
 // ---- Events ----
 export interface EventState {
-  state: string
   fingerprint: string
-  updated_at: string
-  transitioned_by: string
-  state_machine?: string
+  state: string
+  action_type?: string
+  updated_at?: string
 }
 
 // ---- Groups ----
-export interface GroupedEvent {
-  action_id: string
-  fingerprint?: string
-  status?: string
-  payload: Record<string, unknown>
-  received_at: string
-}
-
 export interface EventGroup {
   group_id: string
   group_key: string
-  labels: Record<string, string>
-  events: GroupedEvent[]
+  event_count: number
+  state: string
   notify_at: string
-  state: 'Pending' | 'Notified' | 'Resolved'
+  created_at: string
+}
+
+// ---- Silences ----
+export type SilenceMatchOp = 'equal' | 'not_equal' | 'regex' | 'not_regex'
+
+export interface SilenceMatcher {
+  name: string
+  value: string
+  op: SilenceMatchOp
+}
+
+export interface Silence {
+  id: string
+  namespace: string
+  tenant: string
+  matchers: SilenceMatcher[]
+  starts_at: string
+  ends_at: string
+  created_by: string
+  comment: string
   created_at: string
   updated_at: string
+  active: boolean
+}
+
+export interface CreateSilenceRequest {
+  namespace: string
+  tenant: string
+  matchers: SilenceMatcher[]
+  starts_at?: string
+  ends_at?: string
+  duration_seconds?: number
+  comment: string
+}
+
+export interface UpdateSilenceRequest {
+  ends_at?: string
+  comment?: string
+}
+
+// ---- Time Intervals ----
+export interface TimeOfDayInput {
+  start: string
+  end: string
+}
+
+export interface NumericRange {
+  start: number
+  end: number
+}
+
+export interface TimeRange {
+  times?: TimeOfDayInput[]
+  weekdays?: NumericRange[]
+  days_of_month?: NumericRange[]
+  months?: NumericRange[]
+  years?: NumericRange[]
+}
+
+export interface TimeInterval {
+  name: string
+  namespace: string
+  tenant: string
+  time_ranges: TimeRange[]
+  location?: string
+  description?: string
+  created_by: string
+  created_at: string
+  updated_at: string
+  matches_now: boolean
+}
+
+export interface CreateTimeIntervalRequest {
+  name: string
+  namespace: string
+  tenant: string
+  time_ranges: TimeRange[]
+  location?: string
+  description?: string
+}
+
+export interface UpdateTimeIntervalRequest {
+  time_ranges?: TimeRange[]
+  location?: string
+  description?: string
 }
 
 // ---- Stream ----
@@ -273,6 +541,183 @@ export interface SimilarityRequest {
 export interface SimilarityResponse {
   similarity: number
   topic: string
+}
+
+// ---- Recurring Actions ----
+
+/** Summary returned in list responses. */
+export interface RecurringActionSummary {
+  id: string
+  namespace: string
+  tenant: string
+  cron_expr: string
+  timezone: string
+  enabled: boolean
+  provider: string
+  action_type: string
+  next_execution_at: string | null
+  execution_count: number
+  description: string | null
+  created_at: string
+}
+
+/** Full detail returned by GET /v1/recurring/:id. */
+export interface RecurringAction extends RecurringActionSummary {
+  payload: Record<string, unknown>
+  metadata: Record<string, string>
+  dedup_key: string | null
+  last_executed_at: string | null
+  ends_at: string | null
+  max_executions: number | null
+  labels: Record<string, string>
+  updated_at: string
+}
+
+export interface RecurringActionListResponse {
+  recurring_actions: RecurringActionSummary[]
+  count: number
+}
+
+export interface CreateRecurringActionRequest {
+  namespace: string
+  tenant: string
+  cron_expression: string
+  timezone: string
+  provider: string
+  action_type: string
+  payload: Record<string, unknown>
+  metadata?: Record<string, string>
+  dedup_key?: string | null
+  description?: string | null
+  ends_at?: string | null
+  max_executions?: number | null
+  enabled?: boolean
+}
+
+export interface CreateRecurringActionResponse {
+  id: string
+  name: string | null
+  next_execution_at: string | null
+  status: string
+}
+
+export interface UpdateRecurringActionRequest {
+  namespace: string
+  tenant: string
+  name?: string | null
+  cron_expression?: string
+  timezone?: string
+  enabled?: boolean
+  provider?: string
+  action_type?: string
+  payload?: Record<string, unknown>
+  metadata?: Record<string, string>
+  dedup_key?: string | null
+  description?: string | null
+  max_executions?: number | null
+  ends_at?: string | null
+}
+
+export interface PauseResumeResponse {
+  id: string
+  enabled: boolean
+  next_execution_at: string | null
+}
+
+// ---- Rule Playground ----
+
+export interface EvaluateRulesRequest {
+  namespace: string
+  tenant: string
+  provider: string
+  action_type: string
+  payload: Record<string, unknown>
+  metadata?: Record<string, string>
+  include_disabled?: boolean
+  evaluate_all?: boolean
+  evaluate_at?: string | null
+  mock_state?: Record<string, string>
+}
+
+export interface SemanticMatchDetail {
+  extracted_text: string
+  topic: string
+  similarity: number
+  threshold: number
+}
+
+export interface RuleTraceEntry {
+  rule_name: string
+  priority: number
+  enabled: boolean
+  condition_display: string
+  result: 'matched' | 'not_matched' | 'skipped' | 'error'
+  evaluation_duration_us: number
+  action: string
+  source: string
+  description?: string
+  skip_reason?: string
+  error?: string
+  semantic_details?: SemanticMatchDetail
+  modify_patch?: Record<string, unknown>
+  modified_payload_preview?: Record<string, unknown>
+  wasm_details?: WasmTraceDetails
+}
+
+export interface WasmTraceDetails {
+  plugin: string
+  function: string
+  verdict: boolean
+  message?: string
+  duration_us: number
+  memory_used_bytes?: number
+}
+
+export interface EvaluateRulesResponse {
+  verdict: string
+  matched_rule?: string
+  has_errors: boolean
+  total_rules_evaluated: number
+  total_rules_skipped: number
+  evaluation_duration_us: number
+  trace: RuleTraceEntry[]
+  context: {
+    time: Record<string, unknown>
+    environment_keys: string[]
+    accessed_state_keys?: string[]
+    effective_timezone?: string
+  }
+  modified_payload?: Record<string, unknown>
+}
+
+// ---- WASM Plugins ----
+
+export interface WasmPlugin {
+  name: string
+  description: string | null
+  enabled: boolean
+  memory_limit_bytes: number
+  timeout_ms: number
+  invocation_count: number
+  last_invoked_at: string | null
+  registered_at: string
+}
+
+export interface WasmPluginListResponse {
+  plugins: WasmPlugin[]
+  total: number
+}
+
+export interface WasmTestRequest {
+  function: string
+  input: Record<string, unknown>
+}
+
+export interface WasmTestResponse {
+  verdict: boolean
+  message: string | null
+  metadata: Record<string, unknown> | null
+  duration_us: number
 }
 
 // ---- Config ----
@@ -358,10 +803,17 @@ export interface ConfigResponse {
     enable_timeout_processing: boolean
     enable_approval_retry: boolean
     enable_scheduled_actions: boolean
+    enable_recurring_actions: boolean
+    enable_retention_reaper: boolean
+    enable_template_sync: boolean
     group_flush_interval_seconds: number
     timeout_check_interval_seconds: number
     cleanup_interval_seconds: number
     scheduled_check_interval_seconds: number
+    recurring_check_interval_seconds: number
+    retention_check_interval_seconds: number
+    template_sync_interval_seconds: number
+    max_recurring_actions_per_tenant: number
   }
   telemetry: {
     enabled: boolean
@@ -377,5 +829,278 @@ export interface ConfigResponse {
     completed_chain_ttl_seconds: number
     definitions: Array<{ name: string; steps_count: number; timeout_seconds: number | null }>
   }
-  providers: Array<{ name: string; provider_type: string; url: string | null; header_count: number }>
+  providers: Array<{ name: string; provider_type: string; url: string | null; header_count: number; has_token?: boolean; has_auth_token?: boolean; has_webhook_url?: boolean; email_backend?: string; aws_region?: string }>
+  ui: { enabled: boolean; dist_path: string }
+  encryption: { enabled: boolean }
+  wasm: { enabled: boolean; plugin_dir: string | null; default_memory_limit_bytes: number; default_timeout_ms: number }
+  compliance: { mode: string; immutable_audit: boolean; hash_chain: boolean; sync_audit_writes: boolean }
+  attachments: { max_attachments_per_action: number; max_inline_bytes: number }
+}
+
+// ---- Quotas ----
+
+export type QuotaWindow = 'hourly' | 'daily' | 'weekly' | 'monthly'
+export type OverageBehavior = 'block' | 'warn' | 'degrade' | 'notify'
+
+export interface QuotaPolicy {
+  id: string
+  namespace: string
+  tenant: string
+  max_actions: number
+  window: QuotaWindow
+  overage_behavior: OverageBehavior
+  enabled: boolean
+  description: string | null
+  labels: Record<string, string>
+  created_at: string
+  updated_at: string
+}
+
+export interface QuotaUsage {
+  tenant: string
+  namespace: string
+  used: number
+  limit: number
+  remaining: number
+  window: QuotaWindow
+  resets_at: string
+  overage_behavior: OverageBehavior
+}
+
+export interface QuotaListResponse {
+  quotas: QuotaPolicy[]
+  count: number
+}
+
+export interface CreateQuotaRequest {
+  namespace: string
+  tenant: string
+  max_actions: number
+  window: QuotaWindow
+  overage_behavior: OverageBehavior
+  enabled?: boolean
+  description?: string | null
+  labels?: Record<string, string>
+}
+
+export interface UpdateQuotaRequest {
+  max_actions?: number
+  window?: QuotaWindow
+  overage_behavior?: OverageBehavior
+  enabled?: boolean
+  description?: string | null
+  labels?: Record<string, string>
+}
+
+export interface CreateQuotaResponse {
+  id: string
+}
+
+// ---- Retention Policies ----
+
+export interface RetentionPolicy {
+  id: string
+  namespace: string
+  tenant: string
+  enabled: boolean
+  audit_ttl_seconds: number | null
+  state_ttl_seconds: number | null
+  event_ttl_seconds: number | null
+  compliance_hold: boolean
+  created_at: string
+  updated_at: string
+  description: string | null
+  labels: Record<string, string>
+}
+
+export interface RetentionListResponse {
+  policies: RetentionPolicy[]
+  count: number
+}
+
+export interface CreateRetentionRequest {
+  namespace: string
+  tenant: string
+  audit_ttl_seconds?: number | null
+  state_ttl_seconds?: number | null
+  event_ttl_seconds?: number | null
+  compliance_hold?: boolean
+  enabled?: boolean
+  description?: string | null
+  labels?: Record<string, string>
+}
+
+export interface UpdateRetentionRequest {
+  audit_ttl_seconds?: number | null
+  state_ttl_seconds?: number | null
+  event_ttl_seconds?: number | null
+  compliance_hold?: boolean
+  enabled?: boolean
+  description?: string | null
+  labels?: Record<string, string>
+}
+
+export interface CreateRetentionResponse {
+  id: string
+}
+
+// ---- Payload Templates ----
+
+/**
+ * A profile field is either an inline string value or a $ref pointing to
+ * another template by name.
+ */
+export type TemplateProfileField = string | { $ref: string }
+
+export interface Template {
+  id: string
+  name: string
+  namespace: string
+  tenant: string
+  content: string
+  description: string | null
+  created_at: string
+  updated_at: string
+  labels: Record<string, string>
+}
+
+export interface TemplateProfile {
+  id: string
+  name: string
+  namespace: string
+  tenant: string
+  fields: Record<string, TemplateProfileField>
+  description: string | null
+  created_at: string
+  updated_at: string
+  labels: Record<string, string>
+}
+
+export interface TemplateListResponse {
+  templates: Template[]
+  count: number
+}
+
+export interface TemplateProfileListResponse {
+  profiles: TemplateProfile[]
+  count: number
+}
+
+export interface CreateTemplateRequest {
+  name: string
+  namespace: string
+  tenant: string
+  content: string
+  description?: string | null
+  labels?: Record<string, string>
+}
+
+export interface UpdateTemplateRequest {
+  content?: string
+  description?: string | null
+  labels?: Record<string, string>
+}
+
+export interface CreateTemplateResponse {
+  id: string
+}
+
+export interface CreateProfileRequest {
+  name: string
+  namespace: string
+  tenant: string
+  fields: Record<string, TemplateProfileField>
+  description?: string | null
+  labels?: Record<string, string>
+}
+
+export interface UpdateProfileRequest {
+  fields?: Record<string, TemplateProfileField>
+  description?: string | null
+  labels?: Record<string, string>
+}
+
+export interface CreateProfileResponse {
+  id: string
+}
+
+export interface RenderPreviewRequest {
+  profile: string
+  namespace: string
+  tenant: string
+  payload: Record<string, unknown>
+}
+
+export interface RenderPreviewResponse {
+  rendered: Record<string, string>
+}
+
+export interface TemplateQueryParams {
+  namespace?: string
+  tenant?: string
+}
+
+// ---- Compliance ----
+
+export type ComplianceMode = 'none' | 'soc2' | 'hipaa'
+
+export interface ComplianceStatus {
+  mode: ComplianceMode
+  sync_audit_writes: boolean
+  immutable_audit: boolean
+  hash_chain: boolean
+}
+
+export interface HashChainVerification {
+  valid: boolean
+  records_checked: number
+  first_broken_at: string | null
+  first_record_id: string | null
+  last_record_id: string | null
+}
+
+// ---- Analytics ----
+
+export type AnalyticsMetric = 'volume' | 'outcome_breakdown' | 'top_action_types' | 'latency' | 'error_rate';
+export type AnalyticsInterval = 'hourly' | 'daily' | 'weekly' | 'monthly';
+
+export interface AnalyticsQuery {
+  metric: AnalyticsMetric;
+  namespace?: string;
+  tenant?: string;
+  provider?: string;
+  action_type?: string;
+  outcome?: string;
+  interval?: AnalyticsInterval;
+  from?: string;
+  to?: string;
+  group_by?: string;
+  top_n?: number;
+}
+
+export interface AnalyticsBucket {
+  timestamp: string;
+  count: number;
+  group?: string;
+  avg_duration_ms?: number;
+  p50_duration_ms?: number;
+  p95_duration_ms?: number;
+  p99_duration_ms?: number;
+  error_rate?: number;
+}
+
+export interface AnalyticsTopEntry {
+  label: string;
+  count: number;
+  percentage: number;
+}
+
+export interface AnalyticsResponse {
+  metric: AnalyticsMetric;
+  interval: AnalyticsInterval;
+  from: string;
+  to: string;
+  buckets: AnalyticsBucket[];
+  top_entries: AnalyticsTopEntry[];
+  total_count: number;
 }

@@ -124,8 +124,19 @@ impl LlmEvaluator for HttpLlmEvaluator {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             warn!(status = %status, "LLM API returned error");
+            // Truncate response body to prevent information leakage (internal
+            // hostnames, stack traces, etc.) through error messages.
+            let truncated = if body.len() > 256 {
+                let mut end = 256;
+                while end > 0 && !body.is_char_boundary(end) {
+                    end -= 1;
+                }
+                format!("{}...[truncated]", &body[..end])
+            } else {
+                body
+            };
             return Err(LlmEvaluatorError::ApiError(format!(
-                "HTTP {status}: {body}"
+                "HTTP {status}: {truncated}"
             )));
         }
 

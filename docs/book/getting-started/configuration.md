@@ -5,15 +5,33 @@ Acteon is configured via a TOML file (default: `acteon.toml`). Every section is 
 ## CLI Options
 
 ```
-cargo run -p acteon-server -- [OPTIONS]
+cargo run -p acteon-server -- [OPTIONS] [COMMAND]
 
 Options:
   -c, --config <PATH>   Path to TOML config file [default: acteon.toml]
       --host <HOST>      Override bind host
       --port <PORT>      Override bind port
+
+Commands:
+  encrypt   Encrypt a value for use in auth.toml (reads from stdin)
+  migrate   Run database migrations for configured backends, then exit
 ```
 
 CLI flags override values in the config file.
+
+### Database Migrations
+
+Before starting the server for the first time (or after upgrading), run migrations to create or update database schemas:
+
+```bash
+# Using the wrapper script (auto-detects backend from config)
+scripts/migrate.sh -c acteon.toml
+
+# Or directly via cargo
+cargo run -p acteon-server --features postgres -- -c acteon.toml migrate
+```
+
+Migrations are idempotent and safe to run multiple times. They use `CREATE TABLE IF NOT EXISTS` and `ALTER TABLE ADD COLUMN IF NOT EXISTS` patterns. Backends that don't require schemas (memory, Redis) are no-ops.
 
 ## Full Configuration
 
@@ -27,8 +45,8 @@ port = 8080                          # Bind port
 
 # ─── State Backend ────────────────────────────────────────
 [state]
-backend = "memory"                   # "memory" | "redis" | "postgres" | "dynamodb" | "clickhouse"
-# url = "redis://localhost:6379"     # Connection URL (redis, postgres, clickhouse, dynamodb-local)
+backend = "memory"                   # "memory" | "redis" | "postgres" | "dynamodb"
+# url = "redis://localhost:6379"     # Connection URL (redis, postgres, dynamodb-local)
 # prefix = "acteon"                  # Key/table prefix
 # region = "us-east-1"              # AWS region (DynamoDB only)
 # table_name = "acteon_state"       # Table name (DynamoDB only)
@@ -59,17 +77,47 @@ max_retries = 3                      # Max retry attempts per action
 timeout_seconds = 30                 # Per-action execution timeout
 max_concurrent = 10                  # Max concurrent executions
 
+# ─── Providers ───────────────────────────────────────────
+# [[providers]]
+# name = "email"
+# type = "email"
+# from_address = "noreply@example.com"
+
+# [[providers]]
+# name = "alert-fanout"
+# type = "aws-sns"
+# aws_region = "us-east-1"
+# topic_arn = "arn:aws:sns:us-east-1:123:alerts"
+# aws_endpoint_url = "http://localhost:4566"  # LocalStack
+
+# [[providers]]
+# name = "archive"
+# type = "aws-s3"
+# aws_region = "us-east-1"
+# bucket_name = "my-bucket"
+# object_prefix = "acteon/"
+
 # ─── Authentication ───────────────────────────────────────
+# Users and API keys live in auth.toml, a separate file referenced from
+# here. Each principal is authorized via a list of grants that scope them
+# to specific tenants, namespaces, providers, and action types. Tenant
+# grants support hierarchical matching — a grant on "acme" covers
+# "acme.us-east" and "acme.us-east.prod". See the "API Key Scoping"
+# feature page for the full grant model and worked examples.
 [auth]
 enabled = false                      # Enable authentication
-# config_path = "auth.toml"         # Path to auth config
-# watch = true                       # Hot-reload on file changes
+# config_path = "auth.toml"         # Path to auth config (relative to acteon.toml)
+# watch = true                       # Hot-reload auth.toml on file changes
 
 # ─── Background Processing ───────────────────────────────
 [background]
 # tick_interval_ms = 1000           # Background loop tick interval
 # group_flush_timeout_ms = 60000    # Group flush wait time
 # timeout_check_batch_size = 100    # Batch size for timeout checks
+# enable_scheduled_actions = false  # Enable scheduled action processing
+# scheduled_check_interval = 5     # Scheduled action poll interval (seconds)
+# enable_recurring_actions = false  # Enable recurring action processing
+# recurring_check_interval_seconds = 5  # Recurring action poll interval (seconds)
 
 # ─── State Machines ───────────────────────────────────────
 [[state_machines]]
@@ -326,6 +374,45 @@ Arbitrary key-value pairs added to every exported span as OpenTelemetry resource
 
 See [Distributed Tracing](../features/distributed-tracing.md) for feature documentation.
 
+### `[[providers]]`
+
+Provider configuration. Multiple providers can be defined.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Unique provider name used in action dispatch |
+| `type` | string | Yes | Provider type (see below) |
+
+**Built-in provider types:**
+
+| Type | Description | Extra Fields |
+|------|-------------|-------------|
+| `"log"` | Logs actions (no external calls) | — |
+| `"webhook"` | HTTP webhook | `url` |
+| `"slack"` | Slack webhook | `webhook_url` |
+| `"email"` | Email (SMTP or SES) | `backend`, `from_address`, `smtp_host`, `aws_region`, ... |
+| `"twilio"` | Twilio SMS | `account_sid`, `auth_token`, `from_number` |
+| `"teams"` | Microsoft Teams | `webhook_url` |
+| `"discord"` | Discord webhook | `webhook_url` |
+| `"pagerduty"` | PagerDuty events | `routing_key` |
+| `"aws-sns"` | AWS SNS | `aws_region`, `topic_arn` |
+| `"aws-lambda"` | AWS Lambda | `aws_region`, `function_name` |
+| `"aws-eventbridge"` | AWS EventBridge | `aws_region`, `event_bus_name` |
+| `"aws-sqs"` | AWS SQS | `aws_region`, `queue_url` |
+| `"aws-s3"` | AWS S3 | `aws_region`, `bucket_name`, `object_prefix` |
+
+**Common AWS fields** (all optional, shared across all `aws-*` types and `email` with `backend = "ses"`):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `aws_region` | string | AWS region (required for AWS types) |
+| `aws_endpoint_url` | string | Endpoint URL override (for LocalStack) |
+| `aws_role_arn` | string | IAM role ARN to assume via STS |
+| `aws_session_name` | string | STS session name (default: `"acteon-aws-provider"`) |
+| `aws_external_id` | string | External ID for cross-account trust policies |
+
+See [AWS Providers](../features/aws-providers.md) and [Native Providers](../features/native-providers.md) for full payload format documentation.
+
 ## Environment Variables
 
 | Variable | Description |
@@ -342,10 +429,12 @@ Ready-to-use configs are in the `examples/` directory:
 |------|-------------|
 | `examples/redis.toml` | Redis state backend |
 | `examples/postgres.toml` | PostgreSQL state + audit |
-| `examples/clickhouse.toml` | ClickHouse state + audit |
+| `examples/clickhouse.toml` | ClickHouse audit |
 | `examples/elasticsearch-audit.toml` | Redis state + Elasticsearch audit |
 | `examples/dynamodb.toml` | DynamoDB state backend |
 | `examples/full.toml` | All options documented |
+| `examples/aws-event-pipeline/acteon.toml` | AWS providers (SNS, Lambda, EventBridge, SQS) + DynamoDB |
+| `examples/agent-swarm-coordination/acteon.toml` | Claude Code agent governance with PostgreSQL |
 
 ```bash
 # Start with Redis
@@ -354,5 +443,6 @@ cargo run -p acteon-server -- -c examples/redis.toml
 
 # Start with PostgreSQL
 docker compose --profile postgres up -d
-cargo run -p acteon-server -- -c examples/postgres.toml
+scripts/migrate.sh -c examples/postgres.toml
+cargo run -p acteon-server --features postgres -- -c examples/postgres.toml
 ```

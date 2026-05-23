@@ -20,6 +20,7 @@ use acteon_executor::ExecutorConfig;
 use acteon_gateway::{CircuitBreakerConfig, GatewayBuilder};
 use acteon_simulation::provider::{FailureMode, RecordingProvider};
 use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
+use tracing::info;
 const SUPPRESSION_RULE: &str = r#"
 rules:
   - name: block-internal
@@ -80,55 +81,56 @@ impl DashboardMetrics {
     }
 
     fn print_dashboard(&self, title: &str) {
-        println!("  ┌──────────────────────────────────────────────────┐");
-        println!("  │  {title:<48} │");
-        println!("  ├──────────────────────────────────────────────────┤");
-        println!("  │  Total events: {:<33} │", self.total_events);
-        println!("  ├──────────────────────────────────────────────────┤");
+        info!("  ┌──────────────────────────────────────────────────┐");
+        info!("  │  {title:<48} │");
+        info!("  ├──────────────────────────────────────────────────┤");
+        info!("  │  Total events: {:<33} │", self.total_events);
+        info!("  ├──────────────────────────────────────────────────┤");
 
-        println!("  │  By Provider:                                    │");
+        info!("  │  By Provider:                                    │");
         let mut providers: Vec<_> = self.by_provider.iter().collect();
         providers.sort_by_key(|(_, v)| std::cmp::Reverse(**v));
         for (provider, count) in &providers {
-            println!("  │    {provider:<20} {count:>6}                    │");
+            info!("  │    {provider:<20} {count:>6}                    │");
         }
 
-        println!("  ├──────────────────────────────────────────────────┤");
-        println!("  │  By Outcome:                                     │");
+        info!("  ├──────────────────────────────────────────────────┤");
+        info!("  │  By Outcome:                                     │");
         let mut outcomes: Vec<_> = self.by_outcome.iter().collect();
         outcomes.sort_by_key(|(_, v)| std::cmp::Reverse(**v));
         for (outcome, count) in &outcomes {
-            println!("  │    {outcome:<20} {count:>6}                    │");
+            info!("  │    {outcome:<20} {count:>6}                    │");
         }
 
-        println!("  ├──────────────────────────────────────────────────┤");
-        println!("  │  By Namespace:                                   │");
+        info!("  ├──────────────────────────────────────────────────┤");
+        info!("  │  By Namespace:                                   │");
         let mut namespaces: Vec<_> = self.by_namespace.iter().collect();
         namespaces.sort_by_key(|(_, v)| std::cmp::Reverse(**v));
         for (ns, count) in &namespaces {
-            println!("  │    {ns:<20} {count:>6}                    │");
+            info!("  │    {ns:<20} {count:>6}                    │");
         }
 
-        println!("  └──────────────────────────────────────────────────┘");
+        info!("  └──────────────────────────────────────────────────┘");
     }
 }
 
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║        STREAM MONITORING SIMULATION DEMO                    ║");
-    println!("╚══════════════════════════════════════════════════════════════╝\n");
+    tracing_subscriber::fmt::init();
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║        STREAM MONITORING SIMULATION DEMO                    ║");
+    info!("╚══════════════════════════════════════════════════════════════╝\n");
 
     // =========================================================================
     // SCENARIO 1: Normal Traffic Metrics
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 1: NORMAL TRAFFIC METRICS");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 1: NORMAL TRAFFIC METRICS");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  Simulate healthy traffic across multiple providers and");
-    println!("  aggregate events into dashboard metrics.\n");
+    info!("  Simulate healthy traffic across multiple providers and");
+    info!("  aggregate events into dashboard metrics.\n");
 
     let state: Arc<dyn acteon_state::StateStore> = Arc::new(MemoryStateStore::new());
     let lock: Arc<dyn acteon_state::DistributedLock> = Arc::new(MemoryDistributedLock::new());
@@ -170,7 +172,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let total_dispatched: usize = traffic.iter().map(|(_, _, _, c)| c).sum();
-    println!("  Dispatched {total_dispatched} actions across 4 namespaces\n");
+    info!("  Dispatched {total_dispatched} actions across 4 namespaces\n");
 
     // Ingest events into metrics.
     while let Ok(event) = stream_rx.try_recv() {
@@ -181,17 +183,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(metrics.total_events, total_dispatched);
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 1 passed]\n");
+    info!("\n  [Scenario 1 passed]\n");
 
     // =========================================================================
     // SCENARIO 2: Provider Failure with Circuit Breaker
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 2: PROVIDER FAILURE (CIRCUIT BREAKER)");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 2: PROVIDER FAILURE (CIRCUIT BREAKER)");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  A failing provider trips the circuit breaker. The monitoring");
-    println!("  dashboard sees 'failed' then 'circuit_open' outcomes.\n");
+    info!("  A failing provider trips the circuit breaker. The monitoring");
+    info!("  dashboard sees 'failed' then 'circuit_open' outcomes.\n");
 
     let state: Arc<dyn acteon_state::StateStore> = Arc::new(MemoryStateStore::new());
     let lock: Arc<dyn acteon_state::DistributedLock> = Arc::new(MemoryDistributedLock::new());
@@ -221,7 +223,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut metrics = DashboardMetrics::new();
 
     // Send healthy traffic.
-    println!("  Phase 1: Healthy traffic (5 actions to healthy-svc)");
+    info!("  Phase 1: Healthy traffic (5 actions to healthy-svc)");
     for i in 0..5 {
         let action = Action::new(
             "monitoring",
@@ -234,7 +236,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Send failing traffic to trip the circuit.
-    println!("  Phase 2: Failing traffic (5 actions to failing-svc)");
+    info!("  Phase 2: Failing traffic (5 actions to failing-svc)");
     for i in 0..5 {
         let action = Action::new(
             "monitoring",
@@ -244,7 +246,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             serde_json::json!({"seq": i}),
         );
         let outcome = gateway.dispatch(action, None).await?;
-        println!("    Request {}: {}", i + 1, short_outcome(&outcome));
+        info!("    Request {}: {}", i + 1, short_outcome(&outcome));
     }
 
     // Ingest events.
@@ -252,7 +254,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         metrics.ingest(&event);
     }
 
-    println!();
+    info!("");
     metrics.print_dashboard("PROVIDER FAILURE SCENARIO");
 
     // We expect: 5 executed + 3 failed + 2 circuit_open = 10 total
@@ -268,17 +270,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 2 passed]\n");
+    info!("\n  [Scenario 2 passed]\n");
 
     // =========================================================================
     // SCENARIO 3: Mixed Traffic with Rules
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 3: MIXED TRAFFIC WITH RULE ENFORCEMENT");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 3: MIXED TRAFFIC WITH RULE ENFORCEMENT");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  Traffic includes actions that get suppressed, rerouted, and");
-    println!("  executed normally. The dashboard tracks each outcome type.\n");
+    info!("  Traffic includes actions that get suppressed, rerouted, and");
+    info!("  executed normally. The dashboard tracks each outcome type.\n");
 
     let state: Arc<dyn acteon_state::StateStore> = Arc::new(MemoryStateStore::new());
     let lock: Arc<dyn acteon_state::DistributedLock> = Arc::new(MemoryDistributedLock::new());
@@ -305,7 +307,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut metrics = DashboardMetrics::new();
 
     // Normal actions.
-    println!("  Dispatching 5 normal email actions...");
+    info!("  Dispatching 5 normal email actions...");
     for i in 0..5 {
         let action = Action::new(
             "notifications",
@@ -318,7 +320,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Suppressed actions.
-    println!("  Dispatching 3 internal_only actions (will be suppressed)...");
+    info!("  Dispatching 3 internal_only actions (will be suppressed)...");
     for i in 0..3 {
         let action = Action::new(
             "notifications",
@@ -331,7 +333,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Rerouted actions.
-    println!("  Dispatching 2 critical-severity actions (will be rerouted to pagerduty)...");
+    info!("  Dispatching 2 critical-severity actions (will be rerouted to pagerduty)...");
     for i in 0..2 {
         let action = Action::new(
             "alerts",
@@ -348,23 +350,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         metrics.ingest(&event);
     }
 
-    println!();
+    info!("");
     metrics.print_dashboard("MIXED TRAFFIC WITH RULES");
 
     assert_eq!(metrics.total_events, 10);
-    println!("\n  email calls: {}", email.call_count());
-    println!("  slack calls: {}", slack.call_count());
-    println!("  pagerduty calls: {}", pagerduty.call_count());
+    info!("\n  email calls: {}", email.call_count());
+    info!("  slack calls: {}", slack.call_count());
+    info!("  pagerduty calls: {}", pagerduty.call_count());
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 3 passed]\n");
+    info!("\n  [Scenario 3 passed]\n");
 
     // =========================================================================
     // Summary
     // =========================================================================
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║              ALL SCENARIOS PASSED                           ║");
-    println!("╚══════════════════════════════════════════════════════════════╝");
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║              ALL SCENARIOS PASSED                           ║");
+    info!("╚══════════════════════════════════════════════════════════════╝");
 
     Ok(())
 }

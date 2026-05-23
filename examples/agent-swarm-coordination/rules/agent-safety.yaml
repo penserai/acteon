@@ -1,0 +1,222 @@
+# Deterministic safety rules for Claude Code agent.
+# These rules enforce permissions, block dangerous operations, and gate
+# high-risk actions behind human approval.
+
+rules:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # LAYER 0: Deterministic rules (microseconds, zero deps)
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # ── Block destructive shell commands ─────────────────────────────────────
+  - name: block-destructive-commands
+    priority: 1
+    description: "Block rm -rf, mkfs, dd, fork bombs, and chmod 777"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "claude-code-agent"
+        - field: action.action_type
+          eq: "execute_command"
+        - field: action.payload.command
+          matches: "(rm\\s+-rf|rm\\s+-r\\s+/|mkfs|dd\\s+if=|:\\(\\)\\{|chmod\\s+-R\\s+777)"
+    action:
+      type: suppress
+
+  # ── Block sensitive file reads via commands ─────────────────────────────
+  - name: block-sensitive-command-reads
+    priority: 1
+    description: "Block commands that read .env, .ssh, credentials, or shadow files"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "claude-code-agent"
+        - field: action.action_type
+          eq: "execute_command"
+        - field: action.payload.command
+          matches: "(cat|head|tail|less|more|bat)\\s.*(\\.env|\\.ssh/|/etc/shadow|credentials)"
+    action:
+      type: suppress
+
+  # ── Block sensitive file path reads (write_file actions) ────────────────
+  - name: block-sensitive-file-reads
+    priority: 1
+    description: "Block reading sensitive file paths"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "claude-code-agent"
+        - field: action.action_type
+          eq: "write_file"
+        - field: action.payload.file_path
+          matches: "(\\.env|\\.ssh/|credentials|/etc/shadow)"
+    action:
+      type: suppress
+
+  # ── Block writes to sensitive paths ──────────────────────────────────────
+  - name: block-sensitive-file-writes
+    priority: 1
+    description: "Block writing to .env, .ssh, CI config, or credential files"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "claude-code-agent"
+        - field: action.action_type
+          eq: "write_file"
+        - field: action.payload.file_path
+          matches: "(\\.env|\\.ssh|credentials|\\bci/|\\.github/workflows|\\.gitconfig|\\.bashrc|\\.zshrc)"
+    action:
+      type: suppress
+
+  # ── Block data exfiltration ──────────────────────────────────────────────
+  # Blocks curl/wget/nc to any external URL. In an agent context, all outbound
+  # HTTP should be routed through approved providers, not raw shell commands.
+  - name: block-data-exfiltration
+    priority: 1
+    description: "Block curl/wget/nc to any external URL"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "claude-code-agent"
+        - field: action.action_type
+          eq: "execute_command"
+        - field: action.payload.command
+          matches: "(curl|wget|fetch|nc|ncat)\\s.*https?://"
+    action:
+      type: suppress
+
+  # ── Block shell injection patterns ───────────────────────────────────────
+  - name: block-shell-injection
+    priority: 1
+    description: "Block command chaining that pipes to network tools"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "claude-code-agent"
+        - field: action.action_type
+          eq: "execute_command"
+        - field: action.payload.command
+          matches: "(;|&&|\\|\\||\\$\\(|`).*(curl|wget|nc|ncat|bash\\s+-c|python\\s+-c)"
+    action:
+      type: suppress
+
+  # ── Block known injection phrases in commands ──────────────────────────
+  - name: block-injection-phrases
+    priority: 1
+    description: "Block commands containing prompt injection patterns"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "claude-code-agent"
+        - field: action.action_type
+          eq: "execute_command"
+        - field: action.payload.command
+          contains: "ignore previous instructions"
+    action:
+      type: suppress
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # HUMAN-IN-THE-LOOP: Approval gates for high-risk operations
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # ── Git push requires human approval ─────────────────────────────────────
+  - name: approve-git-push
+    priority: 3
+    description: "Git push/force-push requires human approval"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "claude-code-agent"
+        - field: action.action_type
+          eq: "execute_command"
+        - field: action.payload.command
+          matches: "git\\s+push"
+    action:
+      type: request_approval
+      notify_provider: "claude-code"
+      timeout_seconds: 600
+      message: "Claude Code wants to push to a remote repository. Review and approve."
+
+  # ── Deploy commands require human approval ───────────────────────────────
+  - name: approve-deploy-commands
+    priority: 3
+    description: "Deploy, kubectl, and terraform commands need approval"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "claude-code-agent"
+        - field: action.action_type
+          eq: "execute_command"
+        - field: action.payload.command
+          matches: "(kubectl\\s+apply|terraform\\s+apply|docker\\s+push|deploy)"
+    action:
+      type: request_approval
+      notify_provider: "claude-code"
+      timeout_seconds: 600
+      message: "Claude Code wants to run a deploy command. Review and approve."
+
+  # ── Package install requires human approval ──────────────────────────────
+  - name: approve-package-install
+    priority: 3
+    description: "Package installs need approval to prevent supply chain attacks"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "claude-code-agent"
+        - field: action.action_type
+          eq: "execute_command"
+        - field: action.payload.command
+          matches: "(pip\\s+install|npm\\s+install|cargo\\s+add|brew\\s+install)"
+    action:
+      type: request_approval
+      notify_provider: "claude-code"
+      timeout_seconds: 300
+      message: "Claude Code wants to install packages. Verify the packages are safe."
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # THROTTLE: Rate limiting
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # ── Rate-limit command execution ───────────────────────────────────────
+  - name: throttle-commands
+    priority: 5
+    description: "Allow at most 12 commands per minute to prevent runaway loops"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "claude-code-agent"
+        - field: action.action_type
+          eq: "execute_command"
+    action:
+      type: throttle
+      max_count: 12
+      window_seconds: 60
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ALLOW: Permitted operations
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # ── Allow normal coding operations ───────────────────────────────────────
+  - name: allow-coding-ops
+    priority: 15
+    description: "Allow file writes, edits, and safe commands"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "claude-code-agent"
+        - field: action.action_type
+          in_list: ["write_file", "execute_command", "web_access", "spawn_agent"]
+    action:
+      type: allow
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # CATCH-ALL: Deny by default
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: deny-unmatched
+    priority: 100
+    description: "Block any action not explicitly allowed"
+    condition:
+      field: action.tenant
+      eq: "claude-code-agent"
+    action:
+      type: suppress

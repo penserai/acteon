@@ -50,14 +50,43 @@ pub enum RuleAction {
         fingerprint_fields: Vec<String>,
     },
     /// Group events for batched notification.
+    ///
+    /// ## Notification scheduling
+    ///
+    /// Grouping uses three scheduling timers:
+    ///
+    /// - **`group_wait_seconds`**: initial quiet period from first event
+    ///   to first flush. Lets related events collect into one batch.
+    /// - **`group_interval_seconds`**: wait between successive flushes
+    ///   when new events arrive in an already-flushed group. Only
+    ///   meaningful when `repeat_interval_seconds` is also set — without
+    ///   persistence, the group is deleted after flush and the next
+    ///   event starts a fresh `group_wait` cycle.
+    /// - **`repeat_interval_seconds`**: optional. When set, the group
+    ///   is kept alive after flush and re-flushes every
+    ///   `repeat_interval_seconds` even with no new events, sending
+    ///   the same event set as a "still active" reminder. When unset
+    ///   (the default), the group is ephemeral and is deleted after
+    ///   its first flush.
+    /// - **`max_group_size`**: hard cap on the number of events held by
+    ///   the group. When a new event arrives at capacity, the oldest
+    ///   event is dropped.
     Group {
         /// Fields to group events by.
         group_by: Vec<String>,
-        /// Seconds to wait before sending first notification.
+        /// Seconds to wait between the first event and the first flush.
         group_wait_seconds: u64,
-        /// Minimum seconds between notifications for same group.
+        /// Seconds to wait between successive flushes when new events
+        /// arrive in a persistent group. Only honored when
+        /// `repeat_interval_seconds` is set.
         group_interval_seconds: u64,
-        /// Maximum events in a single group.
+        /// Optional seconds between forced re-flushes for a persistent
+        /// group with no new events. When `None`, the group is deleted
+        /// after its first flush (Phase-1 behavior).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        repeat_interval_seconds: Option<u64>,
+        /// Maximum events held by a single group before dropping the
+        /// oldest.
         max_group_size: usize,
         /// Optional template name for group notification.
         template: Option<String>,
@@ -95,6 +124,11 @@ pub enum RuleSource {
     Api,
     /// Defined inline in code.
     Inline,
+    /// Loaded from a WASM plugin.
+    Wasm {
+        /// The plugin name that provided this rule.
+        plugin: Option<String>,
+    },
 }
 
 /// A single rule combining a condition expression with an action.
@@ -129,6 +163,19 @@ pub struct Rule {
     /// Overrides the gateway-level `default_timezone`.
     #[serde(default)]
     pub timezone: Option<String>,
+    /// Names of [`TimeInterval`](acteon_core::TimeInterval)s during which
+    /// this rule's verdict is *muted* — if any listed interval is currently
+    /// matched, the dispatch short-circuits to `ActionOutcome::Muted`
+    /// instead of executing the verdict. Mirrors Alertmanager's
+    /// `mute_time_intervals` on routes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mute_time_intervals: Vec<String>,
+    /// Names of [`TimeInterval`](acteon_core::TimeInterval)s during which
+    /// this rule is *active*. If non-empty and **none** of the listed
+    /// intervals is currently matched, the dispatch is muted. Mirrors
+    /// Alertmanager's `active_time_intervals`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub active_time_intervals: Vec<String>,
 }
 
 impl Rule {
@@ -147,6 +194,8 @@ impl Rule {
             version: 0,
             metadata: HashMap::new(),
             timezone: None,
+            mute_time_intervals: Vec::new(),
+            active_time_intervals: Vec::new(),
         }
     }
 
@@ -196,6 +245,21 @@ impl Rule {
     #[must_use]
     pub fn with_timezone(mut self, tz: impl Into<String>) -> Self {
         self.timezone = Some(tz.into());
+        self
+    }
+
+    /// Set the list of time intervals during which this rule is muted.
+    #[must_use]
+    pub fn with_mute_time_intervals(mut self, intervals: Vec<String>) -> Self {
+        self.mute_time_intervals = intervals;
+        self
+    }
+
+    /// Set the list of time intervals during which this rule is active.
+    /// If non-empty and none match at dispatch time, the action is muted.
+    #[must_use]
+    pub fn with_active_time_intervals(mut self, intervals: Vec<String>) -> Self {
+        self.active_time_intervals = intervals;
         self
     }
 }
@@ -273,6 +337,7 @@ mod tests {
                 group_by: vec!["cluster".into(), "severity".into()],
                 group_wait_seconds: 30,
                 group_interval_seconds: 300,
+                repeat_interval_seconds: Some(3600),
                 max_group_size: 100,
                 template: Some("alert_group".into()),
             },

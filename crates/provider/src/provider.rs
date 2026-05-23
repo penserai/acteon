@@ -1,6 +1,7 @@
 use acteon_core::{Action, ProviderResponse};
 use async_trait::async_trait;
 
+use crate::context::DispatchContext;
 use crate::error::ProviderError;
 
 /// Strongly-typed provider trait with native `async fn`.
@@ -21,6 +22,27 @@ pub trait Provider: Send + Sync {
 
     /// Perform a health check to verify the provider is operational.
     fn health_check(&self) -> impl std::future::Future<Output = Result<(), ProviderError>> + Send;
+
+    /// Whether this provider supports file attachments.
+    ///
+    /// Defaults to `false`. Providers that handle attachments (email, Slack,
+    /// Discord, webhook) should override this to return `true`.
+    fn supports_attachments(&self) -> bool {
+        false
+    }
+
+    /// Execute the given action with additional dispatch context (e.g. resolved attachments).
+    ///
+    /// The default implementation ignores the context and delegates to [`execute`](Self::execute).
+    /// Providers that support attachments should override this to handle the
+    /// resolved blobs from [`DispatchContext::attachments`].
+    fn execute_with_context(
+        &self,
+        action: &Action,
+        _ctx: &DispatchContext,
+    ) -> impl std::future::Future<Output = Result<ProviderResponse, ProviderError>> + Send {
+        self.execute(action)
+    }
 }
 
 /// Object-safe provider trait for use behind `Arc<dyn DynProvider>`.
@@ -38,6 +60,20 @@ pub trait DynProvider: Send + Sync {
 
     /// Perform a health check to verify the provider is operational.
     async fn health_check(&self) -> Result<(), ProviderError>;
+
+    /// Whether this provider supports file attachments.
+    fn supports_attachments(&self) -> bool {
+        false
+    }
+
+    /// Execute the given action with additional dispatch context.
+    async fn execute_with_context(
+        &self,
+        action: &Action,
+        _ctx: &DispatchContext,
+    ) -> Result<ProviderResponse, ProviderError> {
+        self.execute(action).await
+    }
 }
 
 /// Blanket implementation: any type that implements [`Provider`] also
@@ -54,6 +90,18 @@ impl<T: Provider + Sync> DynProvider for T {
 
     async fn health_check(&self) -> Result<(), ProviderError> {
         Provider::health_check(self).await
+    }
+
+    fn supports_attachments(&self) -> bool {
+        Provider::supports_attachments(self)
+    }
+
+    async fn execute_with_context(
+        &self,
+        action: &Action,
+        ctx: &DispatchContext,
+    ) -> Result<ProviderResponse, ProviderError> {
+        Provider::execute_with_context(self, action, ctx).await
     }
 }
 

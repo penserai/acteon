@@ -1,0 +1,35 @@
+[package]
+name = "acteon-gcp"
+description = "GCP service providers for Acteon (Pub/Sub, Cloud Storage)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+pubsub = ["dep:google-cloud-pubsub"]
+storage = ["dep:google-cloud-storage"]
+full = ["pubsub", "storage"]
+
+[dependencies]
+acteon-core = { workspace = true }
+acteon-provider = { workspace = true }
+google-cloud-pubsub = { workspace = true, optional = true }
+google-cloud-storage = { workspace = true, optional = true }
+google-cloud-auth = { workspace = true }
+async-trait = { workspace = true }
+dashmap = { workspace = true }
+base64 = { workspace = true }
+bytes = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[lints]
+workspace = true

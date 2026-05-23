@@ -1,9 +1,56 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
+
+/// The kind of event an [`AuditRecord`] describes.
+///
+/// The audit pipeline was originally action-centric — every record was
+/// a dispatched action's lifecycle. A2A Task transitions reuse the same
+/// [`AuditRecord`] schema (and therefore the same hash-chain and
+/// compliance machinery) rather than a parallel table; this enum is the
+/// taxonomy that distinguishes them.
+///
+/// There is deliberately no dedicated `event_kind` column on
+/// [`AuditRecord`]: the discriminator rides in the existing
+/// `action_type` field via [`AuditEventKind::as_action_type`], so no
+/// cross-backend schema migration is needed. Audit queries filter A2A
+/// task events with `action_type = "a2a.task.transition"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum AuditEventKind {
+    /// A dispatched action's lifecycle — the original audit use case.
+    /// Real action records carry the action's own type (`send_email`,
+    /// …) in `action_type`, so this variant's discriminator string is
+    /// only a fallback label.
+    #[default]
+    ActionDispatch,
+    /// An A2A Task lifecycle event recorded by the gateway Task Engine
+    /// (creation, state transition, history append, artifact update,
+    /// stale-task reap, …).
+    A2aTaskTransition,
+}
+
+impl AuditEventKind {
+    /// The `action_type` discriminator string stamped on records of
+    /// this kind. For [`AuditEventKind::A2aTaskTransition`] this is the
+    /// stable value audit queries filter on.
+    #[must_use]
+    pub fn as_action_type(self) -> &'static str {
+        match self {
+            Self::ActionDispatch => "action_dispatch",
+            Self::A2aTaskTransition => "a2a.task.transition",
+        }
+    }
+}
+
+/// The `provider` value stamped on A2A Task audit records. Action
+/// records carry a real provider; Task transitions are not provider
+/// dispatches, so they share this synthetic marker.
+pub const A2A_AUDIT_PROVIDER: &str = "a2a";
 
 /// A single audit record capturing the full lifecycle of a dispatched action.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct AuditRecord {
     /// Unique identifier for this audit record (UUID v7).
     pub id: String,
@@ -62,10 +109,46 @@ pub struct AuditRecord {
     /// Authentication method used (`"jwt"`, `"api_key"`, `"anonymous"`).
     #[serde(default)]
     pub auth_method: String,
+
+    // -- Hash chain (compliance mode) --
+    /// `SHA-256` hex digest of the canonicalized record content.
+    #[serde(default)]
+    pub record_hash: Option<String>,
+    /// Hash of the previous record in the chain (for hash-chain integrity).
+    #[serde(default)]
+    pub previous_hash: Option<String>,
+    /// Monotonic sequence number within the `(namespace, tenant)` pair.
+    #[serde(default)]
+    pub sequence_number: Option<u64>,
+
+    /// Attachment metadata (`id`, `name`, `filename`, `content_type`, `size_bytes`)
+    /// for each attachment on the action. Never contains binary data.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachment_metadata: Vec<serde_json::Value>,
+
+    // -- Action signing --
+    /// Ed25519 signature over the action's canonical bytes, base64-encoded.
+    #[serde(default)]
+    pub signature: Option<String>,
+    /// Identifier of the key that produced the signature.
+    #[serde(default)]
+    pub signer_id: Option<String>,
+    /// Optional key identifier for rotation. When the same `signer_id`
+    /// has multiple active keys, `kid` records which one signed this
+    /// action. `None` for legacy single-key signatures.
+    #[serde(default)]
+    pub kid: Option<String>,
+    /// SHA-256 hex digest of the action's canonical bytes at dispatch
+    /// time. Stored so the verify endpoint can confirm the signature
+    /// without needing to reconstruct the full original action (which
+    /// the audit record does not carry in its entirety).
+    #[serde(default)]
+    pub canonical_hash: Option<String>,
 }
 
 /// Query parameters for searching audit records.
-#[derive(Debug, Default, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct AuditQuery {
     /// Filter by namespace.
     pub namespace: Option<String>,
@@ -85,6 +168,18 @@ pub struct AuditQuery {
     pub caller_id: Option<String>,
     /// Filter by chain execution ID.
     pub chain_id: Option<String>,
+    /// Filter by the `signer_id` recorded on the audit entry. Useful
+    /// during incident response to list every action a particular
+    /// signer dispatched (e.g. a compromised key before its rotation).
+    /// Unsigned actions never match.
+    #[serde(default)]
+    pub signer_id: Option<String>,
+    /// Filter by the `kid` (key identifier) recorded on the audit
+    /// entry. Combined with `signer_id`, narrows a query to a specific
+    /// (signer, key) pair across a rotation window. Unsigned actions
+    /// and pre-rotation entries with no `kid` never match.
+    #[serde(default)]
+    pub kid: Option<String>,
     /// Only records dispatched at or after this time.
     pub from: Option<DateTime<Utc>>,
     /// Only records dispatched at or before this time.
@@ -92,7 +187,24 @@ pub struct AuditQuery {
     /// Maximum number of records to return (default 50, max 1000).
     pub limit: Option<u32>,
     /// Number of records to skip for pagination.
+    ///
+    /// Backends fall back to offset-based pagination only when no
+    /// `cursor` is supplied. Prefer `cursor` for deep pagination — large
+    /// offsets degrade linearly on every backend.
     pub offset: Option<u32>,
+    /// Opaque pagination cursor returned by the previous page.
+    ///
+    /// When set, backends use keyset pagination from the cursor's sort
+    /// key and ignore `offset`. Cursors must be round-tripped verbatim
+    /// from a prior `AuditPage::next_cursor`; do not construct or
+    /// modify them on the client side.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    /// When true, sort by `sequence_number ASC` instead of the default
+    /// `dispatched_at DESC`. Used by hash chain verification to iterate
+    /// records in chain order with bounded memory.
+    #[serde(default)]
+    pub sort_by_sequence_asc: bool,
 }
 
 impl AuditQuery {
@@ -108,14 +220,47 @@ impl AuditQuery {
 }
 
 /// A paginated page of audit records.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+///
+/// # Detecting the last page
+///
+/// Always rely on `next_cursor`: when `next_cursor.is_none()` you have
+/// reached the end of the result set. `records.len() < limit` is *not*
+/// a reliable end-of-stream signal because filter expressions on
+/// `DynamoDB` and Elasticsearch can produce short-but-not-final pages.
+///
+/// # `total` semantics
+///
+/// `total` is intentionally a *best-effort* field. It is populated only
+/// when the backend can compute it cheaply, and is `None` whenever the
+/// caller paginated with a `cursor` (the count would defeat the
+/// purpose of cursor pagination). Concrete behaviour by backend:
+///
+/// | Backend         | Offset path (`cursor` is `None`) | Cursor path  |
+/// |-----------------|----------------------------------|--------------|
+/// | Memory          | `Some(matches)`                  | `None`       |
+/// | Postgres        | `Some(SELECT COUNT(*))`          | `None`       |
+/// | `ClickHouse`    | `Some(count())`                  | `None`       |
+/// | Elasticsearch   | `Some(track_total_hits)`         | `None`       |
+/// | `DynamoDB`      | `None` (count was the bottleneck)| `None`       |
+///
+/// Treat `total` as a UI hint, not a state-of-the-world fact. Do not
+/// build pagination control flow on it — use `next_cursor`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct AuditPage {
     /// The records matching the query.
     pub records: Vec<AuditRecord>,
-    /// Total number of records matching the query (before pagination).
-    pub total: u64,
+    /// Best-effort total number of matching records. See the
+    /// [type-level docs](AuditPage) for when this is populated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<u64>,
     /// The limit used for this page.
     pub limit: u32,
-    /// The offset used for this page.
+    /// The offset used for this page (0 when cursor pagination is used).
     pub offset: u32,
+    /// Opaque cursor pointing at the next page, or `None` when this is
+    /// the last page. **This is the authoritative end-of-stream
+    /// signal** — `records.len() < limit` is not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
 }

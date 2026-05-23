@@ -11,6 +11,8 @@ import {
   BatchResult,
   ReloadResult,
   RuleInfo,
+  EvaluateRulesRequest,
+  EvaluateRulesResponse,
   EventQuery,
   EventState,
   EventListResponse,
@@ -25,6 +27,20 @@ import {
   ReplayResult,
   ReplaySummary,
   ReplayQuery,
+  CreateRecurringAction,
+  CreateRecurringResponse,
+  RecurringFilter,
+  RecurringSummary,
+  ListRecurringResponse,
+  RecurringDetail,
+  UpdateRecurringAction,
+  ListChainsResponse,
+  ChainDetailResponse,
+  DlqStatsResponse,
+  DlqDrainResponse,
+  SseEvent,
+  SubscribeOptions,
+  StreamOptions,
   actionToRequest,
   auditQueryToParams,
   eventQueryToParams,
@@ -45,8 +61,181 @@ import {
   parseReplayResult,
   parseReplaySummary,
   replayQueryToParams,
+  createRecurringActionToRequest,
+  parseCreateRecurringResponse,
+  recurringFilterToParams,
+  parseListRecurringResponse,
+  parseRecurringDetail,
+  updateRecurringActionToRequest,
+  SwarmRunFilter,
+  SwarmRunSnapshot,
+  ListSwarmRunsResponse,
+  swarmRunFilterToParams,
+  parseSwarmRunSnapshot,
+  parseListSwarmRunsResponse,
+  parseListChainsResponse,
+  parseChainDetailResponse,
+  DagResponse,
+  parseDagResponse,
+  ChainHistoryResponse,
+  parseChainHistoryResponse,
+  parseDlqStatsResponse,
+  parseDlqDrainResponse,
+  CreateQuotaRequest,
+  createQuotaRequestToApi,
+  UpdateQuotaRequest,
+  updateQuotaRequestToApi,
+  QuotaPolicy,
+  parseQuotaPolicy,
+  ListQuotasResponse,
+  parseListQuotasResponse,
+  QuotaUsage,
+  parseQuotaUsage,
+  SilenceMatcher,
+  CreateSilenceRequest,
+  createSilenceRequestToApi,
+  UpdateSilenceRequest,
+  updateSilenceRequestToApi,
+  Silence,
+  parseSilence,
+  ListSilencesResponse,
+  parseListSilencesResponse,
+  CreateTimeIntervalRequest,
+  createTimeIntervalRequestToApi,
+  UpdateTimeIntervalRequest,
+  updateTimeIntervalRequestToApi,
+  TimeInterval,
+  parseTimeInterval,
+  ListTimeIntervalsResponse,
+  parseListTimeIntervalsResponse,
+  CreateRetentionRequest,
+  createRetentionRequestToApi,
+  UpdateRetentionRequest,
+  updateRetentionRequestToApi,
+  RetentionPolicy,
+  parseRetentionPolicy,
+  ListRetentionResponse,
+  parseListRetentionResponse,
+  ProviderHealthStatus,
+  ListProviderHealthResponse,
+  parseListProviderHealthResponse,
+  WasmPlugin,
+  RegisterPluginRequest,
+  registerPluginRequestToApi,
+  ListPluginsResponse,
+  parseListPluginsResponse,
+  parseWasmPlugin,
+  PluginInvocationRequest,
+  PluginInvocationResponse,
+  parsePluginInvocationResponse,
+  ComplianceStatus,
+  parseComplianceStatus,
+  HashChainVerification,
+  parseHashChainVerification,
+  VerifyHashChainRequest,
+  TemplateInfo,
+  parseTemplateInfo,
+  CreateTemplateRequest,
+  createTemplateRequestToApi,
+  UpdateTemplateRequest,
+  updateTemplateRequestToApi,
+  ListTemplatesResponse,
+  parseListTemplatesResponse,
+  TemplateProfileInfo,
+  parseTemplateProfileInfo,
+  CreateProfileRequest,
+  createProfileRequestToApi,
+  UpdateProfileRequest,
+  updateProfileRequestToApi,
+  ListProfilesResponse,
+  parseListProfilesResponse,
+  RenderPreviewRequest,
+  RenderPreviewResponse,
+  parseRenderPreviewResponse,
+  AnalyticsQuery,
+  AnalyticsResponse,
+  analyticsQueryToParams,
+  parseAnalyticsResponse,
+  CoverageQuery,
+  CoverageReport,
+  parseCoverageReport,
+  SigningKeysResponse,
+  parseSigningKeysResponse,
 } from "./models.js";
 import { ActeonError, ApiError, ConnectionError, HttpError } from "./errors.js";
+import {
+  A2A_HEADERS,
+  a2aSegment,
+  unwrapJsonRpc,
+  type JsonRpcReply,
+} from "./a2a.js";
+import { readFileSync } from "node:fs";
+import { Agent as HttpsAgent } from "node:https";
+import {
+  type AppendBusConversationMessage,
+  type BusAgent,
+  type BusApprovalDecision,
+  type BusApprovalDecisionResponse,
+  type BusApprovalStatus,
+  type BusApprovalView,
+  type BusConsumeItem,
+  type ReconnectConfig,
+  type BusConversation,
+  type BusLag,
+  type BusReplayResponse,
+  type BusSchema,
+  type BusStreamEnvelopeReceipt,
+  type BusStreamItem,
+  type BusSubscription,
+  type BusToolEnvelopeReceipt,
+  type BusToolResultLookup,
+  type BusToolResultLookupParams,
+  type BusTopic,
+  type CreateBusConversation,
+  type CreateBusSubscription,
+  type CreateBusTopic,
+  type PostBusStreamChunk,
+  type PostBusStreamEnd,
+  type PostBusToolCall,
+  type PostBusToolCallOutcome,
+  type PostBusToolResult,
+  type PublishBusMessage,
+  type PublishReceipt,
+  type RegisterBusAgent,
+  type RegisterBusSchema,
+  type SetBusAgentAdminState,
+  appendBusConversationMessageBody,
+  busApprovalDecisionBody,
+  busToolResultLookupParams,
+  createBusConversationBody,
+  createBusSubscriptionBody,
+  createBusTopicBody,
+  parseBusAgent,
+  parseBusApprovalDecisionResponse,
+  parseBusApprovalParkedReceipt,
+  parseBusApprovalView,
+  parseBusConsumedMessage,
+  parseBusConversation,
+  parseBusLag,
+  parseBusReplayResponse,
+  parseBusSchema,
+  parseBusStreamEnvelopeReceipt,
+  parseBusSubscription,
+  parseBusToolEnvelopeReceipt,
+  parseBusToolResultLookup,
+  parseBusTopic,
+  parsePublishReceipt,
+  parseStreamChunkEnvelope,
+  parseStreamEndEnvelope,
+  postBusStreamChunkBody,
+  postBusStreamEndBody,
+  postBusToolCallBody,
+  postBusToolResultBody,
+  publishBusMessageBody,
+  registerBusAgentBody,
+  registerBusSchemaBody,
+  setBusAgentAdminStateBody,
+} from "./bus_models.js";
 
 /**
  * Configuration options for the Acteon client.
@@ -56,6 +245,14 @@ export interface ActeonClientOptions {
   timeout?: number;
   /** Optional API key for authentication. */
   apiKey?: string;
+  /** Path to a custom CA certificate file (PEM) for server verification. */
+  caCertPath?: string;
+  /** Path to client certificate file (PEM) for mTLS. */
+  clientCertPath?: string;
+  /** Path to client private key file (PEM) for mTLS. */
+  clientKeyPath?: string;
+  /** Skip certificate verification (dev/test only). Default: true. */
+  rejectUnauthorized?: boolean;
 }
 
 /**
@@ -78,15 +275,76 @@ export interface ActeonClientOptions {
  * }
  * ```
  */
+/**
+ * Internal envelope yielded by `connectBusSse`. Either a complete
+ * SSE frame or a keep-alive comment (which the bus consumers surface
+ * to callers as a liveness signal).
+ */
+type BusSseEnvelope =
+  | { kind: "frame"; event?: string; id?: string; data: string }
+  | { kind: "keepAlive" };
+
+function decodeJsonOrPassthrough(data: string): unknown {
+  try {
+    return JSON.parse(data);
+  } catch {
+    return data;
+  }
+}
+
+/**
+ * Exponential backoff capped at `maxBackoffMs`. The shift is bounded
+ * at 20 so wild attempt counters can't overflow; matches the Rust
+ * client's `backoff_for`.
+ */
+function reconnectBackoffMs(
+  attempt: number,
+  initialBackoffMs: number,
+  maxBackoffMs: number,
+): number {
+  const shift = Math.min(attempt, 20);
+  const exp = initialBackoffMs * Math.pow(2, shift);
+  return Math.min(exp, maxBackoffMs);
+}
+
+function extractErrorMessage(data: string): string {
+  const decoded = decodeJsonOrPassthrough(data);
+  if (
+    typeof decoded === "object" &&
+    decoded !== null &&
+    typeof (decoded as Record<string, unknown>).error === "string"
+  ) {
+    return (decoded as Record<string, unknown>).error as string;
+  }
+  return data;
+}
+
 export class ActeonClient {
   private readonly baseUrl: string;
   private readonly timeout: number;
   private readonly apiKey?: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private readonly dispatcher?: any;
 
   constructor(baseUrl: string, options: ActeonClientOptions = {}) {
     this.baseUrl = baseUrl.replace(/\/$/, "");
     this.timeout = options.timeout ?? 30000;
     this.apiKey = options.apiKey;
+
+    if (options.caCertPath || options.clientCertPath || options.rejectUnauthorized === false) {
+      const agentOptions: Record<string, unknown> = { keepAlive: true };
+      if (options.caCertPath) {
+        agentOptions.ca = readFileSync(options.caCertPath);
+      }
+      if (options.clientCertPath && options.clientKeyPath) {
+        agentOptions.cert = readFileSync(options.clientCertPath);
+        agentOptions.key = readFileSync(options.clientKeyPath);
+      }
+      if (options.rejectUnauthorized === false) {
+        agentOptions.rejectUnauthorized = false;
+      }
+      this.dispatcher = new HttpsAgent(agentOptions);
+    }
   }
 
   private headers(): Record<string, string> {
@@ -105,6 +363,13 @@ export class ActeonClient {
     options?: {
       body?: unknown;
       params?: URLSearchParams;
+      extraHeaders?: Record<string, string>;
+      /**
+       * When true, suppress the `Authorization` header. Used by the
+       * A2A unauthenticated discovery endpoint
+       * (`/.well-known/agent.json`), which per spec is anonymous.
+       */
+      skipAuth?: boolean;
     }
   ): Promise<Response> {
     let url = `${this.baseUrl}${path}`;
@@ -116,12 +381,23 @@ export class ActeonClient {
     const timeoutId = setTimeout(() => controller.abort(), this.timeout);
 
     try {
-      const response = await fetch(url, {
+      const baseHeaders = options?.skipAuth
+        ? { "Content-Type": "application/json" }
+        : this.headers();
+      const headers: Record<string, string> = {
+        ...baseHeaders,
+        ...(options?.extraHeaders ?? {}),
+      };
+      const fetchOptions: RequestInit & { dispatcher?: unknown } = {
         method,
-        headers: this.headers(),
+        headers,
         body: options?.body ? JSON.stringify(options.body) : undefined,
         signal: controller.signal,
-      });
+      };
+      if (this.dispatcher) {
+        (fetchOptions as Record<string, unknown>).dispatcher = this.dispatcher;
+      }
+      const response = await fetch(url, fetchOptions);
       return response;
     } catch (error) {
       if (error instanceof Error) {
@@ -149,6 +425,64 @@ export class ActeonClient {
       return response.ok;
     } catch {
       return false;
+    }
+  }
+
+  // =========================================================================
+  // Signing key discovery (JWKS-style)
+  // =========================================================================
+
+  /**
+   * Fetch the server's active signing keyring.
+   *
+   * Calls `GET /.well-known/acteon-signing-keys`, a public,
+   * unauthenticated endpoint that publishes the public half of
+   * every `(signer_id, kid)` pair the server will accept
+   * signatures from. Useful for:
+   *
+   * - verifying dispatched actions independently without pinning
+   *   public keys at deploy time
+   * - detecting a rotation in progress — a signer with more than
+   *   one entry means the operator is staging a rotation and the
+   *   client should start sending the new `kid`
+   *
+   * Returns a response with an empty `keys` array when signing is
+   * disabled on the server.
+   *
+   * @throws {HttpError} If the server returns a non-2xx status.
+   */
+  async fetchSigningKeys(): Promise<SigningKeysResponse> {
+    const response = await this.request(
+      "GET",
+      "/.well-known/acteon-signing-keys",
+    );
+    if (!response.ok) {
+      throw new HttpError(
+        response.status,
+        `Failed to fetch signing keys: ${response.status}`,
+      );
+    }
+    // Wrap both JSON decode failures (proxy returns 200 OK with an
+    // HTML body) and shape validation failures from
+    // parseSigningKeysResponse in a typed ConnectionError so
+    // callers see "malformed signing keys response" instead of a
+    // raw SyntaxError.
+    let data: Record<string, unknown>;
+    try {
+      data = (await response.json()) as Record<string, unknown>;
+    } catch (e) {
+      throw new ConnectionError(
+        `malformed signing keys response: ${(e as Error).message}`,
+      );
+    }
+    try {
+      return parseSigningKeysResponse(data);
+    } catch (e) {
+      // parseSigningKeysResponse throws plain Errors with a
+      // "malformed signing keys response:" prefix; rewrap as a
+      // typed ConnectionError so `catch (e: ConnectionError)`
+      // works on the caller side.
+      throw new ConnectionError((e as Error).message);
     }
   }
 
@@ -270,6 +604,25 @@ export class ActeonClient {
 
     if (!response.ok) {
       throw new HttpError(response.status, "Failed to set rule enabled");
+    }
+  }
+
+  /**
+   * Evaluate rules against a test action without dispatching.
+   *
+   * This is the Rule Playground endpoint. It evaluates all matching rules
+   * against the provided action parameters and returns a detailed trace
+   * of each rule evaluation.
+   */
+  async evaluateRules(request: EvaluateRulesRequest): Promise<EvaluateRulesResponse> {
+    const response = await this.request("POST", "/v1/rules/evaluate", {
+      body: request,
+    });
+
+    if (response.ok) {
+      return (await response.json()) as EvaluateRulesResponse;
+    } else {
+      throw new HttpError(response.status, "Failed to evaluate rules");
     }
   }
 
@@ -564,5 +917,2357 @@ export class ActeonClient {
     } else {
       throw new HttpError(response.status, "Failed to list approvals");
     }
+  }
+
+  // =========================================================================
+  // Recurring Actions
+  // =========================================================================
+
+  /**
+   * Create a recurring action.
+   */
+  async createRecurring(recurring: CreateRecurringAction): Promise<CreateRecurringResponse> {
+    const response = await this.request("POST", "/v1/recurring", {
+      body: createRecurringActionToRequest(recurring),
+    });
+
+    if (response.status === 201) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseCreateRecurringResponse(data);
+    } else {
+      const data = (await response.json()) as Record<string, unknown>;
+      throw new ApiError(
+        (data.code as string) ?? "UNKNOWN",
+        (data.message as string) ?? "Unknown error",
+        (data.retryable as boolean) ?? false
+      );
+    }
+  }
+
+  /**
+   * List recurring actions.
+   */
+  async listRecurring(filter?: RecurringFilter): Promise<ListRecurringResponse> {
+    const params = filter ? recurringFilterToParams(filter) : undefined;
+    const response = await this.request("GET", "/v1/recurring", { params });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseListRecurringResponse(data);
+    } else {
+      throw new HttpError(response.status, "Failed to list recurring actions");
+    }
+  }
+
+  /**
+   * Get details of a specific recurring action.
+   */
+  async getRecurring(recurringId: string, namespace: string, tenant: string): Promise<RecurringDetail | null> {
+    const params = new URLSearchParams();
+    params.set("namespace", namespace);
+    params.set("tenant", tenant);
+    const response = await this.request("GET", `/v1/recurring/${recurringId}`, { params });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseRecurringDetail(data);
+    } else if (response.status === 404) {
+      return null;
+    } else {
+      throw new HttpError(response.status, "Failed to get recurring action");
+    }
+  }
+
+  /**
+   * Update a recurring action.
+   */
+  async updateRecurring(recurringId: string, update: UpdateRecurringAction): Promise<RecurringDetail> {
+    const response = await this.request("PUT", `/v1/recurring/${recurringId}`, {
+      body: updateRecurringActionToRequest(update),
+    });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseRecurringDetail(data);
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Recurring action not found: ${recurringId}`);
+    } else {
+      const data = (await response.json()) as Record<string, unknown>;
+      throw new ApiError(
+        (data.code as string) ?? "UNKNOWN",
+        (data.message as string) ?? "Unknown error",
+        (data.retryable as boolean) ?? false
+      );
+    }
+  }
+
+  /**
+   * Delete a recurring action.
+   */
+  async deleteRecurring(recurringId: string, namespace: string, tenant: string): Promise<void> {
+    const params = new URLSearchParams();
+    params.set("namespace", namespace);
+    params.set("tenant", tenant);
+    const response = await this.request("DELETE", `/v1/recurring/${recurringId}`, { params });
+
+    if (response.status === 204) {
+      return;
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Recurring action not found: ${recurringId}`);
+    } else {
+      throw new HttpError(response.status, "Failed to delete recurring action");
+    }
+  }
+
+  /**
+   * Pause a recurring action.
+   */
+  async pauseRecurring(recurringId: string, namespace: string, tenant: string): Promise<RecurringDetail> {
+    const response = await this.request("POST", `/v1/recurring/${recurringId}/pause`, {
+      body: { namespace, tenant },
+    });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseRecurringDetail(data);
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Recurring action not found: ${recurringId}`);
+    } else if (response.status === 409) {
+      throw new HttpError(409, "Recurring action is already paused");
+    } else {
+      throw new HttpError(response.status, "Failed to pause recurring action");
+    }
+  }
+
+  /**
+   * Resume a paused recurring action.
+   */
+  async resumeRecurring(recurringId: string, namespace: string, tenant: string): Promise<RecurringDetail> {
+    const response = await this.request("POST", `/v1/recurring/${recurringId}/resume`, {
+      body: { namespace, tenant },
+    });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseRecurringDetail(data);
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Recurring action not found: ${recurringId}`);
+    } else if (response.status === 409) {
+      throw new HttpError(409, "Recurring action is already active");
+    } else {
+      throw new HttpError(response.status, "Failed to resume recurring action");
+    }
+  }
+
+  // =========================================================================
+  // Swarm runs
+  // =========================================================================
+
+  /**
+   * List swarm runs tracked by the server-side registry.
+   */
+  async listSwarmRuns(filter?: SwarmRunFilter): Promise<ListSwarmRunsResponse> {
+    const params = filter ? swarmRunFilterToParams(filter) : undefined;
+    const response = await this.request("GET", "/v1/swarm/runs", { params });
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseListSwarmRunsResponse(data);
+    }
+    throw new HttpError(response.status, "Failed to list swarm runs");
+  }
+
+  /**
+   * Fetch a single swarm run snapshot. Returns `null` if unknown.
+   */
+  async getSwarmRun(runId: string): Promise<SwarmRunSnapshot | null> {
+    // Encode so a maliciously crafted runId containing '/', '?', or '#'
+    // can't escape the path segment into query/fragment territory.
+    const encoded = encodeURIComponent(runId);
+    const response = await this.request("GET", `/v1/swarm/runs/${encoded}`);
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseSwarmRunSnapshot(data);
+    }
+    if (response.status === 404) {
+      return null;
+    }
+    throw new HttpError(response.status, "Failed to fetch swarm run");
+  }
+
+  /**
+   * Request cancellation of an inflight swarm run.
+   */
+  async cancelSwarmRun(runId: string): Promise<SwarmRunSnapshot | null> {
+    const encoded = encodeURIComponent(runId);
+    const response = await this.request("POST", `/v1/swarm/runs/${encoded}/cancel`);
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseSwarmRunSnapshot(data);
+    }
+    if (response.status === 404) {
+      return null;
+    }
+    throw new HttpError(response.status, "Failed to cancel swarm run");
+  }
+
+  // =========================================================================
+  // Quotas
+  // =========================================================================
+
+  /**
+   * Create a quota policy.
+   */
+  async createQuota(req: CreateQuotaRequest): Promise<QuotaPolicy> {
+    const response = await this.request("POST", "/v1/quotas", {
+      body: createQuotaRequestToApi(req),
+    });
+
+    if (response.status === 201) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseQuotaPolicy(data);
+    } else {
+      const data = (await response.json()) as Record<string, unknown>;
+      throw new ApiError(
+        (data.code as string) ?? "UNKNOWN",
+        (data.message as string) ?? "Unknown error",
+        (data.retryable as boolean) ?? false
+      );
+    }
+  }
+
+  /**
+   * List quota policies, optionally filtered by namespace, tenant,
+   * and provider scope. Pass ``"generic"`` for ``provider`` to match
+   * only policies without a provider scope, or a provider name
+   * (e.g. ``"slack"``) to match only per-provider policies.
+   */
+  async listQuotas(
+    namespace?: string,
+    tenant?: string,
+    provider?: string,
+  ): Promise<ListQuotasResponse> {
+    const params = new URLSearchParams();
+    if (namespace !== undefined) params.set("namespace", namespace);
+    if (tenant !== undefined) params.set("tenant", tenant);
+    if (provider !== undefined) params.set("provider", provider);
+    const response = await this.request("GET", "/v1/quotas", { params: params.toString() ? params : undefined });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseListQuotasResponse(data);
+    } else {
+      throw new HttpError(response.status, "Failed to list quotas");
+    }
+  }
+
+  /**
+   * Get a single quota policy by ID.
+   */
+  async getQuota(quotaId: string): Promise<QuotaPolicy | null> {
+    const response = await this.request("GET", `/v1/quotas/${quotaId}`);
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseQuotaPolicy(data);
+    } else if (response.status === 404) {
+      return null;
+    } else {
+      throw new HttpError(response.status, "Failed to get quota");
+    }
+  }
+
+  /**
+   * Update a quota policy.
+   */
+  async updateQuota(quotaId: string, update: UpdateQuotaRequest): Promise<QuotaPolicy> {
+    const response = await this.request("PUT", `/v1/quotas/${quotaId}`, {
+      body: updateQuotaRequestToApi(update),
+    });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseQuotaPolicy(data);
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Quota not found: ${quotaId}`);
+    } else {
+      const data = (await response.json()) as Record<string, unknown>;
+      throw new ApiError(
+        (data.code as string) ?? "UNKNOWN",
+        (data.message as string) ?? "Unknown error",
+        (data.retryable as boolean) ?? false
+      );
+    }
+  }
+
+  /**
+   * Delete a quota policy.
+   */
+  async deleteQuota(quotaId: string, namespace: string, tenant: string): Promise<void> {
+    const params = new URLSearchParams();
+    params.set("namespace", namespace);
+    params.set("tenant", tenant);
+    const response = await this.request("DELETE", `/v1/quotas/${quotaId}`, { params });
+
+    if (response.status === 204) {
+      return;
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Quota not found: ${quotaId}`);
+    } else {
+      throw new HttpError(response.status, "Failed to delete quota");
+    }
+  }
+
+  /**
+   * Get current usage statistics for a quota policy.
+   */
+  async getQuotaUsage(quotaId: string): Promise<QuotaUsage> {
+    const response = await this.request("GET", `/v1/quotas/${quotaId}/usage`);
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseQuotaUsage(data);
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Quota not found: ${quotaId}`);
+    } else {
+      throw new HttpError(response.status, "Failed to get quota usage");
+    }
+  }
+
+  // =========================================================================
+  // Silences
+  // =========================================================================
+
+  /**
+   * Create a silence. Supply either `endsAt` or `durationSeconds`.
+   */
+  async createSilence(req: CreateSilenceRequest): Promise<Silence> {
+    const response = await this.request("POST", "/v1/silences", {
+      body: createSilenceRequestToApi(req),
+    });
+
+    if (response.status === 201) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseSilence(data);
+    } else {
+      const data = (await response.json()) as Record<string, unknown>;
+      throw new ApiError(
+        (data.code as string) ?? "UNKNOWN",
+        ((data.message ?? data.error) as string) ?? "Unknown error",
+        (data.retryable as boolean) ?? false
+      );
+    }
+  }
+
+  /**
+   * List silences, optionally filtered by namespace, tenant, or expiry.
+   */
+  async listSilences(
+    namespace?: string,
+    tenant?: string,
+    includeExpired = false,
+  ): Promise<ListSilencesResponse> {
+    const params = new URLSearchParams();
+    if (namespace !== undefined) params.set("namespace", namespace);
+    if (tenant !== undefined) params.set("tenant", tenant);
+    if (includeExpired) params.set("include_expired", "true");
+    const response = await this.request("GET", "/v1/silences", {
+      params: params.toString() ? params : undefined,
+    });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseListSilencesResponse(data);
+    } else {
+      throw new HttpError(response.status, "Failed to list silences");
+    }
+  }
+
+  /**
+   * Fetch a single silence by ID. Returns `null` if not found.
+   */
+  async getSilence(silenceId: string): Promise<Silence | null> {
+    const response = await this.request(
+      "GET",
+      `/v1/silences/${encodeURIComponent(silenceId)}`,
+    );
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseSilence(data);
+    } else if (response.status === 404) {
+      return null;
+    } else {
+      throw new HttpError(response.status, "Failed to get silence");
+    }
+  }
+
+  /**
+   * Extend a silence or edit its comment. Matchers are immutable —
+   * to change them, expire the silence and create a new one.
+   */
+  async updateSilence(
+    silenceId: string,
+    update: UpdateSilenceRequest,
+  ): Promise<Silence> {
+    const response = await this.request(
+      "PUT",
+      `/v1/silences/${encodeURIComponent(silenceId)}`,
+      { body: updateSilenceRequestToApi(update) },
+    );
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseSilence(data);
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Silence not found: ${silenceId}`);
+    } else {
+      const data = (await response.json()) as Record<string, unknown>;
+      throw new ApiError(
+        (data.code as string) ?? "UNKNOWN",
+        ((data.message ?? data.error) as string) ?? "Unknown error",
+        (data.retryable as boolean) ?? false
+      );
+    }
+  }
+
+  /**
+   * Expire a silence immediately. Soft-expires by setting
+   * `endsAt = now`; the record stays queryable for audit purposes.
+   */
+  async deleteSilence(silenceId: string): Promise<void> {
+    const response = await this.request(
+      "DELETE",
+      `/v1/silences/${encodeURIComponent(silenceId)}`,
+    );
+
+    if (response.status === 204) {
+      return;
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Silence not found: ${silenceId}`);
+    } else {
+      throw new HttpError(response.status, "Failed to delete silence");
+    }
+  }
+
+  // =========================================================================
+  // Time Intervals
+  // =========================================================================
+
+  async createTimeInterval(
+    req: CreateTimeIntervalRequest,
+  ): Promise<TimeInterval> {
+    const response = await this.request("POST", "/v1/time-intervals", {
+      body: createTimeIntervalRequestToApi(req),
+    });
+    if (response.status === 201) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseTimeInterval(data);
+    }
+    const data = (await response.json()) as Record<string, unknown>;
+    throw new ApiError(
+      (data.code as string) ?? "UNKNOWN",
+      ((data.message ?? data.error) as string) ?? "Unknown error",
+      (data.retryable as boolean) ?? false,
+    );
+  }
+
+  async listTimeIntervals(
+    namespace?: string,
+    tenant?: string,
+  ): Promise<ListTimeIntervalsResponse> {
+    const params = new URLSearchParams();
+    if (namespace !== undefined) params.set("namespace", namespace);
+    if (tenant !== undefined) params.set("tenant", tenant);
+    const response = await this.request("GET", "/v1/time-intervals", {
+      params: params.toString() ? params : undefined,
+    });
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseListTimeIntervalsResponse(data);
+    }
+    throw new HttpError(response.status, "Failed to list time intervals");
+  }
+
+  async getTimeInterval(
+    namespace: string,
+    tenant: string,
+    name: string,
+  ): Promise<TimeInterval | null> {
+    const response = await this.request(
+      "GET",
+      `/v1/time-intervals/${encodeURIComponent(namespace)}/${encodeURIComponent(
+        tenant,
+      )}/${encodeURIComponent(name)}`,
+    );
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseTimeInterval(data);
+    } else if (response.status === 404) {
+      return null;
+    } else {
+      throw new HttpError(response.status, "Failed to get time interval");
+    }
+  }
+
+  async updateTimeInterval(
+    namespace: string,
+    tenant: string,
+    name: string,
+    update: UpdateTimeIntervalRequest,
+  ): Promise<TimeInterval> {
+    const response = await this.request(
+      "PUT",
+      `/v1/time-intervals/${encodeURIComponent(namespace)}/${encodeURIComponent(
+        tenant,
+      )}/${encodeURIComponent(name)}`,
+      { body: updateTimeIntervalRequestToApi(update) },
+    );
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseTimeInterval(data);
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Time interval not found: ${name}`);
+    } else {
+      const data = (await response.json()) as Record<string, unknown>;
+      throw new ApiError(
+        (data.code as string) ?? "UNKNOWN",
+        ((data.message ?? data.error) as string) ?? "Unknown error",
+        (data.retryable as boolean) ?? false,
+      );
+    }
+  }
+
+  async deleteTimeInterval(
+    namespace: string,
+    tenant: string,
+    name: string,
+  ): Promise<void> {
+    const response = await this.request(
+      "DELETE",
+      `/v1/time-intervals/${encodeURIComponent(namespace)}/${encodeURIComponent(
+        tenant,
+      )}/${encodeURIComponent(name)}`,
+    );
+    if (response.status === 204) {
+      return;
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Time interval not found: ${name}`);
+    } else {
+      throw new HttpError(response.status, "Failed to delete time interval");
+    }
+  }
+
+  // =========================================================================
+  // Retention Policies
+  // =========================================================================
+
+  /**
+   * Create a retention policy.
+   */
+  async createRetention(req: CreateRetentionRequest): Promise<RetentionPolicy> {
+    const response = await this.request("POST", "/v1/retention", {
+      body: createRetentionRequestToApi(req),
+    });
+
+    if (response.status === 201) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseRetentionPolicy(data);
+    } else {
+      const data = (await response.json()) as Record<string, unknown>;
+      throw new ApiError(
+        (data.code as string) ?? "UNKNOWN",
+        (data.message as string) ?? "Unknown error",
+        (data.retryable as boolean) ?? false
+      );
+    }
+  }
+
+  /**
+   * List retention policies.
+   */
+  async listRetention(namespace?: string, tenant?: string, limit?: number, offset?: number): Promise<ListRetentionResponse> {
+    const params = new URLSearchParams();
+    if (namespace !== undefined) params.set("namespace", namespace);
+    if (tenant !== undefined) params.set("tenant", tenant);
+    if (limit !== undefined) params.set("limit", limit.toString());
+    if (offset !== undefined) params.set("offset", offset.toString());
+    const response = await this.request("GET", "/v1/retention", { params: params.toString() ? params : undefined });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseListRetentionResponse(data);
+    } else {
+      throw new HttpError(response.status, "Failed to list retention policies");
+    }
+  }
+
+  /**
+   * Get a single retention policy by ID.
+   */
+  async getRetention(retentionId: string): Promise<RetentionPolicy | null> {
+    const response = await this.request("GET", `/v1/retention/${retentionId}`);
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseRetentionPolicy(data);
+    } else if (response.status === 404) {
+      return null;
+    } else {
+      throw new HttpError(response.status, "Failed to get retention policy");
+    }
+  }
+
+  /**
+   * Update a retention policy.
+   */
+  async updateRetention(retentionId: string, update: UpdateRetentionRequest): Promise<RetentionPolicy> {
+    const response = await this.request("PUT", `/v1/retention/${retentionId}`, {
+      body: updateRetentionRequestToApi(update),
+    });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseRetentionPolicy(data);
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Retention policy not found: ${retentionId}`);
+    } else {
+      const data = (await response.json()) as Record<string, unknown>;
+      throw new ApiError(
+        (data.code as string) ?? "UNKNOWN",
+        (data.message as string) ?? "Unknown error",
+        (data.retryable as boolean) ?? false
+      );
+    }
+  }
+
+  /**
+   * Delete a retention policy.
+   */
+  async deleteRetention(retentionId: string): Promise<void> {
+    const response = await this.request("DELETE", `/v1/retention/${retentionId}`);
+
+    if (response.status === 204) {
+      return;
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Retention policy not found: ${retentionId}`);
+    } else {
+      throw new HttpError(response.status, "Failed to delete retention policy");
+    }
+  }
+
+  // =========================================================================
+  // Payload Templates
+  // =========================================================================
+
+  /**
+   * Create a payload template.
+   */
+  async createTemplate(req: CreateTemplateRequest): Promise<TemplateInfo> {
+    const response = await this.request("POST", "/v1/templates", {
+      body: createTemplateRequestToApi(req),
+    });
+
+    if (response.status === 201) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseTemplateInfo(data);
+    } else {
+      const data = (await response.json()) as Record<string, unknown>;
+      throw new ApiError(
+        (data.code as string) ?? "UNKNOWN",
+        (data.message as string) ?? "Unknown error",
+        (data.retryable as boolean) ?? false
+      );
+    }
+  }
+
+  /**
+   * List payload templates.
+   */
+  async listTemplates(namespace?: string, tenant?: string): Promise<ListTemplatesResponse> {
+    const params = new URLSearchParams();
+    if (namespace !== undefined) params.set("namespace", namespace);
+    if (tenant !== undefined) params.set("tenant", tenant);
+    const response = await this.request("GET", "/v1/templates", { params: params.toString() ? params : undefined });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseListTemplatesResponse(data);
+    } else {
+      throw new HttpError(response.status, "Failed to list templates");
+    }
+  }
+
+  /**
+   * Get a single template by ID.
+   */
+  async getTemplate(templateId: string): Promise<TemplateInfo | null> {
+    const response = await this.request("GET", `/v1/templates/${templateId}`);
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseTemplateInfo(data);
+    } else if (response.status === 404) {
+      return null;
+    } else {
+      throw new HttpError(response.status, "Failed to get template");
+    }
+  }
+
+  /**
+   * Update a payload template.
+   */
+  async updateTemplate(templateId: string, update: UpdateTemplateRequest): Promise<TemplateInfo> {
+    const response = await this.request("PUT", `/v1/templates/${templateId}`, {
+      body: updateTemplateRequestToApi(update),
+    });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseTemplateInfo(data);
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Template not found: ${templateId}`);
+    } else {
+      const data = (await response.json()) as Record<string, unknown>;
+      throw new ApiError(
+        (data.code as string) ?? "UNKNOWN",
+        (data.message as string) ?? "Unknown error",
+        (data.retryable as boolean) ?? false
+      );
+    }
+  }
+
+  /**
+   * Delete a payload template.
+   */
+  async deleteTemplate(templateId: string): Promise<void> {
+    const response = await this.request("DELETE", `/v1/templates/${templateId}`);
+
+    if (response.status === 204) {
+      return;
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Template not found: ${templateId}`);
+    } else {
+      throw new HttpError(response.status, "Failed to delete template");
+    }
+  }
+
+  /**
+   * Create a template profile.
+   */
+  async createProfile(req: CreateProfileRequest): Promise<TemplateProfileInfo> {
+    const response = await this.request("POST", "/v1/templates/profiles", {
+      body: createProfileRequestToApi(req),
+    });
+
+    if (response.status === 201) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseTemplateProfileInfo(data);
+    } else {
+      const data = (await response.json()) as Record<string, unknown>;
+      throw new ApiError(
+        (data.code as string) ?? "UNKNOWN",
+        (data.message as string) ?? "Unknown error",
+        (data.retryable as boolean) ?? false
+      );
+    }
+  }
+
+  /**
+   * List template profiles.
+   */
+  async listProfiles(namespace?: string, tenant?: string): Promise<ListProfilesResponse> {
+    const params = new URLSearchParams();
+    if (namespace !== undefined) params.set("namespace", namespace);
+    if (tenant !== undefined) params.set("tenant", tenant);
+    const response = await this.request("GET", "/v1/templates/profiles", { params: params.toString() ? params : undefined });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseListProfilesResponse(data);
+    } else {
+      throw new HttpError(response.status, "Failed to list profiles");
+    }
+  }
+
+  /**
+   * Get a single template profile by ID.
+   */
+  async getProfile(profileId: string): Promise<TemplateProfileInfo | null> {
+    const response = await this.request("GET", `/v1/templates/profiles/${profileId}`);
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseTemplateProfileInfo(data);
+    } else if (response.status === 404) {
+      return null;
+    } else {
+      throw new HttpError(response.status, "Failed to get profile");
+    }
+  }
+
+  /**
+   * Update a template profile.
+   */
+  async updateProfile(profileId: string, update: UpdateProfileRequest): Promise<TemplateProfileInfo> {
+    const response = await this.request("PUT", `/v1/templates/profiles/${profileId}`, {
+      body: updateProfileRequestToApi(update),
+    });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseTemplateProfileInfo(data);
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Profile not found: ${profileId}`);
+    } else {
+      const data = (await response.json()) as Record<string, unknown>;
+      throw new ApiError(
+        (data.code as string) ?? "UNKNOWN",
+        (data.message as string) ?? "Unknown error",
+        (data.retryable as boolean) ?? false
+      );
+    }
+  }
+
+  /**
+   * Delete a template profile.
+   */
+  async deleteProfile(profileId: string): Promise<void> {
+    const response = await this.request("DELETE", `/v1/templates/profiles/${profileId}`);
+
+    if (response.status === 204) {
+      return;
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Profile not found: ${profileId}`);
+    } else {
+      throw new HttpError(response.status, "Failed to delete profile");
+    }
+  }
+
+  /**
+   * Render a template profile with payload data.
+   */
+  async renderPreview(req: RenderPreviewRequest): Promise<RenderPreviewResponse> {
+    const response = await this.request("POST", "/v1/templates/render", {
+      body: req,
+    });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseRenderPreviewResponse(data);
+    } else {
+      const data = (await response.json()) as Record<string, unknown>;
+      throw new ApiError(
+        (data.code as string) ?? "UNKNOWN",
+        (data.message as string) ?? "Unknown error",
+        (data.retryable as boolean) ?? false
+      );
+    }
+  }
+
+  // =========================================================================
+  // Provider Health
+  // =========================================================================
+
+  /**
+   * List health and metrics for all providers.
+   */
+  async listProviderHealth(): Promise<ListProviderHealthResponse> {
+    const response = await this.request("GET", "/v1/providers/health");
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseListProviderHealthResponse(data);
+    } else {
+      throw new HttpError(response.status, "Failed to list provider health");
+    }
+  }
+
+  // =========================================================================
+  // WASM Plugins
+  // =========================================================================
+
+  /**
+   * List all registered WASM plugins.
+   */
+  async listPlugins(): Promise<ListPluginsResponse> {
+    const response = await this.request("GET", "/v1/plugins");
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseListPluginsResponse(data);
+    } else {
+      throw new HttpError(response.status, "Failed to list plugins");
+    }
+  }
+
+  /**
+   * Register a new WASM plugin.
+   */
+  async registerPlugin(req: RegisterPluginRequest): Promise<WasmPlugin> {
+    const response = await this.request("POST", "/v1/plugins", {
+      body: registerPluginRequestToApi(req),
+    });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseWasmPlugin(data);
+    } else {
+      const data = (await response.json()) as Record<string, unknown>;
+      throw new ApiError(
+        (data.code as string) ?? "UNKNOWN",
+        (data.message as string) ?? "Unknown error",
+        (data.retryable as boolean) ?? false
+      );
+    }
+  }
+
+  /**
+   * Get details of a registered WASM plugin.
+   */
+  async getPlugin(name: string): Promise<WasmPlugin | null> {
+    const response = await this.request("GET", `/v1/plugins/${name}`);
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseWasmPlugin(data);
+    } else if (response.status === 404) {
+      return null;
+    } else {
+      throw new HttpError(response.status, "Failed to get plugin");
+    }
+  }
+
+  /**
+   * Unregister (delete) a WASM plugin.
+   */
+  async deletePlugin(name: string): Promise<void> {
+    const response = await this.request("DELETE", `/v1/plugins/${name}`);
+
+    if (response.status === 204) {
+      return;
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Plugin not found: ${name}`);
+    } else {
+      throw new HttpError(response.status, "Failed to delete plugin");
+    }
+  }
+
+  /**
+   * Test-invoke a WASM plugin.
+   */
+  async invokePlugin(name: string, req: PluginInvocationRequest): Promise<PluginInvocationResponse> {
+    const body: Record<string, unknown> = { input: req.input };
+    if (req.function !== undefined) body.function = req.function;
+
+    const response = await this.request("POST", `/v1/plugins/${name}/invoke`, { body });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parsePluginInvocationResponse(data);
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Plugin not found: ${name}`);
+    } else {
+      throw new HttpError(response.status, `Failed to invoke plugin: ${name}`);
+    }
+  }
+
+  // =========================================================================
+  // Compliance (SOC2/HIPAA)
+  // =========================================================================
+
+  /**
+   * Get the current compliance configuration status.
+   */
+  async getComplianceStatus(): Promise<ComplianceStatus> {
+    const response = await this.request("GET", "/v1/compliance/status");
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseComplianceStatus(data);
+    }
+    throw new HttpError(response.status, "Failed to get compliance status");
+  }
+
+  /**
+   * Verify the integrity of the audit hash chain for a namespace/tenant pair.
+   */
+  async verifyAuditChain(req: VerifyHashChainRequest): Promise<HashChainVerification> {
+    const body: Record<string, unknown> = {
+      namespace: req.namespace,
+      tenant: req.tenant,
+    };
+    if (req.from !== undefined) body.from = req.from;
+    if (req.to !== undefined) body.to = req.to;
+
+    const response = await this.request("POST", "/v1/audit/verify", { body });
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseHashChainVerification(data);
+    }
+    throw new HttpError(response.status, "Failed to verify audit chain");
+  }
+
+  // =========================================================================
+  // Chains
+  // =========================================================================
+
+  /**
+   * List chain executions filtered by namespace, tenant, and optional status.
+   */
+  async listChains(namespace: string, tenant: string, status?: string): Promise<ListChainsResponse> {
+    const params = new URLSearchParams();
+    params.set("namespace", namespace);
+    params.set("tenant", tenant);
+    if (status !== undefined) {
+      params.set("status", status);
+    }
+    const response = await this.request("GET", "/v1/chains", { params });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseListChainsResponse(data);
+    } else {
+      throw new HttpError(response.status, "Failed to list chains");
+    }
+  }
+
+  /**
+   * Get full details of a chain execution including step results.
+   */
+  async getChain(chainId: string, namespace: string, tenant: string): Promise<ChainDetailResponse | null> {
+    const params = new URLSearchParams();
+    params.set("namespace", namespace);
+    params.set("tenant", tenant);
+    const response = await this.request("GET", `/v1/chains/${chainId}`, { params });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseChainDetailResponse(data);
+    } else if (response.status === 404) {
+      return null;
+    } else {
+      throw new HttpError(response.status, "Failed to get chain");
+    }
+  }
+
+  /**
+   * Cancel a running chain execution.
+   */
+  async cancelChain(
+    chainId: string,
+    namespace: string,
+    tenant: string,
+    reason?: string,
+    cancelledBy?: string
+  ): Promise<ChainDetailResponse> {
+    const body: Record<string, unknown> = { namespace, tenant };
+    if (reason !== undefined) {
+      body.reason = reason;
+    }
+    if (cancelledBy !== undefined) {
+      body.cancelled_by = cancelledBy;
+    }
+    const response = await this.request("POST", `/v1/chains/${chainId}/cancel`, { body });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseChainDetailResponse(data);
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Chain not found: ${chainId}`);
+    } else if (response.status === 409) {
+      throw new HttpError(409, "Chain is not running");
+    } else {
+      throw new HttpError(response.status, "Failed to cancel chain");
+    }
+  }
+
+  /**
+   * Get the DAG representation for a running chain instance.
+   */
+  async getChainDag(chainId: string, namespace: string, tenant: string): Promise<DagResponse> {
+    const params = new URLSearchParams();
+    params.set("namespace", namespace);
+    params.set("tenant", tenant);
+    const response = await this.request("GET", `/v1/chains/${chainId}/dag`, { params });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseDagResponse(data);
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Chain not found: ${chainId}`);
+    } else {
+      throw new HttpError(response.status, "Failed to get chain DAG");
+    }
+  }
+
+  /**
+   * Get the DAG representation for a chain definition (config only).
+   */
+  async getChainDefinitionDag(name: string): Promise<DagResponse> {
+    const response = await this.request("GET", `/v1/chains/definitions/${name}/dag`);
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseDagResponse(data);
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Chain definition not found: ${name}`);
+    } else {
+      throw new HttpError(response.status, "Failed to get chain definition DAG");
+    }
+  }
+
+  /**
+   * Get the retry history for a chain execution.
+   */
+  async getChainHistory(chainId: string, namespace: string, tenant: string): Promise<ChainHistoryResponse> {
+    const params = new URLSearchParams();
+    params.set("namespace", namespace);
+    params.set("tenant", tenant);
+    const response = await this.request("GET", `/v1/chains/${chainId}/history`, { params });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseChainHistoryResponse(data);
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Chain not found: ${chainId}`);
+    } else {
+      throw new HttpError(response.status, "Failed to get chain history");
+    }
+  }
+
+  // =========================================================================
+  // DLQ (Dead-Letter Queue)
+  // =========================================================================
+
+  /**
+   * Get dead-letter queue statistics.
+   */
+  async dlqStats(): Promise<DlqStatsResponse> {
+    const response = await this.request("GET", "/v1/dlq/stats");
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseDlqStatsResponse(data);
+    } else {
+      throw new HttpError(response.status, "Failed to get DLQ stats");
+    }
+  }
+
+  /**
+   * Drain all entries from the dead-letter queue.
+   * Removes and returns all entries for manual processing or resubmission.
+   */
+  async dlqDrain(): Promise<DlqDrainResponse> {
+    const response = await this.request("POST", "/v1/dlq/drain");
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseDlqDrainResponse(data);
+    } else if (response.status === 404) {
+      throw new HttpError(404, "Dead-letter queue is not enabled");
+    } else {
+      throw new HttpError(response.status, "Failed to drain DLQ");
+    }
+  }
+
+  // =========================================================================
+  // Analytics
+  // =========================================================================
+
+  /**
+   * Query analytics data.
+   *
+   * @param query - Analytics query parameters including the required metric.
+   * @returns Analytics response with time-series buckets and/or top entries.
+   */
+  async queryAnalytics(query: AnalyticsQuery): Promise<AnalyticsResponse> {
+    const params = analyticsQueryToParams(query);
+    const response = await this.request("GET", "/v1/analytics", { params });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseAnalyticsResponse(data);
+    } else {
+      throw new HttpError(response.status, "Failed to query analytics");
+    }
+  }
+
+  // =========================================================================
+  // Rule Coverage
+  // =========================================================================
+
+  /**
+   * Analyze rule coverage by querying the server's aggregation endpoint.
+   *
+   * The server groups audit records by (namespace, tenant, provider,
+   * action_type, matched_rule) and cross-references the result with the
+   * currently-loaded rule set. No raw audit records are transferred over
+   * the wire.
+   */
+  async rulesCoverage(query?: CoverageQuery): Promise<CoverageReport> {
+    const params = new URLSearchParams();
+    if (query?.namespace) params.set("namespace", query.namespace);
+    if (query?.tenant) params.set("tenant", query.tenant);
+    if (query?.from) params.set("from", query.from);
+    if (query?.to) params.set("to", query.to);
+
+    const response = await this.request("GET", "/v1/rules/coverage", { params });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseCoverageReport(data);
+    } else {
+      throw new HttpError(response.status, "Failed to get rule coverage");
+    }
+  }
+
+  // =========================================================================
+  // Subscribe (SSE)
+  // =========================================================================
+
+  /**
+   * Subscribe to events for a specific entity via Server-Sent Events.
+   *
+   * Returns an `AsyncGenerator` that yields parsed SSE events.
+   * The generator completes when the connection is closed.
+   *
+   * @param entityType - The entity type: "chain", "group", or "action".
+   * @param entityId - The entity ID to subscribe to.
+   * @param options - Optional namespace, tenant, and includeHistory settings.
+   *
+   * @example
+   * ```typescript
+   * for await (const event of client.subscribe("chain", "chain-42", { namespace: "ns", tenant: "t1" })) {
+   *   console.log(`${event.event}: ${JSON.stringify(event.data)}`);
+   * }
+   * ```
+   */
+  async *subscribe(
+    entityType: string,
+    entityId: string,
+    options?: SubscribeOptions
+  ): AsyncGenerator<SseEvent, void, undefined> {
+    const params = new URLSearchParams();
+    if (options?.namespace !== undefined) {
+      params.set("namespace", options.namespace);
+    }
+    if (options?.tenant !== undefined) {
+      params.set("tenant", options.tenant);
+    }
+    if (options?.includeHistory !== undefined) {
+      params.set("include_history", options.includeHistory.toString());
+    }
+
+    yield* this.connectSse(`/v1/subscribe/${entityType}/${entityId}`, params);
+  }
+
+  // =========================================================================
+  // Stream (SSE)
+  // =========================================================================
+
+  /**
+   * Subscribe to the real-time event stream via Server-Sent Events.
+   *
+   * Returns an `AsyncGenerator` that yields parsed SSE events.
+   * The generator completes when the connection is closed.
+   *
+   * @param options - Optional filters for namespace, actionType, outcome, eventType,
+   *   chainId, groupId, actionId, and lastEventId for reconnection catch-up.
+   *
+   * @example
+   * ```typescript
+   * for await (const event of client.stream({ namespace: "alerts", eventType: "action_dispatched" })) {
+   *   console.log(`${event.event}: ${JSON.stringify(event.data)}`);
+   * }
+   * ```
+   */
+  async *stream(options?: StreamOptions): AsyncGenerator<SseEvent, void, undefined> {
+    const params = new URLSearchParams();
+    if (options?.namespace !== undefined) {
+      params.set("namespace", options.namespace);
+    }
+    if (options?.actionType !== undefined) {
+      params.set("action_type", options.actionType);
+    }
+    if (options?.outcome !== undefined) {
+      params.set("outcome", options.outcome);
+    }
+    if (options?.eventType !== undefined) {
+      params.set("event_type", options.eventType);
+    }
+    if (options?.chainId !== undefined) {
+      params.set("chain_id", options.chainId);
+    }
+    if (options?.groupId !== undefined) {
+      params.set("group_id", options.groupId);
+    }
+    if (options?.actionId !== undefined) {
+      params.set("action_id", options.actionId);
+    }
+
+    const headers: Record<string, string> = {};
+    if (options?.lastEventId !== undefined) {
+      headers["Last-Event-ID"] = options.lastEventId;
+    }
+
+    yield* this.connectSse("/v1/stream", params, headers);
+  }
+
+  // =========================================================================
+  // SSE Helpers (private)
+  // =========================================================================
+
+  /**
+   * Connect to an SSE endpoint and yield parsed events.
+   */
+  private async *connectSse(
+    path: string,
+    params?: URLSearchParams,
+    extraHeaders?: Record<string, string>
+  ): AsyncGenerator<SseEvent, void, undefined> {
+    let url = `${this.baseUrl}${path}`;
+    if (params && params.toString()) {
+      url += `?${params.toString()}`;
+    }
+
+    const headers: Record<string, string> = {
+      Accept: "text/event-stream",
+    };
+    if (this.apiKey) {
+      headers["Authorization"] = `Bearer ${this.apiKey}`;
+    }
+    if (extraHeaders) {
+      Object.assign(headers, extraHeaders);
+    }
+
+    const response = await fetch(url, {
+      method: "GET",
+      headers,
+    });
+
+    if (!response.ok) {
+      throw new HttpError(response.status, `SSE connection failed: ${path}`);
+    }
+
+    if (!response.body) {
+      throw new ConnectionError("Response body is null");
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let currentEvent = "";
+    let currentId = "";
+    let currentData: string[] = [];
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        // Keep the last incomplete line in the buffer.
+        buffer = lines.pop() ?? "";
+
+        for (const raw of lines) {
+          // Strip a trailing CR — splitting on `\n` alone leaves bare
+          // `\r` on every line when an intermediary normalises to CRLF.
+          const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+          if (line === "") {
+            // Empty line signals end of an event.
+            if (currentData.length > 0) {
+              const dataStr = currentData.join("\n");
+              let parsedData: unknown;
+              try {
+                parsedData = JSON.parse(dataStr);
+              } catch {
+                parsedData = dataStr;
+              }
+              yield {
+                event: currentEvent || "message",
+                id: currentId,
+                data: parsedData,
+              };
+            }
+            currentEvent = "";
+            currentId = "";
+            currentData = [];
+          } else if (line.startsWith("event:")) {
+            currentEvent = line.slice(6).trim();
+          } else if (line.startsWith("id:")) {
+            currentId = line.slice(3).trim();
+          } else if (line.startsWith("data:")) {
+            currentData.push(line.slice(5).trim());
+          }
+          // Ignore comments (lines starting with ':') and unknown fields.
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
+  /**
+   * Connect to a bus SSE endpoint and yield raw envelopes (frame or
+   * keep-alive). The dispatch `connectSse` silently swallows comments;
+   * bus consumers want them as liveness signals, so this private helper
+   * reimplements the line protocol with a slightly wider yield type.
+   */
+  private async *connectBusSse(
+    path: string,
+    params?: URLSearchParams,
+  ): AsyncGenerator<BusSseEnvelope, void, undefined> {
+    let url = `${this.baseUrl}${path}`;
+    if (params && params.toString()) url += `?${params.toString()}`;
+    const headers: Record<string, string> = { Accept: "text/event-stream" };
+    if (this.apiKey) headers["Authorization"] = `Bearer ${this.apiKey}`;
+
+    const response = await fetch(url, { method: "GET", headers });
+    if (!response.ok) {
+      throw new HttpError(response.status, `bus SSE connection failed: ${path}`);
+    }
+    if (!response.body) {
+      throw new ConnectionError("Response body is null");
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let currentEvent = "";
+    let currentId = "";
+    let currentData: string[] = [];
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const raw of lines) {
+          // Strip a trailing CR. The SSE spec accepts `\r\n`, `\r`, or
+          // `\n` as line terminators; splitting on `\n` alone leaves a
+          // bare `\r` on every line when an intermediary normalises to
+          // CRLF — and that breaks the empty-line frame trigger below.
+          const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+          if (line.startsWith(":")) {
+            yield { kind: "keepAlive" };
+            continue;
+          }
+          if (line === "") {
+            if (currentData.length > 0 || currentEvent !== "" || currentId !== "") {
+              yield {
+                kind: "frame",
+                event: currentEvent || undefined,
+                id: currentId || undefined,
+                data: currentData.join("\n"),
+              };
+            }
+            currentEvent = "";
+            currentId = "";
+            currentData = [];
+            continue;
+          }
+          if (line.startsWith("event:")) currentEvent = line.slice(6).trim();
+          else if (line.startsWith("id:")) currentId = line.slice(3).trim();
+          else if (line.startsWith("data:")) currentData.push(line.slice(5).trim());
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
+  private envelopeToConsumeItem(env: BusSseEnvelope): BusConsumeItem {
+    if (env.kind === "keepAlive") return { kind: "keepAlive" };
+    const name = env.event ?? "message";
+    if (name === "bus.message" || name === "message") {
+      const decoded = decodeJsonOrPassthrough(env.data);
+      if (typeof decoded !== "object" || decoded === null) {
+        throw new ApiError("BUS", `invalid bus.message payload: ${env.data}`, false);
+      }
+      return {
+        kind: "message",
+        message: parseBusConsumedMessage(decoded as Record<string, unknown>),
+      };
+    }
+    if (name === "bus.error") {
+      return { kind: "error", error: extractErrorMessage(env.data) };
+    }
+    throw new ApiError(
+      "BUS",
+      `unexpected SSE event '${name}' on bus subscribe stream`,
+      false,
+    );
+  }
+
+  private envelopeToStreamItem(env: BusSseEnvelope): BusStreamItem {
+    if (env.kind === "keepAlive") return { kind: "keepAlive" };
+    const name = env.event ?? "message";
+    if (name === "bus.stream.chunk") {
+      const decoded = decodeJsonOrPassthrough(env.data);
+      if (typeof decoded !== "object" || decoded === null) {
+        throw new ApiError("BUS", `invalid stream chunk payload: ${env.data}`, false);
+      }
+      return {
+        kind: "chunk",
+        chunk: parseStreamChunkEnvelope(decoded as Record<string, unknown>),
+      };
+    }
+    if (name === "bus.stream.end") {
+      const decoded = decodeJsonOrPassthrough(env.data);
+      if (typeof decoded !== "object" || decoded === null) {
+        throw new ApiError("BUS", `invalid stream end payload: ${env.data}`, false);
+      }
+      return {
+        kind: "end",
+        end: parseStreamEndEnvelope(decoded as Record<string, unknown>),
+      };
+    }
+    if (name === "bus.stream.error") {
+      return { kind: "error", error: extractErrorMessage(env.data) };
+    }
+    throw new ApiError(
+      "BUS",
+      `unexpected SSE event '${name}' on bus stream consumer`,
+      false,
+    );
+  }
+
+  // ===========================================================================
+  // Phase 8b: Agentic bus surface (Phases 1-6c)
+  // ===========================================================================
+
+  /** Helper: percent-encode a single path segment. The bus REST
+   *  surface treats namespace / tenant / name slots as opaque
+   *  strings, so reserved characters like `/` need encoding rather
+   *  than slipping through into the URL grammar.
+   */
+  private busSeg(s: string): string {
+    return encodeURIComponent(s);
+  }
+
+  /** Helper: read an Acteon-shaped error body, fall back to a plain
+   *  HttpError if the body isn't structured.
+   */
+  private async busThrowFromResponse(response: Response): Promise<never> {
+    try {
+      const data = (await response.json()) as Record<string, unknown>;
+      throw new ApiError(
+        (data.code as string) ?? "BUS",
+        (data.error as string) ?? (data.message as string) ?? "bus error",
+        false,
+      );
+    } catch (err) {
+      if (err instanceof ApiError) throw err;
+      throw new HttpError(response.status, response.statusText || "bus error");
+    }
+  }
+
+  // --------------- Phase 1: Topics + publish ---------------
+
+  async createBusTopic(req: CreateBusTopic): Promise<BusTopic> {
+    const response = await this.request("POST", "/v1/bus/topics", {
+      body: createBusTopicBody(req),
+    });
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusTopic((await response.json()) as Record<string, unknown>);
+  }
+
+  async listBusTopics(filter: { namespace?: string; tenant?: string } = {}): Promise<BusTopic[]> {
+    const params = new URLSearchParams();
+    if (filter.namespace) params.set("namespace", filter.namespace);
+    if (filter.tenant) params.set("tenant", filter.tenant);
+    const response = await this.request("GET", "/v1/bus/topics", {
+      params: params.toString() ? params : undefined,
+    });
+    if (!response.ok) await this.busThrowFromResponse(response);
+    const body = (await response.json()) as { topics?: Record<string, unknown>[] };
+    return (body.topics ?? []).map(parseBusTopic);
+  }
+
+  async getBusTopic(namespace: string, tenant: string, name: string): Promise<BusTopic> {
+    const response = await this.request(
+      "GET",
+      `/v1/bus/topics/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(name)}`,
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusTopic((await response.json()) as Record<string, unknown>);
+  }
+
+  async deleteBusTopic(namespace: string, tenant: string, name: string): Promise<void> {
+    const response = await this.request(
+      "DELETE",
+      `/v1/bus/topics/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(name)}`,
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+  }
+
+  async publishBusMessage(req: PublishBusMessage): Promise<PublishReceipt> {
+    const response = await this.request("POST", "/v1/bus/publish", {
+      body: publishBusMessageBody(req),
+    });
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parsePublishReceipt((await response.json()) as Record<string, unknown>);
+  }
+
+  // --------------- Phase 2: Subscriptions + lag ---------------
+
+  async createBusSubscription(req: CreateBusSubscription): Promise<BusSubscription> {
+    const response = await this.request("POST", "/v1/bus/subscriptions", {
+      body: createBusSubscriptionBody(req),
+    });
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusSubscription((await response.json()) as Record<string, unknown>);
+  }
+
+  async listBusSubscriptions(
+    filter: { namespace?: string; tenant?: string; topic?: string } = {},
+  ): Promise<BusSubscription[]> {
+    const params = new URLSearchParams();
+    if (filter.namespace) params.set("namespace", filter.namespace);
+    if (filter.tenant) params.set("tenant", filter.tenant);
+    if (filter.topic) params.set("topic", filter.topic);
+    const response = await this.request("GET", "/v1/bus/subscriptions", {
+      params: params.toString() ? params : undefined,
+    });
+    if (!response.ok) await this.busThrowFromResponse(response);
+    const body = (await response.json()) as { subscriptions?: Record<string, unknown>[] };
+    return (body.subscriptions ?? []).map(parseBusSubscription);
+  }
+
+  async getBusSubscription(subId: string): Promise<BusSubscription> {
+    const response = await this.request(
+      "GET",
+      `/v1/bus/subscriptions/${this.busSeg(subId)}`,
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusSubscription((await response.json()) as Record<string, unknown>);
+  }
+
+  async deleteBusSubscription(subId: string): Promise<void> {
+    const response = await this.request(
+      "DELETE",
+      `/v1/bus/subscriptions/${this.busSeg(subId)}`,
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+  }
+
+  async getBusSubscriptionLag(subId: string): Promise<BusLag> {
+    const response = await this.request(
+      "GET",
+      `/v1/bus/subscriptions/${this.busSeg(subId)}/lag`,
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusLag((await response.json()) as Record<string, unknown>);
+  }
+
+  // --------------- Phase 3: Schemas ---------------
+
+  async registerBusSchema(req: RegisterBusSchema): Promise<BusSchema> {
+    const response = await this.request("POST", "/v1/bus/schemas", {
+      body: registerBusSchemaBody(req),
+    });
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusSchema((await response.json()) as Record<string, unknown>);
+  }
+
+  async listBusSchemas(
+    filter: {
+      namespace?: string;
+      tenant?: string;
+      subject?: string;
+      latestOnly?: boolean;
+    } = {},
+  ): Promise<BusSchema[]> {
+    const params = new URLSearchParams();
+    if (filter.namespace) params.set("namespace", filter.namespace);
+    if (filter.tenant) params.set("tenant", filter.tenant);
+    if (filter.subject) params.set("subject", filter.subject);
+    if (filter.latestOnly) params.set("latest_only", "true");
+    const response = await this.request("GET", "/v1/bus/schemas", {
+      params: params.toString() ? params : undefined,
+    });
+    if (!response.ok) await this.busThrowFromResponse(response);
+    const body = (await response.json()) as { schemas?: Record<string, unknown>[] };
+    return (body.schemas ?? []).map(parseBusSchema);
+  }
+
+  async getBusSchema(
+    namespace: string,
+    tenant: string,
+    subject: string,
+    version: number,
+  ): Promise<BusSchema> {
+    const response = await this.request(
+      "GET",
+      `/v1/bus/schemas/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(subject)}/${version}`,
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusSchema((await response.json()) as Record<string, unknown>);
+  }
+
+  async deleteBusSchema(
+    namespace: string,
+    tenant: string,
+    subject: string,
+    version: number,
+  ): Promise<void> {
+    const response = await this.request(
+      "DELETE",
+      `/v1/bus/schemas/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(subject)}/${version}`,
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+  }
+
+  // --------------- Phase 4: Agents + heartbeat ---------------
+
+  async registerBusAgent(req: RegisterBusAgent): Promise<BusAgent> {
+    const response = await this.request("POST", "/v1/bus/agents", {
+      body: registerBusAgentBody(req),
+    });
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusAgent((await response.json()) as Record<string, unknown>);
+  }
+
+  async listBusAgents(filter: { namespace?: string; tenant?: string } = {}): Promise<BusAgent[]> {
+    const params = new URLSearchParams();
+    if (filter.namespace) params.set("namespace", filter.namespace);
+    if (filter.tenant) params.set("tenant", filter.tenant);
+    const response = await this.request("GET", "/v1/bus/agents", {
+      params: params.toString() ? params : undefined,
+    });
+    if (!response.ok) await this.busThrowFromResponse(response);
+    const body = (await response.json()) as { agents?: Record<string, unknown>[] };
+    return (body.agents ?? []).map(parseBusAgent);
+  }
+
+  async getBusAgent(namespace: string, tenant: string, agentId: string): Promise<BusAgent> {
+    const response = await this.request(
+      "GET",
+      `/v1/bus/agents/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(agentId)}`,
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusAgent((await response.json()) as Record<string, unknown>);
+  }
+
+  async deleteBusAgent(namespace: string, tenant: string, agentId: string): Promise<void> {
+    const response = await this.request(
+      "DELETE",
+      `/v1/bus/agents/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(agentId)}`,
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+  }
+
+  async heartbeatBusAgent(
+    namespace: string,
+    tenant: string,
+    agentId: string,
+  ): Promise<BusAgent> {
+    const response = await this.request(
+      "PATCH",
+      `/v1/bus/agents/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(agentId)}/heartbeat`,
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusAgent((await response.json()) as Record<string, unknown>);
+  }
+
+  /**
+   * Set the operator admin state on an agent (active / suspended /
+   * banned). Requires the standard `ManageAgent` permission. The
+   * server returns 400 if `req.expiresAt` is set on anything other
+   * than `"suspended"`.
+   */
+  async setBusAgentAdminState(
+    namespace: string,
+    tenant: string,
+    agentId: string,
+    req: SetBusAgentAdminState,
+  ): Promise<BusAgent> {
+    const response = await this.request(
+      "PUT",
+      `/v1/bus/agents/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(agentId)}/admin-state`,
+      { body: setBusAgentAdminStateBody(req) },
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusAgent((await response.json()) as Record<string, unknown>);
+  }
+
+  // --------------- Phase 5: Conversations ---------------
+
+  async createBusConversation(req: CreateBusConversation): Promise<BusConversation> {
+    const response = await this.request("POST", "/v1/bus/conversations", {
+      body: createBusConversationBody(req),
+    });
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusConversation((await response.json()) as Record<string, unknown>);
+  }
+
+  async listBusConversations(
+    filter: { namespace?: string; tenant?: string; state?: string; participant?: string } = {},
+  ): Promise<BusConversation[]> {
+    const params = new URLSearchParams();
+    if (filter.namespace) params.set("namespace", filter.namespace);
+    if (filter.tenant) params.set("tenant", filter.tenant);
+    if (filter.state) params.set("state", filter.state);
+    if (filter.participant) params.set("participant", filter.participant);
+    const response = await this.request("GET", "/v1/bus/conversations", {
+      params: params.toString() ? params : undefined,
+    });
+    if (!response.ok) await this.busThrowFromResponse(response);
+    const body = (await response.json()) as { conversations?: Record<string, unknown>[] };
+    return (body.conversations ?? []).map(parseBusConversation);
+  }
+
+  async getBusConversation(
+    namespace: string,
+    tenant: string,
+    conversationId: string,
+  ): Promise<BusConversation> {
+    const response = await this.request(
+      "GET",
+      `/v1/bus/conversations/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(conversationId)}`,
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusConversation((await response.json()) as Record<string, unknown>);
+  }
+
+  async deleteBusConversation(
+    namespace: string,
+    tenant: string,
+    conversationId: string,
+  ): Promise<void> {
+    const response = await this.request(
+      "DELETE",
+      `/v1/bus/conversations/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(conversationId)}`,
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+  }
+
+  async transitionBusConversation(
+    namespace: string,
+    tenant: string,
+    conversationId: string,
+    targetState: string,
+  ): Promise<BusConversation> {
+    const response = await this.request(
+      "POST",
+      `/v1/bus/conversations/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(conversationId)}/transition`,
+      { body: { target_state: targetState } },
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusConversation((await response.json()) as Record<string, unknown>);
+  }
+
+  async appendBusConversationMessage(
+    namespace: string,
+    tenant: string,
+    conversationId: string,
+    req: AppendBusConversationMessage,
+  ): Promise<Record<string, unknown>> {
+    const response = await this.request(
+      "POST",
+      `/v1/bus/conversations/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(conversationId)}/messages`,
+      { body: appendBusConversationMessageBody(req) },
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return (await response.json()) as Record<string, unknown>;
+  }
+
+  async replayBusConversationMessages(
+    namespace: string,
+    tenant: string,
+    conversationId: string,
+    options: { limit?: number; cursor?: string } = {},
+  ): Promise<BusReplayResponse> {
+    const params = new URLSearchParams();
+    if (options.limit !== undefined) params.set("limit", String(options.limit));
+    if (options.cursor) params.set("cursor", options.cursor);
+    const response = await this.request(
+      "GET",
+      `/v1/bus/conversations/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(conversationId)}/messages`,
+      { params: params.toString() ? params : undefined },
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusReplayResponse((await response.json()) as Record<string, unknown>);
+  }
+
+  // --------------- Phase 6a: Tool envelopes ---------------
+
+  /**
+   * Append a tool-call envelope.
+   *
+   * Returns a discriminated union: `kind === "produced"` when the
+   * call landed on Kafka, `kind === "parked"` when the server
+   * parked it under a Phase 6c HITL approval (driven by
+   * `req.requireApproval`).
+   */
+  async postBusToolCall(
+    namespace: string,
+    tenant: string,
+    conversationId: string,
+    req: PostBusToolCall,
+  ): Promise<PostBusToolCallOutcome> {
+    const response = await this.request(
+      "POST",
+      `/v1/bus/conversations/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(conversationId)}/tool-calls`,
+      { body: postBusToolCallBody(req) },
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+    const body = (await response.json()) as Record<string, unknown>;
+    if (response.status === 202) {
+      return { kind: "parked", receipt: parseBusApprovalParkedReceipt(body) };
+    }
+    return { kind: "produced", receipt: parseBusToolEnvelopeReceipt(body) };
+  }
+
+  async postBusToolResult(
+    namespace: string,
+    tenant: string,
+    conversationId: string,
+    req: PostBusToolResult,
+  ): Promise<BusToolEnvelopeReceipt> {
+    const response = await this.request(
+      "POST",
+      `/v1/bus/conversations/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(conversationId)}/tool-results`,
+      { body: postBusToolResultBody(req) },
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusToolEnvelopeReceipt((await response.json()) as Record<string, unknown>);
+  }
+
+  async lookupBusToolResult(
+    namespace: string,
+    tenant: string,
+    callId: string,
+    params: BusToolResultLookupParams,
+  ): Promise<BusToolResultLookup> {
+    const response = await this.request(
+      "GET",
+      `/v1/bus/tool-calls/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(callId)}/result`,
+      { params: busToolResultLookupParams(params) },
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusToolResultLookup((await response.json()) as Record<string, unknown>);
+  }
+
+  // --------------- Phase 6b: Stream envelopes ---------------
+
+  async postBusStreamChunk(
+    namespace: string,
+    tenant: string,
+    conversationId: string,
+    req: PostBusStreamChunk,
+  ): Promise<BusStreamEnvelopeReceipt> {
+    const response = await this.request(
+      "POST",
+      `/v1/bus/conversations/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(conversationId)}/stream-chunks`,
+      { body: postBusStreamChunkBody(req) },
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusStreamEnvelopeReceipt((await response.json()) as Record<string, unknown>);
+  }
+
+  async postBusStreamEnd(
+    namespace: string,
+    tenant: string,
+    conversationId: string,
+    req: PostBusStreamEnd,
+  ): Promise<BusStreamEnvelopeReceipt> {
+    const response = await this.request(
+      "POST",
+      `/v1/bus/conversations/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(conversationId)}/stream-end`,
+      { body: postBusStreamEndBody(req) },
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusStreamEnvelopeReceipt((await response.json()) as Record<string, unknown>);
+  }
+
+  /**
+   * Build the SSE consume URL for a stream. Plug it into your
+   * preferred SSE client (`EventSource` in the browser, `eventsource`
+   * package on the server, etc.). Path segments are encoded the
+   * same way the Rust + Python SDKs encode them.
+   */
+  busStreamConsumeUrl(
+    namespace: string,
+    tenant: string,
+    conversationId: string,
+    streamId: string,
+  ): string {
+    return (
+      `${this.baseUrl}/v1/bus/streams/` +
+      `${this.busSeg(namespace)}/${this.busSeg(tenant)}/` +
+      `${this.busSeg(conversationId)}/${this.busSeg(streamId)}`
+    );
+  }
+
+  /**
+   * Consume a bus subscription via SSE
+   * (`GET /v1/bus/subscribe/{subscriptionId}`). Yields one item per
+   * Kafka record on the underlying topic. Server-side errors surface
+   * as `kind: "error"`; SSE keep-alive comments surface as
+   * `kind: "keepAlive"` so callers can use them as a liveness signal.
+   *
+   * When `reconnect` is set, a clean disconnect triggers exponential
+   * backoff and a fresh subscribe call from `latest` — yielding a
+   * `kind: "reconnected"` item so callers can resync state. Note that
+   * resume from `latest` means messages produced during the disconnect
+   * window are dropped; use Phase 2 durable subscriptions with manual
+   * ack for lossless delivery.
+   *
+   * @example
+   * ```typescript
+   * for await (const item of client.consumeBusSubscription("agent-A", {
+   *   topic: "agents.demo.events",
+   *   from: "earliest",
+   *   reconnect: {},  // 500ms initial, 30s cap, infinite retries
+   * })) {
+   *   if (item.kind === "message") console.log(item.message.offset);
+   *   else if (item.kind === "reconnected") {
+   *     console.warn(`reconnected after ${item.backoffMs}ms (attempt ${item.attempt})`);
+   *   }
+   * }
+   * ```
+   */
+  async *consumeBusSubscription(
+    subscriptionId: string,
+    options: {
+      topic: string;
+      from?: "earliest" | "latest";
+      reconnect?: ReconnectConfig;
+    },
+  ): AsyncGenerator<BusConsumeItem, void, undefined> {
+    const path = `/v1/bus/subscribe/${this.busSeg(subscriptionId)}`;
+    if (options.reconnect === undefined) {
+      const params = new URLSearchParams();
+      params.set("topic", options.topic);
+      if (options.from !== undefined) params.set("from", options.from);
+      for await (const env of this.connectBusSse(path, params)) {
+        yield this.envelopeToConsumeItem(env);
+      }
+      return;
+    }
+
+    // Reconnect path: open the first stream with the caller's `from`,
+    // resume from `latest` after every disconnect. Counter resets on
+    // successful read so a long-stable connection isn't penalised
+    // for a single later blip.
+    const cfg = options.reconnect;
+    const initialBackoffMs = cfg.initialBackoffMs ?? 500;
+    const maxBackoffMs = cfg.maxBackoffMs ?? 30_000;
+    const maxAttempts = cfg.maxAttempts;
+    let attempt = 0;
+    let firstOpen = true;
+    while (true) {
+      const params = new URLSearchParams();
+      params.set("topic", options.topic);
+      params.set("from", firstOpen ? options.from ?? "latest" : "latest");
+      try {
+        for await (const env of this.connectBusSse(path, params)) {
+          attempt = 0;
+          yield this.envelopeToConsumeItem(env);
+        }
+      } catch (err) {
+        // Connection-level errors are the disconnect signal we're
+        // meant to recover from; let them flow through to the sleep+
+        // retry path. Anything else (parse error etc.) re-throws.
+        if (err instanceof HttpError || err instanceof ConnectionError) {
+          // expected — fall through to backoff
+        } else {
+          throw err;
+        }
+      }
+      firstOpen = false;
+      if (maxAttempts !== undefined && attempt >= maxAttempts) {
+        return;
+      }
+      const backoffMs = reconnectBackoffMs(attempt, initialBackoffMs, maxBackoffMs);
+      await new Promise((resolve) => setTimeout(resolve, backoffMs));
+      attempt += 1;
+      yield { kind: "reconnected", backoffMs, attempt };
+    }
+  }
+
+  /**
+   * Consume a typed stream via SSE
+   * (`GET /v1/bus/streams/{ns}/{tenant}/{conversationId}/{streamId}`).
+   * The server filters records by `(envelope_kind, conversation_id,
+   * stream_id)`, so this generator only emits chunks for the requested
+   * stream id and closes after the terminal `kind: "end"`.
+   *
+   * @example
+   * ```typescript
+   * for await (const item of client.consumeBusStream("agents", "demo", "thread-1", "stream-42")) {
+   *   if (item.kind === "chunk") process.stdout.write(JSON.stringify(item.chunk.body));
+   *   else if (item.kind === "end") break;
+   * }
+   * ```
+   */
+  async *consumeBusStream(
+    namespace: string,
+    tenant: string,
+    conversationId: string,
+    streamId: string,
+  ): AsyncGenerator<BusStreamItem, void, undefined> {
+    const path =
+      `/v1/bus/streams/${this.busSeg(namespace)}/${this.busSeg(tenant)}/` +
+      `${this.busSeg(conversationId)}/${this.busSeg(streamId)}`;
+    for await (const env of this.connectBusSse(path)) {
+      const item = this.envelopeToStreamItem(env);
+      yield item;
+      if (item.kind === "end") return;
+    }
+  }
+
+  // --------------- Phase 6c: HITL approvals ---------------
+
+  async listBusApprovals(
+    namespace: string,
+    tenant: string,
+    filter: { status?: BusApprovalStatus; conversationId?: string } = {},
+  ): Promise<BusApprovalView[]> {
+    const params = new URLSearchParams();
+    if (filter.status) params.set("status", filter.status);
+    if (filter.conversationId) params.set("conversation_id", filter.conversationId);
+    const response = await this.request(
+      "GET",
+      `/v1/bus/approvals/${this.busSeg(namespace)}/${this.busSeg(tenant)}`,
+      { params: params.toString() ? params : undefined },
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+    const body = (await response.json()) as { approvals?: Record<string, unknown>[] };
+    return (body.approvals ?? []).map(parseBusApprovalView);
+  }
+
+  async getBusApproval(
+    namespace: string,
+    tenant: string,
+    approvalId: string,
+  ): Promise<BusApprovalView> {
+    const response = await this.request(
+      "GET",
+      `/v1/bus/approvals/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(approvalId)}`,
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusApprovalView((await response.json()) as Record<string, unknown>);
+  }
+
+  async approveBusApproval(
+    namespace: string,
+    tenant: string,
+    approvalId: string,
+    decision: BusApprovalDecision,
+  ): Promise<BusApprovalDecisionResponse> {
+    const response = await this.request(
+      "POST",
+      `/v1/bus/approvals/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(approvalId)}/approve`,
+      { body: busApprovalDecisionBody(decision) },
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusApprovalDecisionResponse((await response.json()) as Record<string, unknown>);
+  }
+
+  async rejectBusApproval(
+    namespace: string,
+    tenant: string,
+    approvalId: string,
+    decision: BusApprovalDecision,
+  ): Promise<BusApprovalDecisionResponse> {
+    const response = await this.request(
+      "POST",
+      `/v1/bus/approvals/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(approvalId)}/reject`,
+      { body: busApprovalDecisionBody(decision) },
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusApprovalDecisionResponse((await response.json()) as Record<string, unknown>);
+  }
+
+  // ===========================================================================
+  // A2A protocol surface
+  //
+  // Mirrors the Rust + Python SDKs method-for-method. Every authenticated
+  // call sends `A2A-Version: 1.0`; the discovery call is intentionally
+  // unauthenticated per spec.
+  // ===========================================================================
+
+  /** Translate an A2A error response into an `ApiError`. The A2A
+   *  surface uses the same `{ "error": "..." }` envelope as the rest
+   *  of the Acteon REST API. */
+  private async a2aThrowFromResponse(response: Response): Promise<never> {
+    let payload: Record<string, unknown> = {};
+    try {
+      payload = (await response.json()) as Record<string, unknown>;
+    } catch {
+      /* fall through with empty payload */
+    }
+    const message =
+      (payload.error as string | undefined) ??
+      (payload.message as string | undefined) ??
+      `a2a error (status ${response.status})`;
+    const retryable =
+      response.status === 408 ||
+      response.status === 425 ||
+      response.status === 429 ||
+      response.status >= 500;
+    throw new ApiError(
+      (payload.code as string | undefined) ?? "A2A",
+      message,
+      retryable,
+    );
+  }
+
+  /** `POST /a2a/{namespace}/{tenant}/v1/message:send`. */
+  async a2aSendMessage(
+    namespace: string,
+    tenant: string,
+    message: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const response = await this.request(
+      "POST",
+      `/a2a/${a2aSegment(namespace)}/${a2aSegment(tenant)}/v1/message:send`,
+      { body: { message }, extraHeaders: { ...A2A_HEADERS } },
+    );
+    if (!response.ok) await this.a2aThrowFromResponse(response);
+    return (await response.json()) as Record<string, unknown>;
+  }
+
+  /** `GET /a2a/{namespace}/{tenant}/v1/tasks/{id}`. */
+  async a2aGetTask(
+    namespace: string,
+    tenant: string,
+    taskId: string,
+  ): Promise<Record<string, unknown>> {
+    const response = await this.request(
+      "GET",
+      `/a2a/${a2aSegment(namespace)}/${a2aSegment(tenant)}/v1/tasks/${a2aSegment(taskId)}`,
+      { extraHeaders: { ...A2A_HEADERS } },
+    );
+    if (!response.ok) await this.a2aThrowFromResponse(response);
+    return (await response.json()) as Record<string, unknown>;
+  }
+
+  /** `POST /a2a/{namespace}/{tenant}/v1/tasks/{id}:cancel`. The
+   *  `:cancel` verb is part of the URL (spec §11) — the server
+   *  splits it off in-handler. */
+  async a2aCancelTask(
+    namespace: string,
+    tenant: string,
+    taskId: string,
+  ): Promise<Record<string, unknown>> {
+    const response = await this.request(
+      "POST",
+      `/a2a/${a2aSegment(namespace)}/${a2aSegment(tenant)}/v1/tasks/${a2aSegment(taskId)}:cancel`,
+      { extraHeaders: { ...A2A_HEADERS } },
+    );
+    if (!response.ok) await this.a2aThrowFromResponse(response);
+    return (await response.json()) as Record<string, unknown>;
+  }
+
+  /** `POST .../v1/tasks/{id}/pushNotificationConfigs` — register or
+   *  upsert a push-notification webhook for a Task. Use
+   *  {@link makePushConfig} to build `config`. */
+  async a2aSetPushConfig(
+    namespace: string,
+    tenant: string,
+    taskId: string,
+    config: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const response = await this.request(
+      "POST",
+      `/a2a/${a2aSegment(namespace)}/${a2aSegment(tenant)}/v1/tasks/${a2aSegment(taskId)}/pushNotificationConfigs`,
+      { body: config, extraHeaders: { ...A2A_HEADERS } },
+    );
+    if (!response.ok) await this.a2aThrowFromResponse(response);
+    return (await response.json()) as Record<string, unknown>;
+  }
+
+  /** `GET .../v1/tasks/{id}/pushNotificationConfigs` — list every
+   *  config registered for the task. */
+  async a2aListPushConfigs(
+    namespace: string,
+    tenant: string,
+    taskId: string,
+  ): Promise<Record<string, unknown>[]> {
+    const response = await this.request(
+      "GET",
+      `/a2a/${a2aSegment(namespace)}/${a2aSegment(tenant)}/v1/tasks/${a2aSegment(taskId)}/pushNotificationConfigs`,
+      { extraHeaders: { ...A2A_HEADERS } },
+    );
+    if (!response.ok) await this.a2aThrowFromResponse(response);
+    return (await response.json()) as Record<string, unknown>[];
+  }
+
+  /** `GET …/pushNotificationConfigs/{cfgId}` — read one config. */
+  async a2aGetPushConfig(
+    namespace: string,
+    tenant: string,
+    taskId: string,
+    configId: string,
+  ): Promise<Record<string, unknown>> {
+    const response = await this.request(
+      "GET",
+      `/a2a/${a2aSegment(namespace)}/${a2aSegment(tenant)}/v1/tasks/${a2aSegment(taskId)}/pushNotificationConfigs/${a2aSegment(configId)}`,
+      { extraHeaders: { ...A2A_HEADERS } },
+    );
+    if (!response.ok) await this.a2aThrowFromResponse(response);
+    return (await response.json()) as Record<string, unknown>;
+  }
+
+  /** `DELETE …/pushNotificationConfigs/{cfgId}`. Throws an
+   *  `ApiError` with HTTP 404 when the config doesn't exist — the
+   *  server never silently no-ops. */
+  async a2aDeletePushConfig(
+    namespace: string,
+    tenant: string,
+    taskId: string,
+    configId: string,
+  ): Promise<void> {
+    const response = await this.request(
+      "DELETE",
+      `/a2a/${a2aSegment(namespace)}/${a2aSegment(tenant)}/v1/tasks/${a2aSegment(taskId)}/pushNotificationConfigs/${a2aSegment(configId)}`,
+      { extraHeaders: { ...A2A_HEADERS } },
+    );
+    if (!response.ok) await this.a2aThrowFromResponse(response);
+  }
+
+  /** `GET /a2a/{namespace}/{tenant}/.well-known/agent.json` — the
+   *  unauthenticated discovery endpoint. Issued **without** the
+   *  Authorization header per A2A spec. */
+  async a2aDiscoverAgent(
+    namespace: string,
+    tenant: string,
+  ): Promise<Record<string, unknown>> {
+    const response = await this.request(
+      "GET",
+      `/a2a/${a2aSegment(namespace)}/${a2aSegment(tenant)}/.well-known/agent.json`,
+      { skipAuth: true },
+    );
+    if (!response.ok) await this.a2aThrowFromResponse(response);
+    return (await response.json()) as Record<string, unknown>;
+  }
+
+  /** JSON-RPC `agent/getAuthenticatedExtendedCard` — authenticated
+   *  discovery variant. Issued through the JSON-RPC envelope against
+   *  `POST /a2a/{ns}/{tenant}` (the A2A spec defines no REST
+   *  counterpart). The returned card has
+   *  `capabilities.extendedAgentCard = true`. */
+  async a2aGetAuthenticatedExtendedCard(
+    namespace: string,
+    tenant: string,
+  ): Promise<Record<string, unknown>> {
+    const envelope = {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "agent/getAuthenticatedExtendedCard",
+    };
+    const response = await this.request(
+      "POST",
+      `/a2a/${a2aSegment(namespace)}/${a2aSegment(tenant)}`,
+      { body: envelope, extraHeaders: { ...A2A_HEADERS } },
+    );
+    if (!response.ok) await this.a2aThrowFromResponse(response);
+    const body = (await response.json()) as JsonRpcReply<Record<string, unknown>>;
+    return unwrapJsonRpc(body, (code, message) => {
+      throw new ApiError(code, message, false);
+    });
   }
 }

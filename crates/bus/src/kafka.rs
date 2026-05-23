@@ -1,0 +1,637 @@
+//! `rdkafka`-backed [`BusBackend`].
+//!
+//! One `FutureProducer` is shared across all produces. Each subscribe
+//! spawns a fresh `StreamConsumer` bound to the supplied `group_id`,
+//! because Phase 1 keeps subscriber lifetimes tied to a single SSE
+//! connection. Phase 2 promotes subscriptions to a first-class type
+//! with persistent consumers.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use async_trait::async_trait;
+use chrono::{TimeZone, Utc};
+use futures::StreamExt;
+use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
+use rdkafka::client::DefaultClientContext;
+use rdkafka::config::ClientConfig;
+use rdkafka::consumer::{Consumer, StreamConsumer};
+use rdkafka::error::{KafkaError, RDKafkaErrorCode};
+use rdkafka::message::{Header, Headers, Message, OwnedHeaders};
+use rdkafka::producer::{FutureProducer, FutureRecord, Producer};
+use rdkafka::util::Timeout;
+
+use rdkafka::TopicPartitionList;
+
+use acteon_core::{PartitionLag, Topic};
+
+use crate::backend::{BusBackend, ScanFrom, ScanWatermarks, SubscribeStream};
+use crate::config::KafkaBusConfig;
+use crate::error::BusError;
+use crate::message::{BusMessage, DeliveryReceipt, OffsetPosition, StartOffset};
+
+/// `BusBackend` impl that talks to a real Kafka cluster.
+pub struct KafkaBackend {
+    producer: FutureProducer,
+    admin: AdminClient<DefaultClientContext>,
+    bootstrap: String,
+    client_id: String,
+    produce_timeout: Duration,
+    extra: Vec<(String, String)>,
+    /// `Some` when the operator configured `transactional_id`. Drives
+    /// the per-produce begin/commit wrap. `None` (default) keeps the
+    /// idempotent-producer-only path that the bus has always used.
+    transactional: Option<TransactionalConfig>,
+}
+
+/// Snapshot of the transactional knobs taken at backend construction.
+/// Held so each produce can use the configured timeout without the
+/// caller threading it through.
+struct TransactionalConfig {
+    transaction_timeout: Duration,
+}
+
+impl KafkaBackend {
+    /// Build a new backend from config. Does not contact the broker
+    /// in non-transactional mode — connections are lazy on first
+    /// produce/subscribe/admin call.
+    ///
+    /// **Phase 10 add-on**: when `config.transactional_id` is `Some`,
+    /// the constructor calls `init_transactions` synchronously. That
+    /// IS a broker round-trip — startup will block waiting for the
+    /// broker to acknowledge the transactional registration. If the
+    /// broker is unreachable, the constructor returns
+    /// `BusError::Transport`. This is the right behavior in
+    /// transactional mode: the operator opted into broker-side
+    /// fencing, so a server that can't talk to the broker shouldn't
+    /// pretend to provide it.
+    pub fn new(config: &KafkaBusConfig) -> Result<Arc<Self>, BusError> {
+        let mut cfg = ClientConfig::new();
+        cfg.set("bootstrap.servers", &config.bootstrap_servers);
+        cfg.set("client.id", &config.client_id);
+        for (k, v) in &config.extra {
+            cfg.set(k, v);
+        }
+        cfg.set("message.timeout.ms", config.produce_timeout_ms.to_string());
+        cfg.set("enable.idempotence", "true");
+        if let Some(txn_id) = &config.transactional_id {
+            cfg.set("transactional.id", txn_id);
+            cfg.set(
+                "transaction.timeout.ms",
+                config.transaction_timeout_ms.to_string(),
+            );
+        }
+
+        let producer: FutureProducer = cfg
+            .create()
+            .map_err(|e| BusError::Transport(format!("producer: {e}")))?;
+        let admin: AdminClient<DefaultClientContext> = cfg
+            .create()
+            .map_err(|e| BusError::Transport(format!("admin: {e}")))?;
+
+        let transactional = if config.transactional_id.is_some() {
+            let timeout = Duration::from_millis(config.transaction_timeout_ms);
+            // Synchronously register the transactional.id with the
+            // broker. Blocks until the broker responds or the timeout
+            // elapses. After this, every produce that uses this
+            // producer can be wrapped in begin_transaction /
+            // commit_transaction.
+            producer
+                .init_transactions(Timeout::After(timeout))
+                .map_err(|e| BusError::Transport(format!("init_transactions: {e}")))?;
+            Some(TransactionalConfig {
+                transaction_timeout: timeout,
+            })
+        } else {
+            None
+        };
+
+        Ok(Arc::new(Self {
+            producer,
+            admin,
+            bootstrap: config.bootstrap_servers.clone(),
+            client_id: config.client_id.clone(),
+            produce_timeout: Duration::from_millis(config.produce_timeout_ms),
+            extra: config.extra.clone(),
+            transactional,
+        }))
+    }
+
+    fn consumer_config(&self, group_id: &str, from: StartOffset) -> ClientConfig {
+        let mut cfg = ClientConfig::new();
+        cfg.set("bootstrap.servers", &self.bootstrap);
+        cfg.set("client.id", &self.client_id);
+        cfg.set("group.id", group_id);
+        cfg.set(
+            "auto.offset.reset",
+            match from {
+                StartOffset::Earliest => "earliest",
+                StartOffset::Latest => "latest",
+            },
+        );
+        // Phase 1 does not commit offsets — callers that reconnect get
+        // either the earliest or latest records per `from`.
+        cfg.set("enable.auto.commit", "false");
+        for (k, v) in &self.extra {
+            cfg.set(k, v);
+        }
+        cfg
+    }
+}
+
+fn map_kafka_error(err: KafkaError) -> BusError {
+    let unknown_topic = |code: RDKafkaErrorCode| -> bool {
+        matches!(
+            code,
+            RDKafkaErrorCode::UnknownTopic | RDKafkaErrorCode::UnknownTopicOrPartition
+        )
+    };
+    match err {
+        KafkaError::AdminOp(RDKafkaErrorCode::TopicAlreadyExists)
+        | KafkaError::MessageProduction(RDKafkaErrorCode::TopicAlreadyExists) => {
+            BusError::TopicAlreadyExists(String::new())
+        }
+        KafkaError::MessageProduction(code) if unknown_topic(code) => {
+            // Produce against a non-existent topic was previously a
+            // generic Transport/500; callers get a 404 now, matching
+            // the consume path.
+            BusError::TopicNotFound(String::new())
+        }
+        KafkaError::MessageConsumption(code) if unknown_topic(code) => {
+            BusError::TopicNotFound(String::new())
+        }
+        KafkaError::AdminOp(code) | KafkaError::MessageProduction(code) => {
+            BusError::Transport(format!("kafka: {code:?}"))
+        }
+        other => BusError::Transport(other.to_string()),
+    }
+}
+
+#[async_trait]
+impl BusBackend for KafkaBackend {
+    async fn create_topic(&self, topic: &Topic) -> Result<(), BusError> {
+        let name = topic.kafka_topic_name();
+        let new_topic = NewTopic::new(
+            &name,
+            topic.partitions,
+            TopicReplication::Fixed(i32::from(topic.replication_factor)),
+        );
+        let configured: Vec<(String, String)> = if let Some(ms) = topic.retention_ms {
+            vec![("retention.ms".to_string(), ms.to_string())]
+        } else {
+            Vec::new()
+        };
+        let new_topic = configured
+            .iter()
+            .fold(new_topic, |nt, (k, v)| nt.set(k.as_str(), v.as_str()));
+        let results = self
+            .admin
+            .create_topics(&[new_topic], &AdminOptions::new())
+            .await
+            .map_err(map_kafka_error)?;
+        // `create_topic` only ever submits one `NewTopic` (the trait
+        // takes a single `&Topic`), so we expect exactly one result and
+        // handle it directly. Looping here previously caused an
+        // early-return bug to silently strand later results — moot
+        // today, but the contract is clearer this way.
+        let res = results
+            .into_iter()
+            .next()
+            .ok_or_else(|| BusError::Transport("create_topic: empty admin result".into()))?;
+        match res {
+            Ok(_) => Ok(()),
+            // Surface the typed variant so callers can distinguish a
+            // duplicate create from a real failure. Acteon does not
+            // auto-adopt pre-existing Kafka topics — silently inheriting
+            // an out-of-band topic is a privilege-escalation vector
+            // (any caller with create-topic rights could claim a topic
+            // an admin pre-created out of band) and silently inherits
+            // configuration that may not match the request. Operators
+            // who want to bring an orphan under Acteon governance must
+            // do it explicitly via a future admin-only adoption flow.
+            Err((_, RDKafkaErrorCode::TopicAlreadyExists)) => {
+                Err(BusError::TopicAlreadyExists(topic.kafka_topic_name()))
+            }
+            Err((topic_name, code)) => Err(BusError::Transport(format!(
+                "create_topic {topic_name}: {code:?}"
+            ))),
+        }
+    }
+
+    async fn delete_topic(&self, kafka_name: &str) -> Result<(), BusError> {
+        let results = self
+            .admin
+            .delete_topics(&[kafka_name], &AdminOptions::new())
+            .await
+            .map_err(map_kafka_error)?;
+        for res in results {
+            match res {
+                Ok(_) => {}
+                Err((_, RDKafkaErrorCode::UnknownTopicOrPartition)) => {
+                    return Err(BusError::TopicNotFound(kafka_name.into()));
+                }
+                Err((_, code)) => {
+                    return Err(BusError::Transport(format!("delete_topic: {code:?}")));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn produce(&self, message: BusMessage) -> Result<DeliveryReceipt, BusError> {
+        let BusMessage {
+            topic,
+            key,
+            payload,
+            headers,
+            ..
+        } = message;
+        let payload_bytes =
+            serde_json::to_vec(&payload).map_err(|e| BusError::Serialization(e.to_string()))?;
+        let mut kheaders = OwnedHeaders::new();
+        for (k, v) in &headers {
+            kheaders = kheaders.insert(Header {
+                key: k,
+                value: Some(v.as_bytes()),
+            });
+        }
+        let mut record: FutureRecord<'_, str, Vec<u8>> = FutureRecord::to(&topic)
+            .payload(&payload_bytes)
+            .headers(kheaders);
+        if let Some(ref k) = key {
+            record = record.key(k.as_str());
+        }
+        // Phase 10 add-on: wrap the produce in a Kafka transaction
+        // when the operator configured `transactional.id`. The broker
+        // tracks the producer's epoch, so a restart with the same
+        // transactional.id fences any zombie that might still try to
+        // commit — the cross-restart guarantee that idempotent-mode-
+        // alone can't provide.
+        if self.transactional.is_some() {
+            self.producer
+                .begin_transaction()
+                .map_err(|e| BusError::Transport(format!("begin_transaction: {e}")))?;
+        }
+        let send_result = self
+            .producer
+            .send(record, Timeout::After(self.produce_timeout))
+            .await;
+        let (partition, offset) = match send_result {
+            Ok(p) => {
+                if let Some(txn) = &self.transactional
+                    && let Err(e) = self
+                        .producer
+                        .commit_transaction(Timeout::After(txn.transaction_timeout))
+                {
+                    return Err(BusError::Transport(format!("commit_transaction: {e}")));
+                }
+                p
+            }
+            Err((e, _msg)) => {
+                if let Some(txn) = &self.transactional {
+                    // Best-effort abort. If this fails too the broker
+                    // will eventually fence the transaction by
+                    // timeout. We still propagate the original send
+                    // error rather than the abort error.
+                    let _ = self
+                        .producer
+                        .abort_transaction(Timeout::After(txn.transaction_timeout));
+                }
+                return Err(match e {
+                    KafkaError::MessageProduction(RDKafkaErrorCode::MessageTimedOut) => {
+                        BusError::Timeout
+                    }
+                    other => map_kafka_error(other),
+                });
+            }
+        };
+        Ok(DeliveryReceipt {
+            topic,
+            partition,
+            offset,
+            timestamp: Utc::now(),
+        })
+    }
+
+    async fn subscribe(
+        &self,
+        kafka_topic: &str,
+        group_id: &str,
+        from: StartOffset,
+    ) -> Result<SubscribeStream, BusError> {
+        let cfg = self.consumer_config(group_id, from);
+        let consumer: StreamConsumer = cfg
+            .create()
+            .map_err(|e| BusError::Transport(format!("consumer: {e}")))?;
+        // `assign()` (manual partition placement) and `subscribe()`
+        // (dynamic consumer-group rebalance) are mutually exclusive in
+        // librdkafka. Phase 1 uses `group.id` for everything, so rely
+        // purely on `subscribe()`. `auto.offset.reset` in
+        // `consumer_config` handles Earliest vs Latest when the group
+        // has no committed offset.
+        consumer
+            .subscribe(&[kafka_topic])
+            .map_err(|e| BusError::Transport(format!("subscribe: {e}")))?;
+
+        let topic_owned = kafka_topic.to_string();
+        let stream = async_stream::stream! {
+            let mut stream = consumer.stream();
+            while let Some(res) = stream.next().await {
+                match res {
+                    Ok(msg) => {
+                        let payload = msg.payload().map_or(serde_json::Value::Null, |b| {
+                            serde_json::from_slice::<serde_json::Value>(b)
+                                .unwrap_or(serde_json::Value::Null)
+                        });
+                        let key = msg
+                            .key()
+                            .and_then(|b| std::str::from_utf8(b).ok())
+                            .map(str::to_string);
+                        let mut headers = std::collections::BTreeMap::new();
+                        if let Some(h) = msg.headers() {
+                            for i in 0..h.count() {
+                                let rec = h.get(i);
+                                let name = rec.key.to_string();
+                                if let Some(v) = rec.value
+                                    && let Ok(s) = std::str::from_utf8(v)
+                                {
+                                    headers.insert(name, s.to_string());
+                                }
+                            }
+                        }
+                        let timestamp = msg
+                            .timestamp()
+                            .to_millis()
+                            .and_then(|ms| Utc.timestamp_millis_opt(ms).single());
+                        yield Ok(BusMessage {
+                            topic: topic_owned.clone(),
+                            key,
+                            payload,
+                            headers,
+                            partition: Some(msg.partition()),
+                            offset: Some(msg.offset()),
+                            timestamp,
+                        });
+                    }
+                    Err(e) => {
+                        yield Err(BusError::Transport(e.to_string()));
+                        break;
+                    }
+                }
+            }
+        };
+        Ok(Box::pin(stream))
+    }
+
+    async fn commit_offset(
+        &self,
+        kafka_topic: &str,
+        group_id: &str,
+        position: OffsetPosition,
+    ) -> Result<(), BusError> {
+        // Out-of-band commits need a consumer that has actually joined
+        // the group — otherwise the broker returns `UnknownMemberId`.
+        // We `subscribe` + pull one record (or timeout) to force a
+        // JoinGroup round-trip, then commit and drop. This costs
+        // hundreds of milliseconds per call on a warm broker, which is
+        // fine for end-of-batch acks but **not** for per-record
+        // commits. A future phase introduces a stateful subscription
+        // registry that holds a single long-lived consumer so commits
+        // stream through it.
+        let cfg = self.consumer_config(group_id, StartOffset::Latest);
+        let consumer: StreamConsumer = cfg
+            .create()
+            .map_err(|e| BusError::Transport(format!("commit consumer: {e}")))?;
+        consumer
+            .subscribe(&[kafka_topic])
+            .map_err(|e| BusError::Transport(format!("commit subscribe: {e}")))?;
+
+        // Wait up to 5 s for assignment. A no-record timeout is fine:
+        // the subscribe poll alone triggers JoinGroup.
+        let _ = tokio::time::timeout(
+            Duration::from_secs(5),
+            futures::StreamExt::next(&mut consumer.stream()),
+        )
+        .await;
+
+        let mut tpl = TopicPartitionList::new();
+        // Kafka commits the "next offset to read," hence `+1`.
+        tpl.add_partition_offset(
+            kafka_topic,
+            position.partition,
+            rdkafka::Offset::Offset(position.offset + 1),
+        )
+        .map_err(|e| BusError::Transport(format!("tpl: {e}")))?;
+        consumer
+            .commit(&tpl, rdkafka::consumer::CommitMode::Sync)
+            .map_err(map_kafka_error)
+    }
+
+    async fn consumer_lag(
+        &self,
+        kafka_topic: &str,
+        group_id: &str,
+    ) -> Result<Vec<PartitionLag>, BusError> {
+        let cfg = self.consumer_config(group_id, StartOffset::Latest);
+        let consumer: StreamConsumer = cfg
+            .create()
+            .map_err(|e| BusError::Transport(format!("lag consumer: {e}")))?;
+        let metadata = consumer
+            .fetch_metadata(Some(kafka_topic), Duration::from_secs(10))
+            .map_err(map_kafka_error)?;
+        let topic_meta = metadata
+            .topics()
+            .iter()
+            .find(|t| t.name() == kafka_topic)
+            .ok_or_else(|| BusError::TopicNotFound(kafka_topic.into()))?;
+
+        let mut request_tpl = TopicPartitionList::new();
+        for p in topic_meta.partitions() {
+            request_tpl
+                .add_partition_offset(kafka_topic, p.id(), rdkafka::Offset::Invalid)
+                .map_err(|e| BusError::Transport(format!("tpl: {e}")))?;
+        }
+        let committed = consumer
+            .committed_offsets(request_tpl, Duration::from_secs(10))
+            .map_err(map_kafka_error)?;
+
+        let mut out = Vec::with_capacity(topic_meta.partitions().len());
+        for p in topic_meta.partitions() {
+            let (_low, high) = consumer
+                .fetch_watermarks(kafka_topic, p.id(), Duration::from_secs(10))
+                .map_err(map_kafka_error)?;
+            // Kafka stores "next" offset; our public contract is
+            // "last consumed" so both backends report the same numbers.
+            let committed_offset =
+                committed
+                    .find_partition(kafka_topic, p.id())
+                    .map_or(-1, |elt| match elt.offset() {
+                        rdkafka::Offset::Offset(next) => next - 1,
+                        _ => -1,
+                    });
+            let lag = if committed_offset < 0 {
+                high
+            } else {
+                (high - committed_offset - 1).max(0)
+            };
+            out.push(PartitionLag {
+                partition: p.id(),
+                committed: committed_offset,
+                high_water_mark: high,
+                lag,
+            });
+        }
+        Ok(out)
+    }
+
+    async fn scan_topic(
+        &self,
+        kafka_topic: &str,
+        from: ScanFrom,
+    ) -> Result<SubscribeStream, BusError> {
+        // `assign()` (manual partition placement) bypasses the consumer
+        // group coordinator entirely — no JoinGroup, no
+        // `__consumer_offsets` row, no metadata leak when the consumer
+        // is dropped. We use a unique throwaway `group.id` defensively
+        // because rdkafka still requires the field; without an explicit
+        // commit it never reaches the broker.
+        let group_id = format!("acteon-scan-{}", uuid::Uuid::new_v4());
+        let consumer_start = match from {
+            ScanFrom::Earliest => StartOffset::Earliest,
+            // Latest and FromOffsets both ignore `auto.offset.reset`
+            // because we always set explicit offsets via `assign`.
+            ScanFrom::Latest | ScanFrom::FromOffsets(_) => StartOffset::Latest,
+        };
+        let cfg = self.consumer_config(&group_id, consumer_start);
+        let consumer: StreamConsumer = cfg
+            .create()
+            .map_err(|e| BusError::Transport(format!("scan consumer: {e}")))?;
+        // Discover partitions, then `assign` each at the requested
+        // start offset. `Beginning` / `End` map cleanly to our
+        // `ScanFrom::Earliest`/`Latest` variants. `FromOffsets` uses
+        // `Offset::Offset(n)` per partition so clients can paginate
+        // a long scan across multiple requests.
+        let metadata = consumer
+            .fetch_metadata(Some(kafka_topic), Duration::from_secs(10))
+            .map_err(map_kafka_error)?;
+        let topic_meta = metadata
+            .topics()
+            .iter()
+            .find(|t| t.name() == kafka_topic)
+            .ok_or_else(|| BusError::TopicNotFound(kafka_topic.into()))?;
+        let mut tpl = TopicPartitionList::new();
+        match &from {
+            ScanFrom::Earliest => {
+                for p in topic_meta.partitions() {
+                    tpl.add_partition_offset(kafka_topic, p.id(), rdkafka::Offset::Beginning)
+                        .map_err(|e| BusError::Transport(format!("tpl: {e}")))?;
+                }
+            }
+            ScanFrom::Latest => {
+                for p in topic_meta.partitions() {
+                    tpl.add_partition_offset(kafka_topic, p.id(), rdkafka::Offset::End)
+                        .map_err(|e| BusError::Transport(format!("tpl: {e}")))?;
+                }
+            }
+            ScanFrom::FromOffsets(offsets) => {
+                // Listed partitions resume at `last_seen + 1`;
+                // partitions absent from the map default to `End`
+                // (the broker's high-water mark at scan start). The
+                // earlier "skip absent" contract silently locked
+                // single-partition cursors (e.g. a `ToolCall`
+                // receipt) to one partition, so reply_to flows that
+                // routed the result to a different partition would
+                // never see it. The new shape preserves the
+                // caller's resume intent on listed partitions while
+                // letting unlisted ones still observe new records.
+                for p in topic_meta.partitions() {
+                    let offset = offsets
+                        .get(&p.id())
+                        .map_or(rdkafka::Offset::End, |&last_seen| {
+                            rdkafka::Offset::Offset(last_seen + 1)
+                        });
+                    tpl.add_partition_offset(kafka_topic, p.id(), offset)
+                        .map_err(|e| BusError::Transport(format!("tpl: {e}")))?;
+                }
+            }
+        }
+        consumer
+            .assign(&tpl)
+            .map_err(|e| BusError::Transport(format!("assign: {e}")))?;
+
+        let topic_owned = kafka_topic.to_string();
+        let stream = async_stream::stream! {
+            let mut stream = consumer.stream();
+            while let Some(res) = stream.next().await {
+                match res {
+                    Ok(msg) => {
+                        let payload = msg.payload().map_or(serde_json::Value::Null, |b| {
+                            serde_json::from_slice::<serde_json::Value>(b)
+                                .unwrap_or(serde_json::Value::Null)
+                        });
+                        let key = msg
+                            .key()
+                            .and_then(|b| std::str::from_utf8(b).ok())
+                            .map(str::to_string);
+                        let mut headers = std::collections::BTreeMap::new();
+                        if let Some(h) = msg.headers() {
+                            for i in 0..h.count() {
+                                let rec = h.get(i);
+                                let name = rec.key.to_string();
+                                if let Some(v) = rec.value
+                                    && let Ok(s) = std::str::from_utf8(v)
+                                {
+                                    headers.insert(name, s.to_string());
+                                }
+                            }
+                        }
+                        let timestamp = msg
+                            .timestamp()
+                            .to_millis()
+                            .and_then(|ms| Utc.timestamp_millis_opt(ms).single());
+                        yield Ok(BusMessage {
+                            topic: topic_owned.clone(),
+                            key,
+                            payload,
+                            headers,
+                            partition: Some(msg.partition()),
+                            offset: Some(msg.offset()),
+                            timestamp,
+                        });
+                    }
+                    Err(e) => {
+                        yield Err(BusError::Transport(e.to_string()));
+                        break;
+                    }
+                }
+            }
+        };
+        Ok(Box::pin(stream))
+    }
+
+    async fn scan_topic_watermarks(&self, kafka_topic: &str) -> Result<ScanWatermarks, BusError> {
+        // We need a consumer to call `fetch_watermarks`; throwaway
+        // group.id matching `scan_topic`'s pattern.
+        let group_id = format!("acteon-watermark-{}", uuid::Uuid::new_v4());
+        let cfg = self.consumer_config(&group_id, StartOffset::Latest);
+        let consumer: StreamConsumer = cfg
+            .create()
+            .map_err(|e| BusError::Transport(format!("watermark consumer: {e}")))?;
+        let metadata = consumer
+            .fetch_metadata(Some(kafka_topic), Duration::from_secs(10))
+            .map_err(map_kafka_error)?;
+        let topic_meta = metadata
+            .topics()
+            .iter()
+            .find(|t| t.name() == kafka_topic)
+            .ok_or_else(|| BusError::TopicNotFound(kafka_topic.into()))?;
+        let mut high_water_marks = std::collections::BTreeMap::new();
+        for p in topic_meta.partitions() {
+            let (_low, high) = consumer
+                .fetch_watermarks(kafka_topic, p.id(), Duration::from_secs(10))
+                .map_err(map_kafka_error)?;
+            high_water_marks.insert(p.id(), high);
+        }
+        Ok(ScanWatermarks { high_water_marks })
+    }
+}

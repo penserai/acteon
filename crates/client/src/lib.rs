@@ -57,19 +57,72 @@
 //!     .unwrap();
 //! ```
 
+pub mod a2a;
+pub mod aws;
+pub mod azure;
 mod error;
+pub mod gcp;
 pub mod stream;
 pub mod webhook;
+
+// Domain-specific modules containing `impl ActeonClient` blocks and model types.
+mod analytics;
+mod approvals;
+mod audit;
+mod bus;
+mod chains;
+mod circuit_breakers;
+mod compliance;
+mod coverage;
+mod dispatch;
+mod dlq;
+mod events;
+mod groups;
+mod plugins;
+mod providers;
+mod quotas;
+mod recurring;
+mod retention;
+mod rules;
+mod signing_keys;
+mod silences;
+mod streaming;
+mod swarm;
+mod templates;
+mod time_intervals;
 
 pub use error::Error;
 pub use stream::{EventStream, StreamFilter, StreamItem};
 
-use std::fmt::Write;
+// Re-export core attachment type so callers don't need a direct `acteon_core` dependency.
+pub use acteon_core::Attachment;
+
+// Re-export all public types from domain modules so the public API is unchanged.
+pub use analytics::*;
+pub use approvals::*;
+pub use audit::*;
+pub use bus::*;
+pub use chains::*;
+pub use compliance::*;
+pub use coverage::*;
+pub use dispatch::*;
+pub use dlq::*;
+pub use events::*;
+pub use groups::*;
+pub use plugins::*;
+pub use quotas::*;
+pub use recurring::*;
+pub use retention::*;
+pub use rules::*;
+pub use signing_keys::*;
+pub use silences::*;
+pub use swarm::*;
+pub use templates::*;
+pub use time_intervals::*;
+
 use std::time::Duration;
 
-use acteon_core::{Action, ActionOutcome};
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
 
 /// Default request timeout.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -80,9 +133,9 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 /// via the REST API.
 #[derive(Debug, Clone)]
 pub struct ActeonClient {
-    client: Client,
-    base_url: String,
-    api_key: Option<String>,
+    pub(crate) client: Client,
+    pub(crate) base_url: String,
+    pub(crate) api_key: Option<String>,
 }
 
 /// Builder for configuring an [`ActeonClient`].
@@ -92,6 +145,10 @@ pub struct ActeonClientBuilder {
     timeout: Duration,
     api_key: Option<String>,
     client: Option<Client>,
+    ca_cert_path: Option<String>,
+    client_cert_path: Option<String>,
+    client_key_path: Option<String>,
+    danger_accept_invalid_certs: bool,
 }
 
 impl ActeonClientBuilder {
@@ -102,6 +159,10 @@ impl ActeonClientBuilder {
             timeout: DEFAULT_TIMEOUT,
             api_key: None,
             client: None,
+            ca_cert_path: None,
+            client_cert_path: None,
+            client_key_path: None,
+            danger_accept_invalid_certs: false,
         }
     }
 
@@ -119,6 +180,42 @@ impl ActeonClientBuilder {
         self
     }
 
+    /// Set a custom CA certificate file (PEM) for server verification.
+    ///
+    /// When set, only certificates signed by this CA will be trusted.
+    /// If not set, the system's default root certificates are used.
+    #[must_use]
+    pub fn ca_cert_path(mut self, path: impl Into<String>) -> Self {
+        self.ca_cert_path = Some(path.into());
+        self
+    }
+
+    /// Set client certificate and key files (PEM) for mTLS.
+    ///
+    /// Both paths must be provided for client certificate authentication.
+    #[must_use]
+    pub fn client_cert(
+        mut self,
+        cert_path: impl Into<String>,
+        key_path: impl Into<String>,
+    ) -> Self {
+        self.client_cert_path = Some(cert_path.into());
+        self.client_key_path = Some(key_path.into());
+        self
+    }
+
+    /// Skip certificate verification (dev/test only).
+    ///
+    /// # Warning
+    ///
+    /// This completely disables TLS certificate validation. Only use in
+    /// development or testing environments.
+    #[must_use]
+    pub fn danger_accept_invalid_certs(mut self, accept: bool) -> Self {
+        self.danger_accept_invalid_certs = accept;
+        self
+    }
+
     /// Use a custom reqwest Client.
     ///
     /// Useful for configuring TLS, proxies, or other advanced settings.
@@ -130,12 +227,43 @@ impl ActeonClientBuilder {
 
     /// Build the client.
     pub fn build(self) -> Result<ActeonClient, Error> {
-        let client = match self.client {
-            Some(c) => c,
-            None => Client::builder()
+        let client = if let Some(c) = self.client {
+            c
+        } else {
+            let mut builder = Client::builder()
+                .use_rustls_tls()
                 .timeout(self.timeout)
+                .danger_accept_invalid_certs(self.danger_accept_invalid_certs);
+
+            if let Some(ref ca_path) = self.ca_cert_path {
+                let ca_pem = std::fs::read(ca_path).map_err(|e| {
+                    Error::Configuration(format!("failed to read CA cert {ca_path}: {e}"))
+                })?;
+                let ca_cert = reqwest::Certificate::from_pem(&ca_pem)
+                    .map_err(|e| Error::Configuration(format!("invalid CA cert: {e}")))?;
+                builder = builder.add_root_certificate(ca_cert);
+            }
+
+            if let (Some(cert_path), Some(key_path)) =
+                (&self.client_cert_path, &self.client_key_path)
+            {
+                let cert_pem = std::fs::read(cert_path).map_err(|e| {
+                    Error::Configuration(format!("failed to read client cert {cert_path}: {e}"))
+                })?;
+                let key_pem = std::fs::read(key_path).map_err(|e| {
+                    Error::Configuration(format!("failed to read client key {key_path}: {e}"))
+                })?;
+                let mut combined = cert_pem;
+                combined.push(b'\n');
+                combined.extend_from_slice(&key_pem);
+                let identity = reqwest::Identity::from_pem(&combined)
+                    .map_err(|e| Error::Configuration(format!("invalid client identity: {e}")))?;
+                builder = builder.identity(identity);
+            }
+
+            builder
                 .build()
-                .map_err(|e| Error::Configuration(e.to_string()))?,
+                .map_err(|e| Error::Configuration(e.to_string()))?
         };
 
         Ok(ActeonClient {
@@ -173,7 +301,7 @@ impl ActeonClient {
     }
 
     /// Add authorization header if API key is set.
-    fn add_auth(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    pub(crate) fn add_auth(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         match &self.api_key {
             Some(key) => req.header("Authorization", format!("Bearer {key}")),
             None => req,
@@ -208,1517 +336,6 @@ impl ActeonClient {
 
         Ok(response.status().is_success())
     }
-
-    // =========================================================================
-    // Action Dispatch
-    // =========================================================================
-
-    /// Dispatch a single action.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # async fn example() -> Result<(), acteon_client::Error> {
-    /// use acteon_client::ActeonClient;
-    /// use acteon_core::Action;
-    ///
-    /// let client = ActeonClient::new("http://localhost:8080");
-    /// let action = Action::new("ns", "tenant", "email", "send", serde_json::json!({}));
-    ///
-    /// let outcome = client.dispatch(&action).await?;
-    /// println!("Outcome: {:?}", outcome);
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn dispatch(&self, action: &Action) -> Result<ActionOutcome, Error> {
-        self.dispatch_inner(action, false).await
-    }
-
-    /// Dispatch a single action in dry-run mode.
-    ///
-    /// Evaluates rules and returns the verdict without executing the action,
-    /// recording state, or emitting audit records.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # async fn example() -> Result<(), acteon_client::Error> {
-    /// use acteon_client::ActeonClient;
-    /// use acteon_core::Action;
-    ///
-    /// let client = ActeonClient::new("http://localhost:8080");
-    /// let action = Action::new("ns", "tenant", "email", "send", serde_json::json!({}));
-    ///
-    /// let outcome = client.dispatch_dry_run(&action).await?;
-    /// println!("Would result in: {:?}", outcome);
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn dispatch_dry_run(&self, action: &Action) -> Result<ActionOutcome, Error> {
-        self.dispatch_inner(action, true).await
-    }
-
-    async fn dispatch_inner(&self, action: &Action, dry_run: bool) -> Result<ActionOutcome, Error> {
-        let mut url = format!("{}/v1/dispatch", self.base_url);
-        if dry_run {
-            url.push_str("?dry_run=true");
-        }
-
-        let response = self
-            .add_auth(self.client.post(&url))
-            .json(action)
-            .send()
-            .await
-            .map_err(|e| Error::Connection(e.to_string()))?;
-
-        if response.status().is_success() {
-            let outcome = response
-                .json::<ActionOutcome>()
-                .await
-                .map_err(|e| Error::Deserialization(e.to_string()))?;
-            Ok(outcome)
-        } else {
-            let error = response
-                .json::<ErrorResponse>()
-                .await
-                .map_err(|e| Error::Deserialization(e.to_string()))?;
-            Err(Error::Api {
-                code: error.code,
-                message: error.message,
-                retryable: error.retryable,
-            })
-        }
-    }
-
-    /// Dispatch multiple actions in a single request.
-    ///
-    /// Returns a result for each action, preserving order.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # async fn example() -> Result<(), acteon_client::Error> {
-    /// use acteon_client::ActeonClient;
-    /// use acteon_core::Action;
-    ///
-    /// let client = ActeonClient::new("http://localhost:8080");
-    /// let actions = vec![
-    ///     Action::new("ns", "tenant", "email", "send", serde_json::json!({})),
-    ///     Action::new("ns", "tenant", "sms", "send", serde_json::json!({})),
-    /// ];
-    ///
-    /// let results = client.dispatch_batch(&actions).await?;
-    /// for result in results {
-    ///     match result {
-    ///         acteon_client::BatchResult::Success(outcome) => println!("Success: {:?}", outcome),
-    ///         acteon_client::BatchResult::Error { error } => println!("Error: {}", error.message),
-    ///     }
-    /// }
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn dispatch_batch(&self, actions: &[Action]) -> Result<Vec<BatchResult>, Error> {
-        self.dispatch_batch_inner(actions, false).await
-    }
-
-    /// Dispatch multiple actions in dry-run mode.
-    ///
-    /// Evaluates rules for each action and returns the verdicts without
-    /// executing any actions.
-    pub async fn dispatch_batch_dry_run(
-        &self,
-        actions: &[Action],
-    ) -> Result<Vec<BatchResult>, Error> {
-        self.dispatch_batch_inner(actions, true).await
-    }
-
-    async fn dispatch_batch_inner(
-        &self,
-        actions: &[Action],
-        dry_run: bool,
-    ) -> Result<Vec<BatchResult>, Error> {
-        let mut url = format!("{}/v1/dispatch/batch", self.base_url);
-        if dry_run {
-            url.push_str("?dry_run=true");
-        }
-
-        let response = self
-            .add_auth(self.client.post(&url))
-            .json(actions)
-            .send()
-            .await
-            .map_err(|e| Error::Connection(e.to_string()))?;
-
-        if response.status().is_success() {
-            let results = response
-                .json::<Vec<BatchResult>>()
-                .await
-                .map_err(|e| Error::Deserialization(e.to_string()))?;
-            Ok(results)
-        } else {
-            let error = response
-                .json::<ErrorResponse>()
-                .await
-                .map_err(|e| Error::Deserialization(e.to_string()))?;
-            Err(Error::Api {
-                code: error.code,
-                message: error.message,
-                retryable: error.retryable,
-            })
-        }
-    }
-
-    // =========================================================================
-    // Rules Management
-    // =========================================================================
-
-    /// List all loaded rules.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # async fn example() -> Result<(), acteon_client::Error> {
-    /// use acteon_client::ActeonClient;
-    ///
-    /// let client = ActeonClient::new("http://localhost:8080");
-    /// let rules = client.list_rules().await?;
-    /// for rule in rules {
-    ///     println!("{}: priority={}, enabled={}", rule.name, rule.priority, rule.enabled);
-    /// }
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn list_rules(&self) -> Result<Vec<RuleInfo>, Error> {
-        let url = format!("{}/v1/rules", self.base_url);
-
-        let response = self
-            .add_auth(self.client.get(&url))
-            .send()
-            .await
-            .map_err(|e| Error::Connection(e.to_string()))?;
-
-        if response.status().is_success() {
-            let rules = response
-                .json::<Vec<RuleInfo>>()
-                .await
-                .map_err(|e| Error::Deserialization(e.to_string()))?;
-            Ok(rules)
-        } else {
-            Err(Error::Http {
-                status: response.status().as_u16(),
-                message: format!("Failed to list rules: {}", response.status()),
-            })
-        }
-    }
-
-    /// Reload rules from the configured directory.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # async fn example() -> Result<(), acteon_client::Error> {
-    /// use acteon_client::ActeonClient;
-    ///
-    /// let client = ActeonClient::new("http://localhost:8080");
-    /// let result = client.reload_rules().await?;
-    /// println!("Loaded {} rules", result.loaded);
-    /// if !result.errors.is_empty() {
-    ///     println!("Errors: {:?}", result.errors);
-    /// }
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn reload_rules(&self) -> Result<ReloadResult, Error> {
-        let url = format!("{}/v1/rules/reload", self.base_url);
-
-        let response = self
-            .add_auth(self.client.post(&url))
-            .send()
-            .await
-            .map_err(|e| Error::Connection(e.to_string()))?;
-
-        if response.status().is_success() {
-            let result = response
-                .json::<ReloadResult>()
-                .await
-                .map_err(|e| Error::Deserialization(e.to_string()))?;
-            Ok(result)
-        } else {
-            Err(Error::Http {
-                status: response.status().as_u16(),
-                message: format!("Failed to reload rules: {}", response.status()),
-            })
-        }
-    }
-
-    /// Enable or disable a specific rule.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # async fn example() -> Result<(), acteon_client::Error> {
-    /// use acteon_client::ActeonClient;
-    ///
-    /// let client = ActeonClient::new("http://localhost:8080");
-    /// client.set_rule_enabled("block-spam", false).await?;
-    /// println!("Rule disabled");
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn set_rule_enabled(&self, rule_name: &str, enabled: bool) -> Result<(), Error> {
-        let url = format!("{}/v1/rules/{}/enabled", self.base_url, rule_name);
-
-        let response = self
-            .add_auth(self.client.put(&url))
-            .json(&serde_json::json!({ "enabled": enabled }))
-            .send()
-            .await
-            .map_err(|e| Error::Connection(e.to_string()))?;
-
-        if response.status().is_success() {
-            Ok(())
-        } else {
-            Err(Error::Http {
-                status: response.status().as_u16(),
-                message: format!("Failed to set rule enabled: {}", response.status()),
-            })
-        }
-    }
-
-    // =========================================================================
-    // Audit Trail
-    // =========================================================================
-
-    /// Query audit records.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # async fn example() -> Result<(), acteon_client::Error> {
-    /// use acteon_client::{ActeonClient, AuditQuery};
-    ///
-    /// let client = ActeonClient::new("http://localhost:8080");
-    /// let query = AuditQuery {
-    ///     tenant: Some("tenant-1".to_string()),
-    ///     limit: Some(10),
-    ///     ..Default::default()
-    /// };
-    ///
-    /// let page = client.query_audit(&query).await?;
-    /// println!("Found {} records (total: {})", page.records.len(), page.total);
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn query_audit(&self, query: &AuditQuery) -> Result<AuditPage, Error> {
-        let url = format!("{}/v1/audit", self.base_url);
-
-        let response = self
-            .add_auth(self.client.get(&url))
-            .query(query)
-            .send()
-            .await
-            .map_err(|e| Error::Connection(e.to_string()))?;
-
-        if response.status().is_success() {
-            let page = response
-                .json::<AuditPage>()
-                .await
-                .map_err(|e| Error::Deserialization(e.to_string()))?;
-            Ok(page)
-        } else {
-            Err(Error::Http {
-                status: response.status().as_u16(),
-                message: format!("Failed to query audit: {}", response.status()),
-            })
-        }
-    }
-
-    /// Get a specific audit record by action ID.
-    ///
-    /// Returns `None` if the record is not found.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # async fn example() -> Result<(), acteon_client::Error> {
-    /// use acteon_client::ActeonClient;
-    ///
-    /// let client = ActeonClient::new("http://localhost:8080");
-    /// if let Some(record) = client.get_audit_record("action-id-123").await? {
-    ///     println!("Found record: {:?}", record);
-    /// }
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn get_audit_record(&self, action_id: &str) -> Result<Option<AuditRecord>, Error> {
-        let url = format!("{}/v1/audit/{}", self.base_url, action_id);
-
-        let response = self
-            .add_auth(self.client.get(&url))
-            .send()
-            .await
-            .map_err(|e| Error::Connection(e.to_string()))?;
-
-        if response.status().is_success() {
-            let record = response
-                .json::<AuditRecord>()
-                .await
-                .map_err(|e| Error::Deserialization(e.to_string()))?;
-            Ok(Some(record))
-        } else if response.status() == reqwest::StatusCode::NOT_FOUND {
-            Ok(None)
-        } else {
-            Err(Error::Http {
-                status: response.status().as_u16(),
-                message: format!("Failed to get audit record: {}", response.status()),
-            })
-        }
-    }
-
-    // =========================================================================
-    // Audit Replay
-    // =========================================================================
-
-    /// Replay a single action from the audit trail by its action ID.
-    ///
-    /// Reconstructs the original action from the stored audit payload and
-    /// dispatches it through the gateway pipeline with a new action ID.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # async fn example() -> Result<(), acteon_client::Error> {
-    /// use acteon_client::ActeonClient;
-    ///
-    /// let client = ActeonClient::new("http://localhost:8080");
-    /// let result = client.replay_action("action-id-123").await?;
-    /// if result.success {
-    ///     println!("Replayed as {}", result.new_action_id);
-    /// }
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn replay_action(&self, action_id: &str) -> Result<ReplayResult, Error> {
-        let url = format!("{}/v1/audit/{}/replay", self.base_url, action_id);
-
-        let response = self
-            .add_auth(self.client.post(&url))
-            .send()
-            .await
-            .map_err(|e| Error::Connection(e.to_string()))?;
-
-        if response.status().is_success() {
-            let result = response
-                .json::<ReplayResult>()
-                .await
-                .map_err(|e| Error::Deserialization(e.to_string()))?;
-            Ok(result)
-        } else if response.status() == reqwest::StatusCode::NOT_FOUND {
-            Err(Error::Http {
-                status: 404,
-                message: format!("Audit record not found: {action_id}"),
-            })
-        } else if response.status() == reqwest::StatusCode::UNPROCESSABLE_ENTITY {
-            Err(Error::Http {
-                status: 422,
-                message: "No stored payload available for replay".to_string(),
-            })
-        } else {
-            Err(Error::Http {
-                status: response.status().as_u16(),
-                message: format!("Failed to replay action: {}", response.status()),
-            })
-        }
-    }
-
-    /// Bulk replay actions from the audit trail matching the given query.
-    ///
-    /// Returns a summary with per-action results.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # async fn example() -> Result<(), acteon_client::Error> {
-    /// use acteon_client::{ActeonClient, ReplayQuery};
-    ///
-    /// let client = ActeonClient::new("http://localhost:8080");
-    /// let query = ReplayQuery {
-    ///     outcome: Some("failed".to_string()),
-    ///     limit: Some(100),
-    ///     ..Default::default()
-    /// };
-    ///
-    /// let summary = client.replay_audit(&query).await?;
-    /// println!("Replayed: {}, Failed: {}, Skipped: {}", summary.replayed, summary.failed, summary.skipped);
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn replay_audit(&self, query: &ReplayQuery) -> Result<ReplaySummary, Error> {
-        let url = format!("{}/v1/audit/replay", self.base_url);
-
-        let response = self
-            .add_auth(self.client.post(&url))
-            .query(query)
-            .send()
-            .await
-            .map_err(|e| Error::Connection(e.to_string()))?;
-
-        if response.status().is_success() {
-            let summary = response
-                .json::<ReplaySummary>()
-                .await
-                .map_err(|e| Error::Deserialization(e.to_string()))?;
-            Ok(summary)
-        } else {
-            Err(Error::Http {
-                status: response.status().as_u16(),
-                message: format!("Failed to replay audit: {}", response.status()),
-            })
-        }
-    }
-
-    // =========================================================================
-    // Events (State Machine Lifecycle)
-    // =========================================================================
-
-    /// List events filtered by namespace, tenant, and optionally status.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # async fn example() -> Result<(), acteon_client::Error> {
-    /// use acteon_client::{ActeonClient, EventQuery};
-    ///
-    /// let client = ActeonClient::new("http://localhost:8080");
-    /// let query = EventQuery {
-    ///     namespace: "notifications".to_string(),
-    ///     tenant: "tenant-1".to_string(),
-    ///     status: Some("open".to_string()),
-    ///     limit: Some(50),
-    /// };
-    /// let events = client.list_events(&query).await?;
-    /// for event in events.events {
-    ///     println!("{}: {}", event.fingerprint, event.state);
-    /// }
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn list_events(&self, query: &EventQuery) -> Result<EventListResponse, Error> {
-        let url = format!("{}/v1/events", self.base_url);
-
-        let response = self
-            .add_auth(self.client.get(&url))
-            .query(query)
-            .send()
-            .await
-            .map_err(|e| Error::Connection(e.to_string()))?;
-
-        if response.status().is_success() {
-            let result = response
-                .json::<EventListResponse>()
-                .await
-                .map_err(|e| Error::Deserialization(e.to_string()))?;
-            Ok(result)
-        } else {
-            Err(Error::Http {
-                status: response.status().as_u16(),
-                message: format!("Failed to list events: {}", response.status()),
-            })
-        }
-    }
-
-    /// Get the current state of an event by fingerprint.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # async fn example() -> Result<(), acteon_client::Error> {
-    /// use acteon_client::ActeonClient;
-    ///
-    /// let client = ActeonClient::new("http://localhost:8080");
-    /// if let Some(event) = client.get_event("fingerprint-123", "notifications", "tenant-1").await? {
-    ///     println!("Event state: {}", event.state);
-    /// }
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn get_event(
-        &self,
-        fingerprint: &str,
-        namespace: &str,
-        tenant: &str,
-    ) -> Result<Option<EventState>, Error> {
-        let url = format!("{}/v1/events/{}", self.base_url, fingerprint);
-
-        let response = self
-            .add_auth(self.client.get(&url))
-            .query(&[("namespace", namespace), ("tenant", tenant)])
-            .send()
-            .await
-            .map_err(|e| Error::Connection(e.to_string()))?;
-
-        if response.status().is_success() {
-            let event = response
-                .json::<EventState>()
-                .await
-                .map_err(|e| Error::Deserialization(e.to_string()))?;
-            Ok(Some(event))
-        } else if response.status() == reqwest::StatusCode::NOT_FOUND {
-            Ok(None)
-        } else {
-            Err(Error::Http {
-                status: response.status().as_u16(),
-                message: format!("Failed to get event: {}", response.status()),
-            })
-        }
-    }
-
-    /// Transition an event to a new state.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # async fn example() -> Result<(), acteon_client::Error> {
-    /// use acteon_client::ActeonClient;
-    ///
-    /// let client = ActeonClient::new("http://localhost:8080");
-    /// let result = client.transition_event(
-    ///     "fingerprint-123",
-    ///     "investigating",
-    ///     "notifications",
-    ///     "tenant-1"
-    /// ).await?;
-    /// println!("Transitioned from {} to {}", result.previous_state, result.new_state);
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn transition_event(
-        &self,
-        fingerprint: &str,
-        to_state: &str,
-        namespace: &str,
-        tenant: &str,
-    ) -> Result<TransitionResponse, Error> {
-        let url = format!("{}/v1/events/{}/transition", self.base_url, fingerprint);
-
-        let body = serde_json::json!({
-            "to": to_state,
-            "namespace": namespace,
-            "tenant": tenant,
-        });
-
-        let response = self
-            .add_auth(self.client.put(&url))
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| Error::Connection(e.to_string()))?;
-
-        if response.status().is_success() {
-            let result = response
-                .json::<TransitionResponse>()
-                .await
-                .map_err(|e| Error::Deserialization(e.to_string()))?;
-            Ok(result)
-        } else if response.status() == reqwest::StatusCode::NOT_FOUND {
-            Err(Error::Http {
-                status: 404,
-                message: format!("Event not found: {fingerprint}"),
-            })
-        } else {
-            let error = response
-                .json::<ErrorResponse>()
-                .await
-                .map_err(|e| Error::Deserialization(e.to_string()))?;
-            Err(Error::Api {
-                code: error.code,
-                message: error.message,
-                retryable: error.retryable,
-            })
-        }
-    }
-
-    // =========================================================================
-    // Approvals (Human-in-the-Loop)
-    // =========================================================================
-
-    /// Approve a pending action by namespace, tenant, ID, and HMAC signature.
-    ///
-    /// The original action is executed upon approval. This does not require
-    /// authentication -- the HMAC signature in the query string serves as
-    /// proof of authorization.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # async fn example() -> Result<(), acteon_client::Error> {
-    /// use acteon_client::ActeonClient;
-    ///
-    /// let client = ActeonClient::new("http://localhost:8080");
-    /// let result = client.approve("payments", "tenant-1", "abc-123", "hmac-sig", 1700000000).await?;
-    /// println!("Status: {}, Outcome: {:?}", result.status, result.outcome);
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn approve(
-        &self,
-        namespace: &str,
-        tenant: &str,
-        id: &str,
-        sig: &str,
-        expires_at: i64,
-    ) -> Result<ApprovalActionResponse, Error> {
-        self.approve_with_kid(namespace, tenant, id, sig, expires_at, None)
-            .await
-    }
-
-    /// Approve a pending action, optionally specifying which HMAC key was used.
-    ///
-    /// When `kid` is `Some`, the `kid` query parameter is appended so the
-    /// server can look up the correct key without trying all of them.
-    pub async fn approve_with_kid(
-        &self,
-        namespace: &str,
-        tenant: &str,
-        id: &str,
-        sig: &str,
-        expires_at: i64,
-        kid: Option<&str>,
-    ) -> Result<ApprovalActionResponse, Error> {
-        let mut url = format!(
-            "{}/v1/approvals/{}/{}/{}/approve?sig={}&expires_at={}",
-            self.base_url, namespace, tenant, id, sig, expires_at
-        );
-        if let Some(k) = kid {
-            write!(url, "&kid={k}").expect("writing to String cannot fail");
-        }
-
-        let response = self
-            .client
-            .post(&url)
-            .send()
-            .await
-            .map_err(|e| Error::Connection(e.to_string()))?;
-
-        if response.status().is_success() {
-            let result = response
-                .json::<ApprovalActionResponse>()
-                .await
-                .map_err(|e| Error::Deserialization(e.to_string()))?;
-            Ok(result)
-        } else if response.status() == reqwest::StatusCode::NOT_FOUND {
-            Err(Error::Http {
-                status: 404,
-                message: "Approval not found or expired".to_string(),
-            })
-        } else if response.status() == reqwest::StatusCode::GONE {
-            Err(Error::Http {
-                status: 410,
-                message: "Approval already decided".to_string(),
-            })
-        } else {
-            Err(Error::Http {
-                status: response.status().as_u16(),
-                message: format!("Failed to approve: {}", response.status()),
-            })
-        }
-    }
-
-    /// Reject a pending action by namespace, tenant, ID, and HMAC signature.
-    ///
-    /// This does not require authentication -- the HMAC signature in the
-    /// query string serves as proof of authorization.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # async fn example() -> Result<(), acteon_client::Error> {
-    /// use acteon_client::ActeonClient;
-    ///
-    /// let client = ActeonClient::new("http://localhost:8080");
-    /// let result = client.reject("payments", "tenant-1", "abc-123", "hmac-sig", 1700000000).await?;
-    /// println!("Status: {}", result.status);
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn reject(
-        &self,
-        namespace: &str,
-        tenant: &str,
-        id: &str,
-        sig: &str,
-        expires_at: i64,
-    ) -> Result<ApprovalActionResponse, Error> {
-        self.reject_with_kid(namespace, tenant, id, sig, expires_at, None)
-            .await
-    }
-
-    /// Reject a pending action, optionally specifying which HMAC key was used.
-    ///
-    /// When `kid` is `Some`, the `kid` query parameter is appended so the
-    /// server can look up the correct key without trying all of them.
-    pub async fn reject_with_kid(
-        &self,
-        namespace: &str,
-        tenant: &str,
-        id: &str,
-        sig: &str,
-        expires_at: i64,
-        kid: Option<&str>,
-    ) -> Result<ApprovalActionResponse, Error> {
-        let mut url = format!(
-            "{}/v1/approvals/{}/{}/{}/reject?sig={}&expires_at={}",
-            self.base_url, namespace, tenant, id, sig, expires_at
-        );
-        if let Some(k) = kid {
-            write!(url, "&kid={k}").expect("writing to String cannot fail");
-        }
-
-        let response = self
-            .client
-            .post(&url)
-            .send()
-            .await
-            .map_err(|e| Error::Connection(e.to_string()))?;
-
-        if response.status().is_success() {
-            let result = response
-                .json::<ApprovalActionResponse>()
-                .await
-                .map_err(|e| Error::Deserialization(e.to_string()))?;
-            Ok(result)
-        } else if response.status() == reqwest::StatusCode::NOT_FOUND {
-            Err(Error::Http {
-                status: 404,
-                message: "Approval not found or expired".to_string(),
-            })
-        } else if response.status() == reqwest::StatusCode::GONE {
-            Err(Error::Http {
-                status: 410,
-                message: "Approval already decided".to_string(),
-            })
-        } else {
-            Err(Error::Http {
-                status: response.status().as_u16(),
-                message: format!("Failed to reject: {}", response.status()),
-            })
-        }
-    }
-
-    /// Get the status of an approval by namespace, tenant, ID, and HMAC signature.
-    ///
-    /// Returns `None` if the approval is not found or has expired.
-    /// Does not expose the original action payload.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # async fn example() -> Result<(), acteon_client::Error> {
-    /// use acteon_client::ActeonClient;
-    ///
-    /// let client = ActeonClient::new("http://localhost:8080");
-    /// if let Some(status) = client.get_approval("payments", "tenant-1", "abc-123", "hmac-sig", 1700000000).await? {
-    ///     println!("Approval status: {}", status.status);
-    /// }
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn get_approval(
-        &self,
-        namespace: &str,
-        tenant: &str,
-        id: &str,
-        sig: &str,
-        expires_at: i64,
-    ) -> Result<Option<ApprovalStatusResponse>, Error> {
-        self.get_approval_with_kid(namespace, tenant, id, sig, expires_at, None)
-            .await
-    }
-
-    /// Get approval status, optionally specifying which HMAC key was used.
-    ///
-    /// When `kid` is `Some`, the `kid` query parameter is appended so the
-    /// server can look up the correct key without trying all of them.
-    pub async fn get_approval_with_kid(
-        &self,
-        namespace: &str,
-        tenant: &str,
-        id: &str,
-        sig: &str,
-        expires_at: i64,
-        kid: Option<&str>,
-    ) -> Result<Option<ApprovalStatusResponse>, Error> {
-        let mut url = format!(
-            "{}/v1/approvals/{}/{}/{}?sig={}&expires_at={}",
-            self.base_url, namespace, tenant, id, sig, expires_at
-        );
-        if let Some(k) = kid {
-            write!(url, "&kid={k}").expect("writing to String cannot fail");
-        }
-
-        let response = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| Error::Connection(e.to_string()))?;
-
-        if response.status().is_success() {
-            let result = response
-                .json::<ApprovalStatusResponse>()
-                .await
-                .map_err(|e| Error::Deserialization(e.to_string()))?;
-            Ok(Some(result))
-        } else if response.status() == reqwest::StatusCode::NOT_FOUND {
-            Ok(None)
-        } else {
-            Err(Error::Http {
-                status: response.status().as_u16(),
-                message: format!("Failed to get approval: {}", response.status()),
-            })
-        }
-    }
-
-    /// List pending approvals filtered by namespace and tenant.
-    ///
-    /// Requires authentication.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # async fn example() -> Result<(), acteon_client::Error> {
-    /// use acteon_client::ActeonClient;
-    ///
-    /// let client = ActeonClient::new("http://localhost:8080");
-    /// let result = client.list_approvals("payments", "tenant-1").await?;
-    /// for approval in result.approvals {
-    ///     println!("{}: {}", approval.token, approval.status);
-    /// }
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn list_approvals(
-        &self,
-        namespace: &str,
-        tenant: &str,
-    ) -> Result<ApprovalListResponse, Error> {
-        let url = format!("{}/v1/approvals", self.base_url);
-
-        let response = self
-            .add_auth(self.client.get(&url))
-            .query(&[("namespace", namespace), ("tenant", tenant)])
-            .send()
-            .await
-            .map_err(|e| Error::Connection(e.to_string()))?;
-
-        if response.status().is_success() {
-            let result = response
-                .json::<ApprovalListResponse>()
-                .await
-                .map_err(|e| Error::Deserialization(e.to_string()))?;
-            Ok(result)
-        } else {
-            Err(Error::Http {
-                status: response.status().as_u16(),
-                message: format!("Failed to list approvals: {}", response.status()),
-            })
-        }
-    }
-
-    // =========================================================================
-    // Groups (Event Batching)
-    // =========================================================================
-
-    /// List all active event groups.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # async fn example() -> Result<(), acteon_client::Error> {
-    /// use acteon_client::ActeonClient;
-    ///
-    /// let client = ActeonClient::new("http://localhost:8080");
-    /// let groups = client.list_groups().await?;
-    /// println!("Active groups: {}", groups.total);
-    /// for group in groups.groups {
-    ///     println!("{}: {} events", group.group_id, group.event_count);
-    /// }
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn list_groups(&self) -> Result<GroupListResponse, Error> {
-        let url = format!("{}/v1/groups", self.base_url);
-
-        let response = self
-            .add_auth(self.client.get(&url))
-            .send()
-            .await
-            .map_err(|e| Error::Connection(e.to_string()))?;
-
-        if response.status().is_success() {
-            let result = response
-                .json::<GroupListResponse>()
-                .await
-                .map_err(|e| Error::Deserialization(e.to_string()))?;
-            Ok(result)
-        } else {
-            Err(Error::Http {
-                status: response.status().as_u16(),
-                message: format!("Failed to list groups: {}", response.status()),
-            })
-        }
-    }
-
-    /// Get details of a specific group.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # async fn example() -> Result<(), acteon_client::Error> {
-    /// use acteon_client::ActeonClient;
-    ///
-    /// let client = ActeonClient::new("http://localhost:8080");
-    /// if let Some(group) = client.get_group("group-key-123").await? {
-    ///     println!("Group {} has {} events", group.group.group_id, group.group.event_count);
-    /// }
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn get_group(&self, group_key: &str) -> Result<Option<GroupDetail>, Error> {
-        let url = format!("{}/v1/groups/{}", self.base_url, group_key);
-
-        let response = self
-            .add_auth(self.client.get(&url))
-            .send()
-            .await
-            .map_err(|e| Error::Connection(e.to_string()))?;
-
-        if response.status().is_success() {
-            let result = response
-                .json::<GroupDetail>()
-                .await
-                .map_err(|e| Error::Deserialization(e.to_string()))?;
-            Ok(Some(result))
-        } else if response.status() == reqwest::StatusCode::NOT_FOUND {
-            Ok(None)
-        } else {
-            Err(Error::Http {
-                status: response.status().as_u16(),
-                message: format!("Failed to get group: {}", response.status()),
-            })
-        }
-    }
-
-    /// Force flush a group, triggering immediate notification.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # async fn example() -> Result<(), acteon_client::Error> {
-    /// use acteon_client::ActeonClient;
-    ///
-    /// let client = ActeonClient::new("http://localhost:8080");
-    /// let result = client.flush_group("group-key-123").await?;
-    /// println!("Flushed group {} with {} events", result.group_id, result.event_count);
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn flush_group(&self, group_key: &str) -> Result<FlushGroupResponse, Error> {
-        let url = format!("{}/v1/groups/{}", self.base_url, group_key);
-
-        let response = self
-            .add_auth(self.client.delete(&url))
-            .send()
-            .await
-            .map_err(|e| Error::Connection(e.to_string()))?;
-
-        if response.status().is_success() {
-            let result = response
-                .json::<FlushGroupResponse>()
-                .await
-                .map_err(|e| Error::Deserialization(e.to_string()))?;
-            Ok(result)
-        } else if response.status() == reqwest::StatusCode::NOT_FOUND {
-            Err(Error::Http {
-                status: 404,
-                message: format!("Group not found: {group_key}"),
-            })
-        } else {
-            let error = response
-                .json::<ErrorResponse>()
-                .await
-                .map_err(|e| Error::Deserialization(e.to_string()))?;
-            Err(Error::Api {
-                code: error.code,
-                message: error.message,
-                retryable: error.retryable,
-            })
-        }
-    }
-
-    // =========================================================================
-    // SSE Event Stream
-    // =========================================================================
-
-    /// Subscribe to the real-time SSE event stream.
-    ///
-    /// Returns an [`EventStream`] that yields [`StreamItem`]s as the server
-    /// emits them. Use a [`StreamFilter`] to limit which events are received.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # async fn example() -> Result<(), acteon_client::Error> {
-    /// use acteon_client::{ActeonClient, StreamFilter};
-    /// use futures::StreamExt;
-    ///
-    /// let client = ActeonClient::new("http://localhost:8080");
-    /// let filter = StreamFilter::new().namespace("notifications");
-    ///
-    /// let mut stream = client.stream(&filter).await?;
-    /// while let Some(item) = stream.next().await {
-    ///     match item? {
-    ///         acteon_client::StreamItem::Event(event) => {
-    ///             println!("Event: {:?}", event);
-    ///         }
-    ///         acteon_client::StreamItem::Lagged { skipped } => {
-    ///             eprintln!("Missed {skipped} events");
-    ///         }
-    ///         acteon_client::StreamItem::KeepAlive => {}
-    ///     }
-    /// }
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn stream(&self, filter: &StreamFilter) -> Result<EventStream, Error> {
-        let url = format!("{}/v1/stream", self.base_url);
-
-        let response = self
-            .add_auth(self.client.get(&url))
-            .query(filter)
-            .send()
-            .await
-            .map_err(|e| Error::Connection(e.to_string()))?;
-
-        if response.status().is_success() {
-            Ok(stream::event_stream_from_response(response))
-        } else {
-            let status = response.status().as_u16();
-            let message = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "unknown error".to_string());
-            Err(Error::Http { status, message })
-        }
-    }
-
-    /// Subscribe to events for a specific entity via the
-    /// `GET /v1/subscribe/{entity_type}/{entity_id}` endpoint.
-    ///
-    /// This is a convenience method that opens an SSE stream pre-filtered
-    /// for the given entity type and ID.
-    pub async fn subscribe_entity(
-        &self,
-        entity_type: &str,
-        entity_id: &str,
-    ) -> Result<EventStream, Error> {
-        let url = format!(
-            "{}/v1/subscribe/{}/{}",
-            self.base_url, entity_type, entity_id
-        );
-
-        let response = self
-            .add_auth(self.client.get(&url))
-            .send()
-            .await
-            .map_err(|e| Error::Connection(e.to_string()))?;
-
-        if response.status().is_success() {
-            Ok(stream::event_stream_from_response(response))
-        } else {
-            let status = response.status().as_u16();
-            let message = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "unknown error".to_string());
-            Err(Error::Http { status, message })
-        }
-    }
-
-    /// Subscribe to events for a specific chain.
-    pub async fn subscribe_chain(&self, chain_id: &str) -> Result<EventStream, Error> {
-        self.subscribe_entity("chain", chain_id).await
-    }
-
-    /// Subscribe to events for a specific group.
-    pub async fn subscribe_group(&self, group_id: &str) -> Result<EventStream, Error> {
-        self.subscribe_entity("group", group_id).await
-    }
-
-    /// Subscribe to events for a specific action.
-    pub async fn subscribe_action(&self, action_id: &str) -> Result<EventStream, Error> {
-        self.subscribe_entity("action", action_id).await
-    }
-}
-
-// =============================================================================
-// Response Types
-// =============================================================================
-
-/// Error response from the API.
-#[derive(Debug, Deserialize)]
-pub struct ErrorResponse {
-    /// Error code.
-    pub code: String,
-    /// Human-readable error message.
-    pub message: String,
-    /// Whether the request can be retried.
-    #[serde(default)]
-    pub retryable: bool,
-}
-
-/// Result from a batch dispatch operation.
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-pub enum BatchResult {
-    /// Action was processed successfully.
-    Success(ActionOutcome),
-    /// Action processing failed.
-    Error {
-        /// Error details.
-        error: ErrorResponse,
-    },
-}
-
-impl BatchResult {
-    /// Returns `true` if this is a success result.
-    pub fn is_success(&self) -> bool {
-        matches!(self, Self::Success(_))
-    }
-
-    /// Returns `true` if this is an error result.
-    pub fn is_error(&self) -> bool {
-        matches!(self, Self::Error { .. })
-    }
-
-    /// Returns the outcome if this is a success result.
-    pub fn outcome(&self) -> Option<&ActionOutcome> {
-        match self {
-            Self::Success(outcome) => Some(outcome),
-            Self::Error { .. } => None,
-        }
-    }
-
-    /// Returns the error if this is an error result.
-    pub fn error(&self) -> Option<&ErrorResponse> {
-        match self {
-            Self::Success(_) => None,
-            Self::Error { error } => Some(error),
-        }
-    }
-}
-
-/// Information about a loaded rule.
-#[derive(Debug, Clone, Deserialize)]
-pub struct RuleInfo {
-    /// Rule name.
-    pub name: String,
-    /// Rule priority (lower = higher priority).
-    pub priority: i32,
-    /// Whether the rule is enabled.
-    pub enabled: bool,
-    /// Optional rule description.
-    #[serde(default)]
-    pub description: Option<String>,
-}
-
-/// Result of reloading rules.
-#[derive(Debug, Clone, Deserialize)]
-pub struct ReloadResult {
-    /// Number of rules loaded.
-    pub loaded: usize,
-    /// Any errors that occurred during loading.
-    pub errors: Vec<String>,
-}
-
-/// Query parameters for audit search.
-#[derive(Debug, Default, Clone, Serialize)]
-pub struct AuditQuery {
-    /// Filter by namespace.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub namespace: Option<String>,
-    /// Filter by tenant.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tenant: Option<String>,
-    /// Filter by provider.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>,
-    /// Filter by action type.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub action_type: Option<String>,
-    /// Filter by outcome.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub outcome: Option<String>,
-    /// Maximum number of records to return.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub limit: Option<u32>,
-    /// Number of records to skip.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub offset: Option<u32>,
-}
-
-/// Paginated audit results.
-#[derive(Debug, Clone, Deserialize)]
-pub struct AuditPage {
-    /// Audit records.
-    pub records: Vec<AuditRecord>,
-    /// Total number of matching records.
-    pub total: u64,
-    /// Limit used in the query.
-    pub limit: u64,
-    /// Offset used in the query.
-    pub offset: u64,
-}
-
-/// An audit record.
-#[derive(Debug, Clone, Deserialize)]
-pub struct AuditRecord {
-    /// Record ID.
-    pub id: String,
-    /// Action ID.
-    pub action_id: String,
-    /// Namespace.
-    pub namespace: String,
-    /// Tenant.
-    pub tenant: String,
-    /// Provider name.
-    pub provider: String,
-    /// Action type.
-    pub action_type: String,
-    /// Rule verdict.
-    pub verdict: String,
-    /// Action outcome.
-    pub outcome: String,
-    /// Name of matched rule, if any.
-    pub matched_rule: Option<String>,
-    /// Processing duration in milliseconds.
-    pub duration_ms: u64,
-    /// Dispatch timestamp.
-    pub dispatched_at: String,
-}
-
-// =============================================================================
-// Replay Types
-// =============================================================================
-
-/// Query parameters for bulk audit replay.
-#[derive(Debug, Default, Clone, Serialize)]
-pub struct ReplayQuery {
-    /// Filter by namespace.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub namespace: Option<String>,
-    /// Filter by tenant.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tenant: Option<String>,
-    /// Filter by provider.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>,
-    /// Filter by action type.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub action_type: Option<String>,
-    /// Filter by outcome (e.g., "failed", "suppressed").
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub outcome: Option<String>,
-    /// Filter by verdict.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub verdict: Option<String>,
-    /// Filter by matched rule name.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub matched_rule: Option<String>,
-    /// Only records dispatched at or after this time (RFC 3339).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub from: Option<String>,
-    /// Only records dispatched at or before this time (RFC 3339).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub to: Option<String>,
-    /// Maximum number of records to replay (default 50, max 1000).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub limit: Option<u32>,
-}
-
-/// Result of replaying a single action.
-#[derive(Debug, Clone, Deserialize)]
-pub struct ReplayResult {
-    /// The original action ID from the audit record.
-    pub original_action_id: String,
-    /// The new action ID assigned to the replayed action.
-    pub new_action_id: String,
-    /// Whether the replay succeeded.
-    pub success: bool,
-    /// Error message if the replay failed.
-    pub error: Option<String>,
-}
-
-/// Summary of a bulk replay operation.
-#[derive(Debug, Clone, Deserialize)]
-pub struct ReplaySummary {
-    /// Number of actions successfully replayed.
-    pub replayed: usize,
-    /// Number of actions that failed to replay.
-    pub failed: usize,
-    /// Number of records skipped (no stored payload).
-    pub skipped: usize,
-    /// Per-action results.
-    pub results: Vec<ReplayResult>,
-}
-
-// =============================================================================
-// Event Types (State Machine Lifecycle)
-// =============================================================================
-
-/// Query parameters for listing events.
-#[derive(Debug, Default, Clone, Serialize)]
-pub struct EventQuery {
-    /// Filter by namespace (required).
-    pub namespace: String,
-    /// Filter by tenant (required).
-    pub tenant: String,
-    /// Filter by state (e.g., "open", "closed").
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub status: Option<String>,
-    /// Maximum number of results to return.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub limit: Option<usize>,
-}
-
-/// Current state of an event.
-#[derive(Debug, Clone, Deserialize)]
-pub struct EventState {
-    /// The event fingerprint.
-    pub fingerprint: String,
-    /// Current state of the event.
-    pub state: String,
-    /// The action type that created this event.
-    pub action_type: Option<String>,
-    /// When the state was last updated.
-    pub updated_at: Option<String>,
-}
-
-/// Response from listing events.
-#[derive(Debug, Clone, Deserialize)]
-pub struct EventListResponse {
-    /// List of events.
-    pub events: Vec<EventState>,
-    /// Total number of events returned.
-    pub count: usize,
-}
-
-/// Response from transitioning an event.
-#[derive(Debug, Clone, Deserialize)]
-pub struct TransitionResponse {
-    /// The event fingerprint.
-    pub fingerprint: String,
-    /// The previous state.
-    pub previous_state: String,
-    /// The new state.
-    pub new_state: String,
-    /// Whether the transition triggered a notification.
-    pub notify: bool,
-}
-
-// =============================================================================
-// Approval Types (Human-in-the-Loop)
-// =============================================================================
-
-/// Response from approving or rejecting an action.
-#[derive(Debug, Clone, Deserialize)]
-pub struct ApprovalActionResponse {
-    /// The approval ID.
-    pub id: String,
-    /// The resulting status ("approved" or "rejected").
-    pub status: String,
-    /// The outcome of the original action (only present when approved).
-    pub outcome: Option<serde_json::Value>,
-}
-
-/// Public-facing approval status (no payload exposed).
-#[derive(Debug, Clone, Deserialize)]
-pub struct ApprovalStatusResponse {
-    /// The approval token.
-    pub token: String,
-    /// Current status: "pending", "approved", or "rejected".
-    pub status: String,
-    /// Rule that triggered the approval.
-    pub rule: String,
-    /// When the approval was created.
-    pub created_at: String,
-    /// When the approval expires.
-    pub expires_at: String,
-    /// When a decision was made (if any).
-    pub decided_at: Option<String>,
-    /// Optional message from the rule.
-    pub message: Option<String>,
-}
-
-/// Response from listing pending approvals.
-#[derive(Debug, Clone, Deserialize)]
-pub struct ApprovalListResponse {
-    /// List of pending approvals.
-    pub approvals: Vec<ApprovalStatusResponse>,
-    /// Total number of approvals returned.
-    pub count: usize,
-}
-
-// =============================================================================
-// Group Types (Event Batching)
-// =============================================================================
-
-/// Summary of an event group.
-#[derive(Debug, Clone, Deserialize)]
-pub struct GroupSummary {
-    /// Unique identifier for the group.
-    pub group_id: String,
-    /// The group key used for matching events.
-    pub group_key: String,
-    /// Number of events in the group.
-    pub event_count: usize,
-    /// Current state of the group.
-    pub state: String,
-    /// When the group will be notified.
-    pub notify_at: Option<String>,
-    /// When the group was created.
-    pub created_at: String,
-}
-
-/// Response from listing groups.
-#[derive(Debug, Clone, Deserialize)]
-pub struct GroupListResponse {
-    /// List of groups.
-    pub groups: Vec<GroupSummary>,
-    /// Total number of groups.
-    pub total: usize,
-}
-
-/// Detailed information about a group.
-#[derive(Debug, Clone, Deserialize)]
-pub struct GroupDetail {
-    /// Group summary.
-    pub group: GroupSummary,
-    /// Event fingerprints in this group.
-    pub events: Vec<String>,
-    /// Labels used to group events.
-    pub labels: std::collections::HashMap<String, String>,
-}
-
-/// Response from flushing a group.
-#[derive(Debug, Clone, Deserialize)]
-pub struct FlushGroupResponse {
-    /// The group ID that was flushed.
-    pub group_id: String,
-    /// Number of events that were flushed.
-    pub event_count: usize,
-    /// Whether notification was sent.
-    pub notified: bool,
 }
 
 #[cfg(test)]
@@ -1748,7 +365,7 @@ mod tests {
 
     #[test]
     fn batch_result_helpers() {
-        use acteon_core::ProviderResponse;
+        use acteon_core::{ActionOutcome, ProviderResponse};
 
         let success = BatchResult::Success(ActionOutcome::Executed(ProviderResponse::success(
             serde_json::json!({}),

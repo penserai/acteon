@@ -26,10 +26,13 @@ use super::schemas::ErrorResponse;
         ("verdict" = Option<String>, Query, description = "Filter by verdict"),
         ("matched_rule" = Option<String>, Query, description = "Filter by matched rule name"),
         ("chain_id" = Option<String>, Query, description = "Filter by chain execution ID"),
+        ("signer_id" = Option<String>, Query, description = "Filter by the signer_id stamped on signed actions. Unsigned records never match."),
+        ("kid" = Option<String>, Query, description = "Filter by the key identifier (kid) stamped on signed actions. Combine with signer_id to pin to a specific (signer, key) pair across a rotation window."),
         ("from" = Option<String>, Query, description = "Start of time range (RFC 3339)"),
         ("to" = Option<String>, Query, description = "End of time range (RFC 3339)"),
         ("limit" = Option<u32>, Query, description = "Max records to return (default 50, max 1000)"),
-        ("offset" = Option<u32>, Query, description = "Number of records to skip"),
+        ("offset" = Option<u32>, Query, description = "Number of records to skip — prefer `cursor` for deep pagination"),
+        ("cursor" = Option<String>, Query, description = "Opaque pagination cursor returned by the previous page"),
     ),
     responses(
         (status = 200, description = "Audit records matching query", body = acteon_audit::AuditPage),
@@ -115,8 +118,13 @@ pub async fn get_audit_by_action(
 
     match audit.get_by_action_id(&action_id).await {
         Ok(Some(record)) => {
-            // Verify the caller has access to this record's tenant/namespace.
-            if !identity.is_authorized(&record.tenant, &record.namespace, &record.action_type) {
+            // Verify the caller has access to this record's tenant/namespace/provider.
+            if !identity.is_authorized(
+                &record.tenant,
+                &record.namespace,
+                &record.provider,
+                &record.action_type,
+            ) {
                 return (
                     StatusCode::FORBIDDEN,
                     Json(serde_json::json!(ErrorResponse {

@@ -1,8 +1,96 @@
 package acteon
 
 import (
+	"encoding/json"
 	"testing"
 )
+
+func TestSilenceRoundTrip(t *testing.T) {
+	// Mimic a real server response to verify the JSON tags line up.
+	body := []byte(`{
+		"id": "019d7f1e-7742-7eb2-9796-442773aa93da",
+		"namespace": "prod",
+		"tenant": "acme",
+		"matchers": [
+			{"name": "service", "value": "cdn-edge", "op": "equal"},
+			{"name": "severity", "value": "info", "op": "regex"}
+		],
+		"starts_at": "2026-04-12T00:36:36.290516Z",
+		"ends_at": "2026-04-12T03:36:36.290516Z",
+		"created_by": "operator@acme.example",
+		"comment": "CDN maintenance window",
+		"created_at": "2026-04-12T00:36:36.290516Z",
+		"updated_at": "2026-04-12T00:36:36.290516Z",
+		"active": true
+	}`)
+
+	var s Silence
+	if err := json.Unmarshal(body, &s); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if s.ID != "019d7f1e-7742-7eb2-9796-442773aa93da" {
+		t.Errorf("id: got %q", s.ID)
+	}
+	if s.Namespace != "prod" || s.Tenant != "acme" {
+		t.Errorf("scope: got %s/%s", s.Namespace, s.Tenant)
+	}
+	if len(s.Matchers) != 2 {
+		t.Fatalf("matchers: want 2, got %d", len(s.Matchers))
+	}
+	if s.Matchers[0].Op != "equal" || s.Matchers[1].Op != "regex" {
+		t.Errorf("matcher ops: got %+v", s.Matchers)
+	}
+	if !s.Active {
+		t.Errorf("expected active")
+	}
+
+	// Round-trip back to JSON and ensure the required fields survive.
+	out, err := json.Marshal(&s)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		t.Fatalf("re-unmarshal: %v", err)
+	}
+	if parsed["ends_at"] != "2026-04-12T03:36:36.290516Z" {
+		t.Errorf("ends_at round-trip: got %v", parsed["ends_at"])
+	}
+}
+
+func TestCreateSilenceRequestOmitsEmpty(t *testing.T) {
+	// duration-seconds-only case — ends_at and starts_at should be absent from the JSON.
+	dur := int64(3600)
+	req := &CreateSilenceRequest{
+		Namespace:       "prod",
+		Tenant:          "acme",
+		Matchers:        []SilenceMatcher{{Name: "severity", Value: "warning", Op: "equal"}},
+		Comment:         "deploy window",
+		DurationSeconds: &dur,
+	}
+	out, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	s := string(out)
+	if !jsonContains(s, `"duration_seconds":3600`) {
+		t.Errorf("duration_seconds missing: %s", s)
+	}
+	if jsonContains(s, `"ends_at"`) || jsonContains(s, `"starts_at"`) {
+		t.Errorf("ends_at/starts_at should be omitted: %s", s)
+	}
+}
+
+func jsonContains(haystack, needle string) bool {
+	return len(haystack) > 0 && len(needle) > 0 && (func() bool {
+		for i := 0; i+len(needle) <= len(haystack); i++ {
+			if haystack[i:i+len(needle)] == needle {
+				return true
+			}
+		}
+		return false
+	})()
+}
 
 func TestWebhookPayloadToPayload(t *testing.T) {
 	payload := &WebhookPayload{
@@ -115,5 +203,632 @@ func TestWebhookActionChaining(t *testing.T) {
 	}
 	if action.Metadata == nil || action.Metadata.Labels["env"] != "prod" {
 		t.Error("expected metadata with env=prod")
+	}
+}
+
+func TestProviderHealthStatus(t *testing.T) {
+	status := ProviderHealthStatus{
+		Provider:            "email",
+		Healthy:             true,
+		CircuitBreakerState: "closed",
+		TotalRequests:       1500,
+		Successes:           1480,
+		Failures:            20,
+		SuccessRate:         98.67,
+		AvgLatencyMs:        45.2,
+		P50LatencyMs:        32.0,
+		P95LatencyMs:        120.5,
+		P99LatencyMs:        250.0,
+	}
+
+	if status.Provider != "email" {
+		t.Errorf("expected provider email, got %s", status.Provider)
+	}
+	if !status.Healthy {
+		t.Error("expected healthy to be true")
+	}
+	if status.CircuitBreakerState != "closed" {
+		t.Errorf("expected circuit breaker state closed, got %s", status.CircuitBreakerState)
+	}
+	if status.TotalRequests != 1500 {
+		t.Errorf("expected total requests 1500, got %d", status.TotalRequests)
+	}
+	if status.SuccessRate != 98.67 {
+		t.Errorf("expected success rate 98.67, got %f", status.SuccessRate)
+	}
+}
+
+func TestListProviderHealthResponse(t *testing.T) {
+	response := ListProviderHealthResponse{
+		Providers: []ProviderHealthStatus{
+			{
+				Provider:            "email",
+				Healthy:             true,
+				CircuitBreakerState: "closed",
+				TotalRequests:       1000,
+				Successes:           990,
+				Failures:            10,
+				SuccessRate:         99.0,
+				AvgLatencyMs:        50.0,
+				P50LatencyMs:        40.0,
+				P95LatencyMs:        100.0,
+				P99LatencyMs:        150.0,
+			},
+			{
+				Provider:            "slack",
+				Healthy:             false,
+				CircuitBreakerState: "open",
+				TotalRequests:       500,
+				Successes:           450,
+				Failures:            50,
+				SuccessRate:         90.0,
+				AvgLatencyMs:        200.0,
+				P50LatencyMs:        150.0,
+				P95LatencyMs:        400.0,
+				P99LatencyMs:        600.0,
+			},
+		},
+	}
+
+	if len(response.Providers) != 2 {
+		t.Errorf("expected 2 providers, got %d", len(response.Providers))
+	}
+	if response.Providers[0].Provider != "email" {
+		t.Errorf("expected first provider to be email, got %s", response.Providers[0].Provider)
+	}
+	if response.Providers[1].Provider != "slack" {
+		t.Errorf("expected second provider to be slack, got %s", response.Providers[1].Provider)
+	}
+	if response.Providers[0].Healthy != true {
+		t.Error("expected first provider to be healthy")
+	}
+	if response.Providers[1].Healthy != false {
+		t.Error("expected second provider to be unhealthy")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// WASM Plugin types
+// ---------------------------------------------------------------------------
+
+func TestWasmPluginConfig(t *testing.T) {
+	memLimit := int64(16777216)
+	timeout := int64(100)
+	config := WasmPluginConfig{
+		MemoryLimitBytes:     &memLimit,
+		TimeoutMs:            &timeout,
+		AllowedHostFunctions: []string{"log", "time"},
+	}
+
+	if *config.MemoryLimitBytes != 16777216 {
+		t.Errorf("expected memory_limit_bytes 16777216, got %d", *config.MemoryLimitBytes)
+	}
+	if *config.TimeoutMs != 100 {
+		t.Errorf("expected timeout_ms 100, got %d", *config.TimeoutMs)
+	}
+	if len(config.AllowedHostFunctions) != 2 {
+		t.Errorf("expected 2 allowed host functions, got %d", len(config.AllowedHostFunctions))
+	}
+}
+
+func TestWasmPluginConfigEmpty(t *testing.T) {
+	config := WasmPluginConfig{}
+	if config.MemoryLimitBytes != nil {
+		t.Error("expected nil memory_limit_bytes")
+	}
+	if config.TimeoutMs != nil {
+		t.Error("expected nil timeout_ms")
+	}
+	if config.AllowedHostFunctions != nil {
+		t.Error("expected nil allowed_host_functions")
+	}
+}
+
+func TestWasmPlugin(t *testing.T) {
+	desc := "A test plugin"
+	memLimit := int64(16777216)
+	plugin := WasmPlugin{
+		Name:        "my-plugin",
+		Description: &desc,
+		Status:      "active",
+		Enabled:     true,
+		Config: &WasmPluginConfig{
+			MemoryLimitBytes: &memLimit,
+		},
+		CreatedAt:       "2026-02-15T00:00:00Z",
+		UpdatedAt:       "2026-02-15T01:00:00Z",
+		InvocationCount: 42,
+	}
+
+	if plugin.Name != "my-plugin" {
+		t.Errorf("expected name my-plugin, got %s", plugin.Name)
+	}
+	if *plugin.Description != "A test plugin" {
+		t.Errorf("expected description, got %s", *plugin.Description)
+	}
+	if plugin.Status != "active" {
+		t.Errorf("expected status active, got %s", plugin.Status)
+	}
+	if !plugin.Enabled {
+		t.Error("expected enabled to be true")
+	}
+	if plugin.Config == nil || *plugin.Config.MemoryLimitBytes != 16777216 {
+		t.Error("expected config with memory limit")
+	}
+	if plugin.InvocationCount != 42 {
+		t.Errorf("expected invocation count 42, got %d", plugin.InvocationCount)
+	}
+}
+
+func TestWasmPluginMinimal(t *testing.T) {
+	plugin := WasmPlugin{
+		Name:      "minimal-plugin",
+		Status:    "active",
+		CreatedAt: "2026-02-15T00:00:00Z",
+		UpdatedAt: "2026-02-15T00:00:00Z",
+	}
+
+	if plugin.Name != "minimal-plugin" {
+		t.Errorf("expected name minimal-plugin, got %s", plugin.Name)
+	}
+	if plugin.Description != nil {
+		t.Error("expected nil description")
+	}
+	if plugin.Config != nil {
+		t.Error("expected nil config")
+	}
+	if plugin.InvocationCount != 0 {
+		t.Errorf("expected invocation count 0, got %d", plugin.InvocationCount)
+	}
+}
+
+func TestRegisterPluginRequest(t *testing.T) {
+	memLimit := int64(1024)
+	req := RegisterPluginRequest{
+		Name:        "test-plugin",
+		Description: "A test",
+		WasmPath:    "/plugins/test.wasm",
+		Config: &WasmPluginConfig{
+			MemoryLimitBytes: &memLimit,
+		},
+	}
+
+	if req.Name != "test-plugin" {
+		t.Errorf("expected name test-plugin, got %s", req.Name)
+	}
+	if req.Description != "A test" {
+		t.Errorf("expected description, got %s", req.Description)
+	}
+	if req.WasmPath != "/plugins/test.wasm" {
+		t.Errorf("expected wasm_path, got %s", req.WasmPath)
+	}
+	if req.Config == nil || *req.Config.MemoryLimitBytes != 1024 {
+		t.Error("expected config with memory limit 1024")
+	}
+}
+
+func TestListPluginsResponse(t *testing.T) {
+	response := ListPluginsResponse{
+		Plugins: []WasmPlugin{
+			{Name: "plugin-a", Status: "active", Enabled: true, CreatedAt: "2026-02-15T00:00:00Z", UpdatedAt: "2026-02-15T00:00:00Z"},
+			{Name: "plugin-b", Status: "disabled", Enabled: false, CreatedAt: "2026-02-15T00:00:00Z", UpdatedAt: "2026-02-15T00:00:00Z"},
+		},
+		Count: 2,
+	}
+
+	if len(response.Plugins) != 2 {
+		t.Errorf("expected 2 plugins, got %d", len(response.Plugins))
+	}
+	if response.Count != 2 {
+		t.Errorf("expected count 2, got %d", response.Count)
+	}
+	if response.Plugins[0].Name != "plugin-a" {
+		t.Errorf("expected plugin-a, got %s", response.Plugins[0].Name)
+	}
+	if !response.Plugins[0].Enabled {
+		t.Error("expected plugin-a to be enabled")
+	}
+	if response.Plugins[1].Enabled {
+		t.Error("expected plugin-b to be disabled")
+	}
+}
+
+func TestPluginInvocationRequest(t *testing.T) {
+	req := PluginInvocationRequest{
+		Input:    map[string]any{"key": "value"},
+		Function: "custom_fn",
+	}
+
+	if req.Function != "custom_fn" {
+		t.Errorf("expected function custom_fn, got %s", req.Function)
+	}
+	if req.Input["key"] != "value" {
+		t.Errorf("expected input key=value, got %v", req.Input["key"])
+	}
+}
+
+func TestPluginInvocationResponse(t *testing.T) {
+	msg := "all good"
+	dur := 12.5
+	resp := PluginInvocationResponse{
+		Verdict:    true,
+		Message:    &msg,
+		Metadata:   map[string]any{"score": 0.95},
+		DurationMs: &dur,
+	}
+
+	if !resp.Verdict {
+		t.Error("expected verdict to be true")
+	}
+	if *resp.Message != "all good" {
+		t.Errorf("expected message, got %s", *resp.Message)
+	}
+	if resp.Metadata["score"] != 0.95 {
+		t.Errorf("expected score 0.95, got %v", resp.Metadata["score"])
+	}
+	if *resp.DurationMs != 12.5 {
+		t.Errorf("expected duration 12.5, got %f", *resp.DurationMs)
+	}
+}
+
+func TestPluginInvocationResponseMinimal(t *testing.T) {
+	resp := PluginInvocationResponse{
+		Verdict: false,
+	}
+
+	if resp.Verdict {
+		t.Error("expected verdict to be false")
+	}
+	if resp.Message != nil {
+		t.Error("expected nil message")
+	}
+	if resp.Metadata != nil {
+		t.Error("expected nil metadata")
+	}
+	if resp.DurationMs != nil {
+		t.Error("expected nil duration_ms")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// AWS EC2 Provider Payload Helpers
+// ---------------------------------------------------------------------------
+
+func TestNewEc2StartInstancesPayload(t *testing.T) {
+	p := NewEc2StartInstancesPayload([]string{"i-abc123", "i-def456"})
+	ids := p["instance_ids"].([]string)
+	if len(ids) != 2 || ids[0] != "i-abc123" || ids[1] != "i-def456" {
+		t.Errorf("unexpected instance_ids: %v", ids)
+	}
+}
+
+func TestNewEc2StopInstancesPayload(t *testing.T) {
+	p := NewEc2StopInstancesPayload([]string{"i-abc123"})
+	ids := p["instance_ids"].([]string)
+	if len(ids) != 1 || ids[0] != "i-abc123" {
+		t.Errorf("unexpected instance_ids: %v", ids)
+	}
+	if _, ok := p["hibernate"]; ok {
+		t.Error("expected no hibernate key in basic payload")
+	}
+	if _, ok := p["force"]; ok {
+		t.Error("expected no force key in basic payload")
+	}
+}
+
+func TestNewEc2StopInstancesPayloadWithOptions(t *testing.T) {
+	p := NewEc2StopInstancesPayloadWithOptions([]string{"i-abc123"}, true, true)
+	if p["hibernate"] != true {
+		t.Errorf("expected hibernate=true, got %v", p["hibernate"])
+	}
+	if p["force"] != true {
+		t.Errorf("expected force=true, got %v", p["force"])
+	}
+}
+
+func TestNewEc2RebootInstancesPayload(t *testing.T) {
+	p := NewEc2RebootInstancesPayload([]string{"i-abc123"})
+	ids := p["instance_ids"].([]string)
+	if len(ids) != 1 || ids[0] != "i-abc123" {
+		t.Errorf("unexpected instance_ids: %v", ids)
+	}
+}
+
+func TestNewEc2TerminateInstancesPayload(t *testing.T) {
+	p := NewEc2TerminateInstancesPayload([]string{"i-abc123", "i-def456"})
+	ids := p["instance_ids"].([]string)
+	if len(ids) != 2 {
+		t.Errorf("expected 2 instance IDs, got %d", len(ids))
+	}
+}
+
+func TestNewEc2HibernateInstancesPayload(t *testing.T) {
+	p := NewEc2HibernateInstancesPayload([]string{"i-abc123"})
+	ids := p["instance_ids"].([]string)
+	if len(ids) != 1 || ids[0] != "i-abc123" {
+		t.Errorf("unexpected instance_ids: %v", ids)
+	}
+}
+
+func TestNewEc2RunInstancesPayload(t *testing.T) {
+	p := NewEc2RunInstancesPayload("ami-12345678", "t3.micro")
+	if p["image_id"] != "ami-12345678" {
+		t.Errorf("expected image_id ami-12345678, got %v", p["image_id"])
+	}
+	if p["instance_type"] != "t3.micro" {
+		t.Errorf("expected instance_type t3.micro, got %v", p["instance_type"])
+	}
+	if _, ok := p["min_count"]; ok {
+		t.Error("expected no min_count in basic payload")
+	}
+}
+
+func TestNewEc2RunInstancesPayloadWithOptions(t *testing.T) {
+	p := NewEc2RunInstancesPayloadWithOptions(
+		"ami-12345678", "t3.large",
+		2, 5,
+		"my-keypair", "subnet-abc", "IyEvYmluL2Jhc2g=", "my-profile",
+		[]string{"sg-111", "sg-222"},
+		map[string]string{"Name": "web-server"},
+	)
+	if p["image_id"] != "ami-12345678" {
+		t.Errorf("expected image_id ami-12345678, got %v", p["image_id"])
+	}
+	if p["min_count"] != 2 {
+		t.Errorf("expected min_count 2, got %v", p["min_count"])
+	}
+	if p["max_count"] != 5 {
+		t.Errorf("expected max_count 5, got %v", p["max_count"])
+	}
+	if p["key_name"] != "my-keypair" {
+		t.Errorf("expected key_name my-keypair, got %v", p["key_name"])
+	}
+	if p["subnet_id"] != "subnet-abc" {
+		t.Errorf("expected subnet_id subnet-abc, got %v", p["subnet_id"])
+	}
+	sgIDs := p["security_group_ids"].([]string)
+	if len(sgIDs) != 2 {
+		t.Errorf("expected 2 security group IDs, got %d", len(sgIDs))
+	}
+	tags := p["tags"].(map[string]string)
+	if tags["Name"] != "web-server" {
+		t.Errorf("expected tag Name=web-server, got %v", tags["Name"])
+	}
+	if p["iam_instance_profile"] != "my-profile" {
+		t.Errorf("expected iam_instance_profile my-profile, got %v", p["iam_instance_profile"])
+	}
+}
+
+func TestNewEc2AttachVolumePayload(t *testing.T) {
+	p := NewEc2AttachVolumePayload("vol-abc123", "i-def456", "/dev/sdf")
+	if p["volume_id"] != "vol-abc123" {
+		t.Errorf("expected volume_id vol-abc123, got %v", p["volume_id"])
+	}
+	if p["instance_id"] != "i-def456" {
+		t.Errorf("expected instance_id i-def456, got %v", p["instance_id"])
+	}
+	if p["device"] != "/dev/sdf" {
+		t.Errorf("expected device /dev/sdf, got %v", p["device"])
+	}
+}
+
+func TestNewEc2DetachVolumePayload(t *testing.T) {
+	p := NewEc2DetachVolumePayload("vol-abc123")
+	if p["volume_id"] != "vol-abc123" {
+		t.Errorf("expected volume_id vol-abc123, got %v", p["volume_id"])
+	}
+	if _, ok := p["instance_id"]; ok {
+		t.Error("expected no instance_id in basic payload")
+	}
+}
+
+func TestNewEc2DetachVolumePayloadWithOptions(t *testing.T) {
+	p := NewEc2DetachVolumePayloadWithOptions("vol-abc123", "i-def456", "/dev/sdf", true)
+	if p["volume_id"] != "vol-abc123" {
+		t.Errorf("expected volume_id vol-abc123, got %v", p["volume_id"])
+	}
+	if p["instance_id"] != "i-def456" {
+		t.Errorf("expected instance_id i-def456, got %v", p["instance_id"])
+	}
+	if p["device"] != "/dev/sdf" {
+		t.Errorf("expected device /dev/sdf, got %v", p["device"])
+	}
+	if p["force"] != true {
+		t.Errorf("expected force=true, got %v", p["force"])
+	}
+}
+
+func TestNewEc2DescribeInstancesPayload(t *testing.T) {
+	p := NewEc2DescribeInstancesPayload(nil)
+	if _, ok := p["instance_ids"]; ok {
+		t.Error("expected no instance_ids when nil")
+	}
+
+	p = NewEc2DescribeInstancesPayload([]string{"i-abc123"})
+	ids := p["instance_ids"].([]string)
+	if len(ids) != 1 || ids[0] != "i-abc123" {
+		t.Errorf("unexpected instance_ids: %v", ids)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// AWS Auto Scaling Provider Payload Helpers
+// ---------------------------------------------------------------------------
+
+func TestNewAsgDescribeGroupsPayload(t *testing.T) {
+	p := NewAsgDescribeGroupsPayload(nil)
+	if _, ok := p["auto_scaling_group_names"]; ok {
+		t.Error("expected no group names when nil")
+	}
+
+	p = NewAsgDescribeGroupsPayload([]string{"my-asg-1", "my-asg-2"})
+	names := p["auto_scaling_group_names"].([]string)
+	if len(names) != 2 {
+		t.Errorf("expected 2 group names, got %d", len(names))
+	}
+}
+
+func TestNewAsgSetDesiredCapacityPayload(t *testing.T) {
+	p := NewAsgSetDesiredCapacityPayload("my-asg", 5)
+	if p["auto_scaling_group_name"] != "my-asg" {
+		t.Errorf("expected group name my-asg, got %v", p["auto_scaling_group_name"])
+	}
+	if p["desired_capacity"] != 5 {
+		t.Errorf("expected desired_capacity 5, got %v", p["desired_capacity"])
+	}
+	if _, ok := p["honor_cooldown"]; ok {
+		t.Error("expected no honor_cooldown in basic payload")
+	}
+}
+
+func TestNewAsgSetDesiredCapacityPayloadWithOptions(t *testing.T) {
+	p := NewAsgSetDesiredCapacityPayloadWithOptions("my-asg", 10, true)
+	if p["auto_scaling_group_name"] != "my-asg" {
+		t.Errorf("expected group name my-asg, got %v", p["auto_scaling_group_name"])
+	}
+	if p["desired_capacity"] != 10 {
+		t.Errorf("expected desired_capacity 10, got %v", p["desired_capacity"])
+	}
+	if p["honor_cooldown"] != true {
+		t.Errorf("expected honor_cooldown=true, got %v", p["honor_cooldown"])
+	}
+}
+
+func TestNewAsgUpdateGroupPayload(t *testing.T) {
+	p := NewAsgUpdateGroupPayload("my-asg")
+	if p["auto_scaling_group_name"] != "my-asg" {
+		t.Errorf("expected group name my-asg, got %v", p["auto_scaling_group_name"])
+	}
+	if _, ok := p["min_size"]; ok {
+		t.Error("expected no min_size in basic payload")
+	}
+}
+
+func TestNewAsgUpdateGroupPayloadWithOptions(t *testing.T) {
+	minSize := 1
+	maxSize := 10
+	desiredCapacity := 5
+	defaultCooldown := 300
+	healthCheckGracePeriod := 120
+	p := NewAsgUpdateGroupPayloadWithOptions(
+		"my-asg",
+		&minSize, &maxSize, &desiredCapacity, &defaultCooldown,
+		"ELB", &healthCheckGracePeriod,
+	)
+	if p["auto_scaling_group_name"] != "my-asg" {
+		t.Errorf("expected group name my-asg, got %v", p["auto_scaling_group_name"])
+	}
+	if p["min_size"] != 1 {
+		t.Errorf("expected min_size 1, got %v", p["min_size"])
+	}
+	if p["max_size"] != 10 {
+		t.Errorf("expected max_size 10, got %v", p["max_size"])
+	}
+	if p["desired_capacity"] != 5 {
+		t.Errorf("expected desired_capacity 5, got %v", p["desired_capacity"])
+	}
+	if p["default_cooldown"] != 300 {
+		t.Errorf("expected default_cooldown 300, got %v", p["default_cooldown"])
+	}
+	if p["health_check_type"] != "ELB" {
+		t.Errorf("expected health_check_type ELB, got %v", p["health_check_type"])
+	}
+	if p["health_check_grace_period"] != 120 {
+		t.Errorf("expected health_check_grace_period 120, got %v", p["health_check_grace_period"])
+	}
+}
+
+func TestSigningKeysResponseUnmarshal(t *testing.T) {
+	body := []byte(`{
+		"keys": [
+			{
+				"signer_id": "ci-bot",
+				"kid": "k1",
+				"algorithm": "Ed25519",
+				"public_key": "LZkUda4pibD+v4yfHrLyw9Dnt7OLa6PGzSRGOcN1c4o=",
+				"tenants": ["acme"],
+				"namespaces": ["prod", "staging"]
+			},
+			{
+				"signer_id": "ci-bot",
+				"kid": "k2",
+				"algorithm": "Ed25519",
+				"public_key": "BBBB",
+				"tenants": ["acme"],
+				"namespaces": ["prod", "staging"]
+			}
+		],
+		"count": 2
+	}`)
+
+	var resp SigningKeysResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Count != 2 {
+		t.Errorf("count: got %d, want 2", resp.Count)
+	}
+	if len(resp.Keys) != 2 {
+		t.Fatalf("keys: got %d, want 2", len(resp.Keys))
+	}
+	if resp.Keys[0].SignerID != "ci-bot" || resp.Keys[0].Kid != "k1" {
+		t.Errorf("keys[0]: got %+v", resp.Keys[0])
+	}
+	if resp.Keys[1].Kid != "k2" {
+		t.Errorf("keys[1] kid: got %q", resp.Keys[1].Kid)
+	}
+	if resp.Keys[0].Algorithm != "Ed25519" {
+		t.Errorf("algorithm: got %q", resp.Keys[0].Algorithm)
+	}
+}
+
+func TestSigningKeysResponseEmptyWhenDisabled(t *testing.T) {
+	// Server emits {"keys": [], "count": 0} when [signing].enabled
+	// is false — the client should round-trip that cleanly rather
+	// than requiring callers to special-case a missing "keys" field.
+	body := []byte(`{"keys": [], "count": 0}`)
+	var resp SigningKeysResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Count != 0 || len(resp.Keys) != 0 {
+		t.Errorf("expected empty response, got count=%d keys=%d", resp.Count, len(resp.Keys))
+	}
+}
+
+// The client method applies a defensive fallback (Count = len(Keys)
+// when the server omits count) to keep behavior consistent with
+// Python/Node/Java. Verify that a raw `json.Unmarshal` followed by
+// the client-side normalisation matches that posture.
+func TestSigningKeysResponseCountFallback(t *testing.T) {
+	body := []byte(`{
+		"keys": [
+			{"signer_id": "a", "kid": "k1", "algorithm": "Ed25519", "public_key": "AAAA", "tenants": ["*"], "namespaces": ["*"]},
+			{"signer_id": "b", "kid": "k1", "algorithm": "Ed25519", "public_key": "BBBB", "tenants": ["*"], "namespaces": ["*"]}
+		]
+	}`)
+	var resp SigningKeysResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	// Mimic the fallback applied by FetchSigningKeys.
+	if resp.Count == 0 && len(resp.Keys) > 0 {
+		resp.Count = len(resp.Keys)
+	}
+	if resp.Count != 2 {
+		t.Errorf("expected derived count=2, got %d", resp.Count)
+	}
+}
+
+func TestSigningKeysResponseRejectsMalformedJSON(t *testing.T) {
+	// When a proxy returns 200 OK with an HTML body, json.Unmarshal
+	// should fail with a clear decode error. The client wraps this
+	// in a "malformed signing keys response: ..." ConnectionError
+	// — we check only that Unmarshal surfaces the error at all,
+	// since the wrapping is done in client.go.
+	body := []byte(`<!doctype html><html><body>Waiting Room</body></html>`)
+	var resp SigningKeysResponse
+	if err := json.Unmarshal(body, &resp); err == nil {
+		t.Fatalf("expected unmarshal error on HTML body, got nil")
 	}
 }

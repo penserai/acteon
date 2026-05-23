@@ -19,6 +19,7 @@ use acteon_rules::Rule;
 use acteon_rules_yaml::YamlFrontend;
 use acteon_simulation::prelude::*;
 use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
+use tracing::info;
 
 fn parse_rules(yaml: &str) -> Vec<Rule> {
     let frontend = YamlFrontend;
@@ -70,9 +71,11 @@ async fn start_chain(
 #[tokio::main]
 #[allow(clippy::too_many_lines, clippy::similar_names)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("==================================================================");
-    println!("     ACTEON BRANCH CHAIN SIMULATION");
-    println!("==================================================================\n");
+    tracing_subscriber::fmt::init();
+
+    info!("==================================================================");
+    info!("     ACTEON BRANCH CHAIN SIMULATION");
+    info!("==================================================================\n");
 
     // =========================================================================
     // DEMO 1: Incident Severity Routing
@@ -86,9 +89,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Each branch target uses with_default_next("done") to skip to the
     // terminal step, preventing sequential fallthrough between branches.
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  DEMO 1: INCIDENT SEVERITY ROUTING");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  DEMO 1: INCIDENT SEVERITY ROUTING");
+    info!("------------------------------------------------------------------\n");
 
     let check_provider = Arc::new(
         RecordingProvider::new("incident-api").with_response_fn(|_| {
@@ -196,27 +199,27 @@ rules:
         serde_json::json!({"incident_id": "INC-001"}),
     )
     .await?;
-    println!("  Chain started: {chain_id}");
+    info!("  Chain started: {chain_id}");
 
     // Advance check-severity -> branches to "escalate" (severity == critical)
     gateway.advance_chain("ops", "tenant-1", &chain_id).await?;
-    println!("  Step 0 (check-severity) advanced -> escalate");
+    info!("  Step 0 (check-severity) advanced -> escalate");
 
     // Advance escalate -> default_next "done"
     gateway.advance_chain("ops", "tenant-1", &chain_id).await?;
-    println!("  Step 1 (escalate) advanced -> done");
+    info!("  Step 1 (escalate) advanced -> done");
 
     // Advance done -> chain completes
     gateway.advance_chain("ops", "tenant-1", &chain_id).await?;
-    println!("  Step 2 (done) advanced -> complete");
+    info!("  Step 2 (done) advanced -> complete");
 
     let chain_state = gateway
         .get_chain_status("ops", "tenant-1", &chain_id)
         .await?
         .expect("chain state should exist");
 
-    println!("\n  Final chain status: {:?}", chain_state.status);
-    println!("  Execution path: {:?}", chain_state.execution_path);
+    info!("\n  Final chain status: {:?}", chain_state.status);
+    info!("  Execution path: {:?}", chain_state.execution_path);
     assert_eq!(
         chain_state.status,
         acteon_core::chain::ChainStatus::Completed
@@ -226,14 +229,14 @@ rules:
         vec!["check-severity", "escalate", "done"]
     );
 
-    println!("\n  Provider call counts:");
-    println!("    incident-api: {}", check_provider.call_count());
-    println!("    pagerduty:    {}", pagerduty_provider.call_count());
-    println!(
+    info!("\n  Provider call counts:");
+    info!("    incident-api: {}", check_provider.call_count());
+    info!("    pagerduty:    {}", pagerduty_provider.call_count());
+    info!(
         "    slack:        {} (not reached)",
         slack_provider.call_count()
     );
-    println!(
+    info!(
         "    logger:       {} (not reached)",
         logger_provider.call_count()
     );
@@ -243,7 +246,7 @@ rules:
     logger_provider.assert_not_called();
 
     gateway.shutdown().await;
-    println!("\n  PASSED\n");
+    info!("\n  PASSED\n");
 
     // =========================================================================
     // DEMO 2: Success/Failure Branching
@@ -257,12 +260,12 @@ rules:
     // default_next to skip over "reject" to chain end. We demonstrate this
     // twice: once where validation succeeds and once where it fails.
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  DEMO 2: SUCCESS/FAILURE BRANCHING");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  DEMO 2: SUCCESS/FAILURE BRANCHING");
+    info!("------------------------------------------------------------------\n");
 
     // --- Run A: validation succeeds ---
-    println!("  --- Run A: validation succeeds ---\n");
+    info!("  --- Run A: validation succeeds ---\n");
 
     let validate_ok = Arc::new(RecordingProvider::new("validator").with_response_fn(|_| {
         Ok(acteon_core::ProviderResponse::success(
@@ -356,23 +359,23 @@ rules:
 
     // Advance validate (succeeds) -> branches to "process"
     gateway.advance_chain("app", "tenant-1", &chain_id).await?;
-    println!("  Step 0 (validate) advanced -> process");
+    info!("  Step 0 (validate) advanced -> process");
 
     // Advance process -> default_next "done"
     gateway.advance_chain("app", "tenant-1", &chain_id).await?;
-    println!("  Step 1 (process) advanced -> done");
+    info!("  Step 1 (process) advanced -> done");
 
     // Advance done -> chain completes
     gateway.advance_chain("app", "tenant-1", &chain_id).await?;
-    println!("  Step 2 (done) advanced -> complete");
+    info!("  Step 2 (done) advanced -> complete");
 
     let chain_state = gateway
         .get_chain_status("app", "tenant-1", &chain_id)
         .await?
         .expect("chain state should exist");
 
-    println!("  Final status: {:?}", chain_state.status);
-    println!("  Execution path: {:?}", chain_state.execution_path);
+    info!("  Final status: {:?}", chain_state.status);
+    info!("  Execution path: {:?}", chain_state.execution_path);
     assert_eq!(
         chain_state.status,
         acteon_core::chain::ChainStatus::Completed
@@ -385,10 +388,10 @@ rules:
     reject_provider.assert_not_called();
 
     gateway.shutdown().await;
-    println!("  PASSED\n");
+    info!("  PASSED\n");
 
     // --- Run B: validation fails ---
-    println!("  --- Run B: validation fails ---\n");
+    info!("  --- Run B: validation fails ---\n");
 
     let validate_fail =
         Arc::new(RecordingProvider::new("validator").with_failure_mode(FailureMode::Always));
@@ -462,23 +465,23 @@ rules:
 
     // Advance validate -> fails (skip policy) -> branches to "reject"
     gateway.advance_chain("app", "tenant-1", &chain_id).await?;
-    println!("  Step 0 (validate) failed -> skip -> reject");
+    info!("  Step 0 (validate) failed -> skip -> reject");
 
     // Advance reject -> default_next "done"
     gateway.advance_chain("app", "tenant-1", &chain_id).await?;
-    println!("  Step 1 (reject) advanced -> done");
+    info!("  Step 1 (reject) advanced -> done");
 
     // Advance done -> chain completes
     gateway.advance_chain("app", "tenant-1", &chain_id).await?;
-    println!("  Step 2 (done) advanced -> complete");
+    info!("  Step 2 (done) advanced -> complete");
 
     let chain_state = gateway
         .get_chain_status("app", "tenant-1", &chain_id)
         .await?
         .expect("chain state should exist");
 
-    println!("  Final status: {:?}", chain_state.status);
-    println!("  Execution path: {:?}", chain_state.execution_path);
+    info!("  Final status: {:?}", chain_state.status);
+    info!("  Execution path: {:?}", chain_state.execution_path);
     assert_eq!(
         chain_state.status,
         acteon_core::chain::ChainStatus::Completed
@@ -491,7 +494,7 @@ rules:
     reject_provider_b.assert_called(1);
 
     gateway.shutdown().await;
-    println!("  PASSED\n");
+    info!("  PASSED\n");
 
     // =========================================================================
     // DEMO 3: Multi-Step Branch Paths Converging
@@ -506,9 +509,9 @@ rules:
     // We run this twice with different classification results to verify
     // that execution_path differs.
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  DEMO 3: MULTI-STEP BRANCH PATHS CONVERGING");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  DEMO 3: MULTI-STEP BRANCH PATHS CONVERGING");
+    info!("------------------------------------------------------------------\n");
 
     let classify_provider = Arc::new(RecordingProvider::new("classifier").with_response_fn(
         |_action| {
@@ -566,7 +569,7 @@ rules:
 "#;
 
     // --- Run with type A ---
-    println!("  --- Run with type A ---\n");
+    info!("  --- Run with type A ---\n");
 
     let gateway = build_gateway(
         vec![
@@ -592,21 +595,21 @@ rules:
 
     // classify -> handle-a -> finalize -> complete
     gateway.advance_chain("app", "tenant-1", &chain_id).await?;
-    println!("  Step 0 (classify) -> handle-a");
+    info!("  Step 0 (classify) -> handle-a");
 
     gateway.advance_chain("app", "tenant-1", &chain_id).await?;
-    println!("  Step 1 (handle-a) -> finalize");
+    info!("  Step 1 (handle-a) -> finalize");
 
     gateway.advance_chain("app", "tenant-1", &chain_id).await?;
-    println!("  Step 2 (finalize) -> complete");
+    info!("  Step 2 (finalize) -> complete");
 
     let chain_state = gateway
         .get_chain_status("app", "tenant-1", &chain_id)
         .await?
         .expect("chain state should exist");
 
-    println!("  Final status: {:?}", chain_state.status);
-    println!("  Execution path: {:?}", chain_state.execution_path);
+    info!("  Final status: {:?}", chain_state.status);
+    info!("  Execution path: {:?}", chain_state.execution_path);
     assert_eq!(
         chain_state.status,
         acteon_core::chain::ChainStatus::Completed
@@ -620,10 +623,10 @@ rules:
     finalize_provider.assert_called(1);
 
     gateway.shutdown().await;
-    println!("  PASSED\n");
+    info!("  PASSED\n");
 
     // --- Run with type B ---
-    println!("  --- Run with type B ---\n");
+    info!("  --- Run with type B ---\n");
 
     let classify_b_provider =
         Arc::new(RecordingProvider::new("classifier").with_response_fn(|_| {
@@ -659,21 +662,21 @@ rules:
 
     // classify -> handle-b -> finalize -> complete
     gateway.advance_chain("app", "tenant-1", &chain_id).await?;
-    println!("  Step 0 (classify) -> handle-b");
+    info!("  Step 0 (classify) -> handle-b");
 
     gateway.advance_chain("app", "tenant-1", &chain_id).await?;
-    println!("  Step 1 (handle-b) -> finalize");
+    info!("  Step 1 (handle-b) -> finalize");
 
     gateway.advance_chain("app", "tenant-1", &chain_id).await?;
-    println!("  Step 2 (finalize) -> complete");
+    info!("  Step 2 (finalize) -> complete");
 
     let chain_state = gateway
         .get_chain_status("app", "tenant-1", &chain_id)
         .await?
         .expect("chain state should exist");
 
-    println!("  Final status: {:?}", chain_state.status);
-    println!("  Execution path: {:?}", chain_state.execution_path);
+    info!("  Final status: {:?}", chain_state.status);
+    info!("  Execution path: {:?}", chain_state.execution_path);
     assert_eq!(
         chain_state.status,
         acteon_core::chain::ChainStatus::Completed
@@ -687,7 +690,7 @@ rules:
     finalize2.assert_called(1);
 
     gateway.shutdown().await;
-    println!("  PASSED\n");
+    info!("  PASSED\n");
 
     // =========================================================================
     // DEMO 4: Default Fallthrough
@@ -701,9 +704,9 @@ rules:
     // The response has priority "low", so no branch matches and the
     // default_next step "fallback" is used instead.
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  DEMO 4: DEFAULT FALLTHROUGH");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  DEMO 4: DEFAULT FALLTHROUGH");
+    info!("------------------------------------------------------------------\n");
 
     let check_provider_d4 = Arc::new(RecordingProvider::new("checker").with_response_fn(|_| {
         Ok(acteon_core::ProviderResponse::success(serde_json::json!({
@@ -791,27 +794,27 @@ rules:
         serde_json::json!({}),
     )
     .await?;
-    println!("  Chain started: {chain_id}");
+    info!("  Chain started: {chain_id}");
 
     // check -> no branch matches -> default_next "fallback"
     gateway.advance_chain("app", "tenant-1", &chain_id).await?;
-    println!("  Step 0 (check) -> no branch match -> fallback");
+    info!("  Step 0 (check) -> no branch match -> fallback");
 
     // fallback -> default_next "done"
     gateway.advance_chain("app", "tenant-1", &chain_id).await?;
-    println!("  Step 1 (fallback) -> done");
+    info!("  Step 1 (fallback) -> done");
 
     // done -> complete
     gateway.advance_chain("app", "tenant-1", &chain_id).await?;
-    println!("  Step 2 (done) -> complete");
+    info!("  Step 2 (done) -> complete");
 
     let chain_state = gateway
         .get_chain_status("app", "tenant-1", &chain_id)
         .await?
         .expect("chain state should exist");
 
-    println!("\n  Final status: {:?}", chain_state.status);
-    println!("  Execution path: {:?}", chain_state.execution_path);
+    info!("\n  Final status: {:?}", chain_state.status);
+    info!("  Execution path: {:?}", chain_state.execution_path);
     assert_eq!(
         chain_state.status,
         acteon_core::chain::ChainStatus::Completed
@@ -824,7 +827,7 @@ rules:
     fallback_handler.assert_called(1);
 
     gateway.shutdown().await;
-    println!("\n  PASSED\n");
+    info!("\n  PASSED\n");
 
     // =========================================================================
     // DEMO 5: Linear Chain Backward Compatibility
@@ -834,9 +837,9 @@ rules:
     // and execution_path is populated correctly with the sequential step
     // order.
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  DEMO 5: LINEAR CHAIN BACKWARD COMPATIBILITY");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  DEMO 5: LINEAR CHAIN BACKWARD COMPATIBILITY");
+    info!("------------------------------------------------------------------\n");
 
     let step_a_provider = Arc::new(RecordingProvider::new("svc-a"));
     let step_b_provider = Arc::new(RecordingProvider::new("svc-b"));
@@ -895,11 +898,11 @@ rules:
         serde_json::json!({}),
     )
     .await?;
-    println!("  Chain started: {chain_id}");
+    info!("  Chain started: {chain_id}");
 
     for i in 0..3 {
         gateway.advance_chain("app", "tenant-1", &chain_id).await?;
-        println!("  Step {i} advanced");
+        info!("  Step {i} advanced");
     }
 
     let chain_state = gateway
@@ -907,8 +910,8 @@ rules:
         .await?
         .expect("chain state should exist");
 
-    println!("\n  Final status: {:?}", chain_state.status);
-    println!("  Execution path: {:?}", chain_state.execution_path);
+    info!("\n  Final status: {:?}", chain_state.status);
+    info!("  Execution path: {:?}", chain_state.execution_path);
     assert_eq!(
         chain_state.status,
         acteon_core::chain::ChainStatus::Completed
@@ -928,11 +931,11 @@ rules:
     }
 
     gateway.shutdown().await;
-    println!("\n  PASSED\n");
+    info!("\n  PASSED\n");
 
-    println!("==================================================================");
-    println!("     ALL BRANCH CHAIN SIMULATIONS PASSED");
-    println!("==================================================================");
+    info!("==================================================================");
+    info!("     ALL BRANCH CHAIN SIMULATIONS PASSED");
+    info!("==================================================================");
 
     Ok(())
 }

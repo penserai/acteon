@@ -36,6 +36,11 @@ Transform action payloads before execution — redaction, enrichment, normalizat
 Delay action execution by a configurable duration — send reminders later, retry at off-peak times, or schedule escalations.
 </div>
 
+<div class="card" markdown>
+### [Recurring Actions](recurring-actions.md)
+Cron-scheduled actions that fire on a recurring basis — daily digests, weekly reports, periodic health checks.
+</div>
+
 </div>
 
 ## Event Lifecycle
@@ -54,6 +59,22 @@ Track event lifecycle through configurable states with automatic timeouts.
 
 </div>
 
+## Payload Processing
+
+<div class="grid" markdown>
+
+<div class="card" markdown>
+### [Payload Templates](payload-templates.md)
+Reusable, parameterized content rendered into payloads at dispatch time using MiniJinja templates.
+</div>
+
+<div class="card" markdown>
+### [Attachments](attachments.md)
+Include files with action dispatches -- real MIME email attachments, Slack/Discord file uploads, and webhook multipart parts.
+</div>
+
+</div>
+
 ## Infrastructure
 
 <div class="grid" markdown>
@@ -64,6 +85,11 @@ Automatic provider health tracking — stop requests to failing providers, rerou
 </div>
 
 <div class="card" markdown>
+### [Provider Health Dashboard](provider-health.md)
+Real-time visibility into provider health, performance metrics, and circuit breaker state — success rates, latency percentiles, and last errors at a glance.
+</div>
+
+<div class="card" markdown>
 ### [Event Streaming](event-streaming.md)
 Real-time SSE event stream for dashboards and monitoring — subscribe to action outcomes as they happen.
 </div>
@@ -71,6 +97,11 @@ Real-time SSE event stream for dashboards and monitoring — subscribe to action
 <div class="card" markdown>
 ### [Distributed Tracing](distributed-tracing.md)
 OpenTelemetry distributed tracing — end-to-end visibility across the dispatch pipeline with OTLP export to Jaeger, Tempo, Zipkin, and more.
+</div>
+
+<div class="card" markdown>
+### [Grafana Dashboards](grafana-dashboards.md)
+Pre-built Grafana dashboard templates with Prometheus integration — throughput, provider health, latency percentiles, and error rates out of the box.
 </div>
 
 </div>
@@ -110,6 +141,11 @@ Test rules without executing actions — see what *would* happen before it happe
 </div>
 
 <div class="card" markdown>
+### [Rule Playground](rule-playground.md)
+Detailed per-rule evaluation trace with time-travel debugging, mock state, and modify-payload preview.
+</div>
+
+<div class="card" markdown>
 ### [Time-Based Rules](time-based-rules.md)
 Apply rules based on time of day, day of week, or date — business hours, weekend routing, maintenance windows.
 </div>
@@ -117,6 +153,24 @@ Apply rules based on time of day, day of week, or date — business hours, weeke
 <div class="card" markdown>
 ### [Action Replay](action-replay.md)
 Reconstruct and re-dispatch actions from the audit trail — recover from outages, fix suppressed actions, bulk reprocess.
+</div>
+
+</div>
+
+## Agent Orchestration
+
+The `acteon-swarm` crate is a separate product surface that **uses** Acteon for safety enforcement but provides its own agent orchestration engine.
+
+<div class="grid" markdown>
+
+<div class="card" markdown>
+### [Agent Swarm Orchestrator](agent-swarm.md)
+Multi-agent swarm with parallel execution, 5 built-in roles, AI-powered plan refinement, and knowledge sharing via TesseraiDB. Supports Claude and Gemini engines.
+</div>
+
+<div class="card" markdown>
+### [Adversarial Loop & Eval Harness](agent-swarm.md#adversarial-loop-with-eval-harness-autoresearch-pattern)
+Karpathy-style autoresearch: adversarial critique across engines, code-writing recovery agents, SWE-bench binary assertions, program.md constraints, fitness-gated git keep/revert, polyglot support for 12 languages.
 </div>
 
 </div>

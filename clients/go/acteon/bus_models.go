@@ -1,0 +1,584 @@
+package acteon
+
+import "encoding/json"
+
+// DTOs for the Acteon agentic bus surface (Phases 1-6c).
+//
+// Field types are pointers wherever the server treats the field as
+// optional (`#[serde(default, skip_serializing_if = "Option::is_none")]`)
+// so callers can distinguish "unset" from "explicitly the zero value".
+// Slices and maps use `omitempty` instead — the server treats an
+// absent collection identically to an empty one.
+
+// =============================================================================
+// Phase 1: Topics + publish
+// =============================================================================
+
+type CreateBusTopic struct {
+	Name              string            `json:"name"`
+	Namespace         string            `json:"namespace"`
+	Tenant            string            `json:"tenant"`
+	Partitions        *int              `json:"partitions,omitempty"`
+	ReplicationFactor *int              `json:"replication_factor,omitempty"`
+	RetentionMs       *int64            `json:"retention_ms,omitempty"`
+	Description       *string           `json:"description,omitempty"`
+	Labels            map[string]string `json:"labels,omitempty"`
+}
+
+type BusTopic struct {
+	Name              string            `json:"name"`
+	Namespace         string            `json:"namespace"`
+	Tenant            string            `json:"tenant"`
+	KafkaName         string            `json:"kafka_name"`
+	Partitions        int               `json:"partitions"`
+	ReplicationFactor int               `json:"replication_factor"`
+	RetentionMs       *int64            `json:"retention_ms,omitempty"`
+	Description       *string           `json:"description,omitempty"`
+	Labels            map[string]string `json:"labels,omitempty"`
+	SchemaSubject     *string           `json:"schema_subject,omitempty"`
+	SchemaVersion     *int              `json:"schema_version,omitempty"`
+	CreatedAt         string            `json:"created_at"`
+	UpdatedAt         string            `json:"updated_at"`
+}
+
+type ListBusTopicsResponse struct {
+	Topics []BusTopic `json:"topics"`
+	Count  int        `json:"count"`
+}
+
+type ListBusTopicsFilter struct {
+	Namespace string
+	Tenant    string
+}
+
+type PublishBusMessage struct {
+	Topic     *string           `json:"topic,omitempty"`
+	Namespace *string           `json:"namespace,omitempty"`
+	Tenant    *string           `json:"tenant,omitempty"`
+	Name      *string           `json:"name,omitempty"`
+	Key       *string           `json:"key,omitempty"`
+	Payload   any               `json:"payload"`
+	Headers   map[string]string `json:"headers,omitempty"`
+}
+
+type PublishReceipt struct {
+	Topic      string `json:"topic"`
+	Partition  int32  `json:"partition"`
+	Offset     int64  `json:"offset"`
+	ProducedAt string `json:"produced_at"`
+}
+
+// =============================================================================
+// Phase 2: Subscriptions + lag
+// =============================================================================
+
+type CreateBusSubscription struct {
+	ID              string            `json:"id"`
+	Topic           string            `json:"topic"`
+	Namespace       string            `json:"namespace"`
+	Tenant          string            `json:"tenant"`
+	StartingOffset  *string           `json:"starting_offset,omitempty"`
+	AckMode         *string           `json:"ack_mode,omitempty"`
+	DeadLetterTopic *string           `json:"dead_letter_topic,omitempty"`
+	AckTimeoutMs    *uint64           `json:"ack_timeout_ms,omitempty"`
+	Description     *string           `json:"description,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
+}
+
+type BusSubscription struct {
+	ID              string            `json:"id"`
+	Topic           string            `json:"topic"`
+	Namespace       string            `json:"namespace"`
+	Tenant          string            `json:"tenant"`
+	StartingOffset  string            `json:"starting_offset"`
+	AckMode         string            `json:"ack_mode"`
+	DeadLetterTopic *string           `json:"dead_letter_topic,omitempty"`
+	AckTimeoutMs    uint64            `json:"ack_timeout_ms"`
+	Description     *string           `json:"description,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
+	CreatedAt       string            `json:"created_at"`
+	UpdatedAt       string            `json:"updated_at"`
+}
+
+type ListBusSubscriptionsResponse struct {
+	Subscriptions []BusSubscription `json:"subscriptions"`
+	Count         int               `json:"count"`
+}
+
+type ListBusSubscriptionsFilter struct {
+	Namespace string
+	Tenant    string
+	Topic     string
+}
+
+type BusLagPartition struct {
+	Partition     int32 `json:"partition"`
+	Committed     int64 `json:"committed"`
+	HighWaterMark int64 `json:"high_water_mark"`
+	Lag           int64 `json:"lag"`
+}
+
+type BusLag struct {
+	SubscriptionID string            `json:"subscription_id"`
+	Topic          string            `json:"topic"`
+	Partitions     []BusLagPartition `json:"partitions"`
+	TotalLag       int64             `json:"total_lag"`
+}
+
+// =============================================================================
+// Phase 3: Schemas
+// =============================================================================
+
+type RegisterBusSchema struct {
+	Subject   string            `json:"subject"`
+	Namespace string            `json:"namespace"`
+	Tenant    string            `json:"tenant"`
+	Body      any               `json:"body"`
+	Labels    map[string]string `json:"labels,omitempty"`
+}
+
+type BusSchema struct {
+	Subject   string            `json:"subject"`
+	Version   int               `json:"version"`
+	Namespace string            `json:"namespace"`
+	Tenant    string            `json:"tenant"`
+	Body      any               `json:"body"`
+	Labels    map[string]string `json:"labels,omitempty"`
+	CreatedAt string            `json:"created_at"`
+}
+
+type ListBusSchemasResponse struct {
+	Schemas []BusSchema `json:"schemas"`
+	Count   int         `json:"count"`
+}
+
+type ListBusSchemasFilter struct {
+	Namespace  string
+	Tenant     string
+	Subject    string
+	LatestOnly bool
+}
+
+// =============================================================================
+// Phase 4: Agents + heartbeat
+// =============================================================================
+
+type RegisterBusAgent struct {
+	AgentID        string            `json:"agent_id"`
+	Namespace      string            `json:"namespace"`
+	Tenant         string            `json:"tenant"`
+	Capabilities   []string          `json:"capabilities,omitempty"`
+	InboxSuffix    *string           `json:"inbox_suffix,omitempty"`
+	HeartbeatTtlMs *uint64           `json:"heartbeat_ttl_ms,omitempty"`
+	Description    *string           `json:"description,omitempty"`
+	Labels         map[string]string `json:"labels,omitempty"`
+}
+
+type BusAgent struct {
+	AgentID         string            `json:"agent_id"`
+	Namespace       string            `json:"namespace"`
+	Tenant          string            `json:"tenant"`
+	Capabilities    []string          `json:"capabilities"`
+	InboxTopic      string            `json:"inbox_topic"`
+	Status          string            `json:"status"`
+	LastHeartbeatAt *string           `json:"last_heartbeat_at,omitempty"`
+	HeartbeatTtlMs  uint64            `json:"heartbeat_ttl_ms"`
+	Description     *string           `json:"description,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
+	CreatedAt       string            `json:"created_at"`
+	UpdatedAt       string            `json:"updated_at"`
+	// AdminState is the operator lifecycle state ("active",
+	// "suspended", or "banned"). Defaults to "active" — see
+	// UnmarshalJSON below.
+	AdminState     string  `json:"admin_state,omitempty"`
+	AdminReason    *string `json:"admin_reason,omitempty"`
+	AdminSetBy     *string `json:"admin_set_by,omitempty"`
+	AdminSetAt     *string `json:"admin_set_at,omitempty"`
+	AdminExpiresAt *string `json:"admin_expires_at,omitempty"`
+}
+
+// UnmarshalJSON is overridden so a server response that pre-dates
+// the admin-state surface (the field is absent entirely) reads as
+// "active" rather than the empty string — keeps operator
+// dashboards from rendering "(empty)" for legacy rows.
+func (a *BusAgent) UnmarshalJSON(data []byte) error {
+	type alias BusAgent // shadow type to avoid recursion
+	var tmp alias
+	if err := json.Unmarshal(data, &tmp); err != nil {
+		return err
+	}
+	if tmp.AdminState == "" {
+		tmp.AdminState = "active"
+	}
+	*a = BusAgent(tmp)
+	return nil
+}
+
+// SetBusAgentAdminState is the request body for
+// Client.SetBusAgentAdminState. ExpiresAt is honored only for
+// AdminState = "suspended"; the server returns 400 if it is set
+// alongside another state.
+type SetBusAgentAdminState struct {
+	AdminState string  `json:"admin_state"`
+	Reason     *string `json:"reason,omitempty"`
+	// RFC-3339 timestamp.
+	ExpiresAt *string `json:"expires_at,omitempty"`
+}
+
+type ListBusAgentsResponse struct {
+	Agents []BusAgent `json:"agents"`
+	Count  int        `json:"count"`
+}
+
+type ListBusAgentsFilter struct {
+	Namespace string
+	Tenant    string
+}
+
+// =============================================================================
+// Phase 5: Conversations
+// =============================================================================
+
+type CreateBusConversation struct {
+	ConversationID string            `json:"conversation_id"`
+	Namespace      string            `json:"namespace"`
+	Tenant         string            `json:"tenant"`
+	Participants   []string          `json:"participants,omitempty"`
+	TopicSubject   *string           `json:"topic_subject,omitempty"`
+	EventsTopic    *string           `json:"events_topic,omitempty"`
+	Description    *string           `json:"description,omitempty"`
+	Labels         map[string]string `json:"labels,omitempty"`
+}
+
+type BusConversation struct {
+	ConversationID string            `json:"conversation_id"`
+	Namespace      string            `json:"namespace"`
+	Tenant         string            `json:"tenant"`
+	Participants   []string          `json:"participants"`
+	State          string            `json:"state"`
+	TopicSubject   *string           `json:"topic_subject,omitempty"`
+	EventsTopic    *string           `json:"events_topic,omitempty"`
+	Description    *string           `json:"description,omitempty"`
+	Labels         map[string]string `json:"labels,omitempty"`
+	CreatedAt      string            `json:"created_at"`
+	UpdatedAt      string            `json:"updated_at"`
+}
+
+type ListBusConversationsResponse struct {
+	Conversations []BusConversation `json:"conversations"`
+	Count         int               `json:"count"`
+}
+
+type ListBusConversationsFilter struct {
+	Namespace   string
+	Tenant      string
+	State       string
+	Participant string
+}
+
+type AppendBusConversationMessage struct {
+	Payload any               `json:"payload"`
+	Sender  *string           `json:"sender,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
+}
+
+type BusReplayMessage struct {
+	Partition  int32             `json:"partition"`
+	Offset     int64             `json:"offset"`
+	ProducedAt string            `json:"produced_at"`
+	Sender     *string           `json:"sender,omitempty"`
+	Payload    any               `json:"payload"`
+	Headers    map[string]string `json:"headers,omitempty"`
+}
+
+type BusReplayResponse struct {
+	ConversationID string             `json:"conversation_id"`
+	EventsTopic    string             `json:"events_topic"`
+	Messages       []BusReplayMessage `json:"messages"`
+	NextCursor     *string            `json:"next_cursor,omitempty"`
+	ExitReason     string             `json:"exit_reason"`
+}
+
+type ReplayBusConversationParams struct {
+	Limit  int
+	Cursor string
+}
+
+type TransitionBusConversationRequest struct {
+	TargetState string `json:"target_state"`
+}
+
+// =============================================================================
+// Phase 6a: Tool envelopes
+// =============================================================================
+
+type PostBusToolCall struct {
+	CallID        string            `json:"call_id"`
+	Tool          string            `json:"tool"`
+	Arguments     any               `json:"arguments"`
+	CorrelationID *string           `json:"correlation_id,omitempty"`
+	ReplyTo       *string           `json:"reply_to,omitempty"`
+	Sender        *string           `json:"sender,omitempty"`
+	Metadata      map[string]string `json:"metadata,omitempty"`
+	// Phase 6c: opt into pre-publish HITL gating. When true, the
+	// server parks the envelope under a BusApproval row and the
+	// post returns a PostBusToolCallOutcome with Parked != nil.
+	RequireApproval bool    `json:"require_approval,omitempty"`
+	ApprovalReason  *string `json:"approval_reason,omitempty"`
+	ApprovalTtlMs   *uint64 `json:"approval_ttl_ms,omitempty"`
+}
+
+type PostBusToolResult struct {
+	CallID        string            `json:"call_id"`
+	Status        string            `json:"status"` // "ok" | "error" | "canceled"
+	Output        any               `json:"output"`
+	ErrorMessage  *string           `json:"error_message,omitempty"`
+	CorrelationID *string           `json:"correlation_id,omitempty"`
+	Sender        *string           `json:"sender,omitempty"`
+	Metadata      map[string]string `json:"metadata,omitempty"`
+}
+
+type BusToolEnvelopeReceipt struct {
+	EventsTopic    string `json:"events_topic"`
+	ConversationID string `json:"conversation_id"`
+	CallID         string `json:"call_id"`
+	Partition      int32  `json:"partition"`
+	Offset         int64  `json:"offset"`
+	ProducedAt     string `json:"produced_at"`
+	Cursor         string `json:"cursor"`
+}
+
+type BusToolResult struct {
+	CallID        string            `json:"call_id"`
+	Status        string            `json:"status"`
+	Output        any               `json:"output"`
+	ErrorMessage  *string           `json:"error_message,omitempty"`
+	CorrelationID *string           `json:"correlation_id,omitempty"`
+	Sender        *string           `json:"sender,omitempty"`
+	Metadata      map[string]string `json:"metadata,omitempty"`
+	CreatedAt     string            `json:"created_at"`
+}
+
+type BusToolResultLookupParams struct {
+	ConversationID string
+	Cursor         string
+	TimeoutMs      uint64
+}
+
+type BusToolResultLookup struct {
+	CallID         string        `json:"call_id"`
+	EventsTopic    string        `json:"events_topic"`
+	ConversationID string        `json:"conversation_id"`
+	Partition      int32         `json:"partition"`
+	Offset         int64         `json:"offset"`
+	ProducedAt     string        `json:"produced_at"`
+	Result         BusToolResult `json:"result"`
+}
+
+// =============================================================================
+// Phase 6b: Stream envelopes
+// =============================================================================
+
+type PostBusStreamChunk struct {
+	StreamID string            `json:"stream_id"`
+	ChunkSeq int64             `json:"chunk_seq"`
+	Body     any               `json:"body"`
+	Sender   *string           `json:"sender,omitempty"`
+	Metadata map[string]string `json:"metadata,omitempty"`
+}
+
+type PostBusStreamEnd struct {
+	StreamID     string            `json:"stream_id"`
+	ChunkSeq     int64             `json:"chunk_seq"`
+	Status       string            `json:"status"` // "complete" | "aborted" | "error"
+	ErrorMessage *string           `json:"error_message,omitempty"`
+	Sender       *string           `json:"sender,omitempty"`
+	Metadata     map[string]string `json:"metadata,omitempty"`
+}
+
+type BusStreamEnvelopeReceipt struct {
+	EventsTopic    string `json:"events_topic"`
+	ConversationID string `json:"conversation_id"`
+	StreamID       string `json:"stream_id"`
+	ChunkSeq       int64  `json:"chunk_seq"`
+	Partition      int32  `json:"partition"`
+	Offset         int64  `json:"offset"`
+	ProducedAt     string `json:"produced_at"`
+	Cursor         string `json:"cursor"`
+}
+
+// =============================================================================
+// Phase 6c: HITL approvals
+// =============================================================================
+
+type BusApprovalParkedReceipt struct {
+	ApprovalID       string `json:"approval_id"`
+	Namespace        string `json:"namespace"`
+	Tenant           string `json:"tenant"`
+	ConversationID   string `json:"conversation_id"`
+	CorrelationToken string `json:"correlation_token"`
+	Status           string `json:"status"`
+	CreatedAt        string `json:"created_at"`
+	ExpiresAt        string `json:"expires_at"`
+}
+
+type BusApprovalView struct {
+	ApprovalID        string  `json:"approval_id"`
+	Namespace         string  `json:"namespace"`
+	Tenant            string  `json:"tenant"`
+	Kind              string  `json:"kind"`
+	ConversationID    *string `json:"conversation_id,omitempty"`
+	TaskID            *string `json:"task_id,omitempty"`
+	CorrelationToken  string  `json:"correlation_token"`
+	EnvelopeKind      string  `json:"envelope_kind"`
+	Status            string  `json:"status"`
+	Reason            *string `json:"reason,omitempty"`
+	CreatedAt         string  `json:"created_at"`
+	ExpiresAt         string  `json:"expires_at"`
+	DecidedBy         *string `json:"decided_by,omitempty"`
+	DecidedAt         *string `json:"decided_at,omitempty"`
+	DecisionNote      *string `json:"decision_note,omitempty"`
+	ProducedPartition *int32  `json:"produced_partition,omitempty"`
+	ProducedOffset    *int64  `json:"produced_offset,omitempty"`
+	ProducedAt        *string `json:"produced_at,omitempty"`
+	Envelope          any     `json:"envelope,omitempty"`
+}
+
+type ListBusApprovalsResponse struct {
+	Approvals []BusApprovalView `json:"approvals"`
+	Count     int               `json:"count"`
+}
+
+type ListBusApprovalsFilter struct {
+	Status         string
+	ConversationID string
+}
+
+type BusApprovalDecision struct {
+	DecidedBy    string  `json:"decided_by"`
+	DecisionNote *string `json:"decision_note,omitempty"`
+}
+
+type BusApprovalDecisionResponse struct {
+	Approval BusApprovalView         `json:"approval"`
+	Receipt  *BusToolEnvelopeReceipt `json:"receipt,omitempty"`
+}
+
+// =============================================================================
+// Sum type for PostBusToolCall — produced vs parked
+// =============================================================================
+
+// PostBusToolCallOutcome covers both branches of `PostBusToolCall`.
+// Exactly one of `Produced` or `Parked` is non-nil. When `Parked`
+// is set the call is awaiting a Phase 6c HITL decision. Go has no
+// native sum type so this is the idiomatic encoding — callers
+// branch on `if outcome.Parked != nil { ... }`.
+type PostBusToolCallOutcome struct {
+	Produced *BusToolEnvelopeReceipt
+	Parked   *BusApprovalParkedReceipt
+}
+
+// WasParked returns true iff the server parked the envelope under a
+// pending approval row instead of producing to Kafka.
+func (o *PostBusToolCallOutcome) WasParked() bool {
+	return o != nil && o.Parked != nil
+}
+
+// =============================================================================
+// SSE consumer DTOs — bus subscription tail + stream-id tail
+// =============================================================================
+
+// BusConsumedMessage mirrors the wire shape of `acteon_bus::BusMessage`
+// without taking a dependency on the bus crate. Returned by
+// `Client.ConsumeBusSubscription` for each Kafka record.
+type BusConsumedMessage struct {
+	Topic     string            `json:"topic"`
+	Key       string            `json:"key,omitempty"`
+	Payload   json.RawMessage   `json:"payload,omitempty"`
+	Headers   map[string]string `json:"headers,omitempty"`
+	Partition *int32            `json:"partition,omitempty"`
+	Offset    *int64            `json:"offset,omitempty"`
+	Timestamp *string           `json:"timestamp,omitempty"`
+}
+
+// BusConsumeItemKind tags the variant in BusConsumeItem.
+type BusConsumeItemKind string
+
+const (
+	BusConsumeKindMessage     BusConsumeItemKind = "message"
+	BusConsumeKindError       BusConsumeItemKind = "error"
+	BusConsumeKindKeepAlive   BusConsumeItemKind = "keepalive"
+	BusConsumeKindReconnected BusConsumeItemKind = "reconnected"
+)
+
+// BusConsumeItem is the per-record yield from ConsumeBusSubscription.
+// Inspect Kind, then the matching field. KeepAlive carries no extra
+// data and lets callers use the SSE comment frame as a liveness
+// signal. Reconnected is only emitted when the consumer is configured
+// with a ReconnectConfig and a reconnect succeeded — subsequent
+// messages may have gaps versus the pre-disconnect cursor.
+type BusConsumeItem struct {
+	Kind      BusConsumeItemKind
+	Message   *BusConsumedMessage
+	Error     string
+	BackoffMs int64
+	Attempt   uint32
+}
+
+// ReconnectConfig configures the best-effort reconnect wrapper around
+// ConsumeBusSubscription. Reconnect always resumes from `latest`
+// because Phase 1 has no per-partition offset seek; workloads that
+// need lossless delivery should use Phase 2 durable subscriptions
+// with manual ack instead.
+//
+// Zero-value defaults: 500ms initial backoff, 30s cap, infinite
+// retries. The attempt counter resets after a successful read so a
+// long-stable connection isn't penalised for a single later blip.
+type ReconnectConfig struct {
+	InitialBackoffMs int64
+	MaxBackoffMs     int64
+	// MaxAttempts of 0 means "retry forever".
+	MaxAttempts uint32
+}
+
+// StreamChunkEnvelope mirrors `acteon_core::StreamChunk`.
+type StreamChunkEnvelope struct {
+	StreamID  string            `json:"stream_id"`
+	ChunkSeq  int64             `json:"chunk_seq"`
+	Body      json.RawMessage   `json:"body,omitempty"`
+	Sender    string            `json:"sender,omitempty"`
+	Metadata  map[string]string `json:"metadata,omitempty"`
+	CreatedAt string            `json:"created_at,omitempty"`
+}
+
+// StreamEndEnvelope mirrors `acteon_core::StreamEnd`. Status is one
+// of "complete", "aborted", or "error".
+type StreamEndEnvelope struct {
+	StreamID     string            `json:"stream_id"`
+	ChunkSeq     int64             `json:"chunk_seq"`
+	Status       string            `json:"status"`
+	ErrorMessage string            `json:"error_message,omitempty"`
+	Sender       string            `json:"sender,omitempty"`
+	Metadata     map[string]string `json:"metadata,omitempty"`
+	CreatedAt    string            `json:"created_at,omitempty"`
+}
+
+// BusStreamItemKind tags the variant in BusStreamItem.
+type BusStreamItemKind string
+
+const (
+	BusStreamKindChunk     BusStreamItemKind = "chunk"
+	BusStreamKindEnd       BusStreamItemKind = "end"
+	BusStreamKindError     BusStreamItemKind = "error"
+	BusStreamKindKeepAlive BusStreamItemKind = "keepalive"
+)
+
+// BusStreamItem is the per-record yield from ConsumeBusStream. The
+// underlying channel closes automatically once an End item is
+// observed.
+type BusStreamItem struct {
+	Kind  BusStreamItemKind
+	Chunk *StreamChunkEnvelope
+	End   *StreamEndEnvelope
+	Error string
+}

@@ -1,12 +1,56 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use sqlx::PgPool;
 
+use acteon_audit::analytics::AnalyticsStore;
+use acteon_audit::cursor::{AuditCursor, CursorKind};
 use acteon_audit::error::AuditError;
 use acteon_audit::record::{AuditPage, AuditQuery, AuditRecord};
 use acteon_audit::store::AuditStore;
 
+use crate::analytics::PostgresAnalyticsStore;
 use crate::config::PostgresAuditConfig;
 use crate::migrations;
+
+/// Build `PgConnectOptions` from a [`PostgresAuditConfig`], applying SSL
+/// settings when configured.
+fn build_audit_connect_options(
+    config: &PostgresAuditConfig,
+) -> Result<sqlx::postgres::PgConnectOptions, AuditError> {
+    let mut options: sqlx::postgres::PgConnectOptions = config
+        .url
+        .parse()
+        .map_err(|e: sqlx::Error| AuditError::Storage(e.to_string()))?;
+
+    if let Some(ref mode) = config.ssl_mode {
+        let ssl_mode = match mode.as_str() {
+            "disable" => sqlx::postgres::PgSslMode::Disable,
+            "prefer" => sqlx::postgres::PgSslMode::Prefer,
+            "require" => sqlx::postgres::PgSslMode::Require,
+            "verify-ca" => sqlx::postgres::PgSslMode::VerifyCa,
+            "verify-full" => sqlx::postgres::PgSslMode::VerifyFull,
+            other => {
+                return Err(AuditError::Storage(format!("unknown ssl_mode: {other}")));
+            }
+        };
+        options = options.ssl_mode(ssl_mode);
+    }
+
+    if let Some(ref path) = config.ssl_root_cert {
+        options = options.ssl_root_cert(path);
+    }
+
+    if let Some(ref path) = config.ssl_cert {
+        options = options.ssl_client_cert(path);
+    }
+
+    if let Some(ref path) = config.ssl_key {
+        options = options.ssl_client_key(path);
+    }
+
+    Ok(options)
+}
 
 /// Postgres-backed audit store using `sqlx`.
 pub struct PostgresAuditStore {
@@ -17,7 +61,9 @@ pub struct PostgresAuditStore {
 impl PostgresAuditStore {
     /// Create a new store, connecting to Postgres and running migrations.
     pub async fn new(config: &PostgresAuditConfig) -> Result<Self, AuditError> {
-        let pool = PgPool::connect(&config.url)
+        let connect_options = build_audit_connect_options(config)?;
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_with(connect_options)
             .await
             .map_err(|e| AuditError::Storage(e.to_string()))?;
 
@@ -29,6 +75,16 @@ impl PostgresAuditStore {
             pool,
             table: format!("{}audit", config.prefix),
         })
+    }
+
+    /// Access the connection pool.
+    pub fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
+    /// Access the table name.
+    pub fn table_name(&self) -> &str {
+        &self.table
     }
 
     /// Create from an existing pool (useful for testing).
@@ -54,13 +110,19 @@ impl AuditStore for PostgresAuditStore {
                 verdict, matched_rule, outcome,
                 action_payload, verdict_details, outcome_details, metadata,
                 dispatched_at, completed_at, duration_ms, expires_at,
-                caller_id, auth_method
+                caller_id, auth_method,
+                record_hash, previous_hash, sequence_number,
+                attachment_metadata,
+                signature, signer_id, kid, canonical_hash
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7,
                 $8, $9, $10,
                 $11, $12, $13, $14,
                 $15, $16, $17, $18,
-                $19, $20
+                $19, $20,
+                $21, $22, $23,
+                $24,
+                $25, $26, $27, $28
             )
             ",
             self.table
@@ -68,6 +130,8 @@ impl AuditStore for PostgresAuditStore {
 
         #[allow(clippy::cast_possible_wrap)]
         let duration = entry.duration_ms as i64;
+        #[allow(clippy::cast_possible_wrap)]
+        let sequence_number = entry.sequence_number.map(|n| n as i64);
 
         sqlx::query(&sql)
             .bind(&entry.id)
@@ -90,6 +154,14 @@ impl AuditStore for PostgresAuditStore {
             .bind(entry.expires_at)
             .bind(&entry.caller_id)
             .bind(&entry.auth_method)
+            .bind(&entry.record_hash)
+            .bind(&entry.previous_hash)
+            .bind(sequence_number)
+            .bind(serde_json::Value::Array(entry.attachment_metadata.clone()))
+            .bind(&entry.signature)
+            .bind(&entry.signer_id)
+            .bind(&entry.kid)
+            .bind(&entry.canonical_hash)
             .execute(&self.pool)
             .await
             .map_err(|e| AuditError::Storage(e.to_string()))?;
@@ -124,34 +196,101 @@ impl AuditStore for PostgresAuditStore {
         Ok(row.map(Into::into))
     }
 
+    #[allow(clippy::too_many_lines, clippy::similar_names)]
     async fn query(&self, query: &AuditQuery) -> Result<AuditPage, AuditError> {
         let limit = query.effective_limit();
-        let offset = query.effective_offset();
-        let (where_clause, binds, from_idx, to_idx, bind_idx) = build_where_clause(query);
+        let (mut where_clause, binds, from_idx, to_idx, mut bind_idx) = build_where_clause(query);
 
-        // Count query.
-        let count_sql = format!("SELECT COUNT(*) as cnt FROM {} {where_clause}", self.table);
-        let mut count_q = sqlx::query_scalar::<_, i64>(&count_sql);
-        for b in &binds {
-            count_q = count_q.bind(b);
-        }
-        if from_idx.is_some() {
-            count_q = count_q.bind(query.from.unwrap());
-        }
-        if to_idx.is_some() {
-            count_q = count_q.bind(query.to.unwrap());
+        // Decode the cursor up-front so we can fail fast on bad input.
+        let cursor = query
+            .cursor
+            .as_deref()
+            .map(AuditCursor::decode)
+            .transpose()?;
+
+        // Append the keyset condition for the cursor, if any.
+        let cursor_dispatched_idx;
+        let cursor_id_idx;
+        let cursor_seq_idx;
+        if let Some(ref cursor) = cursor {
+            let prefix = if where_clause.is_empty() {
+                "WHERE"
+            } else {
+                "AND"
+            };
+            match cursor.kind {
+                CursorKind::Ts => {
+                    if query.sort_by_sequence_asc {
+                        return Err(AuditError::Serialization(
+                            "cursor kind 'ts' does not match sort_by_sequence_asc=true".into(),
+                        ));
+                    }
+                    let ts_idx = bind_idx;
+                    let id_idx = bind_idx + 1;
+                    where_clause = format!(
+                        "{where_clause} {prefix} (dispatched_at, id) < (${ts_idx}, ${id_idx})"
+                    );
+                    cursor_dispatched_idx = Some(ts_idx);
+                    cursor_id_idx = Some(id_idx);
+                    cursor_seq_idx = None;
+                    bind_idx += 2;
+                }
+                CursorKind::Seq => {
+                    if !query.sort_by_sequence_asc {
+                        return Err(AuditError::Serialization(
+                            "cursor kind 'seq' requires sort_by_sequence_asc=true".into(),
+                        ));
+                    }
+                    let seq_idx = bind_idx;
+                    where_clause = format!("{where_clause} {prefix} sequence_number > ${seq_idx}");
+                    cursor_dispatched_idx = None;
+                    cursor_id_idx = None;
+                    cursor_seq_idx = Some(seq_idx);
+                    bind_idx += 1;
+                }
+            }
+        } else {
+            cursor_dispatched_idx = None;
+            cursor_id_idx = None;
+            cursor_seq_idx = None;
         }
 
-        let total = count_q
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| AuditError::Storage(e.to_string()))?;
+        // Count query — only run when no cursor is present (offset path).
+        // Cursor pagination intentionally skips the count to keep page
+        // latency O(limit).
+        let total = if cursor.is_none() {
+            let count_sql = format!("SELECT COUNT(*) as cnt FROM {} {where_clause}", self.table);
+            let mut count_q = sqlx::query_scalar::<_, i64>(&count_sql);
+            for b in &binds {
+                count_q = count_q.bind(b);
+            }
+            if from_idx.is_some() {
+                count_q = count_q.bind(query.from.unwrap());
+            }
+            if to_idx.is_some() {
+                count_q = count_q.bind(query.to.unwrap());
+            }
+            let count = count_q
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| AuditError::Storage(e.to_string()))?;
+            #[allow(clippy::cast_sign_loss)]
+            let count = count as u64;
+            Some(count)
+        } else {
+            None
+        };
 
         // Data query.
+        let order_clause = if query.sort_by_sequence_asc {
+            "ORDER BY sequence_number ASC NULLS LAST, id ASC"
+        } else {
+            "ORDER BY dispatched_at DESC, id DESC"
+        };
         let limit_idx = bind_idx;
         let offset_idx = bind_idx + 1;
         let data_sql = format!(
-            "SELECT * FROM {} {where_clause} ORDER BY dispatched_at DESC LIMIT ${limit_idx} OFFSET ${offset_idx}",
+            "SELECT * FROM {} {where_clause} {order_clause} LIMIT ${limit_idx} OFFSET ${offset_idx}",
             self.table
         );
 
@@ -165,24 +304,72 @@ impl AuditStore for PostgresAuditStore {
         if to_idx.is_some() {
             data_q = data_q.bind(query.to.unwrap());
         }
-        data_q = data_q.bind(i64::from(limit));
-        data_q = data_q.bind(i64::from(offset));
+        if let Some(ref cursor) = cursor {
+            match cursor.kind {
+                CursorKind::Ts => {
+                    let ts = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(
+                        cursor.dispatched_at_ms.unwrap_or(0),
+                    )
+                    .unwrap_or_default();
+                    data_q = data_q.bind(ts);
+                    data_q = data_q.bind(cursor.id.clone().unwrap_or_default());
+                }
+                CursorKind::Seq => {
+                    #[allow(clippy::cast_possible_wrap)]
+                    let seq = cursor.sequence_number.unwrap_or(0) as i64;
+                    data_q = data_q.bind(seq);
+                }
+            }
+        }
+        let _ = (cursor_dispatched_idx, cursor_id_idx, cursor_seq_idx);
+        // Fetch limit + 1 so we can detect whether another page exists
+        // without returning an empty trailing cursor to the caller.
+        data_q = data_q.bind(i64::from(limit) + 1);
+        // Cursor pagination always uses offset 0; offset is only used in
+        // the legacy non-cursor path.
+        let offset_value = if cursor.is_some() {
+            0
+        } else {
+            query.effective_offset()
+        };
+        data_q = data_q.bind(i64::from(offset_value));
 
         let rows: Vec<AuditRow> = data_q
             .fetch_all(&self.pool)
             .await
             .map_err(|e| AuditError::Storage(e.to_string()))?;
 
-        let records = rows.into_iter().map(Into::into).collect();
+        let mut records: Vec<AuditRecord> = rows.into_iter().map(Into::into).collect();
+        let has_more = records.len() > limit as usize;
+        if has_more {
+            records.truncate(limit as usize);
+        }
 
-        #[allow(clippy::cast_sign_loss)]
-        let total = total as u64;
+        let next_cursor = if has_more {
+            records
+                .last()
+                .map(|rec| {
+                    if query.sort_by_sequence_asc {
+                        AuditCursor::from_sequence(rec.sequence_number.unwrap_or(0), rec.id.clone())
+                    } else {
+                        AuditCursor::from_timestamp(
+                            rec.dispatched_at.timestamp_millis(),
+                            rec.id.clone(),
+                        )
+                    }
+                })
+                .map(|c| c.encode())
+                .transpose()?
+        } else {
+            None
+        };
 
         Ok(AuditPage {
             records,
             total,
             limit,
-            offset,
+            offset: offset_value,
+            next_cursor,
         })
     }
 
@@ -198,6 +385,13 @@ impl AuditStore for PostgresAuditStore {
             .map_err(|e| AuditError::Storage(e.to_string()))?;
 
         Ok(result.rows_affected())
+    }
+
+    fn analytics(&self) -> Option<Arc<dyn AnalyticsStore>> {
+        Some(Arc::new(PostgresAnalyticsStore::new(
+            self.pool.clone(),
+            self.table.clone(),
+        )))
     }
 }
 
@@ -217,6 +411,8 @@ fn build_where_clause(query: &AuditQuery) -> (String, Vec<String>, Option<u32>, 
         (&query.matched_rule, "matched_rule"),
         (&query.caller_id, "caller_id"),
         (&query.chain_id, "chain_id"),
+        (&query.signer_id, "signer_id"),
+        (&query.kid, "kid"),
     ];
 
     for (value, col) in fields {
@@ -277,12 +473,29 @@ struct AuditRow {
     expires_at: Option<chrono::DateTime<chrono::Utc>>,
     caller_id: String,
     auth_method: String,
+    record_hash: Option<String>,
+    previous_hash: Option<String>,
+    sequence_number: Option<i64>,
+    attachment_metadata: serde_json::Value,
+    #[sqlx(default)]
+    signature: Option<String>,
+    #[sqlx(default)]
+    signer_id: Option<String>,
+    #[sqlx(default)]
+    kid: Option<String>,
+    #[sqlx(default)]
+    canonical_hash: Option<String>,
 }
 
 impl From<AuditRow> for AuditRecord {
     fn from(row: AuditRow) -> Self {
         #[allow(clippy::cast_sign_loss)]
         let duration_ms = row.duration_ms as u64;
+
+        let attachment_metadata = match row.attachment_metadata {
+            serde_json::Value::Array(arr) => arr,
+            _ => Vec::new(),
+        };
 
         Self {
             id: row.id,
@@ -305,6 +518,15 @@ impl From<AuditRow> for AuditRecord {
             expires_at: row.expires_at,
             caller_id: row.caller_id,
             auth_method: row.auth_method,
+            record_hash: row.record_hash,
+            previous_hash: row.previous_hash,
+            #[allow(clippy::cast_sign_loss)]
+            sequence_number: row.sequence_number.map(|n| n as u64),
+            attachment_metadata,
+            signature: row.signature,
+            signer_id: row.signer_id,
+            kid: row.kid,
+            canonical_hash: row.canonical_hash,
         }
     }
 }

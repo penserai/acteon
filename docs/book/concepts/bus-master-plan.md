@@ -1,0 +1,169 @@
+# Agentic Message Bus — Master Plan
+
+This doc is the north star for converting Acteon into a message bus specialized for
+agentic orchestration. It locks architectural decisions, lays out all 9 phases, and
+documents the model. Phase-level progress links live at the bottom.
+
+> **Feature gate:** the bus feature is compiled behind `acteon-server/bus` Cargo
+> feature (opt-in, same as `swarm`). Builds without the feature compile unchanged
+> and respond to `/v1/topics` / `/v1/publish` / `/v1/subscribe/*` with `503`.
+
+## Problem framing
+
+Acteon already has ~60–70 % of a bus latent in its machinery: an action dispatch
+pipeline with rules, quotas, audit, retries, DLQ, circuit breakers, signing, SSE
+streaming, and 5 polyglot SDKs. What it lacks for agentic workloads is durable
+topic-based subscriptions, typed envelopes, agent-as-actor primitives,
+conversation threading, and streaming replies.
+
+Rather than reinvent Kafka, we **use Kafka as the transport/canonical log** and
+build Acteon-native primitives on top for the agentic semantics Kafka doesn't
+care about.
+
+## Locked architectural decisions
+
+1. **Kafka is canonical.** Messages live on Kafka topics. Acteon's audit store is
+   a searchable projection, not a parallel source of truth.
+2. **Schema registry is Acteon-native.** JSON Schema in V1; Avro later. No
+   dependency on Confluent Schema Registry.
+3. **Agent inbox model.** Agents share one inbox topic keyed by `agent_id` rather
+   than owning a topic each. Better partition utilization; simpler ACLs.
+4. **Conversations** are a state object. Messages for a conversation land on a
+   shared `conversations.events` topic partitioned by `conversation_id` so Kafka
+   gives us per-conversation ordering for free.
+5. **HITL gates are pre-publish.** Approvals park the message in Acteon state
+   (not Kafka) until approved, then commit via a Kafka transaction. This is the
+   hardest corner; see "Exactly-once edge" below.
+6. **Streaming = per-chunk Kafka records.** `stream_id` + `chunk_seq` + terminal
+   marker. One primitive for LLM tokens, tool-result streams, partial updates.
+7. **Actions and Chains stay.** Boundary:
+   - `POST /v1/dispatch` = provider-executed action (unchanged).
+   - `POST /v1/publish` = bus-only event (no provider). Both flow through rules
+     and quotas; only dispatch reaches the executor.
+8. **Feature-gated.** `bus` Cargo feature; off by default.
+
+## Kafka integration model
+
+| Concept            | Kafka owns                   | Acteon owns                                              |
+|--------------------|------------------------------|----------------------------------------------------------|
+| Transport          | Producer / broker / consumer | Validation, rules, quotas, HITL gate at publish edge     |
+| Partition assignment | Consumer group rebalancing | Subscription **identity** (name, ACL, schema binding)    |
+| Offsets            | `__consumer_offsets`         | Lag reporting, replay UX                                 |
+| Retention          | `retention.ms` / `retention.bytes` | Policy metadata on `Topic` objects                 |
+| Schema             | —                            | `Schema` objects + validation at publish edge            |
+| Identity / ACL     | (optionally via SASL)        | API-key auth, tenant scoping, per-topic ACL             |
+
+Rule of thumb: **if Kafka has a built-in primitive, we use it**; if Kafka is
+agnostic (agent identity, schema semantics, conversation grouping), Acteon owns
+it.
+
+## Phased roadmap
+
+| Phase | Weeks | Scope                                                                                          |
+|-------|-------|------------------------------------------------------------------------------------------------|
+| **1** | 1–3   | `acteon-bus` crate (rdkafka). `Topic` type + CRUD. `POST /v1/publish`. `GET /v1/subscribe/{id}` SSE bridge. `bus` Cargo feature. Docker Kafka profile. |
+| 2     | 4–5   | `Subscription` + `ConsumerGroup` first-class types. Ack endpoint. DLQ routing. `/lag` endpoint. |
+| 3     | 6–7   | JSON Schema registry. Publish-edge validation. SDK codecs.                                     |
+| 4     | 8–9   | `Agent` type — identity, capabilities, heartbeat, inbox = shared topic keyed by `agent_id`.    |
+| 5     | 10–11 | `Conversation` type. Per-conversation partitioning on shared events topic. Thread UI.          |
+| 6     | 12–13 | `ToolCall` / `ToolResult` envelopes. `correlation_id` / `reply_to`. Streaming chunks. HITL tool-call approvals. |
+| 7     | 14–15 | UI: Topics, Subscriptions, Agents, Conversations, Lag dashboards. Metrics.                     |
+| 8     | 16–17 | 5-SDK parity for bus surface (Rust, Python, Node, Go, Java).                                    |
+| 9     | 18    | Docs, migration guide, example multi-agent app, benchmarks vs raw Kafka.                       |
+| 10    | 19–22 | Atomic HITL via transactional producer + outbox. Authenticated agent identity (derive from API-key grant; replace operator-asserted `as_agent`). |
+
+## Exactly-once edge
+
+The pre-publish HITL gate introduces a "park then produce" window where intent
+and publication must commit atomically. Design for Phase 5:
+
+1. On publish with `require_approval`: write an `unpublished_message` row keyed
+   by `approval_id` under an existing transaction with the approval row.
+2. Approval handler, on approve, produces via a Kafka transaction that includes
+   deleting the `unpublished_message` row (via transactional outbox pattern —
+   we emit a companion "outbox-committed" record and have a cleanup worker
+   reconcile).
+3. Idempotent producer (`enable.idempotence=true`) + per-`(tenant,message_id)`
+   dedup on Kafka side via a hash-based approach.
+
+This section is deliberately deferred to Phase 5 design; Phase 1 does not need
+transactional producers.
+
+## Migration story
+
+Phase 1 does not migrate anything. Existing users keep using `/v1/dispatch` with
+no behavior change. The bus is additive.
+
+Long-term, once all phases ship, a migration story emerges:
+- **Fan-out dispatches** that multiple consumers need → rewrite as `Topic` +
+  subscribers.
+- **Chains** that are really event-driven pipelines → rewrite as topic-to-topic
+  flows with agents subscribing.
+- **Tool-calling apps** that use raw dispatch → rewrite as `ToolCall` envelopes
+  with typed responses.
+
+Migration will be opt-in, per-feature, never forced.
+
+## Phase status
+
+- **Phase 1** — shipped — see [phase-1 feature doc](../features/bus-phase-1.md)
+- **Phase 2** — shipped — see [phase-2 feature doc](../features/bus-phase-2.md)
+- **Phase 3** — shipped — see [phase-3 feature doc](../features/bus-phase-3.md)
+- **Phase 4** — shipped — see [phase-4 feature doc](../features/bus-phase-4.md)
+- **Phase 5** — shipped — see [phase-5 feature doc](../features/bus-phase-5.md)
+- **Phase 6a** (typed tool envelopes) — shipped — see [phase-6a feature doc](../features/bus-phase-6a.md)
+- **Phase 6b** (streaming chunks) — shipped — see [phase-6b feature doc](../features/bus-phase-6b.md)
+- **Phase 6c** (HITL pre-publish approvals) — shipped — see [phase-6c feature doc](../features/bus-phase-6c.md)
+- **Phase 7** (Admin UI) — shipped — see [phase-7 feature doc](../features/bus-phase-7.md)
+- **Phase 8** (5-SDK polyglot parity) — shipped — see [phase-8 feature doc](../features/bus-phase-8.md)
+- **Phase 9** (docs, migration guide, multi-agent demo, benchmarks) — shipped — see [phase-9 feature doc](../features/bus-phase-9.md)
+- **Phase 10** — shipped. Two scope items:
+  1. **HITL state machine + reconciler.**
+     `BusApprovalStatus::Approving` between `Pending` and
+     `Approved` closes the V1 *visibility* gap — a successful
+     produce + failed CAS leaves the row visibly mid-flight
+     with audit metadata, not stuck-pending. A background
+     reconciler (see `crates/server/src/bus_reconciler.rs`)
+     periodically retries stuck `Approving` rows so the
+     operator doesn't have to. Idempotent producer + consumer-
+     side `call_id` dedup keep the topic clean across retries.
+     A Kafka transactional producer for full *atomicity*
+     remains a follow-up tracked under
+     [Exactly-once edge](#exactly-once-edge); Phase 10 closes
+     the visibility and liveness gaps without it.
+  2. **Authenticated agent identity.** The `as_agent` query
+     parameter is gone. Bus agent identity is derived from the
+     API-key grant: each `Grant` carries an optional `agent_id`
+     that's stamped on envelopes posted under that grant's
+     `(tenant, namespace)` scope. Multiple grants can bind the
+     same caller to different identities under different scopes;
+     conflicting bindings on the same scope are rejected as
+     operator misconfig. New operators should start with the
+[agentic bus user guide](agentic-bus.md); existing dispatch + chain
+users should consult the [migration guide](../guides/agentic-bus-migration.md)
+for the cases where moving onto the bus is the right call.
+
+Polish items that landed alongside Phase 10:
+
+- `KeyKind::PendingBusApprovals` index — populated on park,
+  cleared on Pending → Approving / Rejected transitions. The
+  list endpoint with `status=pending` (the operator-actionable
+  default) now scans the index instead of the full approval log.
+- `bus_kafka_e2e` Criterion bench against the real
+  `KafkaBackend`. Skips with a clear warning when
+  `ACTEON_BENCH_KAFKA` isn't set; reports wall-clock numbers
+  including broker round-trip when it is.
+
+Kafka transactional producer (defensive depth) — **shipped**:
+
+- `[bus.kafka] transactional_id = "..."` opts the bus into
+  full Kafka transactions: every produce is wrapped in
+  begin/commit, with abort-on-error. The broker tracks
+  per-`transactional.id` epochs and fences zombie producers,
+  giving cross-restart guarantees that idempotent-mode-alone
+  can't provide. Off by default — consumer-side `call_id`
+  dedup makes the gap invisible in practice, so this is
+  defensive depth for workloads that need exactly-once
+  semantics independent of consumer behavior. See
+  [Phase 6c trust model](../features/bus-phase-6c.md) for
+  when to flip the knob.

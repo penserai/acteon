@@ -1,0 +1,57 @@
+# Sample Alertmanager config for testing the importer.
+#
+# Usage:
+#   acteon import alertmanager -c examples/alertmanager-sample.yml --dry-run
+
+global:
+  smtp_smarthost: "mail.example.com:587"
+  smtp_from: "alerts@example.com"
+  slack_api_url: "https://hooks.slack.com/services/T00/B00/xxx"
+
+route:
+  receiver: default-slack
+  group_by: [alertname, cluster]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - match:
+        severity: critical
+      receiver: pagerduty-critical
+    - match:
+        severity: warning
+      receiver: slack-warnings
+      group_by: [alertname]
+      group_wait: 1m
+    - match_re:
+        service: "web-.*"
+      receiver: webhook-web
+    - match:
+        team: infra
+      match_re:
+        env: "prod|staging"
+      receiver: email-infra
+
+receivers:
+  - name: default-slack
+    slack_configs:
+      - channel: "#alerts"
+  - name: pagerduty-critical
+    pagerduty_configs:
+      - routing_key: "abc123def456"
+  - name: slack-warnings
+    slack_configs:
+      - channel: "#warnings"
+  - name: webhook-web
+    webhook_configs:
+      - url: "https://hooks.example.com/web-alerts"
+  - name: email-infra
+    email_configs:
+      - to: "infra-oncall@example.com"
+
+inhibit_rules:
+  - source_match:
+      severity: critical
+    target_match:
+      severity: warning
+    equal: [alertname, cluster]

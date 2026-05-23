@@ -1,8 +1,8 @@
 import { useCallback, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
-import { XCircle } from 'lucide-react'
-import { useChainDetail, useCancelChain } from '../api/hooks/useChains'
+import { XCircle, ArrowUpRight, GitBranch, Layers } from 'lucide-react'
+import { useChainDetail, useCancelChain, useChainDag } from '../api/hooks/useChains'
 import { useEntityStream } from '../api/hooks/useEntityStream'
 import { PageHeader } from '../components/layout/PageHeader'
 import { Badge } from '../components/ui/Badge'
@@ -17,12 +17,19 @@ import styles from './ChainDetail.module.css'
 
 export function ChainDetail() {
   const { chainId } = useParams<{ chainId: string }>()
-  const { data: chain, isLoading } = useChainDetail(chainId)
+  const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const ns = searchParams.get('namespace') ?? ''
+  const tenant = searchParams.get('tenant') ?? ''
+  const expandAll = searchParams.get('expand') === 'all'
+  const { data: chain, isLoading } = useChainDetail(chainId, { namespace: ns, tenant })
   const cancel = useCancelChain()
   const { toast } = useToast()
   const qc = useQueryClient()
   const [cancelOpen, setCancelOpen] = useState(false)
   const [selectedStep, setSelectedStep] = useState<string | null>(null)
+
+  const { data: dag } = useChainDag(chainId, { namespace: ns, tenant })
 
   const handleStreamEvent = useCallback(() => {
     void qc.invalidateQueries({ queryKey: ['chain', chainId] })
@@ -31,9 +38,9 @@ export function ChainDetail() {
   useEntityStream({
     entityType: 'chain',
     entityId: chainId,
-    namespace: chain?.namespace,
-    tenant: chain?.tenant,
-    enabled: !!chainId && !!chain?.namespace && !!chain?.tenant,
+    namespace: ns,
+    tenant,
+    enabled: !!chainId && !!ns && !!tenant,
     onEvent: handleStreamEvent,
   })
 
@@ -50,7 +57,7 @@ export function ChainDetail() {
 
   const handleCancel = () => {
     cancel.mutate(
-      { chainId: chain.chain_id, namespace: '', tenant: '' },
+      { chainId: chain.chain_id, namespace: ns, tenant },
       {
         onSuccess: () => { toast('success', 'Chain cancelled'); setCancelOpen(false) },
         onError: (e) => toast('error', 'Cancel failed', (e as Error).message),
@@ -66,7 +73,7 @@ export function ChainDetail() {
         actions={
           <div className={styles.headerActions}>
             <Badge size="md">{chain.status}</Badge>
-            {chain.status === 'running' && (
+            {(chain.status === 'running' || chain.status === 'waiting_sub_chain' || chain.status === 'waiting_parallel') && (
               <Button
                 variant="danger"
                 size="sm"
@@ -79,6 +86,19 @@ export function ChainDetail() {
           </div>
         }
       />
+
+      {chain.parent_chain_id && (
+        <div className={styles.parentChainLink}>
+          <ArrowUpRight className="h-4 w-4 text-gray-500" />
+          <span className="text-sm text-gray-500">Parent Chain:</span>
+          <Link
+            to={`/chains/${chain.parent_chain_id}`}
+            className="text-sm text-primary-400 hover:underline"
+          >
+            {chain.parent_chain_id.slice(0, 12)}...
+          </Link>
+        </div>
+      )}
 
       {chain.execution_path.length > 0 && (
         <div className={styles.executionPath}>
@@ -96,7 +116,13 @@ export function ChainDetail() {
         <p className={styles.expiresMessage}>Expires: {formatCountdown(chain.expires_at)}</p>
       )}
 
-      <ChainDAG chain={chain} onSelectStep={setSelectedStep} />
+      <ChainDAG
+        chain={chain}
+        dag={dag}
+        onSelectStep={setSelectedStep}
+        onNavigateChain={(id) => navigate(`/chains/${id}`)}
+        defaultExpandAll={expandAll}
+      />
 
       {step && (
         <div className={styles.stepDetailCard}>
@@ -107,8 +133,57 @@ export function ChainDetail() {
           <div className={styles.stepMetadata}>
             <div><span className="text-gray-500">Provider:</span> {step.provider}</div>
             {step.completed_at && <div><span className="text-gray-500">Completed:</span> {absoluteTime(step.completed_at)}</div>}
+            {step.attempt !== undefined && step.max_retries !== undefined && step.attempt > 1 && (
+              <div>
+                <span className="text-gray-500">Attempt:</span>{' '}
+                <span className={`inline-flex items-center gap-1 text-xs font-medium px-1.5 py-0.5 rounded ${step.status === 'failed' ? 'bg-red-500/15 text-red-400' : 'bg-amber-500/15 text-amber-400'}`}>
+                  &#x21BB; {step.attempt} / {step.max_retries + 1}
+                </span>
+              </div>
+            )}
             {step.error && <div className={styles.stepError}><span className="text-gray-500">Error:</span> {step.error}</div>}
           </div>
+          {step.sub_chain && (
+            <div className={styles.subChainInfo}>
+              <GitBranch className="h-4 w-4 text-primary-400" />
+              <span className="text-sm text-gray-500">Sub-chain:</span>
+              <span className="text-sm font-medium">{step.sub_chain}</span>
+              {step.child_chain_id && (
+                <Link
+                  to={`/chains/${step.child_chain_id}`}
+                  className="text-sm text-primary-400 hover:underline ml-2"
+                >
+                  View child chain
+                </Link>
+              )}
+            </div>
+          )}
+          {step.parallel_sub_steps && step.parallel_sub_steps.length > 0 && (
+            <div className={styles.parallelStepsSection}>
+              <div className={styles.parallelStepsHeader}>
+                <Layers className="h-4 w-4 text-primary-400" />
+                <span className="text-sm text-gray-500">Parallel sub-steps</span>
+              </div>
+              <ul className={styles.parallelStepsList}>
+                {step.parallel_sub_steps.map((sub) => (
+                  <li key={sub.name} className={styles.parallelStepItem}>
+                    <div className={styles.parallelStepItemHeader}>
+                      <span className="text-sm font-medium">{sub.name}</span>
+                      <Badge size="sm">{sub.status}</Badge>
+                    </div>
+                    {sub.error && (
+                      <p className={styles.parallelStepError}>{sub.error}</p>
+                    )}
+                    {sub.response_body && (
+                      <div className={styles.responseSection}>
+                        <JsonViewer data={sub.response_body} collapsed />
+                      </div>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           {step.response_body && (
             <div>
               <span className={styles.responseLabel}>Response:</span>

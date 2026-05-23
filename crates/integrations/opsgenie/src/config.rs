@@ -1,0 +1,343 @@
+use acteon_crypto::{ExposeSecret, SecretString};
+
+use crate::error::OpsGenieError;
+
+/// Default maximum length for the `message` field that will be sent
+/// to the `OpsGenie` Alert API. Matches the API's documented cap at
+/// the time this crate was written; override via
+/// [`OpsGenieConfig::with_message_max_length`] if the upstream limit
+/// changes before a new version of this crate ships.
+pub const DEFAULT_MESSAGE_MAX_LENGTH: usize = 130;
+
+/// `OpsGenie` data residency region.
+///
+/// `OpsGenie` runs two physically separate API endpoints: one in the US
+/// and one in the EU. Accounts are pinned to one region at provisioning
+/// time and API keys only work against their home region, so picking
+/// the wrong one surfaces as a 401/403 rather than a silent misdelivery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OpsGenieRegion {
+    /// `api.opsgenie.com` — default, and the region for most accounts.
+    #[default]
+    Us,
+    /// `api.eu.opsgenie.com` — for EU-region `OpsGenie` accounts.
+    Eu,
+}
+
+impl OpsGenieRegion {
+    /// Base URL for this region's Alert API v2 endpoint.
+    #[must_use]
+    pub const fn base_url(&self) -> &'static str {
+        match self {
+            Self::Us => "https://api.opsgenie.com",
+            Self::Eu => "https://api.eu.opsgenie.com",
+        }
+    }
+}
+
+/// Configuration for the `OpsGenie` provider.
+///
+/// The API key is held as a [`SecretString`] so its plaintext is
+/// zeroized from the heap (via the `zeroize` crate, transitively
+/// through `secrecy`) when the provider is dropped, and so any
+/// accidental `Debug` formatting yields `[REDACTED]` instead of
+/// the raw key.
+#[derive(Clone)]
+pub struct OpsGenieConfig {
+    /// API integration key (the `GenieKey` that authenticates writes
+    /// against the Alert API). Stored as a [`SecretString`] so the
+    /// plaintext is zeroized from memory on drop.
+    api_key: SecretString,
+
+    /// `OpsGenie` region the account lives in.
+    region: OpsGenieRegion,
+
+    /// Base URL override — primarily for testing against a mock
+    /// server. When `None`, the URL is derived from `region`.
+    api_base_url_override: Option<String>,
+
+    /// Default team responder used when the payload omits one.
+    pub default_team: Option<String>,
+
+    /// Default alert priority (`P1`..=`P5`). Defaults to `P3`.
+    pub default_priority: String,
+
+    /// Default `source` field used when the payload omits one.
+    pub default_source: Option<String>,
+
+    /// Whether to prefix user-supplied aliases with
+    /// `{namespace}:{tenant}:` before sending them to `OpsGenie`.
+    ///
+    /// **Defaults to `true`.** Leaving this on is the right choice
+    /// for any deployment where multiple Acteon tenants share a
+    /// single `OpsGenie` integration key — without it, Tenant A
+    /// could close Tenant B's alerts by guessing (or observing)
+    /// the alias string.
+    ///
+    /// Set this to `false` only if every Acteon namespace/tenant
+    /// has its own dedicated `OpsGenie` account OR you need
+    /// cross-tenant alias coordination (e.g., a platform team
+    /// closing a customer alert).
+    pub scope_aliases: bool,
+
+    /// Maximum length, in bytes, that the `message` field may be
+    /// before the provider truncates it client-side. Defaults to
+    /// [`DEFAULT_MESSAGE_MAX_LENGTH`] (130) to match the current
+    /// `OpsGenie` API limit. If `OpsGenie` lifts the cap (or you
+    /// want to be more restrictive), override this via
+    /// [`Self::with_message_max_length`].
+    pub message_max_length: usize,
+}
+
+impl std::fmt::Debug for OpsGenieConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpsGenieConfig")
+            .field("api_key", &"[REDACTED]")
+            .field("region", &self.region)
+            .field("api_base_url_override", &self.api_base_url_override)
+            .field("default_team", &self.default_team)
+            .field("default_priority", &self.default_priority)
+            .field("default_source", &self.default_source)
+            .field("scope_aliases", &self.scope_aliases)
+            .field("message_max_length", &self.message_max_length)
+            .finish()
+    }
+}
+
+impl OpsGenieConfig {
+    /// Create a new configuration with the given API key.
+    ///
+    /// Defaults to the US region, priority `P3`, and no default
+    /// responder / source. Alias scoping is enabled by default.
+    /// Callers typically chain `with_*` builders to customize the
+    /// rest.
+    ///
+    /// The API key may be passed as any `Into<String>` — the value
+    /// is immediately wrapped in a [`SecretString`] so it is
+    /// zeroized on drop.
+    #[must_use]
+    pub fn new(api_key: impl Into<String>) -> Self {
+        Self {
+            api_key: SecretString::new(api_key.into()),
+            region: OpsGenieRegion::Us,
+            api_base_url_override: None,
+            default_team: None,
+            default_priority: "P3".to_owned(),
+            default_source: None,
+            scope_aliases: true,
+            message_max_length: DEFAULT_MESSAGE_MAX_LENGTH,
+        }
+    }
+
+    /// Enable or disable automatic alias scoping. See the field
+    /// docs on [`OpsGenieConfig::scope_aliases`] for the security
+    /// implications.
+    #[must_use]
+    pub fn with_scope_aliases(mut self, scope_aliases: bool) -> Self {
+        self.scope_aliases = scope_aliases;
+        self
+    }
+
+    /// Override the default maximum message length.
+    #[must_use]
+    pub fn with_message_max_length(mut self, max_len: usize) -> Self {
+        self.message_max_length = max_len;
+        self
+    }
+
+    /// Set the `OpsGenie` region for this configuration.
+    #[must_use]
+    pub fn with_region(mut self, region: OpsGenieRegion) -> Self {
+        self.region = region;
+        self
+    }
+
+    /// Override the API base URL (useful for testing against a mock
+    /// server). When set, this takes precedence over the region's
+    /// built-in base URL.
+    #[must_use]
+    pub fn with_api_base_url(mut self, url: impl Into<String>) -> Self {
+        self.api_base_url_override = Some(url.into());
+        self
+    }
+
+    /// Set the default team responder used when a payload omits one.
+    #[must_use]
+    pub fn with_default_team(mut self, team: impl Into<String>) -> Self {
+        self.default_team = Some(team.into());
+        self
+    }
+
+    /// Set the default alert priority (`P1`..=`P5`).
+    #[must_use]
+    pub fn with_default_priority(mut self, priority: impl Into<String>) -> Self {
+        self.default_priority = priority.into();
+        self
+    }
+
+    /// Set the default alert source.
+    #[must_use]
+    pub fn with_default_source(mut self, source: impl Into<String>) -> Self {
+        self.default_source = Some(source.into());
+        self
+    }
+
+    /// Decrypt an `ENC[...]` API key in place.
+    ///
+    /// Plain-text keys pass through unchanged. The decrypted
+    /// plaintext is wrapped in a fresh [`SecretString`] so the
+    /// original encrypted input and the intermediate buffer are
+    /// both dropped and zeroized.
+    #[must_use = "returns the config with the decrypted API key"]
+    pub fn decrypt_secrets(
+        mut self,
+        master_key: &acteon_crypto::MasterKey,
+    ) -> Result<Self, OpsGenieError> {
+        let decrypted = acteon_crypto::decrypt_value(self.api_key.expose_secret(), master_key)
+            .map_err(|e| {
+                OpsGenieError::InvalidPayload(format!("failed to decrypt api_key: {e}"))
+            })?;
+        // `SecretString` is already the right type — move it in so
+        // we never copy the plaintext out onto the stack.
+        self.api_key = decrypted;
+        Ok(self)
+    }
+
+    /// Return the effective base URL for API requests.
+    #[must_use]
+    pub fn api_base_url(&self) -> &str {
+        self.api_base_url_override
+            .as_deref()
+            .unwrap_or_else(|| self.region.base_url())
+    }
+
+    /// Return the API key for constructing the `Authorization` header.
+    /// Kept `pub(crate)` so callers outside the crate cannot lift the
+    /// secret out of the config struct — the provider calls this at
+    /// the last possible moment before handing the bytes to reqwest,
+    /// which is the narrowest window we can enforce at the type level.
+    pub(crate) fn api_key(&self) -> &str {
+        self.api_key.expose_secret()
+    }
+
+    /// Return the configured region.
+    #[must_use]
+    pub fn region(&self) -> OpsGenieRegion {
+        self.region
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_defaults() {
+        let config = OpsGenieConfig::new("test-api-key");
+        assert_eq!(config.api_key(), "test-api-key");
+        assert_eq!(config.region(), OpsGenieRegion::Us);
+        assert_eq!(config.default_priority, "P3");
+        assert!(config.default_team.is_none());
+        assert!(config.default_source.is_none());
+        assert!(
+            config.scope_aliases,
+            "alias scoping must be ON by default for multi-tenant safety"
+        );
+        assert_eq!(config.message_max_length, DEFAULT_MESSAGE_MAX_LENGTH);
+    }
+
+    #[test]
+    fn with_scope_aliases_toggle() {
+        let config = OpsGenieConfig::new("k").with_scope_aliases(false);
+        assert!(!config.scope_aliases);
+        let config = config.with_scope_aliases(true);
+        assert!(config.scope_aliases);
+    }
+
+    #[test]
+    fn with_message_max_length_override() {
+        let config = OpsGenieConfig::new("k").with_message_max_length(256);
+        assert_eq!(config.message_max_length, 256);
+    }
+
+    #[test]
+    fn region_base_urls() {
+        assert_eq!(OpsGenieRegion::Us.base_url(), "https://api.opsgenie.com");
+        assert_eq!(OpsGenieRegion::Eu.base_url(), "https://api.eu.opsgenie.com");
+    }
+
+    #[test]
+    fn with_region_switches_base_url() {
+        let config = OpsGenieConfig::new("k").with_region(OpsGenieRegion::Eu);
+        assert_eq!(config.api_base_url(), "https://api.eu.opsgenie.com");
+    }
+
+    #[test]
+    fn api_base_url_override_wins() {
+        let config = OpsGenieConfig::new("k")
+            .with_region(OpsGenieRegion::Eu)
+            .with_api_base_url("http://localhost:4242");
+        assert_eq!(config.api_base_url(), "http://localhost:4242");
+    }
+
+    #[test]
+    fn builder_chain() {
+        let config = OpsGenieConfig::new("k")
+            .with_region(OpsGenieRegion::Eu)
+            .with_default_team("ops-team")
+            .with_default_priority("P1")
+            .with_default_source("prometheus")
+            .with_api_base_url("http://mock");
+        assert_eq!(config.default_team.as_deref(), Some("ops-team"));
+        assert_eq!(config.default_priority, "P1");
+        assert_eq!(config.default_source.as_deref(), Some("prometheus"));
+        assert_eq!(config.api_base_url(), "http://mock");
+    }
+
+    fn test_master_key() -> acteon_crypto::MasterKey {
+        acteon_crypto::parse_master_key(&"42".repeat(32)).unwrap()
+    }
+
+    #[test]
+    fn decrypt_secrets_roundtrip() {
+        let master_key = test_master_key();
+        let original = "my-genie-key";
+        let encrypted = acteon_crypto::encrypt_value(original, &master_key).unwrap();
+
+        let config = OpsGenieConfig::new(encrypted)
+            .decrypt_secrets(&master_key)
+            .unwrap();
+        assert_eq!(config.api_key(), original);
+    }
+
+    #[test]
+    fn decrypt_secrets_plaintext_passthrough() {
+        let master_key = test_master_key();
+        let config = OpsGenieConfig::new("plain-key")
+            .decrypt_secrets(&master_key)
+            .unwrap();
+        assert_eq!(config.api_key(), "plain-key");
+    }
+
+    #[test]
+    fn decrypt_secrets_invalid_ciphertext() {
+        let master_key = test_master_key();
+        let config = OpsGenieConfig::new("ENC[AES256-GCM,data:bad,iv:bad,tag:bad]");
+        let err = config.decrypt_secrets(&master_key).unwrap_err();
+        assert!(matches!(err, OpsGenieError::InvalidPayload(_)));
+    }
+
+    #[test]
+    fn debug_redacts_api_key() {
+        let config = OpsGenieConfig::new("super-secret-placeholder-value");
+        let debug = format!("{config:?}");
+        assert!(
+            debug.contains("[REDACTED]"),
+            "api_key must be redacted in Debug output"
+        );
+        assert!(
+            !debug.contains("super-secret-placeholder-value"),
+            "raw api_key must not appear in Debug output"
+        );
+    }
+}

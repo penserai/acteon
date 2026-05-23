@@ -96,11 +96,6 @@ Deduplication relies on the state backend for distributed coordination:
 | Redis | Perfect | Strong locking |
 | PostgreSQL | Perfect | ACID guarantees |
 | DynamoDB | Perfect | Conditional writes |
-| ClickHouse | ~80-90% | Eventual consistency — not recommended |
-
-!!! warning "ClickHouse Limitation"
-    ClickHouse uses `ReplacingMergeTree` which provides eventual consistency. Under concurrent load, 10-20% of duplicate actions may slip through. Use Redis or PostgreSQL for strict deduplication.
-
 ## Example: Testing Deduplication
 
 ```rust

@@ -292,6 +292,23 @@ fn parse_function_or_ident(input: &str) -> IResult<&str, Expr> {
             }
             "int" => Expr::Call("to_int".to_owned(), args),
             "string" => Expr::Call("to_string".to_owned(), args),
+            "wasm" if args.len() == 1 || args.len() == 2 => {
+                let mut args_iter = args.into_iter();
+                let plugin_expr = args_iter.next().expect("checked length");
+                let function_expr = args_iter.next();
+
+                let Expr::String(plugin) = plugin_expr else {
+                    let mut full = vec![plugin_expr];
+                    full.extend(function_expr);
+                    return Ok((rest3, Expr::Call("wasm".to_owned(), full)));
+                };
+                let function = if let Some(Expr::String(f)) = function_expr {
+                    f
+                } else {
+                    "evaluate".to_owned()
+                };
+                return Ok((rest3, Expr::WasmCall { plugin, function }));
+            }
             #[allow(clippy::cast_precision_loss)]
             "semantic_match" if args.len() == 2 || args.len() == 3 => {
                 let mut args_iter = args.into_iter();
@@ -1471,6 +1488,87 @@ mod tests {
                 assert!(text_field.is_some());
             }
             other => panic!("expected SemanticMatch, got {other:?}"),
+        }
+    }
+
+    // --- WASM call ---
+
+    #[test]
+    fn parse_wasm_call_default_function() {
+        let expr = parse_cel_expr(r#"wasm("fraud-detector")"#).unwrap();
+        match expr {
+            Expr::WasmCall { plugin, function } => {
+                assert_eq!(plugin, "fraud-detector");
+                assert_eq!(function, "evaluate");
+            }
+            other => panic!("expected WasmCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_wasm_call_custom_function() {
+        let expr = parse_cel_expr(r#"wasm("my-plugin", "check")"#).unwrap();
+        match expr {
+            Expr::WasmCall { plugin, function } => {
+                assert_eq!(plugin, "my-plugin");
+                assert_eq!(function, "check");
+            }
+            other => panic!("expected WasmCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_wasm_call_combined_with_and() {
+        let expr =
+            parse_cel_expr(r#"wasm("fraud-detector") && action.action_type == "send_email""#)
+                .unwrap();
+        match expr {
+            Expr::Binary(BinaryOp::And, lhs, rhs) => {
+                assert!(matches!(*lhs, Expr::WasmCall { .. }));
+                assert!(matches!(*rhs, Expr::Binary(BinaryOp::Eq, _, _)));
+            }
+            other => panic!("expected Binary(And, WasmCall, Eq), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_wasm_call_combined_with_or() {
+        let expr = parse_cel_expr(r#"wasm("checker-a") || wasm("checker-b", "validate")"#).unwrap();
+        match expr {
+            Expr::Binary(BinaryOp::Or, lhs, rhs) => {
+                match *lhs {
+                    Expr::WasmCall {
+                        ref plugin,
+                        ref function,
+                    } => {
+                        assert_eq!(plugin, "checker-a");
+                        assert_eq!(function, "evaluate");
+                    }
+                    ref other => panic!("expected WasmCall, got {other:?}"),
+                }
+                match *rhs {
+                    Expr::WasmCall {
+                        ref plugin,
+                        ref function,
+                    } => {
+                        assert_eq!(plugin, "checker-b");
+                        assert_eq!(function, "validate");
+                    }
+                    ref other => panic!("expected WasmCall, got {other:?}"),
+                }
+            }
+            other => panic!("expected Binary(Or, ...), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_wasm_call_negated() {
+        let expr = parse_cel_expr(r#"!wasm("blocklist")"#).unwrap();
+        match expr {
+            Expr::Unary(UnaryOp::Not, inner) => {
+                assert!(matches!(*inner, Expr::WasmCall { .. }));
+            }
+            other => panic!("expected Unary(Not, WasmCall), got {other:?}"),
         }
     }
 

@@ -8,6 +8,15 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: "sccache"
+
+# `acteon-bus` brings in `rdkafka-sys` 4.10 which vendors librdkafka
+# 2.12.1 and builds it statically through `cmake-build`. librdkafka
+# 2.12.1 has a regression where rdkafka_conf.c includes curl/curl.h
+# unconditionally even when `-DWITH_CURL=0` is passed, so the build
+# fails on runners that don't have libcurl headers. Every Rust job
+# that compiles the workspace needs them.
 
 jobs:
   check:
@@ -19,9 +28,12 @@ jobs:
         rust: [stable, "1.88"]
     steps:
       - uses: actions/checkout@v4
+      - name: Install librdkafka build deps
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.rust }}
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --workspace
 
@@ -34,10 +46,13 @@ jobs:
         rust: [stable, "1.88"]
     steps:
       - uses: actions/checkout@v4
+      - name: Install librdkafka build deps
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.rust }}
           components: clippy
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --no-deps -- -D warnings
 
@@ -50,11 +65,23 @@ jobs:
         rust: [stable, "1.88"]
     steps:
       - uses: actions/checkout@v4
+      - name: Install librdkafka build deps
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.rust }}
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace
+      - uses: taiki-e/install-action@nextest
+      - run: cargo nextest run --workspace --lib --bins --tests
+      - name: Test AWS providers
+        run: cargo nextest run -p acteon-aws --features full --lib --tests
+      - name: Test Azure providers
+        run: cargo nextest run -p acteon-azure --features full --lib --tests
+      - name: Build server with opt-in messaging providers
+        run: cargo check -p acteon-server --features extras-alerting
+      - name: Run doctests
+        run: cargo test --workspace --doc
 
   fmt:
     name: Format
@@ -85,7 +112,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install librdkafka build deps
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
       - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
       - run: cargo doc --workspace --no-deps
         env:
@@ -107,6 +137,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
       # Run integration tests only for backends with running services.
       # Redis is the only service configured in this CI job.

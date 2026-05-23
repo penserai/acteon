@@ -1,0 +1,153 @@
+@reference "../index.css";
+
+/* Layout */
+.container {
+  @apply max-w-7xl;
+}
+
+/* Metric tabs */
+.metricTabs {
+  @apply flex flex-wrap gap-1 mb-6 p-1 rounded-lg;
+  background: var(--bg-surface-secondary);
+}
+
+.metricTab {
+  @apply px-4 py-2 text-sm font-medium rounded-md transition-all cursor-pointer;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+
+  &:hover {
+    color: var(--text-default);
+    background: var(--bg-surface);
+  }
+}
+
+.metricTabActive {
+  color: var(--text-default);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-sm);
+}
+
+/* Filter bar */
+.filterBar {
+  @apply grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-6;
+}
+
+.selectWrapper {
+  @apply relative;
+}
+
+.selectLabel {
+  @apply block text-sm font-medium mb-1;
+  color: var(--text-secondary);
+}
+
+.select {
+  @apply w-full rounded-md border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-400/20 focus:border-primary-400 appearance-none;
+  background: var(--bg-surface);
+  border-color: var(--border-input);
+  color: var(--text-default);
+}
+
+/* Summary cards row */
+.statsRow {
+  @apply grid grid-cols-2 md:grid-cols-4 gap-4 mb-6;
+}
+
+/* Chart card */
+.chartCard {
+  @apply border rounded-lg p-6 mb-6;
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+}
+
+.chartTitle {
+  @apply text-sm font-semibold mb-4;
+  color: var(--text-default);
+}
+
+/* Top entries table */
+.tableCard {
+  @apply border rounded-lg overflow-hidden;
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+}
+
+.tableTitle {
+  @apply text-sm font-semibold p-4 pb-2;
+  color: var(--text-default);
+}
+
+.table {
+  @apply w-full text-sm;
+}
+
+.table thead {
+  background: var(--bg-surface-secondary);
+}
+
+.table th {
+  @apply px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide;
+  color: var(--text-muted);
+}
+
+.table td {
+  @apply px-4 py-3 border-t;
+  border-color: var(--border-default);
+}
+
+.table tbody tr {
+  background: var(--bg-surface);
+}
+
+.table tbody tr:hover {
+  background: var(--bg-surface-secondary);
+}
+
+.labelCell {
+  @apply font-medium;
+  color: var(--text-default);
+}
+
+.countCell {
+  @apply font-mono tabular-nums;
+  color: var(--text-default);
+}
+
+.percentageCell {
+  @apply tabular-nums;
+  color: var(--text-muted);
+}
+
+.percentageBar {
+  @apply flex items-center gap-2;
+}
+
+.percentageTrack {
+  @apply flex-1 h-1.5 rounded-full overflow-hidden;
+  background: var(--bg-surface-secondary);
+}
+
+.percentageFill {
+  @apply h-full rounded-full;
+  background: var(--color-primary-400);
+}
+
+/* Loading state */
+.loadingGrid {
+  @apply grid grid-cols-2 md:grid-cols-4 gap-4 mb-6;
+}
+
+/* Empty / error state */
+.emptyState {
+  @apply flex flex-col items-center justify-center py-16 text-sm;
+  color: var(--text-muted);
+}
+
+/* Outcome bar chart card */
+.outcomeChartCard {
+  @apply border rounded-lg p-6 mb-6;
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+}

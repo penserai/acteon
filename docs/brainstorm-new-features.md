@@ -54,10 +54,14 @@ stripped), backpressure handling (lagged events), and 15s keep-alive. Rust
 client SDK supports `ActeonClient::stream()` with `StreamFilter` builder.
 See [Event Streaming](book/features/event-streaming.md) for full docs.
 
-### Action Status Subscriptions
+### Action Status Subscriptions — IMPLEMENTED
 Subscribe to updates on a specific action ID, chain, or group. Particularly
 useful for long-running chains and approval workflows where the caller
 needs to know when something completes.
+
+**Implemented**: SSE-based subscriptions for individual actions, chains, and
+groups with catch-up delivery of missed events, entity validation, and
+stream UI integration.
 
 ---
 
@@ -87,10 +91,20 @@ Rules that only apply during certain time windows. Examples:
 (`time.hour >= 9 && time.hour < 17 && time.weekday_num <= 5`) frontends.
 See [Time-Based Rules](book/features/time-based-rules.md) for full docs.
 
-### Recurring Actions
+### Recurring Actions — IMPLEMENTED
 Define an action that fires on a cron schedule. Turns Acteon into a
 lightweight scheduler for recurring notifications (daily digests, weekly
 reports, periodic health checks).
+
+**Implemented**: API-only recurring action definitions with 5-field cron
+expressions, IANA timezone support (via `croner` + `chrono-tz`), and a
+background processor that dispatches occurrences through the full gateway
+pipeline. At-most-once delivery per occurrence via distributed CAS claims.
+No-backfill policy prevents dispatch storms after outages. Full CRUD API
+(`POST`/`GET`/`PUT`/`DELETE /v1/recurring`), pause/resume lifecycle, and
+Admin UI with list, create, and detail views. Configurable minimum interval
+(default 60s). See [Recurring Actions](book/features/recurring-actions.md)
+for full docs.
 
 ---
 
@@ -114,9 +128,18 @@ state. Distributed mutation lock prevents race conditions in multi-instance
 deployments. See [Circuit Breaker](book/features/circuit-breaker.md) for full
 docs.
 
-### Provider Health Dashboard
+### Provider Health Dashboard — IMPLEMENTED
 Expose per-provider success rates, latency percentiles, and circuit breaker
 status via the API (`GET /v1/providers/health`) and Prometheus metrics.
+
+**Implemented**: Real-time provider health dashboard with per-provider success
+rates, latency percentiles (p50/p95/p99), circuit breaker state, health check
+status, and last error tracking. In-memory metrics collection with 1,000-sample
+rolling window for percentile accuracy. Admin UI page with auto-refresh. Zero
+configuration required — works automatically when providers are registered.
+Thread-safe atomic counters + `parking_lot::Mutex` for latency buffer. Memory
+overhead ~8 KB per provider. See [Provider Health Dashboard](book/features/provider-health.md)
+for full docs.
 
 ### Weighted/Percentage-Based Routing
 Split traffic across providers by percentage (e.g., 90% SendGrid / 10%
@@ -191,11 +214,21 @@ fully instrumented with `#[instrument]` spans: `gateway.dispatch`,
 with graceful shutdown flush ensures no data loss during deployments.
 See [Distributed Tracing](book/features/distributed-tracing.md) for full docs.
 
-### Grafana Dashboard Templates
+### Grafana Dashboard Templates — IMPLEMENTED
 Ship pre-built Grafana dashboard JSON that visualizes the Prometheus metrics
 already exported. Panels for: throughput, latency percentiles, rule match
 distribution, provider health, error rates, per-tenant usage. Reduces
 time-to-value significantly.
+
+**Implemented**: Two pre-built Grafana dashboards under `deploy/grafana/`:
+Overview dashboard (17 panels across 7 sections: throughput, LLM guardrail,
+chains, circuit breaker, recurring actions, quotas/retention, embedding cache)
+and Provider Health dashboard (7 panels: success rates, request volume, latency
+percentiles with table summary). Lightweight Prometheus exporter at
+`GET /metrics/prometheus` using hand-written text format serialization (no
+`prometheus` crate dependency). Docker Compose `monitoring` profile starts
+Prometheus + Grafana with auto-provisioned datasource and dashboards.
+See [Grafana Dashboards](book/features/grafana-dashboards.md) for full docs.
 
 ### Action Replay from Audit Trail — IMPLEMENTED
 Replay failed or historical actions from the audit log. Invaluable for
@@ -233,7 +266,7 @@ rules locally without a running server. Enables CI/CD validation of rule
 changes before deployment. Output: matched rule, verdict, and evaluation
 trace.
 
-### Rule Playground API
+### ~~Rule Playground API~~ ✅ Done
 `POST /v1/rules/evaluate` accepts an action and returns which rule matched
 and why, without executing. Like dry-run but focused specifically on rule
 debugging. Returns the full evaluation trace: which rules were checked,
@@ -259,7 +292,7 @@ Aggregated queries over the audit trail:
 Could expose via `GET /v1/analytics/...` and leverage ClickHouse's
 analytical strengths when that audit backend is in use.
 
-### Tenant Usage Quotas
+### Tenant Usage Quotas -- IMPLEMENTED
 Hard limits on actions per tenant per billing period, with configurable
 overage behavior:
 - Block (HTTP 429)
@@ -267,11 +300,29 @@ overage behavior:
 - Degrade (reduce to lower-priority provider)
 - Notify (alert tenant admin)
 
-### Data Retention Policies
+**Implemented**: Per-tenant quota policies with four overage behaviors (Block,
+Warn, Degrade, Notify). Quota check runs in the gateway dispatch pipeline
+after lock acquisition but before rule evaluation. Epoch-aligned rolling
+windows (Hourly/Daily/Weekly/Monthly/Custom) with counters stored in the
+state backend. CRUD API at `/v1/quotas` with usage query endpoint.
+Metrics: `quota_exceeded`, `quota_warned`, `quota_degraded` counters.
+See [Tenant Quotas](book/features/tenant-quotas.md) for full docs.
+
+### Data Retention Policies -- IMPLEMENTED
 Automatic cleanup of old audit records and state entries based on
 configurable TTLs per tenant/namespace. Currently the system accumulates
 data indefinitely. A background reaper process with configurable policies
 would handle this.
+
+**Implemented**: Per-tenant retention policies with three-level audit TTL
+resolution (compliance hold > policy TTL > gateway default). Background
+reaper scans for expired chain state and event records on a configurable
+interval. Compliance hold flag preserves audit records indefinitely for
+GDPR/SOC2/HIPAA scenarios. CRUD API at `/v1/retention`. Retention policies
+can be managed at runtime without restart (hot-reload via state store).
+Metrics: `retention_deleted_state`, `retention_skipped_compliance`,
+`retention_errors` counters.
+See [Data Retention](book/features/data-retention.md) for full docs.
 
 ---
 
@@ -356,3 +407,155 @@ Ranked by impact-to-effort ratio:
 | 8 | Action Replay | Medium | Medium | **DONE** |
 | 9 | WebSocket/SSE Stream | Medium | Medium | **DONE** |
 | 10 | Conditional Chain Branching | Medium | Medium | **DONE** |
+| 11 | Action Status Subscriptions | Low | Medium | **DONE** |
+| 12 | Recurring Actions | Medium | Medium | **DONE** |
+| 13 | Tenant Usage Quotas | Medium | Medium | **DONE** |
+| 14 | Rule Playground API | Medium | Medium | **DONE** |
+| 15 | MCP Server | Medium | Medium | **DONE** |
+| 16 | Payload Encryption at Rest | Medium | High | Not started |
+| 17 | Rule Testing CLI | Low-Med | High | **DONE** |
+| 18 | Data Retention Policies | Low-Med | Medium | **DONE** |
+| 19 | Provider Health Dashboard | Medium | Medium | **DONE** |
+| 20 | Grafana Dashboard Templates | Low | Medium | **DONE** |
+| 21 | Parallel Chain Steps | Large | Medium | Not started |
+| 22 | Sub-Chains | Medium | Medium | Not started |
+| 23 | Native Providers (Twilio, Teams, Discord) | Medium ea. | Medium | **DONE** |
+| 24 | Weighted/Canary Routing | Medium | Medium | Not started |
+| 25 | Kafka/RabbitMQ Producers | Medium | Medium | Not started |
+| 26 | Cost-Aware Routing | Medium | Medium | Not started |
+| 27 | Action Analytics API | Med-Large | Medium | Not started |
+| 28 | SOC2/HIPAA Audit Mode | Med-Large | Medium | **DONE** |
+| 29 | mTLS Support | Medium | Medium | Not started |
+| 30 | gRPC Ingress | Large | Low-Med | Not started |
+| 31 | WASM Rule Plugins | Large | Medium | **DONE** |
+
+---
+
+## Next Wave: Implementation Notes
+
+> Added 2026-02-14. Detailed scoping for the next batch of features.
+
+### P0 — Do Next
+
+**16. Payload Encryption at Rest** — DONE
+- `PayloadEncryptor` in `acteon-crypto` for AES-256-GCM encryption of JSON payloads
+- Gateway-level encrypt/decrypt at state store boundaries (scheduled, chain, approval, recurring actions)
+- `EncryptingAuditStore` decorator encrypts `action_payload` in audit records
+- `BackgroundProcessor` decrypts state values before deserializing
+- Opt-in via `encryption.enabled = true` + `ACTEON_PAYLOAD_KEY` env var
+- Backward compatible: unencrypted values pass through decrypt unchanged
+
+**17. Rule Testing CLI**
+- Wraps existing rule playground / trace infrastructure in a CLI
+- `acteon-cli test-rules --rules ./rules/ --fixtures tests/cases.yaml`
+- Reads YAML test cases: input action + expected verdict/matched rule
+- CI/CD friendly: exit code 0/1, machine-readable output option
+- Low effort because trace engine (`evaluate_with_trace`) is already built
+
+### P1 — High Value
+
+**18. Data Retention Policies** — DONE
+- `RetentionPolicy` struct in `acteon-core` with per-tenant audit/state/event TTLs
+- Three-level audit TTL resolution: compliance hold > policy TTL > gateway default
+- Background reaper following `process_recurring_actions()` pattern (configurable interval)
+- Compliance hold flag preserves audit records indefinitely (GDPR/SOC2/HIPAA)
+- CRUD API at `/v1/retention` with namespace:tenant uniqueness constraint
+- Hot-reload: reaper reloads policies from state store each cycle
+- Metrics: `retention_deleted_state`, `retention_skipped_compliance`, `retention_errors`
+
+**19. Provider Health Dashboard**
+- New Admin UI page aggregating existing Prometheus metrics
+- API endpoint `GET /v1/providers/health` returning per-provider stats
+- Success rate, p50/p95/p99 latency, circuit breaker state, last error
+- Refresh interval configurable in UI
+
+**20. Grafana Dashboard Templates** — DONE
+- Pre-built JSON dashboards under `deploy/grafana/dashboards/`
+- Overview dashboard: 17 panels (throughput, LLM guardrail, chains, circuit breaker, recurring, quotas/retention, embedding cache)
+- Provider Health dashboard: 7 panels (success rates, request/failure volume, latency percentiles, summary table)
+- Prometheus exporter: zero-dependency text format handler at `GET /metrics/prometheus`
+- Docker Compose `monitoring` profile with auto-provisioned Grafana datasource and dashboards
+- 40+ metrics exported with `acteon_` prefix (counters + per-provider gauges)
+
+### P2 — Workflow Power
+
+**21. Parallel Chain Steps (Fan-out / Fan-in)**
+- New step kind: `parallel` with list of concurrent sub-steps
+- Join semantics: `all` (wait for all) or `any` (first to complete)
+- `execution_path` becomes a tree rather than linear list
+- Partial failure handling: configurable (fail-fast vs best-effort)
+- Timeout per parallel group
+
+**22. Sub-Chains (Composable Workflows)**
+- New chain step type referencing another `ChainConfig` by name
+- Results from sub-chain available via `{{prev.*}}` in parent chain
+- `validate()` must detect circular references across chain boundaries
+- Promotes reusability: standard "escalation" or "notification" sub-chains
+
+**23. Native Providers**
+- Each provider is a new crate under `crates/providers/`
+- Start with Twilio (highest demand), then Teams, then Discord
+- Typed request/response structs, specialized error handling, rate limit awareness
+- Generic Webhook remains the fallback for unlisted services
+
+**24. Weighted / Canary Routing**
+- New rule action or rule modifier: `weight: 90` on rule A, `weight: 10` on rule B
+- Deterministic hashing (by action ID) or random distribution
+- Supports canary provider rollouts and load balancing
+
+### P3 — Advanced
+
+**25. Kafka / RabbitMQ Producers**
+- New provider crate(s) following existing provider pattern
+- Config: broker list, topic/queue, serialization format (JSON, Avro, Protobuf)
+- Enables Acteon as an event bridge
+
+**26. Cost-Aware Routing**
+- Cost metadata on providers; budget tracking per tenant
+- Rule conditions that reference remaining budget
+- Ties into quota system for enforcement
+
+**27. Action Analytics API**
+- `GET /v1/analytics/...` with time-bucketed aggregations
+- Leverages ClickHouse audit backend for efficient aggregation
+- Endpoints: top actions, suppression rates, chain completion times, provider error trends
+
+**28. SOC2/HIPAA Audit Mode** -- IMPLEMENTED
+- Config toggle: `compliance_mode = "soc2"` or `"hipaa"`
+- Synchronous audit writes, immutable records, SHA-256 hash-chaining
+- `HashChainAuditStore` + `ComplianceAuditStore` decorators
+- Chain verification API at `POST /v1/audit/verify`
+- DB migrations for all 3 audit backends, UI compliance status page
+- All 5 polyglot SDKs updated
+
+**29. mTLS Support**
+- Mutual TLS for Postgres, Redis, and provider egress connections
+- Certificate rotation support
+- Server already uses `axum` + `rustls`; extend to outbound
+
+### P4 — Long-Term
+
+**30. gRPC Ingress**
+- Add `tonic` to server, define `.proto` schemas for Action/ActionOutcome/API
+- Coexists with REST on a separate port
+- Gateway dispatch pipeline is already transport-agnostic
+
+**31. WASM Rule Plugins** -- IMPLEMENTED
+
+**Implemented**: Sandboxed `Wasmtime`-based runtime for user-supplied WebAssembly
+rule plugins. Plugins receive action context as JSON and return a boolean verdict
+with optional message and metadata. Features include:
+- `acteon-wasm-runtime` crate with `WasmPluginRuntime` trait, `WasmPluginRegistry`,
+  `WasmPluginConfig`, and `WasmError` types
+- Per-plugin resource limits: memory (default 16 MB, max 256 MB) and CPU timeout
+  (default 100 ms, max 30 s)
+- `RuleSource::WasmPlugin` variant in rule engine with `wasm_plugin` and
+  `wasm_function` fields on `Rule`
+- YAML support (`source: wasm_plugin`) and CEL support (`wasm("name", "fn")`)
+- REST API at `/v1/wasm/plugins` (register, list, get, delete, test invocation)
+- Rule Playground trace integration showing WASM-specific details
+- Mock/test implementations (`MockWasmRuntime`, `FailingWasmRuntime`)
+- Admin UI page for plugin management
+- All 5 polyglot SDKs updated
+- Prometheus metrics: `wasm_invocations_total`, `wasm_invocation_errors`
+See [WASM Plugins](book/features/wasm-plugins.md) for full docs.

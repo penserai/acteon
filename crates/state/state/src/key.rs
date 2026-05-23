@@ -34,6 +34,59 @@ pub enum KeyKind {
     ScheduledAction,
     /// Index of pending scheduled actions by dispatch time.
     PendingScheduled,
+    /// Recurring action definition.
+    RecurringAction,
+    /// Index of pending recurring actions by next execution time.
+    PendingRecurring,
+    /// Quota policy definition.
+    Quota,
+    /// Quota usage counter for a tenant window.
+    QuotaUsage,
+    /// Data retention policy definition.
+    Retention,
+    /// Payload template definition.
+    Template,
+    /// Template profile definition.
+    TemplateProfile,
+    /// Chain definition (editable at runtime).
+    ChainDefinition,
+    /// Silence (time-bounded label-pattern mute).
+    Silence,
+    /// Index of active silences for fast dispatch-path lookup.
+    ActiveSilences,
+    /// Time interval definition (recurring schedule).
+    TimeInterval,
+    /// Bus topic metadata (Phase 1 of the agentic bus).
+    BusTopic,
+    /// Bus subscription metadata (Phase 2 of the agentic bus).
+    BusSubscription,
+    /// Bus payload schema (Phase 3 of the agentic bus).
+    BusSchema,
+    /// Bus agent identity + heartbeat (Phase 4 of the agentic bus).
+    BusAgent,
+    /// Bus conversation thread (Phase 5 of the agentic bus).
+    BusConversation,
+    /// Bus pre-publish HITL approval (Phase 6c of the agentic bus).
+    BusApproval,
+    /// Index of pending bus approvals for fast list/expiry scans.
+    PendingBusApprovals,
+    /// A2A `Task` lifecycle row (Phase 2 of the A2A protocol).
+    A2aTask,
+    /// Idempotency key for A2A `messageId` deduplication.
+    A2aMessageDedup,
+    /// Full `AgentCard` record (separate from `BusAgent` hot path).
+    BusAgentCard,
+    /// A2A `TaskPushNotificationConfig` row (Phase 4 of the A2A
+    /// protocol). Keyed `{task_id}:{config_id}` under the task's
+    /// namespace + tenant so a `scan_keys` with a `task_id:` prefix
+    /// lists every config bound to a single task.
+    A2aTaskPushConfig,
+    /// A2A Push-Delivery Dead Letter Queue entry. Written by the
+    /// push-delivery worker when a delivery exhausts its retry
+    /// budget or is permanently rejected. Keyed
+    /// `{task_id}:{entry_id}` so a prefix-scan by task id lists
+    /// every failed delivery for one task.
+    A2aPushDlq,
     Custom(String),
 }
 
@@ -59,6 +112,29 @@ impl KeyKind {
             Self::PendingChains => "pending_chains",
             Self::ScheduledAction => "scheduled_action",
             Self::PendingScheduled => "pending_scheduled",
+            Self::RecurringAction => "recurring_action",
+            Self::PendingRecurring => "pending_recurring",
+            Self::Quota => "quota",
+            Self::QuotaUsage => "quota_usage",
+            Self::Retention => "retention",
+            Self::Template => "template",
+            Self::TemplateProfile => "template_profile",
+            Self::ChainDefinition => "chain_def",
+            Self::Silence => "silence",
+            Self::ActiveSilences => "active_silences",
+            Self::TimeInterval => "time_interval",
+            Self::BusTopic => "bus_topic",
+            Self::BusSubscription => "bus_subscription",
+            Self::BusSchema => "bus_schema",
+            Self::BusAgent => "bus_agent",
+            Self::BusConversation => "bus_conversation",
+            Self::BusApproval => "bus_approval",
+            Self::PendingBusApprovals => "pending_bus_approvals",
+            Self::A2aTask => "a2a_task",
+            Self::A2aMessageDedup => "a2a_message_dedup",
+            Self::BusAgentCard => "bus_agent_card",
+            Self::A2aTaskPushConfig => "a2a_task_push_config",
+            Self::A2aPushDlq => "a2a_push_dlq",
             Self::Custom(s) => s.as_str(),
         }
     }
@@ -146,6 +222,23 @@ mod tests {
         assert_eq!(KeyKind::PendingChains.as_str(), "pending_chains");
         assert_eq!(KeyKind::ScheduledAction.as_str(), "scheduled_action");
         assert_eq!(KeyKind::PendingScheduled.as_str(), "pending_scheduled");
+        assert_eq!(KeyKind::RecurringAction.as_str(), "recurring_action");
+        assert_eq!(KeyKind::PendingRecurring.as_str(), "pending_recurring");
+        assert_eq!(KeyKind::Quota.as_str(), "quota");
+        assert_eq!(KeyKind::QuotaUsage.as_str(), "quota_usage");
+        assert_eq!(KeyKind::Retention.as_str(), "retention");
+        assert_eq!(KeyKind::Template.as_str(), "template");
+        assert_eq!(KeyKind::TemplateProfile.as_str(), "template_profile");
+        assert_eq!(KeyKind::ChainDefinition.as_str(), "chain_def");
+        assert_eq!(KeyKind::TimeInterval.as_str(), "time_interval");
+        assert_eq!(KeyKind::BusTopic.as_str(), "bus_topic");
+        assert_eq!(KeyKind::BusSubscription.as_str(), "bus_subscription");
+        assert_eq!(KeyKind::BusSchema.as_str(), "bus_schema");
+        assert_eq!(KeyKind::BusAgent.as_str(), "bus_agent");
+        assert_eq!(KeyKind::BusConversation.as_str(), "bus_conversation");
+        assert_eq!(KeyKind::A2aTask.as_str(), "a2a_task");
+        assert_eq!(KeyKind::A2aMessageDedup.as_str(), "a2a_message_dedup");
+        assert_eq!(KeyKind::BusAgentCard.as_str(), "bus_agent_card");
         assert_eq!(KeyKind::Custom("foo".into()).as_str(), "foo");
     }
 

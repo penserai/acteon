@@ -1,6 +1,8 @@
 """HTTP client for the Acteon action gateway."""
 
-from typing import Optional
+from collections.abc import AsyncIterator
+from typing import Iterator, Optional, Union
+from urllib.parse import quote
 import httpx
 
 from .errors import ActeonError, ConnectionError, HttpError, ApiError
@@ -10,6 +12,8 @@ from .models import (
     BatchResult,
     RuleInfo,
     ReloadResult,
+    EvaluateRulesRequest,
+    EvaluateRulesResponse,
     AuditQuery,
     AuditPage,
     AuditRecord,
@@ -27,10 +31,82 @@ from .models import (
     ReplayResult,
     ReplaySummary,
     ReplayQuery,
+    CreateRecurringAction,
+    CreateRecurringResponse,
+    RecurringFilter,
+    RecurringSummary,
+    ListRecurringResponse,
+    RecurringDetail,
+    UpdateRecurringAction,
+    SwarmRunSnapshot,
+    SwarmRunFilter,
+    ListSwarmRunsResponse,
+    CreateQuotaRequest,
+    UpdateQuotaRequest,
+    QuotaPolicy,
+    ListQuotasResponse,
+    QuotaUsage,
+    SilenceMatcher,
+    CreateSilenceRequest,
+    UpdateSilenceRequest,
+    Silence,
+    ListSilencesResponse,
+    CreateTimeIntervalRequest,
+    UpdateTimeIntervalRequest,
+    TimeInterval,
+    ListTimeIntervalsResponse,
+    CreateRetentionRequest,
+    UpdateRetentionRequest,
+    RetentionPolicy,
+    ListRetentionResponse,
+    ProviderHealthStatus,
+    ListProviderHealthResponse,
+    WasmPluginConfig,
+    WasmPlugin,
+    RegisterPluginRequest,
+    ListPluginsResponse,
+    PluginInvocationRequest,
+    PluginInvocationResponse,
+    ComplianceStatus,
+    HashChainVerification,
+    VerifyHashChainRequest,
+    TemplateInfo,
+    CreateTemplateRequest,
+    UpdateTemplateRequest,
+    ListTemplatesResponse,
+    TemplateProfileInfo,
+    TemplateProfileField,
+    CreateProfileRequest,
+    UpdateProfileRequest,
+    ListProfilesResponse,
+    RenderPreviewRequest,
+    RenderPreviewResponse,
+    ChainSummary,
+    ListChainsResponse,
+    ChainDetailResponse,
+    ChainHistoryResponse,
+    DagNode,
+    DagEdge,
+    DagResponse,
+    DlqStatsResponse,
+    DlqDrainResponse,
+    SseEvent,
+    _parse_sse_stream,
+    AnalyticsResponse,
+    CoverageKey,
+    CoverageEntry,
+    CoverageQuery,
+    CoverageReport,
+    SigningKeyEntry,
+    SigningKeysResponse,
 )
 
 
-class ActeonClient:
+from .a2a import _A2AClientMixin, _AsyncA2AClientMixin
+from .bus import _AsyncBusClientMixin, _BusClientMixin
+
+
+class ActeonClient(_A2AClientMixin, _BusClientMixin):
     """HTTP client for the Acteon action gateway.
 
     Example:
@@ -53,6 +129,10 @@ class ActeonClient:
         *,
         timeout: float = 30.0,
         api_key: Optional[str] = None,
+        ca_cert_path: Optional[str] = None,
+        client_cert_path: Optional[str] = None,
+        client_key_path: Optional[str] = None,
+        verify_ssl: bool = True,
     ):
         """Create a new Acteon client.
 
@@ -60,10 +140,21 @@ class ActeonClient:
             base_url: Base URL of the Acteon server (e.g., "http://localhost:8080").
             timeout: Request timeout in seconds.
             api_key: Optional API key for authentication.
+            ca_cert_path: Path to a custom CA certificate file (PEM) for server
+                verification. When provided, this CA is used instead of system CAs.
+            client_cert_path: Path to a client certificate file (PEM) for mTLS.
+                Must be paired with ``client_key_path``.
+            client_key_path: Path to a client private key file (PEM) for mTLS.
+                Must be paired with ``client_cert_path``.
+            verify_ssl: Set to ``False`` to skip certificate verification
+                (for development/testing only). Ignored when ``ca_cert_path``
+                is provided.
         """
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
-        self._client = httpx.Client(timeout=timeout)
+        verify: Union[bool, str] = ca_cert_path if ca_cert_path else verify_ssl
+        cert = (client_cert_path, client_key_path) if client_cert_path and client_key_path else None
+        self._client = httpx.Client(timeout=timeout, verify=verify, cert=cert)
 
     def __enter__(self):
         return self
@@ -89,16 +180,27 @@ class ActeonClient:
         *,
         json: Optional[dict] = None,
         params: Optional[dict] = None,
+        extra_headers: Optional[dict[str, str]] = None,
+        skip_auth: bool = False,
     ) -> httpx.Response:
-        """Make an HTTP request."""
+        """Make an HTTP request.
+
+        ``extra_headers`` are merged on top of the auth headers (caller
+        overrides win). ``skip_auth=True`` suppresses the
+        ``Authorization`` / API-key headers — used by A2A's unauthenticated
+        ``.well-known/agent.json`` discovery endpoint.
+        """
         url = f"{self.base_url}{path}"
+        headers = {"Content-Type": "application/json"} if skip_auth else self._headers()
+        if extra_headers:
+            headers.update(extra_headers)
         try:
             response = self._client.request(
                 method,
                 url,
                 json=json,
                 params=params,
-                headers=self._headers(),
+                headers=headers,
             )
             return response
         except httpx.ConnectError as e:
@@ -121,6 +223,49 @@ class ActeonClient:
             return response.status_code == 200
         except ConnectionError:
             return False
+
+    # =========================================================================
+    # Signing key discovery (JWKS-style)
+    # =========================================================================
+
+    def fetch_signing_keys(self) -> SigningKeysResponse:
+        """Fetch the server's active signing keyring.
+
+        Calls ``GET /.well-known/acteon-signing-keys``, a public,
+        unauthenticated endpoint that publishes the public half of
+        every ``(signer_id, kid)`` pair the server will accept
+        signatures from. Callers use this to:
+
+        - verify dispatched actions independently without pinning
+          public keys at deploy time, or
+        - detect a rotation in progress (a signer with more than one
+          entry in the response means the operator is staging a
+          rotation and the client should start sending the new
+          ``kid``).
+
+        Returns an empty ``keys`` list when signing is disabled on
+        the server.
+
+        Raises:
+            ConnectionError: If unable to connect or the server
+                returned a malformed (non-JSON) body under a 200
+                status — which can happen when a proxy or
+                waiting-room page intercepts the request.
+            HttpError: If the server returns a non-200 status.
+        """
+        response = self._request("GET", "/.well-known/acteon-signing-keys")
+        if response.status_code != 200:
+            raise HttpError(response.status_code, "Failed to fetch signing keys")
+        try:
+            return SigningKeysResponse.from_dict(response.json())
+        except ValueError as e:
+            # httpx raises JSONDecodeError (a ValueError subclass)
+            # when the 200 body isn't JSON. Rewrap so callers get a
+            # typed "malformed response" signal instead of a raw
+            # JSON decode error.
+            raise ConnectionError(
+                f"malformed signing keys response: {e}"
+            ) from e
 
     # =========================================================================
     # Action Dispatch
@@ -282,6 +427,48 @@ class ActeonClient:
 
         if response.status_code != 200:
             raise HttpError(response.status_code, f"Failed to set rule enabled")
+
+    def evaluate_rules(self, request: EvaluateRulesRequest) -> EvaluateRulesResponse:
+        """Evaluate rules against a test action without dispatching.
+
+        This is the Rule Playground endpoint. It evaluates all matching rules
+        against the provided action parameters and returns a detailed trace
+        of each rule evaluation.
+
+        Args:
+            request: The evaluation request with action parameters.
+
+        Returns:
+            Detailed evaluation response with verdict, trace, and context.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        body: dict = {
+            "namespace": request.namespace,
+            "tenant": request.tenant,
+            "provider": request.provider,
+            "action_type": request.action_type,
+            "payload": request.payload,
+        }
+        if request.metadata:
+            body["metadata"] = request.metadata
+        if request.include_disabled:
+            body["include_disabled"] = True
+        if request.evaluate_all:
+            body["evaluate_all"] = True
+        if request.evaluate_at:
+            body["evaluate_at"] = request.evaluate_at
+        if request.mock_state:
+            body["mock_state"] = request.mock_state
+
+        response = self._request("POST", "/v1/rules/evaluate", json=body)
+
+        if response.status_code == 200:
+            return EvaluateRulesResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to evaluate rules")
 
     # =========================================================================
     # Audit Trail
@@ -679,7 +866,1749 @@ class ActeonClient:
             raise HttpError(response.status_code, "Failed to list approvals")
 
 
-class AsyncActeonClient:
+    # =========================================================================
+    # Recurring Actions
+    # =========================================================================
+
+    def create_recurring(
+        self, recurring: CreateRecurringAction
+    ) -> CreateRecurringResponse:
+        """Create a recurring action.
+
+        Args:
+            recurring: The recurring action definition.
+
+        Returns:
+            The created recurring action response with ID and next execution time.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            ApiError: If the server returns a validation error.
+        """
+        response = self._request("POST", "/v1/recurring", json=recurring.to_dict())
+
+        if response.status_code == 201:
+            return CreateRecurringResponse.from_dict(response.json())
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    def list_recurring(
+        self, filter: Optional[RecurringFilter] = None
+    ) -> ListRecurringResponse:
+        """List recurring actions.
+
+        Args:
+            filter: Optional filter parameters.
+
+        Returns:
+            List of recurring action summaries.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        params = filter.to_params() if filter else {}
+        response = self._request("GET", "/v1/recurring", params=params)
+
+        if response.status_code == 200:
+            return ListRecurringResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list recurring actions")
+
+    def get_recurring(
+        self, recurring_id: str, namespace: str, tenant: str
+    ) -> Optional[RecurringDetail]:
+        """Get details of a specific recurring action.
+
+        Args:
+            recurring_id: The recurring action ID.
+            namespace: The namespace.
+            tenant: The tenant.
+
+        Returns:
+            The recurring action details, or None if not found.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error (other than 404).
+        """
+        response = self._request(
+            "GET",
+            f"/v1/recurring/{recurring_id}",
+            params={"namespace": namespace, "tenant": tenant},
+        )
+
+        if response.status_code == 200:
+            return RecurringDetail.from_dict(response.json())
+        elif response.status_code == 404:
+            return None
+        else:
+            raise HttpError(response.status_code, "Failed to get recurring action")
+
+    def update_recurring(
+        self, recurring_id: str, update: UpdateRecurringAction
+    ) -> RecurringDetail:
+        """Update a recurring action.
+
+        Args:
+            recurring_id: The recurring action ID.
+            update: The update request with fields to change.
+
+        Returns:
+            The updated recurring action details.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the recurring action is not found (404).
+            ApiError: If the server returns a validation error.
+        """
+        response = self._request(
+            "PUT", f"/v1/recurring/{recurring_id}", json=update.to_dict()
+        )
+
+        if response.status_code == 200:
+            return RecurringDetail.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Recurring action not found: {recurring_id}")
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    def delete_recurring(
+        self, recurring_id: str, namespace: str, tenant: str
+    ) -> None:
+        """Delete a recurring action.
+
+        Args:
+            recurring_id: The recurring action ID.
+            namespace: The namespace.
+            tenant: The tenant.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the recurring action is not found (404).
+        """
+        response = self._request(
+            "DELETE",
+            f"/v1/recurring/{recurring_id}",
+            params={"namespace": namespace, "tenant": tenant},
+        )
+
+        if response.status_code == 204:
+            return
+        elif response.status_code == 404:
+            raise HttpError(404, f"Recurring action not found: {recurring_id}")
+        else:
+            raise HttpError(response.status_code, "Failed to delete recurring action")
+
+    def pause_recurring(
+        self, recurring_id: str, namespace: str, tenant: str
+    ) -> RecurringDetail:
+        """Pause a recurring action.
+
+        Args:
+            recurring_id: The recurring action ID.
+            namespace: The namespace.
+            tenant: The tenant.
+
+        Returns:
+            The updated recurring action details.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If not found (404) or already paused (409).
+        """
+        response = self._request(
+            "POST",
+            f"/v1/recurring/{recurring_id}/pause",
+            json={"namespace": namespace, "tenant": tenant},
+        )
+
+        if response.status_code == 200:
+            return RecurringDetail.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Recurring action not found: {recurring_id}")
+        elif response.status_code == 409:
+            raise HttpError(409, "Recurring action is already paused")
+        else:
+            raise HttpError(response.status_code, "Failed to pause recurring action")
+
+    def resume_recurring(
+        self, recurring_id: str, namespace: str, tenant: str
+    ) -> RecurringDetail:
+        """Resume a paused recurring action.
+
+        Args:
+            recurring_id: The recurring action ID.
+            namespace: The namespace.
+            tenant: The tenant.
+
+        Returns:
+            The updated recurring action details.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If not found (404) or already active (409).
+        """
+        response = self._request(
+            "POST",
+            f"/v1/recurring/{recurring_id}/resume",
+            json={"namespace": namespace, "tenant": tenant},
+        )
+
+        if response.status_code == 200:
+            return RecurringDetail.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Recurring action not found: {recurring_id}")
+        elif response.status_code == 409:
+            raise HttpError(409, "Recurring action is already active")
+        else:
+            raise HttpError(response.status_code, "Failed to resume recurring action")
+
+    # =========================================================================
+    # Quotas
+    # =========================================================================
+
+    def create_quota(self, req: "CreateQuotaRequest") -> "QuotaPolicy":
+        """Create a quota policy.
+
+        Args:
+            req: The quota policy definition.
+
+        Returns:
+            The created quota policy.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            ApiError: If the server returns a validation error.
+        """
+        response = self._request("POST", "/v1/quotas", json=req.to_dict())
+
+        if response.status_code == 201:
+            return QuotaPolicy.from_dict(response.json())
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    def list_quotas(
+        self,
+        namespace: Optional[str] = None,
+        tenant: Optional[str] = None,
+        provider: Optional[str] = None,
+    ) -> "ListQuotasResponse":
+        """List quota policies.
+
+        Args:
+            namespace: Optional namespace filter.
+            tenant: Optional tenant filter.
+            provider: Optional provider scope filter. Pass the
+                literal string ``"generic"`` to match only policies
+                without a provider scope, or a provider name (e.g.
+                ``"slack"``) to match only per-provider policies
+                for that provider.
+
+        Returns:
+            List of quota policies.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        params: dict = {}
+        if namespace is not None:
+            params["namespace"] = namespace
+        if tenant is not None:
+            params["tenant"] = tenant
+        if provider is not None:
+            params["provider"] = provider
+        response = self._request("GET", "/v1/quotas", params=params)
+
+        if response.status_code == 200:
+            return ListQuotasResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list quotas")
+
+    def get_quota(self, quota_id: str) -> Optional["QuotaPolicy"]:
+        """Get a single quota policy by ID.
+
+        Args:
+            quota_id: The quota policy ID.
+
+        Returns:
+            The quota policy, or None if not found.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error (other than 404).
+        """
+        response = self._request("GET", f"/v1/quotas/{quota_id}")
+
+        if response.status_code == 200:
+            return QuotaPolicy.from_dict(response.json())
+        elif response.status_code == 404:
+            return None
+        else:
+            raise HttpError(response.status_code, "Failed to get quota")
+
+    def update_quota(
+        self, quota_id: str, update: "UpdateQuotaRequest"
+    ) -> "QuotaPolicy":
+        """Update a quota policy.
+
+        Args:
+            quota_id: The quota policy ID.
+            update: The update request with fields to change.
+
+        Returns:
+            The updated quota policy.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the quota is not found (404).
+            ApiError: If the server returns a validation error.
+        """
+        response = self._request(
+            "PUT", f"/v1/quotas/{quota_id}", json=update.to_dict()
+        )
+
+        if response.status_code == 200:
+            return QuotaPolicy.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Quota not found: {quota_id}")
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    def delete_quota(
+        self, quota_id: str, namespace: str, tenant: str
+    ) -> None:
+        """Delete a quota policy.
+
+        Args:
+            quota_id: The quota policy ID.
+            namespace: The namespace.
+            tenant: The tenant.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the quota is not found (404).
+        """
+        response = self._request(
+            "DELETE",
+            f"/v1/quotas/{quota_id}",
+            params={"namespace": namespace, "tenant": tenant},
+        )
+
+        if response.status_code == 204:
+            return
+        elif response.status_code == 404:
+            raise HttpError(404, f"Quota not found: {quota_id}")
+        else:
+            raise HttpError(response.status_code, "Failed to delete quota")
+
+    def get_quota_usage(self, quota_id: str) -> "QuotaUsage":
+        """Get current usage statistics for a quota policy.
+
+        Args:
+            quota_id: The quota policy ID.
+
+        Returns:
+            The current usage statistics.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the quota is not found (404).
+        """
+        response = self._request("GET", f"/v1/quotas/{quota_id}/usage")
+
+        if response.status_code == 200:
+            return QuotaUsage.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Quota not found: {quota_id}")
+        else:
+            raise HttpError(response.status_code, "Failed to get quota usage")
+
+    # =========================================================================
+    # Silences
+    # =========================================================================
+
+    def create_silence(self, req: "CreateSilenceRequest") -> "Silence":
+        """Create a silence.
+
+        Args:
+            req: The silence definition. Supply either ``ends_at``
+                or ``duration_seconds``.
+
+        Returns:
+            The created silence.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            ApiError: If the server returns a validation error.
+        """
+        response = self._request("POST", "/v1/silences", json=req.to_dict())
+
+        if response.status_code == 201:
+            return Silence.from_dict(response.json())
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", data.get("error", "Unknown error")),
+                retryable=data.get("retryable", False),
+            )
+
+    def list_silences(
+        self,
+        namespace: Optional[str] = None,
+        tenant: Optional[str] = None,
+        include_expired: bool = False,
+    ) -> "ListSilencesResponse":
+        """List silences, optionally filtered by scope or expiry.
+
+        Args:
+            namespace: Optional namespace filter.
+            tenant: Optional tenant filter.
+            include_expired: If ``True``, include silences whose
+                ``ends_at`` is in the past. Defaults to ``False``.
+
+        Returns:
+            List of silences matching the query.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        params: dict = {}
+        if namespace is not None:
+            params["namespace"] = namespace
+        if tenant is not None:
+            params["tenant"] = tenant
+        if include_expired:
+            params["include_expired"] = "true"
+        response = self._request("GET", "/v1/silences", params=params)
+
+        if response.status_code == 200:
+            return ListSilencesResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list silences")
+
+    def get_silence(self, silence_id: str) -> Optional["Silence"]:
+        """Fetch a single silence by ID.
+
+        Args:
+            silence_id: The silence ID.
+
+        Returns:
+            The silence, or ``None`` if not found.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error (other than 404).
+        """
+        response = self._request("GET", f"/v1/silences/{silence_id}")
+
+        if response.status_code == 200:
+            return Silence.from_dict(response.json())
+        elif response.status_code == 404:
+            return None
+        else:
+            raise HttpError(response.status_code, "Failed to get silence")
+
+    def update_silence(
+        self, silence_id: str, update: "UpdateSilenceRequest"
+    ) -> "Silence":
+        """Extend a silence or edit its comment.
+
+        Matchers are immutable — to change them, expire the silence
+        and create a new one.
+
+        Args:
+            silence_id: The silence ID.
+            update: The update request.
+
+        Returns:
+            The updated silence.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the silence is not found (404).
+            ApiError: If the server returns a validation error.
+        """
+        response = self._request(
+            "PUT", f"/v1/silences/{silence_id}", json=update.to_dict()
+        )
+
+        if response.status_code == 200:
+            return Silence.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Silence not found: {silence_id}")
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", data.get("error", "Unknown error")),
+                retryable=data.get("retryable", False),
+            )
+
+    def delete_silence(self, silence_id: str) -> None:
+        """Expire a silence immediately.
+
+        Soft-expires the silence by setting ``ends_at = now``. The
+        record remains queryable for audit-trail purposes.
+
+        Args:
+            silence_id: The silence ID.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the silence is not found (404).
+        """
+        response = self._request("DELETE", f"/v1/silences/{silence_id}")
+
+        if response.status_code == 204:
+            return
+        elif response.status_code == 404:
+            raise HttpError(404, f"Silence not found: {silence_id}")
+        else:
+            raise HttpError(response.status_code, "Failed to delete silence")
+
+    # =========================================================================
+    # Time Intervals
+    # =========================================================================
+
+    def create_time_interval(
+        self, req: "CreateTimeIntervalRequest"
+    ) -> "TimeInterval":
+        """Create a time interval."""
+        response = self._request("POST", "/v1/time-intervals", json=req.to_dict())
+        if response.status_code == 201:
+            return TimeInterval.from_dict(response.json())
+        data = response.json()
+        raise ApiError(
+            code=data.get("code", "UNKNOWN"),
+            message=data.get("message", data.get("error", "Unknown error")),
+            retryable=data.get("retryable", False),
+        )
+
+    def list_time_intervals(
+        self,
+        namespace: Optional[str] = None,
+        tenant: Optional[str] = None,
+    ) -> "ListTimeIntervalsResponse":
+        """List time intervals filtered by namespace/tenant."""
+        params: dict = {}
+        if namespace is not None:
+            params["namespace"] = namespace
+        if tenant is not None:
+            params["tenant"] = tenant
+        response = self._request("GET", "/v1/time-intervals", params=params)
+        if response.status_code == 200:
+            return ListTimeIntervalsResponse.from_dict(response.json())
+        raise HttpError(response.status_code, "Failed to list time intervals")
+
+    def get_time_interval(
+        self, namespace: str, tenant: str, name: str
+    ) -> Optional["TimeInterval"]:
+        """Fetch a single time interval. Returns ``None`` on 404."""
+        response = self._request(
+            "GET", f"/v1/time-intervals/{namespace}/{tenant}/{name}"
+        )
+        if response.status_code == 200:
+            return TimeInterval.from_dict(response.json())
+        if response.status_code == 404:
+            return None
+        raise HttpError(response.status_code, "Failed to get time interval")
+
+    def update_time_interval(
+        self,
+        namespace: str,
+        tenant: str,
+        name: str,
+        update: "UpdateTimeIntervalRequest",
+    ) -> "TimeInterval":
+        """Update a time interval's ranges, location, or description."""
+        response = self._request(
+            "PUT",
+            f"/v1/time-intervals/{namespace}/{tenant}/{name}",
+            json=update.to_dict(),
+        )
+        if response.status_code == 200:
+            return TimeInterval.from_dict(response.json())
+        if response.status_code == 404:
+            raise HttpError(404, f"Time interval not found: {name}")
+        data = response.json()
+        raise ApiError(
+            code=data.get("code", "UNKNOWN"),
+            message=data.get("message", data.get("error", "Unknown error")),
+            retryable=data.get("retryable", False),
+        )
+
+    def delete_time_interval(
+        self, namespace: str, tenant: str, name: str
+    ) -> None:
+        """Delete a time interval."""
+        response = self._request(
+            "DELETE", f"/v1/time-intervals/{namespace}/{tenant}/{name}"
+        )
+        if response.status_code == 204:
+            return
+        if response.status_code == 404:
+            raise HttpError(404, f"Time interval not found: {name}")
+        raise HttpError(response.status_code, "Failed to delete time interval")
+
+    # =========================================================================
+    # Retention Policies
+    # =========================================================================
+
+    def create_retention(self, req: "CreateRetentionRequest") -> "RetentionPolicy":
+        """Create a retention policy.
+
+        Args:
+            req: The retention policy definition.
+
+        Returns:
+            The created retention policy.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            ApiError: If the server returns a validation error.
+        """
+        response = self._request("POST", "/v1/retention", json=req.to_dict())
+
+        if response.status_code == 201:
+            return RetentionPolicy.from_dict(response.json())
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    def list_retention(
+        self,
+        namespace: Optional[str] = None,
+        tenant: Optional[str] = None,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
+    ) -> "ListRetentionResponse":
+        """List retention policies.
+
+        Args:
+            namespace: Optional namespace filter.
+            tenant: Optional tenant filter.
+            limit: Optional maximum number of results.
+            offset: Optional offset for pagination.
+
+        Returns:
+            List of retention policies.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        params: dict = {}
+        if namespace is not None:
+            params["namespace"] = namespace
+        if tenant is not None:
+            params["tenant"] = tenant
+        if limit is not None:
+            params["limit"] = limit
+        if offset is not None:
+            params["offset"] = offset
+        response = self._request("GET", "/v1/retention", params=params)
+
+        if response.status_code == 200:
+            return ListRetentionResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list retention policies")
+
+    def get_retention(self, retention_id: str) -> Optional["RetentionPolicy"]:
+        """Get a single retention policy by ID.
+
+        Args:
+            retention_id: The retention policy ID.
+
+        Returns:
+            The retention policy, or None if not found.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error (other than 404).
+        """
+        response = self._request("GET", f"/v1/retention/{retention_id}")
+
+        if response.status_code == 200:
+            return RetentionPolicy.from_dict(response.json())
+        elif response.status_code == 404:
+            return None
+        else:
+            raise HttpError(response.status_code, "Failed to get retention policy")
+
+    def update_retention(
+        self, retention_id: str, update: "UpdateRetentionRequest"
+    ) -> "RetentionPolicy":
+        """Update a retention policy.
+
+        Args:
+            retention_id: The retention policy ID.
+            update: The update request with fields to change.
+
+        Returns:
+            The updated retention policy.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the retention policy is not found (404).
+            ApiError: If the server returns a validation error.
+        """
+        response = self._request(
+            "PUT", f"/v1/retention/{retention_id}", json=update.to_dict()
+        )
+
+        if response.status_code == 200:
+            return RetentionPolicy.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Retention policy not found: {retention_id}")
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    def delete_retention(self, retention_id: str) -> None:
+        """Delete a retention policy.
+
+        Args:
+            retention_id: The retention policy ID.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the retention policy is not found (404).
+        """
+        response = self._request(
+            "DELETE",
+            f"/v1/retention/{retention_id}",
+        )
+
+        if response.status_code == 204:
+            return
+        elif response.status_code == 404:
+            raise HttpError(404, f"Retention policy not found: {retention_id}")
+        else:
+            raise HttpError(response.status_code, "Failed to delete retention policy")
+
+    # =========================================================================
+    # Payload Templates
+    # =========================================================================
+
+    def create_template(self, req: "CreateTemplateRequest") -> "TemplateInfo":
+        """Create a payload template.
+
+        Args:
+            req: The template definition.
+
+        Returns:
+            The created template.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            ApiError: If the server returns a validation error.
+        """
+        response = self._request("POST", "/v1/templates", json=req.to_dict())
+
+        if response.status_code == 201:
+            return TemplateInfo.from_dict(response.json())
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    def list_templates(
+        self,
+        namespace: Optional[str] = None,
+        tenant: Optional[str] = None,
+    ) -> "ListTemplatesResponse":
+        """List payload templates.
+
+        Args:
+            namespace: Optional namespace filter.
+            tenant: Optional tenant filter.
+
+        Returns:
+            List of templates.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        params: dict = {}
+        if namespace is not None:
+            params["namespace"] = namespace
+        if tenant is not None:
+            params["tenant"] = tenant
+        response = self._request("GET", "/v1/templates", params=params)
+
+        if response.status_code == 200:
+            return ListTemplatesResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list templates")
+
+    def get_template(self, template_id: str) -> Optional["TemplateInfo"]:
+        """Get a single template by ID.
+
+        Args:
+            template_id: The template ID.
+
+        Returns:
+            The template, or None if not found.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error (other than 404).
+        """
+        response = self._request("GET", f"/v1/templates/{template_id}")
+
+        if response.status_code == 200:
+            return TemplateInfo.from_dict(response.json())
+        elif response.status_code == 404:
+            return None
+        else:
+            raise HttpError(response.status_code, "Failed to get template")
+
+    def update_template(
+        self, template_id: str, update: "UpdateTemplateRequest"
+    ) -> "TemplateInfo":
+        """Update a payload template.
+
+        Args:
+            template_id: The template ID.
+            update: The update request with fields to change.
+
+        Returns:
+            The updated template.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the template is not found (404).
+            ApiError: If the server returns a validation error.
+        """
+        response = self._request(
+            "PUT", f"/v1/templates/{template_id}", json=update.to_dict()
+        )
+
+        if response.status_code == 200:
+            return TemplateInfo.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Template not found: {template_id}")
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    def delete_template(self, template_id: str) -> None:
+        """Delete a payload template.
+
+        Args:
+            template_id: The template ID.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the template is not found (404).
+        """
+        response = self._request("DELETE", f"/v1/templates/{template_id}")
+
+        if response.status_code == 204:
+            return
+        elif response.status_code == 404:
+            raise HttpError(404, f"Template not found: {template_id}")
+        else:
+            raise HttpError(response.status_code, "Failed to delete template")
+
+    def create_profile(self, req: "CreateProfileRequest") -> "TemplateProfileInfo":
+        """Create a template profile.
+
+        Args:
+            req: The profile definition.
+
+        Returns:
+            The created profile.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            ApiError: If the server returns a validation error.
+        """
+        response = self._request("POST", "/v1/templates/profiles", json=req.to_dict())
+
+        if response.status_code == 201:
+            return TemplateProfileInfo.from_dict(response.json())
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    def list_profiles(
+        self,
+        namespace: Optional[str] = None,
+        tenant: Optional[str] = None,
+    ) -> "ListProfilesResponse":
+        """List template profiles.
+
+        Args:
+            namespace: Optional namespace filter.
+            tenant: Optional tenant filter.
+
+        Returns:
+            List of profiles.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        params: dict = {}
+        if namespace is not None:
+            params["namespace"] = namespace
+        if tenant is not None:
+            params["tenant"] = tenant
+        response = self._request("GET", "/v1/templates/profiles", params=params)
+
+        if response.status_code == 200:
+            return ListProfilesResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list profiles")
+
+    def get_profile(self, profile_id: str) -> Optional["TemplateProfileInfo"]:
+        """Get a single template profile by ID.
+
+        Args:
+            profile_id: The profile ID.
+
+        Returns:
+            The profile, or None if not found.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error (other than 404).
+        """
+        response = self._request("GET", f"/v1/templates/profiles/{profile_id}")
+
+        if response.status_code == 200:
+            return TemplateProfileInfo.from_dict(response.json())
+        elif response.status_code == 404:
+            return None
+        else:
+            raise HttpError(response.status_code, "Failed to get profile")
+
+    def update_profile(
+        self, profile_id: str, update: "UpdateProfileRequest"
+    ) -> "TemplateProfileInfo":
+        """Update a template profile.
+
+        Args:
+            profile_id: The profile ID.
+            update: The update request with fields to change.
+
+        Returns:
+            The updated profile.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the profile is not found (404).
+            ApiError: If the server returns a validation error.
+        """
+        response = self._request(
+            "PUT", f"/v1/templates/profiles/{profile_id}", json=update.to_dict()
+        )
+
+        if response.status_code == 200:
+            return TemplateProfileInfo.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Profile not found: {profile_id}")
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    def delete_profile(self, profile_id: str) -> None:
+        """Delete a template profile.
+
+        Args:
+            profile_id: The profile ID.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the profile is not found (404).
+        """
+        response = self._request("DELETE", f"/v1/templates/profiles/{profile_id}")
+
+        if response.status_code == 204:
+            return
+        elif response.status_code == 404:
+            raise HttpError(404, f"Profile not found: {profile_id}")
+        else:
+            raise HttpError(response.status_code, "Failed to delete profile")
+
+    def render_preview(self, req: "RenderPreviewRequest") -> "RenderPreviewResponse":
+        """Render a template profile with payload data.
+
+        Args:
+            req: The render request with profile name and payload.
+
+        Returns:
+            The rendered output with field name to rendered string mapping.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        response = self._request("POST", "/v1/templates/render", json=req.to_dict())
+
+        if response.status_code == 200:
+            return RenderPreviewResponse.from_dict(response.json())
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    # =========================================================================
+    # Provider Health
+    # =========================================================================
+
+    def list_provider_health(self) -> ListProviderHealthResponse:
+        """List health and metrics for all providers.
+
+        Returns:
+            Health status and metrics for all registered providers.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        response = self._request("GET", "/v1/providers/health")
+
+        if response.status_code == 200:
+            return ListProviderHealthResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list provider health")
+
+    # =========================================================================
+    # WASM Plugins
+    # =========================================================================
+
+    def list_plugins(self) -> "ListPluginsResponse":
+        """List all registered WASM plugins.
+
+        Returns:
+            List of registered plugins.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        response = self._request("GET", "/v1/plugins")
+
+        if response.status_code == 200:
+            return ListPluginsResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list plugins")
+
+    def register_plugin(self, req: "RegisterPluginRequest") -> "WasmPlugin":
+        """Register a new WASM plugin.
+
+        Args:
+            req: The plugin registration request.
+
+        Returns:
+            The registered plugin.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            ApiError: If the server returns a validation error.
+        """
+        response = self._request("POST", "/v1/plugins", json=req.to_dict())
+
+        if response.status_code in (200, 201):
+            return WasmPlugin.from_dict(response.json())
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    def get_plugin(self, name: str) -> Optional["WasmPlugin"]:
+        """Get details of a registered WASM plugin.
+
+        Args:
+            name: The plugin name.
+
+        Returns:
+            The plugin details, or None if not found.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error (other than 404).
+        """
+        response = self._request("GET", f"/v1/plugins/{name}")
+
+        if response.status_code == 200:
+            return WasmPlugin.from_dict(response.json())
+        elif response.status_code == 404:
+            return None
+        else:
+            raise HttpError(response.status_code, "Failed to get plugin")
+
+    def delete_plugin(self, name: str) -> None:
+        """Unregister (delete) a WASM plugin.
+
+        Args:
+            name: The plugin name.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the plugin is not found (404).
+        """
+        response = self._request("DELETE", f"/v1/plugins/{name}")
+
+        if response.status_code == 204:
+            return
+        elif response.status_code == 404:
+            raise HttpError(404, f"Plugin not found: {name}")
+        else:
+            raise HttpError(response.status_code, "Failed to delete plugin")
+
+    def invoke_plugin(
+        self, name: str, req: "PluginInvocationRequest"
+    ) -> "PluginInvocationResponse":
+        """Test-invoke a WASM plugin.
+
+        Args:
+            name: The plugin name.
+            req: The invocation request with input data.
+
+        Returns:
+            The invocation response with verdict and optional metadata.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the plugin is not found (404).
+            ApiError: If the server returns a validation error.
+        """
+        response = self._request(
+            "POST", f"/v1/plugins/{name}/invoke", json=req.to_dict()
+        )
+
+        if response.status_code == 200:
+            return PluginInvocationResponse.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Plugin not found: {name}")
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    # =========================================================================
+    # Compliance (SOC2/HIPAA)
+    # =========================================================================
+
+    def get_compliance_status(self) -> ComplianceStatus:
+        """Get the current compliance configuration status.
+
+        Returns:
+            The current compliance mode and settings.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: On non-200 responses.
+        """
+        response = self._request("GET", "/v1/compliance/status")
+        if response.status_code == 200:
+            return ComplianceStatus.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to get compliance status")
+
+    def verify_audit_chain(
+        self, req: "VerifyHashChainRequest"
+    ) -> HashChainVerification:
+        """Verify the integrity of the audit hash chain for a namespace/tenant pair.
+
+        Args:
+            req: The verification request specifying namespace, tenant, and
+                optional time range.
+
+        Returns:
+            The verification result indicating chain validity.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: On non-200 responses.
+        """
+        response = self._request("POST", "/v1/audit/verify", json=req.to_dict())
+        if response.status_code == 200:
+            return HashChainVerification.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to verify audit chain")
+
+    # =========================================================================
+    # Chains
+    # =========================================================================
+
+    def list_chains(
+        self, namespace: str, tenant: str, *, status: Optional[str] = None
+    ) -> ListChainsResponse:
+        """List chain executions filtered by namespace, tenant, and optional status.
+
+        Args:
+            namespace: The namespace to filter by.
+            tenant: The tenant to filter by.
+            status: Optional status filter (running, completed, failed, cancelled, timed_out).
+
+        Returns:
+            List of chain execution summaries.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        params: dict = {"namespace": namespace, "tenant": tenant}
+        if status is not None:
+            params["status"] = status
+        response = self._request("GET", "/v1/chains", params=params)
+
+        if response.status_code == 200:
+            return ListChainsResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list chains")
+
+    def get_chain(
+        self, chain_id: str, namespace: str, tenant: str
+    ) -> Optional[ChainDetailResponse]:
+        """Get full details of a chain execution.
+
+        Args:
+            chain_id: The chain execution ID.
+            namespace: The namespace.
+            tenant: The tenant.
+
+        Returns:
+            The chain detail response, or None if not found.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error (other than 404).
+        """
+        response = self._request(
+            "GET",
+            f"/v1/chains/{chain_id}",
+            params={"namespace": namespace, "tenant": tenant},
+        )
+
+        if response.status_code == 200:
+            return ChainDetailResponse.from_dict(response.json())
+        elif response.status_code == 404:
+            return None
+        else:
+            raise HttpError(response.status_code, "Failed to get chain")
+
+    def cancel_chain(
+        self,
+        chain_id: str,
+        namespace: str,
+        tenant: str,
+        *,
+        reason: Optional[str] = None,
+        cancelled_by: Optional[str] = None,
+    ) -> ChainDetailResponse:
+        """Cancel a running chain execution.
+
+        Args:
+            chain_id: The chain execution ID.
+            namespace: The namespace.
+            tenant: The tenant.
+            reason: Optional reason for cancellation.
+            cancelled_by: Optional identifier of who cancelled the chain.
+
+        Returns:
+            The updated chain detail response.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the chain is not found (404) or already finished (409).
+        """
+        body: dict = {"namespace": namespace, "tenant": tenant}
+        if reason is not None:
+            body["reason"] = reason
+        if cancelled_by is not None:
+            body["cancelled_by"] = cancelled_by
+
+        response = self._request(
+            "POST", f"/v1/chains/{chain_id}/cancel", json=body
+        )
+
+        if response.status_code == 200:
+            return ChainDetailResponse.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Chain not found: {chain_id}")
+        elif response.status_code == 409:
+            raise HttpError(409, "Chain is not running")
+        else:
+            raise HttpError(response.status_code, "Failed to cancel chain")
+
+    def get_chain_dag(
+        self, chain_id: str, namespace: str, tenant: str
+    ) -> DagResponse:
+        """Get the DAG representation for a running chain instance.
+
+        Args:
+            chain_id: The chain execution ID.
+            namespace: The namespace.
+            tenant: The tenant.
+
+        Returns:
+            The DAG response with nodes, edges, and execution path.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the chain is not found (404) or server returns an error.
+        """
+        response = self._request(
+            "GET",
+            f"/v1/chains/{chain_id}/dag",
+            params={"namespace": namespace, "tenant": tenant},
+        )
+
+        if response.status_code == 200:
+            return DagResponse.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Chain not found: {chain_id}")
+        else:
+            raise HttpError(response.status_code, "Failed to get chain DAG")
+
+    def get_chain_definition_dag(self, name: str) -> DagResponse:
+        """Get the DAG representation for a chain definition (config only).
+
+        Args:
+            name: The chain configuration name.
+
+        Returns:
+            The DAG response with nodes and edges (no runtime state).
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the definition is not found (404) or server returns an error.
+        """
+        response = self._request(
+            "GET",
+            f"/v1/chains/definitions/{name}/dag",
+        )
+
+        if response.status_code == 200:
+            return DagResponse.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Chain definition not found: {name}")
+        else:
+            raise HttpError(
+                response.status_code, "Failed to get chain definition DAG"
+            )
+
+    def get_chain_history(
+        self, chain_id: str, namespace: str, tenant: str
+    ) -> ChainHistoryResponse:
+        """Get the retry history for a chain execution.
+
+        Args:
+            chain_id: The chain execution ID.
+            namespace: The namespace.
+            tenant: The tenant.
+
+        Returns:
+            The chain history response with per-step attempt details.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the chain is not found (404) or server returns an error.
+        """
+        response = self._request(
+            "GET",
+            f"/v1/chains/{chain_id}/history",
+            params={"namespace": namespace, "tenant": tenant},
+        )
+
+        if response.status_code == 200:
+            return ChainHistoryResponse.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Chain not found: {chain_id}")
+        else:
+            raise HttpError(
+                response.status_code, "Failed to get chain history"
+            )
+
+    # =========================================================================
+    # DLQ (Dead-Letter Queue)
+    # =========================================================================
+
+    def dlq_stats(self) -> DlqStatsResponse:
+        """Get dead-letter queue statistics.
+
+        Returns:
+            DLQ statistics including enabled status and entry count.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        response = self._request("GET", "/v1/dlq/stats")
+
+        if response.status_code == 200:
+            return DlqStatsResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to get DLQ stats")
+
+    def dlq_drain(self) -> DlqDrainResponse:
+        """Drain all entries from the dead-letter queue.
+
+        Removes and returns all entries from the DLQ for manual processing
+        or resubmission.
+
+        Returns:
+            The drained entries and count.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the DLQ is not enabled (404) or the server returns an error.
+        """
+        response = self._request("POST", "/v1/dlq/drain")
+
+        if response.status_code == 200:
+            return DlqDrainResponse.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, "Dead-letter queue is not enabled")
+        else:
+            raise HttpError(response.status_code, "Failed to drain DLQ")
+
+    # =========================================================================
+    # Analytics
+    # =========================================================================
+
+    def query_analytics(
+        self,
+        metric: str,
+        *,
+        namespace: Optional[str] = None,
+        tenant: Optional[str] = None,
+        provider: Optional[str] = None,
+        action_type: Optional[str] = None,
+        outcome: Optional[str] = None,
+        interval: Optional[str] = None,
+        from_time: Optional[str] = None,
+        to_time: Optional[str] = None,
+        group_by: Optional[str] = None,
+        top_n: Optional[int] = None,
+    ) -> "AnalyticsResponse":
+        """Query analytics data.
+
+        Args:
+            metric: The metric to query (required). One of "volume",
+                "outcome_breakdown", "top_action_types", "latency", "error_rate".
+            namespace: Optional namespace filter.
+            tenant: Optional tenant filter.
+            provider: Optional provider filter.
+            action_type: Optional action type filter.
+            outcome: Optional outcome filter.
+            interval: Time bucket interval (default "daily"). One of "hourly",
+                "daily", "weekly", "monthly".
+            from_time: Optional start of time range (RFC 3339 datetime string).
+            to_time: Optional end of time range (RFC 3339 datetime string).
+            group_by: Optional grouping dimension (e.g., "provider", "action_type",
+                "outcome").
+            top_n: Optional limit for top-N queries.
+
+        Returns:
+            Analytics response with time-series buckets and/or top entries.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        params: dict[str, str] = {"metric": metric}
+        if namespace is not None:
+            params["namespace"] = namespace
+        if tenant is not None:
+            params["tenant"] = tenant
+        if provider is not None:
+            params["provider"] = provider
+        if action_type is not None:
+            params["action_type"] = action_type
+        if outcome is not None:
+            params["outcome"] = outcome
+        if interval is not None:
+            params["interval"] = interval
+        if from_time is not None:
+            params["from"] = from_time
+        if to_time is not None:
+            params["to"] = to_time
+        if group_by is not None:
+            params["group_by"] = group_by
+        if top_n is not None:
+            params["top_n"] = str(top_n)
+
+        response = self._request("GET", "/v1/analytics", params=params)
+
+        if response.status_code == 200:
+            return AnalyticsResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to query analytics")
+
+    # =========================================================================
+    # Rule Coverage
+    # =========================================================================
+
+    def rules_coverage(self, query: Optional[CoverageQuery] = None) -> CoverageReport:
+        """Analyze rule coverage by querying the server's aggregation endpoint.
+
+        The server groups audit records by
+        ``(namespace, tenant, provider, action_type, matched_rule)`` and
+        cross-references the result with the currently-loaded rule set.
+        No raw audit records are transferred over the wire.
+
+        Args:
+            query: Optional coverage query parameters.
+
+        Returns:
+            A CoverageReport with per-combination coverage statistics.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        params: dict[str, str] = {}
+        if query is not None:
+            if query.namespace is not None:
+                params["namespace"] = query.namespace
+            if query.tenant is not None:
+                params["tenant"] = query.tenant
+            if query.from_time is not None:
+                params["from"] = query.from_time
+            if query.to_time is not None:
+                params["to"] = query.to_time
+
+        response = self._request("GET", "/v1/rules/coverage", params=params)
+
+        if response.status_code == 200:
+            return CoverageReport.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to get rule coverage")
+
+    # =========================================================================
+    # Subscribe (SSE)
+    # =========================================================================
+
+    def subscribe(
+        self,
+        entity_type: str,
+        entity_id: str,
+        *,
+        namespace: Optional[str] = None,
+        tenant: Optional[str] = None,
+        include_history: bool = True,
+    ) -> Iterator[SseEvent]:
+        """Subscribe to events for a specific entity via SSE.
+
+        Opens a streaming connection to ``GET /v1/subscribe/{entity_type}/{entity_id}``
+        and yields parsed SSE events as they arrive.
+
+        Args:
+            entity_type: One of "chain", "group", or "action".
+            entity_id: The entity identifier to subscribe to.
+            namespace: Namespace for tenant isolation (required for chain/group).
+            tenant: Tenant for tenant isolation (required for chain/group).
+            include_history: Emit catch-up events for current state (default: True).
+
+        Yields:
+            Parsed SseEvent objects.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        params: dict = {"include_history": str(include_history).lower()}
+        if namespace is not None:
+            params["namespace"] = namespace
+        if tenant is not None:
+            params["tenant"] = tenant
+
+        url = f"{self.base_url}/v1/subscribe/{entity_type}/{entity_id}"
+        headers = self._headers()
+        headers["Accept"] = "text/event-stream"
+        # Remove Content-Type for GET streaming requests.
+        headers.pop("Content-Type", None)
+
+        try:
+            with self._client.stream(
+                "GET", url, params=params, headers=headers
+            ) as response:
+                if response.status_code != 200:
+                    response.read()
+                    raise HttpError(response.status_code, "Failed to subscribe")
+                yield from _parse_sse_stream(response.iter_lines())
+        except httpx.ConnectError as e:
+            raise ConnectionError(str(e)) from e
+        except httpx.TimeoutException as e:
+            raise ConnectionError(f"Request timed out: {e}") from e
+
+    # =========================================================================
+    # Stream (SSE)
+    # =========================================================================
+
+    def stream(
+        self,
+        *,
+        namespace: Optional[str] = None,
+        action_type: Optional[str] = None,
+        outcome: Optional[str] = None,
+        event_type: Optional[str] = None,
+        chain_id: Optional[str] = None,
+        group_id: Optional[str] = None,
+        action_id: Optional[str] = None,
+        last_event_id: Optional[str] = None,
+    ) -> Iterator[SseEvent]:
+        """Subscribe to the real-time event stream via SSE.
+
+        Opens a streaming connection to ``GET /v1/stream`` and yields parsed
+        SSE events as they arrive. All parameters are optional filters.
+
+        Args:
+            namespace: Filter events by namespace.
+            action_type: Filter events by action type.
+            outcome: Filter events by outcome category (e.g., executed, suppressed, failed).
+            event_type: Filter events by stream event type (e.g., action_dispatched).
+            chain_id: Filter events by chain ID.
+            group_id: Filter events by group ID.
+            action_id: Filter events by action ID.
+            last_event_id: Reconnection token; replays missed events from this ID.
+
+        Yields:
+            Parsed SseEvent objects.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        params: dict = {}
+        if namespace is not None:
+            params["namespace"] = namespace
+        if action_type is not None:
+            params["action_type"] = action_type
+        if outcome is not None:
+            params["outcome"] = outcome
+        if event_type is not None:
+            params["event_type"] = event_type
+        if chain_id is not None:
+            params["chain_id"] = chain_id
+        if group_id is not None:
+            params["group_id"] = group_id
+        if action_id is not None:
+            params["action_id"] = action_id
+
+        url = f"{self.base_url}/v1/stream"
+        headers = self._headers()
+        headers["Accept"] = "text/event-stream"
+        # Remove Content-Type for GET streaming requests.
+        headers.pop("Content-Type", None)
+        if last_event_id is not None:
+            headers["Last-Event-ID"] = last_event_id
+
+        try:
+            with self._client.stream(
+                "GET", url, params=params, headers=headers
+            ) as response:
+                if response.status_code != 200:
+                    response.read()
+                    raise HttpError(response.status_code, "Failed to open stream")
+                yield from _parse_sse_stream(response.iter_lines())
+        except httpx.ConnectError as e:
+            raise ConnectionError(str(e)) from e
+        except httpx.TimeoutException as e:
+            raise ConnectionError(f"Request timed out: {e}") from e
+
+
+    # ------------------------------------------------------------------
+    # Swarm runs
+    # ------------------------------------------------------------------
+
+    def list_swarm_runs(
+        self, filter: Optional[SwarmRunFilter] = None
+    ) -> ListSwarmRunsResponse:
+        """List swarm runs tracked by the server-side registry."""
+        params = filter.to_params() if filter else {}
+        response = self._request("GET", "/v1/swarm/runs", params=params)
+        if response.status_code == 200:
+            return ListSwarmRunsResponse.from_dict(response.json())
+        raise HttpError(response.status_code, "Failed to list swarm runs")
+
+    def get_swarm_run(self, run_id: str) -> Optional[SwarmRunSnapshot]:
+        """Fetch a single swarm run snapshot. Returns ``None`` if unknown."""
+        # quote() with safe="" encodes '/', '?', and '#' — otherwise a
+        # maliciously crafted run_id could inject path/query segments.
+        encoded = quote(run_id, safe="")
+        response = self._request("GET", f"/v1/swarm/runs/{encoded}")
+        if response.status_code == 200:
+            return SwarmRunSnapshot.from_dict(response.json())
+        if response.status_code == 404:
+            return None
+        raise HttpError(response.status_code, "Failed to fetch swarm run")
+
+    def cancel_swarm_run(self, run_id: str) -> Optional[SwarmRunSnapshot]:
+        """Request cancellation of an inflight swarm run."""
+        encoded = quote(run_id, safe="")
+        response = self._request("POST", f"/v1/swarm/runs/{encoded}/cancel")
+        if response.status_code == 200:
+            return SwarmRunSnapshot.from_dict(response.json())
+        if response.status_code == 404:
+            return None
+        raise HttpError(response.status_code, "Failed to cancel swarm run")
+
+
+class AsyncActeonClient(_AsyncA2AClientMixin, _AsyncBusClientMixin):
     """Async HTTP client for the Acteon action gateway.
 
     Example:
@@ -695,10 +2624,32 @@ class AsyncActeonClient:
         *,
         timeout: float = 30.0,
         api_key: Optional[str] = None,
+        ca_cert_path: Optional[str] = None,
+        client_cert_path: Optional[str] = None,
+        client_key_path: Optional[str] = None,
+        verify_ssl: bool = True,
     ):
+        """Create a new async Acteon client.
+
+        Args:
+            base_url: Base URL of the Acteon server (e.g., "http://localhost:8080").
+            timeout: Request timeout in seconds.
+            api_key: Optional API key for authentication.
+            ca_cert_path: Path to a custom CA certificate file (PEM) for server
+                verification. When provided, this CA is used instead of system CAs.
+            client_cert_path: Path to a client certificate file (PEM) for mTLS.
+                Must be paired with ``client_key_path``.
+            client_key_path: Path to a client private key file (PEM) for mTLS.
+                Must be paired with ``client_cert_path``.
+            verify_ssl: Set to ``False`` to skip certificate verification
+                (for development/testing only). Ignored when ``ca_cert_path``
+                is provided.
+        """
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
-        self._client = httpx.AsyncClient(timeout=timeout)
+        verify: Union[bool, str] = ca_cert_path if ca_cert_path else verify_ssl
+        cert = (client_cert_path, client_key_path) if client_cert_path and client_key_path else None
+        self._client = httpx.AsyncClient(timeout=timeout, verify=verify, cert=cert)
 
     async def __aenter__(self):
         return self
@@ -722,15 +2673,25 @@ class AsyncActeonClient:
         *,
         json: Optional[dict] = None,
         params: Optional[dict] = None,
+        extra_headers: Optional[dict[str, str]] = None,
+        skip_auth: bool = False,
     ) -> httpx.Response:
+        """Async counterpart of the sync ``_request``.
+
+        See the sync version's docstring for the ``extra_headers`` /
+        ``skip_auth`` semantics.
+        """
         url = f"{self.base_url}{path}"
+        headers = {"Content-Type": "application/json"} if skip_auth else self._headers()
+        if extra_headers:
+            headers.update(extra_headers)
         try:
             response = await self._client.request(
                 method,
                 url,
                 json=json,
                 params=params,
-                headers=self._headers(),
+                headers=headers,
             )
             return response
         except httpx.ConnectError as e:
@@ -744,6 +2705,23 @@ class AsyncActeonClient:
             return response.status_code == 200
         except ConnectionError:
             return False
+
+    async def fetch_signing_keys(self) -> SigningKeysResponse:
+        """Fetch the server's active signing keyring.
+
+        See :meth:`ActeonClient.fetch_signing_keys` for the full
+        description — this is the async counterpart with identical
+        semantics.
+        """
+        response = await self._request("GET", "/.well-known/acteon-signing-keys")
+        if response.status_code != 200:
+            raise HttpError(response.status_code, "Failed to fetch signing keys")
+        try:
+            return SigningKeysResponse.from_dict(response.json())
+        except ValueError as e:
+            raise ConnectionError(
+                f"malformed signing keys response: {e}"
+            ) from e
 
     async def dispatch(
         self, action: Action, *, dry_run: bool = False
@@ -812,6 +2790,34 @@ class AsyncActeonClient:
         )
         if response.status_code != 200:
             raise HttpError(response.status_code, f"Failed to set rule enabled")
+
+    async def evaluate_rules(
+        self, request: EvaluateRulesRequest
+    ) -> EvaluateRulesResponse:
+        """Evaluate rules against a test action without dispatching."""
+        body: dict = {
+            "namespace": request.namespace,
+            "tenant": request.tenant,
+            "provider": request.provider,
+            "action_type": request.action_type,
+            "payload": request.payload,
+        }
+        if request.metadata:
+            body["metadata"] = request.metadata
+        if request.include_disabled:
+            body["include_disabled"] = True
+        if request.evaluate_all:
+            body["evaluate_all"] = True
+        if request.evaluate_at:
+            body["evaluate_at"] = request.evaluate_at
+        if request.mock_state:
+            body["mock_state"] = request.mock_state
+
+        response = await self._request("POST", "/v1/rules/evaluate", json=body)
+        if response.status_code == 200:
+            return EvaluateRulesResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to evaluate rules")
 
     async def query_audit(self, query: Optional[AuditQuery] = None) -> AuditPage:
         params = query.to_params() if query else {}
@@ -1003,3 +3009,1047 @@ class AsyncActeonClient:
             return ApprovalListResponse.from_dict(response.json())
         else:
             raise HttpError(response.status_code, "Failed to list approvals")
+
+    # =========================================================================
+    # Recurring Actions
+    # =========================================================================
+
+    async def create_recurring(
+        self, recurring: CreateRecurringAction
+    ) -> CreateRecurringResponse:
+        """Create a recurring action."""
+        response = await self._request(
+            "POST", "/v1/recurring", json=recurring.to_dict()
+        )
+        if response.status_code == 201:
+            return CreateRecurringResponse.from_dict(response.json())
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    async def list_recurring(
+        self, filter: Optional[RecurringFilter] = None
+    ) -> ListRecurringResponse:
+        """List recurring actions."""
+        params = filter.to_params() if filter else {}
+        response = await self._request("GET", "/v1/recurring", params=params)
+        if response.status_code == 200:
+            return ListRecurringResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list recurring actions")
+
+    async def get_recurring(
+        self, recurring_id: str, namespace: str, tenant: str
+    ) -> Optional[RecurringDetail]:
+        """Get details of a specific recurring action."""
+        response = await self._request(
+            "GET",
+            f"/v1/recurring/{recurring_id}",
+            params={"namespace": namespace, "tenant": tenant},
+        )
+        if response.status_code == 200:
+            return RecurringDetail.from_dict(response.json())
+        elif response.status_code == 404:
+            return None
+        else:
+            raise HttpError(response.status_code, "Failed to get recurring action")
+
+    async def update_recurring(
+        self, recurring_id: str, update: UpdateRecurringAction
+    ) -> RecurringDetail:
+        """Update a recurring action."""
+        response = await self._request(
+            "PUT", f"/v1/recurring/{recurring_id}", json=update.to_dict()
+        )
+        if response.status_code == 200:
+            return RecurringDetail.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Recurring action not found: {recurring_id}")
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    async def delete_recurring(
+        self, recurring_id: str, namespace: str, tenant: str
+    ) -> None:
+        """Delete a recurring action."""
+        response = await self._request(
+            "DELETE",
+            f"/v1/recurring/{recurring_id}",
+            params={"namespace": namespace, "tenant": tenant},
+        )
+        if response.status_code == 204:
+            return
+        elif response.status_code == 404:
+            raise HttpError(404, f"Recurring action not found: {recurring_id}")
+        else:
+            raise HttpError(response.status_code, "Failed to delete recurring action")
+
+    async def pause_recurring(
+        self, recurring_id: str, namespace: str, tenant: str
+    ) -> RecurringDetail:
+        """Pause a recurring action."""
+        response = await self._request(
+            "POST",
+            f"/v1/recurring/{recurring_id}/pause",
+            json={"namespace": namespace, "tenant": tenant},
+        )
+        if response.status_code == 200:
+            return RecurringDetail.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Recurring action not found: {recurring_id}")
+        elif response.status_code == 409:
+            raise HttpError(409, "Recurring action is already paused")
+        else:
+            raise HttpError(response.status_code, "Failed to pause recurring action")
+
+    async def resume_recurring(
+        self, recurring_id: str, namespace: str, tenant: str
+    ) -> RecurringDetail:
+        """Resume a paused recurring action."""
+        response = await self._request(
+            "POST",
+            f"/v1/recurring/{recurring_id}/resume",
+            json={"namespace": namespace, "tenant": tenant},
+        )
+        if response.status_code == 200:
+            return RecurringDetail.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Recurring action not found: {recurring_id}")
+        elif response.status_code == 409:
+            raise HttpError(409, "Recurring action is already active")
+        else:
+            raise HttpError(response.status_code, "Failed to resume recurring action")
+
+    # =========================================================================
+    # Quotas
+    # =========================================================================
+
+    async def create_quota(self, req: "CreateQuotaRequest") -> "QuotaPolicy":
+        """Create a quota policy."""
+        response = await self._request("POST", "/v1/quotas", json=req.to_dict())
+        if response.status_code == 201:
+            return QuotaPolicy.from_dict(response.json())
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    async def list_quotas(
+        self,
+        namespace: Optional[str] = None,
+        tenant: Optional[str] = None,
+        provider: Optional[str] = None,
+    ) -> "ListQuotasResponse":
+        """List quota policies, optionally filtered by namespace,
+        tenant, and provider scope (``"generic"`` matches generic
+        policies; a provider name matches per-provider policies)."""
+        params: dict = {}
+        if namespace is not None:
+            params["namespace"] = namespace
+        if tenant is not None:
+            params["tenant"] = tenant
+        if provider is not None:
+            params["provider"] = provider
+        response = await self._request("GET", "/v1/quotas", params=params)
+        if response.status_code == 200:
+            return ListQuotasResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list quotas")
+
+    async def get_quota(self, quota_id: str) -> Optional["QuotaPolicy"]:
+        """Get a single quota policy by ID."""
+        response = await self._request("GET", f"/v1/quotas/{quota_id}")
+        if response.status_code == 200:
+            return QuotaPolicy.from_dict(response.json())
+        elif response.status_code == 404:
+            return None
+        else:
+            raise HttpError(response.status_code, "Failed to get quota")
+
+    async def update_quota(
+        self, quota_id: str, update: "UpdateQuotaRequest"
+    ) -> "QuotaPolicy":
+        """Update a quota policy."""
+        response = await self._request(
+            "PUT", f"/v1/quotas/{quota_id}", json=update.to_dict()
+        )
+        if response.status_code == 200:
+            return QuotaPolicy.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Quota not found: {quota_id}")
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    async def delete_quota(
+        self, quota_id: str, namespace: str, tenant: str
+    ) -> None:
+        """Delete a quota policy."""
+        response = await self._request(
+            "DELETE",
+            f"/v1/quotas/{quota_id}",
+            params={"namespace": namespace, "tenant": tenant},
+        )
+        if response.status_code == 204:
+            return
+        elif response.status_code == 404:
+            raise HttpError(404, f"Quota not found: {quota_id}")
+        else:
+            raise HttpError(response.status_code, "Failed to delete quota")
+
+    async def get_quota_usage(self, quota_id: str) -> "QuotaUsage":
+        """Get current usage statistics for a quota policy."""
+        response = await self._request("GET", f"/v1/quotas/{quota_id}/usage")
+        if response.status_code == 200:
+            return QuotaUsage.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Quota not found: {quota_id}")
+        else:
+            raise HttpError(response.status_code, "Failed to get quota usage")
+
+    # =========================================================================
+    # Silences
+    # =========================================================================
+
+    async def create_silence(self, req: "CreateSilenceRequest") -> "Silence":
+        """Create a silence. Supply either ``ends_at`` or ``duration_seconds``."""
+        response = await self._request(
+            "POST", "/v1/silences", json=req.to_dict()
+        )
+        if response.status_code == 201:
+            return Silence.from_dict(response.json())
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", data.get("error", "Unknown error")),
+                retryable=data.get("retryable", False),
+            )
+
+    async def list_silences(
+        self,
+        namespace: Optional[str] = None,
+        tenant: Optional[str] = None,
+        include_expired: bool = False,
+    ) -> "ListSilencesResponse":
+        """List silences, optionally filtered by scope or expiry."""
+        params: dict = {}
+        if namespace is not None:
+            params["namespace"] = namespace
+        if tenant is not None:
+            params["tenant"] = tenant
+        if include_expired:
+            params["include_expired"] = "true"
+        response = await self._request("GET", "/v1/silences", params=params)
+        if response.status_code == 200:
+            return ListSilencesResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list silences")
+
+    async def get_silence(self, silence_id: str) -> Optional["Silence"]:
+        """Fetch a single silence by ID. Returns ``None`` on 404."""
+        response = await self._request("GET", f"/v1/silences/{silence_id}")
+        if response.status_code == 200:
+            return Silence.from_dict(response.json())
+        elif response.status_code == 404:
+            return None
+        else:
+            raise HttpError(response.status_code, "Failed to get silence")
+
+    async def update_silence(
+        self, silence_id: str, update: "UpdateSilenceRequest"
+    ) -> "Silence":
+        """Extend a silence or edit its comment. Matchers are immutable."""
+        response = await self._request(
+            "PUT", f"/v1/silences/{silence_id}", json=update.to_dict()
+        )
+        if response.status_code == 200:
+            return Silence.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Silence not found: {silence_id}")
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", data.get("error", "Unknown error")),
+                retryable=data.get("retryable", False),
+            )
+
+    async def delete_silence(self, silence_id: str) -> None:
+        """Expire a silence immediately (soft-expire)."""
+        response = await self._request("DELETE", f"/v1/silences/{silence_id}")
+        if response.status_code == 204:
+            return
+        elif response.status_code == 404:
+            raise HttpError(404, f"Silence not found: {silence_id}")
+        else:
+            raise HttpError(response.status_code, "Failed to delete silence")
+
+    # =========================================================================
+    # Retention Policies
+    # =========================================================================
+
+    async def create_retention(self, req: "CreateRetentionRequest") -> "RetentionPolicy":
+        """Create a retention policy."""
+        response = await self._request("POST", "/v1/retention", json=req.to_dict())
+        if response.status_code == 201:
+            return RetentionPolicy.from_dict(response.json())
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    async def list_retention(
+        self,
+        namespace: Optional[str] = None,
+        tenant: Optional[str] = None,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
+    ) -> "ListRetentionResponse":
+        """List retention policies."""
+        params: dict = {}
+        if namespace is not None:
+            params["namespace"] = namespace
+        if tenant is not None:
+            params["tenant"] = tenant
+        if limit is not None:
+            params["limit"] = limit
+        if offset is not None:
+            params["offset"] = offset
+        response = await self._request("GET", "/v1/retention", params=params)
+        if response.status_code == 200:
+            return ListRetentionResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list retention policies")
+
+    async def get_retention(self, retention_id: str) -> Optional["RetentionPolicy"]:
+        """Get a single retention policy by ID."""
+        response = await self._request("GET", f"/v1/retention/{retention_id}")
+        if response.status_code == 200:
+            return RetentionPolicy.from_dict(response.json())
+        elif response.status_code == 404:
+            return None
+        else:
+            raise HttpError(response.status_code, "Failed to get retention policy")
+
+    async def update_retention(
+        self, retention_id: str, update: "UpdateRetentionRequest"
+    ) -> "RetentionPolicy":
+        """Update a retention policy."""
+        response = await self._request(
+            "PUT", f"/v1/retention/{retention_id}", json=update.to_dict()
+        )
+        if response.status_code == 200:
+            return RetentionPolicy.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Retention policy not found: {retention_id}")
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    async def delete_retention(self, retention_id: str) -> None:
+        """Delete a retention policy."""
+        response = await self._request(
+            "DELETE",
+            f"/v1/retention/{retention_id}",
+        )
+        if response.status_code == 204:
+            return
+        elif response.status_code == 404:
+            raise HttpError(404, f"Retention policy not found: {retention_id}")
+        else:
+            raise HttpError(response.status_code, "Failed to delete retention policy")
+
+    # =========================================================================
+    # Payload Templates
+    # =========================================================================
+
+    async def create_template(self, req: "CreateTemplateRequest") -> "TemplateInfo":
+        """Create a payload template."""
+        response = await self._request("POST", "/v1/templates", json=req.to_dict())
+        if response.status_code == 201:
+            return TemplateInfo.from_dict(response.json())
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    async def list_templates(
+        self,
+        namespace: Optional[str] = None,
+        tenant: Optional[str] = None,
+    ) -> "ListTemplatesResponse":
+        """List payload templates."""
+        params: dict = {}
+        if namespace is not None:
+            params["namespace"] = namespace
+        if tenant is not None:
+            params["tenant"] = tenant
+        response = await self._request("GET", "/v1/templates", params=params)
+        if response.status_code == 200:
+            return ListTemplatesResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list templates")
+
+    async def get_template(self, template_id: str) -> Optional["TemplateInfo"]:
+        """Get a single template by ID."""
+        response = await self._request("GET", f"/v1/templates/{template_id}")
+        if response.status_code == 200:
+            return TemplateInfo.from_dict(response.json())
+        elif response.status_code == 404:
+            return None
+        else:
+            raise HttpError(response.status_code, "Failed to get template")
+
+    async def update_template(
+        self, template_id: str, update: "UpdateTemplateRequest"
+    ) -> "TemplateInfo":
+        """Update a payload template."""
+        response = await self._request(
+            "PUT", f"/v1/templates/{template_id}", json=update.to_dict()
+        )
+        if response.status_code == 200:
+            return TemplateInfo.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Template not found: {template_id}")
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    async def delete_template(self, template_id: str) -> None:
+        """Delete a payload template."""
+        response = await self._request("DELETE", f"/v1/templates/{template_id}")
+        if response.status_code == 204:
+            return
+        elif response.status_code == 404:
+            raise HttpError(404, f"Template not found: {template_id}")
+        else:
+            raise HttpError(response.status_code, "Failed to delete template")
+
+    async def create_profile(self, req: "CreateProfileRequest") -> "TemplateProfileInfo":
+        """Create a template profile."""
+        response = await self._request("POST", "/v1/templates/profiles", json=req.to_dict())
+        if response.status_code == 201:
+            return TemplateProfileInfo.from_dict(response.json())
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    async def list_profiles(
+        self,
+        namespace: Optional[str] = None,
+        tenant: Optional[str] = None,
+    ) -> "ListProfilesResponse":
+        """List template profiles."""
+        params: dict = {}
+        if namespace is not None:
+            params["namespace"] = namespace
+        if tenant is not None:
+            params["tenant"] = tenant
+        response = await self._request("GET", "/v1/templates/profiles", params=params)
+        if response.status_code == 200:
+            return ListProfilesResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list profiles")
+
+    async def get_profile(self, profile_id: str) -> Optional["TemplateProfileInfo"]:
+        """Get a single template profile by ID."""
+        response = await self._request("GET", f"/v1/templates/profiles/{profile_id}")
+        if response.status_code == 200:
+            return TemplateProfileInfo.from_dict(response.json())
+        elif response.status_code == 404:
+            return None
+        else:
+            raise HttpError(response.status_code, "Failed to get profile")
+
+    async def update_profile(
+        self, profile_id: str, update: "UpdateProfileRequest"
+    ) -> "TemplateProfileInfo":
+        """Update a template profile."""
+        response = await self._request(
+            "PUT", f"/v1/templates/profiles/{profile_id}", json=update.to_dict()
+        )
+        if response.status_code == 200:
+            return TemplateProfileInfo.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Profile not found: {profile_id}")
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    async def delete_profile(self, profile_id: str) -> None:
+        """Delete a template profile."""
+        response = await self._request("DELETE", f"/v1/templates/profiles/{profile_id}")
+        if response.status_code == 204:
+            return
+        elif response.status_code == 404:
+            raise HttpError(404, f"Profile not found: {profile_id}")
+        else:
+            raise HttpError(response.status_code, "Failed to delete profile")
+
+    async def render_preview(self, req: "RenderPreviewRequest") -> "RenderPreviewResponse":
+        """Render a template profile with payload data."""
+        response = await self._request("POST", "/v1/templates/render", json=req.to_dict())
+        if response.status_code == 200:
+            return RenderPreviewResponse.from_dict(response.json())
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    # =========================================================================
+    # Provider Health
+    # =========================================================================
+
+    async def list_provider_health(self) -> ListProviderHealthResponse:
+        """List health and metrics for all providers."""
+        response = await self._request("GET", "/v1/providers/health")
+        if response.status_code == 200:
+            return ListProviderHealthResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list provider health")
+
+    # =========================================================================
+    # WASM Plugins
+    # =========================================================================
+
+    async def list_plugins(self) -> "ListPluginsResponse":
+        """List all registered WASM plugins."""
+        response = await self._request("GET", "/v1/plugins")
+        if response.status_code == 200:
+            return ListPluginsResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list plugins")
+
+    async def register_plugin(self, req: "RegisterPluginRequest") -> "WasmPlugin":
+        """Register a new WASM plugin."""
+        response = await self._request("POST", "/v1/plugins", json=req.to_dict())
+        if response.status_code in (200, 201):
+            return WasmPlugin.from_dict(response.json())
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    async def get_plugin(self, name: str) -> Optional["WasmPlugin"]:
+        """Get details of a registered WASM plugin."""
+        response = await self._request("GET", f"/v1/plugins/{name}")
+        if response.status_code == 200:
+            return WasmPlugin.from_dict(response.json())
+        elif response.status_code == 404:
+            return None
+        else:
+            raise HttpError(response.status_code, "Failed to get plugin")
+
+    async def delete_plugin(self, name: str) -> None:
+        """Unregister (delete) a WASM plugin."""
+        response = await self._request("DELETE", f"/v1/plugins/{name}")
+        if response.status_code == 204:
+            return
+        elif response.status_code == 404:
+            raise HttpError(404, f"Plugin not found: {name}")
+        else:
+            raise HttpError(response.status_code, "Failed to delete plugin")
+
+    async def invoke_plugin(
+        self, name: str, req: "PluginInvocationRequest"
+    ) -> "PluginInvocationResponse":
+        """Test-invoke a WASM plugin."""
+        response = await self._request(
+            "POST", f"/v1/plugins/{name}/invoke", json=req.to_dict()
+        )
+        if response.status_code == 200:
+            return PluginInvocationResponse.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Plugin not found: {name}")
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    # =========================================================================
+    # Compliance (SOC2/HIPAA)
+    # =========================================================================
+
+    async def get_compliance_status(self) -> ComplianceStatus:
+        """Get the current compliance configuration status."""
+        response = await self._request("GET", "/v1/compliance/status")
+        if response.status_code == 200:
+            return ComplianceStatus.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to get compliance status")
+
+    async def verify_audit_chain(
+        self, req: "VerifyHashChainRequest"
+    ) -> HashChainVerification:
+        """Verify the integrity of the audit hash chain for a namespace/tenant pair."""
+        response = await self._request(
+            "POST", "/v1/audit/verify", json=req.to_dict()
+        )
+        if response.status_code == 200:
+            return HashChainVerification.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to verify audit chain")
+
+    # =========================================================================
+    # Chains
+    # =========================================================================
+
+    async def list_chains(
+        self, namespace: str, tenant: str, *, status: Optional[str] = None
+    ) -> ListChainsResponse:
+        """List chain executions filtered by namespace, tenant, and optional status."""
+        params: dict = {"namespace": namespace, "tenant": tenant}
+        if status is not None:
+            params["status"] = status
+        response = await self._request("GET", "/v1/chains", params=params)
+        if response.status_code == 200:
+            return ListChainsResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list chains")
+
+    async def get_chain(
+        self, chain_id: str, namespace: str, tenant: str
+    ) -> Optional[ChainDetailResponse]:
+        """Get full details of a chain execution."""
+        response = await self._request(
+            "GET",
+            f"/v1/chains/{chain_id}",
+            params={"namespace": namespace, "tenant": tenant},
+        )
+        if response.status_code == 200:
+            return ChainDetailResponse.from_dict(response.json())
+        elif response.status_code == 404:
+            return None
+        else:
+            raise HttpError(response.status_code, "Failed to get chain")
+
+    async def cancel_chain(
+        self,
+        chain_id: str,
+        namespace: str,
+        tenant: str,
+        *,
+        reason: Optional[str] = None,
+        cancelled_by: Optional[str] = None,
+    ) -> ChainDetailResponse:
+        """Cancel a running chain execution."""
+        body: dict = {"namespace": namespace, "tenant": tenant}
+        if reason is not None:
+            body["reason"] = reason
+        if cancelled_by is not None:
+            body["cancelled_by"] = cancelled_by
+        response = await self._request(
+            "POST", f"/v1/chains/{chain_id}/cancel", json=body
+        )
+        if response.status_code == 200:
+            return ChainDetailResponse.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Chain not found: {chain_id}")
+        elif response.status_code == 409:
+            raise HttpError(409, "Chain is not running")
+        else:
+            raise HttpError(response.status_code, "Failed to cancel chain")
+
+    async def get_chain_dag(
+        self, chain_id: str, namespace: str, tenant: str
+    ) -> DagResponse:
+        """Get the DAG representation for a running chain instance."""
+        response = await self._request(
+            "GET",
+            f"/v1/chains/{chain_id}/dag",
+            params={"namespace": namespace, "tenant": tenant},
+        )
+        if response.status_code == 200:
+            return DagResponse.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Chain not found: {chain_id}")
+        else:
+            raise HttpError(response.status_code, "Failed to get chain DAG")
+
+    async def get_chain_definition_dag(self, name: str) -> DagResponse:
+        """Get the DAG representation for a chain definition (config only)."""
+        response = await self._request(
+            "GET",
+            f"/v1/chains/definitions/{name}/dag",
+        )
+        if response.status_code == 200:
+            return DagResponse.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Chain definition not found: {name}")
+        else:
+            raise HttpError(
+                response.status_code, "Failed to get chain definition DAG"
+            )
+
+    async def get_chain_history(
+        self, chain_id: str, namespace: str, tenant: str
+    ) -> ChainHistoryResponse:
+        """Get the retry history for a chain execution."""
+        response = await self._request(
+            "GET",
+            f"/v1/chains/{chain_id}/history",
+            params={"namespace": namespace, "tenant": tenant},
+        )
+        if response.status_code == 200:
+            return ChainHistoryResponse.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Chain not found: {chain_id}")
+        else:
+            raise HttpError(
+                response.status_code, "Failed to get chain history"
+            )
+
+    # =========================================================================
+    # DLQ (Dead-Letter Queue)
+    # =========================================================================
+
+    async def dlq_stats(self) -> DlqStatsResponse:
+        """Get dead-letter queue statistics."""
+        response = await self._request("GET", "/v1/dlq/stats")
+        if response.status_code == 200:
+            return DlqStatsResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to get DLQ stats")
+
+    async def dlq_drain(self) -> DlqDrainResponse:
+        """Drain all entries from the dead-letter queue."""
+        response = await self._request("POST", "/v1/dlq/drain")
+        if response.status_code == 200:
+            return DlqDrainResponse.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, "Dead-letter queue is not enabled")
+        else:
+            raise HttpError(response.status_code, "Failed to drain DLQ")
+
+    # =========================================================================
+    # Analytics
+    # =========================================================================
+
+    async def query_analytics(
+        self,
+        metric: str,
+        *,
+        namespace: Optional[str] = None,
+        tenant: Optional[str] = None,
+        provider: Optional[str] = None,
+        action_type: Optional[str] = None,
+        outcome: Optional[str] = None,
+        interval: Optional[str] = None,
+        from_time: Optional[str] = None,
+        to_time: Optional[str] = None,
+        group_by: Optional[str] = None,
+        top_n: Optional[int] = None,
+    ) -> "AnalyticsResponse":
+        """Query analytics data.
+
+        Args:
+            metric: The metric to query (required). One of "volume",
+                "outcome_breakdown", "top_action_types", "latency", "error_rate".
+            namespace: Optional namespace filter.
+            tenant: Optional tenant filter.
+            provider: Optional provider filter.
+            action_type: Optional action type filter.
+            outcome: Optional outcome filter.
+            interval: Time bucket interval (default "daily"). One of "hourly",
+                "daily", "weekly", "monthly".
+            from_time: Optional start of time range (RFC 3339 datetime string).
+            to_time: Optional end of time range (RFC 3339 datetime string).
+            group_by: Optional grouping dimension (e.g., "provider", "action_type",
+                "outcome").
+            top_n: Optional limit for top-N queries.
+
+        Returns:
+            Analytics response with time-series buckets and/or top entries.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        params: dict[str, str] = {"metric": metric}
+        if namespace is not None:
+            params["namespace"] = namespace
+        if tenant is not None:
+            params["tenant"] = tenant
+        if provider is not None:
+            params["provider"] = provider
+        if action_type is not None:
+            params["action_type"] = action_type
+        if outcome is not None:
+            params["outcome"] = outcome
+        if interval is not None:
+            params["interval"] = interval
+        if from_time is not None:
+            params["from"] = from_time
+        if to_time is not None:
+            params["to"] = to_time
+        if group_by is not None:
+            params["group_by"] = group_by
+        if top_n is not None:
+            params["top_n"] = str(top_n)
+
+        response = await self._request("GET", "/v1/analytics", params=params)
+
+        if response.status_code == 200:
+            return AnalyticsResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to query analytics")
+
+    # =========================================================================
+    # Rule Coverage
+    # =========================================================================
+
+    async def rules_coverage(self, query: Optional[CoverageQuery] = None) -> CoverageReport:
+        """Analyze rule coverage by querying the server's aggregation endpoint.
+
+        The server groups audit records by
+        ``(namespace, tenant, provider, action_type, matched_rule)`` and
+        cross-references the result with the currently-loaded rule set.
+        No raw audit records are transferred over the wire.
+
+        Args:
+            query: Optional coverage query parameters.
+
+        Returns:
+            A CoverageReport with per-combination coverage statistics.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        params: dict[str, str] = {}
+        if query is not None:
+            if query.namespace is not None:
+                params["namespace"] = query.namespace
+            if query.tenant is not None:
+                params["tenant"] = query.tenant
+            if query.from_time is not None:
+                params["from"] = query.from_time
+            if query.to_time is not None:
+                params["to"] = query.to_time
+
+        response = await self._request("GET", "/v1/rules/coverage", params=params)
+
+        if response.status_code == 200:
+            return CoverageReport.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to get rule coverage")
+
+    # =========================================================================
+    # Subscribe (SSE)
+    # =========================================================================
+
+    async def subscribe(
+        self,
+        entity_type: str,
+        entity_id: str,
+        *,
+        namespace: Optional[str] = None,
+        tenant: Optional[str] = None,
+        include_history: bool = True,
+    ) -> AsyncIterator[SseEvent]:
+        """Subscribe to events for a specific entity via SSE.
+
+        Opens a streaming connection to ``GET /v1/subscribe/{entity_type}/{entity_id}``
+        and yields parsed SSE events as they arrive.
+
+        Args:
+            entity_type: One of "chain", "group", or "action".
+            entity_id: The entity identifier to subscribe to.
+            namespace: Namespace for tenant isolation (required for chain/group).
+            tenant: Tenant for tenant isolation (required for chain/group).
+            include_history: Emit catch-up events for current state (default: True).
+
+        Yields:
+            Parsed SseEvent objects.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        params: dict = {"include_history": str(include_history).lower()}
+        if namespace is not None:
+            params["namespace"] = namespace
+        if tenant is not None:
+            params["tenant"] = tenant
+
+        url = f"{self.base_url}/v1/subscribe/{entity_type}/{entity_id}"
+        headers = self._headers()
+        headers["Accept"] = "text/event-stream"
+        headers.pop("Content-Type", None)
+
+        try:
+            async with self._client.stream(
+                "GET", url, params=params, headers=headers
+            ) as response:
+                if response.status_code != 200:
+                    await response.aread()
+                    raise HttpError(response.status_code, "Failed to subscribe")
+                async for event in _async_parse_sse_stream(response.aiter_lines()):
+                    yield event
+        except httpx.ConnectError as e:
+            raise ConnectionError(str(e)) from e
+        except httpx.TimeoutException as e:
+            raise ConnectionError(f"Request timed out: {e}") from e
+
+    # =========================================================================
+    # Stream (SSE)
+    # =========================================================================
+
+    async def stream(
+        self,
+        *,
+        namespace: Optional[str] = None,
+        action_type: Optional[str] = None,
+        outcome: Optional[str] = None,
+        event_type: Optional[str] = None,
+        chain_id: Optional[str] = None,
+        group_id: Optional[str] = None,
+        action_id: Optional[str] = None,
+        last_event_id: Optional[str] = None,
+    ) -> AsyncIterator[SseEvent]:
+        """Subscribe to the real-time event stream via SSE.
+
+        Opens a streaming connection to ``GET /v1/stream`` and yields parsed
+        SSE events as they arrive. All parameters are optional filters.
+
+        Args:
+            namespace: Filter events by namespace.
+            action_type: Filter events by action type.
+            outcome: Filter events by outcome category.
+            event_type: Filter events by stream event type.
+            chain_id: Filter events by chain ID.
+            group_id: Filter events by group ID.
+            action_id: Filter events by action ID.
+            last_event_id: Reconnection token; replays missed events from this ID.
+
+        Yields:
+            Parsed SseEvent objects.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        params: dict = {}
+        if namespace is not None:
+            params["namespace"] = namespace
+        if action_type is not None:
+            params["action_type"] = action_type
+        if outcome is not None:
+            params["outcome"] = outcome
+        if event_type is not None:
+            params["event_type"] = event_type
+        if chain_id is not None:
+            params["chain_id"] = chain_id
+        if group_id is not None:
+            params["group_id"] = group_id
+        if action_id is not None:
+            params["action_id"] = action_id
+
+        url = f"{self.base_url}/v1/stream"
+        headers = self._headers()
+        headers["Accept"] = "text/event-stream"
+        headers.pop("Content-Type", None)
+        if last_event_id is not None:
+            headers["Last-Event-ID"] = last_event_id
+
+        try:
+            async with self._client.stream(
+                "GET", url, params=params, headers=headers
+            ) as response:
+                if response.status_code != 200:
+                    await response.aread()
+                    raise HttpError(response.status_code, "Failed to open stream")
+                async for event in _async_parse_sse_stream(response.aiter_lines()):
+                    yield event
+        except httpx.ConnectError as e:
+            raise ConnectionError(str(e)) from e
+        except httpx.TimeoutException as e:
+            raise ConnectionError(f"Request timed out: {e}") from e
+
+
+async def _async_parse_sse_stream(aiter_lines) -> AsyncIterator[SseEvent]:
+    """Parse a text/event-stream from an async line iterator into SseEvent objects.
+
+    This is the async equivalent of ``_parse_sse_stream``.
+
+    Args:
+        aiter_lines: An async iterator of lines from the SSE stream.
+
+    Yields:
+        Parsed SseEvent objects.
+    """
+    import json as _json
+
+    event_type: Optional[str] = None
+    event_id: Optional[str] = None
+    data_parts: list[str] = []
+
+    async for line in aiter_lines:
+        if line.startswith(":"):
+            continue
+        if line == "":
+            if data_parts:
+                raw_data = "\n".join(data_parts)
+                try:
+                    parsed = _json.loads(raw_data)
+                except (_json.JSONDecodeError, ValueError):
+                    parsed = raw_data
+                yield SseEvent(event=event_type, id=event_id, data=parsed)
+            event_type = None
+            event_id = None
+            data_parts = []
+            continue
+        if line.startswith("event:"):
+            event_type = line[len("event:"):].strip()
+        elif line.startswith("id:"):
+            event_id = line[len("id:"):].strip()
+        elif line.startswith("data:"):
+            data_parts.append(line[len("data:"):].strip())

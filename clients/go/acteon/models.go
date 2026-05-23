@@ -8,17 +8,46 @@ import (
 	"github.com/google/uuid"
 )
 
+// Attachment represents an attachment on an action.
+type Attachment struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Filename    string `json:"filename"`
+	ContentType string `json:"content_type"`
+	DataBase64  string `json:"data_base64"`
+}
+
+// NewAttachment creates an attachment with explicit metadata and base64-encoded data.
+func NewAttachment(id, name, filename, contentType, dataBase64 string) Attachment {
+	return Attachment{
+		ID:          id,
+		Name:        name,
+		Filename:    filename,
+		ContentType: contentType,
+		DataBase64:  dataBase64,
+	}
+}
+
 // Action represents an action to be dispatched through Acteon.
 type Action struct {
-	ID         string          `json:"id"`
-	Namespace  string          `json:"namespace"`
-	Tenant     string          `json:"tenant"`
-	Provider   string          `json:"provider"`
-	ActionType string          `json:"action_type"`
-	Payload    map[string]any  `json:"payload"`
-	DedupKey   string          `json:"dedup_key,omitempty"`
-	Metadata   *ActionMetadata `json:"metadata,omitempty"`
-	CreatedAt  time.Time       `json:"created_at"`
+	ID          string          `json:"id"`
+	Namespace   string          `json:"namespace"`
+	Tenant      string          `json:"tenant"`
+	Provider    string          `json:"provider"`
+	ActionType  string          `json:"action_type"`
+	Payload     map[string]any  `json:"payload"`
+	DedupKey    string          `json:"dedup_key,omitempty"`
+	Metadata    *ActionMetadata `json:"metadata,omitempty"`
+	CreatedAt   time.Time       `json:"created_at"`
+	Template    string          `json:"template,omitempty"`
+	Attachments []Attachment `json:"attachments,omitempty"`
+	Signature   string       `json:"signature,omitempty"`
+	SignerID    string       `json:"signer_id,omitempty"`
+	// Kid is an optional key identifier for rotation. When the same
+	// SignerID has multiple active keys on the server, Kid selects
+	// the specific key to verify against. Discoverable via
+	// GET /.well-known/acteon-signing-keys.
+	Kid string `json:"kid,omitempty"`
 }
 
 // ActionMetadata contains optional metadata for an action.
@@ -51,6 +80,12 @@ func (a *Action) WithMetadata(labels map[string]string) *Action {
 	return a
 }
 
+// WithAttachments sets the attachments on the action.
+func (a *Action) WithAttachments(attachments []Attachment) *Action {
+	a.Attachments = attachments
+	return a
+}
+
 // ProviderResponse represents a response from a provider.
 type ProviderResponse struct {
 	Status  string            `json:"status"`
@@ -72,20 +107,25 @@ type ActionOutcome struct {
 	WouldBeProvider  string            // For DryRun
 	ActionID         string            // For Scheduled
 	ScheduledFor     string            // For Scheduled
+	Tenant           string            // For QuotaExceeded
+	Limit            int64             // For QuotaExceeded
+	Used             int64             // For QuotaExceeded
+	OverageBehavior  string            // For QuotaExceeded
 }
 
 // OutcomeType represents the type of action outcome.
 type OutcomeType string
 
 const (
-	OutcomeExecuted     OutcomeType = "executed"
-	OutcomeDeduplicated OutcomeType = "deduplicated"
-	OutcomeSuppressed   OutcomeType = "suppressed"
-	OutcomeRerouted     OutcomeType = "rerouted"
-	OutcomeThrottled    OutcomeType = "throttled"
-	OutcomeFailed       OutcomeType = "failed"
-	OutcomeDryRun       OutcomeType = "dry_run"
-	OutcomeScheduled    OutcomeType = "scheduled"
+	OutcomeExecuted      OutcomeType = "executed"
+	OutcomeDeduplicated  OutcomeType = "deduplicated"
+	OutcomeSuppressed    OutcomeType = "suppressed"
+	OutcomeRerouted      OutcomeType = "rerouted"
+	OutcomeThrottled     OutcomeType = "throttled"
+	OutcomeFailed        OutcomeType = "failed"
+	OutcomeDryRun        OutcomeType = "dry_run"
+	OutcomeScheduled     OutcomeType = "scheduled"
+	OutcomeQuotaExceeded OutcomeType = "quota_exceeded"
 )
 
 // ActionError represents error details when an action fails.
@@ -208,6 +248,24 @@ func (o *ActionOutcome) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 
+	if quotaExceeded, ok := raw["QuotaExceeded"]; ok {
+		o.Type = OutcomeQuotaExceeded
+		var q struct {
+			Tenant          string `json:"tenant"`
+			Limit           int64  `json:"limit"`
+			Used            int64  `json:"used"`
+			OverageBehavior string `json:"overage_behavior"`
+		}
+		if err := json.Unmarshal(quotaExceeded, &q); err != nil {
+			return err
+		}
+		o.Tenant = q.Tenant
+		o.Limit = q.Limit
+		o.Used = q.Used
+		o.OverageBehavior = q.OverageBehavior
+		return nil
+	}
+
 	o.Type = OutcomeFailed
 	o.Error = &ActionError{Code: "UNKNOWN", Message: "Unknown outcome"}
 	return nil
@@ -236,6 +294,9 @@ func (o *ActionOutcome) IsDryRun() bool { return o.Type == OutcomeDryRun }
 
 // IsScheduled returns true if the outcome is Scheduled.
 func (o *ActionOutcome) IsScheduled() bool { return o.Type == OutcomeScheduled }
+
+// IsQuotaExceeded returns true if the outcome is QuotaExceeded.
+func (o *ActionOutcome) IsQuotaExceeded() bool { return o.Type == OutcomeQuotaExceeded }
 
 // ErrorResponse represents an error response from the API.
 type ErrorResponse struct {
@@ -292,6 +353,11 @@ type ReloadResult struct {
 }
 
 // AuditQuery contains query parameters for audit search.
+//
+// Prefer Cursor over Offset for deep pagination — large offsets degrade
+// linearly on every backend. Pass the NextCursor returned by a prior
+// AuditPage back in here to fetch the next page in O(limit) time.
+// Treat the cursor as opaque.
 type AuditQuery struct {
 	Namespace  string
 	Tenant     string
@@ -300,29 +366,38 @@ type AuditQuery struct {
 	Outcome    string
 	Limit      int
 	Offset     int
+	Cursor     string
 }
 
 // AuditRecord represents an audit record.
 type AuditRecord struct {
-	ID           string  `json:"id"`
-	ActionID     string  `json:"action_id"`
-	Namespace    string  `json:"namespace"`
-	Tenant       string  `json:"tenant"`
-	Provider     string  `json:"provider"`
-	ActionType   string  `json:"action_type"`
-	Verdict      string  `json:"verdict"`
-	Outcome      string  `json:"outcome"`
-	MatchedRule  *string `json:"matched_rule,omitempty"`
-	DurationMs   int64   `json:"duration_ms"`
-	DispatchedAt string  `json:"dispatched_at"`
+	ID             string  `json:"id"`
+	ActionID       string  `json:"action_id"`
+	Namespace      string  `json:"namespace"`
+	Tenant         string  `json:"tenant"`
+	Provider       string  `json:"provider"`
+	ActionType     string  `json:"action_type"`
+	Verdict        string  `json:"verdict"`
+	Outcome        string  `json:"outcome"`
+	MatchedRule    *string `json:"matched_rule,omitempty"`
+	DurationMs     int64   `json:"duration_ms"`
+	DispatchedAt   string  `json:"dispatched_at"`
+	RecordHash     *string `json:"record_hash,omitempty"`
+	PreviousHash   *string `json:"previous_hash,omitempty"`
+	SequenceNumber *uint64 `json:"sequence_number,omitempty"`
 }
 
 // AuditPage represents paginated audit results.
+//
+// Total is nil when the backend skipped the count (always the case
+// when paginating with a cursor). NextCursor is empty when this page
+// is the last; otherwise pass it into AuditQuery.Cursor to resume.
 type AuditPage struct {
-	Records []AuditRecord `json:"records"`
-	Total   int64         `json:"total"`
-	Limit   int64         `json:"limit"`
-	Offset  int64         `json:"offset"`
+	Records    []AuditRecord `json:"records"`
+	Total      *int64        `json:"total,omitempty"`
+	Limit      int64         `json:"limit"`
+	Offset     int64         `json:"offset"`
+	NextCursor string        `json:"next_cursor,omitempty"`
 }
 
 // =============================================================================
@@ -521,4 +596,1636 @@ type ReplayQuery struct {
 	From        string
 	To          string
 	Limit       int
+}
+
+// =============================================================================
+// Recurring Action Types
+// =============================================================================
+
+// CreateRecurringAction is the request to create a recurring action.
+type CreateRecurringAction struct {
+	Namespace      string            `json:"namespace"`
+	Tenant         string            `json:"tenant"`
+	Provider       string            `json:"provider"`
+	ActionType     string            `json:"action_type"`
+	Payload        map[string]any    `json:"payload"`
+	CronExpression string            `json:"cron_expression"`
+	Name           string            `json:"name,omitempty"`
+	Metadata       map[string]string `json:"metadata,omitempty"`
+	Timezone       string            `json:"timezone,omitempty"`
+	EndDate        string            `json:"end_date,omitempty"`
+	MaxExecutions  *int              `json:"max_executions,omitempty"`
+	Description    string            `json:"description,omitempty"`
+	DedupKey       string            `json:"dedup_key,omitempty"`
+	Labels         map[string]string `json:"labels,omitempty"`
+}
+
+// CreateRecurringResponse is the response from creating a recurring action.
+type CreateRecurringResponse struct {
+	ID              string  `json:"id"`
+	Status          string  `json:"status"`
+	Name            *string `json:"name,omitempty"`
+	NextExecutionAt *string `json:"next_execution_at,omitempty"`
+}
+
+// RecurringFilter contains query parameters for listing recurring actions.
+type RecurringFilter struct {
+	Namespace string
+	Tenant    string
+	Status    string
+	Limit     int
+	Offset    int
+}
+
+// RecurringSummary is a summary of a recurring action in list responses.
+type RecurringSummary struct {
+	ID              string  `json:"id"`
+	Namespace       string  `json:"namespace"`
+	Tenant          string  `json:"tenant"`
+	CronExpr        string  `json:"cron_expr"`
+	Timezone        string  `json:"timezone"`
+	Enabled         bool    `json:"enabled"`
+	Provider        string  `json:"provider"`
+	ActionType      string  `json:"action_type"`
+	ExecutionCount  int     `json:"execution_count"`
+	CreatedAt       string  `json:"created_at"`
+	NextExecutionAt *string `json:"next_execution_at,omitempty"`
+	Description     *string `json:"description,omitempty"`
+}
+
+// ListRecurringResponse is the response from listing recurring actions.
+type ListRecurringResponse struct {
+	RecurringActions []RecurringSummary `json:"recurring_actions"`
+	Count            int               `json:"count"`
+}
+
+// RecurringDetail is detailed information about a recurring action.
+type RecurringDetail struct {
+	ID              string            `json:"id"`
+	Namespace       string            `json:"namespace"`
+	Tenant          string            `json:"tenant"`
+	CronExpr        string            `json:"cron_expr"`
+	Timezone        string            `json:"timezone"`
+	Enabled         bool              `json:"enabled"`
+	Provider        string            `json:"provider"`
+	ActionType      string            `json:"action_type"`
+	Payload         map[string]any    `json:"payload"`
+	Metadata        map[string]string `json:"metadata"`
+	ExecutionCount  int               `json:"execution_count"`
+	CreatedAt       string            `json:"created_at"`
+	UpdatedAt       string            `json:"updated_at"`
+	Labels          map[string]string `json:"labels"`
+	NextExecutionAt *string           `json:"next_execution_at,omitempty"`
+	LastExecutedAt  *string           `json:"last_executed_at,omitempty"`
+	EndsAt          *string           `json:"ends_at,omitempty"`
+	Description     *string           `json:"description,omitempty"`
+	DedupKey        *string           `json:"dedup_key,omitempty"`
+}
+
+// UpdateRecurringAction is the request to update a recurring action.
+type UpdateRecurringAction struct {
+	Namespace      string            `json:"namespace"`
+	Tenant         string            `json:"tenant"`
+	Name           *string           `json:"name,omitempty"`
+	Payload        map[string]any    `json:"payload,omitempty"`
+	Metadata       map[string]string `json:"metadata,omitempty"`
+	CronExpression *string           `json:"cron_expression,omitempty"`
+	Timezone       *string           `json:"timezone,omitempty"`
+	EndDate        *string           `json:"end_date,omitempty"`
+	MaxExecutions  *int              `json:"max_executions,omitempty"`
+	Description    *string           `json:"description,omitempty"`
+	DedupKey       *string           `json:"dedup_key,omitempty"`
+	Labels         map[string]string `json:"labels,omitempty"`
+}
+
+// RecurringLifecycleRequest is the body for pause/resume endpoints.
+type RecurringLifecycleRequest struct {
+	Namespace string `json:"namespace"`
+	Tenant    string `json:"tenant"`
+}
+
+// =============================================================================
+// Quota Types
+// =============================================================================
+
+// CreateQuotaRequest is the request to create a quota policy.
+//
+// Provider is an optional provider scope. When empty, the policy is
+// generic and counts every dispatch for the tenant. When set, only
+// dispatches whose action.Provider equals this value count against
+// (and are enforced by) this policy. Generic and per-provider
+// policies may coexist for the same (Namespace, Tenant) pair.
+type CreateQuotaRequest struct {
+	Namespace       string            `json:"namespace"`
+	Tenant          string            `json:"tenant"`
+	Provider        string            `json:"provider,omitempty"`
+	MaxActions      int64             `json:"max_actions"`
+	Window          string            `json:"window"`
+	OverageBehavior string            `json:"overage_behavior"`
+	Description     string            `json:"description,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
+}
+
+// UpdateQuotaRequest is the request to update a quota policy.
+type UpdateQuotaRequest struct {
+	Namespace       string  `json:"namespace"`
+	Tenant          string  `json:"tenant"`
+	MaxActions      *int64  `json:"max_actions,omitempty"`
+	Window          *string `json:"window,omitempty"`
+	OverageBehavior *string `json:"overage_behavior,omitempty"`
+	Description     *string `json:"description,omitempty"`
+	Enabled         *bool   `json:"enabled,omitempty"`
+}
+
+// QuotaPolicy represents a quota policy.
+//
+// Provider is the optional provider scope: empty ("") for generic
+// catch-all policies, or a provider name (e.g. "slack") when the
+// policy is scoped to a single provider.
+type QuotaPolicy struct {
+	ID              string            `json:"id"`
+	Namespace       string            `json:"namespace"`
+	Tenant          string            `json:"tenant"`
+	Provider        string            `json:"provider,omitempty"`
+	MaxActions      int64             `json:"max_actions"`
+	Window          string            `json:"window"`
+	OverageBehavior string            `json:"overage_behavior"`
+	Enabled         bool              `json:"enabled"`
+	CreatedAt       string            `json:"created_at"`
+	UpdatedAt       string            `json:"updated_at"`
+	Description     *string           `json:"description,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
+}
+
+// ListQuotasResponse is the response from listing quota policies.
+type ListQuotasResponse struct {
+	Quotas []QuotaPolicy `json:"quotas"`
+	Count  int           `json:"count"`
+}
+
+// QuotaUsage represents current usage statistics for a quota.
+type QuotaUsage struct {
+	Tenant          string `json:"tenant"`
+	Namespace       string `json:"namespace"`
+	Used            int64  `json:"used"`
+	Limit           int64  `json:"limit"`
+	Remaining       int64  `json:"remaining"`
+	Window          string `json:"window"`
+	ResetsAt        string `json:"resets_at"`
+	OverageBehavior string `json:"overage_behavior"`
+}
+
+// =============================================================================
+// Silence Types
+// =============================================================================
+
+// SilenceMatcher is a single label matcher inside a silence.
+// Op is one of "equal", "not_equal", "regex", "not_regex". All
+// matchers in a silence are AND-ed. Regex patterns are capped at
+// 256 characters and a 64 KB compiled DFA server-side to prevent
+// ReDoS.
+type SilenceMatcher struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+	Op    string `json:"op"`
+}
+
+// CreateSilenceRequest is the request to create a silence.
+//
+// Either EndsAt or DurationSeconds must be supplied. When StartsAt
+// is zero/empty, the server uses its current time.
+type CreateSilenceRequest struct {
+	Namespace       string           `json:"namespace"`
+	Tenant          string           `json:"tenant"`
+	Matchers        []SilenceMatcher `json:"matchers"`
+	Comment         string           `json:"comment"`
+	StartsAt        *string          `json:"starts_at,omitempty"`
+	EndsAt          *string          `json:"ends_at,omitempty"`
+	DurationSeconds *int64           `json:"duration_seconds,omitempty"`
+}
+
+// UpdateSilenceRequest is the request to extend a silence or edit
+// its comment. Matchers are immutable — to change them, expire the
+// silence and create a new one.
+type UpdateSilenceRequest struct {
+	EndsAt  *string `json:"ends_at,omitempty"`
+	Comment *string `json:"comment,omitempty"`
+}
+
+// Silence is a time-bounded label-pattern mute.
+//
+// Active is true when the current server time is within
+// [StartsAt, EndsAt).
+type Silence struct {
+	ID        string           `json:"id"`
+	Namespace string           `json:"namespace"`
+	Tenant    string           `json:"tenant"`
+	Matchers  []SilenceMatcher `json:"matchers"`
+	StartsAt  string           `json:"starts_at"`
+	EndsAt    string           `json:"ends_at"`
+	CreatedBy string           `json:"created_by"`
+	Comment   string           `json:"comment"`
+	CreatedAt string           `json:"created_at"`
+	UpdatedAt string           `json:"updated_at"`
+	Active    bool             `json:"active"`
+}
+
+// ListSilencesResponse is the response from listing silences.
+type ListSilencesResponse struct {
+	Silences []Silence `json:"silences"`
+	Count    int       `json:"count"`
+}
+
+// =============================================================================
+// Time Interval Types
+// =============================================================================
+
+// TimeOfDayInput is a time-of-day window in `HH:MM` form (24-hour clock).
+type TimeOfDayInput struct {
+	Start string `json:"start"`
+	End   string `json:"end"`
+}
+
+// NumericRange is an inclusive integer range used for weekdays,
+// days of month, months, and years.
+type NumericRange struct {
+	Start int `json:"start"`
+	End   int `json:"end"`
+}
+
+// TimeRange is one element of a TimeInterval. Empty fields mean "any".
+type TimeRange struct {
+	Times       []TimeOfDayInput `json:"times,omitempty"`
+	Weekdays    []NumericRange   `json:"weekdays,omitempty"`
+	DaysOfMonth []NumericRange   `json:"days_of_month,omitempty"`
+	Months      []NumericRange   `json:"months,omitempty"`
+	Years       []NumericRange   `json:"years,omitempty"`
+}
+
+// CreateTimeIntervalRequest is the body for POST /v1/time-intervals.
+type CreateTimeIntervalRequest struct {
+	Name        string      `json:"name"`
+	Namespace   string      `json:"namespace"`
+	Tenant      string      `json:"tenant"`
+	TimeRanges  []TimeRange `json:"time_ranges"`
+	Location    *string     `json:"location,omitempty"`
+	Description *string     `json:"description,omitempty"`
+}
+
+// UpdateTimeIntervalRequest is a partial update; nil fields are unchanged.
+type UpdateTimeIntervalRequest struct {
+	TimeRanges  *[]TimeRange `json:"time_ranges,omitempty"`
+	Location    *string      `json:"location,omitempty"`
+	Description *string      `json:"description,omitempty"`
+}
+
+// TimeInterval is a tenant-scoped recurring schedule.
+type TimeInterval struct {
+	Name        string      `json:"name"`
+	Namespace   string      `json:"namespace"`
+	Tenant      string      `json:"tenant"`
+	TimeRanges  []TimeRange `json:"time_ranges"`
+	Location    *string     `json:"location,omitempty"`
+	Description *string     `json:"description,omitempty"`
+	CreatedBy   string      `json:"created_by"`
+	CreatedAt   string      `json:"created_at"`
+	UpdatedAt   string      `json:"updated_at"`
+	MatchesNow  bool        `json:"matches_now"`
+}
+
+// ListTimeIntervalsResponse is the response from listing time intervals.
+type ListTimeIntervalsResponse struct {
+	TimeIntervals []TimeInterval `json:"time_intervals"`
+	Count         int            `json:"count"`
+}
+
+// =============================================================================
+// Retention Policy Types
+// =============================================================================
+
+// CreateRetentionRequest is the request to create a retention policy.
+type CreateRetentionRequest struct {
+	Namespace       string            `json:"namespace"`
+	Tenant          string            `json:"tenant"`
+	AuditTTLSeconds int64             `json:"audit_ttl_seconds"`
+	StateTTLSeconds int64             `json:"state_ttl_seconds"`
+	EventTTLSeconds int64             `json:"event_ttl_seconds"`
+	ComplianceHold  bool              `json:"compliance_hold,omitempty"`
+	Description     string            `json:"description,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
+}
+
+// UpdateRetentionRequest is the request to update a retention policy.
+type UpdateRetentionRequest struct {
+	Enabled         *bool             `json:"enabled,omitempty"`
+	AuditTTLSeconds *int64            `json:"audit_ttl_seconds,omitempty"`
+	StateTTLSeconds *int64            `json:"state_ttl_seconds,omitempty"`
+	EventTTLSeconds *int64            `json:"event_ttl_seconds,omitempty"`
+	ComplianceHold  *bool             `json:"compliance_hold,omitempty"`
+	Description     *string           `json:"description,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
+}
+
+// RetentionPolicy represents a retention policy.
+type RetentionPolicy struct {
+	ID              string            `json:"id"`
+	Namespace       string            `json:"namespace"`
+	Tenant          string            `json:"tenant"`
+	Enabled         bool              `json:"enabled"`
+	AuditTTLSeconds int64             `json:"audit_ttl_seconds"`
+	StateTTLSeconds int64             `json:"state_ttl_seconds"`
+	EventTTLSeconds int64             `json:"event_ttl_seconds"`
+	ComplianceHold  bool              `json:"compliance_hold"`
+	CreatedAt       string            `json:"created_at"`
+	UpdatedAt       string            `json:"updated_at"`
+	Description     *string           `json:"description,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
+}
+
+// ListRetentionResponse is the response from listing retention policies.
+type ListRetentionResponse struct {
+	Policies []RetentionPolicy `json:"policies"`
+	Count    int               `json:"count"`
+}
+
+// =============================================================================
+// Chain Types
+// =============================================================================
+
+// ChainSummary is a summary of a chain execution for list responses.
+type ChainSummary struct {
+	ChainID       string  `json:"chain_id"`
+	ChainName     string  `json:"chain_name"`
+	Status        string  `json:"status"`
+	CurrentStep   int     `json:"current_step"`
+	TotalSteps    int     `json:"total_steps"`
+	StartedAt     string  `json:"started_at"`
+	UpdatedAt     string  `json:"updated_at"`
+	ParentChainID *string `json:"parent_chain_id,omitempty"`
+}
+
+// ListChainsResponse is the response from listing chain executions.
+type ListChainsResponse struct {
+	Chains []ChainSummary `json:"chains"`
+}
+
+// ChainStepStatus is the detailed status of a single chain step.
+// Status is one of: "pending", "running", "completed", "failed", "skipped",
+// "waiting_sub_chain", "waiting_parallel". Parallel sub-steps may also
+// report "cancelled".
+type ChainStepStatus struct {
+	Name             string            `json:"name"`
+	Provider         string            `json:"provider"`
+	Status           string            `json:"status"`
+	ResponseBody     map[string]any    `json:"response_body,omitempty"`
+	Error            *string           `json:"error,omitempty"`
+	CompletedAt      *string           `json:"completed_at,omitempty"`
+	SubChain         *string           `json:"sub_chain,omitempty"`
+	ChildChainID     *string           `json:"child_chain_id,omitempty"`
+	ParallelSubSteps []ChainStepStatus `json:"parallel_sub_steps,omitempty"`
+	Attempt          *int              `json:"attempt,omitempty"`
+	MaxRetries       *int              `json:"max_retries,omitempty"`
+}
+
+// ChainDetailResponse is the full detail response for a chain execution.
+type ChainDetailResponse struct {
+	ChainID       string            `json:"chain_id"`
+	ChainName     string            `json:"chain_name"`
+	Status        string            `json:"status"`
+	CurrentStep   int               `json:"current_step"`
+	TotalSteps    int               `json:"total_steps"`
+	Steps         []ChainStepStatus `json:"steps"`
+	StartedAt     string            `json:"started_at"`
+	UpdatedAt     string            `json:"updated_at"`
+	ExpiresAt     *string           `json:"expires_at,omitempty"`
+	CancelReason  *string           `json:"cancel_reason,omitempty"`
+	CancelledBy   *string           `json:"cancelled_by,omitempty"`
+	ExecutionPath []string          `json:"execution_path,omitempty"`
+	ParentChainID *string           `json:"parent_chain_id,omitempty"`
+	ChildChainIDs []string          `json:"child_chain_ids,omitempty"`
+}
+
+// =============================================================================
+// DAG Types (Chain Visualization)
+// =============================================================================
+
+// DagNode is a node in the chain DAG.
+type DagNode struct {
+	Name             string       `json:"name"`
+	NodeType         string       `json:"node_type"`
+	Provider         *string      `json:"provider,omitempty"`
+	ActionType       *string      `json:"action_type,omitempty"`
+	SubChainName     *string      `json:"sub_chain_name,omitempty"`
+	Status           *string      `json:"status,omitempty"`
+	ChildChainID     *string      `json:"child_chain_id,omitempty"`
+	Children         *DagResponse `json:"children,omitempty"`
+	ParallelChildren []DagNode    `json:"parallel_children,omitempty"`
+	ParallelJoin     *string      `json:"parallel_join,omitempty"`
+	Attempt          *int         `json:"attempt,omitempty"`
+	MaxRetries       *int         `json:"max_retries,omitempty"`
+}
+
+// DagEdge is an edge in the chain DAG.
+type DagEdge struct {
+	Source          string  `json:"source"`
+	Target          string  `json:"target"`
+	Label           *string `json:"label,omitempty"`
+	OnExecutionPath bool    `json:"on_execution_path"`
+}
+
+// DagResponse is the DAG representation of a chain (config or instance).
+type DagResponse struct {
+	ChainName     string    `json:"chain_name"`
+	ChainID       *string   `json:"chain_id,omitempty"`
+	Status        *string   `json:"status,omitempty"`
+	Nodes         []DagNode `json:"nodes"`
+	Edges         []DagEdge `json:"edges"`
+	ExecutionPath []string  `json:"execution_path,omitempty"`
+}
+
+// CancelChainRequest is the request body for cancelling a chain.
+type CancelChainRequest struct {
+	Namespace   string  `json:"namespace"`
+	Tenant      string  `json:"tenant"`
+	Reason      *string `json:"reason,omitempty"`
+	CancelledBy *string `json:"cancelled_by,omitempty"`
+}
+
+// =============================================================================
+// Chain History Types (Retry Attempts)
+// =============================================================================
+
+// StepAttemptResponse is a single execution attempt for a chain step.
+type StepAttemptResponse struct {
+	Attempt     int     `json:"attempt"`
+	StartedAt   string  `json:"started_at"`
+	CompletedAt *string `json:"completed_at,omitempty"`
+	Success     bool    `json:"success"`
+	DurationMs  int     `json:"duration_ms"`
+	Error       *string `json:"error,omitempty"`
+}
+
+// StepHistoryEntry is the retry history for a single chain step.
+type StepHistoryEntry struct {
+	Name           string                `json:"name"`
+	StepIndex      int                   `json:"step_index"`
+	CurrentAttempt int                   `json:"current_attempt"`
+	MaxRetries     int                   `json:"max_retries"`
+	Attempts       []StepAttemptResponse `json:"attempts"`
+}
+
+// ChainHistoryResponse is the retry history for a chain execution.
+type ChainHistoryResponse struct {
+	ChainID   string             `json:"chain_id"`
+	ChainName string             `json:"chain_name"`
+	Status    string             `json:"status"`
+	Steps     []StepHistoryEntry `json:"steps"`
+}
+
+// =============================================================================
+// DLQ Types (Dead Letter Queue)
+// =============================================================================
+
+// DlqStatsResponse is the response from the DLQ stats endpoint.
+type DlqStatsResponse struct {
+	Enabled bool `json:"enabled"`
+	Count   int  `json:"count"`
+}
+
+// DlqEntry is a single dead-letter queue entry.
+type DlqEntry struct {
+	ActionID   string `json:"action_id"`
+	Namespace  string `json:"namespace"`
+	Tenant     string `json:"tenant"`
+	Provider   string `json:"provider"`
+	ActionType string `json:"action_type"`
+	Error      string `json:"error"`
+	Attempts   int    `json:"attempts"`
+	Timestamp  uint64 `json:"timestamp"`
+}
+
+// DlqDrainResponse is the response from draining the DLQ.
+type DlqDrainResponse struct {
+	Entries []DlqEntry `json:"entries"`
+	Count   int        `json:"count"`
+}
+
+// =============================================================================
+// Rule Evaluation Types (Rule Playground)
+// =============================================================================
+
+// EvaluateRulesRequest is the request body for rule evaluation.
+type EvaluateRulesRequest struct {
+	Namespace       string                 `json:"namespace"`
+	Tenant          string                 `json:"tenant"`
+	Provider        string                 `json:"provider"`
+	ActionType      string                 `json:"action_type"`
+	Payload         map[string]interface{} `json:"payload"`
+	Metadata        map[string]string      `json:"metadata,omitempty"`
+	IncludeDisabled bool                   `json:"include_disabled,omitempty"`
+	EvaluateAll     bool                   `json:"evaluate_all,omitempty"`
+	EvaluateAt      *string                `json:"evaluate_at,omitempty"`
+	MockState       map[string]string      `json:"mock_state,omitempty"`
+}
+
+// SemanticMatchDetail contains details about a semantic match evaluation.
+type SemanticMatchDetail struct {
+	// ExtractedText is the text that was extracted and compared.
+	ExtractedText string `json:"extracted_text"`
+	// Topic is the topic the text was compared against.
+	Topic string `json:"topic"`
+	// Similarity is the computed similarity score.
+	Similarity float64 `json:"similarity"`
+	// Threshold is the threshold that was configured on the rule.
+	Threshold float64 `json:"threshold"`
+}
+
+// RuleTraceEntry is a per-rule trace entry from rule evaluation.
+type RuleTraceEntry struct {
+	RuleName               string               `json:"rule_name"`
+	Priority               int                  `json:"priority"`
+	Enabled                bool                 `json:"enabled"`
+	ConditionDisplay       string               `json:"condition_display"`
+	Result                 string               `json:"result"`
+	EvaluationDuration     uint64               `json:"evaluation_duration_us"`
+	Action                 string               `json:"action"`
+	Source                 string               `json:"source"`
+	Description            *string              `json:"description,omitempty"`
+	SkipReason             *string              `json:"skip_reason,omitempty"`
+	Error                  *string              `json:"error,omitempty"`
+	SemanticDetails        *SemanticMatchDetail `json:"semantic_details,omitempty"`
+	ModifyPatch            json.RawMessage      `json:"modify_patch,omitempty"`
+	ModifiedPayloadPreview json.RawMessage      `json:"modified_payload_preview,omitempty"`
+}
+
+// TraceContext holds contextual information from rule evaluation.
+type TraceContext struct {
+	Time              map[string]interface{} `json:"time"`
+	EnvironmentKeys   []string               `json:"environment_keys"`
+	AccessedStateKeys []string               `json:"accessed_state_keys,omitempty"`
+	EffectiveTimezone *string                `json:"effective_timezone,omitempty"`
+}
+
+// EvaluateRulesResponse is the response from rule evaluation.
+type EvaluateRulesResponse struct {
+	Verdict             string                 `json:"verdict"`
+	MatchedRule         *string                `json:"matched_rule,omitempty"`
+	HasErrors           bool                   `json:"has_errors"`
+	TotalRulesEvaluated int                    `json:"total_rules_evaluated"`
+	TotalRulesSkipped   int                    `json:"total_rules_skipped"`
+	EvaluationDuration  uint64                 `json:"evaluation_duration_us"`
+	Trace               []RuleTraceEntry       `json:"trace"`
+	Context             TraceContext            `json:"context"`
+	ModifiedPayload     map[string]interface{} `json:"modified_payload,omitempty"`
+}
+
+// =============================================================================
+// SSE Types (Server-Sent Events)
+// =============================================================================
+
+// SubscribeOptions contains optional parameters for the Subscribe method.
+type SubscribeOptions struct {
+	Namespace      *string
+	Tenant         *string
+	IncludeHistory *bool
+}
+
+// StreamOptions contains optional filter parameters for the Stream method.
+type StreamOptions struct {
+	Namespace   *string
+	ActionType  *string
+	Outcome     *string
+	EventType   *string
+	ChainID     *string
+	GroupID     *string
+	ActionID    *string
+	LastEventID *string
+}
+
+// SseEvent represents a single Server-Sent Event.
+type SseEvent struct {
+	ID    string `json:"id,omitempty"`
+	Event string `json:"event,omitempty"`
+	Data  string `json:"data,omitempty"`
+}
+
+// =============================================================================
+// Provider Health Types
+// =============================================================================
+
+// ProviderHealthStatus represents health and metrics for a single provider.
+type ProviderHealthStatus struct {
+	Provider             string   `json:"provider"`
+	Healthy              bool     `json:"healthy"`
+	HealthCheckError     *string  `json:"health_check_error,omitempty"`
+	CircuitBreakerState  string   `json:"circuit_breaker_state"`
+	TotalRequests        int      `json:"total_requests"`
+	Successes            int      `json:"successes"`
+	Failures             int      `json:"failures"`
+	SuccessRate          float64  `json:"success_rate"`
+	AvgLatencyMs         float64  `json:"avg_latency_ms"`
+	P50LatencyMs         float64  `json:"p50_latency_ms"`
+	P95LatencyMs         float64  `json:"p95_latency_ms"`
+	P99LatencyMs         float64  `json:"p99_latency_ms"`
+	LastRequestAt        *int64   `json:"last_request_at,omitempty"`
+	LastError            *string  `json:"last_error,omitempty"`
+}
+
+// ListProviderHealthResponse is the response from listing provider health.
+type ListProviderHealthResponse struct {
+	Providers []ProviderHealthStatus `json:"providers"`
+}
+
+// =============================================================================
+// WASM Plugin Types
+// =============================================================================
+
+// WasmPluginConfig holds resource configuration for a WASM plugin.
+type WasmPluginConfig struct {
+	MemoryLimitBytes     *int64   `json:"memory_limit_bytes,omitempty"`
+	TimeoutMs            *int64   `json:"timeout_ms,omitempty"`
+	AllowedHostFunctions []string `json:"allowed_host_functions,omitempty"`
+}
+
+// WasmPlugin represents a registered WASM plugin.
+type WasmPlugin struct {
+	Name            string            `json:"name"`
+	Description     *string           `json:"description,omitempty"`
+	Status          string            `json:"status"`
+	Enabled         bool              `json:"enabled"`
+	Config          *WasmPluginConfig `json:"config,omitempty"`
+	CreatedAt       string            `json:"created_at"`
+	UpdatedAt       string            `json:"updated_at"`
+	InvocationCount int64             `json:"invocation_count"`
+}
+
+// RegisterPluginRequest is the request to register a new WASM plugin.
+type RegisterPluginRequest struct {
+	Name        string            `json:"name"`
+	Description string            `json:"description,omitempty"`
+	WasmBytes   string            `json:"wasm_bytes,omitempty"`
+	WasmPath    string            `json:"wasm_path,omitempty"`
+	Config      *WasmPluginConfig `json:"config,omitempty"`
+}
+
+// ListPluginsResponse is the response from listing WASM plugins.
+type ListPluginsResponse struct {
+	Plugins []WasmPlugin `json:"plugins"`
+	Count   int          `json:"count"`
+}
+
+// PluginInvocationRequest is the request to test-invoke a WASM plugin.
+type PluginInvocationRequest struct {
+	Function string         `json:"function,omitempty"`
+	Input    map[string]any `json:"input"`
+}
+
+// PluginInvocationResponse is the response from test-invoking a WASM plugin.
+type PluginInvocationResponse struct {
+	Verdict    bool           `json:"verdict"`
+	Message    *string        `json:"message,omitempty"`
+	Metadata   map[string]any `json:"metadata,omitempty"`
+	DurationMs *float64       `json:"duration_ms,omitempty"`
+}
+
+// =============================================================================
+// Compliance Types (SOC2/HIPAA)
+// =============================================================================
+
+// ComplianceStatus represents the current compliance configuration.
+type ComplianceStatus struct {
+	Mode            string `json:"mode"`
+	SyncAuditWrites bool   `json:"sync_audit_writes"`
+	ImmutableAudit  bool   `json:"immutable_audit"`
+	HashChain       bool   `json:"hash_chain"`
+}
+
+// HashChainVerification is the result of verifying an audit hash chain.
+type HashChainVerification struct {
+	Valid          bool    `json:"valid"`
+	RecordsChecked uint64  `json:"records_checked"`
+	FirstBrokenAt  *string `json:"first_broken_at,omitempty"`
+	FirstRecordID  *string `json:"first_record_id,omitempty"`
+	LastRecordID   *string `json:"last_record_id,omitempty"`
+}
+
+// VerifyHashChainRequest is the request body for hash chain verification.
+type VerifyHashChainRequest struct {
+	Namespace string  `json:"namespace"`
+	Tenant    string  `json:"tenant"`
+	From      *string `json:"from,omitempty"`
+	To        *string `json:"to,omitempty"`
+}
+
+// =============================================================================
+// Payload Template Types
+// =============================================================================
+
+// TemplateInfo represents a payload template.
+type TemplateInfo struct {
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Namespace   string            `json:"namespace"`
+	Tenant      string            `json:"tenant"`
+	Content     string            `json:"content"`
+	CreatedAt   string            `json:"created_at"`
+	UpdatedAt   string            `json:"updated_at"`
+	Description *string           `json:"description,omitempty"`
+	Labels      map[string]string `json:"labels,omitempty"`
+}
+
+// CreateTemplateRequest is the request to create a payload template.
+type CreateTemplateRequest struct {
+	Name        string            `json:"name"`
+	Namespace   string            `json:"namespace"`
+	Tenant      string            `json:"tenant"`
+	Content     string            `json:"content"`
+	Description string            `json:"description,omitempty"`
+	Labels      map[string]string `json:"labels,omitempty"`
+}
+
+// UpdateTemplateRequest is the request to update a payload template.
+type UpdateTemplateRequest struct {
+	Content     *string           `json:"content,omitempty"`
+	Description *string           `json:"description,omitempty"`
+	Labels      map[string]string `json:"labels,omitempty"`
+}
+
+// ListTemplatesResponse is the response from listing templates.
+type ListTemplatesResponse struct {
+	Templates []TemplateInfo `json:"templates"`
+	Count     int            `json:"count"`
+}
+
+// TemplateProfileField represents a field in a template profile.
+// It is either an inline string value or a reference object {"$ref": "template-name"}.
+// Use json.RawMessage for flexible deserialization.
+type TemplateProfileField = json.RawMessage
+
+// TemplateProfileInfo represents a template profile that groups multiple templates.
+type TemplateProfileInfo struct {
+	ID          string                          `json:"id"`
+	Name        string                          `json:"name"`
+	Namespace   string                          `json:"namespace"`
+	Tenant      string                          `json:"tenant"`
+	Fields      map[string]TemplateProfileField `json:"fields"`
+	CreatedAt   string                          `json:"created_at"`
+	UpdatedAt   string                          `json:"updated_at"`
+	Description *string                         `json:"description,omitempty"`
+	Labels      map[string]string               `json:"labels,omitempty"`
+}
+
+// CreateProfileRequest is the request to create a template profile.
+type CreateProfileRequest struct {
+	Name        string                          `json:"name"`
+	Namespace   string                          `json:"namespace"`
+	Tenant      string                          `json:"tenant"`
+	Fields      map[string]TemplateProfileField `json:"fields"`
+	Description string                          `json:"description,omitempty"`
+	Labels      map[string]string               `json:"labels,omitempty"`
+}
+
+// UpdateProfileRequest is the request to update a template profile.
+type UpdateProfileRequest struct {
+	Fields      map[string]TemplateProfileField `json:"fields,omitempty"`
+	Description *string                         `json:"description,omitempty"`
+	Labels      map[string]string               `json:"labels,omitempty"`
+}
+
+// ListProfilesResponse is the response from listing template profiles.
+type ListProfilesResponse struct {
+	Profiles []TemplateProfileInfo `json:"profiles"`
+	Count    int                   `json:"count"`
+}
+
+// RenderPreviewRequest is the request to render a template profile with payload data.
+type RenderPreviewRequest struct {
+	Profile   string         `json:"profile"`
+	Namespace string         `json:"namespace"`
+	Tenant    string         `json:"tenant"`
+	Payload   map[string]any `json:"payload"`
+}
+
+// RenderPreviewResponse is the response from rendering a template profile.
+type RenderPreviewResponse struct {
+	Rendered map[string]string `json:"rendered"`
+}
+
+// =============================================================================
+// Provider Payload Helpers
+// =============================================================================
+
+// NewTwilioSmsPayload creates a payload for the Twilio SMS provider.
+func NewTwilioSmsPayload(to, body string) map[string]any {
+	return map[string]any{
+		"to":   to,
+		"body": body,
+	}
+}
+
+// NewTwilioSmsPayloadWithOptions creates a Twilio SMS payload with optional fields.
+func NewTwilioSmsPayloadWithOptions(to, body string, from string, mediaURL string) map[string]any {
+	p := NewTwilioSmsPayload(to, body)
+	if from != "" {
+		p["from"] = from
+	}
+	if mediaURL != "" {
+		p["media_url"] = mediaURL
+	}
+	return p
+}
+
+// NewTeamsMessagePayload creates a payload for the Microsoft Teams provider.
+func NewTeamsMessagePayload(text string) map[string]any {
+	return map[string]any{
+		"text": text,
+	}
+}
+
+// NewTeamsMessagePayloadWithOptions creates a Teams message payload with optional fields.
+func NewTeamsMessagePayloadWithOptions(text, title, themeColor string) map[string]any {
+	p := NewTeamsMessagePayload(text)
+	if title != "" {
+		p["title"] = title
+	}
+	if themeColor != "" {
+		p["theme_color"] = themeColor
+	}
+	return p
+}
+
+// NewTeamsAdaptiveCardPayload creates a payload for Teams with an Adaptive Card.
+func NewTeamsAdaptiveCardPayload(card map[string]any) map[string]any {
+	return map[string]any{
+		"adaptive_card": card,
+	}
+}
+
+// NewDiscordMessagePayload creates a payload for the Discord webhook provider.
+func NewDiscordMessagePayload(content string) map[string]any {
+	return map[string]any{
+		"content": content,
+	}
+}
+
+// NewDiscordEmbedPayload creates a Discord payload with an embed.
+func NewDiscordEmbedPayload(embeds []map[string]any) map[string]any {
+	return map[string]any{
+		"embeds": embeds,
+	}
+}
+
+// NewDiscordMessagePayloadWithOptions creates a Discord payload with all options.
+func NewDiscordMessagePayloadWithOptions(content, username, avatarURL string, embeds []map[string]any) map[string]any {
+	p := map[string]any{}
+	if content != "" {
+		p["content"] = content
+	}
+	if username != "" {
+		p["username"] = username
+	}
+	if avatarURL != "" {
+		p["avatar_url"] = avatarURL
+	}
+	if len(embeds) > 0 {
+		p["embeds"] = embeds
+	}
+	return p
+}
+
+// =============================================================================
+// AWS Provider Payload Helpers
+// =============================================================================
+
+// NewSnsPublishPayload creates a payload for the AWS SNS provider.
+func NewSnsPublishPayload(message string) map[string]any {
+	return map[string]any{
+		"message": message,
+	}
+}
+
+// NewSnsPublishPayloadWithOptions creates an SNS payload with optional fields.
+func NewSnsPublishPayloadWithOptions(message, subject, topicArn, messageGroupID, messageDedupID string) map[string]any {
+	p := NewSnsPublishPayload(message)
+	if subject != "" {
+		p["subject"] = subject
+	}
+	if topicArn != "" {
+		p["topic_arn"] = topicArn
+	}
+	if messageGroupID != "" {
+		p["message_group_id"] = messageGroupID
+	}
+	if messageDedupID != "" {
+		p["message_dedup_id"] = messageDedupID
+	}
+	return p
+}
+
+// NewLambdaInvokePayload creates a payload for the AWS Lambda provider.
+func NewLambdaInvokePayload(payloadData any) map[string]any {
+	p := map[string]any{}
+	if payloadData != nil {
+		p["payload"] = payloadData
+	}
+	return p
+}
+
+// NewLambdaInvokePayloadWithOptions creates a Lambda payload with optional fields.
+func NewLambdaInvokePayloadWithOptions(payloadData any, functionName, invocationType string) map[string]any {
+	p := NewLambdaInvokePayload(payloadData)
+	if functionName != "" {
+		p["function_name"] = functionName
+	}
+	if invocationType != "" {
+		p["invocation_type"] = invocationType
+	}
+	return p
+}
+
+// NewEventBridgePutEventPayload creates a payload for the AWS EventBridge provider.
+func NewEventBridgePutEventPayload(source, detailType string, detail any) map[string]any {
+	return map[string]any{
+		"source":      source,
+		"detail_type": detailType,
+		"detail":      detail,
+	}
+}
+
+// NewEventBridgePutEventPayloadWithOptions creates an EventBridge payload with optional fields.
+func NewEventBridgePutEventPayloadWithOptions(source, detailType string, detail any, eventBusName string, resources []string) map[string]any {
+	p := NewEventBridgePutEventPayload(source, detailType, detail)
+	if eventBusName != "" {
+		p["event_bus_name"] = eventBusName
+	}
+	if len(resources) > 0 {
+		p["resources"] = resources
+	}
+	return p
+}
+
+// NewSqsSendMessagePayload creates a payload for the AWS SQS provider.
+func NewSqsSendMessagePayload(messageBody string) map[string]any {
+	return map[string]any{
+		"message_body": messageBody,
+	}
+}
+
+// NewSqsSendMessagePayloadWithOptions creates an SQS payload with optional fields.
+func NewSqsSendMessagePayloadWithOptions(messageBody, queueURL string, delaySeconds int, messageGroupID, messageDedupID string, messageAttributes map[string]string) map[string]any {
+	p := NewSqsSendMessagePayload(messageBody)
+	if queueURL != "" {
+		p["queue_url"] = queueURL
+	}
+	if delaySeconds > 0 {
+		p["delay_seconds"] = delaySeconds
+	}
+	if messageGroupID != "" {
+		p["message_group_id"] = messageGroupID
+	}
+	if messageDedupID != "" {
+		p["message_dedup_id"] = messageDedupID
+	}
+	if len(messageAttributes) > 0 {
+		p["message_attributes"] = messageAttributes
+	}
+	return p
+}
+
+// NewS3PutObjectPayload creates a payload for the AWS S3 put-object action.
+func NewS3PutObjectPayload(key, body string) map[string]any {
+	return map[string]any{
+		"key":  key,
+		"body": body,
+	}
+}
+
+// NewS3PutObjectPayloadWithOptions creates an S3 put-object payload with optional fields.
+func NewS3PutObjectPayloadWithOptions(key, bucket, body, bodyBase64, contentType string, metadata map[string]string) map[string]any {
+	p := map[string]any{"key": key}
+	if bucket != "" {
+		p["bucket"] = bucket
+	}
+	if body != "" {
+		p["body"] = body
+	}
+	if bodyBase64 != "" {
+		p["body_base64"] = bodyBase64
+	}
+	if contentType != "" {
+		p["content_type"] = contentType
+	}
+	if len(metadata) > 0 {
+		p["metadata"] = metadata
+	}
+	return p
+}
+
+// NewS3GetObjectPayload creates a payload for the AWS S3 get-object action.
+func NewS3GetObjectPayload(key string) map[string]any {
+	return map[string]any{
+		"key": key,
+	}
+}
+
+// NewS3GetObjectPayloadWithBucket creates an S3 get-object payload with a bucket override.
+func NewS3GetObjectPayloadWithBucket(key, bucket string) map[string]any {
+	p := NewS3GetObjectPayload(key)
+	if bucket != "" {
+		p["bucket"] = bucket
+	}
+	return p
+}
+
+// NewS3DeleteObjectPayload creates a payload for the AWS S3 delete-object action.
+func NewS3DeleteObjectPayload(key string) map[string]any {
+	return map[string]any{
+		"key": key,
+	}
+}
+
+// NewS3DeleteObjectPayloadWithBucket creates an S3 delete-object payload with a bucket override.
+func NewS3DeleteObjectPayloadWithBucket(key, bucket string) map[string]any {
+	p := NewS3DeleteObjectPayload(key)
+	if bucket != "" {
+		p["bucket"] = bucket
+	}
+	return p
+}
+
+// =============================================================================
+// AWS EC2 Provider Payload Helpers
+// =============================================================================
+
+// NewEc2StartInstancesPayload creates a payload for the AWS EC2 start-instances action.
+func NewEc2StartInstancesPayload(instanceIDs []string) map[string]any {
+	return map[string]any{
+		"instance_ids": instanceIDs,
+	}
+}
+
+// NewEc2StopInstancesPayload creates a payload for the AWS EC2 stop-instances action.
+func NewEc2StopInstancesPayload(instanceIDs []string) map[string]any {
+	return map[string]any{
+		"instance_ids": instanceIDs,
+	}
+}
+
+// NewEc2StopInstancesPayloadWithOptions creates an EC2 stop-instances payload with optional fields.
+func NewEc2StopInstancesPayloadWithOptions(instanceIDs []string, hibernate, force bool) map[string]any {
+	p := NewEc2StopInstancesPayload(instanceIDs)
+	if hibernate {
+		p["hibernate"] = hibernate
+	}
+	if force {
+		p["force"] = force
+	}
+	return p
+}
+
+// NewEc2RebootInstancesPayload creates a payload for the AWS EC2 reboot-instances action.
+func NewEc2RebootInstancesPayload(instanceIDs []string) map[string]any {
+	return map[string]any{
+		"instance_ids": instanceIDs,
+	}
+}
+
+// NewEc2TerminateInstancesPayload creates a payload for the AWS EC2 terminate-instances action.
+func NewEc2TerminateInstancesPayload(instanceIDs []string) map[string]any {
+	return map[string]any{
+		"instance_ids": instanceIDs,
+	}
+}
+
+// NewEc2HibernateInstancesPayload creates a payload for the AWS EC2 hibernate-instances action.
+func NewEc2HibernateInstancesPayload(instanceIDs []string) map[string]any {
+	return map[string]any{
+		"instance_ids": instanceIDs,
+	}
+}
+
+// NewEc2RunInstancesPayload creates a payload for the AWS EC2 run-instances action.
+func NewEc2RunInstancesPayload(imageID, instanceType string) map[string]any {
+	return map[string]any{
+		"image_id":      imageID,
+		"instance_type": instanceType,
+	}
+}
+
+// NewEc2RunInstancesPayloadWithOptions creates an EC2 run-instances payload with optional fields.
+func NewEc2RunInstancesPayloadWithOptions(imageID, instanceType string, minCount, maxCount int, keyName, subnetID, userData, iamProfile string, sgIDs []string, tags map[string]string) map[string]any {
+	p := NewEc2RunInstancesPayload(imageID, instanceType)
+	if minCount > 0 {
+		p["min_count"] = minCount
+	}
+	if maxCount > 0 {
+		p["max_count"] = maxCount
+	}
+	if keyName != "" {
+		p["key_name"] = keyName
+	}
+	if subnetID != "" {
+		p["subnet_id"] = subnetID
+	}
+	if userData != "" {
+		p["user_data"] = userData
+	}
+	if iamProfile != "" {
+		p["iam_instance_profile"] = iamProfile
+	}
+	if len(sgIDs) > 0 {
+		p["security_group_ids"] = sgIDs
+	}
+	if len(tags) > 0 {
+		p["tags"] = tags
+	}
+	return p
+}
+
+// NewEc2AttachVolumePayload creates a payload for the AWS EC2 attach-volume action.
+func NewEc2AttachVolumePayload(volumeID, instanceID, device string) map[string]any {
+	return map[string]any{
+		"volume_id":   volumeID,
+		"instance_id": instanceID,
+		"device":      device,
+	}
+}
+
+// NewEc2DetachVolumePayload creates a payload for the AWS EC2 detach-volume action.
+func NewEc2DetachVolumePayload(volumeID string) map[string]any {
+	return map[string]any{
+		"volume_id": volumeID,
+	}
+}
+
+// NewEc2DetachVolumePayloadWithOptions creates an EC2 detach-volume payload with optional fields.
+func NewEc2DetachVolumePayloadWithOptions(volumeID, instanceID, device string, force bool) map[string]any {
+	p := NewEc2DetachVolumePayload(volumeID)
+	if instanceID != "" {
+		p["instance_id"] = instanceID
+	}
+	if device != "" {
+		p["device"] = device
+	}
+	if force {
+		p["force"] = force
+	}
+	return p
+}
+
+// =============================================================================
+// Analytics Types
+// =============================================================================
+
+// AnalyticsQuery contains query parameters for the analytics endpoint.
+type AnalyticsQuery struct {
+	// Metric is the metric to query (required). One of "volume",
+	// "outcome_breakdown", "top_action_types", "latency", "error_rate".
+	Metric string
+
+	// Namespace is an optional namespace filter.
+	Namespace string
+
+	// Tenant is an optional tenant filter.
+	Tenant string
+
+	// Provider is an optional provider filter.
+	Provider string
+
+	// ActionType is an optional action type filter.
+	ActionType string
+
+	// Outcome is an optional outcome filter.
+	Outcome string
+
+	// Interval is the time bucket interval (default "daily"). One of "hourly",
+	// "daily", "weekly", "monthly".
+	Interval string
+
+	// From is an optional start of time range (RFC 3339 datetime string).
+	From string
+
+	// To is an optional end of time range (RFC 3339 datetime string).
+	To string
+
+	// GroupBy is an optional grouping dimension (e.g., "provider", "action_type",
+	// "outcome").
+	GroupBy string
+
+	// TopN is an optional limit for top-N queries.
+	TopN int
+}
+
+// AnalyticsBucket is a single time bucket in an analytics response.
+type AnalyticsBucket struct {
+	Timestamp     string   `json:"timestamp"`
+	Count         int      `json:"count"`
+	Group         *string  `json:"group,omitempty"`
+	AvgDurationMs *float64 `json:"avg_duration_ms,omitempty"`
+	P50DurationMs *float64 `json:"p50_duration_ms,omitempty"`
+	P95DurationMs *float64 `json:"p95_duration_ms,omitempty"`
+	P99DurationMs *float64 `json:"p99_duration_ms,omitempty"`
+	ErrorRate     *float64 `json:"error_rate,omitempty"`
+}
+
+// AnalyticsTopEntry is a single entry in a top-N analytics result.
+type AnalyticsTopEntry struct {
+	Label      string  `json:"label"`
+	Count      int     `json:"count"`
+	Percentage float64 `json:"percentage"`
+}
+
+// AnalyticsResponse is the response from the analytics endpoint.
+type AnalyticsResponse struct {
+	Metric     string              `json:"metric"`
+	Interval   string              `json:"interval"`
+	From       string              `json:"from"`
+	To         string              `json:"to"`
+	Buckets    []AnalyticsBucket   `json:"buckets"`
+	TopEntries []AnalyticsTopEntry `json:"top_entries"`
+	TotalCount int                 `json:"total_count"`
+}
+
+// NewEc2DescribeInstancesPayload creates a payload for the AWS EC2 describe-instances action.
+func NewEc2DescribeInstancesPayload(instanceIDs []string) map[string]any {
+	p := map[string]any{}
+	if len(instanceIDs) > 0 {
+		p["instance_ids"] = instanceIDs
+	}
+	return p
+}
+
+// =============================================================================
+// AWS Auto Scaling Provider Payload Helpers
+// =============================================================================
+
+// NewAsgDescribeGroupsPayload creates a payload for the AWS Auto Scaling describe-groups action.
+func NewAsgDescribeGroupsPayload(groupNames []string) map[string]any {
+	p := map[string]any{}
+	if len(groupNames) > 0 {
+		p["auto_scaling_group_names"] = groupNames
+	}
+	return p
+}
+
+// NewAsgSetDesiredCapacityPayload creates a payload for the AWS Auto Scaling set-desired-capacity action.
+func NewAsgSetDesiredCapacityPayload(groupName string, desiredCapacity int) map[string]any {
+	return map[string]any{
+		"auto_scaling_group_name": groupName,
+		"desired_capacity":       desiredCapacity,
+	}
+}
+
+// NewAsgSetDesiredCapacityPayloadWithOptions creates an Auto Scaling set-desired-capacity payload with optional fields.
+func NewAsgSetDesiredCapacityPayloadWithOptions(groupName string, desiredCapacity int, honorCooldown bool) map[string]any {
+	p := NewAsgSetDesiredCapacityPayload(groupName, desiredCapacity)
+	if honorCooldown {
+		p["honor_cooldown"] = honorCooldown
+	}
+	return p
+}
+
+// NewAsgUpdateGroupPayload creates a payload for the AWS Auto Scaling update-group action.
+func NewAsgUpdateGroupPayload(groupName string) map[string]any {
+	return map[string]any{
+		"auto_scaling_group_name": groupName,
+	}
+}
+
+// NewAsgUpdateGroupPayloadWithOptions creates an Auto Scaling update-group payload with optional fields.
+func NewAsgUpdateGroupPayloadWithOptions(groupName string, minSize, maxSize, desiredCapacity, defaultCooldown *int, healthCheckType string, healthCheckGracePeriod *int) map[string]any {
+	p := NewAsgUpdateGroupPayload(groupName)
+	if minSize != nil {
+		p["min_size"] = *minSize
+	}
+	if maxSize != nil {
+		p["max_size"] = *maxSize
+	}
+	if desiredCapacity != nil {
+		p["desired_capacity"] = *desiredCapacity
+	}
+	if defaultCooldown != nil {
+		p["default_cooldown"] = *defaultCooldown
+	}
+	if healthCheckType != "" {
+		p["health_check_type"] = healthCheckType
+	}
+	if healthCheckGracePeriod != nil {
+		p["health_check_grace_period"] = *healthCheckGracePeriod
+	}
+	return p
+}
+
+// =============================================================================
+// Azure Blob Storage Provider Payload Helpers
+// =============================================================================
+
+// NewAzureBlobUploadPayload creates a payload for the Azure Blob Storage upload-blob action.
+func NewAzureBlobUploadPayload(blobName, body string) map[string]any {
+	return map[string]any{
+		"blob_name": blobName,
+		"body":      body,
+	}
+}
+
+// NewAzureBlobUploadPayloadWithOptions creates an Azure Blob upload payload with optional fields.
+func NewAzureBlobUploadPayloadWithOptions(blobName, container, body, bodyBase64, contentType string, metadata map[string]string) map[string]any {
+	p := map[string]any{"blob_name": blobName}
+	if container != "" {
+		p["container"] = container
+	}
+	if body != "" {
+		p["body"] = body
+	}
+	if bodyBase64 != "" {
+		p["body_base64"] = bodyBase64
+	}
+	if contentType != "" {
+		p["content_type"] = contentType
+	}
+	if len(metadata) > 0 {
+		p["metadata"] = metadata
+	}
+	return p
+}
+
+// NewAzureBlobDownloadPayload creates a payload for the Azure Blob Storage download-blob action.
+func NewAzureBlobDownloadPayload(blobName string) map[string]any {
+	return map[string]any{
+		"blob_name": blobName,
+	}
+}
+
+// NewAzureBlobDownloadPayloadWithContainer creates an Azure Blob download payload with a container override.
+func NewAzureBlobDownloadPayloadWithContainer(blobName, container string) map[string]any {
+	p := NewAzureBlobDownloadPayload(blobName)
+	if container != "" {
+		p["container"] = container
+	}
+	return p
+}
+
+// NewAzureBlobDeletePayload creates a payload for the Azure Blob Storage delete-blob action.
+func NewAzureBlobDeletePayload(blobName string) map[string]any {
+	return map[string]any{
+		"blob_name": blobName,
+	}
+}
+
+// NewAzureBlobDeletePayloadWithContainer creates an Azure Blob delete payload with a container override.
+func NewAzureBlobDeletePayloadWithContainer(blobName, container string) map[string]any {
+	p := NewAzureBlobDeletePayload(blobName)
+	if container != "" {
+		p["container"] = container
+	}
+	return p
+}
+
+// =============================================================================
+// Azure Event Hubs Provider Payload Helpers
+// =============================================================================
+
+// NewAzureEventHubsSendPayload creates a payload for the Azure Event Hubs send-event action.
+func NewAzureEventHubsSendPayload(body any) map[string]any {
+	return map[string]any{
+		"body": body,
+	}
+}
+
+// NewAzureEventHubsSendPayloadWithOptions creates an Azure Event Hubs send payload with optional fields.
+func NewAzureEventHubsSendPayloadWithOptions(body any, eventHubName, partitionID string, properties map[string]string) map[string]any {
+	p := NewAzureEventHubsSendPayload(body)
+	if eventHubName != "" {
+		p["event_hub_name"] = eventHubName
+	}
+	if partitionID != "" {
+		p["partition_id"] = partitionID
+	}
+	if len(properties) > 0 {
+		p["properties"] = properties
+	}
+	return p
+}
+
+// NewAzureEventHubsSendBatchPayload creates a payload for the Azure Event Hubs send-batch action.
+func NewAzureEventHubsSendBatchPayload(events []map[string]any) map[string]any {
+	return map[string]any{
+		"events": events,
+	}
+}
+
+// NewAzureEventHubsSendBatchPayloadWithOptions creates an Azure Event Hubs send-batch payload with optional fields.
+func NewAzureEventHubsSendBatchPayloadWithOptions(events []map[string]any, eventHubName string) map[string]any {
+	p := NewAzureEventHubsSendBatchPayload(events)
+	if eventHubName != "" {
+		p["event_hub_name"] = eventHubName
+	}
+	return p
+}
+
+// =============================================================================
+// GCP Pub/Sub Provider Payload Helpers
+// =============================================================================
+
+// NewGcpPubSubPublishPayload creates a payload for the GCP Pub/Sub publish action.
+func NewGcpPubSubPublishPayload(data string) map[string]any {
+	return map[string]any{
+		"data": data,
+	}
+}
+
+// NewGcpPubSubPublishPayloadWithOptions creates a GCP Pub/Sub publish payload with optional fields.
+func NewGcpPubSubPublishPayloadWithOptions(data, topic, orderingKey string, attributes map[string]string) map[string]any {
+	p := NewGcpPubSubPublishPayload(data)
+	if topic != "" {
+		p["topic"] = topic
+	}
+	if orderingKey != "" {
+		p["ordering_key"] = orderingKey
+	}
+	if len(attributes) > 0 {
+		p["attributes"] = attributes
+	}
+	return p
+}
+
+// NewGcpPubSubPublishBatchPayload creates a payload for the GCP Pub/Sub publish-batch action.
+func NewGcpPubSubPublishBatchPayload(messages []map[string]any) map[string]any {
+	return map[string]any{
+		"messages": messages,
+	}
+}
+
+// NewGcpPubSubPublishBatchPayloadWithOptions creates a GCP Pub/Sub publish-batch payload with optional fields.
+func NewGcpPubSubPublishBatchPayloadWithOptions(messages []map[string]any, topic string) map[string]any {
+	p := NewGcpPubSubPublishBatchPayload(messages)
+	if topic != "" {
+		p["topic"] = topic
+	}
+	return p
+}
+
+// =============================================================================
+// GCP Cloud Storage Provider Payload Helpers
+// =============================================================================
+
+// NewGcpStorageUploadPayload creates a payload for the GCP Cloud Storage upload-object action.
+func NewGcpStorageUploadPayload(objectName, body string) map[string]any {
+	return map[string]any{
+		"object_name": objectName,
+		"body":        body,
+	}
+}
+
+// NewGcpStorageUploadPayloadWithOptions creates a GCP Cloud Storage upload payload with optional fields.
+func NewGcpStorageUploadPayloadWithOptions(objectName, bucket, body, bodyBase64, contentType string, metadata map[string]string) map[string]any {
+	p := map[string]any{"object_name": objectName}
+	if bucket != "" {
+		p["bucket"] = bucket
+	}
+	if body != "" {
+		p["body"] = body
+	}
+	if bodyBase64 != "" {
+		p["body_base64"] = bodyBase64
+	}
+	if contentType != "" {
+		p["content_type"] = contentType
+	}
+	if len(metadata) > 0 {
+		p["metadata"] = metadata
+	}
+	return p
+}
+
+// NewGcpStorageDownloadPayload creates a payload for the GCP Cloud Storage download-object action.
+func NewGcpStorageDownloadPayload(objectName string) map[string]any {
+	return map[string]any{
+		"object_name": objectName,
+	}
+}
+
+// NewGcpStorageDownloadPayloadWithContainer creates a GCP Cloud Storage download payload with a bucket override.
+func NewGcpStorageDownloadPayloadWithContainer(objectName, bucket string) map[string]any {
+	p := NewGcpStorageDownloadPayload(objectName)
+	if bucket != "" {
+		p["bucket"] = bucket
+	}
+	return p
+}
+
+// NewGcpStorageDeletePayload creates a payload for the GCP Cloud Storage delete-object action.
+func NewGcpStorageDeletePayload(objectName string) map[string]any {
+	return map[string]any{
+		"object_name": objectName,
+	}
+}
+
+// NewGcpStorageDeletePayloadWithContainer creates a GCP Cloud Storage delete payload with a bucket override.
+func NewGcpStorageDeletePayloadWithContainer(objectName, bucket string) map[string]any {
+	p := NewGcpStorageDeletePayload(objectName)
+	if bucket != "" {
+		p["bucket"] = bucket
+	}
+	return p
+}
+
+// CoverageKey is a unique combination of coverage dimensions.
+type CoverageKey struct {
+	Namespace  string `json:"namespace"`
+	Tenant     string `json:"tenant"`
+	Provider   string `json:"provider"`
+	ActionType string `json:"action_type"`
+}
+
+// CoverageEntry holds per-combination coverage statistics.
+//
+// Note: the server serializes key fields flattened at the top level, so we
+// embed CoverageKey to match the JSON shape.
+type CoverageEntry struct {
+	CoverageKey
+	Total        int64    `json:"total"`
+	Covered      int64    `json:"covered"`
+	Uncovered    int64    `json:"uncovered"`
+	MatchedRules []string `json:"matched_rules"`
+}
+
+// CoverageQuery holds options for a rule coverage analysis.
+type CoverageQuery struct {
+	Namespace string
+	Tenant    string
+	From      *time.Time
+	To        *time.Time
+}
+
+// CoverageReport is the full rule coverage report.
+type CoverageReport struct {
+	ScannedFrom        time.Time       `json:"scanned_from"`
+	ScannedTo          time.Time       `json:"scanned_to"`
+	TotalActions       int64           `json:"total_actions"`
+	UniqueCombinations int             `json:"unique_combinations"`
+	FullyCovered       int             `json:"fully_covered"`
+	PartiallyCovered   int             `json:"partially_covered"`
+	Uncovered          int             `json:"uncovered"`
+	RulesLoaded        int             `json:"rules_loaded"`
+	Entries            []CoverageEntry `json:"entries"`
+	UnmatchedRules     []string        `json:"unmatched_rules"`
+}
+
+// SigningKeyEntry is one verifying key in the server's active
+// signing keyring. Mirrors the shape returned by
+// GET /.well-known/acteon-signing-keys.
+type SigningKeyEntry struct {
+	SignerID  string `json:"signer_id"`
+	Kid       string `json:"kid"`
+	Algorithm string `json:"algorithm"`
+	// PublicKey is a raw 32-byte Ed25519 public key, base64-encoded.
+	PublicKey string `json:"public_key"`
+	// Tenants scope. ["*"] means all tenants.
+	Tenants []string `json:"tenants"`
+	// Namespaces scope. ["*"] means all namespaces.
+	Namespaces []string `json:"namespaces"`
+}
+
+// SigningKeysResponse is the body returned by the JWKS-style
+// signing key discovery endpoint. Keys is empty when signing is
+// disabled on the server.
+type SigningKeysResponse struct {
+	Keys []SigningKeyEntry `json:"keys"`
+	// Count is always equal to len(Keys); mirrored from the server
+	// for callers who only want a count.
+	Count int `json:"count"`
+}
+
+// -----------------------------------------------------------------------
+// Swarm runs
+// -----------------------------------------------------------------------
+
+// SwarmRunSnapshot is a point-in-time view of a long-running swarm goal.
+type SwarmRunSnapshot struct {
+	RunID      string         `json:"run_id"`
+	PlanID     string         `json:"plan_id"`
+	Objective  string         `json:"objective"`
+	Status     string         `json:"status"`
+	StartedAt  string         `json:"started_at"`
+	FinishedAt *string        `json:"finished_at,omitempty"`
+	Metrics    map[string]any `json:"metrics,omitempty"`
+	Error      *string        `json:"error,omitempty"`
+	Namespace  string         `json:"namespace"`
+	Tenant     string         `json:"tenant"`
+}
+
+// SwarmRunFilter contains query parameters for ListSwarmRuns.
+type SwarmRunFilter struct {
+	Namespace string
+	Tenant    string
+	Status    string
+	Limit     int
+	Offset    int
+}
+
+// ListSwarmRunsResponse is the response shape from GET /v1/swarm/runs.
+type ListSwarmRunsResponse struct {
+	Runs  []SwarmRunSnapshot `json:"runs"`
+	Total int                `json:"total"`
 }

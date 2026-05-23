@@ -1116,7 +1116,7 @@ Authorization = "Bearer token"
 
 | Section | Key | Type | Default | Description |
 |---------|-----|------|---------|-------------|
-| **state** | backend | string | "memory" | State backend: memory/redis/postgres/dynamodb/clickhouse |
+| **state** | backend | string | "memory" | State backend: memory/redis/postgres/dynamodb |
 | | url | string? | none | Connection URL |
 | | prefix | string? | "acteon" | Key prefix |
 | | region | string? | none | AWS region (DynamoDB) |
@@ -1167,7 +1167,7 @@ Authorization = "Bearer token"
 | | api_key | string | "" | API key (supports ENC[...]) |
 | | policy | string | "" | Global system prompt |
 | | policies | map | {} | Per-action-type policies |
-| | fail_open | bool | true | Allow on LLM failure |
+| | fail_open | bool | false | Allow on LLM failure (default fail-closed) |
 | | timeout_seconds | u64? | 10 | Request timeout |
 | | temperature | f64? | 0.0 | Sampling temperature |
 | | max_tokens | u32? | 256 | Max response tokens |
@@ -1254,8 +1254,8 @@ evaluate(action, policy) -> LlmGuardrailResponse { allowed: bool, reason: string
 | `temperature` | f64 | 0.0 | Sampling temperature |
 | `max_tokens` | u32 | 256 | Max response tokens |
 
-### Fail-Open Behavior
-When `fail_open = true` (default), actions are allowed through when the LLM is unreachable.
+### Failure Handling
+When `fail_open = false` (default, fail-closed), actions are denied when the LLM is unreachable. Set `fail_open = true` only for advisory checks where availability matters more than the guarantee that every action was evaluated.
 
 ### Metrics
 - `llm_guardrail_allowed` -- actions allowed
@@ -1302,7 +1302,6 @@ See `telemetry` section in [Server Configuration Reference](#17-server-configura
 | Redis | `acteon-state-redis` | Production (single-node or cluster) |
 | PostgreSQL | `acteon-state-postgres` | Production (SQL-based) |
 | DynamoDB | `acteon-state-dynamodb` | AWS serverless |
-| ClickHouse | `acteon-state-clickhouse` | Analytics-heavy workloads |
 
 ### StateStore Trait Methods
 | Method | Description |

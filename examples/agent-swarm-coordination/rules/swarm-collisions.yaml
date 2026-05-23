@@ -1,0 +1,68 @@
+# Cross-agent collision rules for the multi-agent swarm demo.
+# These rules create observable collisions when three agents share
+# the same tenant and dispatch concurrently.
+
+rules:
+  # ── Cross-agent write dedup ────────────────────────────────────────────────
+  # Prevent two agents from writing the same file within a 2-minute window.
+  # The dedup key is based on the file path (set in acteon-gate.sh), so
+  # different agents writing to the same path will collide.
+  - name: dedup-file-writes
+    priority: 6
+    description: "Deduplicate cross-agent writes to the same file"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "claude-code-agent"
+        - field: action.action_type
+          eq: "write_file"
+    action:
+      type: deduplicate
+      ttl_seconds: 120
+
+  # ── Tighter throttle for swarm ─────────────────────────────────────────────
+  # 25 total actions per minute across all agents. With 3 agents averaging
+  # ~12 actions each, this guarantees visible throttle collisions.
+  - name: throttle-swarm-actions
+    priority: 7
+    description: "Throttle all agent actions to 25/minute across the swarm"
+    condition:
+      field: action.tenant
+      eq: "claude-code-agent"
+    action:
+      type: throttle
+      max_count: 25
+      window_seconds: 60
+
+  # ── Reroute security scanning tools ────────────────────────────────────────
+  # When the security-auditor agent tries to run scanning tools, reroute
+  # the action to a review queue instead of executing it directly.
+  - name: reroute-security-scans
+    priority: 4
+    description: "Reroute security scanning tools to review queue"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "claude-code-agent"
+        - field: action.action_type
+          eq: "execute_command"
+        - field: action.payload.command
+          matches: "(bandit|safety|pip-audit|trivy|snyk|semgrep)"
+    action:
+      type: reroute
+      target_provider: "security-review-queue"
+
+  # ── Tag all swarm actions ──────────────────────────────────────────────────
+  # Add swarm_run=true metadata to every action from this tenant so the
+  # audit trail can identify swarm-originated dispatches.
+  - name: tag-swarm-actions
+    priority: 50
+    description: "Tag all swarm actions with metadata for audit filtering"
+    condition:
+      field: action.tenant
+      eq: "claude-code-agent"
+    action:
+      type: modify
+      changes:
+        metadata:
+          swarm_run: "true"

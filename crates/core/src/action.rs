@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::attachment::Attachment;
 use crate::types::{ActionId, Namespace, ProviderId, TenantId};
 
 /// Metadata attached to an action for routing and observability.
@@ -85,6 +86,42 @@ pub struct Action {
     #[serde(default)]
     #[cfg_attr(feature = "openapi", schema(value_type = HashMap<String, String>))]
     pub trace_context: HashMap<String, String>,
+
+    /// Optional template profile name. When set, the gateway renders the
+    /// matching [`TemplateProfile`](crate::template::TemplateProfile) fields
+    /// using the payload as variables and merges the results into the payload
+    /// before provider execution.
+    #[serde(default)]
+    pub template: Option<String>,
+
+    /// Optional file attachments to include with the action.
+    ///
+    /// Providers that support attachments (email, Slack, Discord, webhook)
+    /// resolve these at execution time. Providers that don't simply ignore them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "openapi", schema(nullable = false))]
+    pub attachments: Vec<Attachment>,
+
+    /// Ed25519 signature over the action's canonical bytes, base64-encoded.
+    /// Set by the client or server when action signing is enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+
+    /// Identifier of the key that produced `signature`. Used to look
+    /// up the corresponding public key in the server's keyring.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signer_id: Option<String>,
+
+    /// Optional key identifier for rotation. When the same `signer_id`
+    /// has more than one active key (e.g., during a rotation window),
+    /// `kid` selects the specific key to verify against. When `None`,
+    /// the verifier accepts any key registered under `signer_id` —
+    /// the legacy single-key behavior. Set this on signed dispatches
+    /// once the operator has provisioned multiple keys for the
+    /// signer; clients can fetch the active set via
+    /// `GET /.well-known/acteon-signing-keys`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kid: Option<String>,
 }
 
 impl Action {
@@ -113,6 +150,11 @@ impl Action {
             ends_at: None,
             created_at: Utc::now(),
             trace_context: HashMap::new(),
+            template: None,
+            attachments: Vec::new(),
+            signature: None,
+            signer_id: None,
+            kid: None,
         }
     }
 
@@ -163,6 +205,80 @@ impl Action {
     pub fn with_trace_context(mut self, ctx: HashMap<String, String>) -> Self {
         self.trace_context = ctx;
         self
+    }
+
+    /// Set the template profile name for payload rendering.
+    #[must_use]
+    pub fn with_template(mut self, template: impl Into<String>) -> Self {
+        self.template = Some(template.into());
+        self
+    }
+
+    /// Set file attachments for the action.
+    #[must_use]
+    pub fn with_attachments(mut self, attachments: Vec<Attachment>) -> Self {
+        self.attachments = attachments;
+        self
+    }
+
+    /// Set the Ed25519 signature (base64-encoded).
+    #[must_use]
+    pub fn with_signature(mut self, signature: impl Into<String>) -> Self {
+        self.signature = Some(signature.into());
+        self
+    }
+
+    /// Set the signer identity (keyring lookup key).
+    #[must_use]
+    pub fn with_signer_id(mut self, signer_id: impl Into<String>) -> Self {
+        self.signer_id = Some(signer_id.into());
+        self
+    }
+
+    /// Set the key identifier (`kid`) — used when the signer has more
+    /// than one active key during a rotation window.
+    #[must_use]
+    pub fn with_kid(mut self, kid: impl Into<String>) -> Self {
+        self.kid = Some(kid.into());
+        self
+    }
+
+    /// Compute the canonical byte representation used for signing.
+    ///
+    /// Returns a **compact** (no whitespace), deterministic JSON
+    /// serialization of every field **except** `signature`,
+    /// `signer_id`, and `kid`. Object keys are sorted lexicographically
+    /// (via `BTreeMap`) so the same action always produces the same
+    /// bytes regardless of the original field insertion order.
+    ///
+    /// `kid` is excluded so that a signer can rotate the key it uses
+    /// without invalidating signatures already produced by an earlier
+    /// key — the canonical bytes stay stable across the rotation
+    /// window. `signature` and `signer_id` are excluded because the
+    /// signature is computed over these bytes and would otherwise
+    /// reference itself.
+    ///
+    /// This format is designed for cross-language reproducibility:
+    /// any JSON library that can emit compact sorted-key JSON will
+    /// produce identical bytes, making it straightforward to sign
+    /// from Go, Python, or Java clients.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut val = serde_json::to_value(self).unwrap_or_default();
+        if let Some(obj) = val.as_object_mut() {
+            obj.remove("signature");
+            obj.remove("signer_id");
+            obj.remove("kid");
+        }
+        // Collect into a BTreeMap for sorted keys, then emit compact
+        // JSON (no whitespace) via the default serializer.
+        let sorted: std::collections::BTreeMap<String, serde_json::Value> =
+            if let serde_json::Value::Object(map) = val {
+                map.into_iter().collect()
+            } else {
+                std::collections::BTreeMap::new()
+            };
+        serde_json::to_vec(&sorted).unwrap_or_default()
     }
 }
 

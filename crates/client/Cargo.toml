@@ -7,10 +7,17 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+signing = ["dep:acteon-crypto"]
+
 [dependencies]
 acteon-core.workspace = true
+acteon-crypto = { workspace = true, features = ["signing"], optional = true }
 
+chrono.workspace = true
 futures.workspace = true
+percent-encoding.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
 serde.workspace = true
 serde_json.workspace = true
@@ -19,7 +26,6 @@ tokio.workspace = true
 tokio-util = { workspace = true }
 
 [dev-dependencies]
-chrono.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]

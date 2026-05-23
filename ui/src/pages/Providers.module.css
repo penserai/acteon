@@ -48,10 +48,6 @@
   @apply flex justify-between;
 }
 
-.detailLabel {
-  @apply text-gray-500;
-}
-
 .fallbackValue {
   @apply font-mono text-xs;
 }

@@ -30,6 +30,10 @@ flowchart TB
     subgraph Providers["Provider Layer (acteon-provider)"]
         Email["Email SMTP"]
         Slack["Slack"]
+        PD["PagerDuty"]
+        Twilio["Twilio SMS"]
+        Teams["Teams"]
+        Discord["Discord"]
         WH["Webhooks"]
         Custom["Custom Providers"]
     end
@@ -39,7 +43,6 @@ flowchart TB
         Redis["Redis"]
         PG["PostgreSQL"]
         DDB["DynamoDB"]
-        CH["ClickHouse"]
     end
 
     subgraph Audit["Audit Layer"]
@@ -60,6 +63,7 @@ flowchart TB
     Features --> State
 
     Exec -.->|record| Audit
+
 ```
 
 ## Crate Organization
@@ -87,7 +91,6 @@ All crates live under the `crates/` directory with logical groupings:
 | `crates/state/redis` | `acteon-state-redis` | Redis backend (distributed) |
 | `crates/state/postgres` | `acteon-state-postgres` | PostgreSQL backend (ACID) |
 | `crates/state/dynamodb` | `acteon-state-dynamodb` | AWS DynamoDB backend |
-| `crates/state/clickhouse` | `acteon-state-clickhouse` | ClickHouse backend (analytics) |
 
 ### Audit Backends
 
@@ -113,6 +116,11 @@ All crates live under the `crates/` directory with logical groupings:
 |-------|---------|-------------|
 | `crates/integrations/email` | `acteon-email` | Email/SMTP provider via Lettre |
 | `crates/integrations/slack` | `acteon-slack` | Slack message provider |
+| `crates/integrations/pagerduty` | `acteon-pagerduty` | PagerDuty Events API v2 provider |
+| `crates/integrations/twilio` | `acteon-twilio` | Twilio SMS provider |
+| `crates/integrations/teams` | `acteon-teams` | Microsoft Teams incoming webhooks |
+| `crates/integrations/discord` | `acteon-discord` | Discord webhook provider |
+| `crates/integrations/webhook` | `acteon-webhook` | Generic HTTP webhook provider |
 | `crates/llm` | `acteon-llm` | LLM-based guardrail evaluation |
 
 ## Data Flow

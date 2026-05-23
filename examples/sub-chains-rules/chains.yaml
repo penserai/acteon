@@ -1,0 +1,27 @@
+rules:
+  - name: incident-response-trigger
+    priority: 1
+    condition:
+      field: action.action_type
+      eq: "incident_detected"
+    action:
+      type: chain
+      chain: incident-response
+
+  - name: deploy-pipeline-trigger
+    priority: 2
+    condition:
+      field: action.action_type
+      eq: "deploy_requested"
+    action:
+      type: chain
+      chain: deploy-pipeline
+
+  - name: onboarding-trigger
+    priority: 3
+    condition:
+      field: action.action_type
+      eq: "user_signup"
+    action:
+      type: chain
+      chain: user-onboarding

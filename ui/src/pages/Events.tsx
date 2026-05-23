@@ -7,10 +7,10 @@ import { Badge } from '../components/ui/Badge'
 import { Input } from '../components/ui/Input'
 import { Drawer } from '../components/ui/Drawer'
 import { Button } from '../components/ui/Button'
-import { Select } from '../components/ui/Select'
 import { useToast } from '../components/ui/useToast'
 import { relativeTime } from '../lib/format'
 import type { EventState } from '../types'
+import shared from '../styles/shared.module.css'
 import styles from './Events.module.css'
 
 const col = createColumnHelper<EventState>()
@@ -25,9 +25,9 @@ export function Events() {
   const [targetState, setTargetState] = useState('')
 
   const handleTransition = () => {
-    if (!selected || !targetState) return
+    if (!selected || !targetState || !ns || !tenant) return
     transition.mutate(
-      { fingerprint: selected.fingerprint, targetState },
+      { fingerprint: selected.fingerprint, namespace: ns, tenant, to: targetState },
       {
         onSuccess: () => { toast('success', 'State transitioned'); setSelected(null) },
         onError: (e) => toast('error', 'Transition failed', (e as Error).message),
@@ -40,13 +40,15 @@ export function Events() {
       header: 'Fingerprint',
       cell: (info) => <span className={styles.fingerprint}>{info.getValue()}</span>,
     }),
-    col.accessor('state_machine', { header: 'State Machine' }),
     col.accessor('state', { header: 'Current State', cell: (info) => <Badge>{info.getValue()}</Badge> }),
+    col.accessor('action_type', { header: 'Action Type', cell: (info) => info.getValue() ?? '-' }),
     col.accessor('updated_at', {
       header: 'Updated',
-      cell: (info) => <span className={styles.timestamp}>{relativeTime(info.getValue())}</span>,
+      cell: (info) => {
+        const v = info.getValue()
+        return <span className={styles.timestamp}>{v ? relativeTime(v) : '-'}</span>
+      },
     }),
-    col.accessor('transitioned_by', { header: 'By' }),
   ]
 
   return (
@@ -71,22 +73,16 @@ export function Events() {
         {selected && (
           <div className={styles.drawerContent}>
             <div className={styles.detailsGrid}>
-              <div className={styles.detailRow}><span className={styles.detailLabel}>Fingerprint</span><span className={styles.detailValue}>{selected.fingerprint}</span></div>
-              <div className={styles.detailRow}><span className={styles.detailLabel}>State Machine</span><span>{selected.state_machine ?? '-'}</span></div>
-              <div className={styles.detailRow}><span className={styles.detailLabel}>Current State</span><Badge>{selected.state}</Badge></div>
-              <div className={styles.detailRow}><span className={styles.detailLabel}>Updated</span><span>{selected.updated_at}</span></div>
-              <div className={styles.detailRow}><span className={styles.detailLabel}>Transitioned By</span><span>{selected.transitioned_by}</span></div>
+              <div className={styles.detailRow}><span className={shared.detailLabel}>Fingerprint</span><span className={shared.detailValue}>{selected.fingerprint}</span></div>
+              <div className={styles.detailRow}><span className={shared.detailLabel}>Current State</span><Badge>{selected.state}</Badge></div>
+              <div className={styles.detailRow}><span className={shared.detailLabel}>Action Type</span><span>{selected.action_type ?? '-'}</span></div>
+              <div className={styles.detailRow}><span className={shared.detailLabel}>Updated</span><span>{selected.updated_at ?? '-'}</span></div>
             </div>
 
             <div className={styles.transitionSection}>
               <h3 className={styles.sectionTitle}>Manual Transition</h3>
               <div className={styles.transitionControls}>
-                <Select
-                  options={[{ value: '', label: 'Select target state' }]}
-                  value={targetState}
-                  onChange={(e) => setTargetState(e.target.value)}
-                />
-                <Input placeholder="Target state" value={targetState} onChange={(e) => setTargetState(e.target.value)} />
+                <Input placeholder="Target state (e.g. acknowledged, resolved)" value={targetState} onChange={(e) => setTargetState(e.target.value)} />
                 <Button size="sm" onClick={handleTransition} loading={transition.isPending} disabled={!targetState}>
                   Transition
                 </Button>

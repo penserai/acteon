@@ -25,10 +25,16 @@ impl Role {
     /// Check whether this role has a given permission.
     pub fn has_permission(self, perm: Permission) -> bool {
         match perm {
-            Permission::Dispatch | Permission::RulesManage | Permission::CircuitBreakerManage => {
-                matches!(self, Self::Admin | Self::Operator)
-            }
-            Permission::AuditRead | Permission::RulesRead | Permission::StreamSubscribe => true,
+            Permission::Dispatch
+            | Permission::RulesManage
+            | Permission::CircuitBreakerManage
+            | Permission::PluginsManage
+            | Permission::SilencesManage
+            | Permission::TimeIntervalsManage => matches!(self, Self::Admin | Self::Operator),
+            Permission::AuditRead
+            | Permission::RulesRead
+            | Permission::RulesTest
+            | Permission::StreamSubscribe => true,
         }
     }
 }
@@ -50,6 +56,12 @@ pub enum Permission {
     AuditRead,
     RulesManage,
     RulesRead,
+    RulesTest,
     CircuitBreakerManage,
+    PluginsManage,
     StreamSubscribe,
+    /// Create, update, or expire silences. Held by admin and operator.
+    SilencesManage,
+    /// Create, update, or delete time intervals. Held by admin and operator.
+    TimeIntervalsManage,
 }

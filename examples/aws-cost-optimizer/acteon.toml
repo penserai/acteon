@@ -1,0 +1,114 @@
+# AWS Cost Optimizer example.
+#
+# Uses Recurring Actions + Auto Scaling provider to schedule off-hours
+# scale-down and morning scale-up of Auto Scaling Groups, reducing
+# overnight compute costs for non-production environments.
+#
+# Requires LocalStack for AWS Auto Scaling:
+#   docker run --rm -d --name localstack -p 4566:4566 localstack/localstack
+#   bash examples/aws-cost-optimizer/scripts/setup.sh
+#
+# Start Acteon:
+#   cargo run -p acteon-server -- -c examples/aws-cost-optimizer/acteon.toml
+
+[server]
+host = "127.0.0.1"
+port = 8080
+
+# HMAC secret for signing approval URLs (hex-encoded, 256-bit).
+approval_secret = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+# ── State (in-memory for this demo) ─────────────────────────────────────────
+[state]
+backend = "memory"
+
+# ── Audit ────────────────────────────────────────────────────────────────────
+[audit]
+enabled = true
+backend = "memory"
+store_payload = true
+
+# ── Providers ────────────────────────────────────────────────────────────────
+
+# EC2: instance-level operations (terminate, reboot, describe)
+[[providers]]
+name = "cost-ec2"
+type = "aws-ec2"
+aws_region = "us-east-1"
+aws_endpoint_url = "http://localhost:4566"
+
+# Auto Scaling: manage ASG capacity
+[[providers]]
+name = "cost-asg"
+type = "aws-autoscaling"
+aws_region = "us-east-1"
+aws_endpoint_url = "http://localhost:4566"
+
+# Log: fallback when AWS is unavailable
+[[providers]]
+name = "local-fallback"
+type = "log"
+
+# ── Rules ────────────────────────────────────────────────────────────────────
+[rules]
+directory = "examples/aws-cost-optimizer/rules"
+
+# ── Executor ─────────────────────────────────────────────────────────────────
+[executor]
+max_retries = 2
+timeout_seconds = 15
+max_concurrent = 8
+
+# ── Circuit Breaker ──────────────────────────────────────────────────────────
+[circuit_breaker]
+enabled = true
+failure_threshold = 3
+success_threshold = 1
+recovery_timeout_seconds = 30
+
+[circuit_breaker.providers.cost-ec2]
+failure_threshold = 2
+recovery_timeout_seconds = 60
+fallback_provider = "local-fallback"
+
+[circuit_breaker.providers.cost-asg]
+failure_threshold = 2
+recovery_timeout_seconds = 60
+fallback_provider = "local-fallback"
+
+# ── Background Processing ───────────────────────────────────────────────────
+[background]
+enabled = true
+group_flush_interval_seconds = 30
+timeout_check_interval_seconds = 30
+cleanup_interval_seconds = 120
+enable_group_flush = false
+enable_timeout_processing = true
+enable_recurring_actions = true
+recurring_check_interval_seconds = 30
+max_recurring_actions_per_tenant = 20
+enable_retention_reaper = false
+namespace = "infra"
+tenant = "cost-optimizer"
+
+# ── Pre-Dispatch Enrichment (commented — requires real ASG state) ────────────
+# Uncomment to have the gateway automatically fetch live ASG state before rule
+# evaluation. Rules can then check `action.payload.current_asg_state.*` fields.
+#
+# [[enrichments]]
+# name = "fetch-asg-state"
+# action_type = "terminate_instances"
+# provider = "cost-ec2"
+# lookup_provider = "cost-asg"
+# resource_type = "auto_scaling_group"
+# merge_key = "current_asg_state"
+# timeout_seconds = 10
+# failure_policy = "fail_closed"
+#
+# [enrichments.params]
+# auto_scaling_group_names = ["{{payload.asg_name}}"]
+
+# ── Quotas ───────────────────────────────────────────────────────────────────
+# Quota enforcement enabled; policies created via the API in scripts/setup-api.sh.
+[quotas]
+enabled = true

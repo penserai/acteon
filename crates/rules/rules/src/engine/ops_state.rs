@@ -9,6 +9,9 @@ pub(crate) async fn eval_state_get(
     key_pattern: &str,
     ctx: &EvalContext<'_>,
 ) -> Result<Value, RuleError> {
+    if let Some(ref tracker) = ctx.access_tracker {
+        tracker.record_state_key(&format!("state:{key_pattern}"));
+    }
     let state_key = StateKey::new(
         ctx.action.namespace.as_str(),
         ctx.action.tenant.as_str(),
@@ -27,6 +30,9 @@ pub(crate) async fn eval_state_counter(
     key_pattern: &str,
     ctx: &EvalContext<'_>,
 ) -> Result<Value, RuleError> {
+    if let Some(ref tracker) = ctx.access_tracker {
+        tracker.record_state_key(&format!("counter:{key_pattern}"));
+    }
     let state_key = StateKey::new(
         ctx.action.namespace.as_str(),
         ctx.action.tenant.as_str(),
@@ -50,6 +56,9 @@ pub(crate) async fn eval_state_time_since(
     key_pattern: &str,
     ctx: &EvalContext<'_>,
 ) -> Result<Value, RuleError> {
+    if let Some(ref tracker) = ctx.access_tracker {
+        tracker.record_state_key(&format!("time_since:{key_pattern}"));
+    }
     let state_key = StateKey::new(
         ctx.action.namespace.as_str(),
         ctx.action.tenant.as_str(),

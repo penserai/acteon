@@ -126,6 +126,18 @@ pub enum Expr {
         state: String,
     },
 
+    // WASM plugin calls
+    /// Invoke a WASM plugin as a condition check.
+    ///
+    /// The plugin receives the action context as JSON and returns a boolean
+    /// verdict. Requires a `WasmPluginRuntime` in the evaluation context.
+    WasmCall {
+        /// Name of the registered WASM plugin.
+        plugin: String,
+        /// Exported function to call (defaults to `"evaluate"`).
+        function: String,
+    },
+
     // Semantic matching
     /// Check if a text field semantically matches a topic description.
     ///
@@ -144,6 +156,135 @@ pub enum Expr {
 }
 
 impl Expr {
+    /// Returns a human-readable pseudo-code representation of the expression.
+    #[allow(clippy::too_many_lines)]
+    pub fn to_source(&self) -> String {
+        match self {
+            Self::Null => "null".to_owned(),
+            Self::Bool(b) => b.to_string(),
+            Self::Int(n) => n.to_string(),
+            Self::Float(f) => f.to_string(),
+            Self::String(s) => format!("\"{}\"", s.replace('"', "\\\"")),
+            Self::List(items) => {
+                let inner = items
+                    .iter()
+                    .map(Self::to_source)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("[{inner}]")
+            }
+            Self::Map(entries) => {
+                let inner = entries
+                    .iter()
+                    .map(|(k, v)| format!("\"{}\": {}", k.replace('"', "\\\""), v.to_source()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{{{inner}}}")
+            }
+            Self::Ident(name) => name.clone(),
+            Self::Field(base, field) => format!("{}.{}", base.to_source(), field),
+            Self::Index(base, index) => format!("{}[{}]", base.to_source(), index.to_source()),
+            Self::Unary(op, expr) => {
+                let symbol = match op {
+                    UnaryOp::Not => "!",
+                    UnaryOp::Neg => "-",
+                };
+                format!("{}{}", symbol, expr.to_source())
+            }
+            Self::Binary(op, lhs, rhs) => {
+                let symbol = match op {
+                    BinaryOp::Add => "+",
+                    BinaryOp::Sub => "-",
+                    BinaryOp::Mul => "*",
+                    BinaryOp::Div => "/",
+                    BinaryOp::Mod => "%",
+                    BinaryOp::Eq => "==",
+                    BinaryOp::Ne => "!=",
+                    BinaryOp::Lt => "<",
+                    BinaryOp::Le => "<=",
+                    BinaryOp::Gt => ">",
+                    BinaryOp::Ge => ">=",
+                    BinaryOp::And => "&&",
+                    BinaryOp::Or => "||",
+                    BinaryOp::Contains => "contains",
+                    BinaryOp::StartsWith => "starts_with",
+                    BinaryOp::EndsWith => "ends_with",
+                    BinaryOp::Matches => "matches",
+                    BinaryOp::In => "in",
+                };
+                format!("({} {} {})", lhs.to_source(), symbol, rhs.to_source())
+            }
+            Self::Ternary(cond, then, els) => format!(
+                "({} ? {} : {})",
+                cond.to_source(),
+                then.to_source(),
+                els.to_source()
+            ),
+            Self::Call(name, args) => {
+                let inner = args
+                    .iter()
+                    .map(Self::to_source)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{name}({inner})")
+            }
+            Self::All(exprs) => {
+                let inner = exprs
+                    .iter()
+                    .map(Self::to_source)
+                    .collect::<Vec<_>>()
+                    .join(" && ");
+                format!("all({inner})")
+            }
+            Self::Any(exprs) => {
+                let inner = exprs
+                    .iter()
+                    .map(Self::to_source)
+                    .collect::<Vec<_>>()
+                    .join(" || ");
+                format!("any({inner})")
+            }
+            Self::StateGet(key) => format!("StateGet(\"{key}\")"),
+            Self::StateCounter(key) => format!("StateCounter(\"{key}\")"),
+            Self::StateTimeSince(key) => format!("StateTimeSince(\"{key}\")"),
+            Self::HasActiveEvent {
+                event_type,
+                label_value,
+            } => match label_value {
+                Some(v) => {
+                    let v_src = v.to_source();
+                    format!("HasActiveEvent(\"{event_type}\", {v_src})")
+                }
+                None => format!("HasActiveEvent(\"{event_type}\")"),
+            },
+            Self::GetEventState(fp) => {
+                let fp_src = fp.to_source();
+                format!("GetEventState({fp_src})")
+            }
+            Self::EventInState { fingerprint, state } => {
+                let fp_src = fingerprint.to_source();
+                format!("EventInState({fp_src}, \"{state}\")")
+            }
+            Self::WasmCall { plugin, function } => {
+                format!("wasm(\"{plugin}\", \"{function}\")")
+            }
+            Self::SemanticMatch {
+                topic,
+                threshold,
+                text_field,
+            } => {
+                let text = text_field
+                    .as_ref()
+                    .map(|f| {
+                        let f_src = f.to_source();
+                        format!(", text={f_src}")
+                    })
+                    .unwrap_or_default();
+                format!("SemanticMatch(\"{topic}\", threshold={threshold}{text})")
+            }
+        }
+    }
+
     /// Returns `true` if this expression is a constant (literal) value.
     pub fn is_constant(&self) -> bool {
         matches!(
@@ -221,7 +362,8 @@ impl Expr {
             | Self::Ident(_)
             | Self::StateGet(_)
             | Self::StateCounter(_)
-            | Self::StateTimeSince(_) => {}
+            | Self::StateTimeSince(_)
+            | Self::WasmCall { .. } => {}
         }
     }
 }
@@ -423,5 +565,87 @@ mod tests {
             Box::new(Expr::Int(42)),
         );
         assert!(expr.semantic_topics().is_empty());
+    }
+
+    // --- WasmCall tests ---
+
+    #[test]
+    fn wasm_call_construction() {
+        let expr = Expr::WasmCall {
+            plugin: "fraud-detector".into(),
+            function: "evaluate".into(),
+        };
+        assert!(!expr.is_constant());
+    }
+
+    #[test]
+    fn wasm_call_serde_roundtrip() {
+        let expr = Expr::WasmCall {
+            plugin: "rate-limiter".into(),
+            function: "check".into(),
+        };
+        let json = serde_json::to_string(&expr).unwrap();
+        let back: Expr = serde_json::from_str(&json).unwrap();
+        assert_eq!(format!("{expr:?}"), format!("{back:?}"));
+    }
+
+    #[test]
+    fn wasm_call_to_source() {
+        let expr = Expr::WasmCall {
+            plugin: "content-filter".into(),
+            function: "evaluate".into(),
+        };
+        assert_eq!(expr.to_source(), r#"wasm("content-filter", "evaluate")"#);
+    }
+
+    #[test]
+    fn wasm_call_to_source_custom_function() {
+        let expr = Expr::WasmCall {
+            plugin: "my-plugin".into(),
+            function: "check_payload".into(),
+        };
+        assert_eq!(expr.to_source(), r#"wasm("my-plugin", "check_payload")"#);
+    }
+
+    #[test]
+    fn wasm_call_semantic_topics_empty() {
+        let expr = Expr::WasmCall {
+            plugin: "test".into(),
+            function: "evaluate".into(),
+        };
+        assert!(expr.semantic_topics().is_empty());
+    }
+
+    #[test]
+    fn wasm_call_nested_in_binary() {
+        let expr = Expr::Binary(
+            BinaryOp::And,
+            Box::new(Expr::WasmCall {
+                plugin: "checker".into(),
+                function: "evaluate".into(),
+            }),
+            Box::new(Expr::Bool(true)),
+        );
+        let json = serde_json::to_string(&expr).unwrap();
+        let back: Expr = serde_json::from_str(&json).unwrap();
+        assert_eq!(format!("{expr:?}"), format!("{back:?}"));
+    }
+
+    #[test]
+    fn wasm_call_in_all_expr() {
+        let expr = Expr::All(vec![
+            Expr::WasmCall {
+                plugin: "checker-a".into(),
+                function: "evaluate".into(),
+            },
+            Expr::WasmCall {
+                plugin: "checker-b".into(),
+                function: "evaluate".into(),
+            },
+        ]);
+        let source = expr.to_source();
+        assert!(source.contains("wasm("));
+        assert!(source.contains("checker-a"));
+        assert!(source.contains("checker-b"));
     }
 }

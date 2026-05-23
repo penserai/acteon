@@ -13,7 +13,7 @@ github.com/penserai/acteon
 
 # **Executive Summary**
 
-Acteon is a distributed action gateway system built in Rust that executes actions across multiple providers (Slack, PagerDuty, Twilio, AWS SQS/SNS, LLM gateways, and more) with sophisticated control plane capabilities including deduplication, suppression, rerouting, and throttling.
+Acteon is a distributed action gateway system built in Rust that executes actions across multiple providers (Slack, PagerDuty, Twilio, Microsoft Teams, Discord, AWS SQS/SNS, LLM gateways, and more) with sophisticated control plane capabilities including deduplication, suppression, rerouting, and throttling.
 
 The system is designed with pluggable infrastructure at every layer: swappable state backends (Redis, DynamoDB, Zookeeper), a polyglot rule engine supporting multiple DSLs (CEL, Rego, Drools-like, YAML), and an extensible provider architecture.
 
@@ -509,14 +509,16 @@ pub trait Provider: Send \+ Sync {
 
 | Provider | Description | Status |
 | :---- | :---- | :---- |
-| Slack | Messages, reactions, channel management | Planned |
-| PagerDuty | Incidents, alerts, escalations | Planned |
-| Twilio | SMS, voice, WhatsApp | Planned |
+| Slack | Messages, reactions, channel management | Implemented |
+| PagerDuty | Incidents, alerts, escalations | Implemented |
+| Twilio | SMS, MMS | Implemented |
+| Microsoft Teams | Incoming webhooks (MessageCard, Adaptive Card) | Implemented |
+| Discord | Webhooks (content, rich embeds) | Implemented |
 | AWS SQS | Queue messaging | Planned |
 | AWS SNS | Pub/sub notifications | Planned |
 | LLM Gateway | OpenAI, Anthropic, local models | Planned |
-| Webhook | Generic HTTP callbacks | Planned |
-| Email (SMTP) | Transactional email | Planned |
+| Webhook | Generic HTTP callbacks | Implemented |
+| Email (SMTP) | Transactional email | Implemented |
 
 ## **Provider Registry**
 
@@ -612,9 +614,11 @@ engine.load\_directory(Path::new("./rules"))?;
 let gateway \= Acteon::builder()  
     .state(state)  
     .rules(engine)  
-    .provider(Slack::from\_env())  
-    .provider(PagerDuty::from\_env())  
-    .provider(Twilio::from\_env())  
+    .provider(Slack::from\_env())
+    .provider(PagerDuty::from\_env())
+    .provider(Twilio::from\_env())
+    .provider(Teams::from\_env())
+    .provider(Discord::from\_env())
     .build()  
     .await?;  
    

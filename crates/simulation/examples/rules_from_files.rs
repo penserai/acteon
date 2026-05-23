@@ -20,6 +20,7 @@ use acteon_simulation::RecordingProvider;
 use acteon_state::lock::DistributedLock;
 use acteon_state::store::StateStore;
 use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
+use tracing::info;
 
 /// Load rules from a YAML file.
 fn load_rules_from_file(
@@ -45,9 +46,9 @@ fn load_rules_from_directory(
             .map(|e| e == "yaml" || e == "yml")
             .unwrap_or(false)
         {
-            println!("  Loading: {}", path.display());
+            info!("  Loading: {}", path.display());
             let rules = load_rules_from_file(&path)?;
-            println!("    → {} rules loaded", rules.len());
+            info!("    → {} rules loaded", rules.len());
             all_rules.extend(rules);
         }
     }
@@ -57,40 +58,42 @@ fn load_rules_from_directory(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║        LOADING RULES FROM CONFIGURATION FILES                ║");
-    println!("╚══════════════════════════════════════════════════════════════╝\n");
+    tracing_subscriber::fmt::init();
+
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║        LOADING RULES FROM CONFIGURATION FILES                ║");
+    info!("╚══════════════════════════════════════════════════════════════╝\n");
 
     // Get the fixtures directory path
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let fixtures_dir = Path::new(manifest_dir).join("fixtures/rules");
 
-    println!("→ Loading rules from: {}\n", fixtures_dir.display());
+    info!("→ Loading rules from: {}\n", fixtures_dir.display());
 
     // =========================================================================
     // APPROACH 1: Load a single rule file
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  APPROACH 1: Load a single rule file");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  APPROACH 1: Load a single rule file");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let suppression_path = fixtures_dir.join("suppression.yaml");
     let suppression_rules = load_rules_from_file(&suppression_path)?;
 
-    println!("  Loaded {} suppression rules:", suppression_rules.len());
+    info!("  Loaded {} suppression rules:", suppression_rules.len());
     for rule in &suppression_rules {
-        println!("    - {} (priority: {})", rule.name, rule.priority);
+        info!("    - {} (priority: {})", rule.name, rule.priority);
     }
 
     // =========================================================================
     // APPROACH 2: Load all rules from a directory
     // =========================================================================
-    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  APPROACH 2: Load all rules from directory");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  APPROACH 2: Load all rules from directory");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let all_rules = load_rules_from_directory(&fixtures_dir)?;
-    println!("\n  Total rules loaded: {}", all_rules.len());
+    info!("\n  Total rules loaded: {}", all_rules.len());
 
     // Group by action type
     let mut by_action: std::collections::HashMap<String, Vec<&acteon_rules::Rule>> =
@@ -100,17 +103,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         by_action.entry(action_type).or_default().push(rule);
     }
 
-    println!("\n  Rules by action type:");
+    info!("\n  Rules by action type:");
     for (action_type, rules) in &by_action {
-        println!("    {}: {} rules", action_type, rules.len());
+        info!("    {}: {} rules", action_type, rules.len());
     }
 
     // =========================================================================
     // APPROACH 3: Selective loading - pick specific files
     // =========================================================================
-    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  APPROACH 3: Selective loading - combine specific files");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  APPROACH 3: Selective loading - combine specific files");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let rule_files = vec!["suppression.yaml", "rerouting.yaml"];
     let mut selected_rules = Vec::new();
@@ -118,18 +121,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for filename in &rule_files {
         let path = fixtures_dir.join(filename);
         let rules = load_rules_from_file(&path)?;
-        println!("  {}: {} rules", filename, rules.len());
+        info!("  {}: {} rules", filename, rules.len());
         selected_rules.extend(rules);
     }
 
-    println!("  Combined: {} rules\n", selected_rules.len());
+    info!("  Combined: {} rules\n", selected_rules.len());
 
     // =========================================================================
     // DEMO: Use loaded rules in a gateway
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  DEMO: Test rules loaded from files");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  DEMO: Test rules loaded from files");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     // Create providers
     let email = Arc::new(RecordingProvider::new("email"));
@@ -147,17 +150,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
 
     // Test suppression rule (from suppression.yaml)
-    println!("  Testing suppression rule (block-spam):");
+    info!("  Testing suppression rule (block-spam):");
     let spam = Action::new("ns", "t1", "email", "spam", serde_json::json!({}));
     let outcome = gateway.dispatch(spam, None).await?;
-    println!("    Action type 'spam' → {:?}", outcome);
-    println!(
+    info!("    Action type 'spam' → {:?}", outcome);
+    info!(
         "    Email provider calls: {} (should be 0)\n",
         email.call_count()
     );
 
     // Test rerouting rule (from rerouting.yaml)
-    println!("  Testing rerouting rule (reroute-urgent-to-sms):");
+    info!("  Testing rerouting rule (reroute-urgent-to-sms):");
     let urgent = Action::new(
         "ns",
         "t1",
@@ -169,8 +172,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
     let outcome = gateway.dispatch(urgent, None).await?;
-    println!("    Urgent notification → {:?}", outcome);
-    println!(
+    info!("    Urgent notification → {:?}", outcome);
+    info!(
         "    Email calls: {}, SMS calls: {}",
         email.call_count(),
         sms.call_count()
@@ -181,12 +184,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // =========================================================================
     // APPROACH 4: Environment-based config selection
     // =========================================================================
-    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  APPROACH 4: Environment-based configuration");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  APPROACH 4: Environment-based configuration");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let env = std::env::var("ACTEON_ENV").unwrap_or_else(|_| "development".to_string());
-    println!("  ACTEON_ENV = {}", env);
+    info!("  ACTEON_ENV = {}", env);
 
     // In production, you might have:
     //   rules/production/strict-rules.yaml
@@ -199,29 +202,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => vec!["suppression.yaml"], // minimal for development
     };
 
-    println!("  Rule files for '{}': {:?}", env, rule_files_for_env);
+    info!("  Rule files for '{}': {:?}", env, rule_files_for_env);
 
     // =========================================================================
     // Note on dynamic rules
     // =========================================================================
-    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  NOTE: Dynamic rule loading");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  NOTE: Dynamic rule loading");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  Rules are configured at the gateway level, not in action payloads.");
-    println!("  The action payload contains data that rules EVALUATE against.\n");
+    info!("  Rules are configured at the gateway level, not in action payloads.");
+    info!("  The action payload contains data that rules EVALUATE against.\n");
 
-    println!("  For dynamic rule management, use the HTTP API:");
-    println!("    GET  /v1/rules              - List all loaded rules");
-    println!("    POST /v1/rules/reload       - Reload rules from directory");
-    println!("    PUT  /v1/rules/{{name}}/enabled - Enable/disable a specific rule\n");
+    info!("  For dynamic rule management, use the HTTP API:");
+    info!("    GET  /v1/rules              - List all loaded rules");
+    info!("    POST /v1/rules/reload       - Reload rules from directory");
+    info!("    PUT  /v1/rules/{{name}}/enabled - Enable/disable a specific rule\n");
 
-    println!("  Example: Reload rules via curl:");
-    println!("    curl -X POST http://localhost:8080/v1/rules/reload\n");
+    info!("  Example: Reload rules via curl:");
+    info!("    curl -X POST http://localhost:8080/v1/rules/reload\n");
 
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║               RULES FROM FILES DEMO COMPLETE                 ║");
-    println!("╚══════════════════════════════════════════════════════════════╝");
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║               RULES FROM FILES DEMO COMPLETE                 ║");
+    info!("╚══════════════════════════════════════════════════════════════╝");
 
     Ok(())
 }

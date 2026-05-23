@@ -466,6 +466,106 @@ See [Event Streaming](../features/event-streaming.md) for full documentation.
 
 ---
 
+## Recurring Actions
+
+### `POST /v1/recurring`
+
+Create a new recurring action.
+
+**Request Body:**
+
+```json
+{
+  "namespace": "notifications",
+  "tenant": "acme",
+  "cron_expr": "0 9 * * MON-FRI",
+  "timezone": "US/Eastern",
+  "provider": "email",
+  "action_type": "send_digest",
+  "payload": {"to": "team@example.com"},
+  "description": "Weekday morning digest"
+}
+```
+
+**Response (201):**
+
+```json
+{
+  "recurring_id": "uuid-...",
+  "next_execution": "2026-02-10T14:00:00Z",
+  "cron_expr": "0 9 * * MON-FRI",
+  "timezone": "US/Eastern",
+  "enabled": true
+}
+```
+
+| Status | Description |
+|--------|-------------|
+| `201` | Recurring action created |
+| `400` | Invalid cron expression, timezone, or missing required fields |
+
+### `GET /v1/recurring`
+
+List recurring actions for a namespace and tenant.
+
+**Query Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `namespace` | string | Yes | Filter by namespace |
+| `tenant` | string | Yes | Filter by tenant |
+| `enabled` | bool | No | Filter by enabled status |
+
+### `GET /v1/recurring/{id}`
+
+Get a recurring action by ID.
+
+**Query Parameters:** `namespace`, `tenant`
+
+| Status | Description |
+|--------|-------------|
+| `200` | Recurring action found |
+| `404` | Recurring action not found |
+
+### `PUT /v1/recurring/{id}`
+
+Update a recurring action (partial update).
+
+**Query Parameters:** `namespace`, `tenant`
+
+| Status | Description |
+|--------|-------------|
+| `200` | Recurring action updated |
+| `400` | Invalid cron expression or timezone |
+| `404` | Recurring action not found |
+
+### `DELETE /v1/recurring/{id}`
+
+Delete a recurring action.
+
+**Query Parameters:** `namespace`, `tenant`
+
+| Status | Description |
+|--------|-------------|
+| `204` | Deleted |
+| `404` | Recurring action not found |
+
+### `POST /v1/recurring/{id}/pause`
+
+Pause a recurring action (stops future executions).
+
+**Query Parameters:** `namespace`, `tenant`
+
+### `POST /v1/recurring/{id}/resume`
+
+Resume a paused recurring action (recomputes next execution from now).
+
+**Query Parameters:** `namespace`, `tenant`
+
+See [Recurring Actions](../features/recurring-actions.md) for full documentation.
+
+---
+
 ## Circuit Breaker Admin
 
 These endpoints require the **admin** or **operator** role.
@@ -596,6 +696,13 @@ Revoke the current JWT token.
 | `GET` | `/admin/circuit-breakers` | List circuit breakers |
 | `POST` | `/admin/circuit-breakers/{provider}/trip` | Force-open circuit breaker |
 | `POST` | `/admin/circuit-breakers/{provider}/reset` | Force-close circuit breaker |
+| `POST` | `/v1/recurring` | Create recurring action |
+| `GET` | `/v1/recurring` | List recurring actions |
+| `GET` | `/v1/recurring/{id}` | Get recurring action |
+| `PUT` | `/v1/recurring/{id}` | Update recurring action |
+| `DELETE` | `/v1/recurring/{id}` | Delete recurring action |
+| `POST` | `/v1/recurring/{id}/pause` | Pause recurring action |
+| `POST` | `/v1/recurring/{id}/resume` | Resume recurring action |
 | `GET` | `/v1/stream` | SSE event stream |
 | `POST` | `/v1/auth/login` | Login |
 | `POST` | `/v1/auth/logout` | Logout |

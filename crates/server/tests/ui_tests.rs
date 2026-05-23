@@ -27,6 +27,7 @@ async fn ui_serves_index_html() {
         .executor_config(ExecutorConfig::default())
         .build()
         .expect("gateway should build");
+    let metrics = gw.metrics_arc();
 
     let ui_config = UiConfig {
         enabled: true,
@@ -35,15 +36,30 @@ async fn ui_serves_index_html() {
 
     let state = AppState {
         gateway: Arc::new(RwLock::new(gw)),
+        metrics,
         audit: None,
+        analytics: None,
         auth: None,
         rate_limiter: None,
         embedding: None,
         embedding_metrics: None,
         connection_registry: None,
+        a2a_discovery_cache: Arc::new(
+            acteon_server::api::a2a_discovery_cache::DiscoveryCache::new(),
+        ),
+        dispatch_semaphore: Arc::new(tokio::sync::Semaphore::new(1000)),
         config: ConfigSnapshot::default(),
         ui_path: Some(ui_config.dist_path.clone()),
         ui_enabled: ui_config.enabled,
+        cors_allowed_origins: Vec::new(),
+        signature_verifier: None,
+        replay_protection: None,
+        #[cfg(feature = "swarm")]
+        swarm_registry: None,
+        #[cfg(feature = "bus")]
+        bus_backend: None,
+        #[cfg(feature = "bus")]
+        bus_schema_validator: acteon_bus::SchemaValidator::new(),
     };
 
     let app = acteon_server::api::router(state);

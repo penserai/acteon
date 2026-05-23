@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -24,6 +25,20 @@ public class Action {
     private ActionMetadata metadata;
     @JsonProperty("created_at")
     private String createdAt;
+    private String template;
+    private List<Attachment> attachments;
+    /** Ed25519 signature over the action's canonical bytes, base64-encoded. */
+    private String signature;
+    /** Identifier of the key that produced the signature. */
+    @JsonProperty("signer_id")
+    private String signerId;
+    /**
+     * Optional key identifier for rotation. When the same `signerId`
+     * has multiple active keys on the server, `kid` selects the
+     * specific key to verify against. Discoverable via
+     * {@code GET /.well-known/acteon-signing-keys}.
+     */
+    private String kid;
 
     public Action() {
         this.id = UUID.randomUUID().toString();
@@ -72,6 +87,21 @@ public class Action {
     public String getCreatedAt() { return createdAt; }
     public void setCreatedAt(String createdAt) { this.createdAt = createdAt; }
 
+    public String getTemplate() { return template; }
+    public void setTemplate(String template) { this.template = template; }
+
+    public List<Attachment> getAttachments() { return attachments; }
+    public void setAttachments(List<Attachment> attachments) { this.attachments = attachments; }
+
+    public String getSignature() { return signature; }
+    public void setSignature(String signature) { this.signature = signature; }
+
+    public String getSignerId() { return signerId; }
+    public void setSignerId(String signerId) { this.signerId = signerId; }
+
+    public String getKid() { return kid; }
+    public void setKid(String kid) { this.kid = kid; }
+
     public Action withDedupKey(String dedupKey) {
         this.dedupKey = dedupKey;
         return this;
@@ -79,6 +109,16 @@ public class Action {
 
     public Action withMetadata(Map<String, String> labels) {
         this.metadata = new ActionMetadata(labels);
+        return this;
+    }
+
+    public Action withTemplate(String template) {
+        this.template = template;
+        return this;
+    }
+
+    public Action withAttachments(List<Attachment> attachments) {
+        this.attachments = attachments;
         return this;
     }
 
@@ -92,6 +132,8 @@ public class Action {
         private String dedupKey;
         private Map<String, String> labels;
         private String createdAt = Instant.now().toString();
+        private String template;
+        private List<Attachment> attachments;
 
         public Builder id(String id) { this.id = id; return this; }
         public Builder namespace(String namespace) { this.namespace = namespace; return this; }
@@ -102,6 +144,8 @@ public class Action {
         public Builder dedupKey(String dedupKey) { this.dedupKey = dedupKey; return this; }
         public Builder labels(Map<String, String> labels) { this.labels = labels; return this; }
         public Builder createdAt(String createdAt) { this.createdAt = createdAt; return this; }
+        public Builder template(String template) { this.template = template; return this; }
+        public Builder attachments(List<Attachment> attachments) { this.attachments = attachments; return this; }
 
         public Action build() {
             Action action = new Action();
@@ -113,6 +157,8 @@ public class Action {
             action.payload = this.payload;
             action.dedupKey = this.dedupKey;
             action.createdAt = this.createdAt;
+            action.template = this.template;
+            action.attachments = this.attachments;
             if (this.labels != null) {
                 action.metadata = new ActionMetadata(this.labels);
             }

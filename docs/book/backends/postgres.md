@@ -92,5 +92,6 @@ cargo build -p acteon-server --features postgres
 
 ```bash
 docker compose --profile postgres up -d
+scripts/migrate.sh -c examples/postgres.toml
 cargo run -p acteon-server --features postgres -- -c examples/postgres.toml
 ```

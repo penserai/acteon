@@ -18,16 +18,50 @@ path = "src/main.rs"
 default = ["redis"]
 redis = ["dep:acteon-state-redis"]
 postgres = ["dep:acteon-state-postgres", "dep:acteon-audit-postgres"]
-clickhouse = ["dep:acteon-state-clickhouse", "dep:acteon-audit-clickhouse"]
-dynamodb = ["dep:acteon-state-dynamodb"]
+clickhouse = ["dep:acteon-audit-clickhouse"]
+dynamodb = ["dep:acteon-state-dynamodb", "dep:acteon-audit-dynamodb"]
 elasticsearch = ["dep:acteon-audit-elasticsearch"]
 all-backends = ["redis", "postgres", "clickhouse", "dynamodb", "elasticsearch"]
+# AWS provider features — only compile the SDKs you need
+aws-sns = ["acteon-aws/sns"]
+aws-lambda = ["acteon-aws/lambda"]
+aws-eventbridge = ["acteon-aws/eventbridge"]
+aws-sqs = ["acteon-aws/sqs"]
+aws-ses = ["acteon-aws/ses"]
+aws-s3 = ["acteon-aws/s3"]
+aws-ec2 = ["acteon-aws/ec2"]
+aws-autoscaling = ["acteon-aws/autoscaling"]
+aws-all = ["aws-sns", "aws-lambda", "aws-eventbridge", "aws-sqs", "aws-ses", "aws-s3", "aws-ec2", "aws-autoscaling"]
+# Azure provider features — only compile the SDKs you need
+azure-blob = ["acteon-azure/blob"]
+azure-eventhubs = ["acteon-azure/eventhubs"]
+azure-all = ["azure-blob", "azure-eventhubs"]
+# GCP provider features — only compile the SDKs you need
+gcp-pubsub = ["acteon-gcp/pubsub"]
+gcp-storage = ["acteon-gcp/storage"]
+gcp-all = ["gcp-pubsub", "gcp-storage"]
+# Niche / regional messaging providers — opt-in to keep the default
+# binary from shipping support for integrations most deployments do
+# not need. Widely-used providers (email, slack, pagerduty, webhook,
+# twilio, teams) remain part of the default build.
+opsgenie = ["dep:acteon-opsgenie"]
+victorops = ["dep:acteon-victorops"]
+pushover = ["dep:acteon-pushover"]
+telegram = ["dep:acteon-telegram"]
+wechat = ["dep:acteon-wechat"]
+discord = ["dep:acteon-discord"]
+extras-alerting = ["opsgenie", "victorops", "pushover", "telegram", "wechat", "discord"]
+# Ambient agent-swarm provider — long-running goal-driven runs dispatched as Actions.
+swarm = ["dep:acteon-swarm", "dep:acteon-swarm-provider"]
+# Agentic message bus (Kafka-backed). Phase 1: topics + publish + subscribe.
+bus = ["dep:acteon-bus"]
 
 [dependencies]
-acteon-audit = { workspace = true }
+acteon-audit = { workspace = true, features = ["openapi"] }
 acteon-audit-memory = { workspace = true }
 acteon-audit-postgres = { workspace = true, optional = true }
 acteon-audit-clickhouse = { workspace = true, optional = true }
+acteon-audit-dynamodb = { workspace = true, optional = true }
 acteon-audit-elasticsearch = { workspace = true, optional = true }
 acteon-core = { workspace = true, features = ["openapi"] }
 acteon-state = { workspace = true }
@@ -35,20 +69,43 @@ acteon-state-memory = { workspace = true }
 acteon-state-redis = { workspace = true, optional = true }
 acteon-state-postgres = { workspace = true, optional = true }
 acteon-state-dynamodb = { workspace = true, optional = true }
-acteon-state-clickhouse = { workspace = true, optional = true }
 acteon-rules = { workspace = true }
 acteon-rules-yaml = { workspace = true }
 acteon-provider = { workspace = true, features = ["webhook"] }
+acteon-email = { workspace = true, features = ["ses"] }
+acteon-aws = { workspace = true, optional = true }
+acteon-azure = { workspace = true, optional = true }
+acteon-gcp = { workspace = true, optional = true }
+acteon-twilio = { workspace = true }
+acteon-teams = { workspace = true }
+acteon-discord = { workspace = true, optional = true }
+acteon-opsgenie = { workspace = true, optional = true }
+acteon-victorops = { workspace = true, optional = true }
+acteon-pushover = { workspace = true, optional = true }
+acteon-telegram = { workspace = true, optional = true }
+acteon-wechat = { workspace = true, optional = true }
+acteon-swarm = { workspace = true, optional = true }
+acteon-swarm-provider = { workspace = true, optional = true, features = ["openapi"] }
+acteon-bus = { workspace = true, optional = true }
 acteon-executor = { workspace = true }
 acteon-gateway = { workspace = true }
 acteon-llm = { workspace = true }
 acteon-embedding = { workspace = true }
-acteon-crypto = { workspace = true }
+acteon-crypto = { workspace = true, features = ["tls", "signing"] }
+acteon-wasm-runtime = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
+base64 = { workspace = true }
 futures = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+reqwest = { workspace = true }
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
 chrono = { workspace = true }
+chrono-tz = { workspace = true }
 clap = { workspace = true }
+croner = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -68,6 +125,7 @@ tracing-opentelemetry = { workspace = true }
 utoipa = { workspace = true }
 utoipa-swagger-ui = { workspace = true }
 utoipa-axum = { workspace = true }
+minijinja = { workspace = true }
 jsonwebtoken = { workspace = true }
 argon2 = { workspace = true }
 sha2 = { workspace = true }
@@ -78,7 +136,7 @@ uuid = { workspace = true }
 acteon-audit = { workspace = true }
 acteon-audit-memory = { workspace = true }
 axum-test = { workspace = true }
-reqwest = { workspace = true }
+proptest = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 
 [lints]

@@ -9,6 +9,7 @@ rust-version.workspace = true
 [dependencies]
 acteon-core = { workspace = true }
 acteon-state = { workspace = true }
+acteon-wasm-runtime = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 chrono-tz = { workspace = true }

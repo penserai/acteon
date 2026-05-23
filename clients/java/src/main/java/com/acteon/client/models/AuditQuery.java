@@ -2,6 +2,11 @@ package com.acteon.client.models;
 
 /**
  * Query parameters for audit search.
+ *
+ * <p>Prefer {@code cursor} over {@code offset} for deep pagination —
+ * large offsets degrade linearly on every backend. Pass the
+ * {@code nextCursor} returned by a prior {@link AuditPage} back in here
+ * to fetch the next page in O(limit) time. Treat the cursor as opaque.
  */
 public class AuditQuery {
     private String namespace;
@@ -11,6 +16,7 @@ public class AuditQuery {
     private String outcome;
     private Integer limit;
     private Integer offset;
+    private String cursor;
 
     public static Builder builder() {
         return new Builder();
@@ -37,6 +43,9 @@ public class AuditQuery {
     public Integer getOffset() { return offset; }
     public void setOffset(Integer offset) { this.offset = offset; }
 
+    public String getCursor() { return cursor; }
+    public void setCursor(String cursor) { this.cursor = cursor; }
+
     public static class Builder {
         private String namespace;
         private String tenant;
@@ -45,6 +54,7 @@ public class AuditQuery {
         private String outcome;
         private Integer limit;
         private Integer offset;
+        private String cursor;
 
         public Builder namespace(String namespace) { this.namespace = namespace; return this; }
         public Builder tenant(String tenant) { this.tenant = tenant; return this; }
@@ -53,6 +63,7 @@ public class AuditQuery {
         public Builder outcome(String outcome) { this.outcome = outcome; return this; }
         public Builder limit(int limit) { this.limit = limit; return this; }
         public Builder offset(int offset) { this.offset = offset; return this; }
+        public Builder cursor(String cursor) { this.cursor = cursor; return this; }
 
         public AuditQuery build() {
             AuditQuery query = new AuditQuery();
@@ -63,6 +74,7 @@ public class AuditQuery {
             query.outcome = this.outcome;
             query.limit = this.limit;
             query.offset = this.offset;
+            query.cursor = this.cursor;
             return query;
         }
     }

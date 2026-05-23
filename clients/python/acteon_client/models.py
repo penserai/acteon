@@ -1,9 +1,38 @@
 """Data models for the Acteon client."""
 
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Dict, Iterator, List, Optional
 from datetime import datetime
+import json
 import uuid
+
+
+@dataclass
+class Attachment:
+    """An attachment with explicit metadata and base64-encoded data.
+
+    Attributes:
+        id: User-set identifier for referencing in chains.
+        name: Human-readable display name.
+        filename: Filename with extension.
+        content_type: MIME type (e.g., "application/pdf").
+        data_base64: Base64-encoded file content.
+    """
+    id: str
+    name: str
+    filename: str
+    content_type: str
+    data_base64: str
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            "id": self.id,
+            "name": self.name,
+            "filename": self.filename,
+            "content_type": self.content_type,
+            "data_base64": self.data_base64,
+        }
 
 
 @dataclass
@@ -20,6 +49,7 @@ class Action:
         dedup_key: Optional deduplication key.
         metadata: Optional key-value metadata.
         created_at: Timestamp when the action was created.
+        attachments: Optional list of attachments.
     """
     namespace: str
     tenant: str
@@ -30,6 +60,11 @@ class Action:
     dedup_key: Optional[str] = None
     metadata: Optional[dict[str, str]] = None
     created_at: datetime = field(default_factory=datetime.utcnow)
+    template: Optional[str] = None
+    attachments: Optional[list[Attachment]] = None
+    signature: Optional[str] = None
+    signer_id: Optional[str] = None
+    kid: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -46,6 +81,16 @@ class Action:
             result["dedup_key"] = self.dedup_key
         if self.metadata:
             result["metadata"] = {"labels": self.metadata}
+        if self.template:
+            result["template"] = self.template
+        if self.attachments:
+            result["attachments"] = [a.to_dict() for a in self.attachments]
+        if self.signature:
+            result["signature"] = self.signature
+        if self.signer_id:
+            result["signer_id"] = self.signer_id
+        if self.kid:
+            result["kid"] = self.kid
         return result
 
 
@@ -86,6 +131,10 @@ class ActionOutcome:
     verdict_details: Optional[dict[str, Any]] = None
     action_id: Optional[str] = None
     scheduled_for: Optional[str] = None
+    tenant: Optional[str] = None
+    limit: Optional[int] = None
+    used: Optional[int] = None
+    overage_behavior: Optional[str] = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ActionOutcome":
@@ -140,6 +189,15 @@ class ActionOutcome:
                 action_id=scheduled.get("action_id"),
                 scheduled_for=scheduled.get("scheduled_for"),
             )
+        elif "QuotaExceeded" in data:
+            quota = data["QuotaExceeded"]
+            return cls(
+                outcome_type="quota_exceeded",
+                tenant=quota.get("tenant"),
+                limit=quota.get("limit"),
+                used=quota.get("used"),
+                overage_behavior=quota.get("overage_behavior"),
+            )
         else:
             return cls(outcome_type="unknown")
 
@@ -166,6 +224,9 @@ class ActionOutcome:
 
     def is_scheduled(self) -> bool:
         return self.outcome_type == "scheduled"
+
+    def is_quota_exceeded(self) -> bool:
+        return self.outcome_type == "quota_exceeded"
 
 
 @dataclass
@@ -230,8 +291,195 @@ class ReloadResult:
 
 
 @dataclass
+class EvaluateRulesRequest:
+    """Request to evaluate rules against a test action without dispatching.
+
+    Attributes:
+        namespace: Logical grouping for the action.
+        tenant: Tenant identifier for multi-tenancy.
+        provider: Target provider name.
+        action_type: Type of action.
+        payload: Action-specific data.
+        metadata: Optional key-value metadata.
+        include_disabled: Whether to include disabled rules in evaluation.
+        evaluate_all: Whether to evaluate all rules instead of stopping at first match.
+        evaluate_at: Optional ISO 8601 timestamp to simulate evaluation at a specific time.
+        mock_state: Optional mock state entries for evaluation.
+    """
+    namespace: str
+    tenant: str
+    provider: str
+    action_type: str
+    payload: Dict[str, Any]
+    metadata: Optional[Dict[str, str]] = None
+    include_disabled: bool = False
+    evaluate_all: bool = False
+    evaluate_at: Optional[str] = None
+    mock_state: Optional[Dict[str, str]] = None
+
+
+@dataclass
+class SemanticMatchDetail:
+    """Details about a semantic match evaluation.
+
+    Attributes:
+        extracted_text: The text that was extracted and compared.
+        topic: The topic the text was compared against.
+        similarity: The computed similarity score.
+        threshold: The threshold that was configured on the rule.
+    """
+    extracted_text: str
+    topic: str
+    similarity: float
+    threshold: float
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SemanticMatchDetail":
+        return cls(
+            extracted_text=data["extracted_text"],
+            topic=data["topic"],
+            similarity=data["similarity"],
+            threshold=data["threshold"],
+        )
+
+
+@dataclass
+class TraceContext:
+    """Contextual information captured during rule evaluation.
+
+    Attributes:
+        time: The time map that was used during evaluation.
+        environment_keys: Environment keys accessed during evaluation (values
+            omitted for security).
+        accessed_state_keys: State keys actually accessed during evaluation.
+        effective_timezone: The effective timezone used for time-based conditions.
+    """
+    time: Dict[str, Any]
+    environment_keys: List[str]
+    accessed_state_keys: List[str] = field(default_factory=list)
+    effective_timezone: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "TraceContext":
+        return cls(
+            time=data.get("time", {}),
+            environment_keys=data.get("environment_keys", []),
+            accessed_state_keys=data.get("accessed_state_keys", []),
+            effective_timezone=data.get("effective_timezone"),
+        )
+
+
+@dataclass
+class RuleTraceEntry:
+    """Trace entry for a single rule evaluation.
+
+    Attributes:
+        rule_name: Name of the rule.
+        priority: Rule priority.
+        enabled: Whether the rule is enabled.
+        condition_display: Human-readable display of the rule condition.
+        result: Evaluation result (matched, not_matched, skipped, error).
+        evaluation_duration_us: Time spent evaluating this rule in microseconds.
+        action: The rule action (e.g., Deny, Allow, Reroute).
+        source: The rule source (e.g., Yaml, Cel).
+        description: Optional rule description.
+        skip_reason: Reason the rule was skipped (if skipped).
+        error: Error message (if evaluation errored).
+        semantic_details: Details about semantic match evaluation, if the rule
+            uses a semantic match condition.
+        modify_patch: JSON merge patch for Modify rules in evaluate_all mode.
+        modified_payload_preview: Cumulative payload after applying this rule's
+            patch (only for Modify rules in evaluate_all mode).
+    """
+    rule_name: str
+    priority: int
+    enabled: bool
+    condition_display: str
+    result: str
+    evaluation_duration_us: int
+    action: str
+    source: str
+    description: Optional[str] = None
+    skip_reason: Optional[str] = None
+    error: Optional[str] = None
+    semantic_details: Optional[SemanticMatchDetail] = None
+    modify_patch: Optional[Dict[str, Any]] = None
+    modified_payload_preview: Optional[Dict[str, Any]] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "RuleTraceEntry":
+        semantic_raw = data.get("semantic_details")
+        return cls(
+            rule_name=data["rule_name"],
+            priority=data["priority"],
+            enabled=data["enabled"],
+            condition_display=data["condition_display"],
+            result=data["result"],
+            evaluation_duration_us=data["evaluation_duration_us"],
+            action=data["action"],
+            source=data["source"],
+            description=data.get("description"),
+            skip_reason=data.get("skip_reason"),
+            error=data.get("error"),
+            semantic_details=(
+                SemanticMatchDetail.from_dict(semantic_raw)
+                if semantic_raw is not None
+                else None
+            ),
+            modify_patch=data.get("modify_patch"),
+            modified_payload_preview=data.get("modified_payload_preview"),
+        )
+
+
+@dataclass
+class EvaluateRulesResponse:
+    """Response from the rule evaluation playground.
+
+    Attributes:
+        verdict: The overall verdict (e.g., allow, deny).
+        total_rules_evaluated: Number of rules that were evaluated.
+        total_rules_skipped: Number of rules that were skipped.
+        evaluation_duration_us: Total evaluation time in microseconds.
+        trace: Per-rule trace entries showing evaluation details.
+        context: Evaluation context including time, environment, and state info.
+        matched_rule: Name of the matched rule (if any).
+        has_errors: Whether any rule evaluation produced an error.
+        modified_payload: The payload after rule modifications (if any).
+    """
+    verdict: str
+    total_rules_evaluated: int
+    total_rules_skipped: int
+    evaluation_duration_us: int
+    trace: List[RuleTraceEntry]
+    context: TraceContext
+    matched_rule: Optional[str] = None
+    has_errors: bool = False
+    modified_payload: Optional[Dict[str, Any]] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "EvaluateRulesResponse":
+        return cls(
+            verdict=data["verdict"],
+            matched_rule=data.get("matched_rule"),
+            has_errors=data.get("has_errors", False),
+            total_rules_evaluated=data["total_rules_evaluated"],
+            total_rules_skipped=data["total_rules_skipped"],
+            evaluation_duration_us=data["evaluation_duration_us"],
+            trace=[RuleTraceEntry.from_dict(t) for t in data["trace"]],
+            context=TraceContext.from_dict(data["context"]),
+            modified_payload=data.get("modified_payload"),
+        )
+
+
+@dataclass
 class AuditQuery:
-    """Query parameters for audit search."""
+    """Query parameters for audit search.
+
+    Prefer ``cursor`` over ``offset`` for deep pagination — large offsets
+    degrade linearly on every backend. Pass the ``next_cursor`` returned
+    by a prior :class:`AuditPage` back in here to fetch the next page in
+    O(limit) time. Treat the cursor as opaque.
+    """
     namespace: Optional[str] = None
     tenant: Optional[str] = None
     provider: Optional[str] = None
@@ -239,6 +487,7 @@ class AuditQuery:
     outcome: Optional[str] = None
     limit: Optional[int] = None
     offset: Optional[int] = None
+    cursor: Optional[str] = None
 
     def to_params(self) -> dict[str, Any]:
         """Convert to query parameters."""
@@ -257,6 +506,8 @@ class AuditQuery:
             params["limit"] = self.limit
         if self.offset is not None:
             params["offset"] = self.offset
+        if self.cursor is not None:
+            params["cursor"] = self.cursor
         return params
 
 
@@ -274,6 +525,9 @@ class AuditRecord:
     matched_rule: Optional[str]
     duration_ms: int
     dispatched_at: str
+    record_hash: Optional[str] = None
+    previous_hash: Optional[str] = None
+    sequence_number: Optional[int] = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AuditRecord":
@@ -289,24 +543,35 @@ class AuditRecord:
             matched_rule=data.get("matched_rule"),
             duration_ms=data["duration_ms"],
             dispatched_at=data["dispatched_at"],
+            record_hash=data.get("record_hash"),
+            previous_hash=data.get("previous_hash"),
+            sequence_number=data.get("sequence_number"),
         )
 
 
 @dataclass
 class AuditPage:
-    """Paginated audit results."""
+    """Paginated audit results.
+
+    ``total`` is ``None`` when the backend skipped the count (always the
+    case when paginating with a cursor). ``next_cursor`` is ``None``
+    when this page is the last; otherwise pass it to the next
+    :class:`AuditQuery` to resume.
+    """
     records: list[AuditRecord]
-    total: int
+    total: Optional[int]
     limit: int
     offset: int
+    next_cursor: Optional[str] = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AuditPage":
         return cls(
             records=[AuditRecord.from_dict(r) for r in data["records"]],
-            total=data["total"],
+            total=data.get("total"),
             limit=data["limit"],
             offset=data["offset"],
+            next_cursor=data.get("next_cursor"),
         )
 
 
@@ -679,3 +944,3139 @@ class ReplayQuery:
         if self.limit is not None:
             params["limit"] = self.limit
         return params
+
+
+# =============================================================================
+# Recurring Action Types
+# =============================================================================
+
+
+@dataclass
+class CreateRecurringAction:
+    """Request to create a recurring action."""
+    namespace: str
+    tenant: str
+    provider: str
+    action_type: str
+    payload: dict[str, Any]
+    cron_expression: str
+    name: Optional[str] = None
+    metadata: Optional[dict[str, str]] = None
+    timezone: Optional[str] = None
+    end_date: Optional[str] = None
+    max_executions: Optional[int] = None
+    description: Optional[str] = None
+    dedup_key: Optional[str] = None
+    labels: Optional[dict[str, str]] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        result: dict[str, Any] = {
+            "namespace": self.namespace,
+            "tenant": self.tenant,
+            "provider": self.provider,
+            "action_type": self.action_type,
+            "payload": self.payload,
+            "cron_expression": self.cron_expression,
+        }
+        if self.name is not None:
+            result["name"] = self.name
+        if self.metadata is not None:
+            result["metadata"] = self.metadata
+        if self.timezone is not None:
+            result["timezone"] = self.timezone
+        if self.end_date is not None:
+            result["end_date"] = self.end_date
+        if self.max_executions is not None:
+            result["max_executions"] = self.max_executions
+        if self.description is not None:
+            result["description"] = self.description
+        if self.dedup_key is not None:
+            result["dedup_key"] = self.dedup_key
+        if self.labels is not None:
+            result["labels"] = self.labels
+        return result
+
+
+@dataclass
+class CreateRecurringResponse:
+    """Response from creating a recurring action."""
+    id: str
+    status: str
+    name: Optional[str] = None
+    next_execution_at: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "CreateRecurringResponse":
+        return cls(
+            id=data["id"],
+            status=data["status"],
+            name=data.get("name"),
+            next_execution_at=data.get("next_execution_at"),
+        )
+
+
+@dataclass
+class RecurringFilter:
+    """Query parameters for listing recurring actions."""
+    namespace: Optional[str] = None
+    tenant: Optional[str] = None
+    status: Optional[str] = None
+    limit: Optional[int] = None
+    offset: Optional[int] = None
+
+    def to_params(self) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if self.namespace is not None:
+            params["namespace"] = self.namespace
+        if self.tenant is not None:
+            params["tenant"] = self.tenant
+        if self.status is not None:
+            params["status"] = self.status
+        if self.limit is not None:
+            params["limit"] = self.limit
+        if self.offset is not None:
+            params["offset"] = self.offset
+        return params
+
+
+@dataclass
+class RecurringSummary:
+    """Summary of a recurring action in list responses."""
+    id: str
+    namespace: str
+    tenant: str
+    cron_expr: str
+    timezone: str
+    enabled: bool
+    provider: str
+    action_type: str
+    execution_count: int
+    created_at: str
+    next_execution_at: Optional[str] = None
+    description: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "RecurringSummary":
+        return cls(
+            id=data["id"],
+            namespace=data["namespace"],
+            tenant=data["tenant"],
+            cron_expr=data["cron_expr"],
+            timezone=data["timezone"],
+            enabled=data["enabled"],
+            provider=data["provider"],
+            action_type=data["action_type"],
+            execution_count=data["execution_count"],
+            created_at=data["created_at"],
+            next_execution_at=data.get("next_execution_at"),
+            description=data.get("description"),
+        )
+
+
+@dataclass
+class ListRecurringResponse:
+    """Response from listing recurring actions."""
+    recurring_actions: list[RecurringSummary]
+    count: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ListRecurringResponse":
+        return cls(
+            recurring_actions=[
+                RecurringSummary.from_dict(r) for r in data["recurring_actions"]
+            ],
+            count=data["count"],
+        )
+
+
+@dataclass
+class RecurringDetail:
+    """Detailed information about a recurring action."""
+    id: str
+    namespace: str
+    tenant: str
+    cron_expr: str
+    timezone: str
+    enabled: bool
+    provider: str
+    action_type: str
+    payload: dict[str, Any]
+    metadata: dict[str, str]
+    execution_count: int
+    created_at: str
+    updated_at: str
+    labels: dict[str, str]
+    next_execution_at: Optional[str] = None
+    last_executed_at: Optional[str] = None
+    ends_at: Optional[str] = None
+    description: Optional[str] = None
+    dedup_key: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "RecurringDetail":
+        return cls(
+            id=data["id"],
+            namespace=data["namespace"],
+            tenant=data["tenant"],
+            cron_expr=data["cron_expr"],
+            timezone=data["timezone"],
+            enabled=data["enabled"],
+            provider=data["provider"],
+            action_type=data["action_type"],
+            payload=data.get("payload", {}),
+            metadata=data.get("metadata", {}),
+            execution_count=data["execution_count"],
+            created_at=data["created_at"],
+            updated_at=data["updated_at"],
+            labels=data.get("labels", {}),
+            next_execution_at=data.get("next_execution_at"),
+            last_executed_at=data.get("last_executed_at"),
+            ends_at=data.get("ends_at"),
+            description=data.get("description"),
+            dedup_key=data.get("dedup_key"),
+        )
+
+
+@dataclass
+class UpdateRecurringAction:
+    """Request to update a recurring action."""
+    namespace: str
+    tenant: str
+    name: Optional[str] = None
+    payload: Optional[dict[str, Any]] = None
+    metadata: Optional[dict[str, str]] = None
+    cron_expression: Optional[str] = None
+    timezone: Optional[str] = None
+    end_date: Optional[str] = None
+    max_executions: Optional[int] = None
+    description: Optional[str] = None
+    dedup_key: Optional[str] = None
+    labels: Optional[dict[str, str]] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        result: dict[str, Any] = {
+            "namespace": self.namespace,
+            "tenant": self.tenant,
+        }
+        if self.name is not None:
+            result["name"] = self.name
+        if self.payload is not None:
+            result["payload"] = self.payload
+        if self.metadata is not None:
+            result["metadata"] = self.metadata
+        if self.cron_expression is not None:
+            result["cron_expression"] = self.cron_expression
+        if self.timezone is not None:
+            result["timezone"] = self.timezone
+        if self.end_date is not None:
+            result["end_date"] = self.end_date
+        if self.max_executions is not None:
+            result["max_executions"] = self.max_executions
+        if self.description is not None:
+            result["description"] = self.description
+        if self.dedup_key is not None:
+            result["dedup_key"] = self.dedup_key
+        if self.labels is not None:
+            result["labels"] = self.labels
+        return result
+
+
+# =============================================================================
+# Quota Types
+# =============================================================================
+
+
+@dataclass
+class CreateQuotaRequest:
+    """Request to create a quota policy.
+
+    Pass ``provider=None`` (the default) for a generic tenant-wide
+    policy or ``provider="slack"`` to scope the policy to a single
+    provider so it only counts dispatches to that provider.
+    Generic and per-provider policies may coexist for the same
+    ``(namespace, tenant)`` and are evaluated together at dispatch
+    time (strictest outcome wins).
+    """
+    namespace: str
+    tenant: str
+    max_actions: int
+    window: str
+    overage_behavior: str
+    provider: Optional[str] = None
+    description: Optional[str] = None
+    labels: Optional[dict[str, str]] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        result: dict[str, Any] = {
+            "namespace": self.namespace,
+            "tenant": self.tenant,
+            "max_actions": self.max_actions,
+            "window": self.window,
+            "overage_behavior": self.overage_behavior,
+        }
+        if self.provider is not None:
+            result["provider"] = self.provider
+        if self.description is not None:
+            result["description"] = self.description
+        if self.labels is not None:
+            result["labels"] = self.labels
+        return result
+
+
+@dataclass
+class UpdateQuotaRequest:
+    """Request to update a quota policy."""
+    namespace: str
+    tenant: str
+    max_actions: Optional[int] = None
+    window: Optional[str] = None
+    overage_behavior: Optional[str] = None
+    description: Optional[str] = None
+    enabled: Optional[bool] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        result: dict[str, Any] = {
+            "namespace": self.namespace,
+            "tenant": self.tenant,
+        }
+        if self.max_actions is not None:
+            result["max_actions"] = self.max_actions
+        if self.window is not None:
+            result["window"] = self.window
+        if self.overage_behavior is not None:
+            result["overage_behavior"] = self.overage_behavior
+        if self.description is not None:
+            result["description"] = self.description
+        if self.enabled is not None:
+            result["enabled"] = self.enabled
+        return result
+
+
+@dataclass
+class QuotaPolicy:
+    """A quota policy.
+
+    ``provider`` is ``None`` for generic catch-all policies and
+    a provider name (e.g. ``"slack"``) when the policy is scoped
+    to a single provider.
+    """
+    id: str
+    namespace: str
+    tenant: str
+    max_actions: int
+    window: str
+    overage_behavior: str
+    enabled: bool
+    created_at: str
+    updated_at: str
+    provider: Optional[str] = None
+    description: Optional[str] = None
+    labels: Optional[dict[str, str]] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "QuotaPolicy":
+        return cls(
+            id=data["id"],
+            namespace=data["namespace"],
+            tenant=data["tenant"],
+            provider=data.get("provider"),
+            max_actions=data["max_actions"],
+            window=data["window"],
+            overage_behavior=data["overage_behavior"],
+            enabled=data["enabled"],
+            created_at=data["created_at"],
+            updated_at=data["updated_at"],
+            description=data.get("description"),
+            labels=data.get("labels"),
+        )
+
+
+@dataclass
+class ListQuotasResponse:
+    """Response from listing quota policies."""
+    quotas: list[QuotaPolicy]
+    count: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ListQuotasResponse":
+        return cls(
+            quotas=[QuotaPolicy.from_dict(q) for q in data["quotas"]],
+            count=data["count"],
+        )
+
+
+@dataclass
+class QuotaUsage:
+    """Current usage statistics for a quota."""
+    tenant: str
+    namespace: str
+    used: int
+    limit: int
+    remaining: int
+    window: str
+    resets_at: str
+    overage_behavior: str
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "QuotaUsage":
+        return cls(
+            tenant=data["tenant"],
+            namespace=data["namespace"],
+            used=data["used"],
+            limit=data["limit"],
+            remaining=data["remaining"],
+            window=data["window"],
+            resets_at=data["resets_at"],
+            overage_behavior=data["overage_behavior"],
+        )
+
+
+# =============================================================================
+# Silence Types
+# =============================================================================
+
+
+@dataclass
+class SilenceMatcher:
+    """A single label matcher within a silence.
+
+    ``op`` is one of ``"equal"``, ``"not_equal"``, ``"regex"``, or
+    ``"not_regex"``. All matchers in a silence are AND-ed together.
+    Regex patterns are capped at 256 characters and a 64 KB compiled
+    DFA on the server side to prevent ReDoS.
+    """
+
+    name: str
+    value: str
+    op: str = "equal"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"name": self.name, "value": self.value, "op": self.op}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SilenceMatcher":
+        return cls(
+            name=data["name"],
+            value=data["value"],
+            op=data.get("op", "equal"),
+        )
+
+
+@dataclass
+class CreateSilenceRequest:
+    """Request to create a silence.
+
+    Either ``ends_at`` or ``duration_seconds`` must be supplied.
+    ``starts_at`` defaults to the server's current time when omitted.
+    """
+
+    namespace: str
+    tenant: str
+    matchers: list[SilenceMatcher]
+    comment: str
+    starts_at: Optional[str] = None
+    ends_at: Optional[str] = None
+    duration_seconds: Optional[int] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "namespace": self.namespace,
+            "tenant": self.tenant,
+            "matchers": [m.to_dict() for m in self.matchers],
+            "comment": self.comment,
+        }
+        if self.starts_at is not None:
+            result["starts_at"] = self.starts_at
+        if self.ends_at is not None:
+            result["ends_at"] = self.ends_at
+        if self.duration_seconds is not None:
+            result["duration_seconds"] = self.duration_seconds
+        return result
+
+
+@dataclass
+class UpdateSilenceRequest:
+    """Request to extend a silence or edit its comment.
+
+    Matchers are immutable — to change them, expire the silence and
+    create a new one.
+    """
+
+    ends_at: Optional[str] = None
+    comment: Optional[str] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        if self.ends_at is not None:
+            result["ends_at"] = self.ends_at
+        if self.comment is not None:
+            result["comment"] = self.comment
+        return result
+
+
+@dataclass
+class Silence:
+    """A time-bounded label-pattern mute.
+
+    ``active`` is ``True`` when the current server time falls within
+    ``[starts_at, ends_at)``.
+    """
+
+    id: str
+    namespace: str
+    tenant: str
+    matchers: list[SilenceMatcher]
+    starts_at: str
+    ends_at: str
+    created_by: str
+    comment: str
+    created_at: str
+    updated_at: str
+    active: bool
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "Silence":
+        return cls(
+            id=data["id"],
+            namespace=data["namespace"],
+            tenant=data["tenant"],
+            matchers=[SilenceMatcher.from_dict(m) for m in data["matchers"]],
+            starts_at=data["starts_at"],
+            ends_at=data["ends_at"],
+            created_by=data.get("created_by", ""),
+            comment=data.get("comment", ""),
+            created_at=data["created_at"],
+            updated_at=data["updated_at"],
+            active=data.get("active", False),
+        )
+
+
+@dataclass
+class ListSilencesResponse:
+    """Response from listing silences."""
+
+    silences: list[Silence]
+    count: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ListSilencesResponse":
+        return cls(
+            silences=[Silence.from_dict(s) for s in data["silences"]],
+            count=data["count"],
+        )
+
+
+# =============================================================================
+# Time Interval Types
+# =============================================================================
+
+
+@dataclass
+class TimeOfDayInput:
+    """Time-of-day window in `HH:MM` form (24-hour clock)."""
+
+    start: str
+    end: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"start": self.start, "end": self.end}
+
+
+@dataclass
+class WeekdayRange:
+    """Inclusive weekday range (1=Mon..7=Sun)."""
+
+    start: int
+    end: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"start": self.start, "end": self.end}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "WeekdayRange":
+        return cls(start=int(data["start"]), end=int(data["end"]))
+
+
+@dataclass
+class IntRange:
+    """Inclusive integer range — used for days_of_month/months/years."""
+
+    start: int
+    end: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"start": self.start, "end": self.end}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "IntRange":
+        return cls(start=int(data["start"]), end=int(data["end"]))
+
+
+@dataclass
+class TimeRange:
+    """One element in a [`TimeInterval`]'s `time_ranges`. Empty fields mean 'any'."""
+
+    times: list[TimeOfDayInput] = field(default_factory=list)
+    weekdays: list[WeekdayRange] = field(default_factory=list)
+    days_of_month: list[IntRange] = field(default_factory=list)
+    months: list[IntRange] = field(default_factory=list)
+    years: list[IntRange] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        if self.times:
+            result["times"] = [t.to_dict() for t in self.times]
+        if self.weekdays:
+            result["weekdays"] = [w.to_dict() for w in self.weekdays]
+        if self.days_of_month:
+            result["days_of_month"] = [d.to_dict() for d in self.days_of_month]
+        if self.months:
+            result["months"] = [m.to_dict() for m in self.months]
+        if self.years:
+            result["years"] = [y.to_dict() for y in self.years]
+        return result
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "TimeRange":
+        return cls(
+            times=[TimeOfDayInput(**t) for t in data.get("times", [])],
+            weekdays=[WeekdayRange.from_dict(w) for w in data.get("weekdays", [])],
+            days_of_month=[
+                IntRange.from_dict(d) for d in data.get("days_of_month", [])
+            ],
+            months=[IntRange.from_dict(m) for m in data.get("months", [])],
+            years=[IntRange.from_dict(y) for y in data.get("years", [])],
+        )
+
+
+@dataclass
+class CreateTimeIntervalRequest:
+    """Request body for creating a time interval."""
+
+    name: str
+    namespace: str
+    tenant: str
+    time_ranges: list[TimeRange] = field(default_factory=list)
+    location: Optional[str] = None
+    description: Optional[str] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "name": self.name,
+            "namespace": self.namespace,
+            "tenant": self.tenant,
+            "time_ranges": [r.to_dict() for r in self.time_ranges],
+        }
+        if self.location is not None:
+            result["location"] = self.location
+        if self.description is not None:
+            result["description"] = self.description
+        return result
+
+
+@dataclass
+class UpdateTimeIntervalRequest:
+    """Partial update for a time interval. ``None`` fields are unchanged."""
+
+    time_ranges: Optional[list[TimeRange]] = None
+    location: Optional[str] = None
+    description: Optional[str] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        if self.time_ranges is not None:
+            result["time_ranges"] = [r.to_dict() for r in self.time_ranges]
+        if self.location is not None:
+            result["location"] = self.location
+        if self.description is not None:
+            result["description"] = self.description
+        return result
+
+
+@dataclass
+class TimeInterval:
+    """A named, tenant-scoped recurring schedule."""
+
+    name: str
+    namespace: str
+    tenant: str
+    time_ranges: list[TimeRange]
+    created_by: str
+    created_at: str
+    updated_at: str
+    matches_now: bool = False
+    location: Optional[str] = None
+    description: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "TimeInterval":
+        return cls(
+            name=data["name"],
+            namespace=data["namespace"],
+            tenant=data["tenant"],
+            time_ranges=[TimeRange.from_dict(r) for r in data.get("time_ranges", [])],
+            location=data.get("location"),
+            description=data.get("description"),
+            created_by=data.get("created_by", ""),
+            created_at=data["created_at"],
+            updated_at=data["updated_at"],
+            matches_now=data.get("matches_now", False),
+        )
+
+
+@dataclass
+class ListTimeIntervalsResponse:
+    time_intervals: list[TimeInterval]
+    count: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ListTimeIntervalsResponse":
+        return cls(
+            time_intervals=[
+                TimeInterval.from_dict(t) for t in data.get("time_intervals", [])
+            ],
+            count=data.get("count", 0),
+        )
+
+
+# =============================================================================
+# Retention Policy Types
+# =============================================================================
+
+
+@dataclass
+class CreateRetentionRequest:
+    """Request to create a retention policy."""
+    namespace: str
+    tenant: str
+    audit_ttl_seconds: int
+    state_ttl_seconds: int
+    event_ttl_seconds: int
+    compliance_hold: bool = False
+    description: Optional[str] = None
+    labels: Optional[dict[str, str]] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        result: dict[str, Any] = {
+            "namespace": self.namespace,
+            "tenant": self.tenant,
+            "audit_ttl_seconds": self.audit_ttl_seconds,
+            "state_ttl_seconds": self.state_ttl_seconds,
+            "event_ttl_seconds": self.event_ttl_seconds,
+            "compliance_hold": self.compliance_hold,
+        }
+        if self.description is not None:
+            result["description"] = self.description
+        if self.labels is not None:
+            result["labels"] = self.labels
+        return result
+
+
+@dataclass
+class UpdateRetentionRequest:
+    """Request to update a retention policy."""
+    enabled: Optional[bool] = None
+    audit_ttl_seconds: Optional[int] = None
+    state_ttl_seconds: Optional[int] = None
+    event_ttl_seconds: Optional[int] = None
+    compliance_hold: Optional[bool] = None
+    description: Optional[str] = None
+    labels: Optional[dict[str, str]] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        result: dict[str, Any] = {}
+        if self.enabled is not None:
+            result["enabled"] = self.enabled
+        if self.audit_ttl_seconds is not None:
+            result["audit_ttl_seconds"] = self.audit_ttl_seconds
+        if self.state_ttl_seconds is not None:
+            result["state_ttl_seconds"] = self.state_ttl_seconds
+        if self.event_ttl_seconds is not None:
+            result["event_ttl_seconds"] = self.event_ttl_seconds
+        if self.compliance_hold is not None:
+            result["compliance_hold"] = self.compliance_hold
+        if self.description is not None:
+            result["description"] = self.description
+        if self.labels is not None:
+            result["labels"] = self.labels
+        return result
+
+
+@dataclass
+class RetentionPolicy:
+    """A retention policy."""
+    id: str
+    namespace: str
+    tenant: str
+    enabled: bool
+    audit_ttl_seconds: int
+    state_ttl_seconds: int
+    event_ttl_seconds: int
+    compliance_hold: bool
+    created_at: str
+    updated_at: str
+    description: Optional[str] = None
+    labels: Optional[dict[str, str]] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "RetentionPolicy":
+        return cls(
+            id=data["id"],
+            namespace=data["namespace"],
+            tenant=data["tenant"],
+            enabled=data["enabled"],
+            audit_ttl_seconds=data["audit_ttl_seconds"],
+            state_ttl_seconds=data["state_ttl_seconds"],
+            event_ttl_seconds=data["event_ttl_seconds"],
+            compliance_hold=data["compliance_hold"],
+            created_at=data["created_at"],
+            updated_at=data["updated_at"],
+            description=data.get("description"),
+            labels=data.get("labels"),
+        )
+
+
+@dataclass
+class ListRetentionResponse:
+    """Response from listing retention policies."""
+    policies: list[RetentionPolicy]
+    count: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ListRetentionResponse":
+        return cls(
+            policies=[RetentionPolicy.from_dict(p) for p in data["policies"]],
+            count=data["count"],
+        )
+
+
+# =============================================================================
+# Chain Types
+# =============================================================================
+
+
+@dataclass
+class ChainSummary:
+    """Summary of a chain execution.
+
+    Attributes:
+        chain_id: Unique chain execution ID.
+        chain_name: Name of the chain configuration.
+        status: Current status (running, completed, failed, cancelled, timed_out).
+        current_step: Current step index (0-based).
+        total_steps: Total number of steps.
+        started_at: When the chain started.
+        updated_at: When the chain was last updated.
+        parent_chain_id: Parent chain ID if this is a sub-chain.
+    """
+    chain_id: str
+    chain_name: str
+    status: str
+    current_step: int
+    total_steps: int
+    started_at: str
+    updated_at: str
+    parent_chain_id: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ChainSummary":
+        return cls(
+            chain_id=data["chain_id"],
+            chain_name=data["chain_name"],
+            status=data["status"],
+            current_step=data["current_step"],
+            total_steps=data["total_steps"],
+            started_at=data["started_at"],
+            updated_at=data["updated_at"],
+            parent_chain_id=data.get("parent_chain_id"),
+        )
+
+
+@dataclass
+class ListChainsResponse:
+    """Response from listing chain executions."""
+    chains: list[ChainSummary]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ListChainsResponse":
+        return cls(
+            chains=[ChainSummary.from_dict(c) for c in data["chains"]],
+        )
+
+
+@dataclass
+class ChainStepStatus:
+    """Detailed status of a single chain step.
+
+    Attributes:
+        name: Step name.
+        provider: Provider used for this step.
+        status: Step status (pending, running, completed, failed, skipped,
+            waiting_sub_chain, waiting_parallel). Parallel sub-steps may also
+            report "cancelled".
+        response_body: Response body from the provider (if completed).
+        error: Error message (if failed).
+        completed_at: When this step completed.
+        sub_chain: Name of the sub-chain this step triggers, if any.
+        child_chain_id: ID of the child chain instance spawned by this step, if any.
+    """
+    name: str
+    provider: str
+    status: str
+    response_body: Optional[Any] = None
+    error: Optional[str] = None
+    completed_at: Optional[str] = None
+    sub_chain: Optional[str] = None
+    child_chain_id: Optional[str] = None
+    parallel_sub_steps: Optional[List["ChainStepStatus"]] = None
+    attempt: Optional[int] = None
+    max_retries: Optional[int] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ChainStepStatus":
+        raw_subs = data.get("parallel_sub_steps")
+        return cls(
+            name=data["name"],
+            provider=data["provider"],
+            status=data["status"],
+            response_body=data.get("response_body"),
+            error=data.get("error"),
+            completed_at=data.get("completed_at"),
+            sub_chain=data.get("sub_chain"),
+            child_chain_id=data.get("child_chain_id"),
+            parallel_sub_steps=(
+                [ChainStepStatus.from_dict(s) for s in raw_subs]
+                if raw_subs is not None
+                else None
+            ),
+            attempt=data.get("attempt"),
+            max_retries=data.get("max_retries"),
+        )
+
+
+@dataclass
+class ChainDetailResponse:
+    """Full detail response for a chain execution.
+
+    Attributes:
+        chain_id: Unique chain execution ID.
+        chain_name: Name of the chain configuration.
+        status: Current status.
+        current_step: Current step index (0-based).
+        total_steps: Total number of steps.
+        steps: Per-step status details.
+        started_at: When the chain started.
+        updated_at: When the chain was last updated.
+        expires_at: When the chain will time out.
+        cancel_reason: Reason for cancellation (if cancelled).
+        cancelled_by: Who cancelled the chain (if cancelled).
+        execution_path: Ordered list of step names that were executed.
+        parent_chain_id: Parent chain ID if this is a sub-chain.
+        child_chain_ids: IDs of child chains spawned by sub-chain steps.
+    """
+    chain_id: str
+    chain_name: str
+    status: str
+    current_step: int
+    total_steps: int
+    steps: list[ChainStepStatus]
+    started_at: str
+    updated_at: str
+    expires_at: Optional[str] = None
+    cancel_reason: Optional[str] = None
+    cancelled_by: Optional[str] = None
+    execution_path: list[str] = field(default_factory=list)
+    parent_chain_id: Optional[str] = None
+    child_chain_ids: list[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ChainDetailResponse":
+        return cls(
+            chain_id=data["chain_id"],
+            chain_name=data["chain_name"],
+            status=data["status"],
+            current_step=data["current_step"],
+            total_steps=data["total_steps"],
+            steps=[ChainStepStatus.from_dict(s) for s in data.get("steps", [])],
+            started_at=data["started_at"],
+            updated_at=data["updated_at"],
+            expires_at=data.get("expires_at"),
+            cancel_reason=data.get("cancel_reason"),
+            cancelled_by=data.get("cancelled_by"),
+            execution_path=data.get("execution_path", []),
+            parent_chain_id=data.get("parent_chain_id"),
+            child_chain_ids=data.get("child_chain_ids", []),
+        )
+
+
+# =============================================================================
+# DAG Types (Chain Visualization)
+# =============================================================================
+
+
+@dataclass
+class DagNode:
+    """A node in the chain DAG.
+
+    Attributes:
+        name: Node name (step name or sub-chain name).
+        node_type: Node type ("step" or "sub_chain").
+        provider: Provider for this step, if applicable.
+        action_type: Action type for this step, if applicable.
+        sub_chain_name: Name of the sub-chain, if this is a sub-chain node.
+        status: Current status of this node (for instance DAGs).
+        child_chain_id: ID of the child chain instance (for instance DAGs).
+        children: Nested DAG for sub-chain expansion.
+    """
+    name: str
+    node_type: str
+    provider: Optional[str] = None
+    action_type: Optional[str] = None
+    sub_chain_name: Optional[str] = None
+    status: Optional[str] = None
+    child_chain_id: Optional[str] = None
+    children: Optional["DagResponse"] = None
+    parallel_children: Optional[List["DagNode"]] = None
+    parallel_join: Optional[str] = None
+    attempt: Optional[int] = None
+    max_retries: Optional[int] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "DagNode":
+        children_data = data.get("children")
+        raw_parallel = data.get("parallel_children")
+        return cls(
+            name=data["name"],
+            node_type=data["node_type"],
+            provider=data.get("provider"),
+            action_type=data.get("action_type"),
+            sub_chain_name=data.get("sub_chain_name"),
+            status=data.get("status"),
+            child_chain_id=data.get("child_chain_id"),
+            children=(
+                DagResponse.from_dict(children_data)
+                if children_data is not None
+                else None
+            ),
+            parallel_children=(
+                [DagNode.from_dict(n) for n in raw_parallel]
+                if raw_parallel is not None
+                else None
+            ),
+            parallel_join=data.get("parallel_join"),
+            attempt=data.get("attempt"),
+            max_retries=data.get("max_retries"),
+        )
+
+
+@dataclass
+class DagEdge:
+    """An edge in the chain DAG.
+
+    Attributes:
+        source: Source node name.
+        target: Target node name.
+        label: Edge label (e.g., branch condition).
+        on_execution_path: Whether this edge is on the execution path.
+    """
+    source: str
+    target: str
+    label: Optional[str] = None
+    on_execution_path: bool = False
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "DagEdge":
+        return cls(
+            source=data["source"],
+            target=data["target"],
+            label=data.get("label"),
+            on_execution_path=data.get("on_execution_path", False),
+        )
+
+
+@dataclass
+class DagResponse:
+    """DAG representation of a chain (config or instance).
+
+    Attributes:
+        chain_name: Chain configuration name.
+        chain_id: Chain instance ID (only for instance DAGs).
+        status: Chain status (only for instance DAGs).
+        nodes: Nodes in the DAG.
+        edges: Edges connecting the nodes.
+        execution_path: Ordered list of step names on the execution path.
+    """
+    chain_name: str
+    nodes: List[DagNode]
+    edges: List[DagEdge]
+    chain_id: Optional[str] = None
+    status: Optional[str] = None
+    execution_path: List[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "DagResponse":
+        return cls(
+            chain_name=data["chain_name"],
+            chain_id=data.get("chain_id"),
+            status=data.get("status"),
+            nodes=[DagNode.from_dict(n) for n in data.get("nodes", [])],
+            edges=[DagEdge.from_dict(e) for e in data.get("edges", [])],
+            execution_path=data.get("execution_path", []),
+        )
+
+
+# =============================================================================
+# Chain History Types (Retry Attempts)
+# =============================================================================
+
+
+@dataclass
+class StepAttemptResponse:
+    """A single execution attempt for a chain step.
+
+    Attributes:
+        attempt: Attempt number (1-based).
+        started_at: When this attempt started.
+        completed_at: When this attempt completed (if finished).
+        success: Whether this attempt succeeded.
+        duration_ms: Duration in milliseconds.
+        error: Error message (if failed).
+    """
+    attempt: int
+    started_at: str
+    success: bool
+    duration_ms: int
+    completed_at: Optional[str] = None
+    error: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "StepAttemptResponse":
+        return cls(
+            attempt=data["attempt"],
+            started_at=data["started_at"],
+            completed_at=data.get("completed_at"),
+            success=data["success"],
+            duration_ms=data["duration_ms"],
+            error=data.get("error"),
+        )
+
+
+@dataclass
+class StepHistoryEntry:
+    """Retry history for a single chain step.
+
+    Attributes:
+        name: Step name.
+        step_index: Step index (0-based).
+        current_attempt: Current attempt number.
+        max_retries: Maximum number of retries configured.
+        attempts: List of execution attempts.
+    """
+    name: str
+    step_index: int
+    current_attempt: int
+    max_retries: int
+    attempts: List[StepAttemptResponse]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "StepHistoryEntry":
+        return cls(
+            name=data["name"],
+            step_index=data["step_index"],
+            current_attempt=data["current_attempt"],
+            max_retries=data["max_retries"],
+            attempts=[
+                StepAttemptResponse.from_dict(a)
+                for a in data.get("attempts", [])
+            ],
+        )
+
+
+@dataclass
+class ChainHistoryResponse:
+    """Retry history for a chain execution.
+
+    Attributes:
+        chain_id: Unique chain execution ID.
+        chain_name: Name of the chain configuration.
+        status: Current chain status.
+        steps: Per-step retry history.
+    """
+    chain_id: str
+    chain_name: str
+    status: str
+    steps: List[StepHistoryEntry]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ChainHistoryResponse":
+        return cls(
+            chain_id=data["chain_id"],
+            chain_name=data["chain_name"],
+            status=data["status"],
+            steps=[
+                StepHistoryEntry.from_dict(s)
+                for s in data.get("steps", [])
+            ],
+        )
+
+
+# =============================================================================
+# DLQ Types (Dead-Letter Queue)
+# =============================================================================
+
+
+@dataclass
+class DlqStatsResponse:
+    """Response from the DLQ stats endpoint.
+
+    Attributes:
+        enabled: Whether the DLQ is enabled.
+        count: Number of entries in the DLQ.
+    """
+    enabled: bool
+    count: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "DlqStatsResponse":
+        return cls(
+            enabled=data["enabled"],
+            count=data["count"],
+        )
+
+
+@dataclass
+class DlqEntry:
+    """A single dead-letter queue entry.
+
+    Attributes:
+        action_id: The failed action's unique identifier.
+        namespace: Namespace the action belongs to.
+        tenant: Tenant that owns the action.
+        provider: Target provider for the action.
+        action_type: Action type discriminator.
+        error: Human-readable description of the final error.
+        attempts: Number of execution attempts made.
+        timestamp: Unix timestamp (seconds) when the entry was created.
+    """
+    action_id: str
+    namespace: str
+    tenant: str
+    provider: str
+    action_type: str
+    error: str
+    attempts: int
+    timestamp: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "DlqEntry":
+        return cls(
+            action_id=data["action_id"],
+            namespace=data["namespace"],
+            tenant=data["tenant"],
+            provider=data["provider"],
+            action_type=data["action_type"],
+            error=data["error"],
+            attempts=data["attempts"],
+            timestamp=data["timestamp"],
+        )
+
+
+@dataclass
+class DlqDrainResponse:
+    """Response from the DLQ drain endpoint.
+
+    Attributes:
+        entries: Entries drained from the DLQ.
+        count: Number of entries drained.
+    """
+    entries: list[DlqEntry]
+    count: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "DlqDrainResponse":
+        return cls(
+            entries=[DlqEntry.from_dict(e) for e in data["entries"]],
+            count=data["count"],
+        )
+
+
+# =============================================================================
+# SSE Event Types
+# =============================================================================
+
+
+@dataclass
+class SseEvent:
+    """A parsed Server-Sent Event.
+
+    Attributes:
+        event: The event type (e.g., "action_dispatched", "chain_completed").
+        id: The event ID (if present).
+        data: The parsed JSON data payload.
+    """
+    event: Optional[str] = None
+    id: Optional[str] = None
+    data: Optional[Any] = None
+
+
+def _parse_sse_stream(lines: Iterator[str]) -> Iterator[SseEvent]:
+    """Parse a text/event-stream into SseEvent objects.
+
+    This is a simple line-by-line SSE parser that yields events as they
+    arrive. It handles the ``event:``, ``id:``, and ``data:`` fields.
+    Blank lines delimit events. Comment lines (starting with ``:``) are
+    ignored.
+
+    Args:
+        lines: An iterator of lines from the SSE stream (without trailing newlines).
+
+    Yields:
+        Parsed SseEvent objects.
+    """
+    event_type: Optional[str] = None
+    event_id: Optional[str] = None
+    data_parts: list[str] = []
+
+    for line in lines:
+        if line.startswith(":"):
+            # Comment line, skip.
+            continue
+        if line == "":
+            # Blank line: dispatch event if we have data.
+            if data_parts:
+                raw_data = "\n".join(data_parts)
+                try:
+                    parsed = json.loads(raw_data)
+                except (json.JSONDecodeError, ValueError):
+                    parsed = raw_data
+                yield SseEvent(event=event_type, id=event_id, data=parsed)
+            # Reset for next event.
+            event_type = None
+            event_id = None
+            data_parts = []
+            continue
+        if line.startswith("event:"):
+            event_type = line[len("event:"):].strip()
+        elif line.startswith("id:"):
+            event_id = line[len("id:"):].strip()
+        elif line.startswith("data:"):
+            data_parts.append(line[len("data:"):].strip())
+        # Other fields are ignored per the SSE spec.
+
+
+# =============================================================================
+# Provider Health Types
+# =============================================================================
+
+
+@dataclass
+class ProviderHealthStatus:
+    """Health and metrics for a single provider.
+
+    Attributes:
+        provider: Provider name.
+        healthy: Whether the provider is healthy (circuit breaker closed).
+        health_check_error: Error message from last health check (if any).
+        circuit_breaker_state: Current circuit breaker state (closed, open, half_open).
+        total_requests: Total number of requests to this provider.
+        successes: Number of successful requests.
+        failures: Number of failed requests.
+        success_rate: Success rate as percentage (0-100).
+        avg_latency_ms: Average request latency in milliseconds.
+        p50_latency_ms: 50th percentile latency in milliseconds.
+        p95_latency_ms: 95th percentile latency in milliseconds.
+        p99_latency_ms: 99th percentile latency in milliseconds.
+        last_request_at: Timestamp of last request (milliseconds since epoch).
+        last_error: Last error message (if any).
+    """
+    provider: str
+    healthy: bool
+    circuit_breaker_state: str
+    total_requests: int
+    successes: int
+    failures: int
+    success_rate: float
+    avg_latency_ms: float
+    p50_latency_ms: float
+    p95_latency_ms: float
+    p99_latency_ms: float
+    health_check_error: Optional[str] = None
+    last_request_at: Optional[int] = None
+    last_error: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ProviderHealthStatus":
+        return cls(
+            provider=data["provider"],
+            healthy=data["healthy"],
+            health_check_error=data.get("health_check_error"),
+            circuit_breaker_state=data["circuit_breaker_state"],
+            total_requests=data["total_requests"],
+            successes=data["successes"],
+            failures=data["failures"],
+            success_rate=data["success_rate"],
+            avg_latency_ms=data["avg_latency_ms"],
+            p50_latency_ms=data["p50_latency_ms"],
+            p95_latency_ms=data["p95_latency_ms"],
+            p99_latency_ms=data["p99_latency_ms"],
+            last_request_at=data.get("last_request_at"),
+            last_error=data.get("last_error"),
+        )
+
+
+@dataclass
+class ListProviderHealthResponse:
+    """Response from listing provider health."""
+    providers: list[ProviderHealthStatus]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ListProviderHealthResponse":
+        return cls(
+            providers=[ProviderHealthStatus.from_dict(p) for p in data["providers"]],
+        )
+
+
+# =============================================================================
+# Analytics Types
+# =============================================================================
+
+
+@dataclass
+class AnalyticsQuery:
+    """Query parameters for the analytics endpoint.
+
+    Attributes:
+        metric: The metric to query (required). One of "volume",
+            "outcome_breakdown", "top_action_types", "latency", "error_rate".
+        namespace: Optional namespace filter.
+        tenant: Optional tenant filter.
+        provider: Optional provider filter.
+        action_type: Optional action type filter.
+        outcome: Optional outcome filter.
+        interval: Time bucket interval (default "daily"). One of "hourly",
+            "daily", "weekly", "monthly".
+        from_time: Optional start of time range (RFC 3339 datetime string).
+        to_time: Optional end of time range (RFC 3339 datetime string).
+        group_by: Optional grouping dimension (e.g., "provider", "action_type",
+            "outcome").
+        top_n: Optional limit for top-N queries.
+    """
+    metric: str
+    namespace: Optional[str] = None
+    tenant: Optional[str] = None
+    provider: Optional[str] = None
+    action_type: Optional[str] = None
+    outcome: Optional[str] = None
+    interval: Optional[str] = None
+    from_time: Optional[str] = None
+    to_time: Optional[str] = None
+    group_by: Optional[str] = None
+    top_n: Optional[int] = None
+
+    def to_params(self) -> dict[str, str]:
+        """Convert to query parameter dictionary."""
+        params: dict[str, str] = {"metric": self.metric}
+        if self.namespace is not None:
+            params["namespace"] = self.namespace
+        if self.tenant is not None:
+            params["tenant"] = self.tenant
+        if self.provider is not None:
+            params["provider"] = self.provider
+        if self.action_type is not None:
+            params["action_type"] = self.action_type
+        if self.outcome is not None:
+            params["outcome"] = self.outcome
+        if self.interval is not None:
+            params["interval"] = self.interval
+        if self.from_time is not None:
+            params["from"] = self.from_time
+        if self.to_time is not None:
+            params["to"] = self.to_time
+        if self.group_by is not None:
+            params["group_by"] = self.group_by
+        if self.top_n is not None:
+            params["top_n"] = str(self.top_n)
+        return params
+
+
+@dataclass
+class AnalyticsBucket:
+    """A single time bucket in an analytics response.
+
+    Attributes:
+        timestamp: ISO 8601 timestamp for the bucket start.
+        count: Number of actions in this bucket.
+        group: Optional group label when group_by is used.
+        avg_duration_ms: Average action duration in milliseconds.
+        p50_duration_ms: 50th percentile duration in milliseconds.
+        p95_duration_ms: 95th percentile duration in milliseconds.
+        p99_duration_ms: 99th percentile duration in milliseconds.
+        error_rate: Fraction of actions that failed (0.0 to 1.0).
+    """
+    timestamp: str
+    count: int
+    group: Optional[str] = None
+    avg_duration_ms: Optional[float] = None
+    p50_duration_ms: Optional[float] = None
+    p95_duration_ms: Optional[float] = None
+    p99_duration_ms: Optional[float] = None
+    error_rate: Optional[float] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "AnalyticsBucket":
+        return cls(
+            timestamp=data["timestamp"],
+            count=data["count"],
+            group=data.get("group"),
+            avg_duration_ms=data.get("avg_duration_ms"),
+            p50_duration_ms=data.get("p50_duration_ms"),
+            p95_duration_ms=data.get("p95_duration_ms"),
+            p99_duration_ms=data.get("p99_duration_ms"),
+            error_rate=data.get("error_rate"),
+        )
+
+
+@dataclass
+class AnalyticsTopEntry:
+    """A single entry in a top-N analytics result.
+
+    Attributes:
+        label: The label for this entry (e.g., action type name).
+        count: Number of occurrences.
+        percentage: Percentage of total.
+    """
+    label: str
+    count: int
+    percentage: float
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "AnalyticsTopEntry":
+        return cls(
+            label=data["label"],
+            count=data["count"],
+            percentage=data["percentage"],
+        )
+
+
+@dataclass
+class AnalyticsResponse:
+    """Response from the analytics endpoint.
+
+    Attributes:
+        metric: The metric that was queried.
+        interval: The time interval used for bucketing.
+        from_time: Start of the queried time range.
+        to_time: End of the queried time range.
+        buckets: List of time-series data buckets.
+        top_entries: List of top-N entries (for top_action_types metric).
+        total_count: Total count across all buckets.
+    """
+    metric: str
+    interval: str
+    from_time: str
+    to_time: str
+    total_count: int
+    buckets: list["AnalyticsBucket"] = field(default_factory=list)
+    top_entries: list["AnalyticsTopEntry"] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "AnalyticsResponse":
+        return cls(
+            metric=data["metric"],
+            interval=data["interval"],
+            from_time=data["from"],
+            to_time=data["to"],
+            total_count=data["total_count"],
+            buckets=[
+                AnalyticsBucket.from_dict(b) for b in data.get("buckets", [])
+            ],
+            top_entries=[
+                AnalyticsTopEntry.from_dict(e) for e in data.get("top_entries", [])
+            ],
+        )
+
+
+# =============================================================================
+# Provider Payload Helpers
+# =============================================================================
+
+
+def twilio_sms_payload(
+    to: str,
+    body: str,
+    *,
+    from_number: Optional[str] = None,
+    media_url: Optional[str] = None,
+) -> dict[str, Any]:
+    """Build a payload for the Twilio SMS provider.
+
+    Args:
+        to: Destination phone number (E.164 format).
+        body: Message body text.
+        from_number: Override the default sender phone number.
+        media_url: URL of media to attach (MMS).
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the Twilio provider.
+    """
+    payload: dict[str, Any] = {"to": to, "body": body}
+    if from_number is not None:
+        payload["from"] = from_number
+    if media_url is not None:
+        payload["media_url"] = media_url
+    return payload
+
+
+def teams_message_payload(
+    text: str,
+    *,
+    title: Optional[str] = None,
+    theme_color: Optional[str] = None,
+    summary: Optional[str] = None,
+) -> dict[str, Any]:
+    """Build a payload for the Microsoft Teams provider (MessageCard).
+
+    Args:
+        text: Message body text (supports basic markdown).
+        title: Card title.
+        theme_color: Hex color string (e.g., "FF0000").
+        summary: Summary text for notifications.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the Teams provider.
+    """
+    payload: dict[str, Any] = {"text": text}
+    if title is not None:
+        payload["title"] = title
+    if theme_color is not None:
+        payload["theme_color"] = theme_color
+    if summary is not None:
+        payload["summary"] = summary
+    return payload
+
+
+def teams_adaptive_card_payload(card: dict[str, Any]) -> dict[str, Any]:
+    """Build a payload for the Microsoft Teams provider (Adaptive Card).
+
+    Args:
+        card: The Adaptive Card JSON object.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the Teams provider.
+    """
+    return {"adaptive_card": card}
+
+
+# =============================================================================
+# WASM Plugin Types
+# =============================================================================
+
+
+@dataclass
+class WasmPluginConfig:
+    """Configuration for a WASM plugin.
+
+    Attributes:
+        memory_limit_bytes: Maximum memory in bytes the plugin can use.
+        timeout_ms: Maximum execution time in milliseconds.
+        allowed_host_functions: List of host functions the plugin may call.
+    """
+    memory_limit_bytes: Optional[int] = None
+    timeout_ms: Optional[int] = None
+    allowed_host_functions: Optional[List[str]] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "WasmPluginConfig":
+        return cls(
+            memory_limit_bytes=data.get("memory_limit_bytes"),
+            timeout_ms=data.get("timeout_ms"),
+            allowed_host_functions=data.get("allowed_host_functions"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        result: dict[str, Any] = {}
+        if self.memory_limit_bytes is not None:
+            result["memory_limit_bytes"] = self.memory_limit_bytes
+        if self.timeout_ms is not None:
+            result["timeout_ms"] = self.timeout_ms
+        if self.allowed_host_functions is not None:
+            result["allowed_host_functions"] = self.allowed_host_functions
+        return result
+
+
+@dataclass
+class WasmPlugin:
+    """A registered WASM plugin.
+
+    Attributes:
+        name: Plugin name (unique identifier).
+        status: Plugin status (e.g., "active", "disabled").
+        enabled: Whether the plugin is enabled.
+        created_at: When the plugin was registered.
+        updated_at: When the plugin was last updated.
+        invocation_count: Number of times the plugin has been invoked.
+        description: Optional human-readable description.
+        config: Plugin resource configuration.
+    """
+    name: str
+    status: str
+    enabled: bool
+    created_at: str
+    updated_at: str
+    invocation_count: int = 0
+    description: Optional[str] = None
+    config: Optional[WasmPluginConfig] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "WasmPlugin":
+        config_data = data.get("config")
+        return cls(
+            name=data["name"],
+            status=data["status"],
+            enabled=data.get("enabled", True),
+            created_at=data["created_at"],
+            updated_at=data["updated_at"],
+            invocation_count=data.get("invocation_count", 0),
+            description=data.get("description"),
+            config=(
+                WasmPluginConfig.from_dict(config_data)
+                if config_data is not None
+                else None
+            ),
+        )
+
+
+@dataclass
+class RegisterPluginRequest:
+    """Request to register a new WASM plugin.
+
+    Attributes:
+        name: Plugin name (unique identifier).
+        description: Optional human-readable description.
+        wasm_bytes: Base64-encoded WASM module bytes.
+        wasm_path: Path to the WASM file (server-side).
+        config: Plugin resource configuration.
+    """
+    name: str
+    description: Optional[str] = None
+    wasm_bytes: Optional[str] = None
+    wasm_path: Optional[str] = None
+    config: Optional[WasmPluginConfig] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        result: dict[str, Any] = {"name": self.name}
+        if self.description is not None:
+            result["description"] = self.description
+        if self.wasm_bytes is not None:
+            result["wasm_bytes"] = self.wasm_bytes
+        if self.wasm_path is not None:
+            result["wasm_path"] = self.wasm_path
+        if self.config is not None:
+            result["config"] = self.config.to_dict()
+        return result
+
+
+@dataclass
+class ListPluginsResponse:
+    """Response from listing WASM plugins."""
+    plugins: list[WasmPlugin]
+    count: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ListPluginsResponse":
+        return cls(
+            plugins=[WasmPlugin.from_dict(p) for p in data["plugins"]],
+            count=data["count"],
+        )
+
+
+@dataclass
+class PluginInvocationRequest:
+    """Request to test-invoke a WASM plugin.
+
+    Attributes:
+        input: JSON input to pass to the plugin.
+        function: The function to invoke (default: "evaluate").
+    """
+    input: Dict[str, Any]
+    function: Optional[str] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        result: dict[str, Any] = {"input": self.input}
+        if self.function is not None:
+            result["function"] = self.function
+        return result
+
+
+@dataclass
+class PluginInvocationResponse:
+    """Response from test-invoking a WASM plugin.
+
+    Attributes:
+        verdict: Whether the plugin evaluation returned true or false.
+        message: Optional message from the plugin.
+        metadata: Optional structured metadata from the plugin.
+        duration_ms: Execution time in milliseconds.
+    """
+    verdict: bool
+    message: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+    duration_ms: Optional[float] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "PluginInvocationResponse":
+        return cls(
+            verdict=data["verdict"],
+            message=data.get("message"),
+            metadata=data.get("metadata"),
+            duration_ms=data.get("duration_ms"),
+        )
+
+
+# =============================================================================
+# Compliance Types (SOC2/HIPAA Audit Mode)
+# =============================================================================
+
+
+@dataclass
+class ComplianceStatus:
+    """Current compliance configuration status.
+
+    Attributes:
+        mode: The active compliance mode ("none", "soc2", or "hipaa").
+        sync_audit_writes: Whether audit writes block the dispatch pipeline.
+        immutable_audit: Whether audit records are immutable (deletes rejected).
+        hash_chain: Whether SHA-256 hash chaining is enabled for audit records.
+    """
+    mode: str
+    sync_audit_writes: bool
+    immutable_audit: bool
+    hash_chain: bool
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ComplianceStatus":
+        return cls(
+            mode=data["mode"],
+            sync_audit_writes=data["sync_audit_writes"],
+            immutable_audit=data["immutable_audit"],
+            hash_chain=data["hash_chain"],
+        )
+
+
+@dataclass
+class HashChainVerification:
+    """Result of verifying the integrity of an audit hash chain.
+
+    Attributes:
+        valid: Whether the hash chain is intact (no broken links).
+        records_checked: Total number of records verified.
+        first_broken_at: ID of the first record where the chain broke, if any.
+        first_record_id: ID of the first record in the verified range.
+        last_record_id: ID of the last record in the verified range.
+    """
+    valid: bool
+    records_checked: int
+    first_broken_at: Optional[str] = None
+    first_record_id: Optional[str] = None
+    last_record_id: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "HashChainVerification":
+        return cls(
+            valid=data["valid"],
+            records_checked=data["records_checked"],
+            first_broken_at=data.get("first_broken_at"),
+            first_record_id=data.get("first_record_id"),
+            last_record_id=data.get("last_record_id"),
+        )
+
+
+@dataclass
+class VerifyHashChainRequest:
+    """Request body for hash chain verification.
+
+    Attributes:
+        namespace: Namespace to verify.
+        tenant: Tenant to verify.
+        from_time: Optional start of the time range (ISO 8601).
+        to_time: Optional end of the time range (ISO 8601).
+    """
+    namespace: str
+    tenant: str
+    from_time: Optional[str] = None
+    to_time: Optional[str] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "namespace": self.namespace,
+            "tenant": self.tenant,
+        }
+        if self.from_time is not None:
+            body["from"] = self.from_time
+        if self.to_time is not None:
+            body["to"] = self.to_time
+        return body
+
+
+# =============================================================================
+# Payload Template Types
+# =============================================================================
+
+
+@dataclass
+class TemplateInfo:
+    """A payload template."""
+    id: str
+    name: str
+    namespace: str
+    tenant: str
+    content: str
+    created_at: str
+    updated_at: str
+    description: Optional[str] = None
+    labels: Optional[dict[str, str]] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "TemplateInfo":
+        return cls(
+            id=data["id"],
+            name=data["name"],
+            namespace=data["namespace"],
+            tenant=data["tenant"],
+            content=data["content"],
+            created_at=data["created_at"],
+            updated_at=data["updated_at"],
+            description=data.get("description"),
+            labels=data.get("labels"),
+        )
+
+
+@dataclass
+class CreateTemplateRequest:
+    """Request to create a payload template."""
+    name: str
+    namespace: str
+    tenant: str
+    content: str
+    description: Optional[str] = None
+    labels: Optional[dict[str, str]] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "name": self.name,
+            "namespace": self.namespace,
+            "tenant": self.tenant,
+            "content": self.content,
+        }
+        if self.description is not None:
+            result["description"] = self.description
+        if self.labels is not None:
+            result["labels"] = self.labels
+        return result
+
+
+@dataclass
+class UpdateTemplateRequest:
+    """Request to update a payload template."""
+    content: Optional[str] = None
+    description: Optional[str] = None
+    labels: Optional[dict[str, str]] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        if self.content is not None:
+            result["content"] = self.content
+        if self.description is not None:
+            result["description"] = self.description
+        if self.labels is not None:
+            result["labels"] = self.labels
+        return result
+
+
+@dataclass
+class ListTemplatesResponse:
+    """Response from listing templates."""
+    templates: list[TemplateInfo]
+    count: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ListTemplatesResponse":
+        return cls(
+            templates=[TemplateInfo.from_dict(t) for t in data["templates"]],
+            count=data["count"],
+        )
+
+
+@dataclass
+class TemplateProfileField:
+    """A field in a template profile.
+
+    Either an inline string value or a reference to a template via ``$ref``.
+    """
+    value: Optional[str] = None
+    ref: Optional[str] = None
+
+    def to_dict(self) -> Any:
+        if self.ref is not None:
+            return {"$ref": self.ref}
+        return self.value
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "TemplateProfileField":
+        if isinstance(data, str):
+            return cls(value=data)
+        if isinstance(data, dict) and "$ref" in data:
+            return cls(ref=data["$ref"])
+        return cls(value=str(data))
+
+
+@dataclass
+class TemplateProfileInfo:
+    """A template profile that groups multiple templates."""
+    id: str
+    name: str
+    namespace: str
+    tenant: str
+    fields: dict[str, TemplateProfileField]
+    created_at: str
+    updated_at: str
+    description: Optional[str] = None
+    labels: Optional[dict[str, str]] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "TemplateProfileInfo":
+        raw_fields = data.get("fields", {})
+        fields = {k: TemplateProfileField.from_dict(v) for k, v in raw_fields.items()}
+        return cls(
+            id=data["id"],
+            name=data["name"],
+            namespace=data["namespace"],
+            tenant=data["tenant"],
+            fields=fields,
+            created_at=data["created_at"],
+            updated_at=data["updated_at"],
+            description=data.get("description"),
+            labels=data.get("labels"),
+        )
+
+
+@dataclass
+class CreateProfileRequest:
+    """Request to create a template profile."""
+    name: str
+    namespace: str
+    tenant: str
+    fields: dict[str, TemplateProfileField]
+    description: Optional[str] = None
+    labels: Optional[dict[str, str]] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "name": self.name,
+            "namespace": self.namespace,
+            "tenant": self.tenant,
+            "fields": {k: v.to_dict() for k, v in self.fields.items()},
+        }
+        if self.description is not None:
+            result["description"] = self.description
+        if self.labels is not None:
+            result["labels"] = self.labels
+        return result
+
+
+@dataclass
+class UpdateProfileRequest:
+    """Request to update a template profile."""
+    fields: Optional[dict[str, TemplateProfileField]] = None
+    description: Optional[str] = None
+    labels: Optional[dict[str, str]] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        if self.fields is not None:
+            result["fields"] = {k: v.to_dict() for k, v in self.fields.items()}
+        if self.description is not None:
+            result["description"] = self.description
+        if self.labels is not None:
+            result["labels"] = self.labels
+        return result
+
+
+@dataclass
+class ListProfilesResponse:
+    """Response from listing template profiles."""
+    profiles: list[TemplateProfileInfo]
+    count: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ListProfilesResponse":
+        return cls(
+            profiles=[TemplateProfileInfo.from_dict(p) for p in data["profiles"]],
+            count=data["count"],
+        )
+
+
+@dataclass
+class RenderPreviewRequest:
+    """Request to render a template profile with payload data."""
+    profile: str
+    namespace: str
+    tenant: str
+    payload: dict[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "profile": self.profile,
+            "namespace": self.namespace,
+            "tenant": self.tenant,
+            "payload": self.payload,
+        }
+
+
+@dataclass
+class RenderPreviewResponse:
+    """Response from rendering a template profile."""
+    rendered: dict[str, str]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "RenderPreviewResponse":
+        return cls(rendered=data.get("rendered", {}))
+
+
+def discord_message_payload(
+    *,
+    content: Optional[str] = None,
+    embeds: Optional[List[dict[str, Any]]] = None,
+    username: Optional[str] = None,
+    avatar_url: Optional[str] = None,
+    tts: Optional[bool] = None,
+) -> dict[str, Any]:
+    """Build a payload for the Discord webhook provider.
+
+    At least one of ``content`` or ``embeds`` must be provided.
+
+    Args:
+        content: Plain-text message content.
+        embeds: List of Discord embed objects.
+        username: Override the webhook's default username.
+        avatar_url: Override the webhook's default avatar.
+        tts: Whether the message should be read aloud.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the Discord provider.
+    """
+    payload: dict[str, Any] = {}
+    if content is not None:
+        payload["content"] = content
+    if embeds is not None:
+        payload["embeds"] = embeds
+    if username is not None:
+        payload["username"] = username
+    if avatar_url is not None:
+        payload["avatar_url"] = avatar_url
+    if tts is not None:
+        payload["tts"] = tts
+    return payload
+
+
+# =============================================================================
+# AWS Provider Payload Helpers
+# =============================================================================
+
+
+def sns_publish_payload(
+    message: str,
+    *,
+    subject: Optional[str] = None,
+    topic_arn: Optional[str] = None,
+    message_group_id: Optional[str] = None,
+    message_dedup_id: Optional[str] = None,
+) -> dict[str, Any]:
+    """Build a payload for the AWS SNS provider.
+
+    Args:
+        message: Message body to publish.
+        subject: Subject for email-protocol subscriptions.
+        topic_arn: Override the topic ARN configured on the provider.
+        message_group_id: Message group ID (for FIFO topics).
+        message_dedup_id: Message deduplication ID (for FIFO topics).
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``aws-sns`` provider.
+    """
+    payload: dict[str, Any] = {"message": message}
+    if subject is not None:
+        payload["subject"] = subject
+    if topic_arn is not None:
+        payload["topic_arn"] = topic_arn
+    if message_group_id is not None:
+        payload["message_group_id"] = message_group_id
+    if message_dedup_id is not None:
+        payload["message_dedup_id"] = message_dedup_id
+    return payload
+
+
+def lambda_invoke_payload(
+    payload_data: Any = None,
+    *,
+    function_name: Optional[str] = None,
+    invocation_type: Optional[str] = None,
+) -> dict[str, Any]:
+    """Build a payload for the AWS Lambda provider.
+
+    Args:
+        payload_data: JSON-serializable data to pass to the Lambda function.
+        function_name: Override the function name configured on the provider.
+        invocation_type: ``"RequestResponse"``, ``"Event"``, or ``"DryRun"``.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``aws-lambda`` provider.
+    """
+    payload: dict[str, Any] = {}
+    if payload_data is not None:
+        payload["payload"] = payload_data
+    if function_name is not None:
+        payload["function_name"] = function_name
+    if invocation_type is not None:
+        payload["invocation_type"] = invocation_type
+    return payload
+
+
+def eventbridge_put_event_payload(
+    source: str,
+    detail_type: str,
+    detail: Any,
+    *,
+    event_bus_name: Optional[str] = None,
+    resources: Optional[List[str]] = None,
+) -> dict[str, Any]:
+    """Build a payload for the AWS ``EventBridge`` provider.
+
+    Args:
+        source: Event source (e.g., ``"com.myapp.orders"``).
+        detail_type: Event detail type (e.g., ``"OrderCreated"``).
+        detail: Event detail as a JSON-serializable value.
+        event_bus_name: Override the event bus name configured on the provider.
+        resources: List of resource ARNs associated with the event.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``aws-eventbridge`` provider.
+    """
+    payload: dict[str, Any] = {
+        "source": source,
+        "detail_type": detail_type,
+        "detail": detail,
+    }
+    if event_bus_name is not None:
+        payload["event_bus_name"] = event_bus_name
+    if resources is not None:
+        payload["resources"] = resources
+    return payload
+
+
+def sqs_send_message_payload(
+    message_body: str,
+    *,
+    queue_url: Optional[str] = None,
+    delay_seconds: Optional[int] = None,
+    message_group_id: Optional[str] = None,
+    message_dedup_id: Optional[str] = None,
+    message_attributes: Optional[dict[str, str]] = None,
+) -> dict[str, Any]:
+    """Build a payload for the AWS SQS provider.
+
+    Args:
+        message_body: Message body text.
+        queue_url: Override the queue URL configured on the provider.
+        delay_seconds: Delivery delay in seconds (0-900).
+        message_group_id: Message group ID (for FIFO queues).
+        message_dedup_id: Message deduplication ID (for FIFO queues).
+        message_attributes: Message attributes as key-value pairs.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``aws-sqs`` provider.
+    """
+    payload: dict[str, Any] = {"message_body": message_body}
+    if queue_url is not None:
+        payload["queue_url"] = queue_url
+    if delay_seconds is not None:
+        payload["delay_seconds"] = delay_seconds
+    if message_group_id is not None:
+        payload["message_group_id"] = message_group_id
+    if message_dedup_id is not None:
+        payload["message_dedup_id"] = message_dedup_id
+    if message_attributes is not None:
+        payload["message_attributes"] = message_attributes
+    return payload
+
+
+def s3_put_object_payload(
+    key: str,
+    *,
+    bucket: Optional[str] = None,
+    body: Optional[str] = None,
+    body_base64: Optional[str] = None,
+    content_type: Optional[str] = None,
+    metadata: Optional[dict[str, str]] = None,
+) -> dict[str, Any]:
+    """Build a payload for the AWS S3 put-object action.
+
+    Args:
+        key: S3 object key.
+        bucket: Override the bucket name configured on the provider.
+        body: Object body as a UTF-8 string.
+        body_base64: Object body as base64-encoded bytes.
+        content_type: Content type (e.g., ``"application/json"``).
+        metadata: Object metadata as key-value pairs.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``aws-s3`` provider
+        with action type ``put_object``.
+    """
+    payload: dict[str, Any] = {"key": key}
+    if bucket is not None:
+        payload["bucket"] = bucket
+    if body is not None:
+        payload["body"] = body
+    if body_base64 is not None:
+        payload["body_base64"] = body_base64
+    if content_type is not None:
+        payload["content_type"] = content_type
+    if metadata is not None:
+        payload["metadata"] = metadata
+    return payload
+
+
+def s3_get_object_payload(
+    key: str,
+    *,
+    bucket: Optional[str] = None,
+) -> dict[str, Any]:
+    """Build a payload for the AWS S3 get-object action.
+
+    Args:
+        key: S3 object key.
+        bucket: Override the bucket name configured on the provider.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``aws-s3`` provider
+        with action type ``get_object``.
+    """
+    payload: dict[str, Any] = {"key": key}
+    if bucket is not None:
+        payload["bucket"] = bucket
+    return payload
+
+
+def s3_delete_object_payload(
+    key: str,
+    *,
+    bucket: Optional[str] = None,
+) -> dict[str, Any]:
+    """Build a payload for the AWS S3 delete-object action.
+
+    Args:
+        key: S3 object key.
+        bucket: Override the bucket name configured on the provider.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``aws-s3`` provider
+        with action type ``delete_object``.
+    """
+    payload: dict[str, Any] = {"key": key}
+    if bucket is not None:
+        payload["bucket"] = bucket
+    return payload
+
+
+# =============================================================================
+# AWS EC2 Provider Payload Helpers
+# =============================================================================
+
+
+def ec2_start_instances_payload(
+    instance_ids: List[str],
+) -> dict[str, Any]:
+    """Build a payload for the AWS EC2 start-instances action.
+
+    Args:
+        instance_ids: List of EC2 instance IDs to start.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``aws-ec2`` provider
+        with action type ``start_instances``.
+    """
+    return {"instance_ids": instance_ids}
+
+
+def ec2_stop_instances_payload(
+    instance_ids: List[str],
+    *,
+    hibernate: Optional[bool] = None,
+    force: Optional[bool] = None,
+) -> dict[str, Any]:
+    """Build a payload for the AWS EC2 stop-instances action.
+
+    Args:
+        instance_ids: List of EC2 instance IDs to stop.
+        hibernate: Whether to hibernate the instances instead of stopping.
+        force: Whether to force stop the instances.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``aws-ec2`` provider
+        with action type ``stop_instances``.
+    """
+    payload: dict[str, Any] = {"instance_ids": instance_ids}
+    if hibernate is not None:
+        payload["hibernate"] = hibernate
+    if force is not None:
+        payload["force"] = force
+    return payload
+
+
+def ec2_reboot_instances_payload(
+    instance_ids: List[str],
+) -> dict[str, Any]:
+    """Build a payload for the AWS EC2 reboot-instances action.
+
+    Args:
+        instance_ids: List of EC2 instance IDs to reboot.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``aws-ec2`` provider
+        with action type ``reboot_instances``.
+    """
+    return {"instance_ids": instance_ids}
+
+
+def ec2_terminate_instances_payload(
+    instance_ids: List[str],
+) -> dict[str, Any]:
+    """Build a payload for the AWS EC2 terminate-instances action.
+
+    Args:
+        instance_ids: List of EC2 instance IDs to terminate.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``aws-ec2`` provider
+        with action type ``terminate_instances``.
+    """
+    return {"instance_ids": instance_ids}
+
+
+def ec2_hibernate_instances_payload(
+    instance_ids: List[str],
+) -> dict[str, Any]:
+    """Build a payload for the AWS EC2 hibernate-instances action.
+
+    Args:
+        instance_ids: List of EC2 instance IDs to hibernate.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``aws-ec2`` provider
+        with action type ``hibernate_instances``.
+    """
+    return {"instance_ids": instance_ids}
+
+
+def ec2_run_instances_payload(
+    image_id: str,
+    instance_type: str,
+    *,
+    min_count: Optional[int] = None,
+    max_count: Optional[int] = None,
+    key_name: Optional[str] = None,
+    security_group_ids: Optional[List[str]] = None,
+    subnet_id: Optional[str] = None,
+    user_data: Optional[str] = None,
+    tags: Optional[dict[str, str]] = None,
+    iam_instance_profile: Optional[str] = None,
+) -> dict[str, Any]:
+    """Build a payload for the AWS EC2 run-instances action.
+
+    Args:
+        image_id: AMI ID to launch.
+        instance_type: EC2 instance type (e.g., ``"t3.micro"``).
+        min_count: Minimum number of instances to launch.
+        max_count: Maximum number of instances to launch.
+        key_name: Name of the key pair for SSH access.
+        security_group_ids: List of security group IDs.
+        subnet_id: VPC subnet ID to launch into.
+        user_data: Base64-encoded user data script.
+        tags: Tags to apply to the launched instances.
+        iam_instance_profile: IAM instance profile name or ARN.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``aws-ec2`` provider
+        with action type ``run_instances``.
+    """
+    payload: dict[str, Any] = {
+        "image_id": image_id,
+        "instance_type": instance_type,
+    }
+    if min_count is not None:
+        payload["min_count"] = min_count
+    if max_count is not None:
+        payload["max_count"] = max_count
+    if key_name is not None:
+        payload["key_name"] = key_name
+    if security_group_ids is not None:
+        payload["security_group_ids"] = security_group_ids
+    if subnet_id is not None:
+        payload["subnet_id"] = subnet_id
+    if user_data is not None:
+        payload["user_data"] = user_data
+    if tags is not None:
+        payload["tags"] = tags
+    if iam_instance_profile is not None:
+        payload["iam_instance_profile"] = iam_instance_profile
+    return payload
+
+
+def ec2_attach_volume_payload(
+    volume_id: str,
+    instance_id: str,
+    device: str,
+) -> dict[str, Any]:
+    """Build a payload for the AWS EC2 attach-volume action.
+
+    Args:
+        volume_id: EBS volume ID to attach.
+        instance_id: EC2 instance ID to attach the volume to.
+        device: Device name (e.g., ``"/dev/sdf"``).
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``aws-ec2`` provider
+        with action type ``attach_volume``.
+    """
+    return {
+        "volume_id": volume_id,
+        "instance_id": instance_id,
+        "device": device,
+    }
+
+
+def ec2_detach_volume_payload(
+    volume_id: str,
+    *,
+    instance_id: Optional[str] = None,
+    device: Optional[str] = None,
+    force: Optional[bool] = None,
+) -> dict[str, Any]:
+    """Build a payload for the AWS EC2 detach-volume action.
+
+    Args:
+        volume_id: EBS volume ID to detach.
+        instance_id: EC2 instance ID to detach the volume from.
+        device: Device name.
+        force: Whether to force detach the volume.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``aws-ec2`` provider
+        with action type ``detach_volume``.
+    """
+    payload: dict[str, Any] = {"volume_id": volume_id}
+    if instance_id is not None:
+        payload["instance_id"] = instance_id
+    if device is not None:
+        payload["device"] = device
+    if force is not None:
+        payload["force"] = force
+    return payload
+
+
+def ec2_describe_instances_payload(
+    *,
+    instance_ids: Optional[List[str]] = None,
+) -> dict[str, Any]:
+    """Build a payload for the AWS EC2 describe-instances action.
+
+    Args:
+        instance_ids: Optional list of EC2 instance IDs to describe.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``aws-ec2`` provider
+        with action type ``describe_instances``.
+    """
+    payload: dict[str, Any] = {}
+    if instance_ids is not None:
+        payload["instance_ids"] = instance_ids
+    return payload
+
+
+# =============================================================================
+# AWS Auto Scaling Provider Payload Helpers
+# =============================================================================
+
+
+def autoscaling_describe_groups_payload(
+    *,
+    group_names: Optional[List[str]] = None,
+) -> dict[str, Any]:
+    """Build a payload for the AWS Auto Scaling describe-groups action.
+
+    Args:
+        group_names: Optional list of Auto Scaling group names to describe.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``aws-autoscaling``
+        provider with action type ``describe_auto_scaling_groups``.
+    """
+    payload: dict[str, Any] = {}
+    if group_names is not None:
+        payload["auto_scaling_group_names"] = group_names
+    return payload
+
+
+def autoscaling_set_desired_capacity_payload(
+    group_name: str,
+    desired_capacity: int,
+    *,
+    honor_cooldown: Optional[bool] = None,
+) -> dict[str, Any]:
+    """Build a payload for the AWS Auto Scaling set-desired-capacity action.
+
+    Args:
+        group_name: Auto Scaling group name.
+        desired_capacity: Desired number of instances.
+        honor_cooldown: Whether to honor the cooldown period.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``aws-autoscaling``
+        provider with action type ``set_desired_capacity``.
+    """
+    payload: dict[str, Any] = {
+        "auto_scaling_group_name": group_name,
+        "desired_capacity": desired_capacity,
+    }
+    if honor_cooldown is not None:
+        payload["honor_cooldown"] = honor_cooldown
+    return payload
+
+
+def autoscaling_update_group_payload(
+    group_name: str,
+    *,
+    min_size: Optional[int] = None,
+    max_size: Optional[int] = None,
+    desired_capacity: Optional[int] = None,
+    default_cooldown: Optional[int] = None,
+    health_check_type: Optional[str] = None,
+    health_check_grace_period: Optional[int] = None,
+) -> dict[str, Any]:
+    """Build a payload for the AWS Auto Scaling update-group action.
+
+    Args:
+        group_name: Auto Scaling group name.
+        min_size: Minimum group size.
+        max_size: Maximum group size.
+        desired_capacity: Desired number of instances.
+        default_cooldown: Default cooldown period in seconds.
+        health_check_type: Health check type (e.g., ``"EC2"``, ``"ELB"``).
+        health_check_grace_period: Health check grace period in seconds.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``aws-autoscaling``
+        provider with action type ``update_auto_scaling_group``.
+    """
+    payload: dict[str, Any] = {
+        "auto_scaling_group_name": group_name,
+    }
+    if min_size is not None:
+        payload["min_size"] = min_size
+    if max_size is not None:
+        payload["max_size"] = max_size
+    if desired_capacity is not None:
+        payload["desired_capacity"] = desired_capacity
+    if default_cooldown is not None:
+        payload["default_cooldown"] = default_cooldown
+    if health_check_type is not None:
+        payload["health_check_type"] = health_check_type
+    if health_check_grace_period is not None:
+        payload["health_check_grace_period"] = health_check_grace_period
+    return payload
+
+
+# =============================================================================
+# Azure Blob Storage Provider Payload Helpers
+# =============================================================================
+
+
+def azure_blob_upload_payload(
+    blob_name: str,
+    *,
+    container: Optional[str] = None,
+    body: Optional[str] = None,
+    body_base64: Optional[str] = None,
+    content_type: Optional[str] = None,
+    metadata: Optional[dict[str, str]] = None,
+) -> dict[str, Any]:
+    """Build a payload for an Azure Blob Storage upload action.
+
+    Args:
+        blob_name: Name of the blob to upload.
+        container: Override the container name configured on the provider.
+        body: Blob body as a UTF-8 string.
+        body_base64: Blob body as base64-encoded bytes.
+        content_type: Content type (e.g., ``"application/json"``).
+        metadata: Blob metadata as key-value pairs.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``azure-blob``
+        provider with action type ``upload_blob``.
+    """
+    payload: dict[str, Any] = {"blob_name": blob_name}
+    if container is not None:
+        payload["container"] = container
+    if body is not None:
+        payload["body"] = body
+    if body_base64 is not None:
+        payload["body_base64"] = body_base64
+    if content_type is not None:
+        payload["content_type"] = content_type
+    if metadata is not None:
+        payload["metadata"] = metadata
+    return payload
+
+
+def azure_blob_download_payload(
+    blob_name: str,
+    *,
+    container: Optional[str] = None,
+) -> dict[str, Any]:
+    """Build a payload for an Azure Blob Storage download action.
+
+    Args:
+        blob_name: Name of the blob to download.
+        container: Override the container name configured on the provider.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``azure-blob``
+        provider with action type ``download_blob``.
+    """
+    payload: dict[str, Any] = {"blob_name": blob_name}
+    if container is not None:
+        payload["container"] = container
+    return payload
+
+
+def azure_blob_delete_payload(
+    blob_name: str,
+    *,
+    container: Optional[str] = None,
+) -> dict[str, Any]:
+    """Build a payload for an Azure Blob Storage delete action.
+
+    Args:
+        blob_name: Name of the blob to delete.
+        container: Override the container name configured on the provider.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``azure-blob``
+        provider with action type ``delete_blob``.
+    """
+    payload: dict[str, Any] = {"blob_name": blob_name}
+    if container is not None:
+        payload["container"] = container
+    return payload
+
+
+# =============================================================================
+# Azure Event Hubs Provider Payload Helpers
+# =============================================================================
+
+
+def azure_eventhubs_send_payload(
+    body: Any,
+    *,
+    event_hub_name: Optional[str] = None,
+    partition_id: Optional[str] = None,
+    properties: Optional[dict[str, str]] = None,
+) -> dict[str, Any]:
+    """Build a payload for an Azure Event Hubs send action.
+
+    Args:
+        body: Event body as a JSON-serializable value.
+        event_hub_name: Override the Event Hub name configured on the provider.
+        partition_id: Target a specific partition.
+        properties: Application properties as key-value pairs.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``azure-eventhubs``
+        provider with action type ``send_event``.
+    """
+    payload: dict[str, Any] = {"body": body}
+    if event_hub_name is not None:
+        payload["event_hub_name"] = event_hub_name
+    if partition_id is not None:
+        payload["partition_id"] = partition_id
+    if properties is not None:
+        payload["properties"] = properties
+    return payload
+
+
+def azure_eventhubs_send_batch_payload(
+    events: List[dict[str, Any]],
+    *,
+    event_hub_name: Optional[str] = None,
+) -> dict[str, Any]:
+    """Build a payload for an Azure Event Hubs send-batch action.
+
+    Args:
+        events: List of event objects to send as a batch.
+        event_hub_name: Override the Event Hub name configured on the provider.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``azure-eventhubs``
+        provider with action type ``send_batch``.
+    """
+    payload: dict[str, Any] = {"events": events}
+    if event_hub_name is not None:
+        payload["event_hub_name"] = event_hub_name
+    return payload
+
+
+# =============================================================================
+# GCP Pub/Sub Provider Payload Helpers
+# =============================================================================
+
+
+def gcp_pubsub_publish_payload(
+    data: str,
+    *,
+    data_base64: Optional[str] = None,
+    attributes: Optional[dict[str, str]] = None,
+    ordering_key: Optional[str] = None,
+    topic: Optional[str] = None,
+) -> dict[str, Any]:
+    """Build a payload for a GCP Pub/Sub publish action.
+
+    Args:
+        data: Message data as a UTF-8 string.
+        data_base64: Message data as base64-encoded bytes.
+        attributes: Message attributes as key-value pairs.
+        ordering_key: Ordering key for ordered delivery.
+        topic: Override the topic configured on the provider.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``gcp-pubsub``
+        provider with action type ``publish``.
+    """
+    payload: dict[str, Any] = {"data": data}
+    if data_base64 is not None:
+        payload["data_base64"] = data_base64
+    if attributes is not None:
+        payload["attributes"] = attributes
+    if ordering_key is not None:
+        payload["ordering_key"] = ordering_key
+    if topic is not None:
+        payload["topic"] = topic
+    return payload
+
+
+def gcp_pubsub_publish_batch_payload(
+    messages: List[dict[str, Any]],
+    *,
+    topic: Optional[str] = None,
+) -> dict[str, Any]:
+    """Build a payload for a GCP Pub/Sub publish-batch action.
+
+    Args:
+        messages: List of message objects to publish as a batch.
+        topic: Override the topic configured on the provider.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``gcp-pubsub``
+        provider with action type ``publish_batch``.
+    """
+    payload: dict[str, Any] = {"messages": messages}
+    if topic is not None:
+        payload["topic"] = topic
+    return payload
+
+
+# =============================================================================
+# GCP Cloud Storage Provider Payload Helpers
+# =============================================================================
+
+
+def gcp_storage_upload_payload(
+    object_name: str,
+    *,
+    bucket: Optional[str] = None,
+    body: Optional[str] = None,
+    body_base64: Optional[str] = None,
+    content_type: Optional[str] = None,
+    metadata: Optional[dict[str, str]] = None,
+) -> dict[str, Any]:
+    """Build a payload for a GCP Cloud Storage upload action.
+
+    Args:
+        object_name: Name of the object to upload.
+        bucket: Override the bucket name configured on the provider.
+        body: Object body as a UTF-8 string.
+        body_base64: Object body as base64-encoded bytes.
+        content_type: Content type (e.g., ``"application/json"``).
+        metadata: Object metadata as key-value pairs.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``gcp-storage``
+        provider with action type ``upload_object``.
+    """
+    payload: dict[str, Any] = {"object_name": object_name}
+    if bucket is not None:
+        payload["bucket"] = bucket
+    if body is not None:
+        payload["body"] = body
+    if body_base64 is not None:
+        payload["body_base64"] = body_base64
+    if content_type is not None:
+        payload["content_type"] = content_type
+    if metadata is not None:
+        payload["metadata"] = metadata
+    return payload
+
+
+def gcp_storage_download_payload(
+    object_name: str,
+    *,
+    bucket: Optional[str] = None,
+) -> dict[str, Any]:
+    """Build a payload for a GCP Cloud Storage download action.
+
+    Args:
+        object_name: Name of the object to download.
+        bucket: Override the bucket name configured on the provider.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``gcp-storage``
+        provider with action type ``download_object``.
+    """
+    payload: dict[str, Any] = {"object_name": object_name}
+    if bucket is not None:
+        payload["bucket"] = bucket
+    return payload
+
+
+def gcp_storage_delete_payload(
+    object_name: str,
+    *,
+    bucket: Optional[str] = None,
+) -> dict[str, Any]:
+    """Build a payload for a GCP Cloud Storage delete action.
+
+    Args:
+        object_name: Name of the object to delete.
+        bucket: Override the bucket name configured on the provider.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``gcp-storage``
+        provider with action type ``delete_object``.
+    """
+    payload: dict[str, Any] = {"object_name": object_name}
+    if bucket is not None:
+        payload["bucket"] = bucket
+    return payload
+
+
+@dataclass
+class CoverageKey:
+    """A unique combination of coverage dimensions."""
+    namespace: str
+    tenant: str
+    provider: str
+    action_type: str
+
+
+@dataclass
+class CoverageEntry:
+    """Per-combination coverage statistics."""
+    key: CoverageKey
+    total: int
+    covered: int
+    uncovered: int
+    matched_rules: list[str]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "CoverageEntry":
+        return cls(
+            key=CoverageKey(
+                namespace=data["namespace"],
+                tenant=data["tenant"],
+                provider=data["provider"],
+                action_type=data["action_type"],
+            ),
+            total=data["total"],
+            covered=data["covered"],
+            uncovered=data["uncovered"],
+            matched_rules=data.get("matched_rules", []),
+        )
+
+
+@dataclass
+class CoverageQuery:
+    """Options for a rule coverage analysis."""
+    namespace: Optional[str] = None
+    tenant: Optional[str] = None
+    from_time: Optional[str] = None  # RFC 3339 timestamp
+    to_time: Optional[str] = None    # RFC 3339 timestamp
+
+
+@dataclass
+class CoverageReport:
+    """Full rule coverage report."""
+    scanned_from: str  # RFC 3339 timestamp
+    scanned_to: str    # RFC 3339 timestamp
+    total_actions: int
+    unique_combinations: int
+    fully_covered: int
+    partially_covered: int
+    uncovered: int
+    rules_loaded: int
+    entries: list[CoverageEntry]
+    unmatched_rules: list[str]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "CoverageReport":
+        return cls(
+            scanned_from=data["scanned_from"],
+            scanned_to=data["scanned_to"],
+            total_actions=data["total_actions"],
+            unique_combinations=data["unique_combinations"],
+            fully_covered=data["fully_covered"],
+            partially_covered=data["partially_covered"],
+            uncovered=data["uncovered"],
+            rules_loaded=data["rules_loaded"],
+            entries=[CoverageEntry.from_dict(e) for e in data.get("entries", [])],
+            unmatched_rules=data.get("unmatched_rules", []),
+        )
+
+
+@dataclass
+class SigningKeyEntry:
+    """One verifying key entry in the server's active signing keyring.
+
+    Mirrors the response shape of
+    ``GET /.well-known/acteon-signing-keys``.
+    """
+
+    signer_id: str
+    kid: str
+    algorithm: str
+    public_key: str  # base64-encoded raw 32-byte Ed25519 public key
+    tenants: list[str]
+    namespaces: list[str]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SigningKeyEntry":
+        return cls(
+            signer_id=data["signer_id"],
+            kid=data["kid"],
+            algorithm=data["algorithm"],
+            public_key=data["public_key"],
+            tenants=list(data.get("tenants", [])),
+            namespaces=list(data.get("namespaces", [])),
+        )
+
+
+@dataclass
+class SigningKeysResponse:
+    """Response body from the JWKS-style signing key discovery endpoint.
+
+    ``keys`` is empty when signing is disabled on the server. The
+    server also returns a ``count`` field we preserve as a
+    convenience, but it is always equal to ``len(keys)``.
+    """
+
+    keys: list[SigningKeyEntry]
+    count: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SigningKeysResponse":
+        keys = [SigningKeyEntry.from_dict(k) for k in data.get("keys", [])]
+        return cls(keys=keys, count=int(data.get("count", len(keys))))
+
+
+# ----------------------------------------------------------------------
+# Swarm runs
+# ----------------------------------------------------------------------
+
+
+@dataclass
+class SwarmRunSnapshot:
+    """Snapshot of a single long-running swarm goal tracked by the server."""
+
+    run_id: str
+    plan_id: str
+    objective: str
+    status: str
+    started_at: str
+    namespace: str
+    tenant: str
+    finished_at: Optional[str] = None
+    metrics: Optional[dict[str, Any]] = None
+    error: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SwarmRunSnapshot":
+        return cls(
+            run_id=data["run_id"],
+            plan_id=data["plan_id"],
+            objective=data["objective"],
+            status=data["status"],
+            started_at=data["started_at"],
+            namespace=data["namespace"],
+            tenant=data["tenant"],
+            finished_at=data.get("finished_at"),
+            metrics=data.get("metrics"),
+            error=data.get("error"),
+        )
+
+
+@dataclass
+class SwarmRunFilter:
+    """Query parameters for listing swarm runs."""
+
+    namespace: Optional[str] = None
+    tenant: Optional[str] = None
+    status: Optional[str] = None
+    limit: Optional[int] = None
+    offset: Optional[int] = None
+
+    def to_params(self) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if self.namespace is not None:
+            params["namespace"] = self.namespace
+        if self.tenant is not None:
+            params["tenant"] = self.tenant
+        if self.status is not None:
+            params["status"] = self.status
+        if self.limit is not None:
+            params["limit"] = self.limit
+        if self.offset is not None:
+            params["offset"] = self.offset
+        return params
+
+
+@dataclass
+class ListSwarmRunsResponse:
+    """Response from listing swarm runs."""
+
+    runs: list[SwarmRunSnapshot]
+    total: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ListSwarmRunsResponse":
+        return cls(
+            runs=[SwarmRunSnapshot.from_dict(r) for r in data.get("runs", [])],
+            total=int(data.get("total", 0)),
+        )

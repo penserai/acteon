@@ -48,6 +48,12 @@ struct CelRule {
     /// Optional IANA timezone for time-based conditions (e.g. `"US/Eastern"`).
     #[serde(default)]
     timezone: Option<String>,
+    /// Names of time intervals during which this rule's verdict is muted.
+    #[serde(default)]
+    mute_time_intervals: Vec<String>,
+    /// Names of time intervals during which this rule is active.
+    #[serde(default)]
+    active_time_intervals: Vec<String>,
 }
 
 /// The action to take when a rule fires.
@@ -154,6 +160,8 @@ fn compile_rule(cel: CelRule, file: Option<&Path>) -> Result<Rule, RuleError> {
         version: 0,
         metadata: std::collections::HashMap::new(),
         timezone: None,
+        mute_time_intervals: cel.mute_time_intervals,
+        active_time_intervals: cel.active_time_intervals,
     };
     if let Some(tz) = cel.timezone {
         rule = rule.with_timezone(tz);

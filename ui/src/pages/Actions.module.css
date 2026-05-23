@@ -1,9 +1,5 @@
 @reference "../index.css";
 
-.filterBar {
-  @apply flex flex-wrap gap-3 mb-4;
-}
-
 .searchInput {
   @apply w-48;
 }
@@ -16,17 +12,8 @@
   @apply space-y-3 text-sm;
 }
 
-.detailRow {
-  @apply flex justify-between py-1 border-b;
-  border-color: var(--border-default);
-}
-
 .detailLabel {
   @apply text-gray-500;
-}
-
-.detailValue {
-  @apply font-mono text-xs;
 }
 
 .jsonViewerCard {

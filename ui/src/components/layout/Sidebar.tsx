@@ -2,44 +2,12 @@ import { useEffect } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import { cn } from '../../lib/cn'
 import { useUiStore } from '../../stores/ui'
+import { MAIN_NAV_ITEMS, SETTINGS_NAV_ITEMS, type NavItem } from '../../lib/navigation'
 import {
-  LayoutDashboard, Send, BookOpen, ScrollText, Radio, Layers, Link2, ShieldCheck,
-  Zap, AlertTriangle, Rss, Brain, Gauge, Users, Server, Cpu, Eye, Settings,
-  PanelLeftClose, PanelLeftOpen, X, ExternalLink,
+  PanelLeftClose, PanelLeftOpen, X,
 } from 'lucide-react'
-import logoPng from '../../assets/logo.png'
+import logoSvg from '../../assets/logo.svg'
 import styles from './Sidebar.module.css'
-
-const mainItems = [
-  { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
-  { to: '/dispatch', icon: Send, label: 'Dispatch' },
-  { to: '/rules', icon: BookOpen, label: 'Rules' },
-  { to: '/audit', icon: ScrollText, label: 'Audit Trail' },
-  { to: '/events', icon: Radio, label: 'Events' },
-  { to: '/groups', icon: Layers, label: 'Groups' },
-  { to: '/chains', icon: Link2, label: 'Chains' },
-  { to: '/approvals', icon: ShieldCheck, label: 'Approvals', badge: true },
-  { to: '/circuit-breakers', icon: Zap, label: 'Circuit Breakers' },
-  { to: '/dlq', icon: AlertTriangle, label: 'Dead-Letter Queue' },
-  { to: '/stream', icon: Rss, label: 'Stream' },
-  { to: '/embeddings', icon: Brain, label: 'Embeddings' },
-  {
-    to: 'https://penserai.github.io/acteon',
-    icon: ExternalLink,
-    label: 'Documentation',
-    external: true,
-  },
-]
-
-const settingsItems = [
-  { to: '/settings/rate-limiting', icon: Gauge, label: 'Rate Limiting' },
-  { to: '/settings/auth', icon: Users, label: 'Auth & Users' },
-  { to: '/settings/providers', icon: Server, label: 'Providers' },
-  { to: '/settings/llm', icon: Cpu, label: 'LLM Guardrail' },
-  { to: '/settings/telemetry', icon: Eye, label: 'Telemetry' },
-  { to: '/settings/config', icon: Settings, label: 'Server Config' },
-  { to: '/settings/background', icon: Cpu, label: 'Background Tasks' },
-]
 
 export function Sidebar() {
   const collapsed = useUiStore((s) => s.sidebarCollapsed)
@@ -57,7 +25,7 @@ export function Sidebar() {
     <>
       <div className={styles.header}>
         <div className={styles.logoWrap}>
-          <img src={logoPng} alt="Acteon" className={styles.logoImg} />
+          <img src={logoSvg} alt="Acteon" className={styles.logoImg} />
           <span className={styles.logo}>Acteon</span>
         </div>
         {/* Desktop: collapse toggle */}
@@ -79,11 +47,11 @@ export function Sidebar() {
       </div>
 
       <div className={styles.scrollContainer}>
-        <SidebarSection items={mainItems} collapsed={false} />
+        <SidebarSection items={MAIN_NAV_ITEMS} collapsed={false} />
         <div className={styles.settingsHeader}>
           <span className={styles.settingsLabel}>Settings</span>
         </div>
-        <SidebarSection items={settingsItems} collapsed={false} />
+        <SidebarSection items={SETTINGS_NAV_ITEMS} collapsed={false} />
       </div>
     </>
   )
@@ -100,7 +68,7 @@ export function Sidebar() {
       >
         <div className={styles.header}>
           <div className={styles.logoWrap}>
-            <img src={logoPng} alt="Acteon" className={styles.logoImg} />
+            <img src={logoSvg} alt="Acteon" className={styles.logoImg} />
             {!collapsed && <span className={styles.logo}>Acteon</span>}
           </div>
           <button
@@ -113,14 +81,14 @@ export function Sidebar() {
         </div>
 
         <div className={styles.scrollContainer}>
-          <SidebarSection items={mainItems} collapsed={collapsed} />
+          <SidebarSection items={MAIN_NAV_ITEMS} collapsed={collapsed} />
           {!collapsed && (
             <div className={styles.settingsHeader}>
               <span className={styles.settingsLabel}>Settings</span>
             </div>
           )}
           {collapsed && <div className={styles.settingsDivider} />}
-          <SidebarSection items={settingsItems} collapsed={collapsed} />
+          <SidebarSection items={SETTINGS_NAV_ITEMS} collapsed={collapsed} />
         </div>
       </nav>
 
@@ -146,7 +114,7 @@ export function Sidebar() {
   )
 }
 
-function SidebarSection({ items, collapsed }: { items: (typeof mainItems[0] & { external?: boolean })[]; collapsed: boolean }) {
+function SidebarSection({ items, collapsed }: { items: NavItem[]; collapsed: boolean }) {
   return (
     <ul className={styles.sectionList}>
       {items.map((item) => (
@@ -169,7 +137,7 @@ function SidebarSection({ items, collapsed }: { items: (typeof mainItems[0] & { 
           ) : (
             <NavLink
               to={item.to}
-              end={item.to === '/'}
+              end={item.end}
               className={({ isActive }) =>
                 cn(
                   styles.navLink,

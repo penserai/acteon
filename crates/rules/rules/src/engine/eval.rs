@@ -39,6 +39,12 @@ pub async fn eval(expr: &Expr, ctx: &EvalContext<'_>) -> Result<Value, RuleError
         Expr::Ident(name) => resolve_ident(name, ctx),
 
         Expr::Field(base, field) => {
+            // Track environment key access for the playground trace.
+            if let Some(ref tracker) = ctx.access_tracker
+                && matches!(base.as_ref(), Expr::Ident(name) if name == "env" || name == "environment")
+            {
+                tracker.record_env_key(field);
+            }
             let base_val = Box::pin(eval(base, ctx)).await?;
             base_val.field(field)
         }
@@ -106,12 +112,48 @@ pub async fn eval(expr: &Expr, ctx: &EvalContext<'_>) -> Result<Value, RuleError
             eval_event_in_state(fingerprint, state, ctx).await
         }
 
+        Expr::WasmCall { plugin, function } => eval_wasm_call(plugin, function, ctx).await,
+
         Expr::SemanticMatch {
             topic,
             threshold,
             text_field,
         } => eval_semantic_match(topic, *threshold, text_field.as_deref(), ctx).await,
     }
+}
+
+/// Evaluate a WASM plugin call as a boolean condition.
+async fn eval_wasm_call(
+    plugin: &str,
+    function: &str,
+    ctx: &EvalContext<'_>,
+) -> Result<Value, RuleError> {
+    let runtime = ctx.wasm_runtime.as_ref().ok_or_else(|| {
+        RuleError::Evaluation(format!(
+            "WASM plugin '{plugin}' called but no WASM runtime configured"
+        ))
+    })?;
+
+    // Serialize the action as the input payload for the plugin.
+    let input = serde_json::to_value(ctx.action)
+        .map_err(|e| RuleError::Evaluation(format!("failed to serialize action for WASM: {e}")))?;
+
+    // Record the invocation attempt.
+    if let Some(ref counters) = ctx.wasm_counters {
+        counters.record_invocation();
+    }
+
+    let result = runtime
+        .invoke(plugin, function, &input)
+        .await
+        .map_err(|e| {
+            if let Some(ref counters) = ctx.wasm_counters {
+                counters.record_error();
+            }
+            RuleError::Evaluation(format!("WASM plugin '{plugin}' error: {e}"))
+        })?;
+
+    Ok(Value::Bool(result.verdict))
 }
 
 /// Resolve a top-level identifier to a value from the evaluation context.
@@ -138,6 +180,9 @@ pub(crate) fn resolve_ident(name: &str, ctx: &EvalContext<'_>) -> Result<Value, 
         _ => {
             // Try environment lookup as a shortcut.
             if let Some(val) = ctx.environment.get(name) {
+                if let Some(ref tracker) = ctx.access_tracker {
+                    tracker.record_env_key(name);
+                }
                 return Ok(Value::String(val.clone()));
             }
             Err(RuleError::UndefinedVariable(name.to_owned()))

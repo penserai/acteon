@@ -32,6 +32,11 @@ fn default_semantic_threshold() -> f64 {
     0.8
 }
 
+/// Default WASM function name.
+fn default_wasm_function() -> String {
+    "evaluate".to_owned()
+}
+
 /// Top-level YAML rule file containing a list of rules.
 #[derive(Debug, Deserialize)]
 pub struct YamlRuleFile {
@@ -62,6 +67,14 @@ pub struct YamlRule {
     /// Optional IANA timezone for time-based conditions (e.g. `"US/Eastern"`).
     #[serde(default)]
     pub timezone: Option<String>,
+    /// Names of time intervals during which this rule's verdict is muted.
+    /// Mirrors Alertmanager's route-level `mute_time_intervals`.
+    #[serde(default)]
+    pub mute_time_intervals: Vec<String>,
+    /// Names of time intervals during which this rule is active. If
+    /// non-empty and none match, the rule is muted at dispatch time.
+    #[serde(default)]
+    pub active_time_intervals: Vec<String>,
 }
 
 /// A condition expression that can combine multiple predicates.
@@ -80,6 +93,26 @@ pub enum YamlCondition {
     },
     /// A single predicate used directly as a condition.
     Single(Box<YamlPredicate>),
+}
+
+/// A nested condition group that can only be `all` or `any`.
+///
+/// This breaks the mutual recursion between `YamlPredicate::Nested` and
+/// `YamlCondition::Single` that would otherwise cause a stack overflow
+/// when `serde(untagged)` encounters an unrecognized key.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum YamlNestedCondition {
+    /// All sub-predicates must be true (logical AND).
+    All {
+        /// The list of predicates that must all hold.
+        all: Vec<YamlPredicate>,
+    },
+    /// Any sub-predicate must be true (logical OR).
+    Any {
+        /// The list of predicates where at least one must hold.
+        any: Vec<YamlPredicate>,
+    },
 }
 
 /// A single predicate within a condition.
@@ -120,8 +153,19 @@ pub enum YamlPredicate {
         /// When omitted, the entire action payload is used.
         text_field: Option<String>,
     },
+    /// Invoke a WASM plugin as a boolean condition check.
+    WasmCall {
+        /// Name of the registered WASM plugin.
+        wasm_plugin: String,
+        /// Exported function to call. Defaults to `"evaluate"`.
+        #[serde(default = "default_wasm_function")]
+        wasm_function: String,
+    },
     /// A nested condition (allows recursive `all` / `any` grouping).
-    Nested(Box<YamlCondition>),
+    ///
+    /// Uses `YamlNestedCondition` instead of `YamlCondition` to prevent
+    /// infinite recursion during deserialization.
+    Nested(Box<YamlNestedCondition>),
 }
 
 /// Describes which comparison operator to apply to a field or counter value.
@@ -195,16 +239,29 @@ pub enum YamlAction {
         fingerprint_fields: Vec<String>,
     },
     /// Group events for batched notification.
+    ///
+    /// `group_wait_seconds` controls the initial batching window.
+    /// `group_interval_seconds` controls re-batching between flushes
+    /// for a persistent group. `repeat_interval_seconds` (optional)
+    /// forces the group to persist and re-flush periodically — omit
+    /// it for the pre-Phase-2 ephemeral-group behavior.
     Group {
         /// Fields to group events by.
         group_by: Vec<String>,
-        /// Seconds to wait before sending first notification.
+        /// Seconds to wait between first event and first flush.
         #[serde(default = "default_group_wait")]
         group_wait_seconds: u64,
-        /// Minimum seconds between notifications for same group.
+        /// Seconds to wait between flushes for a persistent group when
+        /// new events arrive. Honored only if `repeat_interval_seconds`
+        /// is also set.
         #[serde(default = "default_group_interval")]
         group_interval_seconds: u64,
-        /// Maximum events in a single group.
+        /// Optional seconds between forced re-flushes for a persistent
+        /// group with no new events. Omit for ephemeral groups (single
+        /// flush, then delete).
+        #[serde(default)]
+        repeat_interval_seconds: Option<u64>,
+        /// Maximum events in a single group before dropping the oldest.
         #[serde(default = "default_max_group_size")]
         max_group_size: usize,
         /// Optional template name for group notification.
@@ -465,12 +522,16 @@ rules:
                 group_by,
                 group_wait_seconds,
                 group_interval_seconds,
+                repeat_interval_seconds,
                 max_group_size,
                 template,
             } => {
                 assert_eq!(group_by.len(), 2);
                 assert_eq!(*group_wait_seconds, 60);
                 assert_eq!(*group_interval_seconds, 300);
+                // `repeat_interval_seconds` is absent in this fixture, should
+                // default to `None` (ephemeral group — Phase-1 behavior).
+                assert_eq!(*repeat_interval_seconds, None);
                 assert_eq!(*max_group_size, 50);
                 assert_eq!(template.as_deref(), Some("alert_group_template"));
             }
@@ -642,6 +703,60 @@ rules:
     }
 
     #[test]
+    fn parse_wasm_call_predicate() {
+        let yaml = r#"
+rules:
+  - name: wasm-check
+    condition:
+      wasm_plugin: my-validator
+    action:
+      type: deny
+"#;
+        let file: YamlRuleFile = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(file.rules.len(), 1);
+        match &file.rules[0].condition {
+            YamlCondition::Single(pred) => match pred.as_ref() {
+                YamlPredicate::WasmCall {
+                    wasm_plugin,
+                    wasm_function,
+                } => {
+                    assert_eq!(wasm_plugin, "my-validator");
+                    assert_eq!(wasm_function, "evaluate"); // default
+                }
+                other => panic!("expected WasmCall, got {other:?}"),
+            },
+            other => panic!("expected Single, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_wasm_call_with_custom_function() {
+        let yaml = r#"
+rules:
+  - name: wasm-check-custom
+    condition:
+      wasm_plugin: my-plugin
+      wasm_function: check_policy
+    action:
+      type: deny
+"#;
+        let file: YamlRuleFile = serde_yaml_ng::from_str(yaml).unwrap();
+        match &file.rules[0].condition {
+            YamlCondition::Single(pred) => match pred.as_ref() {
+                YamlPredicate::WasmCall {
+                    wasm_plugin,
+                    wasm_function,
+                } => {
+                    assert_eq!(wasm_plugin, "my-plugin");
+                    assert_eq!(wasm_function, "check_policy");
+                }
+                other => panic!("expected WasmCall, got {other:?}"),
+            },
+            other => panic!("expected Single, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parse_schedule_action_missing_delay_fails() {
         let yaml = r#"
 rules:
@@ -689,5 +804,49 @@ rules:
             }
             other => panic!("expected Group, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn unrecognized_condition_key_produces_error_not_stack_overflow() {
+        // Before the `YamlNestedCondition` fix, `not:` would trigger
+        // infinite mutual recursion between `YamlPredicate::Nested` and
+        // `YamlCondition::Single`, causing a stack overflow.
+        let yaml = r#"
+rules:
+  - name: bad-key
+    condition:
+      not:
+        field: action.action_type
+        eq: spam
+    action:
+      type: suppress
+"#;
+        let result: Result<YamlRuleFile, _> = serde_yaml_ng::from_str(yaml);
+        assert!(
+            result.is_err(),
+            "unrecognized condition key should produce a parse error"
+        );
+    }
+
+    #[test]
+    fn nested_all_inside_any_parses() {
+        let yaml = r#"
+rules:
+  - name: nested-groups
+    condition:
+      any:
+        - all:
+            - field: action.action_type
+              eq: "send_email"
+            - field: action.payload.to
+              contains: "@example.com"
+        - field: action.action_type
+          eq: "sms"
+    action:
+      type: allow
+"#;
+        let file: YamlRuleFile = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(file.rules.len(), 1);
+        assert!(matches!(file.rules[0].condition, YamlCondition::Any { .. }));
     }
 }

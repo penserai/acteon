@@ -60,5 +60,36 @@ pub async fn run_migrations(
         format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS chain_id Nullable(String)");
     client.query(&chain_id_stmt).execute().await?;
 
+    // Add hash chain columns for compliance mode (idempotent).
+    let hash_chain_stmts = [
+        format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS record_hash Nullable(String)"),
+        format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS previous_hash Nullable(String)"),
+        format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS sequence_number Nullable(UInt64)"),
+    ];
+    for stmt in &hash_chain_stmts {
+        client.query(stmt).execute().await?;
+    }
+
+    // Add attachment_metadata column (idempotent).
+    let attachment_stmt = format!(
+        "ALTER TABLE {table} ADD COLUMN IF NOT EXISTS attachment_metadata String DEFAULT '[]'"
+    );
+    client.query(&attachment_stmt).execute().await?;
+
+    // Action signing columns: Ed25519 signature, signer key id, and
+    // canonical hash captured at dispatch time. Nullable so existing
+    // unsigned records remain valid.
+    let signing_stmts = [
+        format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS signature Nullable(String)"),
+        format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS signer_id Nullable(String)"),
+        format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS canonical_hash Nullable(String)"),
+        // Key identifier for rotation — nullable so legacy single-key
+        // signatures (no kid) deserialize cleanly.
+        format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS kid Nullable(String)"),
+    ];
+    for stmt in &signing_stmts {
+        client.query(stmt).execute().await?;
+    }
+
     Ok(())
 }

@@ -20,6 +20,7 @@ use acteon_rules::Rule;
 use acteon_rules_yaml::YamlFrontend;
 use acteon_simulation::prelude::*;
 use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
+use tracing::info;
 
 const CHAIN_RULE: &str = r#"
 rules:
@@ -60,6 +61,9 @@ fn event_type_label(event_type: &StreamEventType) -> &'static str {
         StreamEventType::GroupResolved { .. } => "group_resolved",
         StreamEventType::ApprovalResolved { .. } => "approval_resolved",
         StreamEventType::ActionStatusChanged { .. } => "action_status_changed",
+        StreamEventType::TaskTransitioned { .. } => "task_transitioned",
+        StreamEventType::TaskHistoryAppended { .. } => "task_history_appended",
+        StreamEventType::TaskArtifactUpdated { .. } => "task_artifact_updated",
         StreamEventType::Unknown => "unknown",
     }
 }
@@ -67,19 +71,20 @@ fn event_type_label(event_type: &StreamEventType) -> &'static str {
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("==================================================================");
-    println!("     MULTI-CLIENT SUBSCRIPTION SIMULATION");
-    println!("==================================================================\n");
+    tracing_subscriber::fmt::init();
+    info!("==================================================================");
+    info!("     MULTI-CLIENT SUBSCRIPTION SIMULATION");
+    info!("==================================================================\n");
 
     // =========================================================================
     // SCENARIO 1: Multiple subscribers receive the same events (fan-out)
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  SCENARIO 1: FAN-OUT TO MULTIPLE SUBSCRIBERS");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  SCENARIO 1: FAN-OUT TO MULTIPLE SUBSCRIBERS");
+    info!("------------------------------------------------------------------\n");
 
-    println!("  Three subscribers connect to the same gateway. When actions");
-    println!("  are dispatched, all three receive identical events.\n");
+    info!("  Three subscribers connect to the same gateway. When actions");
+    info!("  are dispatched, all three receive identical events.\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -97,7 +102,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut sub_b = gateway.stream_tx().subscribe();
     let mut sub_c = gateway.stream_tx().subscribe();
 
-    println!("  Connected 3 subscribers (A, B, C)\n");
+    info!("  Connected 3 subscribers (A, B, C)\n");
 
     // Dispatch 3 actions.
     let actions = [
@@ -124,7 +129,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
     ];
 
-    println!("  -> Dispatching 3 actions...");
+    info!("  -> Dispatching 3 actions...");
     for action in &actions {
         harness.dispatch(action).await?;
     }
@@ -136,9 +141,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let events_b = drain_events(&mut sub_b);
     let events_c = drain_events(&mut sub_c);
 
-    println!("  Subscriber A received: {} events", events_a.len());
-    println!("  Subscriber B received: {} events", events_b.len());
-    println!("  Subscriber C received: {} events", events_c.len());
+    info!("  Subscriber A received: {} events", events_a.len());
+    info!("  Subscriber B received: {} events", events_b.len());
+    info!("  Subscriber C received: {} events", events_c.len());
 
     assert_eq!(events_a.len(), 3, "subscriber A should get 3 events");
     assert_eq!(events_b.len(), 3, "subscriber B should get 3 events");
@@ -155,20 +160,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "event IDs should match between B and C"
         );
     }
-    println!("  Event IDs match across all subscribers");
+    info!("  Event IDs match across all subscribers");
 
     harness.teardown().await?;
-    println!("\n  [Scenario 1 passed]\n");
+    info!("\n  [Scenario 1 passed]\n");
 
     // =========================================================================
     // SCENARIO 2: Late subscriber joins mid-chain
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  SCENARIO 2: LATE SUBSCRIBER JOINS MID-CHAIN");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  SCENARIO 2: LATE SUBSCRIBER JOINS MID-CHAIN");
+    info!("------------------------------------------------------------------\n");
 
-    println!("  An early subscriber sees the entire chain lifecycle.");
-    println!("  A late subscriber joins after step 1 and sees only steps 2+3.\n");
+    info!("  An early subscriber sees the entire chain lifecycle.");
+    info!("  A late subscriber joins after step 1 and sees only steps 2+3.\n");
 
     let svc = Arc::new(RecordingProvider::new("deploy-svc"));
 
@@ -208,7 +213,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Early subscriber connects before chain starts.
     let mut early_sub = gateway.stream_tx().subscribe();
-    println!("  Early subscriber connected");
+    info!("  Early subscriber connected");
 
     // Dispatch the deploy chain.
     let action = Action::new(
@@ -222,7 +227,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let outcome = gateway.dispatch(action, None).await?;
     let chain_id = match &outcome {
         ActionOutcome::ChainStarted { chain_id, .. } => {
-            println!("  Chain started: {}", &chain_id[..8.min(chain_id.len())]);
+            info!("  Chain started: {}", &chain_id[..8.min(chain_id.len())]);
             chain_id.clone()
         }
         other => panic!("Expected ChainStarted, got {other:?}"),
@@ -232,11 +237,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     gateway.advance_chain("ci", "tenant-1", &chain_id).await?;
     tokio::time::sleep(Duration::from_millis(30)).await;
 
-    println!("  Step 1 (build) completed");
+    info!("  Step 1 (build) completed");
 
     // Late subscriber joins NOW — after step 1 completed.
     let mut late_sub = gateway.stream_tx().subscribe();
-    println!("  Late subscriber connected (after step 1)\n");
+    info!("  Late subscriber connected (after step 1)\n");
 
     // Advance steps 2 and 3 (test, release).
     gateway.advance_chain("ci", "tenant-1", &chain_id).await?;
@@ -248,14 +253,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let early_events = drain_events(&mut early_sub);
     let late_events = drain_events(&mut late_sub);
 
-    println!("  Early subscriber events ({} total):", early_events.len());
+    info!("  Early subscriber events ({} total):", early_events.len());
     for event in &early_events {
-        println!("    [{:>15}]", event_type_label(&event.event_type));
+        info!("    [{:>15}]", event_type_label(&event.event_type));
     }
 
-    println!("\n  Late subscriber events ({} total):", late_events.len());
+    info!("\n  Late subscriber events ({} total):", late_events.len());
     for event in &late_events {
-        println!("    [{:>15}]", event_type_label(&event.event_type));
+        info!("    [{:>15}]", event_type_label(&event.event_type));
     }
 
     // Early subscriber sees all events (dispatch + 3 steps + chain complete + chain_advanced).
@@ -276,24 +281,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "late subscriber should see chain_completed event"
     );
 
-    println!(
+    info!(
         "\n  Early saw {} events, late saw {} events",
         early_events.len(),
         late_events.len()
     );
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 2 passed]\n");
+    info!("\n  [Scenario 2 passed]\n");
 
     // =========================================================================
     // SCENARIO 3: Namespace-based subscriber filtering
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  SCENARIO 3: NAMESPACE-BASED FILTERING");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  SCENARIO 3: NAMESPACE-BASED FILTERING");
+    info!("------------------------------------------------------------------\n");
 
-    println!("  A subscriber filters events by namespace, simulating");
-    println!("  tenant isolation at the client level.\n");
+    info!("  A subscriber filters events by namespace, simulating");
+    info!("  tenant isolation at the client level.\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -346,7 +351,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
     ];
 
-    println!("  -> Dispatching 5 actions across billing/alerts namespaces\n");
+    info!("  -> Dispatching 5 actions across billing/alerts namespaces\n");
     for action in &mixed_actions {
         harness.dispatch(action).await?;
     }
@@ -372,27 +377,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .filter(|e| e.tenant == "tenant-2")
         .collect();
 
-    println!("  Total events: {}", all_events.len());
-    println!("  Filter ns=billing: {} events", billing_events.len());
-    println!(
+    info!("  Total events: {}", all_events.len());
+    info!("  Filter ns=billing: {} events", billing_events.len());
+    info!(
         "  Filter ns=alerts, tenant=tenant-1: {} events",
         alerts_t1.len()
     );
-    println!("  Filter tenant=tenant-2: {} events", tenant_2.len());
+    info!("  Filter tenant=tenant-2: {} events", tenant_2.len());
 
     assert_eq!(billing_events.len(), 3, "3 billing events");
     assert_eq!(alerts_t1.len(), 1, "1 alert from tenant-1");
     assert_eq!(tenant_2.len(), 2, "2 events from tenant-2");
 
     harness.teardown().await?;
-    println!("\n  [Scenario 3 passed]\n");
+    info!("\n  [Scenario 3 passed]\n");
 
     // =========================================================================
     // Summary
     // =========================================================================
-    println!("==================================================================");
-    println!("              ALL SCENARIOS PASSED");
-    println!("==================================================================");
+    info!("==================================================================");
+    info!("              ALL SCENARIOS PASSED");
+    info!("==================================================================");
 
     Ok(())
 }

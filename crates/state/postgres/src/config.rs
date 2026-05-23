@@ -12,6 +12,18 @@ pub struct PostgresConfig {
 
     /// Prefix applied to table names to avoid collisions (e.g. `"acteon_"`).
     pub table_prefix: String,
+
+    /// SSL mode for the connection (`disable`, `prefer`, `require`, `verify-ca`, `verify-full`).
+    pub ssl_mode: Option<String>,
+
+    /// Path to the CA certificate for SSL server verification.
+    pub ssl_root_cert: Option<String>,
+
+    /// Path to the client certificate for mTLS.
+    pub ssl_cert: Option<String>,
+
+    /// Path to the client private key for mTLS.
+    pub ssl_key: Option<String>,
 }
 
 impl Default for PostgresConfig {
@@ -21,6 +33,10 @@ impl Default for PostgresConfig {
             pool_size: 5,
             schema: String::from("public"),
             table_prefix: String::from("acteon_"),
+            ssl_mode: None,
+            ssl_root_cert: None,
+            ssl_cert: None,
+            ssl_key: None,
         }
     }
 }

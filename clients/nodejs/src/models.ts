@@ -5,6 +5,22 @@
 import { randomUUID } from "crypto";
 
 /**
+ * An attachment with explicit metadata and base64-encoded data.
+ */
+export interface Attachment {
+  /** User-set identifier for referencing in chains. */
+  id: string;
+  /** Human-readable display name. */
+  name: string;
+  /** Filename with extension. */
+  filename: string;
+  /** MIME content type (e.g., "application/pdf"). */
+  contentType: string;
+  /** Base64-encoded file content. */
+  dataBase64: string;
+}
+
+/**
  * An action to be dispatched through Acteon.
  */
 export interface Action {
@@ -26,6 +42,21 @@ export interface Action {
   metadata?: Record<string, string>;
   /** Timestamp when the action was created. */
   createdAt: string;
+  /** Optional template name for payload rendering. */
+  template?: string;
+  /** Optional attachments. */
+  attachments?: Attachment[];
+  /** Ed25519 signature over the action's canonical bytes, base64-encoded. */
+  signature?: string;
+  /** Identifier of the key that produced the signature. */
+  signerId?: string;
+  /**
+   * Optional key identifier for rotation. When the same `signerId`
+   * has multiple active keys on the server, `kid` selects the
+   * specific key to verify against. Discoverable via
+   * `GET /.well-known/acteon-signing-keys`.
+   */
+  kid?: string;
 }
 
 /**
@@ -42,6 +73,8 @@ export function createAction(
     dedupKey?: string;
     metadata?: Record<string, string>;
     createdAt?: string;
+    template?: string;
+    attachments?: Attachment[];
   }
 ): Action {
   return {
@@ -54,6 +87,8 @@ export function createAction(
     dedupKey: options?.dedupKey,
     metadata: options?.metadata,
     createdAt: options?.createdAt ?? new Date().toISOString(),
+    template: options?.template,
+    attachments: options?.attachments,
   };
 }
 
@@ -75,6 +110,27 @@ export function actionToRequest(action: Action): Record<string, unknown> {
   }
   if (action.metadata) {
     result.metadata = { labels: action.metadata };
+  }
+  if (action.template) {
+    result.template = action.template;
+  }
+  if (action.attachments && action.attachments.length > 0) {
+    result.attachments = action.attachments.map(a => ({
+      id: a.id,
+      name: a.name,
+      filename: a.filename,
+      content_type: a.contentType,
+      data_base64: a.dataBase64,
+    }));
+  }
+  if (action.signature) {
+    result.signature = action.signature;
+  }
+  if (action.signerId) {
+    result.signer_id = action.signerId;
+  }
+  if (action.kid) {
+    result.kid = action.kid;
   }
   return result;
 }
@@ -104,7 +160,8 @@ export type ActionOutcome =
   | { type: "throttled"; retryAfterSecs: number }
   | { type: "failed"; error: ActionError }
   | { type: "dry_run"; verdict: string; matchedRule?: string; wouldBeProvider: string }
-  | { type: "scheduled"; actionId: string; scheduledFor: string };
+  | { type: "scheduled"; actionId: string; scheduledFor: string }
+  | { type: "quota_exceeded"; tenant: string; limit: number; used: number; overageBehavior: string };
 
 /**
  * Error details when an action fails.
@@ -206,6 +263,17 @@ export function parseActionOutcome(data: unknown): ActionOutcome {
     };
   }
 
+  if ("QuotaExceeded" in obj) {
+    const quota = obj.QuotaExceeded as Record<string, unknown>;
+    return {
+      type: "quota_exceeded",
+      tenant: (quota.tenant as string) ?? "",
+      limit: (quota.limit as number) ?? 0,
+      used: (quota.used as number) ?? 0,
+      overageBehavior: (quota.overage_behavior as string) ?? "",
+    };
+  }
+
   return { type: "failed", error: { code: "UNKNOWN", message: "Unknown outcome", retryable: false, attempts: 0 } };
 }
 
@@ -267,8 +335,91 @@ export interface ReloadResult {
   errors: string[];
 }
 
+// =============================================================================
+// Rule Playground Types
+// =============================================================================
+
+/**
+ * Request to evaluate rules against a test action without dispatching.
+ */
+export interface EvaluateRulesRequest {
+  namespace: string;
+  tenant: string;
+  provider: string;
+  action_type: string;
+  payload: Record<string, unknown>;
+  metadata?: Record<string, string>;
+  include_disabled?: boolean;
+  evaluate_all?: boolean;
+  evaluate_at?: string | null;
+  mock_state?: Record<string, string>;
+}
+
+/**
+ * Details about a semantic match evaluation performed during rule evaluation.
+ */
+export interface SemanticMatchDetail {
+  /** The text extracted from the action payload for semantic comparison. */
+  extracted_text: string;
+  /** The topic the rule is matching against. */
+  topic: string;
+  /** The computed similarity score between the extracted text and the topic. */
+  similarity: number;
+  /** The threshold the similarity must meet for a match. */
+  threshold: number;
+}
+
+/**
+ * Trace entry for a single rule evaluation.
+ */
+export interface RuleTraceEntry {
+  rule_name: string;
+  priority: number;
+  enabled: boolean;
+  condition_display: string;
+  result: 'matched' | 'not_matched' | 'skipped' | 'error';
+  evaluation_duration_us: number;
+  action: string;
+  source: string;
+  description?: string;
+  skip_reason?: string;
+  error?: string;
+  /** Details about semantic match evaluation, if the rule uses semantic matching. */
+  semantic_details?: SemanticMatchDetail;
+  /** JSON merge patch produced by a Modify rule in evaluate_all mode. */
+  modify_patch?: Record<string, unknown>;
+  /** Cumulative payload after applying this rule's merge patch. */
+  modified_payload_preview?: Record<string, unknown>;
+}
+
+/**
+ * Response from the rule evaluation playground.
+ */
+export interface EvaluateRulesResponse {
+  verdict: string;
+  matched_rule?: string;
+  has_errors: boolean;
+  total_rules_evaluated: number;
+  total_rules_skipped: number;
+  evaluation_duration_us: number;
+  trace: RuleTraceEntry[];
+  context: {
+    time: Record<string, unknown>;
+    environment_keys: string[];
+    effective_timezone?: string;
+    /** State keys that were actually accessed during rule evaluation. */
+    accessed_state_keys?: string[];
+  };
+  modified_payload?: Record<string, unknown>;
+}
+
 /**
  * Query parameters for audit search.
+ *
+ * Prefer `cursor` over `offset` for deep pagination — large offsets
+ * degrade linearly on every backend. Pass the `nextCursor` returned by
+ * a prior {@link AuditPage} back in here to fetch the next page in
+ * O(limit) time. Treat the cursor as opaque.
  */
 export interface AuditQuery {
   namespace?: string;
@@ -278,6 +429,7 @@ export interface AuditQuery {
   outcome?: string;
   limit?: number;
   offset?: number;
+  cursor?: string;
 }
 
 /**
@@ -292,6 +444,7 @@ export function auditQueryToParams(query: AuditQuery): URLSearchParams {
   if (query.outcome) params.set("outcome", query.outcome);
   if (query.limit !== undefined) params.set("limit", query.limit.toString());
   if (query.offset !== undefined) params.set("offset", query.offset.toString());
+  if (query.cursor !== undefined) params.set("cursor", query.cursor);
   return params;
 }
 
@@ -310,6 +463,12 @@ export interface AuditRecord {
   matchedRule?: string;
   durationMs: number;
   dispatchedAt: string;
+  /** SHA-256 hex digest of the canonicalized record content (compliance mode). */
+  recordHash?: string;
+  /** Hash of the previous record in the chain (compliance mode). */
+  previousHash?: string;
+  /** Monotonic sequence number within the (namespace, tenant) pair (compliance mode). */
+  sequenceNumber?: number;
 }
 
 /**
@@ -328,17 +487,26 @@ export function parseAuditRecord(data: Record<string, unknown>): AuditRecord {
     matchedRule: data.matched_rule as string | undefined,
     durationMs: data.duration_ms as number,
     dispatchedAt: data.dispatched_at as string,
+    recordHash: data.record_hash as string | undefined,
+    previousHash: data.previous_hash as string | undefined,
+    sequenceNumber: data.sequence_number as number | undefined,
   };
 }
 
 /**
  * Paginated audit results.
+ *
+ * `total` is omitted when the backend skipped the count (always the
+ * case when paginating with a cursor). `nextCursor` is omitted when
+ * this page is the last; otherwise pass it back into
+ * {@link AuditQuery.cursor} to resume.
  */
 export interface AuditPage {
   records: AuditRecord[];
-  total: number;
+  total?: number;
   limit: number;
   offset: number;
+  nextCursor?: string;
 }
 
 /**
@@ -348,9 +516,10 @@ export function parseAuditPage(data: Record<string, unknown>): AuditPage {
   const records = data.records as Record<string, unknown>[];
   return {
     records: records.map(parseAuditRecord),
-    total: data.total as number,
+    total: data.total as number | undefined,
     limit: data.limit as number,
     offset: data.offset as number,
+    nextCursor: data.next_cursor as string | undefined,
   };
 }
 
@@ -734,4 +903,2730 @@ export function replayQueryToParams(query: ReplayQuery): URLSearchParams {
   if (query.to !== undefined) params.set("to", query.to);
   if (query.limit !== undefined) params.set("limit", query.limit.toString());
   return params;
+}
+
+// =============================================================================
+// Recurring Action Types
+// =============================================================================
+
+/** Request to create a recurring action. */
+export interface CreateRecurringAction {
+  namespace: string;
+  tenant: string;
+  provider: string;
+  actionType: string;
+  payload: Record<string, unknown>;
+  cronExpression: string;
+  name?: string;
+  metadata?: Record<string, string>;
+  timezone?: string;
+  endDate?: string;
+  maxExecutions?: number;
+  description?: string;
+  dedupKey?: string;
+  labels?: Record<string, string>;
+}
+
+/** Convert a CreateRecurringAction to the API request format. */
+export function createRecurringActionToRequest(action: CreateRecurringAction): Record<string, unknown> {
+  const result: Record<string, unknown> = {
+    namespace: action.namespace,
+    tenant: action.tenant,
+    provider: action.provider,
+    action_type: action.actionType,
+    payload: action.payload,
+    cron_expression: action.cronExpression,
+  };
+  if (action.name !== undefined) result.name = action.name;
+  if (action.metadata !== undefined) result.metadata = action.metadata;
+  if (action.timezone !== undefined) result.timezone = action.timezone;
+  if (action.endDate !== undefined) result.end_date = action.endDate;
+  if (action.maxExecutions !== undefined) result.max_executions = action.maxExecutions;
+  if (action.description !== undefined) result.description = action.description;
+  if (action.dedupKey !== undefined) result.dedup_key = action.dedupKey;
+  if (action.labels !== undefined) result.labels = action.labels;
+  return result;
+}
+
+/** Response from creating a recurring action. */
+export interface CreateRecurringResponse {
+  id: string;
+  status: string;
+  name?: string;
+  nextExecutionAt?: string;
+}
+
+export function parseCreateRecurringResponse(data: Record<string, unknown>): CreateRecurringResponse {
+  return {
+    id: data.id as string,
+    status: data.status as string,
+    name: data.name as string | undefined,
+    nextExecutionAt: data.next_execution_at as string | undefined,
+  };
+}
+
+/** Query parameters for listing recurring actions. */
+export interface RecurringFilter {
+  namespace?: string;
+  tenant?: string;
+  status?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export function recurringFilterToParams(filter: RecurringFilter): URLSearchParams {
+  const params = new URLSearchParams();
+  if (filter.namespace !== undefined) params.set("namespace", filter.namespace);
+  if (filter.tenant !== undefined) params.set("tenant", filter.tenant);
+  if (filter.status !== undefined) params.set("status", filter.status);
+  if (filter.limit !== undefined) params.set("limit", filter.limit.toString());
+  if (filter.offset !== undefined) params.set("offset", filter.offset.toString());
+  return params;
+}
+
+/** Summary of a recurring action in list responses. */
+export interface RecurringSummary {
+  id: string;
+  namespace: string;
+  tenant: string;
+  cronExpr: string;
+  timezone: string;
+  enabled: boolean;
+  provider: string;
+  actionType: string;
+  executionCount: number;
+  createdAt: string;
+  nextExecutionAt?: string;
+  description?: string;
+}
+
+export function parseRecurringSummary(data: Record<string, unknown>): RecurringSummary {
+  return {
+    id: data.id as string,
+    namespace: data.namespace as string,
+    tenant: data.tenant as string,
+    cronExpr: data.cron_expr as string,
+    timezone: data.timezone as string,
+    enabled: data.enabled as boolean,
+    provider: data.provider as string,
+    actionType: data.action_type as string,
+    executionCount: data.execution_count as number,
+    createdAt: data.created_at as string,
+    nextExecutionAt: data.next_execution_at as string | undefined,
+    description: data.description as string | undefined,
+  };
+}
+
+/** Response from listing recurring actions. */
+export interface ListRecurringResponse {
+  recurringActions: RecurringSummary[];
+  count: number;
+}
+
+export function parseListRecurringResponse(data: Record<string, unknown>): ListRecurringResponse {
+  const items = data.recurring_actions as Record<string, unknown>[];
+  return {
+    recurringActions: items.map(parseRecurringSummary),
+    count: data.count as number,
+  };
+}
+
+/** Detailed information about a recurring action. */
+export interface RecurringDetail {
+  id: string;
+  namespace: string;
+  tenant: string;
+  cronExpr: string;
+  timezone: string;
+  enabled: boolean;
+  provider: string;
+  actionType: string;
+  payload: Record<string, unknown>;
+  metadata: Record<string, string>;
+  executionCount: number;
+  createdAt: string;
+  updatedAt: string;
+  labels: Record<string, string>;
+  nextExecutionAt?: string;
+  lastExecutedAt?: string;
+  endsAt?: string;
+  description?: string;
+  dedupKey?: string;
+}
+
+export function parseRecurringDetail(data: Record<string, unknown>): RecurringDetail {
+  return {
+    id: data.id as string,
+    namespace: data.namespace as string,
+    tenant: data.tenant as string,
+    cronExpr: data.cron_expr as string,
+    timezone: data.timezone as string,
+    enabled: data.enabled as boolean,
+    provider: data.provider as string,
+    actionType: data.action_type as string,
+    payload: (data.payload as Record<string, unknown>) ?? {},
+    metadata: (data.metadata as Record<string, string>) ?? {},
+    executionCount: data.execution_count as number,
+    createdAt: data.created_at as string,
+    updatedAt: data.updated_at as string,
+    labels: (data.labels as Record<string, string>) ?? {},
+    nextExecutionAt: data.next_execution_at as string | undefined,
+    lastExecutedAt: data.last_executed_at as string | undefined,
+    endsAt: data.ends_at as string | undefined,
+    description: data.description as string | undefined,
+    dedupKey: data.dedup_key as string | undefined,
+  };
+}
+
+/** Request to update a recurring action. */
+export interface UpdateRecurringAction {
+  namespace: string;
+  tenant: string;
+  name?: string;
+  payload?: Record<string, unknown>;
+  metadata?: Record<string, string>;
+  cronExpression?: string;
+  timezone?: string;
+  endDate?: string;
+  maxExecutions?: number;
+  description?: string;
+  dedupKey?: string;
+  labels?: Record<string, string>;
+}
+
+export function updateRecurringActionToRequest(action: UpdateRecurringAction): Record<string, unknown> {
+  const result: Record<string, unknown> = {
+    namespace: action.namespace,
+    tenant: action.tenant,
+  };
+  if (action.name !== undefined) result.name = action.name;
+  if (action.payload !== undefined) result.payload = action.payload;
+  if (action.metadata !== undefined) result.metadata = action.metadata;
+  if (action.cronExpression !== undefined) result.cron_expression = action.cronExpression;
+  if (action.timezone !== undefined) result.timezone = action.timezone;
+  if (action.endDate !== undefined) result.end_date = action.endDate;
+  if (action.maxExecutions !== undefined) result.max_executions = action.maxExecutions;
+  if (action.description !== undefined) result.description = action.description;
+  if (action.dedupKey !== undefined) result.dedup_key = action.dedupKey;
+  if (action.labels !== undefined) result.labels = action.labels;
+  return result;
+}
+
+// =============================================================================
+// Quota Types
+// =============================================================================
+
+/** Request to create a quota policy.
+ *
+ * Omit ``provider`` (or pass ``undefined``) for a generic tenant-wide
+ * policy, or set it to a provider name such as ``"slack"`` to scope
+ * the policy to a single provider. Generic and per-provider
+ * policies may coexist for the same ``(namespace, tenant)``.
+ */
+export interface CreateQuotaRequest {
+  namespace: string;
+  tenant: string;
+  provider?: string;
+  maxActions: number;
+  window: string;
+  overageBehavior: string;
+  description?: string;
+  labels?: Record<string, string>;
+}
+
+/** Convert a CreateQuotaRequest to the API request format. */
+export function createQuotaRequestToApi(req: CreateQuotaRequest): Record<string, unknown> {
+  const result: Record<string, unknown> = {
+    namespace: req.namespace,
+    tenant: req.tenant,
+    max_actions: req.maxActions,
+    window: req.window,
+    overage_behavior: req.overageBehavior,
+  };
+  if (req.provider !== undefined) result.provider = req.provider;
+  if (req.description !== undefined) result.description = req.description;
+  if (req.labels !== undefined) result.labels = req.labels;
+  return result;
+}
+
+/** Request to update a quota policy. */
+export interface UpdateQuotaRequest {
+  namespace: string;
+  tenant: string;
+  maxActions?: number;
+  window?: string;
+  overageBehavior?: string;
+  description?: string;
+  enabled?: boolean;
+}
+
+/** Convert an UpdateQuotaRequest to the API request format. */
+export function updateQuotaRequestToApi(req: UpdateQuotaRequest): Record<string, unknown> {
+  const result: Record<string, unknown> = {
+    namespace: req.namespace,
+    tenant: req.tenant,
+  };
+  if (req.maxActions !== undefined) result.max_actions = req.maxActions;
+  if (req.window !== undefined) result.window = req.window;
+  if (req.overageBehavior !== undefined) result.overage_behavior = req.overageBehavior;
+  if (req.description !== undefined) result.description = req.description;
+  if (req.enabled !== undefined) result.enabled = req.enabled;
+  return result;
+}
+
+/** A quota policy. */
+export interface QuotaPolicy {
+  id: string;
+  namespace: string;
+  tenant: string;
+  /** Provider scope (``undefined`` for generic catch-all policies). */
+  provider?: string;
+  maxActions: number;
+  window: string;
+  overageBehavior: string;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+  description?: string;
+  labels?: Record<string, string>;
+}
+
+/** Parse a QuotaPolicy from API response. */
+export function parseQuotaPolicy(data: Record<string, unknown>): QuotaPolicy {
+  return {
+    id: data.id as string,
+    namespace: data.namespace as string,
+    tenant: data.tenant as string,
+    provider: data.provider as string | undefined,
+    maxActions: data.max_actions as number,
+    window: data.window as string,
+    overageBehavior: data.overage_behavior as string,
+    enabled: data.enabled as boolean,
+    createdAt: data.created_at as string,
+    updatedAt: data.updated_at as string,
+    description: data.description as string | undefined,
+    labels: data.labels as Record<string, string> | undefined,
+  };
+}
+
+/** Response from listing quota policies. */
+export interface ListQuotasResponse {
+  quotas: QuotaPolicy[];
+  count: number;
+}
+
+/** Parse a ListQuotasResponse from API response. */
+export function parseListQuotasResponse(data: Record<string, unknown>): ListQuotasResponse {
+  const items = data.quotas as Record<string, unknown>[];
+  return {
+    quotas: items.map(parseQuotaPolicy),
+    count: data.count as number,
+  };
+}
+
+/** Current usage statistics for a quota. */
+export interface QuotaUsage {
+  tenant: string;
+  namespace: string;
+  used: number;
+  limit: number;
+  remaining: number;
+  window: string;
+  resetsAt: string;
+  overageBehavior: string;
+}
+
+/** Parse a QuotaUsage from API response. */
+export function parseQuotaUsage(data: Record<string, unknown>): QuotaUsage {
+  return {
+    tenant: data.tenant as string,
+    namespace: data.namespace as string,
+    used: data.used as number,
+    limit: data.limit as number,
+    remaining: data.remaining as number,
+    window: data.window as string,
+    resetsAt: data.resets_at as string,
+    overageBehavior: data.overage_behavior as string,
+  };
+}
+
+// =============================================================================
+// Silence Types
+// =============================================================================
+
+/** A single label matcher inside a silence. Matchers are AND-ed. */
+export interface SilenceMatcher {
+  name: string;
+  value: string;
+  /** One of: `"equal"`, `"not_equal"`, `"regex"`, `"not_regex"`. */
+  op: string;
+}
+
+/** Request to create a silence.
+ *
+ * Either ``endsAt`` or ``durationSeconds`` must be supplied. When
+ * ``startsAt`` is omitted, the server uses its current time.
+ */
+export interface CreateSilenceRequest {
+  namespace: string;
+  tenant: string;
+  matchers: SilenceMatcher[];
+  comment: string;
+  startsAt?: string;
+  endsAt?: string;
+  durationSeconds?: number;
+}
+
+/** Convert a CreateSilenceRequest to the API request format. */
+export function createSilenceRequestToApi(
+  req: CreateSilenceRequest
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {
+    namespace: req.namespace,
+    tenant: req.tenant,
+    matchers: req.matchers.map((m) => ({
+      name: m.name,
+      value: m.value,
+      op: m.op,
+    })),
+    comment: req.comment,
+  };
+  if (req.startsAt !== undefined) result.starts_at = req.startsAt;
+  if (req.endsAt !== undefined) result.ends_at = req.endsAt;
+  if (req.durationSeconds !== undefined)
+    result.duration_seconds = req.durationSeconds;
+  return result;
+}
+
+/** Request to extend a silence or edit its comment.
+ *
+ * Matchers are immutable — to change them, expire the silence and
+ * create a new one.
+ */
+export interface UpdateSilenceRequest {
+  endsAt?: string;
+  comment?: string;
+}
+
+/** Convert an UpdateSilenceRequest to the API request format. */
+export function updateSilenceRequestToApi(
+  req: UpdateSilenceRequest
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  if (req.endsAt !== undefined) result.ends_at = req.endsAt;
+  if (req.comment !== undefined) result.comment = req.comment;
+  return result;
+}
+
+/** A time-bounded label-pattern mute. */
+export interface Silence {
+  id: string;
+  namespace: string;
+  tenant: string;
+  matchers: SilenceMatcher[];
+  startsAt: string;
+  endsAt: string;
+  createdBy: string;
+  comment: string;
+  createdAt: string;
+  updatedAt: string;
+  /** ``true`` when the current server time is within
+   * ``[startsAt, endsAt)``. */
+  active: boolean;
+}
+
+/** Parse a Silence from API response. */
+export function parseSilence(data: Record<string, unknown>): Silence {
+  const matchers = (data.matchers as Record<string, unknown>[]).map((m) => ({
+    name: m.name as string,
+    value: m.value as string,
+    op: (m.op as string) ?? "equal",
+  }));
+  return {
+    id: data.id as string,
+    namespace: data.namespace as string,
+    tenant: data.tenant as string,
+    matchers,
+    startsAt: data.starts_at as string,
+    endsAt: data.ends_at as string,
+    createdBy: (data.created_by as string) ?? "",
+    comment: (data.comment as string) ?? "",
+    createdAt: data.created_at as string,
+    updatedAt: data.updated_at as string,
+    active: (data.active as boolean) ?? false,
+  };
+}
+
+/** Response from listing silences. */
+export interface ListSilencesResponse {
+  silences: Silence[];
+  count: number;
+}
+
+/** Parse a ListSilencesResponse from API response. */
+export function parseListSilencesResponse(
+  data: Record<string, unknown>
+): ListSilencesResponse {
+  const items = (data.silences as Record<string, unknown>[]) ?? [];
+  return {
+    silences: items.map(parseSilence),
+    count: data.count as number,
+  };
+}
+
+// =============================================================================
+// Time Interval Types
+// =============================================================================
+
+/** Time-of-day window in `HH:MM` (24-hour clock). */
+export interface TimeOfDayInput {
+  start: string;
+  end: string;
+}
+
+/** Inclusive integer range used for weekdays/days_of_month/months/years. */
+export interface NumericRange {
+  start: number;
+  end: number;
+}
+
+/** One TimeRange entry inside a TimeInterval. Empty fields = "any". */
+export interface TimeRange {
+  times?: TimeOfDayInput[];
+  weekdays?: NumericRange[];
+  daysOfMonth?: NumericRange[];
+  months?: NumericRange[];
+  years?: NumericRange[];
+}
+
+function timeRangeToApi(r: TimeRange): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (r.times && r.times.length) out.times = r.times;
+  if (r.weekdays && r.weekdays.length) out.weekdays = r.weekdays;
+  if (r.daysOfMonth && r.daysOfMonth.length) out.days_of_month = r.daysOfMonth;
+  if (r.months && r.months.length) out.months = r.months;
+  if (r.years && r.years.length) out.years = r.years;
+  return out;
+}
+
+function timeRangeFromApi(data: Record<string, unknown>): TimeRange {
+  return {
+    times: (data.times as TimeOfDayInput[]) ?? [],
+    weekdays: (data.weekdays as NumericRange[]) ?? [],
+    daysOfMonth: (data.days_of_month as NumericRange[]) ?? [],
+    months: (data.months as NumericRange[]) ?? [],
+    years: (data.years as NumericRange[]) ?? [],
+  };
+}
+
+export interface CreateTimeIntervalRequest {
+  name: string;
+  namespace: string;
+  tenant: string;
+  timeRanges: TimeRange[];
+  location?: string;
+  description?: string;
+}
+
+export function createTimeIntervalRequestToApi(
+  req: CreateTimeIntervalRequest
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {
+    name: req.name,
+    namespace: req.namespace,
+    tenant: req.tenant,
+    time_ranges: req.timeRanges.map(timeRangeToApi),
+  };
+  if (req.location !== undefined) out.location = req.location;
+  if (req.description !== undefined) out.description = req.description;
+  return out;
+}
+
+export interface UpdateTimeIntervalRequest {
+  timeRanges?: TimeRange[];
+  location?: string;
+  description?: string;
+}
+
+export function updateTimeIntervalRequestToApi(
+  req: UpdateTimeIntervalRequest
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (req.timeRanges !== undefined)
+    out.time_ranges = req.timeRanges.map(timeRangeToApi);
+  if (req.location !== undefined) out.location = req.location;
+  if (req.description !== undefined) out.description = req.description;
+  return out;
+}
+
+export interface TimeInterval {
+  name: string;
+  namespace: string;
+  tenant: string;
+  timeRanges: TimeRange[];
+  location?: string;
+  description?: string;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+  matchesNow: boolean;
+}
+
+export function parseTimeInterval(
+  data: Record<string, unknown>
+): TimeInterval {
+  return {
+    name: data.name as string,
+    namespace: data.namespace as string,
+    tenant: data.tenant as string,
+    timeRanges: ((data.time_ranges as Record<string, unknown>[]) ?? []).map(
+      timeRangeFromApi
+    ),
+    location: data.location as string | undefined,
+    description: data.description as string | undefined,
+    createdBy: (data.created_by as string) ?? "",
+    createdAt: data.created_at as string,
+    updatedAt: data.updated_at as string,
+    matchesNow: (data.matches_now as boolean) ?? false,
+  };
+}
+
+export interface ListTimeIntervalsResponse {
+  timeIntervals: TimeInterval[];
+  count: number;
+}
+
+export function parseListTimeIntervalsResponse(
+  data: Record<string, unknown>
+): ListTimeIntervalsResponse {
+  const items = (data.time_intervals as Record<string, unknown>[]) ?? [];
+  return {
+    timeIntervals: items.map(parseTimeInterval),
+    count: (data.count as number) ?? 0,
+  };
+}
+
+// =============================================================================
+// Retention Policy Types
+// =============================================================================
+
+/** Request to create a retention policy. */
+export interface CreateRetentionRequest {
+  namespace: string;
+  tenant: string;
+  auditTtlSeconds: number;
+  stateTtlSeconds: number;
+  eventTtlSeconds: number;
+  complianceHold?: boolean;
+  description?: string;
+  labels?: Record<string, string>;
+}
+
+/** Convert a CreateRetentionRequest to the API request format. */
+export function createRetentionRequestToApi(req: CreateRetentionRequest): Record<string, unknown> {
+  const result: Record<string, unknown> = {
+    namespace: req.namespace,
+    tenant: req.tenant,
+    audit_ttl_seconds: req.auditTtlSeconds,
+    state_ttl_seconds: req.stateTtlSeconds,
+    event_ttl_seconds: req.eventTtlSeconds,
+  };
+  if (req.complianceHold !== undefined) result.compliance_hold = req.complianceHold;
+  if (req.description !== undefined) result.description = req.description;
+  if (req.labels !== undefined) result.labels = req.labels;
+  return result;
+}
+
+/** Request to update a retention policy. */
+export interface UpdateRetentionRequest {
+  enabled?: boolean;
+  auditTtlSeconds?: number;
+  stateTtlSeconds?: number;
+  eventTtlSeconds?: number;
+  complianceHold?: boolean;
+  description?: string;
+  labels?: Record<string, string>;
+}
+
+/** Convert an UpdateRetentionRequest to the API request format. */
+export function updateRetentionRequestToApi(req: UpdateRetentionRequest): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  if (req.enabled !== undefined) result.enabled = req.enabled;
+  if (req.auditTtlSeconds !== undefined) result.audit_ttl_seconds = req.auditTtlSeconds;
+  if (req.stateTtlSeconds !== undefined) result.state_ttl_seconds = req.stateTtlSeconds;
+  if (req.eventTtlSeconds !== undefined) result.event_ttl_seconds = req.eventTtlSeconds;
+  if (req.complianceHold !== undefined) result.compliance_hold = req.complianceHold;
+  if (req.description !== undefined) result.description = req.description;
+  if (req.labels !== undefined) result.labels = req.labels;
+  return result;
+}
+
+/** A retention policy. */
+export interface RetentionPolicy {
+  id: string;
+  namespace: string;
+  tenant: string;
+  enabled: boolean;
+  auditTtlSeconds: number;
+  stateTtlSeconds: number;
+  eventTtlSeconds: number;
+  complianceHold: boolean;
+  createdAt: string;
+  updatedAt: string;
+  description?: string;
+  labels?: Record<string, string>;
+}
+
+/** Parse a RetentionPolicy from API response. */
+export function parseRetentionPolicy(data: Record<string, unknown>): RetentionPolicy {
+  return {
+    id: data.id as string,
+    namespace: data.namespace as string,
+    tenant: data.tenant as string,
+    enabled: data.enabled as boolean,
+    auditTtlSeconds: data.audit_ttl_seconds as number,
+    stateTtlSeconds: data.state_ttl_seconds as number,
+    eventTtlSeconds: data.event_ttl_seconds as number,
+    complianceHold: data.compliance_hold as boolean,
+    createdAt: data.created_at as string,
+    updatedAt: data.updated_at as string,
+    description: data.description as string | undefined,
+    labels: data.labels as Record<string, string> | undefined,
+  };
+}
+
+/** Response from listing retention policies. */
+export interface ListRetentionResponse {
+  policies: RetentionPolicy[];
+  count: number;
+}
+
+/** Parse a ListRetentionResponse from API response. */
+export function parseListRetentionResponse(data: Record<string, unknown>): ListRetentionResponse {
+  const items = data.policies as Record<string, unknown>[];
+  return {
+    policies: items.map(parseRetentionPolicy),
+    count: data.count as number,
+  };
+}
+
+// =============================================================================
+// Chain Types
+// =============================================================================
+
+/** Summary of a chain execution for list responses. */
+export interface ChainSummary {
+  /** Unique chain execution ID. */
+  chainId: string;
+  /** Name of the chain configuration. */
+  chainName: string;
+  /** Current status. */
+  status: string;
+  /** Current step index (0-based). */
+  currentStep: number;
+  /** Total number of steps. */
+  totalSteps: number;
+  /** When the chain started. */
+  startedAt: string;
+  /** When the chain was last updated. */
+  updatedAt: string;
+  /** Parent chain ID if this is a sub-chain. */
+  parentChainId?: string;
+}
+
+/** Parse a ChainSummary from API response. */
+export function parseChainSummary(data: Record<string, unknown>): ChainSummary {
+  return {
+    chainId: data.chain_id as string,
+    chainName: data.chain_name as string,
+    status: data.status as string,
+    currentStep: data.current_step as number,
+    totalSteps: data.total_steps as number,
+    startedAt: data.started_at as string,
+    updatedAt: data.updated_at as string,
+    parentChainId: data.parent_chain_id as string | undefined,
+  };
+}
+
+/** Response for listing chain executions. */
+export interface ListChainsResponse {
+  /** List of chain execution summaries. */
+  chains: ChainSummary[];
+}
+
+/** Parse a ListChainsResponse from API response. */
+export function parseListChainsResponse(data: Record<string, unknown>): ListChainsResponse {
+  const chains = data.chains as Record<string, unknown>[];
+  return {
+    chains: chains.map(parseChainSummary),
+  };
+}
+
+/** Detailed status of a single chain step. */
+export interface ChainStepStatus {
+  /** Step name. */
+  name: string;
+  /** Provider used for this step. */
+  provider: string;
+  /**
+   * Step status: "pending", "running", "completed", "failed", "skipped",
+   * "waiting_sub_chain", "waiting_parallel". Parallel sub-steps may also
+   * report "cancelled".
+   */
+  status: string;
+  /** Response body from the provider (if completed). */
+  responseBody?: unknown;
+  /** Error message (if failed). */
+  error?: string;
+  /** When this step completed. */
+  completedAt?: string;
+  /** Name of the sub-chain this step triggers, if any. */
+  subChain?: string;
+  /** ID of the child chain instance spawned by this step, if any. */
+  childChainId?: string;
+  /** Results from parallel sub-steps, if this is a parallel step. */
+  parallelSubSteps?: ChainStepStatus[];
+  /** Current attempt number (1-based), if retries are configured. */
+  attempt?: number;
+  /** Maximum number of retries configured for this step. */
+  maxRetries?: number;
+}
+
+/** Parse a ChainStepStatus from API response. */
+export function parseChainStepStatus(data: Record<string, unknown>): ChainStepStatus {
+  const rawSubs = data.parallel_sub_steps as Record<string, unknown>[] | undefined;
+  return {
+    name: data.name as string,
+    provider: data.provider as string,
+    status: data.status as string,
+    responseBody: data.response_body as unknown | undefined,
+    error: data.error as string | undefined,
+    completedAt: data.completed_at as string | undefined,
+    subChain: data.sub_chain as string | undefined,
+    childChainId: data.child_chain_id as string | undefined,
+    parallelSubSteps: rawSubs ? rawSubs.map(parseChainStepStatus) : undefined,
+    attempt: data.attempt as number | undefined,
+    maxRetries: data.max_retries as number | undefined,
+  };
+}
+
+/** Full detail response for a chain execution. */
+export interface ChainDetailResponse {
+  /** Unique chain execution ID. */
+  chainId: string;
+  /** Name of the chain configuration. */
+  chainName: string;
+  /** Current status. */
+  status: string;
+  /** Current step index (0-based). */
+  currentStep: number;
+  /** Total number of steps. */
+  totalSteps: number;
+  /** Per-step status details. */
+  steps: ChainStepStatus[];
+  /** When the chain started. */
+  startedAt: string;
+  /** When the chain was last updated. */
+  updatedAt: string;
+  /** When the chain will time out. */
+  expiresAt?: string;
+  /** Reason for cancellation (if cancelled). */
+  cancelReason?: string;
+  /** Who cancelled the chain (if cancelled). */
+  cancelledBy?: string;
+  /** The ordered list of step names that were executed (the branch path taken). */
+  executionPath?: string[];
+  /** Parent chain ID if this is a sub-chain. */
+  parentChainId?: string;
+  /** IDs of child chains spawned by sub-chain steps. */
+  childChainIds?: string[];
+}
+
+/** Parse a ChainDetailResponse from API response. */
+export function parseChainDetailResponse(data: Record<string, unknown>): ChainDetailResponse {
+  const steps = (data.steps as Record<string, unknown>[]) ?? [];
+  const executionPath = data.execution_path as string[] | undefined;
+  const childChainIds = data.child_chain_ids as string[] | undefined;
+  return {
+    chainId: data.chain_id as string,
+    chainName: data.chain_name as string,
+    status: data.status as string,
+    currentStep: data.current_step as number,
+    totalSteps: data.total_steps as number,
+    steps: steps.map(parseChainStepStatus),
+    startedAt: data.started_at as string,
+    updatedAt: data.updated_at as string,
+    expiresAt: data.expires_at as string | undefined,
+    cancelReason: data.cancel_reason as string | undefined,
+    cancelledBy: data.cancelled_by as string | undefined,
+    executionPath: executionPath && executionPath.length > 0 ? executionPath : undefined,
+    parentChainId: data.parent_chain_id as string | undefined,
+    childChainIds: childChainIds && childChainIds.length > 0 ? childChainIds : undefined,
+  };
+}
+
+// =============================================================================
+// DAG Types (Chain Visualization)
+// =============================================================================
+
+/** A node in the chain DAG. */
+export interface DagNode {
+  /** Node name (step name or sub-chain name). */
+  name: string;
+  /** Node type: "step" or "sub_chain". */
+  nodeType: string;
+  /** Provider for this step, if applicable. */
+  provider?: string;
+  /** Action type for this step, if applicable. */
+  actionType?: string;
+  /** Name of the sub-chain, if this is a sub-chain node. */
+  subChainName?: string;
+  /** Current status of this node (for instance DAGs). */
+  status?: string;
+  /** ID of the child chain instance (for instance DAGs). */
+  childChainId?: string;
+  /** Nested DAG for sub-chain expansion. */
+  children?: DagResponse;
+  /** Nested DAG nodes for parallel sub-steps. */
+  parallelChildren?: DagNode[];
+  /** Join policy for parallel groups ("all" or "any"). */
+  parallelJoin?: string;
+  /** Current attempt number (1-based), if retries are configured. */
+  attempt?: number;
+  /** Maximum number of retries configured for this node. */
+  maxRetries?: number;
+}
+
+/** An edge in the chain DAG. */
+export interface DagEdge {
+  /** Source node name. */
+  source: string;
+  /** Target node name. */
+  target: string;
+  /** Edge label (e.g., branch condition). */
+  label?: string;
+  /** Whether this edge is on the execution path. */
+  onExecutionPath: boolean;
+}
+
+/** DAG representation of a chain (config or instance). */
+export interface DagResponse {
+  /** Chain configuration name. */
+  chainName: string;
+  /** Chain instance ID (only for instance DAGs). */
+  chainId?: string;
+  /** Chain status (only for instance DAGs). */
+  status?: string;
+  /** Nodes in the DAG. */
+  nodes: DagNode[];
+  /** Edges connecting the nodes. */
+  edges: DagEdge[];
+  /** Ordered list of step names on the execution path. */
+  executionPath: string[];
+}
+
+/** Parse a DagNode from API response. */
+export function parseDagNode(data: Record<string, unknown>): DagNode {
+  const children = data.children as Record<string, unknown> | undefined;
+  const rawParallel = data.parallel_children as Record<string, unknown>[] | undefined;
+  return {
+    name: data.name as string,
+    nodeType: data.node_type as string,
+    provider: data.provider as string | undefined,
+    actionType: data.action_type as string | undefined,
+    subChainName: data.sub_chain_name as string | undefined,
+    status: data.status as string | undefined,
+    childChainId: data.child_chain_id as string | undefined,
+    children: children ? parseDagResponse(children) : undefined,
+    parallelChildren: rawParallel ? rawParallel.map(parseDagNode) : undefined,
+    parallelJoin: data.parallel_join as string | undefined,
+    attempt: data.attempt as number | undefined,
+    maxRetries: data.max_retries as number | undefined,
+  };
+}
+
+/** Parse a DagEdge from API response. */
+export function parseDagEdge(data: Record<string, unknown>): DagEdge {
+  return {
+    source: data.source as string,
+    target: data.target as string,
+    label: data.label as string | undefined,
+    onExecutionPath: (data.on_execution_path as boolean) ?? false,
+  };
+}
+
+/** Parse a DagResponse from API response. */
+export function parseDagResponse(data: Record<string, unknown>): DagResponse {
+  const nodes = (data.nodes as Record<string, unknown>[]) ?? [];
+  const edges = (data.edges as Record<string, unknown>[]) ?? [];
+  return {
+    chainName: data.chain_name as string,
+    chainId: data.chain_id as string | undefined,
+    status: data.status as string | undefined,
+    nodes: nodes.map(parseDagNode),
+    edges: edges.map(parseDagEdge),
+    executionPath: (data.execution_path as string[]) ?? [],
+  };
+}
+
+// =============================================================================
+// Chain History Types (Retry Attempts)
+// =============================================================================
+
+/** A single execution attempt for a chain step. */
+export interface StepAttemptResponse {
+  /** Attempt number (1-based). */
+  attempt: number;
+  /** When this attempt started. */
+  startedAt: string;
+  /** When this attempt completed (if finished). */
+  completedAt?: string;
+  /** Whether this attempt succeeded. */
+  success: boolean;
+  /** Duration in milliseconds. */
+  durationMs: number;
+  /** Error message (if failed). */
+  error?: string;
+}
+
+/** Retry history for a single chain step. */
+export interface StepHistoryEntry {
+  /** Step name. */
+  name: string;
+  /** Step index (0-based). */
+  stepIndex: number;
+  /** Current attempt number. */
+  currentAttempt: number;
+  /** Maximum number of retries configured. */
+  maxRetries: number;
+  /** List of execution attempts. */
+  attempts: StepAttemptResponse[];
+}
+
+/** Retry history for a chain execution. */
+export interface ChainHistoryResponse {
+  /** Unique chain execution ID. */
+  chainId: string;
+  /** Name of the chain configuration. */
+  chainName: string;
+  /** Current chain status. */
+  status: string;
+  /** Per-step retry history. */
+  steps: StepHistoryEntry[];
+}
+
+/** Parse a StepAttemptResponse from API response. */
+export function parseStepAttemptResponse(data: Record<string, unknown>): StepAttemptResponse {
+  return {
+    attempt: data.attempt as number,
+    startedAt: data.started_at as string,
+    completedAt: data.completed_at as string | undefined,
+    success: data.success as boolean,
+    durationMs: data.duration_ms as number,
+    error: data.error as string | undefined,
+  };
+}
+
+/** Parse a StepHistoryEntry from API response. */
+export function parseStepHistoryEntry(data: Record<string, unknown>): StepHistoryEntry {
+  const attempts = (data.attempts as Record<string, unknown>[]) ?? [];
+  return {
+    name: data.name as string,
+    stepIndex: data.step_index as number,
+    currentAttempt: data.current_attempt as number,
+    maxRetries: data.max_retries as number,
+    attempts: attempts.map(parseStepAttemptResponse),
+  };
+}
+
+/** Parse a ChainHistoryResponse from API response. */
+export function parseChainHistoryResponse(data: Record<string, unknown>): ChainHistoryResponse {
+  const steps = (data.steps as Record<string, unknown>[]) ?? [];
+  return {
+    chainId: data.chain_id as string,
+    chainName: data.chain_name as string,
+    status: data.status as string,
+    steps: steps.map(parseStepHistoryEntry),
+  };
+}
+
+// =============================================================================
+// DLQ Types (Dead-Letter Queue)
+// =============================================================================
+
+/** Response for DLQ stats endpoint. */
+export interface DlqStatsResponse {
+  /** Whether the DLQ is enabled. */
+  enabled: boolean;
+  /** Number of entries in the DLQ. */
+  count: number;
+}
+
+/** Parse a DlqStatsResponse from API response. */
+export function parseDlqStatsResponse(data: Record<string, unknown>): DlqStatsResponse {
+  return {
+    enabled: data.enabled as boolean,
+    count: data.count as number,
+  };
+}
+
+/** A single dead-letter queue entry. */
+export interface DlqEntry {
+  /** The failed action's unique identifier. */
+  actionId: string;
+  /** Namespace the action belongs to. */
+  namespace: string;
+  /** Tenant that owns the action. */
+  tenant: string;
+  /** Target provider for the action. */
+  provider: string;
+  /** Action type discriminator. */
+  actionType: string;
+  /** Human-readable description of the final error. */
+  error: string;
+  /** Number of execution attempts made. */
+  attempts: number;
+  /** Unix timestamp (seconds) when the entry was created. */
+  timestamp: number;
+}
+
+/** Parse a DlqEntry from API response. */
+export function parseDlqEntry(data: Record<string, unknown>): DlqEntry {
+  return {
+    actionId: data.action_id as string,
+    namespace: data.namespace as string,
+    tenant: data.tenant as string,
+    provider: data.provider as string,
+    actionType: data.action_type as string,
+    error: data.error as string,
+    attempts: data.attempts as number,
+    timestamp: data.timestamp as number,
+  };
+}
+
+/** Response for DLQ drain endpoint. */
+export interface DlqDrainResponse {
+  /** Entries drained from the DLQ. */
+  entries: DlqEntry[];
+  /** Number of entries drained. */
+  count: number;
+}
+
+/** Parse a DlqDrainResponse from API response. */
+export function parseDlqDrainResponse(data: Record<string, unknown>): DlqDrainResponse {
+  const entries = (data.entries as Record<string, unknown>[]) ?? [];
+  return {
+    entries: entries.map(parseDlqEntry),
+    count: data.count as number,
+  };
+}
+
+// =============================================================================
+// SSE Event Types
+// =============================================================================
+
+/** Generic SSE event wrapper. */
+export interface SseEvent {
+  /** The SSE event type (e.g., "action_dispatched", "chain_step_completed"). */
+  event: string;
+  /** The SSE event ID. */
+  id: string;
+  /** The parsed JSON data payload. */
+  data: unknown;
+}
+
+/** Options for the subscribe endpoint. */
+export interface SubscribeOptions {
+  /** Namespace for tenant isolation. */
+  namespace?: string;
+  /** Tenant for tenant isolation. */
+  tenant?: string;
+  /** Emit synthetic catch-up events for the entity's current state (default: true). */
+  includeHistory?: boolean;
+}
+
+/** Options for the stream endpoint. */
+export interface StreamOptions {
+  /** Filter events by namespace. */
+  namespace?: string;
+  /** Filter events by action type. */
+  actionType?: string;
+  /** Filter events by outcome category (e.g., "executed", "suppressed", "failed"). */
+  outcome?: string;
+  /** Filter events by stream event type (e.g., "action_dispatched", "group_flushed"). */
+  eventType?: string;
+  /** Filter events by chain ID. */
+  chainId?: string;
+  /** Filter events by group ID. */
+  groupId?: string;
+  /** Filter events by action ID. */
+  actionId?: string;
+  /** Last event ID for reconnection catch-up. */
+  lastEventId?: string;
+}
+
+// =============================================================================
+// Provider Health Types
+// =============================================================================
+
+/** Health and metrics for a single provider. */
+export interface ProviderHealthStatus {
+  /** Provider name. */
+  provider: string;
+  /** Whether the provider is healthy (circuit breaker closed). */
+  healthy: boolean;
+  /** Error message from last health check (if any). */
+  healthCheckError?: string;
+  /** Current circuit breaker state (closed, open, half_open). */
+  circuitBreakerState: string;
+  /** Total number of requests to this provider. */
+  totalRequests: number;
+  /** Number of successful requests. */
+  successes: number;
+  /** Number of failed requests. */
+  failures: number;
+  /** Success rate as percentage (0-100). */
+  successRate: number;
+  /** Average request latency in milliseconds. */
+  avgLatencyMs: number;
+  /** 50th percentile latency in milliseconds. */
+  p50LatencyMs: number;
+  /** 95th percentile latency in milliseconds. */
+  p95LatencyMs: number;
+  /** 99th percentile latency in milliseconds. */
+  p99LatencyMs: number;
+  /** Timestamp of last request (milliseconds since epoch). */
+  lastRequestAt?: number;
+  /** Last error message (if any). */
+  lastError?: string;
+}
+
+export function parseProviderHealthStatus(data: Record<string, unknown>): ProviderHealthStatus {
+  return {
+    provider: data.provider as string,
+    healthy: data.healthy as boolean,
+    healthCheckError: data.health_check_error as string | undefined,
+    circuitBreakerState: data.circuit_breaker_state as string,
+    totalRequests: data.total_requests as number,
+    successes: data.successes as number,
+    failures: data.failures as number,
+    successRate: data.success_rate as number,
+    avgLatencyMs: data.avg_latency_ms as number,
+    p50LatencyMs: data.p50_latency_ms as number,
+    p95LatencyMs: data.p95_latency_ms as number,
+    p99LatencyMs: data.p99_latency_ms as number,
+    lastRequestAt: data.last_request_at as number | undefined,
+    lastError: data.last_error as string | undefined,
+  };
+}
+
+/** Response from listing provider health. */
+export interface ListProviderHealthResponse {
+  providers: ProviderHealthStatus[];
+}
+
+export function parseListProviderHealthResponse(data: Record<string, unknown>): ListProviderHealthResponse {
+  const items = data.providers as Record<string, unknown>[];
+  return {
+    providers: items.map(parseProviderHealthStatus),
+  };
+}
+
+// =============================================================================
+// WASM Plugin Types
+// =============================================================================
+
+/** Configuration for a WASM plugin. */
+export interface WasmPluginConfig {
+  /** Maximum memory in bytes the plugin can use. */
+  memoryLimitBytes?: number;
+  /** Maximum execution time in milliseconds. */
+  timeoutMs?: number;
+  /** List of host functions the plugin is allowed to call. */
+  allowedHostFunctions?: string[];
+}
+
+/** Parse a WasmPluginConfig from API response. */
+export function parseWasmPluginConfig(data: Record<string, unknown>): WasmPluginConfig {
+  return {
+    memoryLimitBytes: data.memory_limit_bytes as number | undefined,
+    timeoutMs: data.timeout_ms as number | undefined,
+    allowedHostFunctions: data.allowed_host_functions as string[] | undefined,
+  };
+}
+
+/** A registered WASM plugin. */
+export interface WasmPlugin {
+  /** Plugin name (unique identifier). */
+  name: string;
+  /** Optional human-readable description. */
+  description?: string;
+  /** Plugin status (e.g., "active", "disabled"). */
+  status: string;
+  /** Whether the plugin is enabled. */
+  enabled: boolean;
+  /** Plugin resource configuration. */
+  config?: WasmPluginConfig;
+  /** When the plugin was registered. */
+  createdAt: string;
+  /** When the plugin was last updated. */
+  updatedAt: string;
+  /** Number of times the plugin has been invoked. */
+  invocationCount: number;
+}
+
+/** Parse a WasmPlugin from API response. */
+export function parseWasmPlugin(data: Record<string, unknown>): WasmPlugin {
+  const configData = data.config as Record<string, unknown> | undefined;
+  return {
+    name: data.name as string,
+    description: data.description as string | undefined,
+    status: data.status as string,
+    enabled: (data.enabled as boolean) ?? true,
+    config: configData ? parseWasmPluginConfig(configData) : undefined,
+    createdAt: data.created_at as string,
+    updatedAt: data.updated_at as string,
+    invocationCount: (data.invocation_count as number) ?? 0,
+  };
+}
+
+/** Request to register a new WASM plugin. */
+export interface RegisterPluginRequest {
+  /** Plugin name (unique identifier). */
+  name: string;
+  /** Optional human-readable description. */
+  description?: string;
+  /** Base64-encoded WASM module bytes. */
+  wasmBytes?: string;
+  /** Path to the WASM file (server-side). */
+  wasmPath?: string;
+  /** Plugin resource configuration. */
+  config?: WasmPluginConfig;
+}
+
+/** Convert a RegisterPluginRequest to the API request format. */
+export function registerPluginRequestToApi(req: RegisterPluginRequest): Record<string, unknown> {
+  const result: Record<string, unknown> = { name: req.name };
+  if (req.description !== undefined) result.description = req.description;
+  if (req.wasmBytes !== undefined) result.wasm_bytes = req.wasmBytes;
+  if (req.wasmPath !== undefined) result.wasm_path = req.wasmPath;
+  if (req.config !== undefined) {
+    const config: Record<string, unknown> = {};
+    if (req.config.memoryLimitBytes !== undefined) config.memory_limit_bytes = req.config.memoryLimitBytes;
+    if (req.config.timeoutMs !== undefined) config.timeout_ms = req.config.timeoutMs;
+    if (req.config.allowedHostFunctions !== undefined) config.allowed_host_functions = req.config.allowedHostFunctions;
+    result.config = config;
+  }
+  return result;
+}
+
+/** Response from listing WASM plugins. */
+export interface ListPluginsResponse {
+  plugins: WasmPlugin[];
+  count: number;
+}
+
+/** Parse a ListPluginsResponse from API response. */
+export function parseListPluginsResponse(data: Record<string, unknown>): ListPluginsResponse {
+  const items = data.plugins as Record<string, unknown>[];
+  return {
+    plugins: items.map(parseWasmPlugin),
+    count: data.count as number,
+  };
+}
+
+/** Request to test-invoke a WASM plugin. */
+export interface PluginInvocationRequest {
+  /** JSON input to pass to the plugin. */
+  input: Record<string, unknown>;
+  /** The function to invoke (default: "evaluate"). */
+  function?: string;
+}
+
+/** Response from test-invoking a WASM plugin. */
+export interface PluginInvocationResponse {
+  /** Whether the plugin evaluation returned true or false. */
+  verdict: boolean;
+  /** Optional message from the plugin. */
+  message?: string;
+  /** Optional structured metadata from the plugin. */
+  metadata?: Record<string, unknown>;
+  /** Execution time in milliseconds. */
+  durationMs?: number;
+}
+
+/** Parse a PluginInvocationResponse from API response. */
+export function parsePluginInvocationResponse(data: Record<string, unknown>): PluginInvocationResponse {
+  return {
+    verdict: data.verdict as boolean,
+    message: data.message as string | undefined,
+    metadata: data.metadata as Record<string, unknown> | undefined,
+    durationMs: data.duration_ms as number | undefined,
+  };
+}
+
+// =============================================================================
+// Compliance Types (SOC2/HIPAA)
+// =============================================================================
+
+/** Compliance mode: "none", "soc2", or "hipaa". */
+export type ComplianceMode = "none" | "soc2" | "hipaa";
+
+/** Current compliance configuration status. */
+export interface ComplianceStatus {
+  mode: ComplianceMode;
+  syncAuditWrites: boolean;
+  immutableAudit: boolean;
+  hashChain: boolean;
+}
+
+/** Parse a ComplianceStatus from API response. */
+export function parseComplianceStatus(data: Record<string, unknown>): ComplianceStatus {
+  return {
+    mode: data.mode as ComplianceMode,
+    syncAuditWrites: data.sync_audit_writes as boolean,
+    immutableAudit: data.immutable_audit as boolean,
+    hashChain: data.hash_chain as boolean,
+  };
+}
+
+/** Result of verifying the integrity of an audit hash chain. */
+export interface HashChainVerification {
+  valid: boolean;
+  recordsChecked: number;
+  firstBrokenAt?: string;
+  firstRecordId?: string;
+  lastRecordId?: string;
+}
+
+/** Parse a HashChainVerification from API response. */
+export function parseHashChainVerification(data: Record<string, unknown>): HashChainVerification {
+  return {
+    valid: data.valid as boolean,
+    recordsChecked: data.records_checked as number,
+    firstBrokenAt: data.first_broken_at as string | undefined,
+    firstRecordId: data.first_record_id as string | undefined,
+    lastRecordId: data.last_record_id as string | undefined,
+  };
+}
+
+/** Request body for hash chain verification. */
+export interface VerifyHashChainRequest {
+  namespace: string;
+  tenant: string;
+  from?: string;
+  to?: string;
+}
+
+// =============================================================================
+// Payload Template Types
+// =============================================================================
+
+/** A payload template. */
+export interface TemplateInfo {
+  id: string;
+  name: string;
+  namespace: string;
+  tenant: string;
+  content: string;
+  createdAt: string;
+  updatedAt: string;
+  description?: string;
+  labels?: Record<string, string>;
+}
+
+/** Parse a TemplateInfo from API response. */
+export function parseTemplateInfo(data: Record<string, unknown>): TemplateInfo {
+  return {
+    id: data.id as string,
+    name: data.name as string,
+    namespace: data.namespace as string,
+    tenant: data.tenant as string,
+    content: data.content as string,
+    createdAt: data.created_at as string,
+    updatedAt: data.updated_at as string,
+    description: data.description as string | undefined,
+    labels: data.labels as Record<string, string> | undefined,
+  };
+}
+
+/** Request to create a payload template. */
+export interface CreateTemplateRequest {
+  name: string;
+  namespace: string;
+  tenant: string;
+  content: string;
+  description?: string;
+  labels?: Record<string, string>;
+}
+
+/** Convert a CreateTemplateRequest to the API request format. */
+export function createTemplateRequestToApi(req: CreateTemplateRequest): Record<string, unknown> {
+  const result: Record<string, unknown> = {
+    name: req.name,
+    namespace: req.namespace,
+    tenant: req.tenant,
+    content: req.content,
+  };
+  if (req.description !== undefined) result.description = req.description;
+  if (req.labels !== undefined) result.labels = req.labels;
+  return result;
+}
+
+/** Request to update a payload template. */
+export interface UpdateTemplateRequest {
+  content?: string;
+  description?: string;
+  labels?: Record<string, string>;
+}
+
+/** Convert an UpdateTemplateRequest to the API request format. */
+export function updateTemplateRequestToApi(req: UpdateTemplateRequest): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  if (req.content !== undefined) result.content = req.content;
+  if (req.description !== undefined) result.description = req.description;
+  if (req.labels !== undefined) result.labels = req.labels;
+  return result;
+}
+
+/** Response from listing templates. */
+export interface ListTemplatesResponse {
+  templates: TemplateInfo[];
+  count: number;
+}
+
+/** Parse a ListTemplatesResponse from API response. */
+export function parseListTemplatesResponse(data: Record<string, unknown>): ListTemplatesResponse {
+  const items = data.templates as Record<string, unknown>[];
+  return {
+    templates: items.map(parseTemplateInfo),
+    count: data.count as number,
+  };
+}
+
+/**
+ * A field in a template profile.
+ * Either an inline string value or a reference to a template via $ref.
+ */
+export type TemplateProfileField = string | { $ref: string };
+
+/** A template profile that groups multiple templates. */
+export interface TemplateProfileInfo {
+  id: string;
+  name: string;
+  namespace: string;
+  tenant: string;
+  fields: Record<string, TemplateProfileField>;
+  createdAt: string;
+  updatedAt: string;
+  description?: string;
+  labels?: Record<string, string>;
+}
+
+/** Parse a TemplateProfileInfo from API response. */
+export function parseTemplateProfileInfo(data: Record<string, unknown>): TemplateProfileInfo {
+  return {
+    id: data.id as string,
+    name: data.name as string,
+    namespace: data.namespace as string,
+    tenant: data.tenant as string,
+    fields: (data.fields as Record<string, TemplateProfileField>) ?? {},
+    createdAt: data.created_at as string,
+    updatedAt: data.updated_at as string,
+    description: data.description as string | undefined,
+    labels: data.labels as Record<string, string> | undefined,
+  };
+}
+
+/** Request to create a template profile. */
+export interface CreateProfileRequest {
+  name: string;
+  namespace: string;
+  tenant: string;
+  fields: Record<string, TemplateProfileField>;
+  description?: string;
+  labels?: Record<string, string>;
+}
+
+/** Convert a CreateProfileRequest to the API request format. */
+export function createProfileRequestToApi(req: CreateProfileRequest): Record<string, unknown> {
+  const result: Record<string, unknown> = {
+    name: req.name,
+    namespace: req.namespace,
+    tenant: req.tenant,
+    fields: req.fields,
+  };
+  if (req.description !== undefined) result.description = req.description;
+  if (req.labels !== undefined) result.labels = req.labels;
+  return result;
+}
+
+/** Request to update a template profile. */
+export interface UpdateProfileRequest {
+  fields?: Record<string, TemplateProfileField>;
+  description?: string;
+  labels?: Record<string, string>;
+}
+
+/** Convert an UpdateProfileRequest to the API request format. */
+export function updateProfileRequestToApi(req: UpdateProfileRequest): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  if (req.fields !== undefined) result.fields = req.fields;
+  if (req.description !== undefined) result.description = req.description;
+  if (req.labels !== undefined) result.labels = req.labels;
+  return result;
+}
+
+/** Response from listing template profiles. */
+export interface ListProfilesResponse {
+  profiles: TemplateProfileInfo[];
+  count: number;
+}
+
+/** Parse a ListProfilesResponse from API response. */
+export function parseListProfilesResponse(data: Record<string, unknown>): ListProfilesResponse {
+  const items = data.profiles as Record<string, unknown>[];
+  return {
+    profiles: items.map(parseTemplateProfileInfo),
+    count: data.count as number,
+  };
+}
+
+/** Request to render a template profile with payload data. */
+export interface RenderPreviewRequest {
+  profile: string;
+  namespace: string;
+  tenant: string;
+  payload: Record<string, unknown>;
+}
+
+/** Response from rendering a template profile. */
+export interface RenderPreviewResponse {
+  rendered: Record<string, string>;
+}
+
+/** Parse a RenderPreviewResponse from API response. */
+export function parseRenderPreviewResponse(data: Record<string, unknown>): RenderPreviewResponse {
+  return {
+    rendered: (data.rendered as Record<string, string>) ?? {},
+  };
+}
+
+// =============================================================================
+// Analytics Types
+// =============================================================================
+
+/** Query parameters for the analytics endpoint. */
+export interface AnalyticsQuery {
+  /** The metric to query (required). */
+  metric: "volume" | "outcome_breakdown" | "top_action_types" | "latency" | "error_rate";
+  /** Optional namespace filter. */
+  namespace?: string;
+  /** Optional tenant filter. */
+  tenant?: string;
+  /** Optional provider filter. */
+  provider?: string;
+  /** Optional action type filter. */
+  actionType?: string;
+  /** Optional outcome filter. */
+  outcome?: string;
+  /** Time bucket interval (default "daily"). */
+  interval?: "hourly" | "daily" | "weekly" | "monthly";
+  /** Optional start of time range (RFC 3339 datetime string). */
+  from?: string;
+  /** Optional end of time range (RFC 3339 datetime string). */
+  to?: string;
+  /** Optional grouping dimension (e.g., "provider", "action_type", "outcome"). */
+  groupBy?: string;
+  /** Optional limit for top-N queries. */
+  topN?: number;
+}
+
+/** A single time bucket in an analytics response. */
+export interface AnalyticsBucket {
+  /** ISO 8601 timestamp for the bucket start. */
+  timestamp: string;
+  /** Number of actions in this bucket. */
+  count: number;
+  /** Optional group label when group_by is used. */
+  group?: string | null;
+  /** Average action duration in milliseconds. */
+  avgDurationMs?: number | null;
+  /** 50th percentile duration in milliseconds. */
+  p50DurationMs?: number | null;
+  /** 95th percentile duration in milliseconds. */
+  p95DurationMs?: number | null;
+  /** 99th percentile duration in milliseconds. */
+  p99DurationMs?: number | null;
+  /** Fraction of actions that failed (0.0 to 1.0). */
+  errorRate?: number | null;
+}
+
+/** A single entry in a top-N analytics result. */
+export interface AnalyticsTopEntry {
+  /** The label for this entry (e.g., action type name). */
+  label: string;
+  /** Number of occurrences. */
+  count: number;
+  /** Percentage of total. */
+  percentage: number;
+}
+
+/** Response from the analytics endpoint. */
+export interface AnalyticsResponse {
+  /** The metric that was queried. */
+  metric: string;
+  /** The time interval used for bucketing. */
+  interval: string;
+  /** Start of the queried time range. */
+  from: string;
+  /** End of the queried time range. */
+  to: string;
+  /** List of time-series data buckets. */
+  buckets: AnalyticsBucket[];
+  /** List of top-N entries (for top_action_types metric). */
+  topEntries: AnalyticsTopEntry[];
+  /** Total count across all buckets. */
+  totalCount: number;
+}
+
+/** Convert AnalyticsQuery to URL search params. */
+export function analyticsQueryToParams(query: AnalyticsQuery): URLSearchParams {
+  const params = new URLSearchParams();
+  params.set("metric", query.metric);
+  if (query.namespace) params.set("namespace", query.namespace);
+  if (query.tenant) params.set("tenant", query.tenant);
+  if (query.provider) params.set("provider", query.provider);
+  if (query.actionType) params.set("action_type", query.actionType);
+  if (query.outcome) params.set("outcome", query.outcome);
+  if (query.interval) params.set("interval", query.interval);
+  if (query.from) params.set("from", query.from);
+  if (query.to) params.set("to", query.to);
+  if (query.groupBy) params.set("group_by", query.groupBy);
+  if (query.topN !== undefined) params.set("top_n", query.topN.toString());
+  return params;
+}
+
+/** Parse an AnalyticsBucket from a raw JSON object. */
+export function parseAnalyticsBucket(data: Record<string, unknown>): AnalyticsBucket {
+  return {
+    timestamp: data.timestamp as string,
+    count: data.count as number,
+    group: (data.group as string | null) ?? null,
+    avgDurationMs: (data.avg_duration_ms as number | null) ?? null,
+    p50DurationMs: (data.p50_duration_ms as number | null) ?? null,
+    p95DurationMs: (data.p95_duration_ms as number | null) ?? null,
+    p99DurationMs: (data.p99_duration_ms as number | null) ?? null,
+    errorRate: (data.error_rate as number | null) ?? null,
+  };
+}
+
+/** Parse an AnalyticsTopEntry from a raw JSON object. */
+export function parseAnalyticsTopEntry(data: Record<string, unknown>): AnalyticsTopEntry {
+  return {
+    label: data.label as string,
+    count: data.count as number,
+    percentage: data.percentage as number,
+  };
+}
+
+/** Parse an AnalyticsResponse from a raw JSON object. */
+export function parseAnalyticsResponse(data: Record<string, unknown>): AnalyticsResponse {
+  const buckets = (data.buckets as Record<string, unknown>[]) ?? [];
+  const topEntries = (data.top_entries as Record<string, unknown>[]) ?? [];
+  return {
+    metric: data.metric as string,
+    interval: data.interval as string,
+    from: data.from as string,
+    to: data.to as string,
+    buckets: buckets.map(parseAnalyticsBucket),
+    topEntries: topEntries.map(parseAnalyticsTopEntry),
+    totalCount: data.total_count as number,
+  };
+}
+
+// =============================================================================
+// Provider Payload Helpers
+// =============================================================================
+
+/** Payload for the Twilio SMS provider. */
+export interface TwilioSmsPayload {
+  to: string;
+  body: string;
+  from?: string;
+  media_url?: string;
+}
+
+/** Create a payload for the Twilio SMS provider. */
+export function createTwilioSmsPayload(
+  to: string,
+  body: string,
+  options?: { from?: string; mediaUrl?: string }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { to, body };
+  if (options?.from) payload.from = options.from;
+  if (options?.mediaUrl) payload.media_url = options.mediaUrl;
+  return payload;
+}
+
+/** Payload for the Microsoft Teams provider. */
+export interface TeamsMessagePayload {
+  text?: string;
+  title?: string;
+  theme_color?: string;
+  summary?: string;
+  adaptive_card?: Record<string, unknown>;
+}
+
+/** Create a payload for the Teams provider (MessageCard). */
+export function createTeamsMessagePayload(
+  text: string,
+  options?: { title?: string; themeColor?: string; summary?: string }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { text };
+  if (options?.title) payload.title = options.title;
+  if (options?.themeColor) payload.theme_color = options.themeColor;
+  if (options?.summary) payload.summary = options.summary;
+  return payload;
+}
+
+/** Create a payload for the Teams provider (Adaptive Card). */
+export function createTeamsAdaptiveCardPayload(
+  card: Record<string, unknown>
+): Record<string, unknown> {
+  return { adaptive_card: card };
+}
+
+/** Payload for the Discord webhook provider. */
+export interface DiscordMessagePayload {
+  content?: string;
+  embeds?: DiscordEmbed[];
+  username?: string;
+  avatar_url?: string;
+  tts?: boolean;
+}
+
+/** A Discord embed object. */
+export interface DiscordEmbed {
+  title?: string;
+  description?: string;
+  color?: number;
+  fields?: Array<{ name: string; value: string; inline?: boolean }>;
+  footer?: { text: string };
+  timestamp?: string;
+}
+
+/** Create a payload for the Discord webhook provider. */
+export function createDiscordMessagePayload(
+  options: {
+    content?: string;
+    embeds?: DiscordEmbed[];
+    username?: string;
+    avatarUrl?: string;
+    tts?: boolean;
+  }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = {};
+  if (options.content !== undefined) payload.content = options.content;
+  if (options.embeds !== undefined) payload.embeds = options.embeds;
+  if (options.username !== undefined) payload.username = options.username;
+  if (options.avatarUrl !== undefined) payload.avatar_url = options.avatarUrl;
+  if (options.tts !== undefined) payload.tts = options.tts;
+  return payload;
+}
+
+// =============================================================================
+// AWS Provider Payload Helpers
+// =============================================================================
+
+/** Payload for the AWS SNS publish action. */
+export interface SnsPublishPayload {
+  message: string;
+  subject?: string;
+  topic_arn?: string;
+  message_group_id?: string;
+  message_dedup_id?: string;
+}
+
+/** Create a payload for the AWS SNS provider. */
+export function createSnsPublishPayload(
+  message: string,
+  options?: {
+    subject?: string;
+    topicArn?: string;
+    messageGroupId?: string;
+    messageDedupId?: string;
+  }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { message };
+  if (options?.subject) payload.subject = options.subject;
+  if (options?.topicArn) payload.topic_arn = options.topicArn;
+  if (options?.messageGroupId)
+    payload.message_group_id = options.messageGroupId;
+  if (options?.messageDedupId)
+    payload.message_dedup_id = options.messageDedupId;
+  return payload;
+}
+
+/** Payload for the AWS Lambda invoke action. */
+export interface LambdaInvokePayload {
+  payload?: unknown;
+  function_name?: string;
+  invocation_type?: "RequestResponse" | "Event" | "DryRun";
+}
+
+/** Create a payload for the AWS Lambda provider. */
+export function createLambdaInvokePayload(
+  payloadData?: unknown,
+  options?: {
+    functionName?: string;
+    invocationType?: "RequestResponse" | "Event" | "DryRun";
+  }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = {};
+  if (payloadData !== undefined) payload.payload = payloadData;
+  if (options?.functionName) payload.function_name = options.functionName;
+  if (options?.invocationType)
+    payload.invocation_type = options.invocationType;
+  return payload;
+}
+
+/** Payload for the AWS EventBridge put-event action. */
+export interface EventBridgePutEventPayload {
+  source: string;
+  detail_type: string;
+  detail: unknown;
+  event_bus_name?: string;
+  resources?: string[];
+}
+
+/** Create a payload for the AWS EventBridge provider. */
+export function createEventBridgePutEventPayload(
+  source: string,
+  detailType: string,
+  detail: unknown,
+  options?: { eventBusName?: string; resources?: string[] }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    source,
+    detail_type: detailType,
+    detail,
+  };
+  if (options?.eventBusName) payload.event_bus_name = options.eventBusName;
+  if (options?.resources) payload.resources = options.resources;
+  return payload;
+}
+
+/** Payload for the AWS SQS send-message action. */
+export interface SqsSendMessagePayload {
+  message_body: string;
+  queue_url?: string;
+  delay_seconds?: number;
+  message_group_id?: string;
+  message_dedup_id?: string;
+  message_attributes?: Record<string, string>;
+}
+
+/** Create a payload for the AWS SQS provider. */
+export function createSqsSendMessagePayload(
+  messageBody: string,
+  options?: {
+    queueUrl?: string;
+    delaySeconds?: number;
+    messageGroupId?: string;
+    messageDedupId?: string;
+    messageAttributes?: Record<string, string>;
+  }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { message_body: messageBody };
+  if (options?.queueUrl) payload.queue_url = options.queueUrl;
+  if (options?.delaySeconds !== undefined)
+    payload.delay_seconds = options.delaySeconds;
+  if (options?.messageGroupId)
+    payload.message_group_id = options.messageGroupId;
+  if (options?.messageDedupId)
+    payload.message_dedup_id = options.messageDedupId;
+  if (options?.messageAttributes)
+    payload.message_attributes = options.messageAttributes;
+  return payload;
+}
+
+/** Payload for the AWS S3 put-object action. */
+export interface S3PutObjectPayload {
+  key: string;
+  bucket?: string;
+  body?: string;
+  body_base64?: string;
+  content_type?: string;
+  metadata?: Record<string, string>;
+}
+
+/** Create a payload for the AWS S3 put-object action. */
+export function createS3PutObjectPayload(
+  key: string,
+  options?: {
+    bucket?: string;
+    body?: string;
+    bodyBase64?: string;
+    contentType?: string;
+    metadata?: Record<string, string>;
+  }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { key };
+  if (options?.bucket) payload.bucket = options.bucket;
+  if (options?.body !== undefined) payload.body = options.body;
+  if (options?.bodyBase64) payload.body_base64 = options.bodyBase64;
+  if (options?.contentType) payload.content_type = options.contentType;
+  if (options?.metadata) payload.metadata = options.metadata;
+  return payload;
+}
+
+/** Payload for the AWS S3 get-object action. */
+export interface S3GetObjectPayload {
+  key: string;
+  bucket?: string;
+}
+
+/** Create a payload for the AWS S3 get-object action. */
+export function createS3GetObjectPayload(
+  key: string,
+  options?: { bucket?: string }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { key };
+  if (options?.bucket) payload.bucket = options.bucket;
+  return payload;
+}
+
+/** Payload for the AWS S3 delete-object action. */
+export interface S3DeleteObjectPayload {
+  key: string;
+  bucket?: string;
+}
+
+/** Create a payload for the AWS S3 delete-object action. */
+export function createS3DeleteObjectPayload(
+  key: string,
+  options?: { bucket?: string }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { key };
+  if (options?.bucket) payload.bucket = options.bucket;
+  return payload;
+}
+
+// =============================================================================
+// AWS EC2 Provider Payload Helpers
+// =============================================================================
+
+/** Payload for the AWS EC2 start-instances action. */
+export interface Ec2StartInstancesPayload {
+  instance_ids: string[];
+}
+
+/** Create a payload for the AWS EC2 start-instances action. */
+export function createEc2StartInstancesPayload(
+  instanceIds: string[]
+): Record<string, unknown> {
+  return { instance_ids: instanceIds };
+}
+
+/** Payload for the AWS EC2 stop-instances action. */
+export interface Ec2StopInstancesPayload {
+  instance_ids: string[];
+  hibernate?: boolean;
+  force?: boolean;
+}
+
+/** Create a payload for the AWS EC2 stop-instances action. */
+export function createEc2StopInstancesPayload(
+  instanceIds: string[],
+  options?: { hibernate?: boolean; force?: boolean }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { instance_ids: instanceIds };
+  if (options?.hibernate !== undefined) payload.hibernate = options.hibernate;
+  if (options?.force !== undefined) payload.force = options.force;
+  return payload;
+}
+
+/** Payload for the AWS EC2 reboot-instances action. */
+export interface Ec2RebootInstancesPayload {
+  instance_ids: string[];
+}
+
+/** Create a payload for the AWS EC2 reboot-instances action. */
+export function createEc2RebootInstancesPayload(
+  instanceIds: string[]
+): Record<string, unknown> {
+  return { instance_ids: instanceIds };
+}
+
+/** Payload for the AWS EC2 terminate-instances action. */
+export interface Ec2TerminateInstancesPayload {
+  instance_ids: string[];
+}
+
+/** Create a payload for the AWS EC2 terminate-instances action. */
+export function createEc2TerminateInstancesPayload(
+  instanceIds: string[]
+): Record<string, unknown> {
+  return { instance_ids: instanceIds };
+}
+
+/** Create a payload for the AWS EC2 hibernate-instances action. */
+export function createEc2HibernateInstancesPayload(
+  instanceIds: string[]
+): Record<string, unknown> {
+  return { instance_ids: instanceIds };
+}
+
+/** Payload for the AWS EC2 run-instances action. */
+export interface Ec2RunInstancesPayload {
+  image_id: string;
+  instance_type: string;
+  min_count?: number;
+  max_count?: number;
+  key_name?: string;
+  security_group_ids?: string[];
+  subnet_id?: string;
+  user_data?: string;
+  tags?: Record<string, string>;
+  iam_instance_profile?: string;
+}
+
+/** Create a payload for the AWS EC2 run-instances action. */
+export function createEc2RunInstancesPayload(
+  imageId: string,
+  instanceType: string,
+  options?: {
+    minCount?: number;
+    maxCount?: number;
+    keyName?: string;
+    securityGroupIds?: string[];
+    subnetId?: string;
+    userData?: string;
+    tags?: Record<string, string>;
+    iamInstanceProfile?: string;
+  }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    image_id: imageId,
+    instance_type: instanceType,
+  };
+  if (options?.minCount !== undefined) payload.min_count = options.minCount;
+  if (options?.maxCount !== undefined) payload.max_count = options.maxCount;
+  if (options?.keyName !== undefined) payload.key_name = options.keyName;
+  if (options?.securityGroupIds !== undefined)
+    payload.security_group_ids = options.securityGroupIds;
+  if (options?.subnetId !== undefined) payload.subnet_id = options.subnetId;
+  if (options?.userData !== undefined) payload.user_data = options.userData;
+  if (options?.tags !== undefined) payload.tags = options.tags;
+  if (options?.iamInstanceProfile !== undefined)
+    payload.iam_instance_profile = options.iamInstanceProfile;
+  return payload;
+}
+
+/** Payload for the AWS EC2 attach-volume action. */
+export interface Ec2AttachVolumePayload {
+  volume_id: string;
+  instance_id: string;
+  device: string;
+}
+
+/** Create a payload for the AWS EC2 attach-volume action. */
+export function createEc2AttachVolumePayload(
+  volumeId: string,
+  instanceId: string,
+  device: string
+): Record<string, unknown> {
+  return {
+    volume_id: volumeId,
+    instance_id: instanceId,
+    device,
+  };
+}
+
+/** Payload for the AWS EC2 detach-volume action. */
+export interface Ec2DetachVolumePayload {
+  volume_id: string;
+  instance_id?: string;
+  device?: string;
+  force?: boolean;
+}
+
+/** Create a payload for the AWS EC2 detach-volume action. */
+export function createEc2DetachVolumePayload(
+  volumeId: string,
+  options?: { instanceId?: string; device?: string; force?: boolean }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { volume_id: volumeId };
+  if (options?.instanceId !== undefined)
+    payload.instance_id = options.instanceId;
+  if (options?.device !== undefined) payload.device = options.device;
+  if (options?.force !== undefined) payload.force = options.force;
+  return payload;
+}
+
+/** Payload for the AWS EC2 describe-instances action. */
+export interface Ec2DescribeInstancesPayload {
+  instance_ids?: string[];
+}
+
+/** Create a payload for the AWS EC2 describe-instances action. */
+export function createEc2DescribeInstancesPayload(
+  options?: { instanceIds?: string[] }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = {};
+  if (options?.instanceIds !== undefined)
+    payload.instance_ids = options.instanceIds;
+  return payload;
+}
+
+// =============================================================================
+// AWS Auto Scaling Provider Payload Helpers
+// =============================================================================
+
+/** Payload for the AWS Auto Scaling describe-groups action. */
+export interface AsgDescribeGroupsPayload {
+  auto_scaling_group_names?: string[];
+}
+
+/** Create a payload for the AWS Auto Scaling describe-groups action. */
+export function createAsgDescribeGroupsPayload(
+  options?: { groupNames?: string[] }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = {};
+  if (options?.groupNames !== undefined)
+    payload.auto_scaling_group_names = options.groupNames;
+  return payload;
+}
+
+/** Payload for the AWS Auto Scaling set-desired-capacity action. */
+export interface AsgSetDesiredCapacityPayload {
+  auto_scaling_group_name: string;
+  desired_capacity: number;
+  honor_cooldown?: boolean;
+}
+
+/** Create a payload for the AWS Auto Scaling set-desired-capacity action. */
+export function createAsgSetDesiredCapacityPayload(
+  groupName: string,
+  desiredCapacity: number,
+  options?: { honorCooldown?: boolean }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    auto_scaling_group_name: groupName,
+    desired_capacity: desiredCapacity,
+  };
+  if (options?.honorCooldown !== undefined)
+    payload.honor_cooldown = options.honorCooldown;
+  return payload;
+}
+
+/** Payload for the AWS Auto Scaling update-group action. */
+export interface AsgUpdateGroupPayload {
+  auto_scaling_group_name: string;
+  min_size?: number;
+  max_size?: number;
+  desired_capacity?: number;
+  default_cooldown?: number;
+  health_check_type?: string;
+  health_check_grace_period?: number;
+}
+
+/** Create a payload for the AWS Auto Scaling update-group action. */
+export function createAsgUpdateGroupPayload(
+  groupName: string,
+  options?: {
+    minSize?: number;
+    maxSize?: number;
+    desiredCapacity?: number;
+    defaultCooldown?: number;
+    healthCheckType?: string;
+    healthCheckGracePeriod?: number;
+  }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    auto_scaling_group_name: groupName,
+  };
+  if (options?.minSize !== undefined) payload.min_size = options.minSize;
+  if (options?.maxSize !== undefined) payload.max_size = options.maxSize;
+  if (options?.desiredCapacity !== undefined)
+    payload.desired_capacity = options.desiredCapacity;
+  if (options?.defaultCooldown !== undefined)
+    payload.default_cooldown = options.defaultCooldown;
+  if (options?.healthCheckType !== undefined)
+    payload.health_check_type = options.healthCheckType;
+  if (options?.healthCheckGracePeriod !== undefined)
+    payload.health_check_grace_period = options.healthCheckGracePeriod;
+  return payload;
+}
+
+// =============================================================================
+// Azure Blob Storage Provider Payload Helpers
+// =============================================================================
+
+/** Payload for the Azure Blob Storage upload-blob action. */
+export interface AzureBlobUploadPayload {
+  blob_name: string;
+  container?: string;
+  body?: string;
+  body_base64?: string;
+  content_type?: string;
+  metadata?: Record<string, string>;
+}
+
+/** Create a payload for the Azure Blob Storage upload-blob action. */
+export function createAzureBlobUploadPayload(
+  blobName: string,
+  options?: {
+    container?: string;
+    body?: string;
+    bodyBase64?: string;
+    contentType?: string;
+    metadata?: Record<string, string>;
+  }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { blob_name: blobName };
+  if (options?.container) payload.container = options.container;
+  if (options?.body !== undefined) payload.body = options.body;
+  if (options?.bodyBase64) payload.body_base64 = options.bodyBase64;
+  if (options?.contentType) payload.content_type = options.contentType;
+  if (options?.metadata) payload.metadata = options.metadata;
+  return payload;
+}
+
+/** Payload for the Azure Blob Storage download-blob action. */
+export interface AzureBlobDownloadPayload {
+  blob_name: string;
+  container?: string;
+}
+
+/** Create a payload for the Azure Blob Storage download-blob action. */
+export function createAzureBlobDownloadPayload(
+  blobName: string,
+  options?: { container?: string }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { blob_name: blobName };
+  if (options?.container) payload.container = options.container;
+  return payload;
+}
+
+/** Payload for the Azure Blob Storage delete-blob action. */
+export interface AzureBlobDeletePayload {
+  blob_name: string;
+  container?: string;
+}
+
+/** Create a payload for the Azure Blob Storage delete-blob action. */
+export function createAzureBlobDeletePayload(
+  blobName: string,
+  options?: { container?: string }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { blob_name: blobName };
+  if (options?.container) payload.container = options.container;
+  return payload;
+}
+
+// =============================================================================
+// Azure Event Hubs Provider Payload Helpers
+// =============================================================================
+
+/** Payload for the Azure Event Hubs send-event action. */
+export interface AzureEventHubsSendPayload {
+  body: unknown;
+  event_hub_name?: string;
+  partition_id?: string;
+  properties?: Record<string, string>;
+}
+
+/** Create a payload for the Azure Event Hubs send-event action. */
+export function createAzureEventHubsSendPayload(
+  body: unknown,
+  options?: {
+    eventHubName?: string;
+    partitionId?: string;
+    properties?: Record<string, string>;
+  }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { body };
+  if (options?.eventHubName) payload.event_hub_name = options.eventHubName;
+  if (options?.partitionId) payload.partition_id = options.partitionId;
+  if (options?.properties) payload.properties = options.properties;
+  return payload;
+}
+
+/** Payload for the Azure Event Hubs send-batch action. */
+export interface AzureEventHubsSendBatchPayload {
+  events: Record<string, unknown>[];
+  event_hub_name?: string;
+}
+
+/** Create a payload for the Azure Event Hubs send-batch action. */
+export function createAzureEventHubsSendBatchPayload(
+  events: Record<string, unknown>[],
+  options?: { eventHubName?: string }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { events };
+  if (options?.eventHubName) payload.event_hub_name = options.eventHubName;
+  return payload;
+}
+
+// =============================================================================
+// GCP Pub/Sub Provider Payload Helpers
+// =============================================================================
+
+/** Payload for the GCP Pub/Sub publish action. */
+export interface GcpPubSubPublishPayload {
+  data: string;
+  data_base64?: string;
+  attributes?: Record<string, string>;
+  ordering_key?: string;
+  topic?: string;
+}
+
+/** Create a payload for the GCP Pub/Sub publish action. */
+export function createGcpPubSubPublishPayload(
+  data: string,
+  options?: {
+    dataBase64?: string;
+    attributes?: Record<string, string>;
+    orderingKey?: string;
+    topic?: string;
+  }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { data };
+  if (options?.dataBase64) payload.data_base64 = options.dataBase64;
+  if (options?.attributes) payload.attributes = options.attributes;
+  if (options?.orderingKey) payload.ordering_key = options.orderingKey;
+  if (options?.topic) payload.topic = options.topic;
+  return payload;
+}
+
+/** Payload for the GCP Pub/Sub publish-batch action. */
+export interface GcpPubSubPublishBatchPayload {
+  messages: Record<string, unknown>[];
+  topic?: string;
+}
+
+/** Create a payload for the GCP Pub/Sub publish-batch action. */
+export function createGcpPubSubPublishBatchPayload(
+  messages: Record<string, unknown>[],
+  options?: { topic?: string }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { messages };
+  if (options?.topic) payload.topic = options.topic;
+  return payload;
+}
+
+// =============================================================================
+// GCP Cloud Storage Provider Payload Helpers
+// =============================================================================
+
+/** Payload for the GCP Cloud Storage upload-object action. */
+export interface GcpStorageUploadPayload {
+  object_name: string;
+  bucket?: string;
+  body?: string;
+  body_base64?: string;
+  content_type?: string;
+  metadata?: Record<string, string>;
+}
+
+/** Create a payload for the GCP Cloud Storage upload-object action. */
+export function createGcpStorageUploadPayload(
+  objectName: string,
+  options?: {
+    bucket?: string;
+    body?: string;
+    bodyBase64?: string;
+    contentType?: string;
+    metadata?: Record<string, string>;
+  }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { object_name: objectName };
+  if (options?.bucket) payload.bucket = options.bucket;
+  if (options?.body !== undefined) payload.body = options.body;
+  if (options?.bodyBase64) payload.body_base64 = options.bodyBase64;
+  if (options?.contentType) payload.content_type = options.contentType;
+  if (options?.metadata) payload.metadata = options.metadata;
+  return payload;
+}
+
+/** Payload for the GCP Cloud Storage download-object action. */
+export interface GcpStorageDownloadPayload {
+  object_name: string;
+  bucket?: string;
+}
+
+/** Create a payload for the GCP Cloud Storage download-object action. */
+export function createGcpStorageDownloadPayload(
+  objectName: string,
+  options?: { bucket?: string }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { object_name: objectName };
+  if (options?.bucket) payload.bucket = options.bucket;
+  return payload;
+}
+
+/** Payload for the GCP Cloud Storage delete-object action. */
+export interface GcpStorageDeletePayload {
+  object_name: string;
+  bucket?: string;
+}
+
+/** Create a payload for the GCP Cloud Storage delete-object action. */
+export function createGcpStorageDeletePayload(
+  objectName: string,
+  options?: { bucket?: string }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { object_name: objectName };
+  if (options?.bucket) payload.bucket = options.bucket;
+  return payload;
+}
+
+// =========================================================================
+// Rule Coverage
+// =========================================================================
+
+/** Options for a rule coverage analysis. */
+export interface CoverageQuery {
+  namespace?: string;
+  tenant?: string;
+  /** Start of the time range (RFC 3339). */
+  from?: string;
+  /** End of the time range (RFC 3339). */
+  to?: string;
+}
+
+/** A unique combination of coverage dimensions. */
+export interface CoverageKey {
+  namespace: string;
+  tenant: string;
+  provider: string;
+  action_type: string;
+}
+
+/** Per-combination coverage statistics. */
+export interface CoverageEntry {
+  key: CoverageKey;
+  total: number;
+  covered: number;
+  uncovered: number;
+  matched_rules: string[];
+}
+
+/** Full rule coverage report. */
+export interface CoverageReport {
+  scanned_from: string;
+  scanned_to: string;
+  total_actions: number;
+  unique_combinations: number;
+  fully_covered: number;
+  partially_covered: number;
+  uncovered: number;
+  rules_loaded: number;
+  entries: CoverageEntry[];
+  unmatched_rules: string[];
+}
+
+/** Parse a raw CoverageReport JSON payload from the server.
+ *
+ * The server serializes each entry with its key fields (namespace/tenant/
+ * provider/action_type) flattened at the top level, not nested under "key".
+ */
+export function parseCoverageReport(data: Record<string, unknown>): CoverageReport {
+  const rawEntries = (data.entries as Array<Record<string, unknown>>) ?? [];
+  const entries: CoverageEntry[] = rawEntries.map((e) => ({
+    key: {
+      namespace: String(e.namespace),
+      tenant: String(e.tenant),
+      provider: String(e.provider),
+      action_type: String(e.action_type),
+    },
+    total: Number(e.total),
+    covered: Number(e.covered),
+    uncovered: Number(e.uncovered),
+    matched_rules: (e.matched_rules as string[]) ?? [],
+  }));
+
+  return {
+    scanned_from: String(data.scanned_from),
+    scanned_to: String(data.scanned_to),
+    total_actions: Number(data.total_actions),
+    unique_combinations: Number(data.unique_combinations),
+    fully_covered: Number(data.fully_covered),
+    partially_covered: Number(data.partially_covered),
+    uncovered: Number(data.uncovered),
+    rules_loaded: Number(data.rules_loaded),
+    entries,
+    unmatched_rules: (data.unmatched_rules as string[]) ?? [],
+  };
+}
+
+// =============================================================================
+// Signing key discovery
+// =============================================================================
+
+/** One verifying key in the server's active signing keyring. */
+export interface SigningKeyEntry {
+  signer_id: string;
+  kid: string;
+  algorithm: string;
+  /** Raw 32-byte Ed25519 public key, base64-encoded. */
+  public_key: string;
+  /** Tenant scopes this key is authorized for. `["*"]` means all. */
+  tenants: string[];
+  /** Namespace scopes this key is authorized for. `["*"]` means all. */
+  namespaces: string[];
+}
+
+/** Response body from `GET /.well-known/acteon-signing-keys`. */
+export interface SigningKeysResponse {
+  keys: SigningKeyEntry[];
+  /** Always equal to `keys.length`; mirrored from the server for
+   * callers who only want a count. */
+  count: number;
+}
+
+/** Parse a raw signing keys payload from the server.
+ *
+ * Tolerant of a missing `count` field: falls back to `keys.length`
+ * so a minor server-side shape change doesn't break client code.
+ *
+ * Strict about required string fields: a missing or null
+ * `signer_id`/`kid`/`algorithm`/`public_key` throws instead of
+ * coercing to `"undefined"` or `"null"` — a silently-bad string
+ * would sneak past `if (key.signer_id)` checks in caller code and
+ * let garbage flow downstream.
+ *
+ * @throws {Error} with a message beginning `malformed signing keys
+ *   response:` when the shape is invalid.
+ */
+export function parseSigningKeysResponse(
+  data: Record<string, unknown>,
+): SigningKeysResponse {
+  if (data.keys !== undefined && !Array.isArray(data.keys)) {
+    throw new Error(
+      `malformed signing keys response: 'keys' should be an array, got ${typeof data.keys}`,
+    );
+  }
+  const rawKeys = (data.keys as Array<Record<string, unknown>>) ?? [];
+  const keys: SigningKeyEntry[] = rawKeys.map((k, i) => ({
+    signer_id: requireString(k, "signer_id", i),
+    kid: requireString(k, "kid", i),
+    algorithm: requireString(k, "algorithm", i),
+    public_key: requireString(k, "public_key", i),
+    tenants: optionalStringList(k, "tenants", i),
+    namespaces: optionalStringList(k, "namespaces", i),
+  }));
+  if (data.count !== undefined && typeof data.count !== "number") {
+    throw new Error(
+      `malformed signing keys response: 'count' should be a number, got ${typeof data.count}`,
+    );
+  }
+  return {
+    keys,
+    count: typeof data.count === "number" ? data.count : keys.length,
+  };
+}
+
+function requireString(
+  entry: Record<string, unknown>,
+  field: string,
+  index: number,
+): string {
+  const value = entry[field];
+  if (typeof value !== "string") {
+    throw new Error(
+      `malformed signing keys response: keys[${index}].${field} should be a string, got ${value === null ? "null" : typeof value}`,
+    );
+  }
+  return value;
+}
+
+function optionalStringList(
+  entry: Record<string, unknown>,
+  field: string,
+  index: number,
+): string[] {
+  const value = entry[field];
+  if (value === undefined || value === null) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new Error(
+      `malformed signing keys response: keys[${index}].${field} should be an array, got ${typeof value}`,
+    );
+  }
+  for (const item of value) {
+    if (typeof item !== "string") {
+      throw new Error(
+        `malformed signing keys response: keys[${index}].${field} contains non-string element of type ${typeof item}`,
+      );
+    }
+  }
+  return value as string[];
+}
+
+
+// ---------------------------------------------------------------------------
+// Swarm runs
+// ---------------------------------------------------------------------------
+
+export interface SwarmRunSnapshot {
+  runId: string;
+  planId: string;
+  objective: string;
+  status: string;
+  startedAt: string;
+  finishedAt?: string;
+  metrics?: Record<string, unknown>;
+  error?: string;
+  namespace: string;
+  tenant: string;
+}
+
+export function parseSwarmRunSnapshot(data: Record<string, unknown>): SwarmRunSnapshot {
+  return {
+    runId: data.run_id as string,
+    planId: data.plan_id as string,
+    objective: data.objective as string,
+    status: data.status as string,
+    startedAt: data.started_at as string,
+    finishedAt: (data.finished_at as string | undefined) ?? undefined,
+    metrics: (data.metrics as Record<string, unknown> | undefined) ?? undefined,
+    error: (data.error as string | undefined) ?? undefined,
+    namespace: data.namespace as string,
+    tenant: data.tenant as string,
+  };
+}
+
+export interface SwarmRunFilter {
+  namespace?: string;
+  tenant?: string;
+  status?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export function swarmRunFilterToParams(filter: SwarmRunFilter): URLSearchParams {
+  const params = new URLSearchParams();
+  if (filter.namespace !== undefined) params.set("namespace", filter.namespace);
+  if (filter.tenant !== undefined) params.set("tenant", filter.tenant);
+  if (filter.status !== undefined) params.set("status", filter.status);
+  if (filter.limit !== undefined) params.set("limit", String(filter.limit));
+  if (filter.offset !== undefined) params.set("offset", String(filter.offset));
+  return params;
+}
+
+export interface ListSwarmRunsResponse {
+  runs: SwarmRunSnapshot[];
+  total: number;
+}
+
+export function parseListSwarmRunsResponse(data: Record<string, unknown>): ListSwarmRunsResponse {
+  const runs = ((data.runs as Record<string, unknown>[]) ?? []).map(parseSwarmRunSnapshot);
+  return {
+    runs,
+    total: (data.total as number) ?? runs.length,
+  };
 }

@@ -19,6 +19,11 @@ Dispatch actions, browse rules, inspect the audit trail, manage approvals, and m
 </div>
 
 <div class="card" markdown>
+### [Templates](templates.md)
+Manage payload templates and profiles for reusable, parameterized content rendering.
+</div>
+
+<div class="card" markdown>
 ### [Settings](settings.md)
 View server configuration, manage providers and circuit breakers, and toggle dark mode.
 </div>

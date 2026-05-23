@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use tokio::sync::RwLock;
-use tracing::info;
+use tracing::{info, warn};
 
 use acteon_core::{
     Action, BranchCondition, BranchOperator, ChainConfig, ChainFailurePolicy,
@@ -48,6 +48,8 @@ struct Cli {
 enum Commands {
     /// Encrypt a value for use in auth.toml. Reads plaintext from stdin.
     Encrypt,
+    /// Run database migrations for configured state and audit backends, then exit.
+    Migrate,
 }
 
 #[tokio::main]
@@ -74,6 +76,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         toml::from_str("")?
     };
 
+    // Handle the `migrate` subcommand before full tracing/OTel init.
+    if let Some(Commands::Migrate) = cli.command {
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+            )
+            .init();
+        return run_migrate(&config).await;
+    }
+
     // Initialize tracing subscriber (with optional OpenTelemetry layer).
     // Must happen after config is loaded so we know whether OTel is enabled,
     // but before any tracing calls.
@@ -98,12 +111,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         exec_config.max_concurrent = concurrent;
     }
 
+    // Build a shared HTTP client with TLS config for all outbound calls.
+    let shared_http_client = if config.tls.enabled {
+        if config.tls.client.danger_accept_invalid_certs {
+            warn!(
+                "TLS certificate verification is DISABLED (danger_accept_invalid_certs = true). \
+                 All outbound HTTPS connections will accept any certificate. \
+                 This setting MUST NOT be used in production."
+            );
+        }
+        acteon_crypto::tls::build_reqwest_client(
+            config.tls.client.cert_path.as_deref(),
+            config.tls.client.key_path.as_deref(),
+            config.tls.client.ca_bundle_path.as_deref(),
+            config.tls.client.danger_accept_invalid_certs,
+        )
+        .map_err(|e| format!("TLS HTTP client: {e}"))?
+    } else {
+        reqwest::Client::new()
+    };
+
     // Create the state backend.
     let (store, lock) = acteon_server::state_factory::create_state(&config.state).await?;
 
     // Create the audit store if enabled.
     let audit_store = if config.audit.enabled {
-        let store = acteon_server::audit_factory::create_audit_store(&config.audit).await?;
+        let store = acteon_server::audit_factory::create_audit_store(
+            &config.audit,
+            Some(&shared_http_client),
+        )
+        .await?;
         info!(backend = %config.audit.backend, "audit store initialized");
         Some(store)
     } else {
@@ -200,6 +237,89 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create a shared group manager for the gateway and background processor.
     let group_manager = Arc::new(GroupManager::new());
 
+    // Parse the payload encryption key(s) if available.
+    //
+    // Key rotation support:
+    //   ACTEON_PAYLOAD_KEYS="kid:hex,kid:hex,..."  (first key encrypts, all decrypt)
+    //   ACTEON_PAYLOAD_KEY="hex"                    (single-key backward compat)
+    let payload_encryptor: Option<Arc<acteon_crypto::PayloadEncryptor>> = if config
+        .encryption
+        .enabled
+    {
+        if let Ok(raw_keys) = std::env::var("ACTEON_PAYLOAD_KEYS") {
+            let mut entries = Vec::new();
+            for pair in raw_keys.split(',') {
+                let pair = pair.trim();
+                if pair.is_empty() {
+                    continue;
+                }
+                let (kid, hex) = pair.split_once(':').ok_or_else(|| {
+                    format!("invalid ACTEON_PAYLOAD_KEYS entry (expected kid:hex): {pair}")
+                })?;
+                let key = acteon_crypto::parse_master_key(hex)
+                    .map_err(|e| format!("invalid key for kid={kid}: {e}"))?;
+                entries.push(acteon_crypto::PayloadKeyEntry {
+                    kid: kid.to_owned(),
+                    key,
+                });
+            }
+            if entries.is_empty() {
+                return Err("ACTEON_PAYLOAD_KEYS is set but contains no valid key entries".into());
+            }
+            info!(
+                key_count = entries.len(),
+                primary_kid = %entries[0].kid,
+                "payload encryption at rest enabled (multi-key)"
+            );
+            Some(Arc::new(acteon_crypto::PayloadEncryptor::with_keys(
+                entries,
+            )))
+        } else if let Ok(raw) = std::env::var("ACTEON_PAYLOAD_KEY") {
+            let key = acteon_crypto::parse_master_key(&raw)
+                .map_err(|e| format!("invalid ACTEON_PAYLOAD_KEY: {e}"))?;
+            let enc = Arc::new(acteon_crypto::PayloadEncryptor::new(key));
+            info!("payload encryption at rest enabled");
+            Some(enc)
+        } else {
+            return Err(
+                    "ACTEON_PAYLOAD_KEY or ACTEON_PAYLOAD_KEYS environment variable is required when encryption.enabled = true".into(),
+                );
+        }
+    } else {
+        None
+    };
+
+    // Wrap audit store with encryption if enabled.
+    // Wrapping order: EncryptingAuditStore(RedactingAuditStore(Inner))
+    // Redaction runs first (on plaintext), then encryption.
+    let audit_store: Option<Arc<dyn acteon_audit::store::AuditStore>> = if let Some(store) =
+        audit_store
+    {
+        // Wrap with redaction if configured.
+        let store = if config.audit.redact.enabled {
+            let redact_config = acteon_audit::RedactConfig::new(config.audit.redact.fields.clone())
+                .with_placeholder(&config.audit.redact.placeholder);
+            Arc::new(acteon_audit::RedactingAuditStore::new(
+                store,
+                &redact_config,
+            )) as Arc<dyn acteon_audit::store::AuditStore>
+        } else {
+            store
+        };
+
+        // Wrap with encryption if enabled.
+        if let Some(ref enc) = payload_encryptor {
+            Some(Arc::new(acteon_audit::EncryptingAuditStore::new(
+                store,
+                Arc::clone(enc),
+            )) as Arc<dyn acteon_audit::store::AuditStore>)
+        } else {
+            Some(store)
+        }
+    } else {
+        None
+    };
+
     // Build the gateway.
     let external_url = config
         .server
@@ -214,6 +334,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .dlq_enabled(config.executor.dlq_enabled)
         .group_manager(Arc::clone(&group_manager))
         .external_url(external_url);
+
+    if let Some(ref enc) = payload_encryptor {
+        builder = builder.payload_encryptor(Arc::clone(enc));
+    }
 
     if let Some(ref tz) = config.rules.default_timezone {
         builder = builder.default_timezone(tz);
@@ -308,6 +432,69 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             None
         };
 
+    // Wire WASM plugin runtime if enabled.
+    if config.wasm.enabled {
+        let wasm_runtime_config = acteon_wasm_runtime::config::WasmRuntimeConfig {
+            enabled: true,
+            plugin_dir: config.wasm.plugin_dir.clone(),
+            default_memory_limit_bytes: config.wasm.default_memory_limit_bytes,
+            default_timeout_ms: config.wasm.default_timeout_ms,
+        };
+        let registry = acteon_wasm_runtime::WasmPluginRegistry::new(wasm_runtime_config)
+            .map_err(|e| format!("failed to create WASM runtime: {e}"))?;
+
+        // Load plugins from the configured directory.
+        let loaded = registry
+            .load_plugin_dir()
+            .map_err(|e| format!("failed to load WASM plugins: {e}"))?;
+
+        let shared = acteon_wasm_runtime::SharedWasmRegistry::new(registry);
+        builder = builder.wasm_runtime(Arc::new(shared));
+        info!(
+            count = loaded,
+            dir = config.wasm.plugin_dir.as_deref().unwrap_or("(none)"),
+            "WASM plugin runtime enabled"
+        );
+    }
+
+    // Wire compliance configuration.
+    if config.compliance.is_active() {
+        let compliance = config.compliance.to_compliance_config();
+
+        // Validate backend compatibility: hash chaining requires a backend
+        // that supports atomic sequence number uniqueness for optimistic
+        // concurrency in multi-replica deployments. Postgres (UNIQUE
+        // constraint), DynamoDB (conditional writes), and memory (dev/test)
+        // are supported; ClickHouse and Elasticsearch lack synchronous
+        // unique constraints.
+        if compliance.hash_chain {
+            let backend = config.audit.backend.as_str();
+            match backend {
+                "postgres" | "memory" | "dynamodb" => {}
+                other => {
+                    return Err(format!(
+                        "compliance hash_chain requires the 'postgres' or 'dynamodb' \
+                         audit backend for multi-replica correctness, but the \
+                         configured backend is '{other}'. ClickHouse and Elasticsearch \
+                         do not support synchronous unique constraints needed for \
+                         hash chain integrity. Either switch to 'postgres'/'dynamodb' \
+                         or disable hash_chain in [compliance]."
+                    )
+                    .into());
+                }
+            }
+        }
+
+        info!(
+            mode = %compliance.mode,
+            sync_audit_writes = compliance.sync_audit_writes,
+            immutable_audit = compliance.immutable_audit,
+            hash_chain = compliance.hash_chain,
+            "compliance mode enabled"
+        );
+        builder = builder.compliance_config(compliance);
+    }
+
     // Wire task chain definitions.
     for chain_toml in &config.chains.definitions {
         let on_failure = match chain_toml.on_failure.as_deref() {
@@ -325,12 +512,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
         }
         for step_toml in &chain_toml.steps {
-            let mut step = ChainStepConfig::new(
-                &step_toml.name,
-                &step_toml.provider,
-                &step_toml.action_type,
-                step_toml.payload_template.clone(),
-            );
+            let mut step = if let Some(ref sub_chain_name) = step_toml.sub_chain {
+                ChainStepConfig::new_sub_chain(&step_toml.name, sub_chain_name)
+            } else {
+                ChainStepConfig::new(
+                    &step_toml.name,
+                    step_toml.provider.as_deref().unwrap_or(""),
+                    step_toml.action_type.as_deref().unwrap_or(""),
+                    step_toml.payload_template.clone(),
+                )
+            };
             if let Some(ref policy) = step_toml.on_failure {
                 let step_policy = match policy.as_str() {
                     "skip" => StepFailurePolicy::Skip,
@@ -342,11 +533,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(delay) = step_toml.delay_seconds {
                 step = step.with_delay(delay);
             }
+            if let Some(ref retry_toml) = step_toml.retry {
+                use acteon_core::chain::{RetryBackoffStrategy, RetryPolicy};
+                let strategy = match retry_toml.strategy.as_deref() {
+                    Some("linear") => RetryBackoffStrategy::Linear,
+                    Some("exponential") => RetryBackoffStrategy::Exponential,
+                    _ => RetryBackoffStrategy::Fixed,
+                };
+                step = step.with_retry(RetryPolicy {
+                    max_retries: retry_toml.max_retries,
+                    backoff_ms: retry_toml.backoff_ms.unwrap_or(1000),
+                    strategy,
+                    jitter_ms: retry_toml.jitter_ms,
+                });
+            }
             for branch_toml in &step_toml.branches {
                 let operator = match branch_toml.operator.as_str() {
                     "neq" => BranchOperator::Neq,
                     "contains" => BranchOperator::Contains,
                     "exists" => BranchOperator::Exists,
+                    "gt" => BranchOperator::Gt,
+                    "lt" => BranchOperator::Lt,
+                    "gte" => BranchOperator::Gte,
+                    "lte" => BranchOperator::Lte,
                     _ => BranchOperator::Eq,
                 };
                 step = step.with_branch(BranchCondition::new(
@@ -418,33 +627,761 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
+    // Shared handle to the swarm provider's in-memory registry. All
+    // `swarm`-type providers share a single registry so the API layer
+    // can expose a unified /v1/swarm/runs surface regardless of how
+    // many logical swarm providers are defined.
+    #[cfg(feature = "swarm")]
+    let mut swarm_registry_state: Option<
+        std::sync::Arc<acteon_swarm_provider::SwarmRunRegistry>,
+    > = None;
+
     // Register providers from config.
     for provider_cfg in &config.providers {
-        let provider: std::sync::Arc<dyn acteon_provider::DynProvider> =
-            match provider_cfg.provider_type.as_str() {
-                "webhook" => {
-                    let url = provider_cfg.url.as_deref().ok_or_else(|| {
+        let provider: std::sync::Arc<dyn acteon_provider::DynProvider> = match provider_cfg
+            .provider_type
+            .as_str()
+        {
+            "webhook" => {
+                let url = provider_cfg.url.as_deref().ok_or_else(|| {
+                    format!(
+                        "provider '{}': webhook type requires a 'url' field",
+                        provider_cfg.name
+                    )
+                })?;
+                validate_provider_url(&provider_cfg.name, url)?;
+                let mut wp =
+                    acteon_provider::webhook::WebhookProvider::new(&provider_cfg.name, url)
+                        .with_client(shared_http_client.clone());
+                if !provider_cfg.headers.is_empty() {
+                    wp = wp.with_headers(provider_cfg.headers.clone());
+                }
+                std::sync::Arc::new(wp)
+            }
+            "log" => std::sync::Arc::new(acteon_provider::LogProvider::new(&provider_cfg.name)),
+            "twilio" => {
+                let account_sid = provider_cfg.account_sid.as_deref().ok_or_else(|| {
+                    format!(
+                        "provider '{}': twilio type requires an 'account_sid' field",
+                        provider_cfg.name
+                    )
+                })?;
+                let auth_token_raw = provider_cfg.auth_token.as_deref().ok_or_else(|| {
+                    format!(
+                        "provider '{}': twilio type requires an 'auth_token' field",
+                        provider_cfg.name
+                    )
+                })?;
+                let auth_token = require_decrypt(auth_token_raw, master_key.as_ref())?;
+                let mut twilio_config = acteon_twilio::TwilioConfig::new(account_sid, auth_token);
+                if let Some(ref from) = provider_cfg.from_number {
+                    twilio_config = twilio_config.with_from_number(from);
+                }
+                std::sync::Arc::new(acteon_twilio::TwilioProvider::with_client(
+                    twilio_config,
+                    shared_http_client.clone(),
+                ))
+            }
+            "teams" => {
+                let webhook_url = provider_cfg
+                    .webhook_url
+                    .as_deref()
+                    .or(provider_cfg.url.as_deref())
+                    .ok_or_else(|| {
                         format!(
-                            "provider '{}': webhook type requires a 'url' field",
+                            "provider '{}': teams type requires a 'webhook_url' field",
                             provider_cfg.name
                         )
                     })?;
-                    let mut wp =
-                        acteon_provider::webhook::WebhookProvider::new(&provider_cfg.name, url);
-                    if !provider_cfg.headers.is_empty() {
-                        wp = wp.with_headers(provider_cfg.headers.clone());
-                    }
-                    std::sync::Arc::new(wp)
+                validate_provider_url(&provider_cfg.name, webhook_url)?;
+                let teams_config = acteon_teams::TeamsConfig::new(webhook_url);
+                std::sync::Arc::new(acteon_teams::TeamsProvider::with_client(
+                    teams_config,
+                    shared_http_client.clone(),
+                ))
+            }
+            #[cfg(feature = "discord")]
+            "discord" => {
+                let webhook_url = provider_cfg
+                    .webhook_url
+                    .as_deref()
+                    .or(provider_cfg.url.as_deref())
+                    .ok_or_else(|| {
+                        format!(
+                            "provider '{}': discord type requires a 'webhook_url' field",
+                            provider_cfg.name
+                        )
+                    })?;
+                validate_provider_url(&provider_cfg.name, webhook_url)?;
+                let mut discord_config = acteon_discord::DiscordConfig::new(webhook_url);
+                if let Some(ref username) = provider_cfg.default_channel {
+                    discord_config = discord_config.with_default_username(username);
                 }
-                "log" => std::sync::Arc::new(acteon_provider::LogProvider::new(&provider_cfg.name)),
-                other => {
+                std::sync::Arc::new(acteon_discord::DiscordProvider::with_client(
+                    discord_config,
+                    shared_http_client.clone(),
+                ))
+            }
+            #[cfg(feature = "opsgenie")]
+            "opsgenie" => {
+                let og = &provider_cfg.opsgenie;
+                let api_key_raw = og.api_key.as_deref().ok_or_else(|| {
+                    format!(
+                        "provider '{}': opsgenie type requires an 'opsgenie.api_key' field",
+                        provider_cfg.name
+                    )
+                })?;
+                let api_key = require_decrypt(api_key_raw, master_key.as_ref())?;
+                let mut opsgenie_config = acteon_opsgenie::OpsGenieConfig::new(api_key);
+                match og.region.as_deref().map(str::to_ascii_lowercase).as_deref() {
+                    Some("eu") => {
+                        opsgenie_config =
+                            opsgenie_config.with_region(acteon_opsgenie::OpsGenieRegion::Eu);
+                    }
+                    Some("us") | None => {
+                        opsgenie_config =
+                            opsgenie_config.with_region(acteon_opsgenie::OpsGenieRegion::Us);
+                    }
+                    Some(other) => {
+                        return Err(format!(
+                            "provider '{}': unknown opsgenie.region '{other}' (expected 'us' or 'eu')",
+                            provider_cfg.name
+                        )
+                        .into());
+                    }
+                }
+                if let Some(ref team) = og.default_team {
+                    opsgenie_config = opsgenie_config.with_default_team(team);
+                }
+                if let Some(ref priority) = og.default_priority {
+                    opsgenie_config = opsgenie_config.with_default_priority(priority);
+                }
+                if let Some(ref source) = og.default_source {
+                    opsgenie_config = opsgenie_config.with_default_source(source);
+                }
+                if let Some(ref url) = og.api_base_url {
+                    validate_provider_url(&provider_cfg.name, url)?;
+                    opsgenie_config = opsgenie_config.with_api_base_url(url);
+                }
+                if let Some(scope_aliases) = og.scope_aliases {
+                    opsgenie_config = opsgenie_config.with_scope_aliases(scope_aliases);
+                }
+                if let Some(max_len) = og.message_max_length {
+                    opsgenie_config = opsgenie_config.with_message_max_length(max_len);
+                }
+                std::sync::Arc::new(acteon_opsgenie::OpsGenieProvider::with_client(
+                    opsgenie_config,
+                    shared_http_client.clone(),
+                ))
+            }
+            #[cfg(feature = "victorops")]
+            "victorops" => {
+                let vo = &provider_cfg.victorops;
+                let api_key_raw = vo.api_key.as_deref().ok_or_else(|| {
+                    format!(
+                        "provider '{}': victorops type requires a 'victorops.api_key' field",
+                        provider_cfg.name
+                    )
+                })?;
+                if vo.routes.is_empty() {
                     return Err(format!(
-                        "provider '{}': unknown type '{other}' (expected 'webhook' or 'log')",
+                        "provider '{}': victorops type requires at least one entry in 'victorops.routes'",
                         provider_cfg.name
                     )
                     .into());
                 }
-            };
+                let api_key = require_decrypt(api_key_raw, master_key.as_ref())?;
+                let mut victorops_config = acteon_victorops::VictorOpsConfig::new(api_key);
+                for (route_name, routing_key_raw) in &vo.routes {
+                    let routing_key = require_decrypt(routing_key_raw, master_key.as_ref())?;
+                    victorops_config = victorops_config.with_route(route_name, routing_key);
+                }
+                if let Some(ref default_route) = vo.default_route {
+                    victorops_config = victorops_config.with_default_route(default_route);
+                }
+                if let Some(ref url) = vo.api_base_url {
+                    validate_provider_url(&provider_cfg.name, url)?;
+                    victorops_config = victorops_config.with_api_base_url(url);
+                }
+                if let Some(ref tool) = vo.monitoring_tool {
+                    victorops_config = victorops_config.with_monitoring_tool(tool);
+                }
+                if let Some(scope) = vo.scope_entity_ids {
+                    victorops_config = victorops_config.with_scope_entity_ids(scope);
+                }
+                std::sync::Arc::new(acteon_victorops::VictorOpsProvider::with_client(
+                    victorops_config,
+                    shared_http_client.clone(),
+                ))
+            }
+            #[cfg(feature = "pushover")]
+            "pushover" => {
+                let po = &provider_cfg.pushover;
+                let app_token_raw = po.app_token.as_deref().ok_or_else(|| {
+                    format!(
+                        "provider '{}': pushover type requires a 'pushover.app_token' field",
+                        provider_cfg.name
+                    )
+                })?;
+                if po.recipients.is_empty() {
+                    return Err(format!(
+                        "provider '{}': pushover type requires at least one entry in 'pushover.recipients'",
+                        provider_cfg.name
+                    )
+                    .into());
+                }
+                let app_token = require_decrypt(app_token_raw, master_key.as_ref())?;
+                let mut pushover_config = acteon_pushover::PushoverConfig::new(app_token);
+                for (name, user_key_raw) in &po.recipients {
+                    let user_key = require_decrypt(user_key_raw, master_key.as_ref())?;
+                    pushover_config = pushover_config.with_recipient(name, user_key);
+                }
+                if let Some(ref default_recipient) = po.default_recipient {
+                    pushover_config = pushover_config.with_default_recipient(default_recipient);
+                }
+                if let Some(ref url) = po.api_base_url {
+                    validate_provider_url(&provider_cfg.name, url)?;
+                    pushover_config = pushover_config.with_api_base_url(url);
+                }
+                std::sync::Arc::new(acteon_pushover::PushoverProvider::with_client(
+                    pushover_config,
+                    shared_http_client.clone(),
+                ))
+            }
+            #[cfg(feature = "telegram")]
+            "telegram" => {
+                let tg = &provider_cfg.telegram;
+                let bot_token_raw = tg.bot_token.as_deref().ok_or_else(|| {
+                    format!(
+                        "provider '{}': telegram type requires a 'telegram.bot_token' field",
+                        provider_cfg.name
+                    )
+                })?;
+                if tg.chats.is_empty() {
+                    return Err(format!(
+                        "provider '{}': telegram type requires at least one entry in 'telegram.chats'",
+                        provider_cfg.name
+                    )
+                    .into());
+                }
+                let bot_token = require_decrypt(bot_token_raw, master_key.as_ref())?;
+                let mut telegram_config = acteon_telegram::TelegramConfig::new(bot_token);
+                for (name, chat_id) in &tg.chats {
+                    telegram_config = telegram_config.with_chat(name, chat_id);
+                }
+                if let Some(ref default_chat) = tg.default_chat {
+                    telegram_config = telegram_config.with_default_chat(default_chat);
+                }
+                if let Some(ref parse_mode) = tg.default_parse_mode {
+                    telegram_config = telegram_config.with_default_parse_mode(parse_mode);
+                }
+                if let Some(units) = tg.text_max_utf16_units {
+                    telegram_config = telegram_config.with_text_max_utf16_units(units);
+                }
+                if let Some(ref url) = tg.api_base_url {
+                    validate_provider_url(&provider_cfg.name, url)?;
+                    telegram_config = telegram_config.with_api_base_url(url);
+                }
+                std::sync::Arc::new(acteon_telegram::TelegramProvider::with_client(
+                    telegram_config,
+                    shared_http_client.clone(),
+                ))
+            }
+            #[cfg(feature = "wechat")]
+            "wechat" => {
+                let wc = &provider_cfg.wechat;
+                let corp_id_raw = wc.corp_id.as_deref().ok_or_else(|| {
+                    format!(
+                        "provider '{}': wechat type requires a 'wechat.corp_id' field",
+                        provider_cfg.name
+                    )
+                })?;
+                let corp_secret_raw = wc.corp_secret.as_deref().ok_or_else(|| {
+                    format!(
+                        "provider '{}': wechat type requires a 'wechat.corp_secret' field",
+                        provider_cfg.name
+                    )
+                })?;
+                let agent_id = wc.agent_id.ok_or_else(|| {
+                    format!(
+                        "provider '{}': wechat type requires a numeric 'wechat.agent_id' field",
+                        provider_cfg.name
+                    )
+                })?;
+                let corp_id = require_decrypt(corp_id_raw, master_key.as_ref())?;
+                let corp_secret = require_decrypt(corp_secret_raw, master_key.as_ref())?;
+                let mut wechat_config =
+                    acteon_wechat::WeChatConfig::new(corp_id, corp_secret, agent_id);
+                if let Some(ref touser) = wc.default_touser {
+                    wechat_config = wechat_config.with_default_touser(touser);
+                }
+                if let Some(ref toparty) = wc.default_toparty {
+                    wechat_config = wechat_config.with_default_toparty(toparty);
+                }
+                if let Some(ref totag) = wc.default_totag {
+                    wechat_config = wechat_config.with_default_totag(totag);
+                }
+                if let Some(ref msgtype) = wc.default_msgtype {
+                    wechat_config = wechat_config.with_default_msgtype(msgtype);
+                }
+                if let Some(safe) = wc.safe {
+                    wechat_config = wechat_config.with_safe(safe);
+                }
+                if wc.enable_duplicate_check == Some(true) {
+                    let interval = wc.duplicate_check_interval.ok_or_else(|| {
+                        format!(
+                            "provider '{}': wechat.enable_duplicate_check=true requires 'wechat.duplicate_check_interval'",
+                            provider_cfg.name
+                        )
+                    })?;
+                    if interval > acteon_wechat::MAX_DUPLICATE_CHECK_INTERVAL_SECONDS {
+                        return Err(format!(
+                            "provider '{}': wechat.duplicate_check_interval={interval} exceeds the WeChat API maximum of {} seconds",
+                            provider_cfg.name,
+                            acteon_wechat::MAX_DUPLICATE_CHECK_INTERVAL_SECONDS
+                        )
+                        .into());
+                    }
+                    wechat_config = wechat_config.with_duplicate_check(interval);
+                }
+                if let Some(buffer) = wc.token_refresh_buffer_seconds {
+                    wechat_config = wechat_config.with_token_refresh_buffer_seconds(buffer);
+                }
+                if let Some(ref url) = wc.api_base_url {
+                    validate_provider_url(&provider_cfg.name, url)?;
+                    wechat_config = wechat_config.with_api_base_url(url);
+                }
+                std::sync::Arc::new(acteon_wechat::WeChatProvider::with_client(
+                    wechat_config,
+                    shared_http_client.clone(),
+                ))
+            }
+            "email" => {
+                let from_address = provider_cfg.from_address.as_deref().ok_or_else(|| {
+                    format!(
+                        "provider '{}': email type requires a 'from_address' field",
+                        provider_cfg.name
+                    )
+                })?;
+                let backend = provider_cfg.email_backend.as_deref().unwrap_or("smtp");
+                match backend {
+                    "smtp" => {
+                        let smtp_host = provider_cfg.smtp_host.as_deref().ok_or_else(|| {
+                            format!(
+                                "provider '{}': email/smtp backend requires a 'smtp_host' field",
+                                provider_cfg.name
+                            )
+                        })?;
+                        let mut email_config =
+                            acteon_email::EmailConfig::new(smtp_host, from_address);
+                        if let Some(port) = provider_cfg.smtp_port {
+                            email_config = email_config.with_port(port);
+                        }
+                        if let Some(tls) = provider_cfg.tls {
+                            email_config = email_config.with_tls(tls);
+                        }
+                        if let (Some(user), Some(pass_raw)) =
+                            (&provider_cfg.username, &provider_cfg.password)
+                        {
+                            let pass = require_decrypt(pass_raw, master_key.as_ref())?;
+                            email_config = email_config.with_credentials(user, pass);
+                        }
+                        std::sync::Arc::new(
+                            acteon_email::EmailProvider::new(&email_config)
+                                .map_err(|e| format!("provider '{}': {e}", provider_cfg.name))?,
+                        )
+                    }
+                    "ses" => {
+                        let region = provider_cfg.aws_region.as_deref().unwrap_or("us-east-1");
+                        let mut email_config = acteon_email::EmailConfig::ses(region, from_address);
+                        if let Some(ref url) = provider_cfg.aws_endpoint_url {
+                            email_config = email_config.with_aws_endpoint_url(url);
+                        }
+                        if let Some(ref arn) = provider_cfg.aws_role_arn {
+                            email_config = email_config.with_aws_role_arn(arn);
+                        }
+                        if let Some(ref set) = provider_cfg.ses_configuration_set {
+                            email_config = email_config.with_ses_configuration_set(set);
+                        }
+                        if let Some(ref name) = provider_cfg.aws_session_name {
+                            email_config = email_config.with_aws_session_name(name);
+                        }
+                        if let Some(ref ext_id) = provider_cfg.aws_external_id {
+                            email_config = email_config.with_aws_external_id(ext_id);
+                        }
+                        std::sync::Arc::new(acteon_email::EmailProvider::ses(&email_config).await)
+                    }
+                    other => {
+                        return Err(format!(
+                            "provider '{}': unknown email backend '{other}' (expected 'smtp' or 'ses')",
+                            provider_cfg.name
+                        )
+                        .into());
+                    }
+                }
+            }
+            #[cfg(feature = "aws-sns")]
+            "aws-sns" => {
+                let region = provider_cfg.aws_region.as_deref().unwrap_or("us-east-1");
+                let mut sns_config = acteon_aws::SnsConfig::new(region);
+                if let Some(ref arn) = provider_cfg.topic_arn {
+                    sns_config = sns_config.with_topic_arn(arn);
+                }
+                if let Some(ref url) = provider_cfg.aws_endpoint_url {
+                    sns_config = sns_config.with_endpoint_url(url);
+                }
+                if let Some(ref arn) = provider_cfg.aws_role_arn {
+                    sns_config = sns_config.with_role_arn(arn);
+                }
+                if let Some(ref name) = provider_cfg.aws_session_name {
+                    sns_config = sns_config.with_session_name(name);
+                }
+                if let Some(ref ext_id) = provider_cfg.aws_external_id {
+                    sns_config = sns_config.with_external_id(ext_id);
+                }
+                std::sync::Arc::new(acteon_aws::SnsProvider::new(sns_config).await)
+            }
+            #[cfg(feature = "aws-lambda")]
+            "aws-lambda" => {
+                let region = provider_cfg.aws_region.as_deref().unwrap_or("us-east-1");
+                let mut lambda_config = acteon_aws::LambdaConfig::new(region);
+                if let Some(ref name) = provider_cfg.function_name {
+                    lambda_config = lambda_config.with_function_name(name);
+                }
+                if let Some(ref q) = provider_cfg.qualifier {
+                    lambda_config = lambda_config.with_qualifier(q);
+                }
+                if let Some(ref url) = provider_cfg.aws_endpoint_url {
+                    lambda_config = lambda_config.with_endpoint_url(url);
+                }
+                if let Some(ref arn) = provider_cfg.aws_role_arn {
+                    lambda_config = lambda_config.with_role_arn(arn);
+                }
+                if let Some(ref name) = provider_cfg.aws_session_name {
+                    lambda_config = lambda_config.with_session_name(name);
+                }
+                if let Some(ref ext_id) = provider_cfg.aws_external_id {
+                    lambda_config = lambda_config.with_external_id(ext_id);
+                }
+                std::sync::Arc::new(acteon_aws::LambdaProvider::new(lambda_config).await)
+            }
+            #[cfg(feature = "aws-eventbridge")]
+            "aws-eventbridge" => {
+                let region = provider_cfg.aws_region.as_deref().unwrap_or("us-east-1");
+                let mut eb_config = acteon_aws::EventBridgeConfig::new(region);
+                if let Some(ref bus) = provider_cfg.event_bus_name {
+                    eb_config = eb_config.with_event_bus_name(bus);
+                }
+                if let Some(ref url) = provider_cfg.aws_endpoint_url {
+                    eb_config = eb_config.with_endpoint_url(url);
+                }
+                if let Some(ref arn) = provider_cfg.aws_role_arn {
+                    eb_config = eb_config.with_role_arn(arn);
+                }
+                if let Some(ref name) = provider_cfg.aws_session_name {
+                    eb_config = eb_config.with_session_name(name);
+                }
+                if let Some(ref ext_id) = provider_cfg.aws_external_id {
+                    eb_config = eb_config.with_external_id(ext_id);
+                }
+                std::sync::Arc::new(acteon_aws::EventBridgeProvider::new(eb_config).await)
+            }
+            #[cfg(feature = "aws-sqs")]
+            "aws-sqs" => {
+                let region = provider_cfg.aws_region.as_deref().unwrap_or("us-east-1");
+                let mut sqs_config = acteon_aws::SqsConfig::new(region);
+                if let Some(ref url) = provider_cfg.queue_url {
+                    sqs_config = sqs_config.with_queue_url(url);
+                }
+                if let Some(ref url) = provider_cfg.aws_endpoint_url {
+                    sqs_config = sqs_config.with_endpoint_url(url);
+                }
+                if let Some(ref arn) = provider_cfg.aws_role_arn {
+                    sqs_config = sqs_config.with_role_arn(arn);
+                }
+                if let Some(ref name) = provider_cfg.aws_session_name {
+                    sqs_config = sqs_config.with_session_name(name);
+                }
+                if let Some(ref ext_id) = provider_cfg.aws_external_id {
+                    sqs_config = sqs_config.with_external_id(ext_id);
+                }
+                std::sync::Arc::new(acteon_aws::SqsProvider::new(sqs_config).await)
+            }
+            #[cfg(feature = "aws-s3")]
+            "aws-s3" => {
+                let region = provider_cfg.aws_region.as_deref().unwrap_or("us-east-1");
+                let mut s3_config = acteon_aws::S3Config::new(region);
+                if let Some(ref bucket) = provider_cfg.bucket_name {
+                    s3_config = s3_config.with_bucket(bucket);
+                }
+                if let Some(ref prefix) = provider_cfg.object_prefix {
+                    s3_config = s3_config.with_prefix(prefix);
+                }
+                if let Some(ref url) = provider_cfg.aws_endpoint_url {
+                    s3_config = s3_config.with_endpoint_url(url);
+                }
+                if let Some(ref arn) = provider_cfg.aws_role_arn {
+                    s3_config = s3_config.with_role_arn(arn);
+                }
+                if let Some(ref name) = provider_cfg.aws_session_name {
+                    s3_config = s3_config.with_session_name(name);
+                }
+                if let Some(ref ext_id) = provider_cfg.aws_external_id {
+                    s3_config = s3_config.with_external_id(ext_id);
+                }
+                std::sync::Arc::new(acteon_aws::S3Provider::new(s3_config).await)
+            }
+            #[cfg(feature = "aws-ec2")]
+            "aws-ec2" => {
+                let region = provider_cfg.aws_region.as_deref().unwrap_or("us-east-1");
+                let mut ec2_config = acteon_aws::Ec2Config::new(region);
+                if let Some(ref ids) = provider_cfg.default_security_group_ids {
+                    ec2_config = ec2_config.with_default_security_group_ids(ids.clone());
+                }
+                if let Some(ref sid) = provider_cfg.default_subnet_id {
+                    ec2_config = ec2_config.with_default_subnet_id(sid);
+                }
+                if let Some(ref kn) = provider_cfg.default_key_name {
+                    ec2_config = ec2_config.with_default_key_name(kn);
+                }
+                if let Some(ref url) = provider_cfg.aws_endpoint_url {
+                    ec2_config = ec2_config.with_endpoint_url(url);
+                }
+                if let Some(ref arn) = provider_cfg.aws_role_arn {
+                    ec2_config = ec2_config.with_role_arn(arn);
+                }
+                if let Some(ref name) = provider_cfg.aws_session_name {
+                    ec2_config = ec2_config.with_session_name(name);
+                }
+                if let Some(ref ext_id) = provider_cfg.aws_external_id {
+                    ec2_config = ec2_config.with_external_id(ext_id);
+                }
+                let ec2 = std::sync::Arc::new(acteon_aws::Ec2Provider::new(ec2_config).await);
+                builder = builder.resource_lookup(
+                    provider_cfg.name.clone(),
+                    std::sync::Arc::clone(&ec2)
+                        as std::sync::Arc<dyn acteon_provider::ResourceLookup>,
+                );
+                ec2
+            }
+            #[cfg(feature = "aws-autoscaling")]
+            "aws-autoscaling" => {
+                let region = provider_cfg.aws_region.as_deref().unwrap_or("us-east-1");
+                let mut asg_config = acteon_aws::AutoScalingConfig::new(region);
+                if let Some(ref url) = provider_cfg.aws_endpoint_url {
+                    asg_config = asg_config.with_endpoint_url(url);
+                }
+                if let Some(ref arn) = provider_cfg.aws_role_arn {
+                    asg_config = asg_config.with_role_arn(arn);
+                }
+                if let Some(ref name) = provider_cfg.aws_session_name {
+                    asg_config = asg_config.with_session_name(name);
+                }
+                if let Some(ref ext_id) = provider_cfg.aws_external_id {
+                    asg_config = asg_config.with_external_id(ext_id);
+                }
+                let asg =
+                    std::sync::Arc::new(acteon_aws::AutoScalingProvider::new(asg_config).await);
+                builder = builder.resource_lookup(
+                    provider_cfg.name.clone(),
+                    std::sync::Arc::clone(&asg)
+                        as std::sync::Arc<dyn acteon_provider::ResourceLookup>,
+                );
+                asg
+            }
+            #[cfg(feature = "azure-blob")]
+            "azure-blob" => {
+                let location = provider_cfg.azure_location.as_deref().unwrap_or("eastus");
+                let mut blob_config = acteon_azure::BlobConfig::new(location);
+                if let Some(ref name) = provider_cfg.azure_account_name {
+                    blob_config = blob_config.with_account_name(name);
+                }
+                if let Some(ref container) = provider_cfg.azure_container_name {
+                    blob_config = blob_config.with_container_name(container);
+                }
+                if let Some(ref prefix) = provider_cfg.azure_blob_prefix {
+                    blob_config = blob_config.with_prefix(prefix);
+                }
+                if let Some(ref url) = provider_cfg.azure_endpoint_url {
+                    blob_config = blob_config.with_endpoint_url(url);
+                }
+                if let Some(ref tid) = provider_cfg.azure_tenant_id {
+                    blob_config = blob_config.with_tenant_id(tid);
+                }
+                if let Some(ref cid) = provider_cfg.azure_client_id {
+                    blob_config = blob_config.with_client_id(cid);
+                }
+                if let Some(ref cred) = provider_cfg.azure_client_credential {
+                    let decrypted = require_decrypt(cred, master_key.as_ref())?;
+                    blob_config = blob_config.with_client_credential(decrypted);
+                }
+                std::sync::Arc::new(
+                    acteon_azure::BlobProvider::new(blob_config)
+                        .await
+                        .map_err(|e| format!("provider '{}': {e}", provider_cfg.name))?,
+                )
+            }
+            #[cfg(feature = "azure-eventhubs")]
+            "azure-eventhubs" => {
+                let location = provider_cfg.azure_location.as_deref().unwrap_or("eastus");
+                let mut eh_config = acteon_azure::EventHubsConfig::new(location);
+                if let Some(ref ns) = provider_cfg.azure_namespace {
+                    eh_config = eh_config.with_namespace(ns);
+                }
+                if let Some(ref name) = provider_cfg.azure_event_hub_name {
+                    eh_config = eh_config.with_event_hub_name(name);
+                }
+                if let Some(ref url) = provider_cfg.azure_endpoint_url {
+                    eh_config = eh_config.with_endpoint_url(url);
+                }
+                if let Some(ref tid) = provider_cfg.azure_tenant_id {
+                    eh_config = eh_config.with_tenant_id(tid);
+                }
+                if let Some(ref cid) = provider_cfg.azure_client_id {
+                    eh_config = eh_config.with_client_id(cid);
+                }
+                if let Some(ref cred) = provider_cfg.azure_client_credential {
+                    let decrypted = require_decrypt(cred, master_key.as_ref())?;
+                    eh_config = eh_config.with_client_credential(decrypted);
+                }
+                std::sync::Arc::new(
+                    acteon_azure::EventHubsProvider::new(eh_config)
+                        .await
+                        .map_err(|e| format!("provider '{}': {e}", provider_cfg.name))?,
+                )
+            }
+            #[cfg(feature = "gcp-pubsub")]
+            "gcp-pubsub" => {
+                let project_id = provider_cfg.gcp_project_id.as_deref().ok_or_else(|| {
+                    format!(
+                        "provider '{}': gcp_project_id is required for gcp-pubsub",
+                        provider_cfg.name
+                    )
+                })?;
+                let mut ps_config = acteon_gcp::PubSubConfig::new(project_id);
+                if let Some(ref topic) = provider_cfg.gcp_topic {
+                    ps_config = ps_config.with_topic(topic);
+                }
+                if let Some(ref url) = provider_cfg.gcp_endpoint_url {
+                    ps_config = ps_config.with_endpoint_url(url);
+                }
+                if let Some(ref path) = provider_cfg.gcp_credentials_path {
+                    let decrypted = require_decrypt(path, master_key.as_ref())?;
+                    ps_config = ps_config.with_credentials_path(decrypted);
+                }
+                if let Some(ref json) = provider_cfg.gcp_credentials_json {
+                    let decrypted = require_decrypt(json, master_key.as_ref())?;
+                    ps_config = ps_config.with_credentials_json(decrypted);
+                }
+                std::sync::Arc::new(
+                    acteon_gcp::PubSubProvider::new(ps_config)
+                        .await
+                        .map_err(|e| format!("provider '{}': {e}", provider_cfg.name))?,
+                )
+            }
+            #[cfg(feature = "gcp-storage")]
+            "gcp-storage" => {
+                let project_id = provider_cfg.gcp_project_id.as_deref().ok_or_else(|| {
+                    format!(
+                        "provider '{}': gcp_project_id is required for gcp-storage",
+                        provider_cfg.name
+                    )
+                })?;
+                let mut storage_config = acteon_gcp::StorageConfig::new(project_id);
+                if let Some(ref bucket) = provider_cfg.gcp_bucket {
+                    storage_config = storage_config.with_bucket(bucket);
+                }
+                if let Some(ref prefix) = provider_cfg.gcp_object_prefix {
+                    storage_config = storage_config.with_prefix(prefix);
+                }
+                if let Some(ref url) = provider_cfg.gcp_endpoint_url {
+                    storage_config = storage_config.with_endpoint_url(url);
+                }
+                if let Some(ref path) = provider_cfg.gcp_credentials_path {
+                    let decrypted = require_decrypt(path, master_key.as_ref())?;
+                    storage_config = storage_config.with_credentials_path(decrypted);
+                }
+                if let Some(ref json) = provider_cfg.gcp_credentials_json {
+                    let decrypted = require_decrypt(json, master_key.as_ref())?;
+                    storage_config = storage_config.with_credentials_json(decrypted);
+                }
+                std::sync::Arc::new(
+                    acteon_gcp::StorageProvider::new(storage_config)
+                        .await
+                        .map_err(|e| format!("provider '{}': {e}", provider_cfg.name))?,
+                )
+            }
+            #[cfg(feature = "swarm")]
+            "swarm" => {
+                let sw = &provider_cfg.swarm;
+                let config_path = sw.config_path.as_deref().ok_or_else(|| {
+                    format!(
+                        "provider '{}': swarm type requires a 'swarm.config_path' field",
+                        provider_cfg.name
+                    )
+                })?;
+                let hooks_binary = sw.hooks_binary.as_deref().ok_or_else(|| {
+                    format!(
+                        "provider '{}': swarm type requires a 'swarm.hooks_binary' field",
+                        provider_cfg.name
+                    )
+                })?;
+                let swarm_config =
+                    acteon_swarm::SwarmConfig::from_file(std::path::Path::new(config_path))
+                        .map_err(|e| {
+                            format!(
+                                "provider '{}': failed to load swarm config: {e}",
+                                provider_cfg.name
+                            )
+                        })?;
+                let roles = acteon_swarm::RoleRegistry::with_config(
+                    swarm_config.defaults.engine,
+                    &swarm_config.roles,
+                );
+                let registry = if let Some(r) = swarm_registry_state.clone() {
+                    r
+                } else {
+                    let executor =
+                        std::sync::Arc::new(acteon_swarm_provider::DefaultSwarmExecutor::new(
+                            swarm_config.clone(),
+                            roles,
+                            std::path::PathBuf::from(hooks_binary),
+                        ));
+                    let sink = std::sync::Arc::new(acteon_swarm_provider::LoggingSink);
+                    let reg = acteon_swarm_provider::SwarmRunRegistry::new(
+                        executor,
+                        sink,
+                        sw.max_concurrent_runs.unwrap_or(4),
+                    );
+                    swarm_registry_state = Some(reg.clone());
+                    reg
+                };
+                std::sync::Arc::new(acteon_swarm_provider::SwarmProvider::new(
+                    &provider_cfg.name,
+                    registry,
+                ))
+            }
+            other => {
+                // Check if the user requested a provider that's not compiled in.
+                let feature_hint = match other {
+                    "aws-sns" | "aws-lambda" | "aws-eventbridge" | "aws-sqs" | "aws-s3"
+                    | "aws-ec2" | "aws-autoscaling" | "azure-blob" | "azure-eventhubs"
+                    | "gcp-pubsub" | "gcp-storage" | "opsgenie" | "victorops" | "pushover"
+                    | "telegram" | "wechat" | "discord" | "swarm" => {
+                        format!(
+                            ". Hint: enable the '{other}' feature on acteon-server \
+                             (cargo build --features {other})"
+                        )
+                    }
+                    _ => String::new(),
+                };
+                return Err(format!(
+                    "provider '{}': unknown type '{other}'{feature_hint}",
+                    provider_cfg.name
+                )
+                .into());
+            }
+        };
         builder = builder.provider(provider);
     }
     if !config.providers.is_empty() {
@@ -453,6 +1390,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "providers registered from config"
         );
     }
+
+    // Spawn the swarm-run reaper if a swarm provider is configured so
+    // terminal runs don't accumulate unbounded in the registry.
+    #[cfg(feature = "swarm")]
+    let _swarm_reaper_handle = swarm_registry_state.as_ref().map(|reg| {
+        // 24h retention, sweep every 5 minutes. Operators who want a
+        // different retention can adjust the numbers here; the reaper is
+        // a last line of defence, not the canonical retention source.
+        reg.spawn_reaper(
+            std::time::Duration::from_secs(24 * 60 * 60),
+            std::time::Duration::from_secs(300),
+        )
+    });
+
+    // Wire enrichment configs.
+    for enrichment_toml in &config.enrichments {
+        let enrichment_config = acteon_core::EnrichmentConfig {
+            name: enrichment_toml.name.clone(),
+            namespace: enrichment_toml.namespace.clone(),
+            tenant: enrichment_toml.tenant.clone(),
+            action_type: enrichment_toml.action_type.clone(),
+            provider: enrichment_toml.provider.clone(),
+            lookup_provider: enrichment_toml.lookup_provider.clone(),
+            resource_type: enrichment_toml.resource_type.clone(),
+            params: enrichment_toml.params.clone(),
+            merge_key: enrichment_toml.merge_key.clone(),
+            timeout_seconds: enrichment_toml.timeout_seconds,
+            failure_policy: enrichment_toml.failure_policy,
+        };
+        builder = builder.enrichment(enrichment_config);
+    }
+    if !config.enrichments.is_empty() {
+        info!(
+            count = config.enrichments.len(),
+            "pre-dispatch enrichments configured"
+        );
+    }
+
+    builder = builder
+        .max_inline_bytes(config.attachments.max_inline_bytes)
+        .max_attachments_per_action(config.attachments.max_attachments_per_action);
 
     let mut gateway = builder.build()?;
 
@@ -470,6 +1448,115 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             info!(count, directory = %dir, "loaded rules from directory");
         } else {
             tracing::warn!(directory = %dir, "rules directory does not exist");
+        }
+    }
+
+    // Load quota policies from state store on startup.
+    if config.quotas.enabled {
+        match store.scan_keys_by_kind(acteon_state::KeyKind::Quota).await {
+            Ok(entries) => {
+                let mut count = 0usize;
+                for (_key, value) in entries {
+                    if let Ok(policy) = serde_json::from_str::<acteon_core::QuotaPolicy>(&value) {
+                        gateway.set_quota_policy(policy);
+                        count += 1;
+                    }
+                }
+                if count > 0 {
+                    info!(count, "loaded quota policies from state store");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to load quota policies from state store");
+            }
+        }
+    }
+
+    // Load retention policies from state store on startup.
+    match store
+        .scan_keys_by_kind(acteon_state::KeyKind::Retention)
+        .await
+    {
+        Ok(entries) => {
+            let mut count = 0usize;
+            for (_key, value) in entries {
+                if let Ok(policy) = serde_json::from_str::<acteon_core::RetentionPolicy>(&value) {
+                    gateway.set_retention_policy(policy);
+                    count += 1;
+                }
+            }
+            if count > 0 {
+                info!(count, "loaded retention policies from state store");
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load retention policies from state store");
+        }
+    }
+
+    // Load templates from state store on startup.
+    match store
+        .scan_keys_by_kind(acteon_state::KeyKind::Template)
+        .await
+    {
+        Ok(entries) => {
+            let mut count = 0usize;
+            for (_key, value) in entries {
+                if let Ok(tpl) = serde_json::from_str::<acteon_core::Template>(&value) {
+                    gateway.set_template(tpl);
+                    count += 1;
+                }
+            }
+            if count > 0 {
+                info!(count, "loaded templates from state store");
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load templates from state store");
+        }
+    }
+
+    // Load template profiles from state store on startup.
+    match store
+        .scan_keys_by_kind(acteon_state::KeyKind::TemplateProfile)
+        .await
+    {
+        Ok(entries) => {
+            let mut count = 0usize;
+            for (_key, value) in entries {
+                if let Ok(profile) = serde_json::from_str::<acteon_core::TemplateProfile>(&value) {
+                    gateway.set_template_profile(profile);
+                    count += 1;
+                }
+            }
+            if count > 0 {
+                info!(count, "loaded template profiles from state store");
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load template profiles from state store");
+        }
+    }
+
+    // Load chain definitions from state store on startup.
+    match store
+        .scan_keys_by_kind(acteon_state::KeyKind::ChainDefinition)
+        .await
+    {
+        Ok(entries) => {
+            let mut count = 0usize;
+            for (_key, value) in entries {
+                if let Ok(config) = serde_json::from_str::<acteon_core::ChainConfig>(&value) {
+                    let _ = gateway.set_chain_config(config);
+                    count += 1;
+                }
+            }
+            if count > 0 {
+                info!(count, "loaded chain definitions from state store");
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load chain definitions from state store");
         }
     }
 
@@ -496,6 +1583,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 store.as_ref(),
                 &config.background.namespace,
                 &config.background.tenant,
+                payload_encryptor.as_deref(),
             )
             .await
         {
@@ -536,6 +1624,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // tokio::broadcast::Sender (cheap, fan-out preserved).
     let bg_stream_tx = gateway.stream_tx().clone();
     let gateway = Arc::new(RwLock::new(gateway));
+    // Snapshot the Arc<GatewayMetrics> at startup so hot-path metric
+    // increments can skip the gateway RwLock entirely. The inner
+    // counters are AtomicU64 — no lock needed once we hold the Arc.
+    let gateway_metrics = gateway.read().await.metrics_arc();
+
+    // A2A push-notification delivery worker (Phase 4.2). Subscribes
+    // to the gateway's stream broadcast and POSTs every A2A task
+    // event to each registered `TaskPushNotificationConfig`. Spawn
+    // here, after the gateway is wrapped but before any handlers can
+    // emit events, so the subscriber misses nothing.
+    let _a2a_push_worker = {
+        let state_store = gateway.read().await.state_store().clone();
+        let rx = gateway.read().await.stream_tx().subscribe();
+        let worker = acteon_server::api::a2a_push_worker::PushDeliveryWorker::new(
+            state_store,
+            shared_http_client.clone(),
+            rx,
+        );
+        tokio::spawn(worker.run())
+    };
 
     // Spawn background processor for group flushing and timeout processing.
     // This must be after gateway Arc is created so handlers can dispatch notifications.
@@ -557,6 +1665,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             scheduled_check_interval: Duration::from_secs(
                 config.background.scheduled_check_interval_seconds,
             ),
+            enable_recurring_actions: config.background.enable_recurring_actions,
+            recurring_check_interval: Duration::from_secs(
+                config.background.recurring_check_interval_seconds,
+            ),
+            enable_retention_reaper: config.background.enable_retention_reaper,
+            retention_check_interval: Duration::from_secs(
+                config.background.retention_check_interval_seconds,
+            ),
+            enable_stale_task_reaper: config.background.enable_stale_task_reaper,
+            stale_task_check_interval: Duration::from_secs(
+                config.background.stale_task_check_interval_seconds,
+            ),
+            enable_template_sync: config.background.enable_template_sync,
+            template_sync_interval: Duration::from_secs(
+                config.background.template_sync_interval_seconds,
+            ),
+            enable_silence_sync: config.background.enable_silence_sync,
+            silence_sync_interval: Duration::from_secs(
+                config.background.silence_sync_interval_seconds,
+            ),
+            enable_time_interval_sync: config.background.enable_time_interval_sync,
+            time_interval_sync_interval: Duration::from_secs(
+                config.background.time_interval_sync_interval_seconds,
+            ),
+            enable_group_sync: config.background.enable_group_sync,
+            group_sync_interval: Duration::from_secs(config.background.group_sync_interval_seconds),
             namespace: config.background.namespace.clone(),
             tenant: config.background.tenant.clone(),
         };
@@ -567,9 +1701,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (approval_retry_tx, mut approval_retry_rx) = tokio::sync::mpsc::channel(100);
         let (chain_advance_tx, mut chain_advance_rx) = tokio::sync::mpsc::channel(100);
         let (scheduled_action_tx, mut scheduled_action_rx) = tokio::sync::mpsc::channel(100);
+        let (recurring_action_tx, mut recurring_action_rx) = tokio::sync::mpsc::channel(100);
 
         let mut bg_builder = BackgroundProcessorBuilder::new()
             .config(bg_config)
+            .metrics(gateway.read().await.metrics_arc())
             .group_manager(Arc::clone(&group_manager))
             .state(Arc::clone(&store))
             .group_flush_channel(flush_tx)
@@ -586,6 +1722,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if config.background.enable_scheduled_actions {
             bg_builder = bg_builder.scheduled_action_channel(scheduled_action_tx);
+        }
+
+        if config.background.enable_recurring_actions {
+            bg_builder = bg_builder.recurring_action_channel(recurring_action_tx);
+        }
+
+        if let Some(ref enc) = payload_encryptor {
+            bg_builder = bg_builder.payload_encryptor(Arc::clone(enc));
+        }
+
+        // Give the stale-task reaper the gateway's compliance-decorated
+        // audit store so reaped A2A tasks land on the same hash chain
+        // as action records.
+        if let Some(audit) = gateway.read().await.audit_store() {
+            bg_builder = bg_builder.audit(audit);
+        }
+
+        if config.background.enable_template_sync {
+            bg_builder = bg_builder.gateway(Arc::clone(&gateway));
         }
 
         let (mut processor, shutdown_tx) = bg_builder
@@ -617,7 +1772,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Build a summary notification action from the grouped events.
                 // Uses the first event's metadata and aggregates the payloads.
                 let payloads: Vec<_> = group.events.iter().map(|e| e.payload.clone()).collect();
-                let summary_payload = serde_json::json!({
+                let mut summary_payload = serde_json::json!({
                     "group_id": group.group_id,
                     "group_key": group.group_key,
                     "event_count": group.size(),
@@ -625,6 +1780,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "labels": group.labels,
                     "flushed_at": event.flushed_at.to_rfc3339(),
                 });
+
+                // Mark as a group re-dispatch so quota enforcement is skipped.
+                if let Some(obj) = summary_payload.as_object_mut() {
+                    obj.insert("_group_dispatch".to_string(), serde_json::Value::Bool(true));
+                }
 
                 // Extract namespace/tenant from labels or use defaults.
                 let namespace = group
@@ -957,6 +2117,126 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         });
 
+        // Spawn consumer for recurring action events.
+        // Constructs a concrete Action from the recurring template, dispatches it,
+        // updates execution state, and re-indexes the next occurrence.
+        let recurring_gateway = Arc::clone(&gateway);
+        let recurring_store = Arc::clone(&store);
+        tokio::spawn(async move {
+            while let Some(event) = recurring_action_rx.recv().await {
+                let recurring = &event.recurring_action;
+                info!(
+                    recurring_id = %event.recurring_id,
+                    namespace = %event.namespace,
+                    tenant = %event.tenant,
+                    cron_expr = %recurring.cron_expr,
+                    "processing recurring action"
+                );
+
+                // Construct a concrete Action from the template.
+                let mut payload = recurring.action_template.payload.clone();
+                // Mark as a recurring re-dispatch so quota enforcement
+                // does not double-count the action.
+                if let Some(obj) = payload.as_object_mut() {
+                    obj.insert(
+                        "_recurring_dispatch".to_string(),
+                        serde_json::Value::Bool(true),
+                    );
+                }
+                let action = acteon_core::Action::new(
+                    event.namespace.as_str(),
+                    event.tenant.as_str(),
+                    recurring.action_template.provider.as_str(),
+                    recurring.action_template.action_type.as_str(),
+                    payload,
+                );
+
+                // Dispatch through the gateway.
+                let gw = recurring_gateway.read().await;
+                let now = chrono::Utc::now();
+
+                match gw.dispatch(action, None).await {
+                    Ok(outcome) => {
+                        info!(
+                            recurring_id = %event.recurring_id,
+                            ?outcome,
+                            "recurring action dispatched"
+                        );
+                        gw.metrics().increment_recurring_dispatched();
+
+                        // Update the recurring action state: increment count,
+                        // set last_executed_at, compute and index next occurrence.
+                        let rec_key = acteon_state::StateKey::new(
+                            event.namespace.as_str(),
+                            event.tenant.as_str(),
+                            acteon_state::KeyKind::RecurringAction,
+                            &event.recurring_id,
+                        );
+                        if let Ok(Some(raw_str)) = recurring_store.get(&rec_key).await
+                            && let Ok(data_str) = gw.decrypt_state_value(&raw_str)
+                            && let Ok(mut rec) =
+                                serde_json::from_str::<acteon_core::RecurringAction>(&data_str)
+                        {
+                            rec.last_executed_at = Some(now);
+                            rec.execution_count += 1;
+                            rec.updated_at = now;
+
+                            // Compute next occurrence (no backfill).
+                            let next = acteon_core::validate_cron_expr(&rec.cron_expr)
+                                .ok()
+                                .and_then(|cron| {
+                                    acteon_core::validate_timezone(&rec.timezone).ok().and_then(
+                                        |tz| acteon_core::next_occurrence(&cron, tz, &now),
+                                    )
+                                });
+
+                            // Check if the action should still be active.
+                            let still_active = rec.enabled
+                                && next.is_some()
+                                && rec.ends_at.is_none_or(|ends| next.unwrap() <= ends)
+                                && rec
+                                    .max_executions
+                                    .is_none_or(|max| rec.execution_count < max);
+
+                            rec.next_execution_at = if still_active { next } else { None };
+
+                            if let Ok(json) = serde_json::to_string(&rec) {
+                                let encrypted = gw.encrypt_state_value(&json).unwrap_or(json);
+                                let _ = recurring_store.set(&rec_key, &encrypted, None).await;
+                            }
+
+                            // Re-index or remove from pending index.
+                            let pending_key = acteon_state::StateKey::new(
+                                event.namespace.as_str(),
+                                event.tenant.as_str(),
+                                acteon_state::KeyKind::PendingRecurring,
+                                &event.recurring_id,
+                            );
+
+                            if let Some(next_at) = rec.next_execution_at {
+                                let next_ms = next_at.timestamp_millis();
+                                let _ = recurring_store
+                                    .set(&pending_key, &next_ms.to_string(), None)
+                                    .await;
+                                let _ = recurring_store.index_timeout(&pending_key, next_ms).await;
+                            } else {
+                                let _ = recurring_store.delete(&pending_key).await;
+                                let _ = recurring_store.remove_timeout_index(&pending_key).await;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            recurring_id = %event.recurring_id,
+                            error = %e,
+                            "failed to dispatch recurring action"
+                        );
+                        gw.metrics().increment_recurring_errors();
+                    }
+                }
+            }
+        });
+
         info!("background processor started");
         Some(shutdown_tx)
     } else {
@@ -970,9 +2250,124 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let config_snapshot = ConfigSnapshot::from(&config);
 
+    // Build the analytics store if audit is enabled.
+    let analytics_store = if let Some(ref audit) = audit_store {
+        acteon_server::analytics_factory::create_analytics_store(audit).await
+    } else {
+        None
+    };
+
+    let dispatch_semaphore = Arc::new(tokio::sync::Semaphore::new(
+        config.server.max_concurrent_dispatch,
+    ));
+
+    // Build the signature verifier from the [signing] config.
+    let signature_verifier = if config.signing.enabled {
+        let mut keyring = acteon_crypto::signing::Keyring::new();
+        for entry in &config.signing.keyring {
+            let raw_key = require_decrypt(&entry.public_key, master_key.as_ref())?;
+            let vk = acteon_crypto::signing::parse_verifying_key_with_kid(
+                &raw_key,
+                &entry.signer_id,
+                &entry.kid,
+            )?;
+            keyring.insert(vk);
+        }
+        // If a server signing key is configured, add its public key to the
+        // keyring too so the server can verify its own server-originated
+        // signatures.
+        if let Some(ref server_key_raw) = config.signing.server_key {
+            let decrypted = require_decrypt(server_key_raw, master_key.as_ref())?;
+            let sk = acteon_crypto::signing::parse_signing_key(
+                &decrypted,
+                config
+                    .signing
+                    .server_signer_id
+                    .as_deref()
+                    .unwrap_or("acteon-server"),
+            )?;
+            keyring.insert(sk.verifying_key());
+        }
+        let mut verifier =
+            acteon_server::api::SignatureVerifier::new(keyring, config.signing.reject_unsigned);
+        // Wire per-signer scope restrictions from config.
+        for entry in &config.signing.keyring {
+            verifier.add_scope(
+                &entry.signer_id,
+                acteon_server::api::verify::SignerScope {
+                    tenants: entry.tenants.clone(),
+                    namespaces: entry.namespaces.clone(),
+                },
+            );
+        }
+        info!(
+            keyring_size = verifier.keyring_len(),
+            reject_unsigned = config.signing.reject_unsigned,
+            reject_replay = config.signing.reject_replay,
+            "action signing enabled"
+        );
+        Some(Arc::new(verifier))
+    } else {
+        None
+    };
+
+    #[cfg(feature = "swarm")]
+    let swarm_registry = swarm_registry_state.clone();
+
+    #[cfg(feature = "bus")]
+    let bus_backend: Option<acteon_bus::SharedBackend> = if config.bus.enabled {
+        let kcfg = acteon_bus::KafkaBusConfig {
+            bootstrap_servers: config.bus.kafka.bootstrap_servers.clone(),
+            client_id: config.bus.kafka.client_id.clone(),
+            produce_timeout_ms: config.bus.kafka.produce_timeout_ms,
+            transactional_id: config.bus.kafka.transactional_id.clone(),
+            transaction_timeout_ms: config.bus.kafka.transaction_timeout_ms,
+            extra: config.bus.kafka.extra.clone(),
+        };
+        match acteon_bus::KafkaBackend::new(&kcfg) {
+            Ok(b) => {
+                info!(
+                    bootstrap = %kcfg.bootstrap_servers,
+                    client_id = %kcfg.client_id,
+                    transactional = kcfg.transactional_id.is_some(),
+                    transactional_id = ?kcfg.transactional_id,
+                    "agentic bus enabled (Kafka backend)"
+                );
+                Some(b as acteon_bus::SharedBackend)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to initialize bus backend; bus endpoints will return 503");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // Phase 10: spawn the bus approval reconciler before consuming
+    // `bus_backend` into AppState. The reconciler runs on its own
+    // tokio task, sweeping for stuck `Approving` rows and re-driving
+    // the produce + CAS to Approved. Idempotent producer + consumer-
+    // side `call_id` dedup keep the topic clean across retries.
+    #[cfg(feature = "bus")]
+    let _bus_reconciler_handle = if let Some(b) = bus_backend.clone() {
+        let store = gateway.read().await.state_store().clone();
+        let cfg = acteon_server::bus_reconciler::BusReconcilerConfig::default();
+        info!(
+            interval_s = cfg.interval.as_secs(),
+            min_age_s = cfg.min_age.as_secs(),
+            "spawning bus approval reconciler",
+        );
+        Some(acteon_server::bus_reconciler::spawn_bus_approval_reconciler(store, b, &cfg))
+    } else {
+        None
+    };
+
     let state = AppState {
         gateway: Arc::clone(&gateway),
+        metrics: gateway_metrics,
         audit: audit_store,
+        analytics: analytics_store,
         auth: auth_provider,
         rate_limiter,
         embedding: embedding_bridge
@@ -980,9 +2375,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map(|b| Arc::clone(b) as Arc<dyn acteon_rules::EmbeddingEvalSupport>),
         embedding_metrics: embedding_bridge.as_ref().map(|b| b.metrics()),
         connection_registry: Some(connection_registry),
+        a2a_discovery_cache: Arc::new(
+            acteon_server::api::a2a_discovery_cache::DiscoveryCache::new(),
+        ),
+        dispatch_semaphore,
         config: config_snapshot,
         ui_path: Some(config.ui.dist_path.clone()),
         ui_enabled: config.ui.enabled,
+        cors_allowed_origins: config.server.cors_allowed_origins.clone(),
+        signature_verifier,
+        replay_protection: if config.signing.enabled && config.signing.reject_replay {
+            Some((true, config.signing.replay_ttl_seconds))
+        } else {
+            None
+        },
+        #[cfg(feature = "swarm")]
+        swarm_registry,
+        #[cfg(feature = "bus")]
+        bus_backend,
+        #[cfg(feature = "bus")]
+        bus_schema_validator: acteon_bus::SchemaValidator::new(),
     };
     let app = acteon_server::api::router(state);
 
@@ -992,12 +2404,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = format!("{host}:{port}");
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    info!(address = %addr, "acteon-server listening");
 
     // Serve with graceful shutdown on SIGINT / SIGTERM.
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    if config.tls.enabled
+        && config.tls.server.cert_path.is_some()
+        && config.tls.server.key_path.is_some()
+    {
+        let cert_path = config.tls.server.cert_path.as_deref().unwrap();
+        let key_path = config.tls.server.key_path.as_deref().unwrap();
+        let min_version = acteon_crypto::tls::MinTlsVersion::parse(&config.tls.server.min_version)
+            .unwrap_or_default();
+
+        let tls_config = acteon_crypto::tls::build_server_config(
+            cert_path,
+            key_path,
+            config.tls.server.client_ca_path.as_deref(),
+            min_version,
+        )
+        .map_err(|e| format!("TLS server config: {e}"))?;
+
+        info!(
+            address = %addr,
+            cert = cert_path,
+            mtls = config.tls.server.client_ca_path.is_some(),
+            "acteon-server listening (HTTPS)"
+        );
+
+        serve_tls(listener, app, tls_config, shutdown_signal()).await?;
+    } else {
+        info!(address = %addr, "acteon-server listening");
+        axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown_signal())
+            .await?;
+    }
 
     // Wait for pending audit tasks to complete (with configurable timeout).
     let shutdown_timeout = Duration::from_secs(config.server.shutdown_timeout_seconds);
@@ -1023,6 +2462,59 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Validate that a configured endpoint URL uses an allowed scheme.
+///
+/// Rejects URLs that do not start with `https://` or `http://localhost`
+/// (including `http://127.0.0.1` and `http://[::1]`). Plain `http://` to
+/// non-loopback destinations is logged as a warning because it exposes
+/// credentials and payloads on the wire.
+///
+/// This is a defence-in-depth measure against SSRF via operator-controlled
+/// configuration (e.g. `acteon.toml`).
+fn validate_provider_url(provider_name: &str, url: &str) -> Result<(), String> {
+    let lower = url.to_lowercase();
+
+    // Allow https always.
+    if lower.starts_with("https://") {
+        return Ok(());
+    }
+
+    // Explicitly block cloud metadata service (AWS/GCP/Azure) which is a common SSRF target.
+    if lower.contains("169.254.169.254") {
+        return Err(format!(
+            "provider '{provider_name}': URL references restricted cloud metadata IP (169.254.169.254)"
+        ));
+    }
+
+    // Allow http to loopback addresses (local dev / emulators).
+    if lower.starts_with("http://localhost")
+        || lower.starts_with("http://127.")
+        || lower.starts_with("http://[::1]")
+    {
+        return Ok(());
+    }
+
+    // Reject non-HTTP schemes entirely (file://, ftp://, gopher://, etc.).
+    if !lower.starts_with("http://") {
+        return Err(format!(
+            "provider '{provider_name}': URL scheme not allowed — only https:// \
+             and http://localhost are permitted, got: {url}"
+        ));
+    }
+
+    // Warn about plain http:// to non-loopback destinations but allow it
+    // to avoid breaking existing deployments (Docker networks, k8s services,
+    // internal VPNs). Operators should migrate to HTTPS.
+    warn!(
+        provider = %provider_name,
+        url = %url,
+        "provider URL uses plain http:// to a non-loopback destination — \
+         credentials and payloads will be transmitted in cleartext. \
+         Use https:// in production."
+    );
+    Ok(())
+}
+
 /// Decrypt a config value, requiring `ACTEON_AUTH_KEY` if the value is encrypted.
 ///
 /// - `ENC[...]` values are decrypted using the master key (error if key is missing).
@@ -1039,6 +2531,24 @@ fn require_decrypt(
     } else {
         Ok(value.to_owned())
     }
+}
+
+/// Run the `migrate` subcommand: initialize database schemas for configured backends and exit.
+async fn run_migrate(config: &ActeonConfig) -> Result<(), Box<dyn std::error::Error>> {
+    info!(backend = %config.state.backend, "running state backend migrations...");
+    let (_store, _lock) = acteon_server::state_factory::create_state(&config.state).await?;
+    info!(backend = %config.state.backend, "state backend migrations complete");
+
+    if config.audit.enabled {
+        info!(backend = %config.audit.backend, "running audit backend migrations...");
+        let _audit = acteon_server::audit_factory::create_audit_store(&config.audit, None).await?;
+        info!(backend = %config.audit.backend, "audit backend migrations complete");
+    } else {
+        info!("audit disabled, skipping audit migrations");
+    }
+
+    info!("all migrations complete");
+    Ok(())
 }
 
 /// Run the `encrypt` subcommand: read plaintext from stdin, output ENC[...] to stdout.
@@ -1058,6 +2568,71 @@ fn run_encrypt() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Wait for SIGINT (Ctrl+C) or SIGTERM, then return to trigger graceful shutdown.
+/// Serve HTTPS connections using `tokio-rustls` with graceful shutdown.
+async fn serve_tls(
+    listener: tokio::net::TcpListener,
+    app: axum::Router,
+    tls_config: std::sync::Arc<rustls::ServerConfig>,
+    shutdown: impl std::future::Future<Output = ()>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use tower::ServiceExt;
+
+    let tls_acceptor = tokio_rustls::TlsAcceptor::from(tls_config);
+
+    tokio::pin!(shutdown);
+
+    loop {
+        tokio::select! {
+            result = listener.accept() => {
+                let (tcp_stream, remote_addr) = result?;
+                let acceptor = tls_acceptor.clone();
+                let app = app.clone();
+
+                tokio::spawn(async move {
+                    let tls_stream = match acceptor.accept(tcp_stream).await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            tracing::debug!(
+                                addr = %remote_addr,
+                                error = %e,
+                                "TLS handshake failed"
+                            );
+                            return;
+                        }
+                    };
+
+                    let io = hyper_util::rt::TokioIo::new(tls_stream);
+                    let tower_service = app;
+                    let hyper_service = hyper::service::service_fn(
+                        move |request: hyper::Request<hyper::body::Incoming>| {
+                            tower_service.clone().oneshot(request)
+                        },
+                    );
+
+                    if let Err(e) = hyper_util::server::conn::auto::Builder::new(
+                        hyper_util::rt::TokioExecutor::new(),
+                    )
+                    .serve_connection(io, hyper_service)
+                    .await
+                    {
+                        tracing::debug!(
+                            addr = %remote_addr,
+                            error = %e,
+                            "connection error"
+                        );
+                    }
+                });
+            }
+            () = &mut shutdown => {
+                tracing::info!("TLS server shutting down");
+                break;
+            }
+        }
+    }
+
+    Ok(())
+}
+
 async fn shutdown_signal() {
     let ctrl_c = async {
         tokio::signal::ctrl_c()

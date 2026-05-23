@@ -1,0 +1,43 @@
+# Triage rules: suppress test alerts, throttle alert storms, route to chains.
+
+rules:
+  # ── Suppress alerts from test environments ─────────────────────────────────
+  - name: suppress-test-env
+    priority: 1
+    description: "Block all alerts originating from test environments"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "ops-team"
+        - field: action.payload.environment
+          eq: "test"
+    action:
+      type: suppress
+
+  # ── Throttle alert storms ──────────────────────────────────────────────────
+  - name: throttle-alert-storm
+    priority: 2
+    description: "Limit ops-team to 20 alerts per minute to prevent alert fatigue"
+    condition:
+      field: action.tenant
+      eq: "ops-team"
+    action:
+      type: throttle
+      max_count: 20
+      window_seconds: 60
+
+  # ── Route critical/high alerts to incident triage chain ────────────────────
+  - name: trigger-incident-triage
+    priority: 5
+    description: "Start incident triage chain for critical and high severity alerts"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "ops-team"
+        - field: action.action_type
+          eq: "alert"
+        - field: action.payload.severity
+          in_list: ["critical", "high"]
+    action:
+      type: chain
+      chain: "incident-triage"

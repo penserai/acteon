@@ -65,23 +65,41 @@ where
                 return inner.call(req).await;
             };
 
-            // Try Bearer token first.
-            if let Some(auth_header) = req.headers().get("authorization")
-                && let Ok(header_str) = auth_header.to_str()
-                && let Some(token) = header_str.strip_prefix("Bearer ")
-            {
+            // Try the Authorization: Bearer header first. JWT validation
+            // runs first; if it fails (e.g., the caller is using a raw
+            // API key instead of a JWT), fall back to treating the token
+            // as an API key. This makes API-key auth work for SDKs that
+            // send credentials via the standard Authorization header.
+            let bearer_token = req
+                .headers()
+                .get("authorization")
+                .and_then(|h| h.to_str().ok())
+                .and_then(|s| s.strip_prefix("Bearer "))
+                .map(str::to_owned);
+
+            if let Some(ref token) = bearer_token {
                 match provider.validate_jwt(token).await {
                     Ok(identity) => {
                         req.extensions_mut().insert(identity);
                         return inner.call(req).await;
                     }
-                    Err(e) => {
-                        return Ok(unauthorized(&e));
+                    Err(jwt_err) => {
+                        // JWT validation failed — try API key fallback
+                        // before returning 401.
+                        if let Some(identity) = provider.authenticate_api_key(token).await {
+                            req.extensions_mut().insert(identity);
+                            return inner.call(req).await;
+                        }
+                        // Neither JWT nor API key worked. Surface the
+                        // JWT error so Bearer-JWT callers see a useful
+                        // message (invalid signature, expired, etc.).
+                        return Ok(unauthorized(&jwt_err));
                     }
                 }
             }
 
-            // Try API key.
+            // Legacy explicit X-API-Key header path. Still supported for
+            // tools and curl examples that set the dedicated header.
             if let Some(api_key_header) = req.headers().get("x-api-key")
                 && let Ok(key_str) = api_key_header.to_str()
             {

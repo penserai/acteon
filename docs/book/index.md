@@ -6,11 +6,7 @@ hide:
 
 <div class="hero" markdown>
 
-![Acteon](assets/logo.png){ width="180" }
-
-# Acteon
-
-**Actions forged in Rust**
+![Acteon — Actions forged in Rust](assets/logo.svg){ width="180" }
 
 _A distributed action gateway that transforms, deduplicates, routes, and dispatches actions through a configurable pipeline of rules, providers, and state backends._
 
@@ -36,7 +32,7 @@ flowchart LR
     C -->|Suppress| F[Block Action]
     C -->|Throttle| G[Rate Limit]
     C -->|Reroute| H[Different Provider]
-    D --> I[Email / SMS / Slack / Webhook]
+    D --> I[Email / Twilio / Slack / Teams / Discord / Webhook / SNS / Lambda / SQS / S3]
 ```
 
 ---
@@ -67,7 +63,7 @@ Track events through configurable state machines with automatic timeout transiti
 
 ### Pluggable Backends
 
-Choose from Memory, Redis, PostgreSQL, DynamoDB, or ClickHouse for state storage. Mix and match with PostgreSQL, ClickHouse, or Elasticsearch for audit trails.
+Choose from Memory, Redis, PostgreSQL, or DynamoDB for state storage. Mix and match with PostgreSQL, ClickHouse, or Elasticsearch for audit trails. (Note: ClickHouse state backend was removed in v0.1.0; see [Migration Guide](reference/migration-clickhouse-state.md)).
 
 [Learn more](backends/index.md)
 
@@ -115,6 +111,16 @@ Route actions by meaning, not just field values. Use vector embeddings and cosin
 
 <div class="card" markdown>
 
+### AWS Providers
+
+Native integrations for SNS, Lambda, EventBridge, SQS, S3, and SES with automatic STS credential refresh, cross-account role assumption, and LocalStack support for local development.
+
+[Learn more](features/aws-providers.md)
+
+</div>
+
+<div class="card" markdown>
+
 ### Enterprise Ready
 
 Multi-tenant isolation, API key and JWT authentication, hot-reload for rules and auth config, graceful shutdown, and comprehensive audit trails.
@@ -143,7 +149,61 @@ End-to-end testing framework with mock providers, failure injection, multi-node 
 
 </div>
 
+<div class="card" markdown>
+
+### Guides
+
+In-depth guides that combine multiple Acteon features to solve real-world problems, from AI agent swarm coordination to production deployment patterns.
+
+[Learn more](guides/index.md)
+
 </div>
+
+</div>
+
+---
+
+## Agent Swarm Orchestrator
+
+Acteon also ships `acteon-swarm` — a standalone multi-agent orchestrator that **uses** the Acteon gateway for safety enforcement but is a separate product surface. While Acteon core is an action gateway (rules, routing, audit), the swarm is an **agent orchestration engine** inspired by [Karpathy's autoresearch](https://github.com/karpathy/autoresearch) pattern.
+
+<div class="grid" markdown>
+
+<div class="card" markdown>
+
+### Build → Eval → Critique → Fix → Verify
+
+Primary agents build your project, an **eval harness** scores it, adversarial agents **critique** across engines (Claude + Gemini), and recovery agents **fix code** — all gated by fitness scoring with automatic **git revert on regression**.
+
+</div>
+
+<div class="card" markdown>
+
+### Cross-Engine Adversarial Review
+
+Use a different AI engine for critique than for building — Claude primary with Gemini adversarial, or vice versa. Cross-model blind spots catch issues that a single model misses.
+
+</div>
+
+<div class="card" markdown>
+
+### Autoresearch Primitives
+
+Three Karpathy primitives: editable asset (workspace), scalar metric (eval score), time-boxed cycles. Plus a fourth: SWE-bench-style binary assertions auto-generated from adversarial challenges.
+
+</div>
+
+<div class="card" markdown>
+
+### Acteon as Safety Layer
+
+Every agent tool call flows through Acteon for policy enforcement — dedup, throttle, approval gates, audit trail. The swarm is the orchestrator; Acteon is the guardrail.
+
+</div>
+
+</div>
+
+[Learn more about Agent Swarm](features/agent-swarm.md){ .md-button }
 
 ---
 
@@ -219,7 +279,6 @@ graph TB
         RED[(Redis)]
         PG[(PostgreSQL)]
         DDB[(DynamoDB)]
-        CH[(ClickHouse)]
     end
 
     subgraph Audit
@@ -237,10 +296,14 @@ graph TB
     RE --> LLM
     RE --> EX
     EX --> PROV
-    PROV --> Email[Email SMTP]
+    PROV --> Email[Email SMTP/SES]
     PROV --> Slack[Slack]
+    PROV --> Twilio[Twilio SMS]
+    PROV --> Teams[Teams]
+    PROV --> Discord[Discord]
     PROV --> WH[Webhooks]
-    RE -.-> MEM & RED & PG & DDB & CH
+    PROV --> AWS[AWS SNS/Lambda/SQS/S3]
+    RE -.-> MEM & RED & PG & DDB
     EX -.-> AUD_PG & AUD_CH & AUD_ES
 ```
 

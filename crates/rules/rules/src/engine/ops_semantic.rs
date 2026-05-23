@@ -1,4 +1,4 @@
-use crate::engine::context::EvalContext;
+use crate::engine::context::{EvalContext, SemanticMatchDetail};
 use crate::engine::eval::eval;
 use crate::engine::value::Value;
 use crate::error::RuleError;
@@ -31,5 +31,16 @@ pub(crate) async fn eval_semantic_match(
     }
 
     let similarity = embedding.similarity(&text, topic).await?;
+
+    // Record the detail for the playground trace.
+    if let Some(ref tracker) = ctx.access_tracker {
+        tracker.set_semantic_detail(SemanticMatchDetail {
+            extracted_text: text,
+            topic: topic.to_owned(),
+            similarity,
+            threshold,
+        });
+    }
+
     Ok(Value::Bool(similarity >= threshold))
 }

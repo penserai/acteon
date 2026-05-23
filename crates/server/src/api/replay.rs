@@ -180,8 +180,13 @@ pub async fn replay_action(
         }
     };
 
-    // Verify the caller has access to this record's tenant/namespace.
-    if !identity.is_authorized(&record.tenant, &record.namespace, &record.action_type) {
+    // Verify the caller has access to this record's tenant/namespace/provider.
+    if !identity.is_authorized(
+        &record.tenant,
+        &record.namespace,
+        &record.provider,
+        &record.action_type,
+    ) {
         return (
             StatusCode::FORBIDDEN,
             Json(serde_json::json!(ErrorResponse {
@@ -334,7 +339,12 @@ pub async fn replay_audit(
             let caller = &caller;
             let identity = &identity;
             async move {
-                if !identity.is_authorized(&record.tenant, &record.namespace, &record.action_type) {
+                if !identity.is_authorized(
+                    &record.tenant,
+                    &record.namespace,
+                    &record.provider,
+                    &record.action_type,
+                ) {
                     return None; // skipped
                 }
 

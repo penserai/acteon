@@ -1,0 +1,36 @@
+[package]
+name = "acteon-swarm-provider"
+description = "Acteon provider that dispatches long-running swarm runs as fire-and-forget actions"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+acteon-core = { workspace = true }
+acteon-provider = { workspace = true }
+acteon-swarm = { workspace = true }
+
+async-trait = { workspace = true }
+chrono = { workspace = true }
+dashmap = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync", "rt"] }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+utoipa = { workspace = true, optional = true }
+
+[features]
+default = []
+openapi = ["dep:utoipa", "acteon-core/openapi"]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util", "time"] }
+
+[lints]
+workspace = true

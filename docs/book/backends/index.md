@@ -14,7 +14,6 @@ State backends store distributed locks, deduplication keys, event state, group s
 | [Redis](redis.md) | Strong | ~2,000/s | General purpose, most deployments |
 | [PostgreSQL](postgres.md) | ACID | ~850/s | Strong consistency requirements |
 | [DynamoDB](dynamodb.md) | Strong | ~340/s | AWS-native deployments |
-| [ClickHouse](clickhouse-state.md) | Eventual | ~120/s | Analytics (not for dedup) |
 
 ### Audit Backends
 
@@ -56,5 +55,6 @@ url = "postgres://acteon:acteon@localhost:5432/acteon"
 ```bash
 # Start both backends
 docker compose --profile postgres up -d
+scripts/migrate.sh -c acteon.toml
 cargo run -p acteon-server -- -c acteon.toml
 ```

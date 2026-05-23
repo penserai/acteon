@@ -182,6 +182,12 @@ if record != nil {
 
 ## Configuration
 
+API keys are sent via the `Authorization: Bearer <key>` header. The server
+accepts both JWTs and raw API keys on that header. API keys are scoped by
+tenant, namespace, provider, and action type on the server side — see the
+[API Key Scoping](https://penserai.github.io/acteon/features/api-key-scoping/)
+documentation for the grant model and hierarchical tenant matching.
+
 ```go
 client := acteon.NewClient(
     "http://localhost:8080",
@@ -244,6 +250,7 @@ if err != nil {
 | `SetRuleEnabled(ctx, name, enabled)` | Enable/disable a rule |
 | `QueryAudit(ctx, query)` | Query audit records |
 | `GetAuditRecord(ctx, actionID)` | Get specific audit record |
+| `FetchSigningKeys(ctx)` | Fetch the server's active signing keyring (JWKS-style discovery) |
 
 ### Action Fields
 

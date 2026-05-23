@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::Utc;
+
 use acteon_audit::store::AuditStore;
 use acteon_core::{ChainConfig, StateMachineConfig};
 use acteon_executor::{DeadLetterQueue, DeadLetterSink, ExecutorConfig};
@@ -10,7 +12,10 @@ use acteon_rules::{Rule, RuleEngine};
 use acteon_state::{DistributedLock, StateStore};
 use tokio_util::task::TaskTracker;
 
+use acteon_core::EnrichmentConfig;
+use acteon_crypto::PayloadEncryptor;
 use acteon_llm::LlmEvaluator;
+use acteon_provider::ResourceLookup;
 
 use crate::circuit_breaker::{CircuitBreakerConfig, CircuitBreakerRegistry};
 use crate::error::GatewayError;
@@ -51,6 +56,19 @@ pub struct GatewayBuilder {
     circuit_breaker_default: Option<CircuitBreakerConfig>,
     circuit_breaker_overrides: HashMap<String, CircuitBreakerConfig>,
     stream_buffer_size: usize,
+    quota_policies: Vec<acteon_core::QuotaPolicy>,
+    retention_policies: HashMap<String, acteon_core::RetentionPolicy>,
+    payload_encryptor: Option<Arc<PayloadEncryptor>>,
+    wasm_runtime: Option<Arc<dyn acteon_wasm_runtime::WasmPluginRuntime>>,
+    compliance_config: Option<acteon_core::ComplianceConfig>,
+    enrichments: Vec<EnrichmentConfig>,
+    resource_lookups: HashMap<String, Arc<dyn ResourceLookup>>,
+    templates: HashMap<(String, String), HashMap<String, acteon_core::Template>>,
+    template_profiles: HashMap<(String, String), HashMap<String, acteon_core::TemplateProfile>>,
+    silences: Vec<acteon_core::Silence>,
+    time_intervals: Vec<acteon_core::TimeInterval>,
+    max_inline_bytes: u64,
+    max_attachments_per_action: usize,
 }
 
 impl GatewayBuilder {
@@ -76,7 +94,11 @@ impl GatewayBuilder {
             llm_evaluator: None,
             llm_policy: String::new(),
             llm_policies: HashMap::new(),
-            llm_fail_open: true,
+            // Fail closed by default: when the LLM evaluator errors,
+            // deny the action rather than silently letting it
+            // through. Operators who explicitly accept the bypass
+            // risk can flip this with `.llm_fail_open(true)`.
+            llm_fail_open: false,
             chains: HashMap::new(),
             completed_chain_ttl: None,
             embedding: None,
@@ -84,6 +106,19 @@ impl GatewayBuilder {
             circuit_breaker_default: None,
             circuit_breaker_overrides: HashMap::new(),
             stream_buffer_size: 1024,
+            quota_policies: Vec::new(),
+            retention_policies: HashMap::new(),
+            payload_encryptor: None,
+            wasm_runtime: None,
+            compliance_config: None,
+            enrichments: Vec::new(),
+            resource_lookups: HashMap::new(),
+            templates: HashMap::new(),
+            template_profiles: HashMap::new(),
+            silences: Vec::new(),
+            time_intervals: Vec::new(),
+            max_inline_bytes: 5_242_880,
+            max_attachments_per_action: 10,
         }
     }
 
@@ -252,10 +287,19 @@ impl GatewayBuilder {
         self
     }
 
-    /// Set whether the LLM guardrail fails open (default: `true`).
+    /// Set whether the LLM guardrail fails open (default: `false`).
     ///
-    /// When `true`, LLM evaluation errors allow the action to proceed.
-    /// When `false`, errors cause the action to be denied.
+    /// When `false` (the default, fail-closed), LLM evaluation errors
+    /// cause the action to be denied — the guardrail is treated as a
+    /// hard gate that must succeed for the action to proceed. This is
+    /// the safer default for security-oriented deployments because an
+    /// attacker who can force evaluator timeouts (oversized prompts,
+    /// upstream slowness) cannot quietly bypass the check.
+    ///
+    /// When `true` (fail-open), evaluator errors allow the action
+    /// through. Use this when availability matters more than the
+    /// guarantee that every action was evaluated — for example, when
+    /// the guardrail is an advisory check on a low-stakes flow.
     #[must_use]
     pub fn llm_fail_open(mut self, fail_open: bool) -> Self {
         self.llm_fail_open = fail_open;
@@ -340,6 +384,242 @@ impl GatewayBuilder {
         self
     }
 
+    /// Register a quota policy for a tenant.
+    ///
+    /// Multiple policies may coexist for the same `(namespace, tenant)`
+    /// pair as long as they target different providers (one generic
+    /// policy with `provider: None` plus any number of provider-scoped
+    /// policies). Adding a policy with the same `id` as an existing
+    /// one replaces it; otherwise it is appended.
+    #[must_use]
+    pub fn quota_policy(mut self, policy: acteon_core::QuotaPolicy) -> Self {
+        if let Some(slot) = self.quota_policies.iter_mut().find(|p| p.id == policy.id) {
+            *slot = policy;
+        } else {
+            self.quota_policies.push(policy);
+        }
+        self
+    }
+
+    /// Register a data retention policy for a tenant.
+    ///
+    /// The policy is keyed by `"namespace:tenant"`. Multiple policies for the
+    /// same tenant replace the previous one.
+    #[must_use]
+    pub fn retention_policy(mut self, policy: acteon_core::RetentionPolicy) -> Self {
+        let key = format!("{}:{}", policy.namespace, policy.tenant);
+        self.retention_policies.insert(key, policy);
+        self
+    }
+
+    /// Set all retention policies at once (replaces any previously added).
+    #[must_use]
+    pub fn retention_policies(mut self, policies: Vec<acteon_core::RetentionPolicy>) -> Self {
+        self.retention_policies = policies
+            .into_iter()
+            .map(|p| (format!("{}:{}", p.namespace, p.tenant), p))
+            .collect();
+        self
+    }
+
+    /// Set the payload encryptor for encrypting action payloads at rest.
+    ///
+    /// When set, the gateway encrypts payload-carrying state values before
+    /// writing to the state store and decrypts them on read. This protects
+    /// scheduled actions, chain state, approval records, and recurring actions.
+    #[must_use]
+    pub fn payload_encryptor(mut self, enc: Arc<PayloadEncryptor>) -> Self {
+        self.payload_encryptor = Some(enc);
+        self
+    }
+
+    /// Set the WASM plugin runtime for evaluating `WasmCall` expressions in rules.
+    ///
+    /// When set, rules containing `wasm()` conditions can invoke registered
+    /// WASM plugins as part of condition evaluation.
+    #[must_use]
+    pub fn wasm_runtime(
+        mut self,
+        runtime: Arc<dyn acteon_wasm_runtime::WasmPluginRuntime>,
+    ) -> Self {
+        self.wasm_runtime = Some(runtime);
+        self
+    }
+
+    /// Set the compliance configuration for the gateway.
+    ///
+    /// When set, enables compliance features such as synchronous audit writes,
+    /// immutable audit records, and `SHA-256` hash chaining.
+    #[must_use]
+    pub fn compliance_config(mut self, config: acteon_core::ComplianceConfig) -> Self {
+        self.compliance_config = Some(config);
+        self
+    }
+
+    /// Register a pre-dispatch enrichment configuration.
+    ///
+    /// Enrichments are applied in order before rule evaluation. Each enrichment
+    /// calls a [`ResourceLookup`] provider to fetch external state and merge it
+    /// into the action payload.
+    #[must_use]
+    pub fn enrichment(mut self, config: EnrichmentConfig) -> Self {
+        self.enrichments.push(config);
+        self
+    }
+
+    /// Register a resource lookup provider for pre-dispatch enrichment.
+    ///
+    /// The name should match the `lookup_provider` field in enrichment configs.
+    #[must_use]
+    pub fn resource_lookup(
+        mut self,
+        name: impl Into<String>,
+        lookup: Arc<dyn ResourceLookup>,
+    ) -> Self {
+        self.resource_lookups.insert(name.into(), lookup);
+        self
+    }
+
+    /// Register a payload template.
+    ///
+    /// Templates are stored in a nested map keyed by `(namespace, tenant)` → `name`.
+    /// Duplicate names for the same scope replace the previous template.
+    #[must_use]
+    pub fn template(mut self, template: acteon_core::Template) -> Self {
+        let scope = (template.namespace.clone(), template.tenant.clone());
+        self.templates
+            .entry(scope)
+            .or_default()
+            .insert(template.name.clone(), template);
+        self
+    }
+
+    /// Register a template profile.
+    ///
+    /// Profiles are stored in a nested map keyed by `(namespace, tenant)` → `name`.
+    /// Duplicate names for the same scope replace the previous profile.
+    #[must_use]
+    pub fn template_profile(mut self, profile: acteon_core::TemplateProfile) -> Self {
+        let scope = (profile.namespace.clone(), profile.tenant.clone());
+        self.template_profiles
+            .entry(scope)
+            .or_default()
+            .insert(profile.name.clone(), profile);
+        self
+    }
+
+    /// Set the maximum allowed size for a single attachment after `base64` decoding (default: 5 MB).
+    #[must_use]
+    pub fn max_inline_bytes(mut self, max: u64) -> Self {
+        self.max_inline_bytes = max;
+        self
+    }
+
+    /// Set the maximum number of attachments per action (default: 10).
+    #[must_use]
+    pub fn max_attachments_per_action(mut self, max: usize) -> Self {
+        self.max_attachments_per_action = max;
+        self
+    }
+
+    /// Set all quota policies at once (replaces any previously added).
+    #[must_use]
+    pub fn quota_policies(mut self, policies: Vec<acteon_core::QuotaPolicy>) -> Self {
+        self.quota_policies = policies;
+        self
+    }
+
+    /// Seed the gateway silence cache with a set of silences.
+    ///
+    /// In production, silences are also loaded from the state store at
+    /// startup via [`Gateway::load_silences_from_state_store`](crate::Gateway::load_silences_from_state_store).
+    /// This setter is primarily for tests and for initial bootstrapping.
+    #[must_use]
+    pub fn silences(mut self, silences: Vec<acteon_core::Silence>) -> Self {
+        self.silences = silences;
+        self
+    }
+
+    /// Seed the gateway with a list of time intervals. In production these
+    /// are also loaded from the state store at startup via
+    /// [`Gateway::load_time_intervals_from_state_store`](crate::Gateway::load_time_intervals_from_state_store).
+    #[must_use]
+    pub fn time_intervals(mut self, intervals: Vec<acteon_core::TimeInterval>) -> Self {
+        self.time_intervals = intervals;
+        self
+    }
+
+    /// Validate quota policies and bucket them by `"namespace:tenant"`.
+    ///
+    /// Each bucket may hold a generic policy plus any number of
+    /// per-provider policies (capped at
+    /// [`acteon_core::MAX_POLICIES_PER_BUCKET`] to prevent
+    /// policy-explosion `DoS`), all of which are evaluated together
+    /// per dispatch at runtime.
+    ///
+    /// Every policy must pass [`acteon_core::QuotaPolicy::validate_scope`]
+    /// — this catches colon injection in identifiers, zero-duration
+    /// windows, and zero `max_actions` up front so the dispatch
+    /// path can rely on the invariants.
+    fn validate_and_wrap_quota_policies(
+        policies: Vec<acteon_core::QuotaPolicy>,
+    ) -> Result<HashMap<String, crate::gateway::CachedPolicy>, GatewayError> {
+        for policy in &policies {
+            let label = format!(
+                "{}:{}{}",
+                policy.namespace,
+                policy.tenant,
+                policy
+                    .provider
+                    .as_ref()
+                    .map(|p| format!(":{p}"))
+                    .unwrap_or_default()
+            );
+            policy.validate_scope().map_err(|e| {
+                GatewayError::Configuration(format!("quota policy '{label}' invalid: {e}"))
+            })?;
+        }
+        // Reject duplicate (ns, tenant, provider) tuples — operators
+        // should pick exactly one policy per scope; silent override
+        // would be surprising.
+        let mut seen: HashMap<(String, String, Option<String>), String> = HashMap::new();
+        for policy in &policies {
+            let key = (
+                policy.namespace.clone(),
+                policy.tenant.clone(),
+                policy.provider.clone(),
+            );
+            if let Some(existing_id) = seen.get(&key) {
+                return Err(GatewayError::Configuration(format!(
+                    "duplicate quota policy for (namespace={}, tenant={}, provider={:?}): ids {existing_id} and {}",
+                    policy.namespace, policy.tenant, policy.provider, policy.id
+                )));
+            }
+            seen.insert(key, policy.id.clone());
+        }
+
+        let now = Utc::now();
+        let mut buckets: HashMap<String, crate::gateway::CachedPolicy> = HashMap::new();
+        for policy in policies {
+            let key = format!("{}:{}", policy.namespace, policy.tenant);
+            let bucket =
+                buckets
+                    .entry(key.clone())
+                    .or_insert_with(|| crate::gateway::CachedPolicy {
+                        policies: Vec::new(),
+                        cached_at: now,
+                    });
+            if bucket.policies.len() >= acteon_core::MAX_POLICIES_PER_BUCKET {
+                return Err(GatewayError::Configuration(format!(
+                    "quota bucket '{key}' exceeds the per-tenant policy cap of {}",
+                    acteon_core::MAX_POLICIES_PER_BUCKET
+                )));
+            }
+            bucket.policies.push(policy);
+        }
+        Ok(buckets)
+    }
+
     /// Build and validate the circuit breaker registry if a default config is provided.
     fn build_circuit_breaker_registry(
         default: Option<CircuitBreakerConfig>,
@@ -417,6 +697,7 @@ impl GatewayBuilder {
     ///
     /// Returns a [`GatewayError::Configuration`] if required fields
     /// (state store, distributed lock) have not been set.
+    #[allow(clippy::too_many_lines)]
     pub fn build(self) -> Result<Gateway, GatewayError> {
         let state = self
             .state
@@ -439,9 +720,16 @@ impl GatewayBuilder {
 
         let engine = RuleEngine::new(self.rules);
 
-        // Create the DLQ if enabled.
+        // Create the DLQ if enabled, wrapping with encryption if configured.
         let dlq: Option<Arc<dyn DeadLetterSink>> = if self.dlq_enabled {
-            self.dlq.or_else(|| Some(Arc::new(DeadLetterQueue::new())))
+            let raw_dlq = self.dlq.unwrap_or_else(|| Arc::new(DeadLetterQueue::new()));
+            if let Some(ref enc) = self.payload_encryptor {
+                Some(Arc::new(
+                    crate::encrypting_dlq::EncryptingDeadLetterSink::new(raw_dlq, Arc::clone(enc)),
+                ))
+            } else {
+                Some(raw_dlq)
+            }
         } else {
             None
         };
@@ -481,6 +769,17 @@ impl GatewayBuilder {
             Arc::clone(&lock),
         )?;
 
+        let quota_policies = Self::validate_and_wrap_quota_policies(self.quota_policies)?;
+
+        // Validate the sub-chain reference graph (dangling refs + cycles).
+        let chain_graph_errors = acteon_core::validate_chain_graph(&self.chains);
+        if !chain_graph_errors.is_empty() {
+            return Err(GatewayError::Configuration(format!(
+                "invalid chain graph: {}",
+                chain_graph_errors.join("; ")
+            )));
+        }
+
         // Pre-compute step-name → index maps for each chain config so we
         // don't rebuild them on every step completion during chain advancement.
         let chain_step_indices: HashMap<String, HashMap<String, usize>> = self
@@ -492,6 +791,33 @@ impl GatewayBuilder {
         // Create the broadcast channel for SSE event streaming.
         let (stream_tx, _) = tokio::sync::broadcast::channel(self.stream_buffer_size);
 
+        // Wrap the audit store with compliance decorators when configured.
+        let mut hash_chain_store: Option<Arc<acteon_audit::HashChainAuditStore>> = None;
+        let audit: Option<Arc<dyn AuditStore>> = if let Some(audit_store) = self.audit {
+            if let Some(ref compliance) = self.compliance_config {
+                let store: Arc<dyn AuditStore> = if compliance.hash_chain {
+                    let hcs = Arc::new(acteon_audit::HashChainAuditStore::new(audit_store));
+                    hash_chain_store = Some(Arc::clone(&hcs));
+                    hcs
+                } else {
+                    audit_store
+                };
+                let store: Arc<dyn AuditStore> = if compliance.immutable_audit {
+                    Arc::new(acteon_audit::ComplianceAuditStore::new(
+                        store,
+                        compliance.clone(),
+                    ))
+                } else {
+                    store
+                };
+                Some(store)
+            } else {
+                Some(audit_store)
+            }
+        } else {
+            None
+        };
+
         Ok(Gateway {
             state,
             lock,
@@ -500,7 +826,7 @@ impl GatewayBuilder {
             executor,
             environment: self.environment,
             metrics: Arc::new(GatewayMetrics::default()),
-            audit: self.audit,
+            audit,
             audit_ttl_seconds: self.audit_ttl_seconds,
             audit_store_payload: self.audit_store_payload,
             audit_tracker: TaskTracker::new(),
@@ -513,13 +839,30 @@ impl GatewayBuilder {
             llm_policy: self.llm_policy,
             llm_policies: self.llm_policies,
             llm_fail_open: self.llm_fail_open,
-            chains: self.chains,
-            chain_step_indices,
+            chains: parking_lot::RwLock::new(self.chains),
+            chain_step_indices: parking_lot::RwLock::new(chain_step_indices),
             completed_chain_ttl: self.completed_chain_ttl,
             embedding: self.embedding,
             default_timezone,
             circuit_breakers,
             stream_tx,
+            quota_policies: parking_lot::RwLock::new(quota_policies),
+            retention_policies: parking_lot::RwLock::new(self.retention_policies),
+            payload_encryptor: self.payload_encryptor,
+            provider_metrics: Arc::new(crate::metrics::ProviderMetrics::default()),
+            wasm_runtime: self.wasm_runtime,
+            compliance_config: self.compliance_config,
+            hash_chain_store,
+            enrichments: self.enrichments,
+            resource_lookups: self.resource_lookups,
+            templates: parking_lot::RwLock::new(self.templates),
+            template_profiles: parking_lot::RwLock::new(self.template_profiles),
+            silences: parking_lot::RwLock::new(build_silence_cache(self.silences)?),
+            time_intervals: parking_lot::RwLock::new(build_time_interval_cache(
+                self.time_intervals,
+            )?),
+            max_inline_bytes: self.max_inline_bytes,
+            max_attachments_per_action: self.max_attachments_per_action,
         })
     }
 }
@@ -528,6 +871,43 @@ impl Default for GatewayBuilder {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Compile a list of silences into the gateway cache, keyed by namespace.
+///
+/// The cache is keyed by namespace alone (not `(namespace, tenant)`) so
+/// that hierarchical tenant matching works at dispatch time — a silence
+/// on tenant `acme` can cover dispatches to `acme.us-east`. See
+/// [`Gateway::check_silence`](crate::Gateway::check_silence) for the
+/// match logic.
+fn build_silence_cache(
+    silences: Vec<acteon_core::Silence>,
+) -> Result<HashMap<String, Vec<crate::silence_enforcement::CachedSilence>>, GatewayError> {
+    let mut out: HashMap<String, Vec<crate::silence_enforcement::CachedSilence>> = HashMap::new();
+    for silence in silences {
+        silence.validate().map_err(GatewayError::Configuration)?;
+        let cached = crate::silence_enforcement::CachedSilence::new(silence)
+            .map_err(GatewayError::Configuration)?;
+        let namespace = cached.silence.namespace.clone();
+        out.entry(namespace).or_default().push(cached);
+    }
+    Ok(out)
+}
+
+/// Compile a list of time intervals into the gateway cache, keyed by
+/// namespace. Mirrors [`build_silence_cache`] so hierarchical tenant
+/// matching works at dispatch time.
+fn build_time_interval_cache(
+    intervals: Vec<acteon_core::TimeInterval>,
+) -> Result<HashMap<String, Vec<acteon_core::TimeInterval>>, GatewayError> {
+    let mut out: HashMap<String, Vec<acteon_core::TimeInterval>> = HashMap::new();
+    for interval in intervals {
+        interval.validate().map_err(GatewayError::Configuration)?;
+        out.entry(interval.namespace.clone())
+            .or_default()
+            .push(interval);
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -557,6 +937,20 @@ mod tests {
         async fn health_check(&self) -> Result<(), acteon_provider::ProviderError> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn llm_fail_open_default_is_false() {
+        // The builder defaults to fail-closed so a deployment that
+        // wires an LLM evaluator without explicitly setting
+        // fail_open does not silently bypass the guardrail when the
+        // evaluator errors. Operators who want fail-open behavior
+        // must opt in via .llm_fail_open(true). See issue #120.
+        let builder = GatewayBuilder::new();
+        assert!(
+            !builder.llm_fail_open,
+            "GatewayBuilder default for llm_fail_open must remain false (fail-closed)"
+        );
     }
 
     #[test]
@@ -702,6 +1096,72 @@ mod tests {
     }
 
     #[test]
+    fn build_rejects_quota_policy_zero_max_actions() {
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+        let policy = acteon_core::QuotaPolicy {
+            id: "q-bad".into(),
+            namespace: "ns".into(),
+            tenant: "t".into(),
+            provider: None,
+            max_actions: 0,
+            window: acteon_core::quota::QuotaWindow::Daily,
+            overage_behavior: acteon_core::quota::OverageBehavior::Block,
+            enabled: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            description: None,
+            labels: HashMap::new(),
+        };
+        let result = GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .quota_policy(policy)
+            .build();
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("max_actions must be greater than 0"),
+            "should reject quota with zero max_actions"
+        );
+    }
+
+    #[test]
+    fn build_rejects_quota_policy_zero_window() {
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+        let policy = acteon_core::QuotaPolicy {
+            id: "q-bad2".into(),
+            namespace: "ns".into(),
+            tenant: "t".into(),
+            provider: None,
+            max_actions: 100,
+            window: acteon_core::quota::QuotaWindow::Custom { seconds: 0 },
+            overage_behavior: acteon_core::quota::OverageBehavior::Block,
+            enabled: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            description: None,
+            labels: HashMap::new(),
+        };
+        let result = GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .quota_policy(policy)
+            .build();
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("quota window duration must be greater than 0"),
+            "should reject quota with zero-duration window"
+        );
+    }
+
+    #[test]
     fn build_accepts_valid_fallback_chain() {
         let store = Arc::new(MemoryStateStore::new());
         let lock = Arc::new(MemoryDistributedLock::new());
@@ -727,5 +1187,37 @@ mod tests {
             )
             .build();
         assert!(result.is_ok(), "A→B→C (no cycle) should be accepted");
+    }
+
+    #[test]
+    fn builder_wasm_runtime() {
+        use acteon_wasm_runtime::MockWasmRuntime;
+
+        let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+        let wasm = Arc::new(MockWasmRuntime::new(true));
+
+        let gateway = GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .wasm_runtime(wasm)
+            .build()
+            .unwrap();
+
+        assert!(gateway.wasm_runtime().is_some());
+    }
+
+    #[test]
+    fn builder_without_wasm_runtime() {
+        let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+
+        let gateway = GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .build()
+            .unwrap();
+
+        assert!(gateway.wasm_runtime().is_none());
     }
 }

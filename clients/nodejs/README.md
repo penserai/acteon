@@ -162,6 +162,12 @@ const client = new ActeonClient("http://localhost:8080", {
 });
 ```
 
+API keys are sent via the `Authorization: Bearer <key>` header. The server
+accepts both JWTs and raw API keys on that header. API keys are scoped by
+tenant, namespace, provider, and action type on the server side — see the
+[API Key Scoping](https://penserai.github.io/acteon/features/api-key-scoping/)
+documentation for the grant model and hierarchical tenant matching.
+
 ## Error Handling
 
 ```typescript
@@ -200,6 +206,7 @@ try {
 | `setRuleEnabled(name, enabled)` | Enable/disable a rule |
 | `queryAudit(query)` | Query audit records |
 | `getAuditRecord(actionId)` | Get specific audit record |
+| `fetchSigningKeys()` | Fetch the server's active signing keyring (JWKS-style discovery) |
 
 ### Action Fields
 

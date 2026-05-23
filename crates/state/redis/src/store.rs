@@ -30,7 +30,8 @@ impl RedisStateStore {
     ///
     /// Returns [`StateError::Connection`] if the pool cannot be created.
     pub fn new(config: &RedisConfig) -> Result<Self, StateError> {
-        let cfg = Config::from_url(&config.url);
+        let effective_url = config.effective_url();
+        let cfg = Config::from_url(&effective_url);
         let pool = cfg
             .builder()
             .map(|b| {
@@ -115,6 +116,32 @@ impl StateStore for RedisStateStore {
             .map_err(|e| StateError::Backend(e.to_string()))?;
 
         Ok(val)
+    }
+
+    async fn get_versioned(&self, key: &StateKey) -> Result<Option<(String, u64)>, StateError> {
+        let hash_key = self.hash_key(key);
+        let mut conn = self.conn().await?;
+        // Hash storage carries the version; CAS-only callers update
+        // through this path.
+        let (val, ver): (Option<String>, Option<u64>) = redis::pipe()
+            .hget(&hash_key, "v")
+            .hget(&hash_key, "ver")
+            .query_async(&mut conn)
+            .await
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+        if let (Some(v), Some(ver)) = (val, ver) {
+            return Ok(Some((v, ver)));
+        }
+        // Plain-string fallback for entries written by `check_and_set`
+        // (no version tracked). Report version 0 — the first
+        // `compare_and_swap(_, 0, ...)` call will atomically promote
+        // the entry into hash form with version 1.
+        let string_key = self.string_key(key);
+        let val: Option<String> = conn
+            .get(&string_key)
+            .await
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+        Ok(val.map(|v| (v, 0)))
     }
 
     async fn set(

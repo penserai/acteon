@@ -5,8 +5,12 @@ import com.acteon.client.models.*;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
+import java.security.KeyStore;
+import java.security.cert.CertificateFactory;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -14,9 +18,16 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import javax.net.ssl.KeyManager;
+import javax.net.ssl.KeyManagerFactory;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.TrustManagerFactory;
+import javax.net.ssl.X509TrustManager;
 
 /**
  * HTTP client for the Acteon action gateway.
@@ -58,10 +69,30 @@ public class ActeonClient implements AutoCloseable {
     public ActeonClient(String baseUrl, String apiKey, Duration timeout) {
         this.baseUrl = baseUrl.replaceAll("/$", "");
         this.apiKey = apiKey;
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonMapper.build();
         this.httpClient = HttpClient.newBuilder()
             .connectTimeout(timeout)
             .build();
+    }
+
+    /**
+     * Creates a new Acteon client with TLS configuration for mTLS.
+     */
+    public ActeonClient(String baseUrl, String apiKey, Duration timeout, TlsConfig tlsConfig) {
+        this.baseUrl = baseUrl.replaceAll("/$", "");
+        this.apiKey = apiKey;
+        this.objectMapper = JsonMapper.build();
+
+        HttpClient.Builder builder = HttpClient.newBuilder().connectTimeout(timeout);
+        if (tlsConfig != null) {
+            try {
+                SSLContext sslContext = buildSslContext(tlsConfig);
+                builder.sslContext(sslContext);
+            } catch (Exception e) {
+                throw new RuntimeException("Failed to configure TLS: " + e.getMessage(), e);
+            }
+        }
+        this.httpClient = builder.build();
     }
 
     private HttpRequest.Builder requestBuilder(String path) {
@@ -76,6 +107,32 @@ public class ActeonClient implements AutoCloseable {
         return builder;
     }
 
+    /**
+     * A2A request builder. Lets callers attach extra headers (used
+     * by the A2A surface to set {@code A2A-Version}) and optionally
+     * suppress the {@code Authorization} header (used by the
+     * unauthenticated discovery endpoint).
+     */
+    private HttpRequest.Builder a2aRequestBuilder(
+        String path,
+        java.util.Map<String, String> extraHeaders,
+        boolean skipAuth
+    ) {
+        HttpRequest.Builder builder = HttpRequest.newBuilder()
+            .uri(URI.create(baseUrl + path))
+            .header("Content-Type", "application/json");
+
+        if (!skipAuth && apiKey != null && !apiKey.isEmpty()) {
+            builder.header("Authorization", "Bearer " + apiKey);
+        }
+        if (extraHeaders != null) {
+            for (java.util.Map.Entry<String, String> e : extraHeaders.entrySet()) {
+                builder.header(e.getKey(), e.getValue());
+            }
+        }
+        return builder;
+    }
+
     private <T> T parseResponse(HttpResponse<String> response, Class<T> clazz) throws IOException {
         return objectMapper.readValue(response.body(), clazz);
     }
@@ -87,6 +144,62 @@ public class ActeonClient implements AutoCloseable {
     @Override
     public void close() {
         // HttpClient doesn't need explicit closing in Java 11+
+    }
+
+    /**
+     * TLS configuration for connecting to an mTLS-enabled Acteon server.
+     */
+    public static class TlsConfig {
+        private final String caCertPath;
+        private final String clientCertPath;
+        private final String clientKeyPath;
+        private final boolean trustAllCerts;
+
+        private TlsConfig(Builder builder) {
+            this.caCertPath = builder.caCertPath;
+            this.clientCertPath = builder.clientCertPath;
+            this.clientKeyPath = builder.clientKeyPath;
+            this.trustAllCerts = builder.trustAllCerts;
+        }
+
+        public static Builder builder() {
+            return new Builder();
+        }
+
+        public static class Builder {
+            private String caCertPath;
+            private String clientCertPath;
+            private String clientKeyPath;
+            private boolean trustAllCerts = false;
+
+            /** Set path to custom CA certificate file (PEM) for server verification. */
+            public Builder caCertPath(String path) {
+                this.caCertPath = path;
+                return this;
+            }
+
+            /** Set path to client certificate file (PEM) for mTLS. */
+            public Builder clientCertPath(String path) {
+                this.clientCertPath = path;
+                return this;
+            }
+
+            /** Set path to client private key file (PEM) for mTLS. */
+            public Builder clientKeyPath(String path) {
+                this.clientKeyPath = path;
+                return this;
+            }
+
+            /** Skip certificate verification (dev/test only). */
+            public Builder trustAllCerts(boolean trustAll) {
+                this.trustAllCerts = trustAll;
+                return this;
+            }
+
+            public TlsConfig build() {
+                return new TlsConfig(this);
+            }
+        }
     }
 
     // =========================================================================
@@ -109,6 +222,63 @@ public class ActeonClient implements AutoCloseable {
     }
 
     // =========================================================================
+    // Signing key discovery (JWKS-style)
+    // =========================================================================
+
+    /**
+     * Fetches the server's active signing keyring.
+     *
+     * <p>Calls {@code GET /.well-known/acteon-signing-keys}, a public,
+     * unauthenticated endpoint that publishes the public half of
+     * every {@code (signer_id, kid)} pair the server will accept
+     * signatures from. Useful for:
+     *
+     * <ul>
+     *   <li>verifying dispatched actions independently without pinning
+     *       public keys at deploy time, or</li>
+     *   <li>detecting a rotation in progress — a signer with more
+     *       than one entry in the response means the operator is
+     *       staging a rotation and the client should start sending
+     *       the new {@code kid}.</li>
+     * </ul>
+     *
+     * <p>Returns a response with an empty {@code keys} list when
+     * signing is disabled on the server.
+     *
+     * @throws ActeonException if the server returns a non-200 status
+     *         or the response cannot be parsed.
+     */
+    public SigningKeysResponse fetchSigningKeys() throws ActeonException {
+        HttpResponse<String> response;
+        try {
+            HttpRequest request = requestBuilder("/.well-known/acteon-signing-keys")
+                .GET()
+                .build();
+            response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+
+        if (response.statusCode() != 200) {
+            throw new HttpException(response.statusCode(), "Failed to fetch signing keys");
+        }
+
+        // Wrap JSON parse errors so upstream callers see a typed
+        // "malformed response" signal instead of a raw Jackson
+        // exception — which is what they'd see if a proxy or
+        // waiting-room page returned 200 OK with an HTML body.
+        try {
+            return objectMapper.readValue(response.body(), SigningKeysResponse.class);
+        } catch (IOException e) {
+            throw new ConnectionException(
+                "malformed signing keys response: " + e.getMessage(), e);
+        }
+    }
+
+    // =========================================================================
     // Action Dispatch
     // =========================================================================
 
@@ -125,11 +295,7 @@ public class ActeonClient implements AutoCloseable {
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
             if (response.statusCode() == 200) {
-                Map<String, Object> data = objectMapper.readValue(
-                    response.body(),
-                    new TypeReference<Map<String, Object>>() {}
-                );
-                return ActionOutcome.fromMap(data);
+                return objectMapper.readValue(response.body(), ActionOutcome.class);
             } else {
                 ErrorResponse error = parseResponse(response, ErrorResponse.class);
                 throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
@@ -156,11 +322,7 @@ public class ActeonClient implements AutoCloseable {
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
             if (response.statusCode() == 200) {
-                Map<String, Object> data = objectMapper.readValue(
-                    response.body(),
-                    new TypeReference<Map<String, Object>>() {}
-                );
-                return ActionOutcome.fromMap(data);
+                return objectMapper.readValue(response.body(), ActionOutcome.class);
             } else {
                 ErrorResponse error = parseResponse(response, ErrorResponse.class);
                 throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
@@ -186,15 +348,10 @@ public class ActeonClient implements AutoCloseable {
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
             if (response.statusCode() == 200) {
-                List<Map<String, Object>> data = objectMapper.readValue(
+                return objectMapper.readValue(
                     response.body(),
-                    new TypeReference<List<Map<String, Object>>>() {}
+                    new TypeReference<List<BatchResult>>() {}
                 );
-                List<BatchResult> results = new ArrayList<>();
-                for (Map<String, Object> item : data) {
-                    results.add(BatchResult.fromMap(item));
-                }
-                return results;
             } else {
                 ErrorResponse error = parseResponse(response, ErrorResponse.class);
                 throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
@@ -221,15 +378,10 @@ public class ActeonClient implements AutoCloseable {
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
             if (response.statusCode() == 200) {
-                List<Map<String, Object>> data = objectMapper.readValue(
+                return objectMapper.readValue(
                     response.body(),
-                    new TypeReference<List<Map<String, Object>>>() {}
+                    new TypeReference<List<BatchResult>>() {}
                 );
-                List<BatchResult> results = new ArrayList<>();
-                for (Map<String, Object> item : data) {
-                    results.add(BatchResult.fromMap(item));
-                }
-                return results;
             } else {
                 ErrorResponse error = parseResponse(response, ErrorResponse.class);
                 throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
@@ -317,6 +469,33 @@ public class ActeonClient implements AutoCloseable {
         }
     }
 
+    /**
+     * Evaluates rules against a test action without dispatching (Rule Playground).
+     * Returns detailed trace information about each rule's evaluation.
+     */
+    public EvaluateRulesResponse evaluateRules(EvaluateRulesRequest request) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(request);
+            HttpRequest httpReq = requestBuilder("/v1/rules/evaluate")
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = httpClient.send(httpReq, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, EvaluateRulesResponse.class);
+            } else {
+                ErrorResponse error = parseResponse(response, ErrorResponse.class);
+                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
     // =========================================================================
     // Audit Trail
     // =========================================================================
@@ -350,6 +529,9 @@ public class ActeonClient implements AutoCloseable {
                 }
                 if (query.getOffset() != null) {
                     params.add("offset=" + query.getOffset());
+                }
+                if (query.getCursor() != null) {
+                    params.add("cursor=" + URLEncoder.encode(query.getCursor(), StandardCharsets.UTF_8));
                 }
             }
 
@@ -845,5 +1027,2904 @@ public class ActeonClient implements AutoCloseable {
             Thread.currentThread().interrupt();
             throw new ConnectionException("Request interrupted", e);
         }
+    }
+
+    // =========================================================================
+    // Recurring Actions
+    // =========================================================================
+
+    /**
+     * Creates a recurring action.
+     */
+    public CreateRecurringResponse createRecurring(CreateRecurringAction recurring) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(recurring);
+            HttpRequest request = requestBuilder("/v1/recurring")
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 201) {
+                return parseResponse(response, CreateRecurringResponse.class);
+            } else {
+                ErrorResponse error = parseResponse(response, ErrorResponse.class);
+                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Lists recurring actions with optional filters.
+     */
+    public ListRecurringResponse listRecurring(RecurringFilter filter) throws ActeonException {
+        try {
+            StringBuilder path = new StringBuilder("/v1/recurring");
+            List<String> params = new ArrayList<>();
+
+            if (filter != null) {
+                if (filter.getNamespace() != null) {
+                    params.add("namespace=" + URLEncoder.encode(filter.getNamespace(), StandardCharsets.UTF_8));
+                }
+                if (filter.getTenant() != null) {
+                    params.add("tenant=" + URLEncoder.encode(filter.getTenant(), StandardCharsets.UTF_8));
+                }
+                if (filter.getStatus() != null) {
+                    params.add("status=" + URLEncoder.encode(filter.getStatus(), StandardCharsets.UTF_8));
+                }
+                if (filter.getLimit() != null) {
+                    params.add("limit=" + filter.getLimit());
+                }
+                if (filter.getOffset() != null) {
+                    params.add("offset=" + filter.getOffset());
+                }
+            }
+
+            if (!params.isEmpty()) {
+                path.append("?").append(String.join("&", params));
+            }
+
+            HttpRequest request = requestBuilder(path.toString())
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, ListRecurringResponse.class);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to list recurring actions");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Gets details of a specific recurring action.
+     */
+    public Optional<RecurringDetail> getRecurring(String recurringId, String namespace, String tenant) throws ActeonException {
+        try {
+            String path = "/v1/recurring/" + URLEncoder.encode(recurringId, StandardCharsets.UTF_8)
+                + "?namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8)
+                + "&tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8);
+
+            HttpRequest request = requestBuilder(path)
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return Optional.of(parseResponse(response, RecurringDetail.class));
+            } else if (response.statusCode() == 404) {
+                return Optional.empty();
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to get recurring action");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Updates a recurring action.
+     */
+    public RecurringDetail updateRecurring(String recurringId, UpdateRecurringAction update) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(update);
+            HttpRequest request = requestBuilder("/v1/recurring/" + URLEncoder.encode(recurringId, StandardCharsets.UTF_8))
+                .PUT(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, RecurringDetail.class);
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Recurring action not found: " + recurringId);
+            } else {
+                ErrorResponse error = parseResponse(response, ErrorResponse.class);
+                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Deletes a recurring action.
+     */
+    public void deleteRecurring(String recurringId, String namespace, String tenant) throws ActeonException {
+        try {
+            String path = "/v1/recurring/" + URLEncoder.encode(recurringId, StandardCharsets.UTF_8)
+                + "?namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8)
+                + "&tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8);
+
+            HttpRequest request = requestBuilder(path)
+                .DELETE()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 204) {
+                return;
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Recurring action not found: " + recurringId);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to delete recurring action");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Pauses a recurring action.
+     */
+    public RecurringDetail pauseRecurring(String recurringId, String namespace, String tenant) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(Map.of("namespace", namespace, "tenant", tenant));
+            HttpRequest request = requestBuilder("/v1/recurring/" + URLEncoder.encode(recurringId, StandardCharsets.UTF_8) + "/pause")
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, RecurringDetail.class);
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Recurring action not found: " + recurringId);
+            } else if (response.statusCode() == 409) {
+                throw new HttpException(response.statusCode(), "Recurring action is already paused");
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to pause recurring action");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Resumes a paused recurring action.
+     */
+    public RecurringDetail resumeRecurring(String recurringId, String namespace, String tenant) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(Map.of("namespace", namespace, "tenant", tenant));
+            HttpRequest request = requestBuilder("/v1/recurring/" + URLEncoder.encode(recurringId, StandardCharsets.UTF_8) + "/resume")
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, RecurringDetail.class);
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Recurring action not found: " + recurringId);
+            } else if (response.statusCode() == 409) {
+                throw new HttpException(response.statusCode(), "Recurring action is already active");
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to resume recurring action");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    // =========================================================================
+    // Swarm runs
+    // =========================================================================
+
+    /**
+     * Lists swarm runs tracked by the server-side registry.
+     */
+    public ListSwarmRunsResponse listSwarmRuns(SwarmRunFilter filter) throws ActeonException {
+        try {
+            StringBuilder path = new StringBuilder("/v1/swarm/runs");
+            List<String> params = new ArrayList<>();
+            if (filter != null) {
+                if (filter.getNamespace() != null) {
+                    params.add("namespace=" + URLEncoder.encode(filter.getNamespace(), StandardCharsets.UTF_8));
+                }
+                if (filter.getTenant() != null) {
+                    params.add("tenant=" + URLEncoder.encode(filter.getTenant(), StandardCharsets.UTF_8));
+                }
+                if (filter.getStatus() != null) {
+                    params.add("status=" + URLEncoder.encode(filter.getStatus(), StandardCharsets.UTF_8));
+                }
+                if (filter.getLimit() != null) {
+                    params.add("limit=" + filter.getLimit());
+                }
+                if (filter.getOffset() != null) {
+                    params.add("offset=" + filter.getOffset());
+                }
+            }
+            if (!params.isEmpty()) {
+                path.append("?").append(String.join("&", params));
+            }
+
+            HttpRequest request = requestBuilder(path.toString()).GET().build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() == 200) {
+                return parseResponse(response, ListSwarmRunsResponse.class);
+            }
+            throw new HttpException(response.statusCode(), "Failed to list swarm runs");
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Fetches a single swarm run snapshot. Returns empty when unknown.
+     */
+    public Optional<SwarmRunSnapshot> getSwarmRun(String runId) throws ActeonException {
+        try {
+            HttpRequest request = requestBuilder(
+                "/v1/swarm/runs/" + URLEncoder.encode(runId, StandardCharsets.UTF_8)
+            ).GET().build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() == 200) {
+                return Optional.of(parseResponse(response, SwarmRunSnapshot.class));
+            }
+            if (response.statusCode() == 404) {
+                return Optional.empty();
+            }
+            throw new HttpException(response.statusCode(), "Failed to fetch swarm run");
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Requests cancellation of an inflight swarm run. Returns empty when unknown.
+     */
+    public Optional<SwarmRunSnapshot> cancelSwarmRun(String runId) throws ActeonException {
+        try {
+            HttpRequest request = requestBuilder(
+                "/v1/swarm/runs/" + URLEncoder.encode(runId, StandardCharsets.UTF_8) + "/cancel"
+            ).POST(HttpRequest.BodyPublishers.noBody()).build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() == 200) {
+                return Optional.of(parseResponse(response, SwarmRunSnapshot.class));
+            }
+            if (response.statusCode() == 404) {
+                return Optional.empty();
+            }
+            throw new HttpException(response.statusCode(), "Failed to cancel swarm run");
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    // =========================================================================
+    // Quotas
+    // =========================================================================
+
+    /**
+     * Creates a quota policy.
+     */
+    public QuotaPolicy createQuota(CreateQuotaRequest req) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(req);
+            HttpRequest request = requestBuilder("/v1/quotas")
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 201) {
+                return parseResponse(response, QuotaPolicy.class);
+            } else {
+                ErrorResponse error = parseResponse(response, ErrorResponse.class);
+                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Lists quota policies with optional namespace, tenant, and
+     * provider filters. Pass "generic" as the provider filter to
+     * match only policies without a provider scope, or a provider
+     * name (e.g. "slack") to match only per-provider policies.
+     */
+    public ListQuotasResponse listQuotas(String namespace, String tenant, String provider) throws ActeonException {
+        try {
+            List<String> params = new ArrayList<>();
+            if (namespace != null) {
+                params.add("namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8));
+            }
+            if (tenant != null) {
+                params.add("tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8));
+            }
+            if (provider != null) {
+                params.add("provider=" + URLEncoder.encode(provider, StandardCharsets.UTF_8));
+            }
+
+            String path = "/v1/quotas";
+            if (!params.isEmpty()) {
+                path += "?" + String.join("&", params);
+            }
+
+            HttpRequest request = requestBuilder(path)
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, ListQuotasResponse.class);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to list quotas");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Gets a single quota policy by ID.
+     */
+    public Optional<QuotaPolicy> getQuota(String quotaId) throws ActeonException {
+        try {
+            String path = "/v1/quotas/" + URLEncoder.encode(quotaId, StandardCharsets.UTF_8);
+
+            HttpRequest request = requestBuilder(path)
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return Optional.of(parseResponse(response, QuotaPolicy.class));
+            } else if (response.statusCode() == 404) {
+                return Optional.empty();
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to get quota");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Updates a quota policy.
+     */
+    public QuotaPolicy updateQuota(String quotaId, UpdateQuotaRequest update) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(update);
+            HttpRequest request = requestBuilder("/v1/quotas/" + URLEncoder.encode(quotaId, StandardCharsets.UTF_8))
+                .PUT(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, QuotaPolicy.class);
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Quota not found: " + quotaId);
+            } else {
+                ErrorResponse error = parseResponse(response, ErrorResponse.class);
+                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Deletes a quota policy.
+     */
+    public void deleteQuota(String quotaId, String namespace, String tenant) throws ActeonException {
+        try {
+            String path = "/v1/quotas/" + URLEncoder.encode(quotaId, StandardCharsets.UTF_8)
+                + "?namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8)
+                + "&tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8);
+
+            HttpRequest request = requestBuilder(path)
+                .DELETE()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 204) {
+                return;
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Quota not found: " + quotaId);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to delete quota");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Gets current usage statistics for a quota policy.
+     */
+    public QuotaUsage getQuotaUsage(String quotaId) throws ActeonException {
+        try {
+            String path = "/v1/quotas/" + URLEncoder.encode(quotaId, StandardCharsets.UTF_8) + "/usage";
+
+            HttpRequest request = requestBuilder(path)
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, QuotaUsage.class);
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Quota not found: " + quotaId);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to get quota usage");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    // =========================================================================
+    // Silences
+    // =========================================================================
+
+    /**
+     * Creates a silence. Supply either {@code endsAt} or
+     * {@code durationSeconds} on the request.
+     */
+    public Silence createSilence(CreateSilenceRequest req) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(req);
+            HttpRequest request = requestBuilder("/v1/silences")
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 201) {
+                return parseResponse(response, Silence.class);
+            } else {
+                ErrorResponse error = parseResponse(response, ErrorResponse.class);
+                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Lists silences, optionally filtered by namespace, tenant, or
+     * whether to include expired silences.
+     */
+    public ListSilencesResponse listSilences(String namespace, String tenant, boolean includeExpired) throws ActeonException {
+        try {
+            List<String> params = new ArrayList<>();
+            if (namespace != null) {
+                params.add("namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8));
+            }
+            if (tenant != null) {
+                params.add("tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8));
+            }
+            if (includeExpired) {
+                params.add("include_expired=true");
+            }
+
+            String path = "/v1/silences";
+            if (!params.isEmpty()) {
+                path += "?" + String.join("&", params);
+            }
+
+            HttpRequest request = requestBuilder(path)
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, ListSilencesResponse.class);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to list silences");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Fetches a single silence by ID. Returns an empty Optional if
+     * the silence does not exist (404).
+     */
+    public Optional<Silence> getSilence(String silenceId) throws ActeonException {
+        try {
+            String path = "/v1/silences/" + URLEncoder.encode(silenceId, StandardCharsets.UTF_8);
+
+            HttpRequest request = requestBuilder(path)
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return Optional.of(parseResponse(response, Silence.class));
+            } else if (response.statusCode() == 404) {
+                return Optional.empty();
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to get silence");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Extends a silence or edits its comment. Matchers are immutable
+     * — to change them, expire the silence and create a new one.
+     */
+    public Silence updateSilence(String silenceId, UpdateSilenceRequest update) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(update);
+            HttpRequest request = requestBuilder("/v1/silences/" + URLEncoder.encode(silenceId, StandardCharsets.UTF_8))
+                .PUT(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, Silence.class);
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Silence not found: " + silenceId);
+            } else {
+                ErrorResponse error = parseResponse(response, ErrorResponse.class);
+                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Expires a silence immediately (soft-expire). The record stays
+     * queryable for audit-trail purposes.
+     */
+    public void deleteSilence(String silenceId) throws ActeonException {
+        try {
+            String path = "/v1/silences/" + URLEncoder.encode(silenceId, StandardCharsets.UTF_8);
+
+            HttpRequest request = requestBuilder(path)
+                .DELETE()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 204) {
+                return;
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Silence not found: " + silenceId);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to delete silence");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    // =========================================================================
+    // Time Intervals
+    // =========================================================================
+
+    /**
+     * Creates a tenant-scoped time interval that rules can reference
+     * via {@code mute_time_intervals} or {@code active_time_intervals}.
+     */
+    public TimeInterval createTimeInterval(CreateTimeIntervalRequest req) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(req);
+            HttpRequest request = requestBuilder("/v1/time-intervals")
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() == 201) {
+                return parseResponse(response, TimeInterval.class);
+            } else {
+                ErrorResponse error = parseResponse(response, ErrorResponse.class);
+                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Lists time intervals filtered by namespace and/or tenant.
+     */
+    public ListTimeIntervalsResponse listTimeIntervals(String namespace, String tenant) throws ActeonException {
+        try {
+            List<String> params = new ArrayList<>();
+            if (namespace != null) {
+                params.add("namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8));
+            }
+            if (tenant != null) {
+                params.add("tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8));
+            }
+            String path = "/v1/time-intervals";
+            if (!params.isEmpty()) {
+                path += "?" + String.join("&", params);
+            }
+            HttpRequest request = requestBuilder(path).GET().build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() == 200) {
+                return parseResponse(response, ListTimeIntervalsResponse.class);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to list time intervals");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Fetches a single time interval. Returns an empty Optional on 404.
+     */
+    public Optional<TimeInterval> getTimeInterval(String namespace, String tenant, String name) throws ActeonException {
+        try {
+            String path = "/v1/time-intervals/"
+                + URLEncoder.encode(namespace, StandardCharsets.UTF_8) + "/"
+                + URLEncoder.encode(tenant, StandardCharsets.UTF_8) + "/"
+                + URLEncoder.encode(name, StandardCharsets.UTF_8);
+            HttpRequest request = requestBuilder(path).GET().build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() == 200) {
+                return Optional.of(parseResponse(response, TimeInterval.class));
+            } else if (response.statusCode() == 404) {
+                return Optional.empty();
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to get time interval");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Updates a time interval's ranges, location, or description.
+     */
+    public TimeInterval updateTimeInterval(String namespace, String tenant, String name, UpdateTimeIntervalRequest update) throws ActeonException {
+        try {
+            String path = "/v1/time-intervals/"
+                + URLEncoder.encode(namespace, StandardCharsets.UTF_8) + "/"
+                + URLEncoder.encode(tenant, StandardCharsets.UTF_8) + "/"
+                + URLEncoder.encode(name, StandardCharsets.UTF_8);
+            String body = objectMapper.writeValueAsString(update);
+            HttpRequest request = requestBuilder(path)
+                .PUT(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() == 200) {
+                return parseResponse(response, TimeInterval.class);
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Time interval not found: " + name);
+            } else {
+                ErrorResponse error = parseResponse(response, ErrorResponse.class);
+                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Deletes a time interval.
+     */
+    public void deleteTimeInterval(String namespace, String tenant, String name) throws ActeonException {
+        try {
+            String path = "/v1/time-intervals/"
+                + URLEncoder.encode(namespace, StandardCharsets.UTF_8) + "/"
+                + URLEncoder.encode(tenant, StandardCharsets.UTF_8) + "/"
+                + URLEncoder.encode(name, StandardCharsets.UTF_8);
+            HttpRequest request = requestBuilder(path).DELETE().build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() == 204) {
+                return;
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Time interval not found: " + name);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to delete time interval");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    // =========================================================================
+    // Retention Policies
+    // =========================================================================
+
+    /**
+     * Creates a retention policy.
+     */
+    public RetentionPolicy createRetention(CreateRetentionRequest req) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(req);
+            HttpRequest request = requestBuilder("/v1/retention")
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 201) {
+                return parseResponse(response, RetentionPolicy.class);
+            } else {
+                ErrorResponse error = parseResponse(response, ErrorResponse.class);
+                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Lists retention policies with optional namespace, tenant, limit, and offset filters.
+     */
+    public ListRetentionResponse listRetention(String namespace, String tenant, Integer limit, Integer offset) throws ActeonException {
+        try {
+            List<String> params = new ArrayList<>();
+            if (namespace != null) {
+                params.add("namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8));
+            }
+            if (tenant != null) {
+                params.add("tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8));
+            }
+            if (limit != null) {
+                params.add("limit=" + limit);
+            }
+            if (offset != null) {
+                params.add("offset=" + offset);
+            }
+
+            String path = "/v1/retention";
+            if (!params.isEmpty()) {
+                path += "?" + String.join("&", params);
+            }
+
+            HttpRequest request = requestBuilder(path)
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, ListRetentionResponse.class);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to list retention policies");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Gets a single retention policy by ID.
+     */
+    public Optional<RetentionPolicy> getRetention(String retentionId) throws ActeonException {
+        try {
+            String path = "/v1/retention/" + URLEncoder.encode(retentionId, StandardCharsets.UTF_8);
+
+            HttpRequest request = requestBuilder(path)
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return Optional.of(parseResponse(response, RetentionPolicy.class));
+            } else if (response.statusCode() == 404) {
+                return Optional.empty();
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to get retention policy");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Updates a retention policy.
+     */
+    public RetentionPolicy updateRetention(String retentionId, UpdateRetentionRequest update) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(update);
+            HttpRequest request = requestBuilder("/v1/retention/" + URLEncoder.encode(retentionId, StandardCharsets.UTF_8))
+                .PUT(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, RetentionPolicy.class);
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Retention policy not found: " + retentionId);
+            } else {
+                ErrorResponse error = parseResponse(response, ErrorResponse.class);
+                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Deletes a retention policy.
+     */
+    public void deleteRetention(String retentionId) throws ActeonException {
+        try {
+            String path = "/v1/retention/" + URLEncoder.encode(retentionId, StandardCharsets.UTF_8);
+
+            HttpRequest request = requestBuilder(path)
+                .DELETE()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 204) {
+                return;
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Retention policy not found: " + retentionId);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to delete retention policy");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    // =========================================================================
+    // Payload Templates
+    // =========================================================================
+
+    /**
+     * Creates a payload template.
+     */
+    public TemplateInfo createTemplate(CreateTemplateRequest req) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(req);
+            HttpRequest request = requestBuilder("/v1/templates")
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 201) {
+                return parseResponse(response, TemplateInfo.class);
+            } else {
+                ErrorResponse error = parseResponse(response, ErrorResponse.class);
+                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Lists payload templates with optional namespace and tenant filters.
+     */
+    public ListTemplatesResponse listTemplates(String namespace, String tenant) throws ActeonException {
+        try {
+            List<String> params = new ArrayList<>();
+            if (namespace != null) {
+                params.add("namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8));
+            }
+            if (tenant != null) {
+                params.add("tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8));
+            }
+
+            String path = "/v1/templates";
+            if (!params.isEmpty()) {
+                path += "?" + String.join("&", params);
+            }
+
+            HttpRequest request = requestBuilder(path)
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, ListTemplatesResponse.class);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to list templates");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Gets a single template by ID.
+     */
+    public Optional<TemplateInfo> getTemplate(String templateId) throws ActeonException {
+        try {
+            String path = "/v1/templates/" + URLEncoder.encode(templateId, StandardCharsets.UTF_8);
+
+            HttpRequest request = requestBuilder(path)
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return Optional.of(parseResponse(response, TemplateInfo.class));
+            } else if (response.statusCode() == 404) {
+                return Optional.empty();
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to get template");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Updates a payload template.
+     */
+    public TemplateInfo updateTemplate(String templateId, UpdateTemplateRequest update) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(update);
+            HttpRequest request = requestBuilder("/v1/templates/" + URLEncoder.encode(templateId, StandardCharsets.UTF_8))
+                .PUT(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, TemplateInfo.class);
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Template not found: " + templateId);
+            } else {
+                ErrorResponse error = parseResponse(response, ErrorResponse.class);
+                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Deletes a payload template.
+     */
+    public void deleteTemplate(String templateId) throws ActeonException {
+        try {
+            String path = "/v1/templates/" + URLEncoder.encode(templateId, StandardCharsets.UTF_8);
+
+            HttpRequest request = requestBuilder(path)
+                .DELETE()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 204) {
+                return;
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Template not found: " + templateId);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to delete template");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Creates a template profile.
+     */
+    public TemplateProfileInfo createProfile(CreateProfileRequest req) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(req);
+            HttpRequest request = requestBuilder("/v1/templates/profiles")
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 201) {
+                return parseResponse(response, TemplateProfileInfo.class);
+            } else {
+                ErrorResponse error = parseResponse(response, ErrorResponse.class);
+                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Lists template profiles with optional namespace and tenant filters.
+     */
+    public ListProfilesResponse listProfiles(String namespace, String tenant) throws ActeonException {
+        try {
+            List<String> params = new ArrayList<>();
+            if (namespace != null) {
+                params.add("namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8));
+            }
+            if (tenant != null) {
+                params.add("tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8));
+            }
+
+            String path = "/v1/templates/profiles";
+            if (!params.isEmpty()) {
+                path += "?" + String.join("&", params);
+            }
+
+            HttpRequest request = requestBuilder(path)
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, ListProfilesResponse.class);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to list profiles");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Gets a single template profile by ID.
+     */
+    public Optional<TemplateProfileInfo> getProfile(String profileId) throws ActeonException {
+        try {
+            String path = "/v1/templates/profiles/" + URLEncoder.encode(profileId, StandardCharsets.UTF_8);
+
+            HttpRequest request = requestBuilder(path)
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return Optional.of(parseResponse(response, TemplateProfileInfo.class));
+            } else if (response.statusCode() == 404) {
+                return Optional.empty();
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to get profile");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Updates a template profile.
+     */
+    public TemplateProfileInfo updateProfile(String profileId, UpdateProfileRequest update) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(update);
+            HttpRequest request = requestBuilder("/v1/templates/profiles/" + URLEncoder.encode(profileId, StandardCharsets.UTF_8))
+                .PUT(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, TemplateProfileInfo.class);
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Profile not found: " + profileId);
+            } else {
+                ErrorResponse error = parseResponse(response, ErrorResponse.class);
+                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Deletes a template profile.
+     */
+    public void deleteProfile(String profileId) throws ActeonException {
+        try {
+            String path = "/v1/templates/profiles/" + URLEncoder.encode(profileId, StandardCharsets.UTF_8);
+
+            HttpRequest request = requestBuilder(path)
+                .DELETE()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 204) {
+                return;
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Profile not found: " + profileId);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to delete profile");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Renders a template profile with payload data.
+     */
+    public RenderPreviewResponse renderPreview(RenderPreviewRequest req) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(req);
+            HttpRequest request = requestBuilder("/v1/templates/render")
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, RenderPreviewResponse.class);
+            } else {
+                ErrorResponse error = parseResponse(response, ErrorResponse.class);
+                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    // =========================================================================
+    // Provider Health
+    // =========================================================================
+
+    /**
+     * Lists health and metrics for all providers.
+     *
+     * @return health status and metrics for all registered providers
+     * @throws ActeonException if the request fails
+     */
+    public ListProviderHealthResponse listProviderHealth() throws ActeonException {
+        try {
+            HttpRequest request = requestBuilder("/v1/providers/health")
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return objectMapper.readValue(response.body(), ListProviderHealthResponse.class);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to list provider health");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    // =========================================================================
+    // WASM Plugins
+    // =========================================================================
+
+    /**
+     * Lists all registered WASM plugins.
+     */
+    public ListPluginsResponse listPlugins() throws ActeonException {
+        try {
+            HttpRequest request = requestBuilder("/v1/plugins")
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return objectMapper.readValue(response.body(), ListPluginsResponse.class);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to list plugins");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Registers a new WASM plugin.
+     */
+    public WasmPlugin registerPlugin(RegisterPluginRequest req) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(req);
+            HttpRequest request = requestBuilder("/v1/plugins")
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200 || response.statusCode() == 201) {
+                return objectMapper.readValue(response.body(), WasmPlugin.class);
+            } else {
+                ErrorResponse error = parseResponse(response, ErrorResponse.class);
+                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Gets details of a registered WASM plugin by name.
+     */
+    public Optional<WasmPlugin> getPlugin(String name) throws ActeonException {
+        try {
+            String path = "/v1/plugins/" + URLEncoder.encode(name, StandardCharsets.UTF_8);
+
+            HttpRequest request = requestBuilder(path)
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return Optional.of(objectMapper.readValue(response.body(), WasmPlugin.class));
+            } else if (response.statusCode() == 404) {
+                return Optional.empty();
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to get plugin");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Unregisters (deletes) a WASM plugin by name.
+     */
+    public void deletePlugin(String name) throws ActeonException {
+        try {
+            String path = "/v1/plugins/" + URLEncoder.encode(name, StandardCharsets.UTF_8);
+
+            HttpRequest request = requestBuilder(path)
+                .DELETE()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 204) {
+                return;
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Plugin not found: " + name);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to delete plugin");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Test-invokes a WASM plugin.
+     */
+    public PluginInvocationResponse invokePlugin(String name, PluginInvocationRequest req) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(req);
+            String path = "/v1/plugins/" + URLEncoder.encode(name, StandardCharsets.UTF_8) + "/invoke";
+            HttpRequest request = requestBuilder(path)
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return objectMapper.readValue(response.body(), PluginInvocationResponse.class);
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Plugin not found: " + name);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to invoke plugin: " + name);
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    // =========================================================================
+    // Compliance (SOC2/HIPAA)
+    // =========================================================================
+
+    /**
+     * Gets the current compliance configuration status.
+     *
+     * @return the compliance status
+     */
+    public ComplianceStatus getComplianceStatus() throws ActeonException {
+        try {
+            HttpRequest request = requestBuilder("/v1/compliance/status")
+                    .GET()
+                    .build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() == 200) {
+                return objectMapper.readValue(response.body(), ComplianceStatus.class);
+            }
+            throw new HttpException(response.statusCode(), "Failed to get compliance status");
+        } catch (IOException e) {
+            throw new ConnectionException("Failed to connect: " + e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Verifies the integrity of the audit hash chain for a namespace/tenant pair.
+     *
+     * @param req the verification request
+     * @return the verification result
+     */
+    public HashChainVerification verifyAuditChain(VerifyHashChainRequest req) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(req);
+            HttpRequest request = requestBuilder("/v1/audit/verify")
+                    .POST(HttpRequest.BodyPublishers.ofString(body))
+                    .header("Content-Type", "application/json")
+                    .build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() == 200) {
+                return objectMapper.readValue(response.body(), HashChainVerification.class);
+            }
+            throw new HttpException(response.statusCode(), "Failed to verify audit chain");
+        } catch (IOException e) {
+            throw new ConnectionException("Failed to connect: " + e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    // =========================================================================
+    // Chains (Task Chain Orchestration)
+    // =========================================================================
+
+    /**
+     * Lists chain executions filtered by namespace, tenant, and optional status.
+     *
+     * @param namespace namespace to filter by
+     * @param tenant    tenant to filter by
+     * @param status    optional status filter ({@code "running"}, {@code "completed"},
+     *                  {@code "failed"}, {@code "cancelled"}, {@code "timed_out"})
+     */
+    public ListChainsResponse listChains(String namespace, String tenant, String status) throws ActeonException {
+        try {
+            List<String> params = new ArrayList<>();
+            params.add("namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8));
+            params.add("tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8));
+            if (status != null) {
+                params.add("status=" + URLEncoder.encode(status, StandardCharsets.UTF_8));
+            }
+
+            String path = "/v1/chains?" + String.join("&", params);
+            HttpRequest request = requestBuilder(path)
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, ListChainsResponse.class);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to list chains");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Gets full details of a chain execution including step results.
+     *
+     * @param chainId   chain execution ID
+     * @param namespace namespace the chain belongs to
+     * @param tenant    tenant the chain belongs to
+     */
+    public Optional<ChainDetailResponse> getChain(String chainId, String namespace, String tenant) throws ActeonException {
+        try {
+            String path = "/v1/chains/" + URLEncoder.encode(chainId, StandardCharsets.UTF_8)
+                + "?namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8)
+                + "&tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8);
+
+            HttpRequest request = requestBuilder(path)
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return Optional.of(parseResponse(response, ChainDetailResponse.class));
+            } else if (response.statusCode() == 404) {
+                return Optional.empty();
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to get chain");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Cancels a running chain execution.
+     *
+     * @param chainId chain execution ID
+     * @param request cancel request containing namespace, tenant, and optional reason
+     */
+    public ChainDetailResponse cancelChain(String chainId, CancelChainRequest request) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(request);
+            HttpRequest httpReq = requestBuilder("/v1/chains/" + URLEncoder.encode(chainId, StandardCharsets.UTF_8) + "/cancel")
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = httpClient.send(httpReq, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, ChainDetailResponse.class);
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Chain not found: " + chainId);
+            } else if (response.statusCode() == 409) {
+                throw new HttpException(response.statusCode(), "Chain is not running");
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to cancel chain");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Gets the DAG representation for a running chain instance.
+     *
+     * @param chainId   chain execution ID
+     * @param namespace namespace the chain belongs to
+     * @param tenant    tenant the chain belongs to
+     */
+    public DagResponse getChainDag(String chainId, String namespace, String tenant) throws ActeonException {
+        try {
+            String path = "/v1/chains/" + URLEncoder.encode(chainId, StandardCharsets.UTF_8)
+                + "/dag?namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8)
+                + "&tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8);
+
+            HttpRequest request = requestBuilder(path)
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, DagResponse.class);
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Chain not found: " + chainId);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to get chain DAG");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Gets the DAG representation for a chain definition (config only).
+     *
+     * @param name chain configuration name
+     */
+    public DagResponse getChainDefinitionDag(String name) throws ActeonException {
+        try {
+            String path = "/v1/chains/definitions/" + URLEncoder.encode(name, StandardCharsets.UTF_8) + "/dag";
+
+            HttpRequest request = requestBuilder(path)
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, DagResponse.class);
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Chain definition not found: " + name);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to get chain definition DAG");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Gets the retry history for a chain execution.
+     *
+     * @param chainId   chain execution ID
+     * @param namespace namespace the chain belongs to
+     * @param tenant    tenant the chain belongs to
+     */
+    public ChainHistoryResponse getChainHistory(String chainId, String namespace, String tenant) throws ActeonException {
+        try {
+            String path = "/v1/chains/" + URLEncoder.encode(chainId, StandardCharsets.UTF_8)
+                + "/history?namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8)
+                + "&tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8);
+
+            HttpRequest request = requestBuilder(path)
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, ChainHistoryResponse.class);
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Chain not found: " + chainId);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to get chain history");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    // =========================================================================
+    // Dead-Letter Queue (DLQ)
+    // =========================================================================
+
+    /**
+     * Gets dead-letter queue statistics.
+     */
+    public DlqStatsResponse dlqStats() throws ActeonException {
+        try {
+            HttpRequest request = requestBuilder("/v1/dlq/stats")
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, DlqStatsResponse.class);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to get DLQ stats");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Drains all entries from the dead-letter queue.
+     * Returns the drained entries for manual processing or resubmission.
+     */
+    public DlqDrainResponse dlqDrain() throws ActeonException {
+        try {
+            HttpRequest request = requestBuilder("/v1/dlq/drain")
+                .POST(HttpRequest.BodyPublishers.noBody())
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, DlqDrainResponse.class);
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Dead-letter queue is not enabled");
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to drain DLQ");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    // =========================================================================
+    // Subscribe (SSE -- Entity-specific)
+    // =========================================================================
+
+    /**
+     * Subscribes to real-time events for a specific entity via Server-Sent Events.
+     *
+     * <p>Returns an {@link SseEventIterator} that lazily reads SSE events from the
+     * server. The iterator should be closed when no longer needed.</p>
+     *
+     * <p>Example usage:</p>
+     * <pre>{@code
+     * SubscribeOptions opts = new SubscribeOptions("ns", "tenant-1");
+     * try (SseEventIterator events = client.subscribe("chain", "chain-42", opts)) {
+     *     while (events.hasNext()) {
+     *         SseEvent event = events.next();
+     *         System.out.println(event.getEvent() + ": " + event.getData());
+     *     }
+     * }
+     * }</pre>
+     *
+     * @param entityType entity type ({@code "chain"}, {@code "group"}, or {@code "action"})
+     * @param entityId   entity identifier
+     * @param options    subscribe options (namespace, tenant, include_history)
+     */
+    public SseEventIterator subscribe(String entityType, String entityId, SubscribeOptions options) throws ActeonException {
+        try {
+            List<String> params = new ArrayList<>();
+            if (options != null) {
+                if (options.getNamespace() != null) {
+                    params.add("namespace=" + URLEncoder.encode(options.getNamespace(), StandardCharsets.UTF_8));
+                }
+                if (options.getTenant() != null) {
+                    params.add("tenant=" + URLEncoder.encode(options.getTenant(), StandardCharsets.UTF_8));
+                }
+                if (options.getIncludeHistory() != null) {
+                    params.add("include_history=" + options.getIncludeHistory());
+                }
+            }
+
+            String path = "/v1/subscribe/"
+                + URLEncoder.encode(entityType, StandardCharsets.UTF_8) + "/"
+                + URLEncoder.encode(entityId, StandardCharsets.UTF_8);
+            if (!params.isEmpty()) {
+                path += "?" + String.join("&", params);
+            }
+
+            HttpRequest.Builder builder = HttpRequest.newBuilder()
+                .uri(URI.create(baseUrl + path))
+                .header("Accept", "text/event-stream");
+
+            if (apiKey != null && !apiKey.isEmpty()) {
+                builder.header("Authorization", "Bearer " + apiKey);
+            }
+
+            HttpRequest request = builder.GET().build();
+
+            HttpResponse<InputStream> response = httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
+
+            if (response.statusCode() == 200) {
+                return new SseEventIterator(response.body());
+            } else {
+                // Read the error body and close the stream.
+                try (InputStream body = response.body()) {
+                    String errorBody = new String(body.readAllBytes(), StandardCharsets.UTF_8);
+                    throw new HttpException(response.statusCode(), "Subscribe failed: " + errorBody);
+                }
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    // =========================================================================
+    // Analytics
+    // =========================================================================
+
+    /**
+     * Queries analytics data from the Acteon server.
+     *
+     * @param query analytics query parameters including the required metric
+     * @return analytics response with time-series buckets and/or top entries
+     */
+    public AnalyticsResponse queryAnalytics(AnalyticsQuery query) throws ActeonException {
+        try {
+            StringBuilder path = new StringBuilder("/v1/analytics");
+            List<String> params = new ArrayList<>();
+
+            if (query != null) {
+                if (query.getMetric() != null) {
+                    params.add("metric=" + URLEncoder.encode(query.getMetric(), StandardCharsets.UTF_8));
+                }
+                if (query.getNamespace() != null) {
+                    params.add("namespace=" + URLEncoder.encode(query.getNamespace(), StandardCharsets.UTF_8));
+                }
+                if (query.getTenant() != null) {
+                    params.add("tenant=" + URLEncoder.encode(query.getTenant(), StandardCharsets.UTF_8));
+                }
+                if (query.getProvider() != null) {
+                    params.add("provider=" + URLEncoder.encode(query.getProvider(), StandardCharsets.UTF_8));
+                }
+                if (query.getActionType() != null) {
+                    params.add("action_type=" + URLEncoder.encode(query.getActionType(), StandardCharsets.UTF_8));
+                }
+                if (query.getOutcome() != null) {
+                    params.add("outcome=" + URLEncoder.encode(query.getOutcome(), StandardCharsets.UTF_8));
+                }
+                if (query.getInterval() != null) {
+                    params.add("interval=" + URLEncoder.encode(query.getInterval(), StandardCharsets.UTF_8));
+                }
+                if (query.getFrom() != null) {
+                    params.add("from=" + URLEncoder.encode(query.getFrom(), StandardCharsets.UTF_8));
+                }
+                if (query.getTo() != null) {
+                    params.add("to=" + URLEncoder.encode(query.getTo(), StandardCharsets.UTF_8));
+                }
+                if (query.getGroupBy() != null) {
+                    params.add("group_by=" + URLEncoder.encode(query.getGroupBy(), StandardCharsets.UTF_8));
+                }
+                if (query.getTopN() != null) {
+                    params.add("top_n=" + query.getTopN());
+                }
+            }
+
+            if (!params.isEmpty()) {
+                path.append("?").append(String.join("&", params));
+            }
+
+            HttpRequest request = requestBuilder(path.toString())
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return objectMapper.readValue(response.body(), AnalyticsResponse.class);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to query analytics");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    // =========================================================================
+    // Rule Coverage
+    // =========================================================================
+
+    /**
+     * Analyzes rule coverage by querying the server's aggregation endpoint.
+     *
+     * <p>The server groups audit records by
+     * (namespace, tenant, provider, action_type, matched_rule) and
+     * cross-references the result with the currently-loaded rule set.
+     * No raw audit records are transferred over the wire.</p>
+     *
+     * @param query Coverage query options (may be null for defaults).
+     * @return A coverage report with per-combination statistics.
+     * @throws ActeonException If a network or server error occurs.
+     */
+    public CoverageReport rulesCoverage(CoverageQuery query) throws ActeonException {
+        try {
+            StringBuilder path = new StringBuilder("/v1/rules/coverage");
+            List<String> params = new ArrayList<>();
+
+            if (query != null) {
+                if (query.getNamespace() != null) {
+                    params.add("namespace=" + URLEncoder.encode(query.getNamespace(), StandardCharsets.UTF_8));
+                }
+                if (query.getTenant() != null) {
+                    params.add("tenant=" + URLEncoder.encode(query.getTenant(), StandardCharsets.UTF_8));
+                }
+                if (query.getFrom() != null) {
+                    params.add("from=" + URLEncoder.encode(query.getFrom(), StandardCharsets.UTF_8));
+                }
+                if (query.getTo() != null) {
+                    params.add("to=" + URLEncoder.encode(query.getTo(), StandardCharsets.UTF_8));
+                }
+            }
+
+            if (!params.isEmpty()) {
+                path.append("?").append(String.join("&", params));
+            }
+
+            HttpRequest request = requestBuilder(path.toString())
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, CoverageReport.class);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to get rule coverage");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    // =========================================================================
+    // Stream (SSE -- General)
+    // =========================================================================
+
+    /**
+     * Opens a general-purpose SSE stream for real-time action outcomes.
+     *
+     * <p>Returns an {@link SseEventIterator} that lazily reads SSE events from the
+     * server. The iterator should be closed when no longer needed.</p>
+     *
+     * <p>Example usage:</p>
+     * <pre>{@code
+     * StreamOptions opts = new StreamOptions();
+     * opts.setNamespace("alerts");
+     * opts.setOutcome("failed");
+     * try (SseEventIterator events = client.stream(opts)) {
+     *     while (events.hasNext()) {
+     *         SseEvent event = events.next();
+     *         System.out.println(event.getEvent() + ": " + event.getData());
+     *     }
+     * }
+     * }</pre>
+     *
+     * @param options stream filter options (namespace, action_type, outcome, event_type, etc.)
+     */
+    public SseEventIterator stream(StreamOptions options) throws ActeonException {
+        try {
+            List<String> params = new ArrayList<>();
+            String lastEventId = null;
+
+            if (options != null) {
+                if (options.getNamespace() != null) {
+                    params.add("namespace=" + URLEncoder.encode(options.getNamespace(), StandardCharsets.UTF_8));
+                }
+                if (options.getActionType() != null) {
+                    params.add("action_type=" + URLEncoder.encode(options.getActionType(), StandardCharsets.UTF_8));
+                }
+                if (options.getOutcome() != null) {
+                    params.add("outcome=" + URLEncoder.encode(options.getOutcome(), StandardCharsets.UTF_8));
+                }
+                if (options.getEventType() != null) {
+                    params.add("event_type=" + URLEncoder.encode(options.getEventType(), StandardCharsets.UTF_8));
+                }
+                if (options.getChainId() != null) {
+                    params.add("chain_id=" + URLEncoder.encode(options.getChainId(), StandardCharsets.UTF_8));
+                }
+                if (options.getGroupId() != null) {
+                    params.add("group_id=" + URLEncoder.encode(options.getGroupId(), StandardCharsets.UTF_8));
+                }
+                if (options.getActionId() != null) {
+                    params.add("action_id=" + URLEncoder.encode(options.getActionId(), StandardCharsets.UTF_8));
+                }
+                lastEventId = options.getLastEventId();
+            }
+
+            String path = "/v1/stream";
+            if (!params.isEmpty()) {
+                path += "?" + String.join("&", params);
+            }
+
+            HttpRequest.Builder builder = HttpRequest.newBuilder()
+                .uri(URI.create(baseUrl + path))
+                .header("Accept", "text/event-stream");
+
+            if (apiKey != null && !apiKey.isEmpty()) {
+                builder.header("Authorization", "Bearer " + apiKey);
+            }
+
+            if (lastEventId != null) {
+                builder.header("Last-Event-ID", lastEventId);
+            }
+
+            HttpRequest request = builder.GET().build();
+
+            HttpResponse<InputStream> response = httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
+
+            if (response.statusCode() == 200) {
+                return new SseEventIterator(response.body());
+            } else {
+                // Read the error body and close the stream.
+                try (InputStream body = response.body()) {
+                    String errorBody = new String(body.readAllBytes(), StandardCharsets.UTF_8);
+                    throw new HttpException(response.statusCode(), "Stream failed: " + errorBody);
+                }
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    private static SSLContext buildSslContext(TlsConfig config) throws Exception {
+        KeyManager[] keyManagers = null;
+        TrustManager[] trustManagers = null;
+
+        // Client certificate (mTLS)
+        if (config.clientCertPath != null && config.clientKeyPath != null) {
+            KeyStore keyStore = KeyStore.getInstance("PKCS12");
+            keyStore.load(null, null);
+
+            CertificateFactory cf = CertificateFactory.getInstance("X.509");
+            try (InputStream certStream = new FileInputStream(config.clientCertPath)) {
+                java.security.cert.Certificate cert = cf.generateCertificate(certStream);
+
+                // Read the private key - for simplicity, load via KeyStore
+                // Java's standard library doesn't directly read PEM keys,
+                // so we load them into a PKCS12 keystore.
+                KeyStore clientStore = KeyStore.getInstance("PKCS12");
+                try (InputStream p12Stream = new FileInputStream(config.clientKeyPath)) {
+                    clientStore.load(p12Stream, new char[0]);
+                }
+                KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+                kmf.init(clientStore, new char[0]);
+                keyManagers = kmf.getKeyManagers();
+            }
+        }
+
+        // Custom CA or trust-all
+        if (config.trustAllCerts) {
+            trustManagers = new TrustManager[]{
+                new X509TrustManager() {
+                    public void checkClientTrusted(java.security.cert.X509Certificate[] chain, String authType) {}
+                    public void checkServerTrusted(java.security.cert.X509Certificate[] chain, String authType) {}
+                    public java.security.cert.X509Certificate[] getAcceptedIssuers() { return new java.security.cert.X509Certificate[0]; }
+                }
+            };
+        } else if (config.caCertPath != null) {
+            CertificateFactory cf = CertificateFactory.getInstance("X.509");
+            KeyStore trustStore = KeyStore.getInstance(KeyStore.getDefaultType());
+            trustStore.load(null, null);
+            try (InputStream caStream = new FileInputStream(config.caCertPath)) {
+                java.security.cert.Certificate caCert = cf.generateCertificate(caStream);
+                trustStore.setCertificateEntry("custom-ca", caCert);
+            }
+            TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+            tmf.init(trustStore);
+            trustManagers = tmf.getTrustManagers();
+        }
+
+        SSLContext sslContext = SSLContext.getInstance("TLS");
+        sslContext.init(keyManagers, trustManagers, null);
+        return sslContext;
+    }
+
+    // =========================================================================
+    // Phase 8d: Agentic bus surface (Phases 1-6c)
+    // =========================================================================
+
+    /**
+     * Percent-encode a single path segment so reserved characters
+     * like {@code /} don't slip into the URL grammar. Acteon's bus
+     * REST surface treats namespace / tenant / name slots as opaque
+     * strings.
+     */
+    private static String busSeg(String s) {
+        return URLEncoder.encode(s, StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Send a bus request, parse the response into {@code clazz}, or
+     * throw a typed {@link ApiException} when the server returns a
+     * structured Acteon-shaped error body.
+     */
+    private <T> T busSend(String method, String path, Object body, Class<T> clazz) throws ActeonException {
+        HttpResponse<String> response = busExecute(method, path, body);
+        return busDecode(response, clazz);
+    }
+
+    private <T> T busSend(String method, String path, Object body, TypeReference<T> typeRef) throws ActeonException {
+        HttpResponse<String> response = busExecute(method, path, body);
+        try {
+            return objectMapper.readValue(response.body(), typeRef);
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        }
+    }
+
+    private void busSendVoid(String method, String path, Object body) throws ActeonException {
+        busExecute(method, path, body);
+    }
+
+    private HttpResponse<String> busExecute(String method, String path, Object body) throws ActeonException {
+        try {
+            String requestBody = body == null ? null : objectMapper.writeValueAsString(body);
+            HttpRequest.Builder builder = requestBuilder(path);
+            HttpRequest request = switch (method) {
+                case "POST" -> builder.POST(requestBody == null
+                    ? HttpRequest.BodyPublishers.noBody()
+                    : HttpRequest.BodyPublishers.ofString(requestBody)).build();
+                case "PATCH" -> builder.method("PATCH", requestBody == null
+                    ? HttpRequest.BodyPublishers.noBody()
+                    : HttpRequest.BodyPublishers.ofString(requestBody)).build();
+                case "DELETE" -> builder.DELETE().build();
+                case "GET" -> builder.GET().build();
+                default -> throw new IllegalArgumentException("unsupported method: " + method);
+            };
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                throw busError(response);
+            }
+            return response;
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    private <T> T busDecode(HttpResponse<String> response, Class<T> clazz) throws ActeonException {
+        try {
+            return objectMapper.readValue(response.body(), clazz);
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Map an Acteon-shaped error body to a typed exception. The bus
+     * handlers emit either {@code {"code":..., "message":...}} (the
+     * generic shape) or {@code {"error":"..."}} (the bus-specific
+     * shape); accept both.
+     */
+    private ActeonException busError(HttpResponse<String> response) {
+        try {
+            Map<String, Object> errorBody = objectMapper.readValue(response.body(),
+                new TypeReference<Map<String, Object>>() {});
+            String message = (String) errorBody.getOrDefault("error",
+                errorBody.getOrDefault("message", "bus error"));
+            String code = (String) errorBody.getOrDefault("code", "BUS");
+            return new ApiException(code, message, false);
+        } catch (IOException e) {
+            return new HttpException(response.statusCode(), response.body());
+        }
+    }
+
+    private static String appendQuery(String path, Map<String, String> params) {
+        if (params == null || params.isEmpty()) {
+            return path;
+        }
+        StringBuilder sb = new StringBuilder(path);
+        sb.append('?');
+        boolean first = true;
+        for (var e : params.entrySet()) {
+            if (!first) sb.append('&');
+            first = false;
+            sb.append(URLEncoder.encode(e.getKey(), StandardCharsets.UTF_8))
+              .append('=')
+              .append(URLEncoder.encode(e.getValue(), StandardCharsets.UTF_8));
+        }
+        return sb.toString();
+    }
+
+    // --------------- Phase 1: Topics + publish ---------------
+
+    public Bus.BusTopic createBusTopic(Bus.CreateBusTopic req) throws ActeonException {
+        return busSend("POST", "/v1/bus/topics", req, Bus.BusTopic.class);
+    }
+
+    public List<Bus.BusTopic> listBusTopics(String namespace, String tenant) throws ActeonException {
+        java.util.LinkedHashMap<String, String> params = new java.util.LinkedHashMap<>();
+        if (namespace != null) params.put("namespace", namespace);
+        if (tenant != null) params.put("tenant", tenant);
+        Bus.ListBusTopicsResponse resp = busSend("GET", appendQuery("/v1/bus/topics", params),
+            null, Bus.ListBusTopicsResponse.class);
+        return resp.topics() == null ? List.of() : resp.topics();
+    }
+
+    public Bus.BusTopic getBusTopic(String namespace, String tenant, String name) throws ActeonException {
+        return busSend("GET",
+            "/v1/bus/topics/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(name),
+            null, Bus.BusTopic.class);
+    }
+
+    public void deleteBusTopic(String namespace, String tenant, String name) throws ActeonException {
+        busSendVoid("DELETE",
+            "/v1/bus/topics/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(name),
+            null);
+    }
+
+    public Bus.PublishReceipt publishBusMessage(Bus.PublishBusMessage req) throws ActeonException {
+        return busSend("POST", "/v1/bus/publish", req, Bus.PublishReceipt.class);
+    }
+
+    // --------------- Phase 2: Subscriptions + lag ---------------
+
+    public Bus.BusSubscription createBusSubscription(Bus.CreateBusSubscription req) throws ActeonException {
+        return busSend("POST", "/v1/bus/subscriptions", req, Bus.BusSubscription.class);
+    }
+
+    public List<Bus.BusSubscription> listBusSubscriptions(String namespace, String tenant, String topic) throws ActeonException {
+        java.util.LinkedHashMap<String, String> params = new java.util.LinkedHashMap<>();
+        if (namespace != null) params.put("namespace", namespace);
+        if (tenant != null) params.put("tenant", tenant);
+        if (topic != null) params.put("topic", topic);
+        Bus.ListBusSubscriptionsResponse resp = busSend("GET", appendQuery("/v1/bus/subscriptions", params),
+            null, Bus.ListBusSubscriptionsResponse.class);
+        return resp.subscriptions() == null ? List.of() : resp.subscriptions();
+    }
+
+    public Bus.BusSubscription getBusSubscription(String subId) throws ActeonException {
+        return busSend("GET", "/v1/bus/subscriptions/" + busSeg(subId), null, Bus.BusSubscription.class);
+    }
+
+    public void deleteBusSubscription(String subId) throws ActeonException {
+        busSendVoid("DELETE", "/v1/bus/subscriptions/" + busSeg(subId), null);
+    }
+
+    public Bus.BusLag getBusSubscriptionLag(String subId) throws ActeonException {
+        return busSend("GET", "/v1/bus/subscriptions/" + busSeg(subId) + "/lag", null, Bus.BusLag.class);
+    }
+
+    // --------------- Phase 3: Schemas ---------------
+
+    public Bus.BusSchema registerBusSchema(Bus.RegisterBusSchema req) throws ActeonException {
+        return busSend("POST", "/v1/bus/schemas", req, Bus.BusSchema.class);
+    }
+
+    public List<Bus.BusSchema> listBusSchemas(String namespace, String tenant, String subject, boolean latestOnly) throws ActeonException {
+        java.util.LinkedHashMap<String, String> params = new java.util.LinkedHashMap<>();
+        if (namespace != null) params.put("namespace", namespace);
+        if (tenant != null) params.put("tenant", tenant);
+        if (subject != null) params.put("subject", subject);
+        if (latestOnly) params.put("latest_only", "true");
+        Bus.ListBusSchemasResponse resp = busSend("GET", appendQuery("/v1/bus/schemas", params),
+            null, Bus.ListBusSchemasResponse.class);
+        return resp.schemas() == null ? List.of() : resp.schemas();
+    }
+
+    public Bus.BusSchema getBusSchema(String namespace, String tenant, String subject, int version) throws ActeonException {
+        return busSend("GET",
+            "/v1/bus/schemas/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(subject) + "/" + version,
+            null, Bus.BusSchema.class);
+    }
+
+    public void deleteBusSchema(String namespace, String tenant, String subject, int version) throws ActeonException {
+        busSendVoid("DELETE",
+            "/v1/bus/schemas/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(subject) + "/" + version,
+            null);
+    }
+
+    // --------------- Phase 4: Agents + heartbeat ---------------
+
+    public Bus.BusAgent registerBusAgent(Bus.RegisterBusAgent req) throws ActeonException {
+        return busSend("POST", "/v1/bus/agents", req, Bus.BusAgent.class);
+    }
+
+    public List<Bus.BusAgent> listBusAgents(String namespace, String tenant) throws ActeonException {
+        java.util.LinkedHashMap<String, String> params = new java.util.LinkedHashMap<>();
+        if (namespace != null) params.put("namespace", namespace);
+        if (tenant != null) params.put("tenant", tenant);
+        Bus.ListBusAgentsResponse resp = busSend("GET", appendQuery("/v1/bus/agents", params),
+            null, Bus.ListBusAgentsResponse.class);
+        return resp.agents() == null ? List.of() : resp.agents();
+    }
+
+    public Bus.BusAgent getBusAgent(String namespace, String tenant, String agentId) throws ActeonException {
+        return busSend("GET",
+            "/v1/bus/agents/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(agentId),
+            null, Bus.BusAgent.class);
+    }
+
+    public void deleteBusAgent(String namespace, String tenant, String agentId) throws ActeonException {
+        busSendVoid("DELETE",
+            "/v1/bus/agents/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(agentId),
+            null);
+    }
+
+    public Bus.BusAgent heartbeatBusAgent(String namespace, String tenant, String agentId) throws ActeonException {
+        return busSend("PATCH",
+            "/v1/bus/agents/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(agentId) + "/heartbeat",
+            null, Bus.BusAgent.class);
+    }
+
+    /**
+     * Set the operator admin state on an agent (active / suspended
+     * / banned). Requires the standard {@code ManageAgent}
+     * permission. The server returns 400 if
+     * {@code req.expiresAt()} is set on anything other than
+     * {@code "suspended"}.
+     */
+    public Bus.BusAgent setBusAgentAdminState(
+        String namespace, String tenant, String agentId, Bus.SetBusAgentAdminState req
+    ) throws ActeonException {
+        return busSend("PUT",
+            "/v1/bus/agents/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(agentId) + "/admin-state",
+            req, Bus.BusAgent.class);
+    }
+
+    // --------------- Phase 5: Conversations ---------------
+
+    public Bus.BusConversation createBusConversation(Bus.CreateBusConversation req) throws ActeonException {
+        return busSend("POST", "/v1/bus/conversations", req, Bus.BusConversation.class);
+    }
+
+    public List<Bus.BusConversation> listBusConversations(String namespace, String tenant, String state, String participant) throws ActeonException {
+        java.util.LinkedHashMap<String, String> params = new java.util.LinkedHashMap<>();
+        if (namespace != null) params.put("namespace", namespace);
+        if (tenant != null) params.put("tenant", tenant);
+        if (state != null) params.put("state", state);
+        if (participant != null) params.put("participant", participant);
+        Bus.ListBusConversationsResponse resp = busSend("GET", appendQuery("/v1/bus/conversations", params),
+            null, Bus.ListBusConversationsResponse.class);
+        return resp.conversations() == null ? List.of() : resp.conversations();
+    }
+
+    public Bus.BusConversation getBusConversation(String namespace, String tenant, String conversationId) throws ActeonException {
+        return busSend("GET",
+            "/v1/bus/conversations/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(conversationId),
+            null, Bus.BusConversation.class);
+    }
+
+    public void deleteBusConversation(String namespace, String tenant, String conversationId) throws ActeonException {
+        busSendVoid("DELETE",
+            "/v1/bus/conversations/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(conversationId),
+            null);
+    }
+
+    public Bus.BusConversation transitionBusConversation(String namespace, String tenant, String conversationId, String targetState) throws ActeonException {
+        return busSend("POST",
+            "/v1/bus/conversations/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(conversationId) + "/transition",
+            new Bus.TransitionBusConversationRequest(targetState),
+            Bus.BusConversation.class);
+    }
+
+    public Map<String, Object> appendBusConversationMessage(
+        String namespace, String tenant, String conversationId,
+        Bus.AppendBusConversationMessage req
+    ) throws ActeonException {
+        return busSend("POST",
+            "/v1/bus/conversations/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(conversationId) + "/messages",
+            req, new TypeReference<Map<String, Object>>() {});
+    }
+
+    public Bus.BusReplayResponse replayBusConversationMessages(
+        String namespace, String tenant, String conversationId,
+        Integer limit, String cursor
+    ) throws ActeonException {
+        java.util.LinkedHashMap<String, String> params = new java.util.LinkedHashMap<>();
+        if (limit != null) params.put("limit", limit.toString());
+        if (cursor != null) params.put("cursor", cursor);
+        String path = appendQuery(
+            "/v1/bus/conversations/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(conversationId) + "/messages",
+            params);
+        return busSend("GET", path, null, Bus.BusReplayResponse.class);
+    }
+
+    // --------------- Phase 6a: Tool envelopes ---------------
+
+    /**
+     * Append a tool-call envelope.
+     *
+     * <p>Returns a sealed {@link Bus.PostBusToolCallOutcome}: a
+     * {@code Produced} record when the call landed on Kafka, a
+     * {@code Parked} record when the server parked it under a
+     * Phase 6c HITL approval (driven by
+     * {@code req.requireApproval()}). Pattern-match with
+     * {@code switch} to handle both branches.
+     */
+    public Bus.PostBusToolCallOutcome postBusToolCall(
+        String namespace, String tenant, String conversationId,
+        Bus.PostBusToolCall req
+    ) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(req);
+            HttpRequest request = requestBuilder(
+                "/v1/bus/conversations/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(conversationId) + "/tool-calls"
+            ).POST(HttpRequest.BodyPublishers.ofString(body)).build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                throw busError(response);
+            }
+            if (response.statusCode() == 202) {
+                return new Bus.PostBusToolCallOutcome.Parked(
+                    objectMapper.readValue(response.body(), Bus.BusApprovalParkedReceipt.class));
+            }
+            return new Bus.PostBusToolCallOutcome.Produced(
+                objectMapper.readValue(response.body(), Bus.BusToolEnvelopeReceipt.class));
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    public Bus.BusToolEnvelopeReceipt postBusToolResult(
+        String namespace, String tenant, String conversationId,
+        Bus.PostBusToolResult req
+    ) throws ActeonException {
+        return busSend("POST",
+            "/v1/bus/conversations/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(conversationId) + "/tool-results",
+            req, Bus.BusToolEnvelopeReceipt.class);
+    }
+
+    public Bus.BusToolResultLookup lookupBusToolResult(
+        String namespace, String tenant, String callId,
+        Bus.BusToolResultLookupParams params
+    ) throws ActeonException {
+        java.util.LinkedHashMap<String, String> q = new java.util.LinkedHashMap<>();
+        q.put("conversation_id", params.conversationId());
+        if (params.cursor() != null) q.put("cursor", params.cursor());
+        if (params.timeoutMs() != null) q.put("timeout_ms", params.timeoutMs().toString());
+        String path = appendQuery(
+            "/v1/bus/tool-calls/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(callId) + "/result",
+            q);
+        return busSend("GET", path, null, Bus.BusToolResultLookup.class);
+    }
+
+    // --------------- Phase 6b: Stream envelopes ---------------
+
+    public Bus.BusStreamEnvelopeReceipt postBusStreamChunk(
+        String namespace, String tenant, String conversationId,
+        Bus.PostBusStreamChunk req
+    ) throws ActeonException {
+        return busSend("POST",
+            "/v1/bus/conversations/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(conversationId) + "/stream-chunks",
+            req, Bus.BusStreamEnvelopeReceipt.class);
+    }
+
+    public Bus.BusStreamEnvelopeReceipt postBusStreamEnd(
+        String namespace, String tenant, String conversationId,
+        Bus.PostBusStreamEnd req
+    ) throws ActeonException {
+        return busSend("POST",
+            "/v1/bus/conversations/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(conversationId) + "/stream-end",
+            req, Bus.BusStreamEnvelopeReceipt.class);
+    }
+
+    /**
+     * Build the SSE consume URL for a stream. Plug it into your
+     * preferred SSE client. Path segments are encoded the same way
+     * the Rust + Python + Node + Go SDKs encode them.
+     */
+    public String busStreamConsumeUrl(String namespace, String tenant, String conversationId, String streamId) {
+        return baseUrl + "/v1/bus/streams/"
+            + busSeg(namespace) + "/" + busSeg(tenant) + "/"
+            + busSeg(conversationId) + "/" + busSeg(streamId);
+    }
+
+    /**
+     * Consume a bus subscription via SSE
+     * ({@code GET /v1/bus/subscribe/{subscriptionId}}). Returns a
+     * {@link BusSseIterator} that yields typed
+     * {@link Bus.BusConsumeItem}s. Server-side {@code bus.error}
+     * events surface as {@code BusConsumeItem.Error}; SSE keep-alive
+     * comments surface as {@code BusConsumeItem.KeepAlive} so callers
+     * can use them as a liveness signal.
+     *
+     * <pre>{@code
+     * try (BusSseIterator iter = client.consumeBusSubscription(
+     *         "agent-A", "agents.demo.events", "earliest")) {
+     *     while (iter.hasNext()) {
+     *         switch (iter.next()) {
+     *             case Bus.BusConsumeItem.Message m -> System.out.println(m.message().offset());
+     *             case Bus.BusConsumeItem.Error e -> System.err.println(e.message());
+     *             case Bus.BusConsumeItem.KeepAlive __ -> {}
+     *         }
+     *     }
+     * }
+     * }</pre>
+     *
+     * @param subscriptionId Subscription id (Kafka consumer group).
+     * @param topic Full Kafka topic name ({@code namespace.tenant.name}).
+     * @param from {@code "earliest"} or {@code "latest"}, or {@code null} for the server default.
+     */
+    public BusSseIterator consumeBusSubscription(
+        String subscriptionId, String topic, String from
+    ) throws ActeonException {
+        java.util.LinkedHashMap<String, String> params = new java.util.LinkedHashMap<>();
+        params.put("topic", topic);
+        if (from != null) params.put("from", from);
+        String path = appendQuery("/v1/bus/subscribe/" + busSeg(subscriptionId), params);
+        InputStream body = openSseStream(path);
+        return new BusSseIterator(body);
+    }
+
+    /**
+     * Consume a bus subscription with best-effort reconnect on
+     * disconnect. The caller iterates a single
+     * {@link ReconnectingBusSseIterator} that transparently opens
+     * fresh SSE streams from {@code latest} between connections,
+     * yielding a {@link Bus.BusConsumeItem.Reconnected} boundary
+     * item so callers can resync state.
+     *
+     * <p>Resume from {@code latest} means messages produced during
+     * the disconnect window are dropped — workloads that need
+     * lossless delivery should use Phase 2 durable subscriptions
+     * with manual ack instead.
+     *
+     * @param subscriptionId Subscription id (Kafka consumer group).
+     * @param topic Full Kafka topic name ({@code namespace.tenant.name}).
+     * @param from {@code "earliest"} or {@code "latest"} for the first
+     *     attempt; subsequent attempts always use {@code "latest"}.
+     * @param reconnect Reconnect policy. Use {@link Bus.ReconnectConfig#defaults()}
+     *     for the standard 500ms / 30s / forever shape.
+     */
+    public ReconnectingBusSseIterator consumeBusSubscription(
+        String subscriptionId, String topic, String from, Bus.ReconnectConfig reconnect
+    ) throws ActeonException {
+        ReconnectingBusSseIterator.InnerOpener opener = (firstAttempt) -> {
+            String effectiveFrom = firstAttempt ? from : "latest";
+            return consumeBusSubscription(subscriptionId, topic, effectiveFrom);
+        };
+        return new ReconnectingBusSseIterator(opener, reconnect);
+    }
+
+    /**
+     * Consume a typed stream via SSE
+     * ({@code GET /v1/bus/streams/{ns}/{tenant}/{conversationId}/{streamId}}).
+     * The server filters records by
+     * {@code (envelope_kind, conversation_id, stream_id)}, so this
+     * iterator only yields chunks for the requested stream id and
+     * closes after the terminal {@code BusStreamItem.End}.
+     *
+     * <pre>{@code
+     * try (BusStreamSseIterator iter = client.consumeBusStream(
+     *         "agents", "demo", "thread-1", "stream-42")) {
+     *     while (iter.hasNext()) {
+     *         var item = iter.next();
+     *         if (item instanceof Bus.BusStreamItem.Chunk c) {
+     *             System.out.println(c.chunk().chunkSeq());
+     *         } else if (item instanceof Bus.BusStreamItem.End) {
+     *             break;
+     *         }
+     *     }
+     * }
+     * }</pre>
+     */
+    public BusStreamSseIterator consumeBusStream(
+        String namespace, String tenant, String conversationId, String streamId
+    ) throws ActeonException {
+        String path = "/v1/bus/streams/" + busSeg(namespace) + "/" + busSeg(tenant) + "/"
+            + busSeg(conversationId) + "/" + busSeg(streamId);
+        InputStream body = openSseStream(path);
+        return new BusStreamSseIterator(body);
+    }
+
+    /**
+     * Open an SSE-flavoured GET against the given path and return the
+     * raw response body. Caller wraps it in a typed iterator. Errors
+     * surface as {@link HttpException} with the response body inlined.
+     */
+    private InputStream openSseStream(String path) throws ActeonException {
+        try {
+            HttpRequest.Builder builder = HttpRequest.newBuilder()
+                .uri(URI.create(baseUrl + path))
+                .header("Accept", "text/event-stream");
+            if (apiKey != null && !apiKey.isEmpty()) {
+                builder.header("Authorization", "Bearer " + apiKey);
+            }
+            HttpRequest request = builder.GET().build();
+            HttpResponse<InputStream> response = httpClient.send(
+                request, HttpResponse.BodyHandlers.ofInputStream());
+            if (response.statusCode() == 200) {
+                return response.body();
+            }
+            try (InputStream body = response.body()) {
+                String errorBody = new String(body.readAllBytes(), StandardCharsets.UTF_8);
+                throw new HttpException(
+                    response.statusCode(), "bus SSE connection failed: " + errorBody);
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    // --------------- Phase 6c: HITL approvals ---------------
+
+    public List<Bus.BusApprovalView> listBusApprovals(
+        String namespace, String tenant, String status, String conversationId
+    ) throws ActeonException {
+        java.util.LinkedHashMap<String, String> params = new java.util.LinkedHashMap<>();
+        if (status != null) params.put("status", status);
+        if (conversationId != null) params.put("conversation_id", conversationId);
+        String path = appendQuery(
+            "/v1/bus/approvals/" + busSeg(namespace) + "/" + busSeg(tenant),
+            params);
+        Bus.ListBusApprovalsResponse resp = busSend("GET", path, null, Bus.ListBusApprovalsResponse.class);
+        return resp.approvals() == null ? List.of() : resp.approvals();
+    }
+
+    public Bus.BusApprovalView getBusApproval(String namespace, String tenant, String approvalId) throws ActeonException {
+        return busSend("GET",
+            "/v1/bus/approvals/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(approvalId),
+            null, Bus.BusApprovalView.class);
+    }
+
+    public Bus.BusApprovalDecisionResponse approveBusApproval(
+        String namespace, String tenant, String approvalId, Bus.BusApprovalDecision decision
+    ) throws ActeonException {
+        return busSend("POST",
+            "/v1/bus/approvals/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(approvalId) + "/approve",
+            decision, Bus.BusApprovalDecisionResponse.class);
+    }
+
+    public Bus.BusApprovalDecisionResponse rejectBusApproval(
+        String namespace, String tenant, String approvalId, Bus.BusApprovalDecision decision
+    ) throws ActeonException {
+        return busSend("POST",
+            "/v1/bus/approvals/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(approvalId) + "/reject",
+            decision, Bus.BusApprovalDecisionResponse.class);
+    }
+
+    // =========================================================================
+    // A2A protocol surface — mirrors the Rust/Python/Node/Go SDKs.
+    // =========================================================================
+
+    /**
+     * Common A2A request-send path: build a request, send, and
+     * dispatch the response either into the typed body or to the
+     * structured-error path.
+     *
+     * @param method  HTTP method
+     * @param path    URL path (already segment-encoded by caller)
+     * @param body    request body to JSON-encode, or null for no body
+     * @param skipAuth suppress the Authorization header
+     */
+    private <T> T a2aSend(
+        String method,
+        String path,
+        Object body,
+        Class<T> responseType,
+        boolean skipAuth
+    ) throws ActeonException {
+        try {
+            HttpRequest.Builder builder = a2aRequestBuilder(
+                path, A2A.defaultHeaders(), skipAuth);
+            HttpRequest.BodyPublisher publisher = (body == null)
+                ? HttpRequest.BodyPublishers.noBody()
+                : HttpRequest.BodyPublishers.ofString(
+                    objectMapper.writeValueAsString(body));
+            HttpRequest request = builder.method(method, publisher).build();
+            HttpResponse<String> response = httpClient.send(
+                request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() >= 200 && response.statusCode() < 300) {
+                if (responseType == Void.class
+                    || response.body() == null
+                    || response.body().isEmpty()) {
+                    return null;
+                }
+                return objectMapper.readValue(response.body(), responseType);
+            }
+            // The A2A REST binding uses the standard
+            // {"error": "..."} envelope. Map to ApiException so
+            // callers can branch on it.
+            String code = "A2A";
+            String message = "a2a error (status " + response.statusCode() + ")";
+            try {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> err = objectMapper.readValue(
+                    response.body(), Map.class);
+                Object e = err.get("error");
+                Object m = err.get("message");
+                if (e instanceof String) message = (String) e;
+                else if (m instanceof String) message = (String) m;
+                Object c = err.get("code");
+                if (c instanceof String) code = (String) c;
+            } catch (IOException ignored) {
+                /* fall through with raw status */
+            }
+            boolean retryable = response.statusCode() == 408
+                || response.statusCode() == 425
+                || response.statusCode() == 429
+                || response.statusCode() >= 500;
+            throw new ApiException(code, message, retryable);
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /** Overload of {@link #a2aSend} for the {@code Map<String, Object>}
+     *  return type — the default A2A response shape. */
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> a2aSendMap(
+        String method, String path, Object body, boolean skipAuth
+    ) throws ActeonException {
+        return (Map<String, Object>) a2aSend(method, path, body, Map.class, skipAuth);
+    }
+
+    /** {@code POST /a2a/{namespace}/{tenant}/v1/message:send} —
+     *  start a new A2A Task or continue an existing one. */
+    public Map<String, Object> a2aSendMessage(
+        String namespace, String tenant, Map<String, Object> message
+    ) throws ActeonException {
+        Map<String, Object> body = new HashMap<>();
+        body.put("message", message);
+        String path = "/a2a/" + A2A.segment(namespace) + "/"
+            + A2A.segment(tenant) + "/v1/message:send";
+        return a2aSendMap("POST", path, body, false);
+    }
+
+    /** {@code GET /a2a/{namespace}/{tenant}/v1/tasks/{id}} — read
+     *  a Task by id. Throws {@code ApiException} with HTTP 404 when
+     *  the task does not exist for the caller. */
+    public Map<String, Object> a2aGetTask(
+        String namespace, String tenant, String taskId
+    ) throws ActeonException {
+        String path = "/a2a/" + A2A.segment(namespace) + "/"
+            + A2A.segment(tenant) + "/v1/tasks/" + A2A.segment(taskId);
+        return a2aSendMap("GET", path, null, false);
+    }
+
+    /** {@code POST /a2a/{namespace}/{tenant}/v1/tasks/{id}:cancel}.
+     *  The {@code :cancel} verb is part of the URL (spec §11) —
+     *  the server splits it off in-handler. */
+    public Map<String, Object> a2aCancelTask(
+        String namespace, String tenant, String taskId
+    ) throws ActeonException {
+        String path = "/a2a/" + A2A.segment(namespace) + "/"
+            + A2A.segment(tenant) + "/v1/tasks/"
+            + A2A.segment(taskId) + ":cancel";
+        return a2aSendMap("POST", path, null, false);
+    }
+
+    /** {@code POST .../v1/tasks/{id}/pushNotificationConfigs} —
+     *  register or upsert a push-notification webhook for a Task. */
+    public Map<String, Object> a2aSetPushConfig(
+        String namespace, String tenant, String taskId, Map<String, Object> config
+    ) throws ActeonException {
+        String path = "/a2a/" + A2A.segment(namespace) + "/"
+            + A2A.segment(tenant) + "/v1/tasks/" + A2A.segment(taskId)
+            + "/pushNotificationConfigs";
+        return a2aSendMap("POST", path, config, false);
+    }
+
+    /** {@code GET .../v1/tasks/{id}/pushNotificationConfigs} —
+     *  list every config registered for the task. */
+    @SuppressWarnings("unchecked")
+    public List<Map<String, Object>> a2aListPushConfigs(
+        String namespace, String tenant, String taskId
+    ) throws ActeonException {
+        String path = "/a2a/" + A2A.segment(namespace) + "/"
+            + A2A.segment(tenant) + "/v1/tasks/" + A2A.segment(taskId)
+            + "/pushNotificationConfigs";
+        return (List<Map<String, Object>>) a2aSend(
+            "GET", path, null, List.class, false);
+    }
+
+    /** {@code GET …/pushNotificationConfigs/{cfgId}} — read one
+     *  config. */
+    public Map<String, Object> a2aGetPushConfig(
+        String namespace, String tenant, String taskId, String configId
+    ) throws ActeonException {
+        String path = "/a2a/" + A2A.segment(namespace) + "/"
+            + A2A.segment(tenant) + "/v1/tasks/" + A2A.segment(taskId)
+            + "/pushNotificationConfigs/" + A2A.segment(configId);
+        return a2aSendMap("GET", path, null, false);
+    }
+
+    /** {@code DELETE …/pushNotificationConfigs/{cfgId}}. Throws
+     *  {@code ApiException} with HTTP 404 when the config doesn't
+     *  exist — the server never silently no-ops. */
+    public void a2aDeletePushConfig(
+        String namespace, String tenant, String taskId, String configId
+    ) throws ActeonException {
+        String path = "/a2a/" + A2A.segment(namespace) + "/"
+            + A2A.segment(tenant) + "/v1/tasks/" + A2A.segment(taskId)
+            + "/pushNotificationConfigs/" + A2A.segment(configId);
+        a2aSend("DELETE", path, null, Void.class, false);
+    }
+
+    /** {@code GET /a2a/{namespace}/{tenant}/.well-known/agent.json}.
+     *  Unauthenticated discovery endpoint — issued *without* the
+     *  Authorization header per the A2A spec. */
+    public Map<String, Object> a2aDiscoverAgent(
+        String namespace, String tenant
+    ) throws ActeonException {
+        String path = "/a2a/" + A2A.segment(namespace) + "/"
+            + A2A.segment(tenant) + "/.well-known/agent.json";
+        return a2aSendMap("GET", path, null, true);
+    }
+
+    /** JSON-RPC {@code agent/getAuthenticatedExtendedCard} —
+     *  authenticated discovery variant. Issued through the JSON-RPC
+     *  envelope against {@code POST /a2a/{ns}/{tenant}} (the A2A
+     *  spec defines no REST counterpart). The returned card has
+     *  {@code capabilities.extendedAgentCard = true}. */
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> a2aGetAuthenticatedExtendedCard(
+        String namespace, String tenant
+    ) throws ActeonException {
+        Map<String, Object> envelope = new HashMap<>();
+        envelope.put("jsonrpc", "2.0");
+        envelope.put("id", 1);
+        envelope.put("method", "agent/getAuthenticatedExtendedCard");
+        String path = "/a2a/" + A2A.segment(namespace) + "/" + A2A.segment(tenant);
+        Map<String, Object> reply = a2aSendMap("POST", path, envelope, false);
+        // Unwrap the JSON-RPC envelope: error wins; missing result is
+        // an error too.
+        Object error = reply.get("error");
+        if (error instanceof Map) {
+            Map<String, Object> err = (Map<String, Object>) error;
+            Object code = err.get("code");
+            Object message = err.get("message");
+            throw new ApiException(
+                code != null ? code.toString() : "JSONRPC",
+                message != null ? message.toString() : "JSON-RPC error",
+                false
+            );
+        }
+        Object result = reply.get("result");
+        if (!(result instanceof Map)) {
+            throw new ApiException(
+                "JSONRPC",
+                "JSON-RPC reply had neither result nor error",
+                false
+            );
+        }
+        return (Map<String, Object>) result;
     }
 }

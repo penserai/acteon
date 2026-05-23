@@ -1,10 +1,15 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
+use acteon_audit::analytics::AnalyticsStore;
+use acteon_audit::cursor::{AuditCursor, CursorKind};
 use acteon_audit::error::AuditError;
 use acteon_audit::record::{AuditPage, AuditQuery, AuditRecord};
 use acteon_audit::store::AuditStore;
 
+use crate::analytics::ClickHouseAnalyticsStore;
 use crate::config::ClickHouseAuditConfig;
 use crate::migrations;
 
@@ -42,6 +47,15 @@ struct AuditInsertRow {
     expires_at: Option<i64>,
     caller_id: String,
     auth_method: String,
+    record_hash: Option<String>,
+    previous_hash: Option<String>,
+    sequence_number: Option<u64>,
+    /// JSON-serialised `Vec<serde_json::Value>`.
+    attachment_metadata: String,
+    signature: Option<String>,
+    signer_id: Option<String>,
+    kid: Option<String>,
+    canonical_hash: Option<String>,
 }
 
 /// Row layout used when reading audit records from `ClickHouse`.
@@ -67,6 +81,14 @@ struct AuditSelectRow {
     expires_at: Option<i64>,
     caller_id: String,
     auth_method: String,
+    record_hash: Option<String>,
+    previous_hash: Option<String>,
+    sequence_number: Option<u64>,
+    attachment_metadata: String,
+    signature: Option<String>,
+    signer_id: Option<String>,
+    kid: Option<String>,
+    canonical_hash: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -98,6 +120,15 @@ impl From<AuditRecord> for AuditInsertRow {
             expires_at: r.expires_at.map(|dt| dt.timestamp_millis()),
             caller_id: r.caller_id,
             auth_method: r.auth_method,
+            record_hash: r.record_hash,
+            previous_hash: r.previous_hash,
+            sequence_number: r.sequence_number,
+            attachment_metadata: serde_json::to_string(&r.attachment_metadata)
+                .unwrap_or_else(|_| "[]".to_owned()),
+            signature: r.signature,
+            signer_id: r.signer_id,
+            kid: r.kid,
+            canonical_hash: r.canonical_hash,
         }
     }
 }
@@ -129,6 +160,14 @@ impl From<AuditSelectRow> for AuditRecord {
             expires_at: row.expires_at.map(millis_to_datetime),
             caller_id: row.caller_id,
             auth_method: row.auth_method,
+            record_hash: row.record_hash,
+            previous_hash: row.previous_hash,
+            sequence_number: row.sequence_number,
+            attachment_metadata: serde_json::from_str(&row.attachment_metadata).unwrap_or_default(),
+            signature: row.signature,
+            signer_id: row.signer_id,
+            kid: row.kid,
+            canonical_hash: row.canonical_hash,
         }
     }
 }
@@ -148,19 +187,15 @@ const SELECT_COLUMNS: &str = "\
     id, action_id, chain_id, namespace, tenant, provider, action_type, verdict, \
     matched_rule, outcome, action_payload, verdict_details, outcome_details, \
     metadata, dispatched_at, completed_at, duration_ms, expires_at, \
-    caller_id, auth_method";
-
-/// Escape a string value for safe interpolation inside a `ClickHouse` SQL
-/// single-quoted literal.  `ClickHouse` uses backslash escaping by default.
-fn escape_ch(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('\'', "\\'")
-}
+    caller_id, auth_method, record_hash, previous_hash, sequence_number, \
+    attachment_metadata, signature, signer_id, kid, canonical_hash";
 
 /// Build a `WHERE` clause and its corresponding SQL fragment from an
-/// [`AuditQuery`].  Returns a string that is either empty or starts with
-/// `WHERE `.
-fn build_where_clause(query: &AuditQuery) -> String {
+/// [`AuditQuery`]. Returns the SQL string with placeholders and a vector of
+/// values to bind.
+fn build_where_clause(query: &AuditQuery) -> (String, Vec<String>) {
     let mut conditions: Vec<String> = Vec::new();
+    let mut binds: Vec<String> = Vec::new();
 
     let string_filters: &[(&Option<String>, &str)] = &[
         (&query.namespace, "namespace"),
@@ -172,11 +207,14 @@ fn build_where_clause(query: &AuditQuery) -> String {
         (&query.matched_rule, "matched_rule"),
         (&query.caller_id, "caller_id"),
         (&query.chain_id, "chain_id"),
+        (&query.signer_id, "signer_id"),
+        (&query.kid, "kid"),
     ];
 
     for (value, col) in string_filters {
         if let Some(v) = value {
-            conditions.push(format!("{col} = '{}'", escape_ch(v)));
+            conditions.push(format!("{col} = ?"));
+            binds.push(v.clone());
         }
     }
 
@@ -189,9 +227,9 @@ fn build_where_clause(query: &AuditQuery) -> String {
     }
 
     if conditions.is_empty() {
-        String::new()
+        (String::new(), binds)
     } else {
-        format!("WHERE {}", conditions.join(" AND "))
+        (format!("WHERE {}", conditions.join(" AND ")), binds)
     }
 }
 
@@ -231,6 +269,16 @@ impl ClickHouseAuditStore {
             client,
             table: format!("{}audit", config.prefix),
         })
+    }
+
+    /// Access the `ClickHouse` client.
+    pub fn client(&self) -> &clickhouse::Client {
+        &self.client
+    }
+
+    /// Access the table name.
+    pub fn table_name(&self) -> &str {
+        &self.table
     }
 
     /// Create from an existing `clickhouse::Client` (useful for testing).
@@ -300,41 +348,129 @@ impl AuditStore for ClickHouseAuditStore {
         Ok(rows.into_iter().next().map(Into::into))
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn query(&self, query: &AuditQuery) -> Result<AuditPage, AuditError> {
         let limit = query.effective_limit();
-        let offset = query.effective_offset();
-        let where_clause = build_where_clause(query);
+        let (mut where_clause, binds) = build_where_clause(query);
 
-        // Count query.
-        let count_sql = format!("SELECT count() FROM {} {where_clause}", self.table);
+        let cursor = query
+            .cursor
+            .as_deref()
+            .map(AuditCursor::decode)
+            .transpose()?;
 
-        let total = self
-            .client
-            .query(&count_sql)
-            .fetch_one::<u64>()
-            .await
-            .map_err(|e| AuditError::Storage(e.to_string()))?;
+        if let Some(ref cursor) = cursor {
+            let prefix = if where_clause.is_empty() {
+                "WHERE"
+            } else {
+                "AND"
+            };
+            match cursor.kind {
+                CursorKind::Ts => {
+                    if query.sort_by_sequence_asc {
+                        return Err(AuditError::Serialization(
+                            "cursor kind 'ts' does not match sort_by_sequence_asc=true".into(),
+                        ));
+                    }
+                    let ts = cursor.dispatched_at_ms.unwrap_or(0);
+                    // For the cursor we still interpolate the numeric TS
+                    // but bind the ID.
+                    where_clause =
+                        format!("{where_clause} {prefix} (dispatched_at, id) < ({ts}, ?)");
+                }
+                CursorKind::Seq => {
+                    if !query.sort_by_sequence_asc {
+                        return Err(AuditError::Serialization(
+                            "cursor kind 'seq' requires sort_by_sequence_asc=true".into(),
+                        ));
+                    }
+                    let seq = cursor.sequence_number.unwrap_or(0);
+                    where_clause = format!("{where_clause} {prefix} sequence_number > {seq}");
+                }
+            }
+        }
+
+        // Count query — only on the offset path. Cursor pagination skips
+        // the count for O(limit) page latency.
+        let total = if cursor.is_none() {
+            let count_sql = format!("SELECT count() FROM {} {where_clause}", self.table);
+            let mut q = self.client.query(&count_sql);
+            for b in &binds {
+                q = q.bind(b);
+            }
+            let count = q
+                .fetch_one::<u64>()
+                .await
+                .map_err(|e| AuditError::Storage(e.to_string()))?;
+            Some(count)
+        } else {
+            None
+        };
 
         // Data query.
+        let order_clause = if query.sort_by_sequence_asc {
+            "ORDER BY sequence_number ASC, id ASC"
+        } else {
+            "ORDER BY dispatched_at DESC, id DESC"
+        };
+        let offset = if cursor.is_some() {
+            0
+        } else {
+            query.effective_offset()
+        };
+        // Fetch limit + 1 to detect whether another page exists.
+        let probe = limit + 1;
         let data_sql = format!(
-            "SELECT {SELECT_COLUMNS} FROM {} {where_clause} ORDER BY dispatched_at DESC LIMIT {limit} OFFSET {offset}",
+            "SELECT {SELECT_COLUMNS} FROM {} {where_clause} {order_clause} LIMIT {probe} OFFSET {offset}",
             self.table,
         );
 
-        let rows = self
-            .client
-            .query(&data_sql)
+        let mut data_q = self.client.query(&data_sql);
+        for b in &binds {
+            data_q = data_q.bind(b);
+        }
+        if let Some(ref cursor) = cursor
+            && let CursorKind::Ts = cursor.kind
+        {
+            data_q = data_q.bind(cursor.id.as_deref().unwrap_or(""));
+        }
+
+        let rows = data_q
             .fetch_all::<AuditSelectRow>()
             .await
             .map_err(|e| AuditError::Storage(e.to_string()))?;
 
-        let records = rows.into_iter().map(Into::into).collect();
+        let mut records: Vec<AuditRecord> = rows.into_iter().map(Into::into).collect();
+        let has_more = records.len() > limit as usize;
+        if has_more {
+            records.truncate(limit as usize);
+        }
+
+        let next_cursor = if has_more {
+            records
+                .last()
+                .map(|rec| {
+                    if query.sort_by_sequence_asc {
+                        AuditCursor::from_sequence(rec.sequence_number.unwrap_or(0), rec.id.clone())
+                    } else {
+                        AuditCursor::from_timestamp(
+                            rec.dispatched_at.timestamp_millis(),
+                            rec.id.clone(),
+                        )
+                    }
+                })
+                .map(|c| c.encode())
+                .transpose()?
+        } else {
+            None
+        };
 
         Ok(AuditPage {
             records,
             total,
             limit,
             offset,
+            next_cursor,
         })
     }
 
@@ -371,5 +507,12 @@ impl AuditStore for ClickHouseAuditStore {
         }
 
         Ok(count)
+    }
+
+    fn analytics(&self) -> Option<Arc<dyn AnalyticsStore>> {
+        Some(Arc::new(ClickHouseAnalyticsStore::new(
+            self.client.clone(),
+            self.table.clone(),
+        )))
     }
 }

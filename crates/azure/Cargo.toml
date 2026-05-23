@@ -1,0 +1,43 @@
+[package]
+name = "acteon-azure"
+description = "Azure service providers for Acteon (Blob Storage, Event Hubs)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+integration = []
+blob = ["dep:azure_storage_blob"]
+eventhubs = ["dep:azure_messaging_eventhubs"]
+# Phase 2/3 placeholders (REST-based, no SDK deps yet)
+functions = []
+servicebus = []
+email = []
+vm = []
+vmss = []
+eventgrid = []
+full = ["blob", "eventhubs", "functions", "servicebus", "email", "vm", "vmss", "eventgrid"]
+
+[dependencies]
+acteon-core = { workspace = true }
+acteon-provider = { workspace = true }
+azure_core = { workspace = true }
+azure_identity = { workspace = true }
+azure_storage_blob = { workspace = true, optional = true }
+azure_messaging_eventhubs = { workspace = true, optional = true }
+async-trait = { workspace = true }
+base64 = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[lints]
+workspace = true

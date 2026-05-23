@@ -1,0 +1,40 @@
+# Configuration for MCP integration testing.
+# Uses log providers (mock) and in-memory audit so all tools work end-to-end.
+
+[server]
+host = "127.0.0.1"
+port = 8080
+
+[state]
+backend = "memory"
+
+[audit]
+enabled = true
+backend = "memory"
+store_payload = true
+
+# ── Mock providers (log type: no external deps, just logs and returns success) ──
+
+[[providers]]
+name = "slack"
+type = "log"
+
+[[providers]]
+name = "email"
+type = "log"
+
+[[providers]]
+name = "webhook"
+type = "log"
+
+[[providers]]
+name = "pagerduty"
+type = "log"
+
+[rules]
+# No rule directory — start clean
+
+[executor]
+max_retries = 3
+timeout_seconds = 30
+max_concurrent = 10

@@ -1,0 +1,58 @@
+# Processing rules: dedup, throttle, group, and schedule telemetry data.
+
+rules:
+  # ── Deduplicate duplicate sensor readings within 60s ─────────────────────
+  - name: dedup-sensor-readings
+    priority: 2
+    description: "Deduplicate identical sensor readings within a 60-second window"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "smartbuilding-hq"
+        - field: action.action_type
+          eq: "sensor_reading"
+    action:
+      type: deduplicate
+      ttl_seconds: 60
+
+  # ── Throttle rapid telemetry: max 30 per minute ─────────────────────────
+  - name: throttle-telemetry
+    priority: 3
+    description: "Limit telemetry ingestion to 30 readings per minute per tenant"
+    condition:
+      field: action.tenant
+      eq: "smartbuilding-hq"
+    action:
+      type: throttle
+      max_count: 30
+      window_seconds: 60
+
+  # ── Group humidity readings into 30s batches ─────────────────────────────
+  - name: group-humidity-readings
+    priority: 4
+    description: "Batch humidity readings by floor, flush every 30 seconds"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "smartbuilding-hq"
+        - field: action.payload.sensor_type
+          eq: "humidity"
+    action:
+      type: group
+      group_by:
+        - payload.floor
+      group_wait_seconds: 30
+
+  # ── Schedule energy reports with 60s delay ───────────────────────────────
+  - name: schedule-energy-reports
+    priority: 4
+    description: "Delay energy meter reports by 60 seconds for batch aggregation"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "smartbuilding-hq"
+        - field: action.payload.sensor_type
+          eq: "energy"
+    action:
+      type: schedule
+      delay_seconds: 60

@@ -1,0 +1,147 @@
+@reference "../index.css";
+
+.loadingGrid {
+  @apply grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4;
+}
+
+/* Mode card */
+.modeCard {
+  @apply border rounded-lg p-5 mb-6;
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+}
+
+.modeHeader {
+  @apply flex items-center gap-4;
+}
+
+.modeIcon {
+  @apply h-8 w-8;
+  color: var(--color-primary-400);
+}
+
+.modeLabel {
+  @apply text-sm font-medium mb-1;
+  color: var(--text-muted);
+}
+
+.modeBadgeWrap {
+  @apply mt-1;
+}
+
+/* Feature cards */
+.featuresGrid {
+  @apply grid grid-cols-1 md:grid-cols-3 gap-4 mb-8;
+}
+
+.featureCard {
+  @apply border rounded-lg p-5 transition-all;
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+}
+
+.featureHeader {
+  @apply flex items-center gap-3 mb-2;
+}
+
+.featureIconEnabled {
+  @apply h-5 w-5 shrink-0;
+  color: var(--color-success-500);
+}
+
+.featureIconDisabled {
+  @apply h-5 w-5 shrink-0;
+  color: var(--color-gray-400);
+}
+
+.featureLabel {
+  @apply text-sm font-semibold;
+  color: var(--text-default);
+}
+
+.featureDescription {
+  @apply text-xs mb-3;
+  color: var(--text-muted);
+}
+
+.featureStatus {
+  @apply mt-auto;
+}
+
+/* Verify section */
+.verifySection {
+  @apply border rounded-lg p-5;
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+}
+
+.sectionTitle {
+  @apply text-sm font-semibold mb-1;
+  color: var(--text-default);
+}
+
+.sectionDescription {
+  @apply text-xs mb-4;
+  color: var(--text-muted);
+}
+
+.verifyForm {
+  @apply grid grid-cols-1 md:grid-cols-3 gap-4 items-end;
+}
+
+.verifyButtonWrap {
+  @apply flex items-end;
+}
+
+.verifyError {
+  @apply mt-4 text-sm rounded-md p-3;
+  color: var(--color-error-500);
+  background: var(--color-error-50);
+}
+
+.verifyResult {
+  @apply mt-4 border rounded-lg p-4;
+  border-color: var(--border-default);
+  background: var(--bg-surface-secondary);
+}
+
+.verifyResultHeader {
+  @apply flex items-center gap-2 mb-3;
+}
+
+.verifyResultIconValid {
+  @apply h-5 w-5;
+  color: var(--color-success-500);
+}
+
+.verifyResultIconInvalid {
+  @apply h-5 w-5;
+  color: var(--color-error-500);
+}
+
+.verifyResultTitle {
+  @apply text-sm font-semibold;
+  color: var(--text-default);
+}
+
+.verifyDetails {
+  @apply space-y-2 text-sm;
+}
+
+.verifyDetailRow {
+  @apply flex justify-between items-center;
+}
+
+.verifyDetailLabel {
+  color: var(--text-muted);
+}
+
+.verifyDetailValue {
+  @apply font-mono text-xs tabular-nums;
+  color: var(--text-default);
+}
+
+.verifyDetailValueError {
+  @apply font-mono text-xs tabular-nums;
+  color: var(--color-error-500);
+}

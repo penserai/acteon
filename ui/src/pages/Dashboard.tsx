@@ -1,9 +1,9 @@
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { RefreshCw } from 'lucide-react'
 import { useMetrics } from '../api/hooks/useHealth'
 import { useCircuitBreakers } from '../api/hooks/useCircuitBreakers'
-import { useStream } from '../api/hooks/useStream'
+import { useEventStore } from '../stores/events'
 import { PageHeader } from '../components/layout/PageHeader'
 import { StatCard } from '../components/charts/StatCard'
 import { TimeSeriesChart } from '../components/charts/TimeSeriesChart'
@@ -11,45 +11,22 @@ import { Badge } from '../components/ui/Badge'
 import { Button } from '../components/ui/Button'
 import { StatCardSkeleton } from '../components/ui/Skeleton'
 import { shortTime } from '../lib/format'
-import type { StreamEvent, MetricsResponse } from '../types'
+import type { MetricsResponse } from '../types'
 import styles from './Dashboard.module.css'
 
 export function Dashboard() {
   const navigate = useNavigate()
   const { data: metrics, isLoading, refetch } = useMetrics()
   const { data: circuits } = useCircuitBreakers()
-  const [events, setEvents] = useState<StreamEvent[]>([])
-  const [history, setHistory] = useState<Record<string, unknown>[]>([])
-  const historyRef = useRef<Record<string, unknown>[]>([])
+  const allEvents = useEventStore((s) => s.events)
+  const events = allEvents.slice(0, 10)
+  const history = useEventStore((s) => s.metricsHistory)
 
-  // Accumulate time series in effect
+  // Push polled metrics into the event store for the time-series chart
+  const addMetricsPoint = useRef(useEventStore.getState().addMetricsPoint)
   useEffect(() => {
-    if (metrics) {
-      const now = new Date()
-      const point = {
-        time: shortTime(now),
-        executed: metrics.executed,
-        failed: metrics.failed,
-        suppressed: metrics.suppressed,
-        deduplicated: metrics.deduplicated,
-      }
-      const prev = historyRef.current
-      if (prev.length === 0 || prev[prev.length - 1].time !== point.time) {
-        const next = [...prev.slice(-59), point]
-        historyRef.current = next
-        setHistory(next)
-      }
-    }
+    if (metrics) addMetricsPoint.current(metrics)
   }, [metrics])
-
-  const handleEvent = useCallback((event: StreamEvent) => {
-    setEvents((prev) => [event, ...prev].slice(0, 20))
-  }, [])
-
-  useStream({
-    onEvent: handleEvent,
-    enabled: true,
-  })
 
   const statCards = metrics ? buildStatCards(metrics) : []
 
@@ -89,6 +66,8 @@ export function Dashboard() {
                 { key: 'executed', color: '#10B981', label: 'Executed' },
                 { key: 'failed', color: '#EF4444', label: 'Failed' },
                 { key: 'suppressed', color: '#F59E0B', label: 'Suppressed' },
+                { key: 'silenced', color: '#06B6D4', label: 'Silenced' },
+                { key: 'muted', color: '#A855F7', label: 'Muted' },
                 { key: 'deduplicated', color: '#64647A', label: 'Deduplicated' },
               ]}
             />
@@ -137,15 +116,41 @@ export function Dashboard() {
   )
 }
 
-function buildStatCards(m: MetricsResponse) {
-  return [
+interface StatCard {
+  label: string
+  value: number
+  link?: string
+}
+
+function buildStatCards(m: MetricsResponse): StatCard[] {
+  const cards: StatCard[] = [
     { label: 'Dispatched', value: m.dispatched, link: '/audit' },
     { label: 'Executed', value: m.executed, link: '/audit?outcome=Executed' },
     { label: 'Failed', value: m.failed, link: '/audit?outcome=Failed' },
-    { label: 'Deduplicated', value: m.deduplicated },
-    { label: 'Suppressed', value: m.suppressed },
+    { label: 'Deduplicated', value: m.deduplicated, link: '/audit?outcome=Deduplicated' },
+    { label: 'Suppressed', value: m.suppressed, link: '/audit?outcome=Suppressed' },
+    { label: 'Silenced', value: m.silenced ?? 0, link: '/silences' },
+    { label: 'Muted', value: m.muted ?? 0, link: '/time-intervals' },
     { label: 'Pending Approval', value: m.pending_approval ?? 0, link: '/approvals' },
     { label: 'Circuit Open', value: m.circuit_open ?? 0, link: '/circuit-breakers' },
     { label: 'Scheduled', value: m.scheduled ?? 0, link: '/scheduled' },
   ]
+
+  // Signing cards render whenever the server reports signing is
+  // configured (`signing_enabled`), OR when any signing counter has
+  // ticked on older servers that predate the flag. This way an
+  // operator who just turned on signing sees the cards with zeros
+  // instead of wondering whether the config was actually picked up.
+  const sigVerified = m.signing_verified ?? 0
+  const sigRejected =
+    (m.signing_invalid ?? 0) +
+    (m.signing_unknown_signer ?? 0) +
+    (m.signing_scope_denied ?? 0) +
+    (m.signing_unsigned_rejected ?? 0)
+  if (m.signing_enabled || sigVerified > 0 || sigRejected > 0) {
+    cards.push({ label: 'Sig Verified', value: sigVerified })
+    cards.push({ label: 'Sig Rejected', value: sigRejected })
+  }
+
+  return cards
 }

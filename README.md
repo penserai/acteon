@@ -1,18 +1,22 @@
 <p align="center">
-  <img src="docs/logo.png" alt="Acteon" width="200">
+  <img src="docs/logo.svg" alt="Acteon — Actions forged in Rust" width="200">
 </p>
-
-<h1 align="center">acteon</h1>
-
-<p align="center">Actions forged in Rust</p>
 
 <p align="center">
   <a href="https://github.com/penserai/acteon/actions/workflows/ci.yml"><img src="https://github.com/penserai/acteon/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
 </p>
 
-Acteon is an action gateway that dispatches actions through a configurable pipeline of rules, providers, and state backends.
+In Greek mythology, Actaeon was a hunter who, upon encountering the divine Artemis, was instantly transformed. He went from pursuer to stag—his form completely rewritten by a higher power.
 
-The name draws from the Greek myth of Actaeon, a hunter transformed by Artemis into a stag -- the very thing he pursued. Likewise, actions entering Acteon are transformed -- deduplicated, rerouted, throttled, or dispatched -- before they ever reach the outside world.
+In distributed systems, raw actions are like that hunter: they arrive wild, untamed, and relentless. If they reach your core services unchanged, they can cause chaos.
+
+Acteon is the force that manages this transformation. It serves as an Action Gateway that intercepts raw intent and reshapes it—deduplicating, throttling, and routing events through a configurable pipeline. It ensures that by the time an action reaches your logic, it has been forged into exactly what your system needs.
+
+## Guides
+
+> **[AI Agent Swarm Coordination](https://penserai.github.io/acteon/guides/agent-swarm-coordination/)** — Use Acteon as a safety and orchestration layer for multi-agent AI systems. Covers identity isolation, permission control, prompt injection defense, rate limiting, approval workflows, failure isolation, and full observability.
+
+> **[Migrating from Prometheus Alertmanager](https://penserai.github.io/acteon/guides/migrating-from-alertmanager/)** — Lift an existing `alertmanager.yml` into Acteon with `acteon import alertmanager`, plus the concept-mapping table (routes, inhibit_rules, time_intervals, silences), cutover patterns, and what's still different between the two systems.
 
 ## Features
 
@@ -34,8 +38,19 @@ The name draws from the Greek myth of Actaeon, a hunter transformed by Artemis i
 
 ### Pluggable Backends
 
-- **State Storage** — Memory, Redis, PostgreSQL, DynamoDB, or ClickHouse for distributed locks and deduplication state
+- **State Storage** — Memory, Redis, PostgreSQL, or DynamoDB for distributed locks and deduplication state
 - **Audit Trail** — Memory, PostgreSQL, ClickHouse, or Elasticsearch for searchable action history with configurable retention
+
+### Agent Interop ([A2A Protocol v1.0](https://a2aprotocol.org))
+
+- **Task Engine** — 8-state Task lifecycle (`Submitted`, `Working`, `InputRequired`, `AuthRequired`, `Completed`, `Canceled`, `Failed`, `Rejected`) with CAS-retried atomic transitions, multi-hop reference-graph cycle detection, and the stale-task reaper as a backstop
+- **Two Transports, One Engine** — JSON-RPC 2.0 (`message/send`, `tasks/get`, `tasks/cancel`, push-config CRUD, `agent/getAuthenticatedExtendedCard`) and the spec §11 REST binding share the same method implementations
+- **Pause-for-Human** — `InputRequired` and `AuthRequired` interrupts pair a Task transition with a `BusApproval` row in one atomic step
+- **Artifact Streaming Gatekeeper** — Enforces strict `chunk_index` order, no-updates-after-`lastChunk`, and `totalChunks` completeness across multi-chunk artifact deliveries
+- **SSE Events** — `GET /a2a/{ns}/{tenant}/v1/tasks/{id}/events` re-uses the gateway broadcast and the same per-tenant connection caps as `/v1/stream`
+- **Push Notifications** — Per-task webhook configs (CRUD over JSON-RPC + REST) plus a background delivery worker with bounded concurrent dispatch, short-TTL config cache, and refined retry classification (`408`/`425`/`429` transient, other `4xx` terminal)
+- **Discovery** — Public unauthenticated `.well-known/agent.json` with single-card-verbatim vs. tenant-aggregated semantics, enriched with the gateway's intrinsic security schemes (`acteon.bearer`, `acteon.apiKey`)
+- **Multi-tenant** — Every A2A endpoint scoped by `/a2a/{namespace}/{tenant}/…` with full grant-level authorization
 
 ### Enterprise Ready
 
@@ -78,7 +93,6 @@ All crates are organized under `crates/` with logical groupings:
 | `crates/state/redis` | Redis state backend |
 | `crates/state/postgres` | PostgreSQL state backend |
 | `crates/state/dynamodb` | DynamoDB state backend |
-| `crates/state/clickhouse` | ClickHouse state backend |
 
 ### Audit Backends
 
@@ -129,12 +143,16 @@ The server starts on `http://127.0.0.1:8080` with the in-memory state backend an
 ### CLI options
 
 ```
-cargo run -p acteon-server -- [OPTIONS]
+cargo run -p acteon-server -- [OPTIONS] [COMMAND]
 
 Options:
   -c, --config <PATH>   Path to TOML config file [default: acteon.toml]
       --host <HOST>      Override bind host
       --port <PORT>      Override bind port
+
+Commands:
+  encrypt   Encrypt a value for use in auth.toml (reads from stdin)
+  migrate   Run database migrations for configured backends, then exit
 ```
 
 Examples:
@@ -145,6 +163,9 @@ cargo run -p acteon-server -- --port 3000
 
 # With a config file
 cargo run -p acteon-server -- -c my-config.toml
+
+# Run database migrations before first start
+scripts/migrate.sh -c my-config.toml
 ```
 
 ### Configuration
@@ -162,7 +183,7 @@ port = 8080
 # dist_path = "ui/dist"
 
 [state]
-backend = "memory"   # "memory", "redis", "postgres", "dynamodb", or "clickhouse"
+backend = "memory"   # "memory", "redis", "postgres", or "dynamodb"
 # url = "redis://localhost:6379"
 # prefix = "acteon"
 # region = "us-east-1"       # DynamoDB only
@@ -215,7 +236,7 @@ The `docker-compose.yml` ships with profiles for every supported backend. Redis 
 | Memory | state, audit | *(none)* | n/a |
 | Redis | state | *(default)* | `redis://localhost:6379` |
 | PostgreSQL | state, audit | `postgres` | `postgres://acteon:acteon@localhost:5432/acteon` |
-| ClickHouse | state, audit | `clickhouse` | `http://localhost:8123` |
+| ClickHouse | audit | `clickhouse` | `http://localhost:8123` |
 | Elasticsearch | audit | `elasticsearch` | `http://localhost:9200` |
 | DynamoDB Local | state | `dynamodb` | `http://localhost:8000` |
 
@@ -243,19 +264,23 @@ cargo run -p acteon-server -- -c examples/redis.toml
 
 # PostgreSQL state + audit
 docker compose --profile postgres up -d
-cargo run -p acteon-server -- -c examples/postgres.toml
+scripts/migrate.sh -c examples/postgres.toml
+cargo run -p acteon-server --features postgres -- -c examples/postgres.toml
 
-# ClickHouse state + audit
+# ClickHouse audit (with Redis state)
 docker compose --profile clickhouse up -d
-cargo run -p acteon-server -- -c examples/clickhouse.toml
+scripts/migrate.sh -c examples/clickhouse.toml
+cargo run -p acteon-server --features clickhouse -- -c examples/clickhouse.toml
 
 # Redis state + Elasticsearch audit
 docker compose --profile elasticsearch up -d
+scripts/migrate.sh -c examples/elasticsearch-audit.toml
 cargo run -p acteon-server -- -c examples/elasticsearch-audit.toml
 
 # DynamoDB Local state
 docker compose --profile dynamodb up -d
-cargo run -p acteon-server -- -c examples/dynamodb.toml
+scripts/migrate.sh -c examples/dynamodb.toml
+cargo run -p acteon-server --features dynamodb -- -c examples/dynamodb.toml
 ```
 
 ### Combining backends
@@ -276,6 +301,7 @@ url = "postgres://acteon:acteon@localhost:5432/acteon"
 
 ```sh
 docker compose --profile postgres up -d
+scripts/migrate.sh -c acteon.toml
 cargo run -p acteon-server -- -c acteon.toml
 ```
 

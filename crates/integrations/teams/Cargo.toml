@@ -1,0 +1,25 @@
+[package]
+name = "acteon-teams"
+description = "Microsoft Teams provider for Acteon — posts messages via incoming webhooks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+acteon-core = { workspace = true }
+acteon-provider = { workspace = true, features = ["trace-context"] }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

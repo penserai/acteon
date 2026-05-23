@@ -1,0 +1,30 @@
+@reference "../index.css";
+
+.ttlValue {
+  @apply font-mono text-xs;
+  color: var(--text-secondary);
+}
+
+.textarea {
+  @apply w-full h-24 rounded-md border px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-primary-400/20 focus:border-primary-400;
+  background: var(--bg-surface);
+  border-color: var(--border-input);
+  color: var(--text-default);
+}
+
+/* Detail drawer */
+.tabContainer {
+  @apply mb-4;
+}
+
+.detailContent {
+  @apply space-y-3 text-sm;
+}
+
+.detailValueWrap {
+  @apply font-mono text-xs text-right max-w-xs break-all;
+}
+
+.sectionTitle {
+  @apply text-sm font-medium mb-2;
+}

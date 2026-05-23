@@ -1,4 +1,10 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::{HashMap, VecDeque};
+use std::sync::{
+    LazyLock,
+    atomic::{AtomicI64, AtomicU64, Ordering},
+};
+
+use regex::Regex;
 
 /// Atomic counters tracking gateway dispatch outcomes.
 ///
@@ -14,6 +20,11 @@ pub struct GatewayMetrics {
     pub deduplicated: AtomicU64,
     /// Actions that were suppressed by a rule.
     pub suppressed: AtomicU64,
+    /// Actions that were silenced by a matching silence (label-pattern mute).
+    pub silenced: AtomicU64,
+    /// Actions that were muted by a referenced time interval (mute or
+    /// inactive active window).
+    pub muted: AtomicU64,
     /// Actions that were rerouted to a different provider.
     pub rerouted: AtomicU64,
     /// Actions that were throttled.
@@ -44,6 +55,63 @@ pub struct GatewayMetrics {
     pub circuit_fallbacks: AtomicU64,
     /// Actions scheduled for delayed execution.
     pub scheduled: AtomicU64,
+    /// Recurring actions dispatched successfully.
+    pub recurring_dispatched: AtomicU64,
+    /// Recurring action dispatch errors.
+    pub recurring_errors: AtomicU64,
+    /// Recurring actions skipped (disabled, expired, etc.).
+    pub recurring_skipped: AtomicU64,
+    /// Recurring actions currently scheduled and eligible for dispatch.
+    /// Refreshed once per `recurring_check_interval` tick by counting
+    /// the pending-recurring index.
+    pub recurring_active: AtomicU64,
+    /// Actions blocked by tenant quota.
+    pub quota_exceeded: AtomicU64,
+    /// Actions that passed with a quota warning.
+    pub quota_warned: AtomicU64,
+    /// Actions degraded to a fallback provider due to quota.
+    pub quota_degraded: AtomicU64,
+    /// Actions that triggered a quota notification.
+    pub quota_notified: AtomicU64,
+    /// State entries deleted by the retention reaper.
+    pub retention_deleted_state: AtomicU64,
+    /// Retention reaper skipped entries due to compliance hold.
+    pub retention_skipped_compliance: AtomicU64,
+    /// Retention reaper errors.
+    pub retention_errors: AtomicU64,
+    /// A2A tasks transitioned to `Failed` by the stale-task reaper.
+    pub stale_tasks_reaped: AtomicU64,
+    /// Stale-task reaper errors.
+    pub stale_task_reaper_errors: AtomicU64,
+    /// WASM plugin invocations.
+    pub wasm_invocations: AtomicU64,
+    /// WASM plugin invocation errors.
+    pub wasm_errors: AtomicU64,
+    /// Action signatures successfully verified and scope-authorized.
+    pub signing_verified: AtomicU64,
+    /// Signed actions rejected because the Ed25519 signature did not
+    /// validate against the registered public key.
+    pub signing_invalid: AtomicU64,
+    /// Signed actions rejected because the `signer_id` (or
+    /// `(signer_id, kid)` pair during a rotation window) is not in
+    /// the server's keyring.
+    pub signing_unknown_signer: AtomicU64,
+    /// Signed actions rejected because the signer is not authorized
+    /// for the action's `(tenant, namespace)` pair.
+    pub signing_scope_denied: AtomicU64,
+    /// Unsigned actions rejected because `signing.reject_unsigned`
+    /// is enabled.
+    pub signing_unsigned_rejected: AtomicU64,
+    /// Unsigned actions passed through because `signing.reject_unsigned`
+    /// is off. Lets operators compute the signed-vs-unsigned ratio
+    /// directly without subtracting every rejection counter from
+    /// `dispatched`.
+    pub signing_unsigned_allowed: AtomicU64,
+    /// Actions rejected because their action ID was already seen
+    /// within the `replay_ttl_seconds` window. Replay protection is
+    /// independent of signing — this counter increments whether or
+    /// not a valid signature was presented.
+    pub replay_rejected: AtomicU64,
 }
 
 impl GatewayMetrics {
@@ -65,6 +133,16 @@ impl GatewayMetrics {
     /// Increment the suppressed counter.
     pub fn increment_suppressed(&self) {
         self.suppressed.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the silenced counter.
+    pub fn increment_silenced(&self) {
+        self.silenced.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the muted counter.
+    pub fn increment_muted(&self) {
+        self.muted.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Increment the rerouted counter.
@@ -142,6 +220,138 @@ impl GatewayMetrics {
         self.scheduled.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Increment the recurring dispatched counter.
+    pub fn increment_recurring_dispatched(&self) {
+        self.recurring_dispatched.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the recurring errors counter.
+    pub fn increment_recurring_errors(&self) {
+        self.recurring_errors.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the recurring skipped counter.
+    pub fn increment_recurring_skipped(&self) {
+        self.recurring_skipped.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Set the recurring active gauge to the current count of scheduled
+    /// recurring actions. Called from the recurring worker tick.
+    pub fn set_recurring_active(&self, value: u64) {
+        self.recurring_active.store(value, Ordering::Relaxed);
+    }
+
+    /// Increment the quota exceeded (blocked) counter.
+    pub fn increment_quota_exceeded(&self) {
+        self.quota_exceeded.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the quota warned counter.
+    pub fn increment_quota_warned(&self) {
+        self.quota_warned.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the quota degraded counter.
+    pub fn increment_quota_degraded(&self) {
+        self.quota_degraded.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the quota notified counter.
+    pub fn increment_quota_notified(&self) {
+        self.quota_notified.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the retention deleted state counter.
+    pub fn increment_retention_deleted_state(&self) {
+        self.retention_deleted_state.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the retention skipped compliance counter.
+    pub fn increment_retention_skipped_compliance(&self) {
+        self.retention_skipped_compliance
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the retention errors counter.
+    pub fn increment_retention_errors(&self) {
+        self.retention_errors.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the stale-tasks-reaped counter.
+    pub fn increment_stale_tasks_reaped(&self) {
+        self.stale_tasks_reaped.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the stale-task reaper errors counter.
+    pub fn increment_stale_task_reaper_errors(&self) {
+        self.stale_task_reaper_errors
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the WASM invocations counter.
+    pub fn increment_wasm_invocations(&self) {
+        self.wasm_invocations.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Add `n` to the WASM invocations counter.
+    pub fn add_wasm_invocations(&self, n: u64) {
+        self.wasm_invocations.fetch_add(n, Ordering::Relaxed);
+    }
+
+    /// Increment the WASM errors counter.
+    pub fn increment_wasm_errors(&self) {
+        self.wasm_errors.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Add `n` to the WASM errors counter.
+    pub fn add_wasm_errors(&self, n: u64) {
+        self.wasm_errors.fetch_add(n, Ordering::Relaxed);
+    }
+
+    /// Increment the `signing_verified` counter (signature crypto-valid
+    /// and scope-authorized).
+    pub fn increment_signing_verified(&self) {
+        self.signing_verified.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the `signing_invalid` counter (Ed25519 verification
+    /// failed against the registered public key).
+    pub fn increment_signing_invalid(&self) {
+        self.signing_invalid.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the `signing_unknown_signer` counter (`signer_id` or
+    /// `(signer_id, kid)` pair not in the keyring).
+    pub fn increment_signing_unknown_signer(&self) {
+        self.signing_unknown_signer.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the `signing_scope_denied` counter (signature valid
+    /// but signer not authorized for the `(tenant, namespace)` pair).
+    pub fn increment_signing_scope_denied(&self) {
+        self.signing_scope_denied.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the `signing_unsigned_rejected` counter (unsigned
+    /// action rejected because `signing.reject_unsigned` is enabled).
+    pub fn increment_signing_unsigned_rejected(&self) {
+        self.signing_unsigned_rejected
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the `signing_unsigned_allowed` counter (unsigned
+    /// action passed through because `signing.reject_unsigned` is off).
+    pub fn increment_signing_unsigned_allowed(&self) {
+        self.signing_unsigned_allowed
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the `replay_rejected` counter (action ID already
+    /// seen within the replay protection window).
+    pub fn increment_replay_rejected(&self) {
+        self.replay_rejected.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Take a consistent point-in-time snapshot of all counters.
     pub fn snapshot(&self) -> MetricsSnapshot {
         MetricsSnapshot {
@@ -149,6 +359,8 @@ impl GatewayMetrics {
             executed: self.executed.load(Ordering::Relaxed),
             deduplicated: self.deduplicated.load(Ordering::Relaxed),
             suppressed: self.suppressed.load(Ordering::Relaxed),
+            silenced: self.silenced.load(Ordering::Relaxed),
+            muted: self.muted.load(Ordering::Relaxed),
             rerouted: self.rerouted.load(Ordering::Relaxed),
             throttled: self.throttled.load(Ordering::Relaxed),
             failed: self.failed.load(Ordering::Relaxed),
@@ -164,6 +376,28 @@ impl GatewayMetrics {
             circuit_transitions: self.circuit_transitions.load(Ordering::Relaxed),
             circuit_fallbacks: self.circuit_fallbacks.load(Ordering::Relaxed),
             scheduled: self.scheduled.load(Ordering::Relaxed),
+            recurring_dispatched: self.recurring_dispatched.load(Ordering::Relaxed),
+            recurring_errors: self.recurring_errors.load(Ordering::Relaxed),
+            recurring_skipped: self.recurring_skipped.load(Ordering::Relaxed),
+            recurring_active: self.recurring_active.load(Ordering::Relaxed),
+            quota_exceeded: self.quota_exceeded.load(Ordering::Relaxed),
+            quota_warned: self.quota_warned.load(Ordering::Relaxed),
+            quota_degraded: self.quota_degraded.load(Ordering::Relaxed),
+            quota_notified: self.quota_notified.load(Ordering::Relaxed),
+            retention_deleted_state: self.retention_deleted_state.load(Ordering::Relaxed),
+            retention_skipped_compliance: self.retention_skipped_compliance.load(Ordering::Relaxed),
+            retention_errors: self.retention_errors.load(Ordering::Relaxed),
+            stale_tasks_reaped: self.stale_tasks_reaped.load(Ordering::Relaxed),
+            stale_task_reaper_errors: self.stale_task_reaper_errors.load(Ordering::Relaxed),
+            wasm_invocations: self.wasm_invocations.load(Ordering::Relaxed),
+            wasm_errors: self.wasm_errors.load(Ordering::Relaxed),
+            signing_verified: self.signing_verified.load(Ordering::Relaxed),
+            signing_invalid: self.signing_invalid.load(Ordering::Relaxed),
+            signing_unknown_signer: self.signing_unknown_signer.load(Ordering::Relaxed),
+            signing_scope_denied: self.signing_scope_denied.load(Ordering::Relaxed),
+            signing_unsigned_rejected: self.signing_unsigned_rejected.load(Ordering::Relaxed),
+            signing_unsigned_allowed: self.signing_unsigned_allowed.load(Ordering::Relaxed),
+            replay_rejected: self.replay_rejected.load(Ordering::Relaxed),
         }
     }
 }
@@ -179,6 +413,10 @@ pub struct MetricsSnapshot {
     pub deduplicated: u64,
     /// Actions that were suppressed by a rule.
     pub suppressed: u64,
+    /// Actions that were silenced by a matching silence (label-pattern mute).
+    pub silenced: u64,
+    /// Actions that were muted by a referenced time interval.
+    pub muted: u64,
     /// Actions that were rerouted to a different provider.
     pub rerouted: u64,
     /// Actions that were throttled.
@@ -209,6 +447,366 @@ pub struct MetricsSnapshot {
     pub circuit_fallbacks: u64,
     /// Actions scheduled for delayed execution.
     pub scheduled: u64,
+    /// Recurring actions dispatched successfully.
+    pub recurring_dispatched: u64,
+    /// Recurring action dispatch errors.
+    pub recurring_errors: u64,
+    /// Recurring actions skipped (disabled, expired, etc.).
+    pub recurring_skipped: u64,
+    /// Recurring actions currently scheduled and eligible for dispatch.
+    pub recurring_active: u64,
+    /// Actions blocked by tenant quota.
+    pub quota_exceeded: u64,
+    /// Actions that passed with a quota warning.
+    pub quota_warned: u64,
+    /// Actions degraded to a fallback provider due to quota.
+    pub quota_degraded: u64,
+    /// Actions that triggered a quota notification.
+    pub quota_notified: u64,
+    /// State entries deleted by the retention reaper.
+    pub retention_deleted_state: u64,
+    /// Retention reaper skipped entries due to compliance hold.
+    pub retention_skipped_compliance: u64,
+    /// Retention reaper errors.
+    pub retention_errors: u64,
+    /// A2A tasks transitioned to `Failed` by the stale-task reaper.
+    pub stale_tasks_reaped: u64,
+    /// Stale-task reaper errors.
+    pub stale_task_reaper_errors: u64,
+    /// WASM plugin invocations.
+    pub wasm_invocations: u64,
+    /// WASM plugin invocation errors.
+    pub wasm_errors: u64,
+    /// Action signatures successfully verified and scope-authorized.
+    pub signing_verified: u64,
+    /// Signed actions rejected because the Ed25519 signature did not
+    /// validate against the registered public key.
+    pub signing_invalid: u64,
+    /// Signed actions rejected because `signer_id` (or
+    /// `(signer_id, kid)`) is not in the server's keyring.
+    pub signing_unknown_signer: u64,
+    /// Signed actions rejected because the signer is not authorized
+    /// for the action's `(tenant, namespace)` pair.
+    pub signing_scope_denied: u64,
+    /// Unsigned actions rejected because `signing.reject_unsigned`
+    /// is enabled.
+    pub signing_unsigned_rejected: u64,
+    /// Unsigned actions that passed through because
+    /// `signing.reject_unsigned` is off.
+    pub signing_unsigned_allowed: u64,
+    /// Actions rejected because their action ID was already seen
+    /// within the `replay_ttl_seconds` window.
+    pub replay_rejected: u64,
+}
+
+/// Maximum number of latency samples retained per provider.
+///
+/// When the buffer is full the oldest sample is evicted. 1 000 samples gives
+/// accurate p99 values for low-to-medium traffic providers (< 100 req/s) while
+/// consuming ~8 KB per provider.
+///
+/// **Limitation for high-traffic providers**: For providers handling 1000+ req/s,
+/// percentiles will only represent the most recent ~1 second of traffic and may
+/// not reflect long-term performance characteristics. For production-grade metrics
+/// and historical analysis, export to Prometheus or a similar metrics backend.
+const MAX_LATENCY_SAMPLES: usize = 1_000;
+
+/// Maximum length of error messages stored in `last_error`.
+///
+/// Long error messages (stack traces, large responses) are truncated to prevent
+/// unbounded memory growth and potential information leakage of sensitive details
+/// like internal URLs, credentials, or file paths.
+const MAX_ERROR_MESSAGE_LEN: usize = 500;
+
+/// Maximum number of unique providers tracked by `ProviderMetrics`.
+///
+/// Prevents unbounded memory growth from malicious or misconfigured clients
+/// creating unlimited unique provider names. Once limit is reached, new providers
+/// are ignored for metrics tracking (but requests are still processed normally).
+const MAX_TRACKED_PROVIDERS: usize = 1_000;
+
+// Compiled regex patterns for error sanitization (compiled once, used many times).
+static URL_CREDS_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(https?://)[^:/@]+:[^@]+@").expect("valid regex"));
+static AUTH_HEADER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(authorization|api[-_]?key|bearer|token)[\s:=]+(?:bearer\s+)?[^\s,}]+")
+        .expect("valid regex")
+});
+static FILE_PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(/[a-zA-Z][a-zA-Z0-9_\-./]*|[A-Z]:\\[a-zA-Z0-9_\-\\/.]+)").expect("valid regex")
+});
+
+/// Sanitize an error message to prevent information leakage.
+///
+/// Truncates long messages and redacts patterns that may contain sensitive data:
+/// - URLs with embedded credentials (e.g., `https://user:pass@host`)
+/// - API keys and tokens (common patterns like `Bearer`, `API-Key`, `token=`)
+/// - File paths (absolute paths starting with `/` or `C:\`)
+fn sanitize_error_message(msg: &str) -> String {
+    // Truncate to max length first
+    let truncated = if msg.len() > MAX_ERROR_MESSAGE_LEN {
+        format!("{}... (truncated)", &msg[..MAX_ERROR_MESSAGE_LEN])
+    } else {
+        msg.to_owned()
+    };
+
+    // Redact URLs with embedded credentials (basic auth)
+    let mut sanitized = URL_CREDS_RE
+        .replace_all(&truncated, "${1}***:***@")
+        .to_string();
+
+    // Redact common auth header patterns
+    sanitized = AUTH_HEADER_RE
+        .replace_all(&sanitized, "${1}: ***")
+        .to_string();
+
+    // Redact absolute file paths (both Unix and Windows)
+    sanitized = FILE_PATH_RE
+        .replace_all(&sanitized, "[PATH_REDACTED]")
+        .to_string();
+
+    sanitized
+}
+
+/// Per-provider execution statistics.
+///
+/// All atomic fields use relaxed ordering for throughput. The latency sample
+/// buffer and last-error string are guarded by a `parking_lot::Mutex` which
+/// is held only for short, non-blocking durations.
+pub struct ProviderStats {
+    total_requests: AtomicU64,
+    successes: AtomicU64,
+    failures: AtomicU64,
+    /// Cumulative latency in microseconds (for average calculation).
+    total_latency_us: AtomicU64,
+    /// Rolling window of individual latency samples (microseconds).
+    latency_samples: parking_lot::Mutex<VecDeque<u64>>,
+    /// Unix-millisecond timestamp of the most recent request.
+    last_request_at: AtomicI64,
+    /// Most recent error message.
+    last_error: parking_lot::Mutex<Option<String>>,
+}
+
+impl std::fmt::Debug for ProviderStats {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderStats")
+            .field(
+                "total_requests",
+                &self.total_requests.load(Ordering::Relaxed),
+            )
+            .field("successes", &self.successes.load(Ordering::Relaxed))
+            .field("failures", &self.failures.load(Ordering::Relaxed))
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for ProviderStats {
+    fn default() -> Self {
+        Self {
+            total_requests: AtomicU64::new(0),
+            successes: AtomicU64::new(0),
+            failures: AtomicU64::new(0),
+            total_latency_us: AtomicU64::new(0),
+            latency_samples: parking_lot::Mutex::new(VecDeque::with_capacity(MAX_LATENCY_SAMPLES)),
+            last_request_at: AtomicI64::new(0),
+            last_error: parking_lot::Mutex::new(None),
+        }
+    }
+}
+
+impl ProviderStats {
+    /// Record a successful execution.
+    pub fn record_success(&self, latency_us: u64) {
+        self.total_requests.fetch_add(1, Ordering::Relaxed);
+        self.successes.fetch_add(1, Ordering::Relaxed);
+        self.total_latency_us
+            .fetch_add(latency_us, Ordering::Relaxed);
+        self.push_latency(latency_us);
+        self.touch();
+    }
+
+    /// Record a failed execution.
+    pub fn record_failure(&self, latency_us: u64, error: &str) {
+        self.total_requests.fetch_add(1, Ordering::Relaxed);
+        self.failures.fetch_add(1, Ordering::Relaxed);
+        self.total_latency_us
+            .fetch_add(latency_us, Ordering::Relaxed);
+        self.push_latency(latency_us);
+        self.touch();
+        // Sanitize error message to prevent information leakage
+        *self.last_error.lock() = Some(sanitize_error_message(error));
+    }
+
+    fn push_latency(&self, us: u64) {
+        let mut buf = self.latency_samples.lock();
+        if buf.len() >= MAX_LATENCY_SAMPLES {
+            buf.pop_front();
+        }
+        buf.push_back(us);
+    }
+
+    fn touch(&self) {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        self.last_request_at.store(now_ms, Ordering::Relaxed);
+    }
+
+    /// Take a point-in-time snapshot.
+    #[allow(clippy::cast_precision_loss)]
+    pub fn snapshot(&self) -> ProviderStatsSnapshot {
+        let total = self.total_requests.load(Ordering::Relaxed);
+        let successes = self.successes.load(Ordering::Relaxed);
+        let failures = self.failures.load(Ordering::Relaxed);
+        let total_latency_us = self.total_latency_us.load(Ordering::Relaxed);
+        let last_at = self.last_request_at.load(Ordering::Relaxed);
+
+        let success_rate = if total > 0 {
+            (successes as f64 / total as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        let avg_latency_ms = if total > 0 {
+            (total_latency_us as f64 / total as f64) / 1_000.0
+        } else {
+            0.0
+        };
+
+        let (p50, p95, p99) = self.compute_percentiles();
+
+        ProviderStatsSnapshot {
+            total_requests: total,
+            successes,
+            failures,
+            success_rate,
+            avg_latency_ms,
+            p50_latency_ms: p50,
+            p95_latency_ms: p95,
+            p99_latency_ms: p99,
+            last_request_at: if last_at > 0 { Some(last_at) } else { None },
+            last_error: self.last_error.lock().clone(),
+        }
+    }
+
+    fn compute_percentiles(&self) -> (f64, f64, f64) {
+        let buf = self.latency_samples.lock();
+        if buf.is_empty() {
+            return (0.0, 0.0, 0.0);
+        }
+        let mut sorted: Vec<u64> = buf.iter().copied().collect();
+        sorted.sort_unstable();
+        let len = sorted.len();
+        let p50 = percentile_value(&sorted, len, 50.0);
+        let p95 = percentile_value(&sorted, len, 95.0);
+        let p99 = percentile_value(&sorted, len, 99.0);
+        (p50, p95, p99)
+    }
+}
+
+/// Compute a percentile value from a sorted slice, converting microseconds to milliseconds.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
+fn percentile_value(sorted: &[u64], len: usize, pct: f64) -> f64 {
+    let idx = ((pct / 100.0) * (len as f64 - 1.0)).round() as usize;
+    let idx = idx.min(len - 1);
+    sorted[idx] as f64 / 1_000.0
+}
+
+/// Point-in-time snapshot of a single provider's stats.
+#[derive(Debug, Clone)]
+pub struct ProviderStatsSnapshot {
+    pub total_requests: u64,
+    pub successes: u64,
+    pub failures: u64,
+    /// Success rate as a percentage (0.0 - 100.0).
+    pub success_rate: f64,
+    /// Average latency in milliseconds.
+    pub avg_latency_ms: f64,
+    /// p50 latency in milliseconds.
+    pub p50_latency_ms: f64,
+    /// p95 latency in milliseconds.
+    pub p95_latency_ms: f64,
+    /// p99 latency in milliseconds.
+    pub p99_latency_ms: f64,
+    /// Unix-millisecond timestamp of the last request.
+    pub last_request_at: Option<i64>,
+    /// Most recent error message.
+    pub last_error: Option<String>,
+}
+
+/// Thread-safe container for per-provider execution metrics.
+///
+/// Providers are lazily registered on first use, so there is no setup
+/// required beyond constructing the container.
+///
+/// ## In-Memory Metrics
+///
+/// All metrics are stored **in-memory** and will be **reset to zero** when the
+/// gateway restarts. For historical analysis and production monitoring, export
+/// metrics to Prometheus, Grafana, or a similar observability backend.
+///
+/// Stats are tracked **globally per provider** (not per-namespace or per-tenant).
+/// For granular per-tenant analysis, use the audit log or Prometheus labels.
+#[derive(Debug, Default)]
+pub struct ProviderMetrics {
+    providers: parking_lot::RwLock<HashMap<String, ProviderStats>>,
+}
+
+impl ProviderMetrics {
+    /// Record a successful execution for `provider`.
+    pub fn record_success(&self, provider: &str, latency_us: u64) {
+        let map = self.providers.read();
+        if let Some(stats) = map.get(provider) {
+            stats.record_success(latency_us);
+            return;
+        }
+        drop(map);
+        // Upgrade to write lock and insert on first use.
+        let mut map = self.providers.write();
+        // Enforce maximum provider limit to prevent unbounded memory growth
+        if !map.contains_key(provider) && map.len() >= MAX_TRACKED_PROVIDERS {
+            // Silently drop metrics for new providers once limit is reached.
+            // The action will still be processed normally, just no metrics tracked.
+            return;
+        }
+        let stats = map.entry(provider.to_owned()).or_default();
+        stats.record_success(latency_us);
+    }
+
+    /// Record a failed execution for `provider`.
+    pub fn record_failure(&self, provider: &str, latency_us: u64, error: &str) {
+        let map = self.providers.read();
+        if let Some(stats) = map.get(provider) {
+            stats.record_failure(latency_us, error);
+            return;
+        }
+        drop(map);
+        let mut map = self.providers.write();
+        // Enforce maximum provider limit to prevent unbounded memory growth
+        if !map.contains_key(provider) && map.len() >= MAX_TRACKED_PROVIDERS {
+            // Silently drop metrics for new providers once limit is reached.
+            // The action will still be processed normally, just no metrics tracked.
+            return;
+        }
+        let stats = map.entry(provider.to_owned()).or_default();
+        stats.record_failure(latency_us, error);
+    }
+
+    /// Take a snapshot of all providers.
+    pub fn snapshot(&self) -> HashMap<String, ProviderStatsSnapshot> {
+        let map = self.providers.read();
+        map.iter()
+            .map(|(name, stats)| (name.clone(), stats.snapshot()))
+            .collect()
+    }
+
+    /// Take a snapshot for a single provider (returns `None` if never seen).
+    pub fn snapshot_for(&self, provider: &str) -> Option<ProviderStatsSnapshot> {
+        let map = self.providers.read();
+        map.get(provider).map(ProviderStats::snapshot)
+    }
 }
 
 #[cfg(test)]
@@ -223,6 +821,8 @@ mod tests {
         assert_eq!(snap.executed, 0);
         assert_eq!(snap.deduplicated, 0);
         assert_eq!(snap.suppressed, 0);
+        assert_eq!(snap.silenced, 0);
+        assert_eq!(snap.muted, 0);
         assert_eq!(snap.rerouted, 0);
         assert_eq!(snap.throttled, 0);
         assert_eq!(snap.failed, 0);
@@ -238,6 +838,26 @@ mod tests {
         assert_eq!(snap.circuit_transitions, 0);
         assert_eq!(snap.circuit_fallbacks, 0);
         assert_eq!(snap.scheduled, 0);
+        assert_eq!(snap.recurring_dispatched, 0);
+        assert_eq!(snap.recurring_errors, 0);
+        assert_eq!(snap.recurring_skipped, 0);
+        assert_eq!(snap.recurring_active, 0);
+        assert_eq!(snap.quota_exceeded, 0);
+        assert_eq!(snap.quota_warned, 0);
+        assert_eq!(snap.quota_degraded, 0);
+        assert_eq!(snap.quota_notified, 0);
+        assert_eq!(snap.retention_deleted_state, 0);
+        assert_eq!(snap.retention_skipped_compliance, 0);
+        assert_eq!(snap.retention_errors, 0);
+        assert_eq!(snap.wasm_invocations, 0);
+        assert_eq!(snap.wasm_errors, 0);
+        assert_eq!(snap.signing_verified, 0);
+        assert_eq!(snap.signing_invalid, 0);
+        assert_eq!(snap.signing_unknown_signer, 0);
+        assert_eq!(snap.signing_scope_denied, 0);
+        assert_eq!(snap.signing_unsigned_rejected, 0);
+        assert_eq!(snap.signing_unsigned_allowed, 0);
+        assert_eq!(snap.replay_rejected, 0);
     }
 
     #[test]
@@ -248,6 +868,8 @@ mod tests {
         m.increment_executed();
         m.increment_deduplicated();
         m.increment_suppressed();
+        m.increment_silenced();
+        m.increment_muted();
         m.increment_rerouted();
         m.increment_throttled();
         m.increment_failed();
@@ -263,12 +885,34 @@ mod tests {
         m.increment_circuit_transitions();
         m.increment_circuit_fallbacks();
         m.increment_scheduled();
+        m.increment_recurring_dispatched();
+        m.increment_recurring_errors();
+        m.increment_recurring_skipped();
+        m.set_recurring_active(7);
+        m.increment_quota_exceeded();
+        m.increment_quota_warned();
+        m.increment_quota_degraded();
+        m.increment_quota_notified();
+        m.increment_retention_deleted_state();
+        m.increment_retention_skipped_compliance();
+        m.increment_retention_errors();
+        m.increment_wasm_invocations();
+        m.increment_wasm_errors();
+        m.increment_signing_verified();
+        m.increment_signing_invalid();
+        m.increment_signing_unknown_signer();
+        m.increment_signing_scope_denied();
+        m.increment_signing_unsigned_rejected();
+        m.increment_signing_unsigned_allowed();
+        m.increment_replay_rejected();
 
         let snap = m.snapshot();
         assert_eq!(snap.dispatched, 2);
         assert_eq!(snap.executed, 1);
         assert_eq!(snap.deduplicated, 1);
         assert_eq!(snap.suppressed, 1);
+        assert_eq!(snap.silenced, 1);
+        assert_eq!(snap.muted, 1);
         assert_eq!(snap.rerouted, 1);
         assert_eq!(snap.throttled, 1);
         assert_eq!(snap.failed, 1);
@@ -284,5 +928,540 @@ mod tests {
         assert_eq!(snap.circuit_transitions, 1);
         assert_eq!(snap.circuit_fallbacks, 1);
         assert_eq!(snap.scheduled, 1);
+        assert_eq!(snap.recurring_dispatched, 1);
+        assert_eq!(snap.recurring_errors, 1);
+        assert_eq!(snap.recurring_skipped, 1);
+        assert_eq!(snap.recurring_active, 7);
+        assert_eq!(snap.quota_exceeded, 1);
+        assert_eq!(snap.quota_warned, 1);
+        assert_eq!(snap.quota_degraded, 1);
+        assert_eq!(snap.quota_notified, 1);
+        assert_eq!(snap.retention_deleted_state, 1);
+        assert_eq!(snap.retention_skipped_compliance, 1);
+        assert_eq!(snap.retention_errors, 1);
+        assert_eq!(snap.wasm_invocations, 1);
+        assert_eq!(snap.wasm_errors, 1);
+        assert_eq!(snap.signing_verified, 1);
+        assert_eq!(snap.signing_invalid, 1);
+        assert_eq!(snap.signing_unknown_signer, 1);
+        assert_eq!(snap.signing_scope_denied, 1);
+        assert_eq!(snap.signing_unsigned_rejected, 1);
+        assert_eq!(snap.signing_unsigned_allowed, 1);
+        assert_eq!(snap.replay_rejected, 1);
+    }
+
+    #[test]
+    fn provider_metrics_empty_snapshot() {
+        let pm = ProviderMetrics::default();
+        let snap = pm.snapshot();
+        assert!(snap.is_empty());
+    }
+
+    #[test]
+    fn provider_metrics_record_success() {
+        let pm = ProviderMetrics::default();
+        pm.record_success("email", 10_000); // 10ms
+        pm.record_success("email", 20_000); // 20ms
+
+        let snap = pm.snapshot_for("email").unwrap();
+        assert_eq!(snap.total_requests, 2);
+        assert_eq!(snap.successes, 2);
+        assert_eq!(snap.failures, 0);
+        assert!((snap.success_rate - 100.0).abs() < f64::EPSILON);
+        assert!((snap.avg_latency_ms - 15.0).abs() < f64::EPSILON);
+        assert!(snap.last_request_at.is_some());
+        assert!(snap.last_error.is_none());
+    }
+
+    #[test]
+    fn provider_metrics_record_failure() {
+        let pm = ProviderMetrics::default();
+        pm.record_success("slack", 5_000);
+        pm.record_failure("slack", 100_000, "connection timeout");
+
+        let snap = pm.snapshot_for("slack").unwrap();
+        assert_eq!(snap.total_requests, 2);
+        assert_eq!(snap.successes, 1);
+        assert_eq!(snap.failures, 1);
+        assert!((snap.success_rate - 50.0).abs() < f64::EPSILON);
+        assert_eq!(snap.last_error.as_deref(), Some("connection timeout"));
+    }
+
+    #[test]
+    fn provider_metrics_percentiles() {
+        let pm = ProviderMetrics::default();
+        // Insert 100 samples: 1ms, 2ms, ..., 100ms
+        for i in 1..=100 {
+            pm.record_success("webhook", i * 1_000);
+        }
+
+        let snap = pm.snapshot_for("webhook").unwrap();
+        // p50 should be around 50ms
+        assert!((snap.p50_latency_ms - 50.0).abs() < 2.0);
+        // p95 should be around 95ms
+        assert!((snap.p95_latency_ms - 95.0).abs() < 2.0);
+        // p99 should be around 99ms
+        assert!((snap.p99_latency_ms - 99.0).abs() < 2.0);
+    }
+
+    #[test]
+    fn provider_metrics_multiple_providers() {
+        let pm = ProviderMetrics::default();
+        pm.record_success("email", 10_000);
+        pm.record_success("slack", 20_000);
+        pm.record_failure("pagerduty", 30_000, "auth error");
+
+        let all = pm.snapshot();
+        assert_eq!(all.len(), 3);
+        assert!(all.contains_key("email"));
+        assert!(all.contains_key("slack"));
+        assert!(all.contains_key("pagerduty"));
+    }
+
+    #[test]
+    fn provider_metrics_bounded_buffer() {
+        let pm = ProviderMetrics::default();
+        // Insert more than MAX_LATENCY_SAMPLES
+        for i in 0..(MAX_LATENCY_SAMPLES + 500) {
+            pm.record_success("test", (i as u64) * 100);
+        }
+        let snap = pm.snapshot_for("test").unwrap();
+        assert_eq!(snap.total_requests, (MAX_LATENCY_SAMPLES + 500) as u64);
+        // Percentiles should still be computable
+        assert!(snap.p50_latency_ms > 0.0);
+    }
+
+    #[test]
+    fn provider_metrics_unknown_provider() {
+        let pm = ProviderMetrics::default();
+        assert!(pm.snapshot_for("nonexistent").is_none());
+    }
+
+    // -- Additional comprehensive tests ---------------------------------------
+
+    #[test]
+    fn provider_metrics_concurrent_access() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let pm = Arc::new(ProviderMetrics::default());
+        let num_threads = 10;
+        let ops_per_thread = 1_000;
+
+        let mut handles = Vec::new();
+        for thread_id in 0..num_threads {
+            let pm_clone = Arc::clone(&pm);
+            let handle = thread::spawn(move || {
+                for i in 0..ops_per_thread {
+                    if (thread_id + i) % 2 == 0 {
+                        pm_clone.record_success("concurrent_test", 5_000);
+                    } else {
+                        pm_clone.record_failure("concurrent_test", 10_000, "test error");
+                    }
+                }
+            });
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            handle.join().expect("thread should complete");
+        }
+
+        let snap = pm.snapshot_for("concurrent_test").unwrap();
+        assert_eq!(snap.total_requests, (num_threads * ops_per_thread) as u64);
+        // Verify success/failure counts sum to total
+        assert_eq!(snap.successes + snap.failures, snap.total_requests);
+    }
+
+    #[test]
+    fn provider_metrics_percentiles_single_sample() {
+        let pm = ProviderMetrics::default();
+        pm.record_success("single", 42_000); // 42ms
+
+        let snap = pm.snapshot_for("single").unwrap();
+        assert!((snap.p50_latency_ms - 42.0).abs() < f64::EPSILON);
+        assert!((snap.p95_latency_ms - 42.0).abs() < f64::EPSILON);
+        assert!((snap.p99_latency_ms - 42.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn provider_metrics_percentiles_two_samples() {
+        let pm = ProviderMetrics::default();
+        pm.record_success("two", 10_000); // 10ms
+        pm.record_success("two", 20_000); // 20ms
+
+        let snap = pm.snapshot_for("two").unwrap();
+        // With two samples, percentiles should be one of the values
+        assert!(
+            (snap.p50_latency_ms - 10.0).abs() < 1.0 || (snap.p50_latency_ms - 20.0).abs() < 1.0
+        );
+        assert!(
+            (snap.p99_latency_ms - 10.0).abs() < 1.0 || (snap.p99_latency_ms - 20.0).abs() < 1.0
+        );
+    }
+
+    #[test]
+    fn provider_metrics_percentiles_all_same() {
+        let pm = ProviderMetrics::default();
+        for _ in 0..100 {
+            pm.record_success("same", 100_000); // 100ms every time
+        }
+
+        let snap = pm.snapshot_for("same").unwrap();
+        assert!((snap.p50_latency_ms - 100.0).abs() < f64::EPSILON);
+        assert!((snap.p95_latency_ms - 100.0).abs() < f64::EPSILON);
+        assert!((snap.p99_latency_ms - 100.0).abs() < f64::EPSILON);
+        assert!((snap.avg_latency_ms - 100.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn provider_metrics_success_rate_precision() {
+        let pm = ProviderMetrics::default();
+        // Simulate millions of requests
+        let total = 10_000_000_u64;
+        let successes = 9_999_999_u64;
+
+        // Record by directly manipulating stats (to avoid actually recording millions)
+        pm.record_success("precision", 1_000);
+        let map = pm.providers.read();
+        let stats = map.get("precision").unwrap();
+
+        // Manually set the counters for large numbers
+        stats
+            .total_requests
+            .store(total, std::sync::atomic::Ordering::Relaxed);
+        stats
+            .successes
+            .store(successes, std::sync::atomic::Ordering::Relaxed);
+        stats
+            .failures
+            .store(total - successes, std::sync::atomic::Ordering::Relaxed);
+        drop(map);
+
+        let snap = pm.snapshot_for("precision").unwrap();
+        #[allow(clippy::cast_precision_loss)]
+        let expected_rate = (successes as f64 / total as f64) * 100.0;
+        assert!((snap.success_rate - expected_rate).abs() < 0.001);
+    }
+
+    #[test]
+    fn provider_metrics_last_error_overwrite() {
+        let pm = ProviderMetrics::default();
+        pm.record_failure("errors", 1_000, "first error");
+        pm.record_failure("errors", 2_000, "second error");
+        pm.record_failure("errors", 3_000, "third error");
+
+        let snap = pm.snapshot_for("errors").unwrap();
+        // Last error should be the most recent
+        assert_eq!(snap.last_error.as_deref(), Some("third error"));
+        assert_eq!(snap.failures, 3);
+    }
+
+    #[test]
+    fn provider_metrics_snapshot_isolation() {
+        let pm = ProviderMetrics::default();
+        pm.record_success("isolation", 10_000);
+        pm.record_success("isolation", 20_000);
+
+        // Take a snapshot
+        let snap1 = pm.snapshot_for("isolation").unwrap();
+        assert_eq!(snap1.total_requests, 2);
+        assert_eq!(snap1.successes, 2);
+
+        // Record more data after snapshot
+        pm.record_success("isolation", 30_000);
+        pm.record_failure("isolation", 40_000, "oops");
+
+        // Original snapshot should be unchanged
+        assert_eq!(snap1.total_requests, 2);
+        assert_eq!(snap1.successes, 2);
+        assert_eq!(snap1.failures, 0);
+
+        // New snapshot should reflect new data
+        let snap2 = pm.snapshot_for("isolation").unwrap();
+        assert_eq!(snap2.total_requests, 4);
+        assert_eq!(snap2.successes, 3);
+        assert_eq!(snap2.failures, 1);
+    }
+
+    #[test]
+    fn provider_metrics_mixed_providers_concurrency() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let pm = Arc::new(ProviderMetrics::default());
+        let mut handles = Vec::new();
+
+        // Spawn threads for different providers
+        let providers = vec!["email", "slack", "pagerduty", "webhook"];
+        for provider in &providers {
+            let pm_clone = Arc::clone(&pm);
+            let provider_name = provider.to_string();
+            let handle = thread::spawn(move || {
+                for i in 0..500 {
+                    pm_clone.record_success(&provider_name, (i * 100) as u64);
+                }
+            });
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            handle.join().expect("thread should complete");
+        }
+
+        let all = pm.snapshot();
+        assert_eq!(all.len(), 4);
+
+        for provider in &providers {
+            let snap = all.get(*provider).unwrap();
+            assert_eq!(snap.total_requests, 500);
+            assert_eq!(snap.successes, 500);
+            assert_eq!(snap.failures, 0);
+        }
+    }
+
+    #[test]
+    fn provider_metrics_zero_requests_success_rate() {
+        let pm = ProviderMetrics::default();
+        // Record nothing, then check snapshot
+        pm.providers
+            .write()
+            .insert("empty".to_owned(), ProviderStats::default());
+
+        let snap = pm.snapshot_for("empty").unwrap();
+        assert_eq!(snap.total_requests, 0);
+        // Success rate should be 0% when no requests (no data = 0%, not 100%)
+        assert!((snap.success_rate - 0.0).abs() < f64::EPSILON);
+        assert_eq!(snap.avg_latency_ms, 0.0);
+    }
+
+    #[test]
+    fn provider_metrics_percentiles_empty_buffer() {
+        let pm = ProviderMetrics::default();
+        pm.providers
+            .write()
+            .insert("no_samples".to_owned(), ProviderStats::default());
+
+        let snap = pm.snapshot_for("no_samples").unwrap();
+        // With no samples, percentiles should be 0
+        assert_eq!(snap.p50_latency_ms, 0.0);
+        assert_eq!(snap.p95_latency_ms, 0.0);
+        assert_eq!(snap.p99_latency_ms, 0.0);
+    }
+
+    #[test]
+    fn provider_metrics_last_request_timestamp() {
+        let pm = ProviderMetrics::default();
+
+        // Before any requests, timestamp should be None
+        pm.providers
+            .write()
+            .insert("timestamp_test".to_owned(), ProviderStats::default());
+        let snap1 = pm.snapshot_for("timestamp_test").unwrap();
+        assert!(snap1.last_request_at.is_none());
+
+        // After recording, should have a timestamp
+        pm.record_success("timestamp_test", 1_000);
+        let snap2 = pm.snapshot_for("timestamp_test").unwrap();
+        assert!(snap2.last_request_at.is_some());
+        assert!(snap2.last_request_at.unwrap() > 0);
+    }
+
+    #[test]
+    fn provider_metrics_latency_buffer_eviction() {
+        let pm = ProviderMetrics::default();
+
+        // Fill buffer exactly to max
+        for i in 0..MAX_LATENCY_SAMPLES {
+            pm.record_success("eviction", (i as u64) * 1_000);
+        }
+
+        let snap1 = pm.snapshot_for("eviction").unwrap();
+        let p50_before = snap1.p50_latency_ms;
+
+        // Add more samples to trigger eviction
+        for i in 0..100 {
+            pm.record_success("eviction", ((MAX_LATENCY_SAMPLES + i) as u64) * 1_000);
+        }
+
+        let snap2 = pm.snapshot_for("eviction").unwrap();
+        // Percentiles should have changed due to eviction
+        assert_ne!(p50_before, snap2.p50_latency_ms);
+        // But total count should reflect all requests
+        assert_eq!(snap2.total_requests, (MAX_LATENCY_SAMPLES + 100) as u64);
+    }
+
+    #[test]
+    fn gateway_metrics_concurrent_increments() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let metrics = Arc::new(GatewayMetrics::default());
+        let mut handles = Vec::new();
+
+        // Spawn 20 threads, each incrementing different counters
+        for _ in 0..20 {
+            let m = Arc::clone(&metrics);
+            let handle = thread::spawn(move || {
+                for _ in 0..100 {
+                    m.increment_dispatched();
+                    m.increment_executed();
+                    m.increment_failed();
+                }
+            });
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            handle.join().expect("thread should complete");
+        }
+
+        let snap = metrics.snapshot();
+        assert_eq!(snap.dispatched, 2_000);
+        assert_eq!(snap.executed, 2_000);
+        assert_eq!(snap.failed, 2_000);
+    }
+
+    #[test]
+    fn gateway_metrics_snapshot_consistency() {
+        let m = GatewayMetrics::default();
+
+        // Increment various counters
+        for _ in 0..10 {
+            m.increment_dispatched();
+        }
+        for _ in 0..5 {
+            m.increment_executed();
+        }
+        for _ in 0..3 {
+            m.increment_failed();
+        }
+
+        // Take multiple snapshots and verify they're consistent at point-in-time
+        let snap1 = m.snapshot();
+        let snap2 = m.snapshot();
+
+        assert_eq!(snap1, snap2);
+
+        // Modify counters
+        m.increment_dispatched();
+
+        // Original snapshots should be unchanged
+        let snap3 = m.snapshot();
+        assert_ne!(snap1, snap3);
+        assert_eq!(snap1.dispatched, 10);
+        assert_eq!(snap3.dispatched, 11);
+    }
+
+    #[test]
+    fn sanitize_error_truncation() {
+        let long_msg = "x".repeat(600);
+        let sanitized = super::sanitize_error_message(&long_msg);
+        assert!(sanitized.len() <= MAX_ERROR_MESSAGE_LEN + 20); // +20 for "... (truncated)"
+        assert!(sanitized.ends_with("... (truncated)"));
+    }
+
+    #[test]
+    fn sanitize_error_url_credentials() {
+        let msg = "Failed to connect to https://user:secret123@api.example.com/v1";
+        let sanitized = super::sanitize_error_message(msg);
+        assert!(!sanitized.contains("user"));
+        assert!(!sanitized.contains("secret123"));
+        assert!(sanitized.contains("https://***:***@"));
+    }
+
+    #[test]
+    fn sanitize_error_auth_headers() {
+        let msg = "HTTP 401: Authorization: Bearer fake-test-token-000";
+        let sanitized = super::sanitize_error_message(msg);
+        assert!(!sanitized.contains("fake-test-token-000"));
+        assert!(sanitized.contains("Authorization: ***"));
+    }
+
+    #[test]
+    fn sanitize_error_api_key() {
+        let msg = "Invalid API-Key: AKIAIOSFODNN7EXAMPLE";
+        let sanitized = super::sanitize_error_message(msg);
+        assert!(!sanitized.contains("AKIAIOSFODNN7EXAMPLE"));
+        assert!(sanitized.contains("API-Key: ***"));
+    }
+
+    #[test]
+    fn sanitize_error_file_paths() {
+        let msg = "File not found: /var/lib/acteon/secret.key";
+        let sanitized = super::sanitize_error_message(msg);
+        assert!(!sanitized.contains("/var/lib/acteon/secret.key"));
+        assert!(sanitized.contains("[PATH_REDACTED]"));
+    }
+
+    #[test]
+    fn sanitize_error_windows_paths() {
+        let msg = "Access denied: C:\\Program Files\\Acteon\\config.toml";
+        let sanitized = super::sanitize_error_message(msg);
+        assert!(!sanitized.contains("C:\\Program Files\\Acteon\\config.toml"));
+        assert!(sanitized.contains("[PATH_REDACTED]"));
+    }
+
+    #[test]
+    fn sanitize_error_multiple_patterns() {
+        let msg = "Failed to POST https://admin:pass@api.example.com/webhook with token=sk-123 at /etc/acteon/config.toml";
+        let sanitized = super::sanitize_error_message(msg);
+        assert!(!sanitized.contains("admin:pass"));
+        assert!(!sanitized.contains("sk-123"));
+        assert!(!sanitized.contains("/etc/acteon/config.toml"));
+        assert!(sanitized.contains("https://***:***@"));
+        assert!(sanitized.contains("token: ***"));
+        assert!(sanitized.contains("[PATH_REDACTED]"));
+    }
+
+    #[test]
+    fn sanitize_error_benign_message() {
+        let msg = "Connection timeout after 30s";
+        let sanitized = super::sanitize_error_message(msg);
+        // Benign messages should pass through unchanged
+        assert_eq!(sanitized, msg);
+    }
+
+    #[test]
+    fn provider_metrics_max_providers_limit() {
+        let pm = ProviderMetrics::default();
+
+        // Fill up to the limit
+        for i in 0..MAX_TRACKED_PROVIDERS {
+            pm.record_success(&format!("provider-{i}"), 1_000);
+        }
+
+        let snap = pm.snapshot();
+        assert_eq!(snap.len(), MAX_TRACKED_PROVIDERS);
+
+        // Try to add one more provider (should be silently dropped)
+        pm.record_success("provider-overflow", 1_000);
+        let snap = pm.snapshot();
+        assert_eq!(snap.len(), MAX_TRACKED_PROVIDERS);
+        assert!(!snap.contains_key("provider-overflow"));
+
+        // Existing providers should still work
+        pm.record_success("provider-0", 2_000);
+        let snap = pm.snapshot_for("provider-0").unwrap();
+        assert_eq!(snap.total_requests, 2);
+    }
+
+    #[test]
+    fn provider_metrics_max_providers_limit_failures() {
+        let pm = ProviderMetrics::default();
+
+        // Fill up to the limit with failures
+        for i in 0..MAX_TRACKED_PROVIDERS {
+            pm.record_failure(&format!("provider-{i}"), 1_000, "test error");
+        }
+
+        let snap = pm.snapshot();
+        assert_eq!(snap.len(), MAX_TRACKED_PROVIDERS);
+
+        // Try to add one more provider via failure (should be silently dropped)
+        pm.record_failure("provider-overflow", 1_000, "test error");
+        let snap = pm.snapshot();
+        assert_eq!(snap.len(), MAX_TRACKED_PROVIDERS);
+        assert!(!snap.contains_key("provider-overflow"));
     }
 }

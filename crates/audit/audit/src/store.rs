@@ -1,5 +1,8 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 
+use crate::analytics::AnalyticsStore;
 use crate::error::AuditError;
 use crate::record::{AuditPage, AuditQuery, AuditRecord};
 
@@ -22,4 +25,13 @@ pub trait AuditStore: Send + Sync {
 
     /// Remove expired records. Returns the number of records deleted.
     async fn cleanup_expired(&self) -> Result<u64, AuditError>;
+
+    /// Return a native analytics store if the backend supports one.
+    ///
+    /// Backends with server-side aggregation (e.g. Postgres, `ClickHouse`)
+    /// override this to return their optimized implementation. The default
+    /// returns `None`, causing the caller to fall back to in-memory analytics.
+    fn analytics(&self) -> Option<Arc<dyn AnalyticsStore>> {
+        None
+    }
 }

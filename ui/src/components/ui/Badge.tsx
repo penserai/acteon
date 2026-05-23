@@ -20,6 +20,8 @@ const outcomeVariant: Record<string, keyof typeof variants> = {
   Executed: 'success',
   Deduplicated: 'neutral',
   Suppressed: 'error',
+  Silenced: 'info',
+  Muted: 'neutral',
   Rerouted: 'info',
   Throttled: 'warning',
   Failed: 'error',
@@ -36,6 +38,7 @@ const outcomeVariant: Record<string, keyof typeof variants> = {
   failed: 'error',
   cancelled: 'warning',
   timed_out: 'warning',
+  waiting_sub_chain: 'info',
   pending: 'neutral',
   skipped: 'neutral',
   // Circuit states
@@ -53,7 +56,21 @@ const outcomeVariant: Record<string, keyof typeof variants> = {
   Pending: 'warning',
   Notified: 'info',
   Resolved: 'success',
+  // Recurring action states
+  Active: 'success',
+  Paused: 'warning',
+  Completed: 'neutral',
+  // Swarm run statuses (lowercase, as the server emits them).
+  // `running`, `completed`, `failed`, `cancelled`, `timed_out` also appear
+  // in the chain-status block above and resolve to the same variants —
+  // listing them again documents the intent for future readers.
+  accepted: 'pending',
+  adversarial: 'info',
+  cancelling: 'warning',
 }
+
+// All chain-status keys reused by swarm runs (running, completed, failed,
+// cancelled, timed_out) resolve via the shared entries declared earlier.
 
 interface BadgeProps {
   variant?: keyof typeof variants

@@ -1,0 +1,436 @@
+//! In-memory [`BusBackend`] for unit tests.
+//!
+//! Each topic is a `VecDeque<BusMessage>` under a mutex plus a tokio
+//! broadcast channel for live subscribers. Offsets are assigned
+//! monotonically per-topic starting at 0. There is only one "partition"
+//! (0) — Phase 1 doesn't need multi-partition semantics here, and
+//! the `BusBackend` contract doesn't require it.
+
+use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use chrono::Utc;
+use parking_lot::Mutex;
+use tokio::sync::broadcast;
+
+use acteon_core::Topic;
+
+use crate::backend::{BusBackend, ScanFrom, ScanWatermarks, SubscribeStream};
+use acteon_core::PartitionLag;
+
+use crate::error::BusError;
+use crate::message::{BusMessage, DeliveryReceipt, OffsetPosition, StartOffset};
+
+struct TopicState {
+    log: VecDeque<BusMessage>,
+    tx: broadcast::Sender<BusMessage>,
+    next_offset: i64,
+}
+
+/// In-memory backend suitable for unit tests.
+#[derive(Default)]
+pub struct MemoryBackend {
+    topics: Mutex<HashMap<String, TopicState>>,
+    /// `(topic, group) → committed offset`. Phase 2 commit semantics.
+    committed: Mutex<HashMap<(String, String), i64>>,
+}
+
+impl MemoryBackend {
+    #[must_use]
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    /// Test helper: count retained records in a topic's log.
+    #[must_use]
+    pub fn log_len(&self, topic: &str) -> usize {
+        self.topics.lock().get(topic).map_or(0, |s| s.log.len())
+    }
+}
+
+#[async_trait]
+impl BusBackend for MemoryBackend {
+    async fn create_topic(&self, topic: &Topic) -> Result<(), BusError> {
+        let name = topic.kafka_topic_name();
+        let mut topics = self.topics.lock();
+        if topics.contains_key(&name) {
+            // Mirrors `KafkaBackend`: any duplicate is a typed
+            // `TopicAlreadyExists`. Acteon does not auto-adopt — see
+            // the matching comment in `KafkaBackend::create_topic`.
+            return Err(BusError::TopicAlreadyExists(name));
+        }
+        let (tx, _) = broadcast::channel(1024);
+        topics.insert(
+            name,
+            TopicState {
+                log: VecDeque::new(),
+                tx,
+                next_offset: 0,
+            },
+        );
+        Ok(())
+    }
+
+    async fn delete_topic(&self, kafka_name: &str) -> Result<(), BusError> {
+        let mut topics = self.topics.lock();
+        topics
+            .remove(kafka_name)
+            .ok_or_else(|| BusError::TopicNotFound(kafka_name.into()))?;
+        Ok(())
+    }
+
+    async fn produce(&self, mut message: BusMessage) -> Result<DeliveryReceipt, BusError> {
+        let mut topics = self.topics.lock();
+        let state = topics
+            .get_mut(&message.topic)
+            .ok_or_else(|| BusError::TopicNotFound(message.topic.clone()))?;
+        let offset = state.next_offset;
+        state.next_offset += 1;
+        let timestamp = Utc::now();
+        message.partition = Some(0);
+        message.offset = Some(offset);
+        message.timestamp = Some(timestamp);
+        state.log.push_back(message.clone());
+        let _ = state.tx.send(message.clone());
+        Ok(DeliveryReceipt {
+            topic: message.topic,
+            partition: 0,
+            offset,
+            timestamp,
+        })
+    }
+
+    async fn subscribe(
+        &self,
+        kafka_topic: &str,
+        _group_id: &str,
+        from: StartOffset,
+    ) -> Result<SubscribeStream, BusError> {
+        let (backlog, rx) = {
+            let topics = self.topics.lock();
+            let state = topics
+                .get(kafka_topic)
+                .ok_or_else(|| BusError::TopicNotFound(kafka_topic.into()))?;
+            let backlog: Vec<BusMessage> = match from {
+                StartOffset::Earliest => state.log.iter().cloned().collect(),
+                StartOffset::Latest => Vec::new(),
+            };
+            (backlog, state.tx.subscribe())
+        };
+        let mut rx = rx;
+        let stream = async_stream::stream! {
+            for msg in backlog {
+                yield Ok(msg);
+            }
+            while let Ok(msg) = rx.recv().await {
+                yield Ok(msg);
+            }
+        };
+        Ok(Box::pin(stream))
+    }
+
+    async fn commit_offset(
+        &self,
+        kafka_topic: &str,
+        group_id: &str,
+        position: OffsetPosition,
+    ) -> Result<(), BusError> {
+        // Require the topic to exist so tests with typos fail loudly.
+        if !self.topics.lock().contains_key(kafka_topic) {
+            return Err(BusError::TopicNotFound(kafka_topic.into()));
+        }
+        self.committed.lock().insert(
+            (kafka_topic.to_string(), group_id.to_string()),
+            position.offset,
+        );
+        Ok(())
+    }
+
+    async fn consumer_lag(
+        &self,
+        kafka_topic: &str,
+        group_id: &str,
+    ) -> Result<Vec<PartitionLag>, BusError> {
+        let high_water_mark = {
+            let topics = self.topics.lock();
+            topics
+                .get(kafka_topic)
+                .ok_or_else(|| BusError::TopicNotFound(kafka_topic.into()))?
+                .next_offset
+        };
+        let committed = self
+            .committed
+            .lock()
+            .get(&(kafka_topic.to_string(), group_id.to_string()))
+            .copied()
+            .unwrap_or(-1);
+        // Contract: `committed` = last consumed offset. `lag` = number
+        // of records not yet consumed.
+        let lag = if committed < 0 {
+            high_water_mark
+        } else {
+            (high_water_mark - committed - 1).max(0)
+        };
+        Ok(vec![PartitionLag {
+            partition: 0,
+            committed,
+            high_water_mark,
+            lag,
+        }])
+    }
+
+    async fn scan_topic(
+        &self,
+        kafka_topic: &str,
+        from: ScanFrom,
+    ) -> Result<SubscribeStream, BusError> {
+        // Memory backend has no consumer-group concept — `scan_topic`
+        // and `subscribe` are equivalent here. The distinction
+        // matters in the Kafka backend where `scan_topic` uses
+        // `assign()` to avoid leaking consumer-group metadata.
+        let (start_offset, skip_until_offset) = match from {
+            ScanFrom::Earliest => (StartOffset::Earliest, None),
+            ScanFrom::Latest => (StartOffset::Latest, None),
+            // Memory backend has only one partition (id 0). When
+            // the caller's map covers it, honor the explicit offset.
+            // When it doesn't (e.g. a tool-call cursor whose call
+            // landed on a Kafka partition that the in-memory
+            // backend doesn't model), default to `Latest` — same
+            // shape the kafka backend now uses for unlisted
+            // partitions, so single-backend tests can exercise
+            // both branches.
+            ScanFrom::FromOffsets(map) => match map.get(&0).copied() {
+                Some(offset) => (StartOffset::Earliest, Some(offset)),
+                None => (StartOffset::Latest, None),
+            },
+        };
+        let stream = self
+            .subscribe(kafka_topic, "memory-scan", start_offset)
+            .await?;
+        match skip_until_offset {
+            None => Ok(stream),
+            Some(skip) => {
+                use futures::StreamExt;
+                // Caller provided per-partition resume offsets; drop
+                // anything at-or-before `skip` so callers see only
+                // strictly-newer messages. Memory backend doesn't
+                // populate `BusMessage.offset`, so we count by index
+                // — the contract `subscribe(Earliest)` gives is
+                // monotonic-from-zero, matching memory's offset model.
+                let mut idx: i64 = -1;
+                let s = stream.filter(move |m| {
+                    if m.is_ok() {
+                        idx += 1;
+                    }
+                    futures::future::ready(idx > skip)
+                });
+                Ok(Box::pin(s))
+            }
+        }
+    }
+
+    async fn scan_topic_watermarks(&self, kafka_topic: &str) -> Result<ScanWatermarks, BusError> {
+        let topics = self.topics.lock();
+        let state = topics
+            .get(kafka_topic)
+            .ok_or_else(|| BusError::TopicNotFound(kafka_topic.into()))?;
+        let mut high_water_marks = std::collections::BTreeMap::new();
+        // Single-partition contract for the in-memory backend.
+        high_water_marks.insert(0, state.next_offset);
+        Ok(ScanWatermarks { high_water_marks })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::StreamExt;
+
+    #[tokio::test]
+    async fn produce_and_subscribe_earliest() {
+        let backend = MemoryBackend::new();
+        let topic = Topic::new("t1", "ns", "tn");
+        backend.create_topic(&topic).await.unwrap();
+
+        for i in 0..3 {
+            backend
+                .produce(BusMessage::new(
+                    topic.kafka_topic_name(),
+                    serde_json::json!({ "n": i }),
+                ))
+                .await
+                .unwrap();
+        }
+
+        let mut stream = backend
+            .subscribe(
+                &topic.kafka_topic_name(),
+                "test-group",
+                StartOffset::Earliest,
+            )
+            .await
+            .unwrap();
+        for i in 0..3 {
+            let msg = stream.next().await.unwrap().unwrap();
+            assert_eq!(msg.payload["n"], i);
+            assert_eq!(msg.offset, Some(i));
+        }
+    }
+
+    #[tokio::test]
+    async fn subscribe_latest_skips_backlog() {
+        let backend = MemoryBackend::new();
+        let topic = Topic::new("t1", "ns", "tn");
+        backend.create_topic(&topic).await.unwrap();
+
+        backend
+            .produce(BusMessage::new(
+                topic.kafka_topic_name(),
+                serde_json::json!({"seen": false}),
+            ))
+            .await
+            .unwrap();
+
+        let mut stream = backend
+            .subscribe(&topic.kafka_topic_name(), "g", StartOffset::Latest)
+            .await
+            .unwrap();
+        // Live produce after subscribe — this one should arrive.
+        let backend2 = Arc::clone(&backend);
+        let topic_name = topic.kafka_topic_name();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            backend2
+                .produce(BusMessage::new(
+                    topic_name,
+                    serde_json::json!({"seen": true}),
+                ))
+                .await
+                .unwrap();
+        });
+        let msg = stream.next().await.unwrap().unwrap();
+        assert_eq!(msg.payload["seen"], true);
+    }
+
+    #[tokio::test]
+    async fn produce_to_missing_topic_fails() {
+        let backend = MemoryBackend::new();
+        let err = backend
+            .produce(BusMessage::new("ghost", serde_json::json!({})))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, BusError::TopicNotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn delete_is_idempotent_on_absent() {
+        let backend = MemoryBackend::new();
+        let err = backend.delete_topic("nope").await.unwrap_err();
+        assert!(matches!(err, BusError::TopicNotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn commit_and_lag_roundtrip() {
+        let backend = MemoryBackend::new();
+        let topic = Topic::new("t1", "ns", "tn");
+        backend.create_topic(&topic).await.unwrap();
+        let name = topic.kafka_topic_name();
+
+        for i in 0..5 {
+            backend
+                .produce(BusMessage::new(name.clone(), serde_json::json!({ "n": i })))
+                .await
+                .unwrap();
+        }
+
+        // Before any commit: committed=-1, lag = full log.
+        let lag = backend.consumer_lag(&name, "g1").await.unwrap();
+        assert_eq!(lag[0].committed, -1);
+        assert_eq!(lag[0].high_water_mark, 5);
+        assert_eq!(lag[0].lag, 5); // uncommitted = full log.
+
+        // Commit offset 2 → consumed through record 2 → lag = 2 (records 3, 4).
+        backend
+            .commit_offset(
+                &name,
+                "g1",
+                OffsetPosition {
+                    partition: 0,
+                    offset: 2,
+                },
+            )
+            .await
+            .unwrap();
+        let lag = backend.consumer_lag(&name, "g1").await.unwrap();
+        assert_eq!(lag[0].committed, 2);
+        assert_eq!(lag[0].lag, 2);
+    }
+
+    #[tokio::test]
+    async fn commit_to_unknown_topic_fails() {
+        let backend = MemoryBackend::new();
+        let err = backend
+            .commit_offset(
+                "ghost",
+                "g",
+                OffsetPosition {
+                    partition: 0,
+                    offset: 0,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, BusError::TopicNotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn create_topic_returns_typed_already_exists() {
+        // Any duplicate create returns the typed variant. The bus does
+        // not auto-adopt or silently absorb idempotent creates —
+        // operators must reconcile drift explicitly. Setup scripts that
+        // want idempotency should ignore `TopicAlreadyExists` at the
+        // call site.
+        let backend = MemoryBackend::new();
+        let topic = Topic::new("dup", "ns", "tn");
+        backend.create_topic(&topic).await.unwrap();
+        let err = backend.create_topic(&topic).await.unwrap_err();
+        match err {
+            BusError::TopicAlreadyExists(name) => {
+                assert_eq!(name, topic.kafka_topic_name());
+            }
+            other => panic!("expected TopicAlreadyExists, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn scan_from_offsets_with_missing_partition_defaults_to_latest() {
+        // `ScanFrom::FromOffsets` no longer skips partitions absent
+        // from the map — they default to Latest. Verify the memory
+        // backend honors this contract by passing an offsets map
+        // that doesn't cover partition 0 and confirming the scan
+        // does *not* yield the existing backlog (Latest = no backlog).
+        let backend = MemoryBackend::new();
+        let topic = Topic::new("scan-default", "ns", "tn");
+        backend.create_topic(&topic).await.unwrap();
+        backend
+            .produce(BusMessage::new(
+                topic.kafka_topic_name(),
+                serde_json::json!({"n": 0}),
+            ))
+            .await
+            .unwrap();
+        // Empty FromOffsets map → all partitions default to Latest.
+        // Memory backend's lone partition is 0; the produced record
+        // is *backlog*, so a Latest scan must not return it.
+        let mut stream = backend
+            .scan_topic(
+                &topic.kafka_topic_name(),
+                crate::backend::ScanFrom::FromOffsets(std::collections::BTreeMap::new()),
+            )
+            .await
+            .unwrap();
+        let next = tokio::time::timeout(std::time::Duration::from_millis(50), stream.next()).await;
+        assert!(next.is_err(), "Latest-default scan must not yield backlog");
+    }
+}

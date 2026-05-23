@@ -2,30 +2,8 @@ import { useLocation } from 'react-router-dom'
 import { Sun, Moon, Monitor, Command, Menu } from 'lucide-react'
 import { useThemeStore } from '../../stores/theme'
 import { useUiStore } from '../../stores/ui'
+import { ROUTE_NAMES } from '../../lib/navigation'
 import styles from './Header.module.css'
-
-const routeNames: Record<string, string> = {
-  '/': 'Dashboard',
-  '/dispatch': 'Dispatch',
-  '/rules': 'Rules',
-  '/audit': 'Audit Trail',
-  '/events': 'Events',
-  '/groups': 'Groups',
-  '/chains': 'Chains',
-  '/approvals': 'Approvals',
-  '/circuit-breakers': 'Circuit Breakers',
-  '/dlq': 'Dead-Letter Queue',
-  '/stream': 'Event Stream',
-  '/embeddings': 'Embeddings',
-  '/settings': 'Settings',
-  '/settings/rate-limiting': 'Rate Limiting',
-  '/settings/auth': 'Auth & Users',
-  '/settings/providers': 'Providers',
-  '/settings/llm': 'LLM Guardrail',
-  '/settings/telemetry': 'Telemetry',
-  '/settings/config': 'Server Config',
-  '/settings/background': 'Background Tasks',
-}
 
 export function Header() {
   const location = useLocation()
@@ -37,7 +15,7 @@ export function Header() {
   const pathSegments = location.pathname.split('/').filter(Boolean)
   const breadcrumbs = pathSegments.reduce<{ path: string; label: string }[]>((acc, seg, i) => {
     const path = '/' + pathSegments.slice(0, i + 1).join('/')
-    const label = routeNames[path] ?? seg
+    const label = ROUTE_NAMES[path] ?? seg
     acc.push({ path, label })
     return acc
   }, [])

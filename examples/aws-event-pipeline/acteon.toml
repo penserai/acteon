@@ -1,0 +1,209 @@
+# AWS Event-Driven Pipeline example.
+#
+# Exercises AWS providers (SNS, Lambda, EventBridge, SQS) in an IoT
+# smart-building telemetry scenario. Sensor data flows through Acteon,
+# which normalizes, detects anomalies, routes alerts, and archives metrics.
+#
+# Requires LocalStack for AWS services + DynamoDB:
+#   docker run --rm -d --name localstack -p 4566:4566 localstack/localstack
+#   bash examples/aws-event-pipeline/scripts/setup.sh
+#
+# Start Acteon:
+#   cargo run -p acteon-server --features dynamodb -- -c examples/aws-event-pipeline/acteon.toml
+
+[server]
+host = "127.0.0.1"
+port = 8080
+
+# HMAC secret for signing approval URLs (hex-encoded, 256-bit).
+approval_secret = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+# ─── State (DynamoDB via LocalStack) ─────────────────────────────────────────
+[state]
+backend = "dynamodb"
+url = "http://localhost:4566"
+region = "us-east-1"
+table_name = "acteon_state"
+
+# ─── Audit (DynamoDB via LocalStack, 7-day TTL, payload stored, redaction) ───
+[audit]
+enabled = true
+backend = "dynamodb"
+url = "http://localhost:4566"
+region = "us-east-1"
+table_name = "acteon_audit"
+store_payload = true
+ttl_seconds = 604800
+
+[audit.redact]
+enabled = true
+fields = ["aws_role_arn", "function_arn", "queue_url"]
+placeholder = "[REDACTED]"
+
+# ─── Providers ───────────────────────────────────────────────────────────────
+
+# SNS: fan-out critical alerts to operations team
+[[providers]]
+name = "alert-fanout"
+type = "aws-sns"
+aws_region = "us-east-1"
+aws_endpoint_url = "http://localhost:4566"
+topic_arn = "arn:aws:sns:us-east-1:000000000000:building-alerts"
+
+# Lambda: anomaly detection on sensor readings
+[[providers]]
+name = "anomaly-detector"
+type = "aws-lambda"
+aws_region = "us-east-1"
+aws_endpoint_url = "http://localhost:4566"
+function_name = "anomaly-detector"
+
+# Lambda: normalize raw telemetry into standard format
+[[providers]]
+name = "telemetry-normalizer"
+type = "aws-lambda"
+aws_region = "us-east-1"
+aws_endpoint_url = "http://localhost:4566"
+function_name = "telemetry-normalizer"
+
+# EventBridge: publish device lifecycle and system events
+[[providers]]
+name = "event-bus"
+type = "aws-eventbridge"
+aws_region = "us-east-1"
+aws_endpoint_url = "http://localhost:4566"
+event_bus_name = "building-events"
+
+# SQS: queue metrics for batch processing
+[[providers]]
+name = "metrics-queue"
+type = "aws-sqs"
+aws_region = "us-east-1"
+aws_endpoint_url = "http://localhost:4566"
+queue_url = "http://localhost:4566/000000000000/telemetry-metrics"
+
+# SQS: dead-letter queue for failed dispatches
+[[providers]]
+name = "dead-letter-queue"
+type = "aws-sqs"
+aws_region = "us-east-1"
+aws_endpoint_url = "http://localhost:4566"
+queue_url = "http://localhost:4566/000000000000/telemetry-dlq"
+
+# Log: local fallback when AWS providers are unavailable
+[[providers]]
+name = "local-fallback"
+type = "log"
+
+# ─── Rules ───────────────────────────────────────────────────────────────────
+[rules]
+directory = "examples/aws-event-pipeline/rules"
+
+# ─── Executor ────────────────────────────────────────────────────────────────
+[executor]
+max_retries = 2
+timeout_seconds = 15
+max_concurrent = 16
+
+# ─── Circuit Breaker ────────────────────────────────────────────────────────
+[circuit_breaker]
+enabled = true
+failure_threshold = 3
+success_threshold = 1
+recovery_timeout_seconds = 30
+
+# Lambda anomaly-detector trips after 2 failures, falls back to DLQ
+[circuit_breaker.providers.anomaly-detector]
+failure_threshold = 2
+recovery_timeout_seconds = 60
+fallback_provider = "dead-letter-queue"
+
+# SNS alert-fanout trips after 2 failures, falls back to local-fallback
+[circuit_breaker.providers.alert-fanout]
+failure_threshold = 2
+recovery_timeout_seconds = 60
+fallback_provider = "local-fallback"
+
+# ─── Chains ─────────────────────────────────────────────────────────────────
+[chains]
+max_concurrent_advances = 8
+completed_chain_ttl_seconds = 3600
+
+# Main chain: normalize → detect anomalies → publish → archive
+[[chains.definitions]]
+name = "telemetry-processing"
+timeout_seconds = 300
+
+[[chains.definitions.steps]]
+name = "normalize"
+provider = "telemetry-normalizer"
+action_type = "invoke"
+payload_template = { device_id = "{{origin.payload.device_id}}", sensor_type = "{{origin.payload.sensor_type}}", value = "{{origin.payload.value}}", unit = "{{origin.payload.unit}}" }
+
+  [[chains.definitions.steps.branches]]
+  field = "body.logged"
+  operator = "eq"
+  value = true
+  target = "detect-anomaly"
+
+[[chains.definitions.steps]]
+name = "detect-anomaly"
+provider = "anomaly-detector"
+action_type = "invoke"
+payload_template = { device_id = "{{origin.payload.device_id}}", sensor_type = "{{origin.payload.sensor_type}}", value = "{{origin.payload.value}}" }
+
+  [[chains.definitions.steps.branches]]
+  field = "success"
+  operator = "eq"
+  value = true
+  target = "publish-event"
+
+  default_next = "archive-metrics"
+
+[[chains.definitions.steps]]
+name = "publish-event"
+sub_chain = "critical-alert"
+
+[[chains.definitions.steps]]
+name = "archive-metrics"
+provider = "metrics-queue"
+action_type = "send_message"
+payload_template = { device_id = "{{origin.payload.device_id}}", sensor_type = "{{origin.payload.sensor_type}}", value = "{{origin.payload.value}}", processed = "true" }
+
+# Sub-chain: critical alert path (SNS → EventBridge)
+[[chains.definitions]]
+name = "critical-alert"
+timeout_seconds = 120
+
+[[chains.definitions.steps]]
+name = "fan-out-alert"
+provider = "alert-fanout"
+action_type = "publish"
+payload_template = { device_id = "{{origin.payload.device_id}}", sensor_type = "{{origin.payload.sensor_type}}", value = "{{origin.payload.value}}", severity = "critical" }
+
+[[chains.definitions.steps]]
+name = "publish-to-bus"
+provider = "event-bus"
+action_type = "put_event"
+payload_template = { source = "acteon.iot", detail_type = "CriticalAlert", detail = "{{origin.payload}}" }
+
+# ─── Background Processing ──────────────────────────────────────────────────
+[background]
+enabled = true
+group_flush_interval_seconds = 10
+timeout_check_interval_seconds = 10
+cleanup_interval_seconds = 60
+enable_group_flush = true
+enable_timeout_processing = true
+enable_recurring_actions = true
+recurring_check_interval_seconds = 30
+max_recurring_actions_per_tenant = 10
+enable_retention_reaper = true
+retention_check_interval_seconds = 60
+namespace = "iot"
+tenant = "smartbuilding-hq"
+
+# ─── Quotas ─────────────────────────────────────────────────────────────────
+# Quota enforcement enabled; policies created via the API in scripts/setup-api.sh.
+[quotas]
+enabled = true

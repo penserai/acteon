@@ -1,0 +1,105 @@
+graph LR
+  classDef run fill:#2563eb,color:#fff,stroke:#1d4ed8
+  classDef task fill:#7c3aed,color:#fff,stroke:#6d28d9
+  classDef agent fill:#059669,color:#fff,stroke:#047857
+  classDef episodic fill:#d97706,color:#fff,stroke:#b45309
+  classDef finding fill:#dc2626,color:#fff,stroke:#b91c1c
+
+  53096e["finding"]:::finding
+  2c3842["finding"]:::finding
+  351929["finding"]:::finding
+  56597c["finding"]:::finding
+  3bd2ea["finding"]:::finding
+  75608f["finding"]:::finding
+  f10658["finding"]:::finding
+  be57f7["finding"]:::finding
+  86ebf4["finding"]:::finding
+  9e44fd["finding"]:::finding
+  ef1ad1["memory"]:::episodic
+  cf46a2["memory"]:::episodic
+  b83cbb["memory"]:::episodic
+  911a5a["memory"]:::episodic
+  fce6a6["memory"]:::episodic
+  d1ac0b["memory"]:::episodic
+  9b3d76["memory"]:::episodic
+  10e46a["memory"]:::episodic
+  a53ea6["memory"]:::episodic
+  5017d2["memory"]:::episodic
+  7a060b["coder agent (task-4-sub-4)"]:::agent
+  0a0737["coder agent (task-4-sub-1)"]:::agent
+  4ff76b["researcher agent (task-3-sub-2)"]:::agent
+  45b2a7["researcher agent (task-2-sub-3)"]:::agent
+  11c69a["researcher agent (task-3-sub-1)"]:::agent
+  e44867["researcher agent (task-2-sub-1)"]:::agent
+  3859c9["researcher agent (task-2-sub-2)"]:::agent
+  9705df["researcher agent (task-2-sub-4)"]:::agent
+  7bdf7a["coder agent (task-4-sub-2)"]:::agent
+  3ab6d0["coder agent (task-4-sub-3)"]:::agent
+  d26247["executor agent (task-1-sub-1)"]:::agent
+  30163d["Stock Analysis Run"]:::run
+  f1fe22["Setup directory structure [executor]"]:::task
+  4ce99d["Research company earnings [researcher]"]:::task
+  d5b423["Research sector impacts [researcher]"]:::task
+  763979["Write company summaries [coder]"]:::task
+  cdfc88["Write sector impact reports [coder]"]:::task
+  4da9a7["Write cross-company correlations [coder]"]:::task
+  67a3c9["Write executive summary [coder]"]:::task
+
+  7a060b -->|rel/discovered| f10658
+  7a060b -->|rel/produced| 10e46a
+  0a0737 -->|rel/discovered| 86ebf4
+  0a0737 -->|rel/produced| cf46a2
+  45b2a7 -->|rel/discovered| 56597c
+  45b2a7 -->|rel/produced| ef1ad1
+  11c69a -->|rel/discovered| 9e44fd
+  11c69a -->|rel/produced| 9b3d76
+  e44867 -->|rel/discovered| 3bd2ea
+  e44867 -->|rel/produced| d1ac0b
+  3859c9 -->|rel/discovered| be57f7
+  3859c9 -->|rel/produced| 5017d2
+  9705df -->|rel/discovered| 2c3842
+  9705df -->|rel/produced| fce6a6
+  7bdf7a -->|rel/discovered| 53096e
+  7bdf7a -->|rel/produced| 911a5a
+  3ab6d0 -->|rel/discovered| 75608f
+  3ab6d0 -->|rel/produced| b83cbb
+  d26247 -->|rel/discovered| 351929
+  d26247 -->|rel/produced| a53ea6
+  30163d -->|rel/hasAgent| d26247
+  30163d -->|rel/hasAgent| 3ab6d0
+  30163d -->|rel/hasAgent| 7bdf7a
+  30163d -->|rel/hasAgent| 9705df
+  30163d -->|rel/hasAgent| 3859c9
+  30163d -->|rel/hasAgent| e44867
+  30163d -->|rel/hasAgent| 11c69a
+  30163d -->|rel/hasAgent| 45b2a7
+  30163d -->|rel/hasAgent| 4ff76b
+  30163d -->|rel/hasAgent| 0a0737
+  30163d -->|rel/hasAgent| 7a060b
+  30163d -->|rel/hasTask| 67a3c9
+  30163d -->|rel/hasTask| 4da9a7
+  30163d -->|rel/hasTask| cdfc88
+  30163d -->|rel/hasTask| 763979
+  30163d -->|rel/hasTask| d5b423
+  30163d -->|rel/hasTask| 4ce99d
+  30163d -->|rel/hasTask| f1fe22
+  f1fe22 -->|rel/assignedTo| d26247
+  4ce99d -->|rel/assignedTo| 9705df
+  4ce99d -->|rel/assignedTo| 3859c9
+  4ce99d -->|rel/assignedTo| e44867
+  4ce99d -->|rel/assignedTo| 45b2a7
+  4ce99d -->|rel/dependsOn| f1fe22
+  d5b423 -->|rel/assignedTo| 11c69a
+  d5b423 -->|rel/assignedTo| 4ff76b
+  d5b423 -->|rel/dependsOn| f1fe22
+  763979 -->|rel/assignedTo| 3ab6d0
+  763979 -->|rel/assignedTo| 7bdf7a
+  763979 -->|rel/assignedTo| 0a0737
+  763979 -->|rel/assignedTo| 7a060b
+  763979 -->|rel/dependsOn| 4ce99d
+  cdfc88 -->|rel/dependsOn| d5b423
+  4da9a7 -->|rel/dependsOn| cdfc88
+  4da9a7 -->|rel/dependsOn| 763979
+  67a3c9 -->|rel/dependsOn| 4da9a7
+  67a3c9 -->|rel/dependsOn| cdfc88
+  67a3c9 -->|rel/dependsOn| 763979

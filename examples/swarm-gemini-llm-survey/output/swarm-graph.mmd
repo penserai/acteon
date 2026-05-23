@@ -1,0 +1,88 @@
+graph LR
+  classDef run fill:#2563eb,color:#fff,stroke:#1d4ed8
+  classDef task fill:#7c3aed,color:#fff,stroke:#6d28d9
+  classDef agent fill:#059669,color:#fff,stroke:#047857
+  classDef episodic fill:#d97706,color:#fff,stroke:#b45309
+  classDef finding fill:#dc2626,color:#fff,stroke:#b91c1c
+
+  33f123["finding"]:::finding
+  53a23f["finding"]:::finding
+  779e8e["finding"]:::finding
+  b58e2d["finding"]:::finding
+  42026b["finding"]:::finding
+  e2413f["finding"]:::finding
+  21886a["finding"]:::finding
+  99ba81["finding"]:::finding
+  542fa1["memory"]:::episodic
+  1723fd["memory"]:::episodic
+  2eb69b["memory"]:::episodic
+  ac1a8c["memory"]:::episodic
+  a7abcd["memory"]:::episodic
+  17578c["memory"]:::episodic
+  a03ab4["memory"]:::episodic
+  09f95c["memory"]:::episodic
+  bf9cea["researcher agent (task-1-sub-1)"]:::agent
+  71d714["researcher agent (task-6-sub-1)"]:::agent
+  b958e2["researcher agent (task-2-sub-1)"]:::agent
+  92e001["coder agent (task-8-sub-1)"]:::agent
+  669b79["researcher agent (task-5-sub-1)"]:::agent
+  d7980d["researcher agent (task-3-sub-1)"]:::agent
+  211dcb["researcher agent (task-7-sub-1)"]:::agent
+  3152ac["researcher agent (task-4-sub-1)"]:::agent
+  9bc823["LLM Survey (Gemini)"]:::run
+  a569e3["Research Llama 4 [researcher]"]:::task
+  63bf63["Research Gemma 3 [researcher]"]:::task
+  493587["Research Mistral/Mixtral [researcher]"]:::task
+  467d17["Research Qwen 3 [researcher]"]:::task
+  7eb7ce["Research DeepSeek R1/V3 [researcher]"]:::task
+  de66fb["Research Phi-4 [researcher]"]:::task
+  cf05dd["Research Command R+ [researcher]"]:::task
+  3fed76["Create Comparison Summary [coder]"]:::task
+
+  bf9cea -->|rel/discovered| 33f123
+  bf9cea -->|rel/produced| 09f95c
+  71d714 -->|rel/discovered| 42026b
+  71d714 -->|rel/produced| a7abcd
+  b958e2 -->|rel/discovered| 53a23f
+  b958e2 -->|rel/produced| 1723fd
+  92e001 -->|rel/discovered| 99ba81
+  92e001 -->|rel/produced| 2eb69b
+  669b79 -->|rel/discovered| b58e2d
+  669b79 -->|rel/produced| a03ab4
+  d7980d -->|rel/discovered| 779e8e
+  d7980d -->|rel/produced| ac1a8c
+  211dcb -->|rel/discovered| 21886a
+  211dcb -->|rel/produced| 542fa1
+  3152ac -->|rel/discovered| e2413f
+  3152ac -->|rel/produced| 17578c
+  9bc823 -->|rel/hasAgent| 3152ac
+  9bc823 -->|rel/hasAgent| 211dcb
+  9bc823 -->|rel/hasAgent| d7980d
+  9bc823 -->|rel/hasAgent| 669b79
+  9bc823 -->|rel/hasAgent| 92e001
+  9bc823 -->|rel/hasAgent| b958e2
+  9bc823 -->|rel/hasAgent| 71d714
+  9bc823 -->|rel/hasAgent| bf9cea
+  9bc823 -->|rel/hasTask| 3fed76
+  9bc823 -->|rel/hasTask| cf05dd
+  9bc823 -->|rel/hasTask| de66fb
+  9bc823 -->|rel/hasTask| 7eb7ce
+  9bc823 -->|rel/hasTask| 467d17
+  9bc823 -->|rel/hasTask| 493587
+  9bc823 -->|rel/hasTask| 63bf63
+  9bc823 -->|rel/hasTask| a569e3
+  a569e3 -->|rel/assignedTo| bf9cea
+  63bf63 -->|rel/assignedTo| b958e2
+  493587 -->|rel/assignedTo| d7980d
+  467d17 -->|rel/assignedTo| 3152ac
+  7eb7ce -->|rel/assignedTo| 669b79
+  de66fb -->|rel/assignedTo| 71d714
+  cf05dd -->|rel/assignedTo| 211dcb
+  3fed76 -->|rel/assignedTo| 92e001
+  3fed76 -->|rel/dependsOn| cf05dd
+  3fed76 -->|rel/dependsOn| de66fb
+  3fed76 -->|rel/dependsOn| 7eb7ce
+  3fed76 -->|rel/dependsOn| 467d17
+  3fed76 -->|rel/dependsOn| 493587
+  3fed76 -->|rel/dependsOn| 63bf63
+  3fed76 -->|rel/dependsOn| a569e3

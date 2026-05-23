@@ -1,0 +1,17 @@
+# Minimal Acteon config for swarm demo (in-memory, no external deps)
+[server]
+host = "127.0.0.1"
+port = 8080
+
+[audit]
+enabled = true
+backend = "memory"
+store_payload = true
+
+[[providers]]
+name = "claude-code"
+type = "log"
+
+[[providers]]
+name = "security-review-queue"
+type = "log"

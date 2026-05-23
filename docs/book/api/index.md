@@ -1,12 +1,22 @@
 # API Reference
 
-Complete reference for all Acteon interfaces — REST API, client SDKs, rule syntax, and authentication.
+Complete reference for all Acteon interfaces — REST API, MCP server, CLI, client SDKs, rule syntax, and authentication.
 
 <div class="grid" markdown>
 
 <div class="card" markdown>
 ### [REST API](rest-api.md)
 Full HTTP endpoint reference with request/response schemas.
+</div>
+
+<div class="card" markdown>
+### [MCP Server](mcp-server.md)
+Expose Acteon to LLMs and AI agents via the Model Context Protocol.
+</div>
+
+<div class="card" markdown>
+### [CLI](cli.md)
+Command-line interface for dispatching actions, querying audit trails, and managing rules.
 </div>
 
 <div class="card" markdown>

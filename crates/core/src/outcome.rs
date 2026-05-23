@@ -96,6 +96,58 @@ pub enum ActionOutcome {
         /// When the action is scheduled to be dispatched.
         scheduled_for: DateTime<Utc>,
     },
+    /// A recurring action was created or updated.
+    RecurringCreated {
+        /// Unique identifier for the recurring action.
+        recurring_id: String,
+        /// Cron expression for the schedule.
+        cron_expr: String,
+        /// Next scheduled execution time.
+        next_execution_at: Option<DateTime<Utc>>,
+    },
+    /// Action was blocked or modified because the tenant exceeded their quota.
+    QuotaExceeded {
+        /// Tenant that exceeded the quota.
+        tenant: String,
+        /// Maximum actions allowed in the window.
+        limit: u64,
+        /// Current usage count.
+        used: u64,
+        /// The overage behavior that was applied.
+        overage_behavior: String,
+    },
+    /// Action was suppressed because it matched an active silence.
+    ///
+    /// Silences are evaluated after rule evaluation but before provider
+    /// dispatch, so `matched_rule` captures whichever rule verdict would
+    /// have applied had the silence not been in place. This lets operators
+    /// trace silenced dispatches with full context.
+    Silenced {
+        /// ID of the silence that matched this action.
+        silence_id: String,
+        /// Name of the rule that matched before silence evaluation, if any.
+        #[serde(default)]
+        matched_rule: Option<String>,
+    },
+    /// Action was muted because the current wall-clock time fell inside (or,
+    /// for `active_time_intervals`, outside) a referenced time interval.
+    ///
+    /// Time intervals are evaluated after silences and before provider
+    /// dispatch. `matched_rule` carries whichever rule verdict would have
+    /// applied so operators can audit the would-be path.
+    Muted {
+        /// Name of the time interval that gated this action.
+        interval: String,
+        /// Why the interval gated the action: `"mute_time_interval"` (the
+        /// interval matched and its referencing rule has `mute_time_intervals`)
+        /// or `"active_time_interval"` (the interval did NOT match and the
+        /// rule has `active_time_intervals`).
+        reason: String,
+        /// Name of the rule that matched before time-interval evaluation,
+        /// if any.
+        #[serde(default)]
+        matched_rule: Option<String>,
+    },
 }
 
 /// Response from a provider after executing an action.
@@ -331,6 +383,116 @@ mod tests {
                 assert_eq!(sf.timestamp_millis(), scheduled_for.timestamp_millis());
             }
             other => panic!("expected Scheduled, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn outcome_recurring_created() {
+        let outcome = ActionOutcome::RecurringCreated {
+            recurring_id: "rec-abc-123".into(),
+            cron_expr: "0 9 * * MON-FRI".into(),
+            next_execution_at: Some(chrono::Utc::now()),
+        };
+        let json = serde_json::to_string(&outcome).unwrap();
+        assert!(json.contains("rec-abc-123"));
+        assert!(json.contains("0 9 * * MON-FRI"));
+        assert!(json.contains("next_execution_at"));
+        let back: ActionOutcome = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, ActionOutcome::RecurringCreated { .. }));
+    }
+
+    #[test]
+    fn outcome_recurring_created_no_next() {
+        let outcome = ActionOutcome::RecurringCreated {
+            recurring_id: "rec-xyz".into(),
+            cron_expr: "0 0 31 2 *".into(),
+            next_execution_at: None,
+        };
+        let json = serde_json::to_string(&outcome).unwrap();
+        let back: ActionOutcome = serde_json::from_str(&json).unwrap();
+        match back {
+            ActionOutcome::RecurringCreated {
+                recurring_id,
+                next_execution_at,
+                ..
+            } => {
+                assert_eq!(recurring_id, "rec-xyz");
+                assert!(next_execution_at.is_none());
+            }
+            other => panic!("expected RecurringCreated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn outcome_quota_exceeded() {
+        let outcome = ActionOutcome::QuotaExceeded {
+            tenant: "tenant-1".into(),
+            limit: 1000,
+            used: 1001,
+            overage_behavior: "block".into(),
+        };
+        let json = serde_json::to_string(&outcome).unwrap();
+        assert!(json.contains("tenant-1"));
+        assert!(json.contains("1000"));
+        assert!(json.contains("1001"));
+        assert!(json.contains("block"));
+        let back: ActionOutcome = serde_json::from_str(&json).unwrap();
+        match back {
+            ActionOutcome::QuotaExceeded {
+                tenant,
+                limit,
+                used,
+                overage_behavior,
+            } => {
+                assert_eq!(tenant, "tenant-1");
+                assert_eq!(limit, 1000);
+                assert_eq!(used, 1001);
+                assert_eq!(overage_behavior, "block");
+            }
+            other => panic!("expected QuotaExceeded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn outcome_silenced() {
+        let outcome = ActionOutcome::Silenced {
+            silence_id: "sil-123".into(),
+            matched_rule: Some("allow-email".into()),
+        };
+        let json = serde_json::to_string(&outcome).unwrap();
+        assert!(json.contains("Silenced"));
+        assert!(json.contains("sil-123"));
+        assert!(json.contains("allow-email"));
+        let back: ActionOutcome = serde_json::from_str(&json).unwrap();
+        match back {
+            ActionOutcome::Silenced {
+                silence_id,
+                matched_rule,
+            } => {
+                assert_eq!(silence_id, "sil-123");
+                assert_eq!(matched_rule.unwrap(), "allow-email");
+            }
+            other => panic!("expected Silenced, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn outcome_silenced_without_matched_rule() {
+        let outcome = ActionOutcome::Silenced {
+            silence_id: "sil-456".into(),
+            matched_rule: None,
+        };
+        let json = serde_json::to_string(&outcome).unwrap();
+        let back: ActionOutcome = serde_json::from_str(&json).unwrap();
+        match back {
+            ActionOutcome::Silenced {
+                silence_id,
+                matched_rule,
+            } => {
+                assert_eq!(silence_id, "sil-456");
+                assert!(matched_rule.is_none());
+            }
+            other => panic!("expected Silenced, got {other:?}"),
         }
     }
 

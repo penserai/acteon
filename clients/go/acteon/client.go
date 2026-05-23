@@ -1,13 +1,17 @@
 package acteon
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -44,6 +48,54 @@ func WithHTTPClient(httpClient *http.Client) ClientOption {
 	}
 }
 
+// TLSConfig configures TLS for the Acteon client.
+type TLSConfig struct {
+	// CACertPath is the path to a custom CA certificate file (PEM) for server verification.
+	// If empty, the system root CAs are used.
+	CACertPath string
+
+	// ClientCertPath is the path to the client certificate file (PEM) for mTLS.
+	ClientCertPath string
+
+	// ClientKeyPath is the path to the client private key file (PEM) for mTLS.
+	ClientKeyPath string
+
+	// InsecureSkipVerify disables certificate verification (dev/test only).
+	InsecureSkipVerify bool
+}
+
+// WithTLS configures the client with TLS settings including custom CAs and client certificates.
+func WithTLS(cfg TLSConfig) ClientOption {
+	return func(c *Client) {
+		tlsConfig := &tls.Config{
+			InsecureSkipVerify: cfg.InsecureSkipVerify,
+		}
+
+		if cfg.CACertPath != "" {
+			caCert, err := os.ReadFile(cfg.CACertPath)
+			if err == nil {
+				caCertPool := x509.NewCertPool()
+				caCertPool.AppendCertsFromPEM(caCert)
+				tlsConfig.RootCAs = caCertPool
+			}
+		}
+
+		if cfg.ClientCertPath != "" && cfg.ClientKeyPath != "" {
+			cert, err := tls.LoadX509KeyPair(cfg.ClientCertPath, cfg.ClientKeyPath)
+			if err == nil {
+				tlsConfig.Certificates = []tls.Certificate{cert}
+			}
+		}
+
+		c.httpClient = &http.Client{
+			Timeout: c.httpClient.Timeout,
+			Transport: &http.Transport{
+				TLSClientConfig: tlsConfig,
+			},
+		}
+	}
+}
+
 // NewClient creates a new Acteon client.
 func NewClient(baseURL string, opts ...ClientOption) *Client {
 	c := &Client{
@@ -61,6 +113,33 @@ func NewClient(baseURL string, opts ...ClientOption) *Client {
 }
 
 func (c *Client) doRequest(ctx context.Context, method, path string, body any) (*http.Response, error) {
+	return c.doRequestExt(ctx, method, path, body, requestOpts{})
+}
+
+// requestOpts carries the optional request-shaping flags that
+// `doRequestExt` honours on top of the base auth + content-type
+// behaviour. Used by the A2A surface to attach `A2A-Version` on
+// authenticated calls and to issue the unauthenticated discovery
+// endpoint.
+type requestOpts struct {
+	// extraHeaders are merged on top of the default headers
+	// (caller wins on collision).
+	extraHeaders map[string]string
+	// skipAuth suppresses the Authorization header even when an
+	// API key is configured on the client.
+	skipAuth bool
+}
+
+// doRequestExt is the request workhorse with hook points for
+// per-request header overrides. `doRequest` is the thin
+// default-opts wrapper that pre-existing callers keep using
+// unchanged.
+func (c *Client) doRequestExt(
+	ctx context.Context,
+	method, path string,
+	body any,
+	opts requestOpts,
+) (*http.Response, error) {
 	var bodyReader io.Reader
 	if body != nil {
 		jsonBody, err := json.Marshal(body)
@@ -76,8 +155,11 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body any) (
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	if c.apiKey != "" {
+	if !opts.skipAuth && c.apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+	for k, v := range opts.extraHeaders {
+		req.Header.Set(k, v)
 	}
 
 	resp, err := c.httpClient.Do(req)
@@ -96,6 +178,64 @@ func (c *Client) Health(ctx context.Context) (bool, error) {
 	}
 	defer resp.Body.Close()
 	return resp.StatusCode == http.StatusOK, nil
+}
+
+// FetchSigningKeys returns the server's active signing keyring.
+//
+// Hits GET /.well-known/acteon-signing-keys, a public, unauthenticated
+// endpoint that publishes the public half of every (signer_id, kid)
+// pair the server will accept signatures from. Useful for:
+//   - verifying dispatched actions independently without pinning
+//     public keys at deploy time
+//   - detecting a rotation in progress (a signer with more than one
+//     entry means the operator is staging a rotation and the client
+//     should start sending the new kid).
+//
+// Returns a response with an empty Keys slice when signing is
+// disabled on the server.
+func (c *Client) FetchSigningKeys(ctx context.Context) (*SigningKeysResponse, error) {
+	resp, err := c.doRequest(ctx, http.MethodGet, "/.well-known/acteon-signing-keys", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	// Cap the response body. The endpoint is public (no auth) so a
+	// malicious or misconfigured upstream could return an arbitrarily
+	// large payload and trigger an OOM in the client. A real keyring
+	// is tens-to-hundreds of bytes per entry; 1MB is three orders of
+	// magnitude of headroom.
+	const maxSigningKeysResponseBytes = 1 << 20 // 1 MiB
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSigningKeysResponseBytes))
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "failed to fetch signing keys"}
+	}
+
+	var out SigningKeysResponse
+	if err := json.Unmarshal(body, &out); err != nil {
+		// Wrap the raw json.Unmarshal error so upstream callers get a
+		// clear "malformed response" signal instead of a cryptic
+		// "invalid character '<' looking for beginning of value" —
+		// which is what they'd see if a proxy or waiting-room page
+		// returned 200 OK with an HTML body.
+		return nil, &ConnectionError{
+			Message: "malformed signing keys response: " + err.Error(),
+		}
+	}
+
+	// Match the defensive posture of the other SDKs: when the server
+	// omits `count` (or sends count=0 with a non-empty keys array
+	// due to a shape drift), derive it from len(Keys). The server
+	// always emits count today — this is belt-and-braces against a
+	// future minor change.
+	if out.Count == 0 && len(out.Keys) > 0 {
+		out.Count = len(out.Keys)
+	}
+	return &out, nil
 }
 
 // Dispatch dispatches a single action.
@@ -290,6 +430,9 @@ func (c *Client) QueryAudit(ctx context.Context, query *AuditQuery) (*AuditPage,
 		}
 		if query.Offset > 0 {
 			params.Set("offset", strconv.Itoa(query.Offset))
+		}
+		if query.Cursor != "" {
+			params.Set("cursor", query.Cursor)
 		}
 		if len(params) > 0 {
 			path += "?" + params.Encode()
@@ -751,4 +894,1940 @@ func (c *Client) FlushGroup(ctx context.Context, groupKey string) (*FlushGroupRe
 		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to flush group"}
 	}
 	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+}
+
+// =============================================================================
+// Recurring Actions
+// =============================================================================
+
+// CreateRecurring creates a recurring action.
+func (c *Client) CreateRecurring(ctx context.Context, recurring *CreateRecurringAction) (*CreateRecurringResponse, error) {
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/recurring", recurring)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusCreated {
+		var result CreateRecurringResponse
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &result, nil
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to create recurring action"}
+	}
+	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+}
+
+// ListRecurring lists recurring actions with optional filters.
+func (c *Client) ListRecurring(ctx context.Context, filter *RecurringFilter) (*ListRecurringResponse, error) {
+	path := "/v1/recurring"
+	if filter != nil {
+		params := url.Values{}
+		if filter.Namespace != "" {
+			params.Set("namespace", filter.Namespace)
+		}
+		if filter.Tenant != "" {
+			params.Set("tenant", filter.Tenant)
+		}
+		if filter.Status != "" {
+			params.Set("status", filter.Status)
+		}
+		if filter.Limit > 0 {
+			params.Set("limit", strconv.Itoa(filter.Limit))
+		}
+		if filter.Offset > 0 {
+			params.Set("offset", strconv.Itoa(filter.Offset))
+		}
+		if len(params) > 0 {
+			path += "?" + params.Encode()
+		}
+	}
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to list recurring actions"}
+	}
+
+	var result ListRecurringResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &result, nil
+}
+
+// GetRecurring gets details of a specific recurring action.
+func (c *Client) GetRecurring(ctx context.Context, recurringID, namespace, tenant string) (*RecurringDetail, error) {
+	params := url.Values{}
+	params.Set("namespace", namespace)
+	params.Set("tenant", tenant)
+	path := fmt.Sprintf("/v1/recurring/%s?%s", recurringID, params.Encode())
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to get recurring action"}
+	}
+
+	var detail RecurringDetail
+	if err := json.NewDecoder(resp.Body).Decode(&detail); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &detail, nil
+}
+
+// UpdateRecurring updates a recurring action.
+func (c *Client) UpdateRecurring(ctx context.Context, recurringID string, update *UpdateRecurringAction) (*RecurringDetail, error) {
+	resp, err := c.doRequest(ctx, http.MethodPut, fmt.Sprintf("/v1/recurring/%s", recurringID), update)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		var detail RecurringDetail
+		if err := json.Unmarshal(body, &detail); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &detail, nil
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Recurring action not found: %s", recurringID)}
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to update recurring action"}
+	}
+	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+}
+
+// DeleteRecurring deletes a recurring action.
+func (c *Client) DeleteRecurring(ctx context.Context, recurringID, namespace, tenant string) error {
+	params := url.Values{}
+	params.Set("namespace", namespace)
+	params.Set("tenant", tenant)
+	path := fmt.Sprintf("/v1/recurring/%s?%s", recurringID, params.Encode())
+
+	resp, err := c.doRequest(ctx, http.MethodDelete, path, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Recurring action not found: %s", recurringID)}
+	}
+	return &HTTPError{Status: resp.StatusCode, Message: "Failed to delete recurring action"}
+}
+
+// PauseRecurring pauses a recurring action.
+func (c *Client) PauseRecurring(ctx context.Context, recurringID, namespace, tenant string) (*RecurringDetail, error) {
+	body := &RecurringLifecycleRequest{Namespace: namespace, Tenant: tenant}
+	resp, err := c.doRequest(ctx, http.MethodPost, fmt.Sprintf("/v1/recurring/%s/pause", recurringID), body)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		var detail RecurringDetail
+		if err := json.Unmarshal(respBody, &detail); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &detail, nil
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Recurring action not found: %s", recurringID)}
+	}
+	if resp.StatusCode == http.StatusConflict {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Recurring action is already paused"}
+	}
+	return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to pause recurring action"}
+}
+
+// ResumeRecurring resumes a paused recurring action.
+func (c *Client) ResumeRecurring(ctx context.Context, recurringID, namespace, tenant string) (*RecurringDetail, error) {
+	body := &RecurringLifecycleRequest{Namespace: namespace, Tenant: tenant}
+	resp, err := c.doRequest(ctx, http.MethodPost, fmt.Sprintf("/v1/recurring/%s/resume", recurringID), body)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		var detail RecurringDetail
+		if err := json.Unmarshal(respBody, &detail); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &detail, nil
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Recurring action not found: %s", recurringID)}
+	}
+	if resp.StatusCode == http.StatusConflict {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Recurring action is already active"}
+	}
+	return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to resume recurring action"}
+}
+
+// =============================================================================
+// Quotas
+// =============================================================================
+
+// CreateQuota creates a quota policy.
+func (c *Client) CreateQuota(ctx context.Context, req *CreateQuotaRequest) (*QuotaPolicy, error) {
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/quotas", req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusCreated {
+		var result QuotaPolicy
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &result, nil
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to create quota"}
+	}
+	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+}
+
+// ListQuotas lists quota policies with optional namespace, tenant,
+// and provider filters. Pass "generic" as the provider filter to
+// match only policies without a provider scope; pass a provider
+// name (e.g. "slack") to match only per-provider policies.
+func (c *Client) ListQuotas(ctx context.Context, namespace, tenant, provider *string) (*ListQuotasResponse, error) {
+	params := url.Values{}
+	if namespace != nil {
+		params.Set("namespace", *namespace)
+	}
+	if tenant != nil {
+		params.Set("tenant", *tenant)
+	}
+	if provider != nil {
+		params.Set("provider", *provider)
+	}
+
+	path := "/v1/quotas"
+	if len(params) > 0 {
+		path += "?" + params.Encode()
+	}
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to list quotas"}
+	}
+
+	var result ListQuotasResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &result, nil
+}
+
+// GetQuota gets a single quota policy by ID.
+func (c *Client) GetQuota(ctx context.Context, quotaID string) (*QuotaPolicy, error) {
+	path := fmt.Sprintf("/v1/quotas/%s", quotaID)
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to get quota"}
+	}
+
+	var result QuotaPolicy
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &result, nil
+}
+
+// UpdateQuota updates a quota policy.
+func (c *Client) UpdateQuota(ctx context.Context, quotaID string, update *UpdateQuotaRequest) (*QuotaPolicy, error) {
+	resp, err := c.doRequest(ctx, http.MethodPut, fmt.Sprintf("/v1/quotas/%s", quotaID), update)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		var result QuotaPolicy
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &result, nil
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Quota not found: %s", quotaID)}
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to update quota"}
+	}
+	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+}
+
+// DeleteQuota deletes a quota policy.
+func (c *Client) DeleteQuota(ctx context.Context, quotaID, namespace, tenant string) error {
+	params := url.Values{}
+	params.Set("namespace", namespace)
+	params.Set("tenant", tenant)
+	path := fmt.Sprintf("/v1/quotas/%s?%s", quotaID, params.Encode())
+
+	resp, err := c.doRequest(ctx, http.MethodDelete, path, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Quota not found: %s", quotaID)}
+	}
+	return &HTTPError{Status: resp.StatusCode, Message: "Failed to delete quota"}
+}
+
+// GetQuotaUsage gets current usage statistics for a quota policy.
+func (c *Client) GetQuotaUsage(ctx context.Context, quotaID string) (*QuotaUsage, error) {
+	path := fmt.Sprintf("/v1/quotas/%s/usage", quotaID)
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Quota not found: %s", quotaID)}
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to get quota usage"}
+	}
+
+	var result QuotaUsage
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &result, nil
+}
+
+// =============================================================================
+// Silences
+// =============================================================================
+
+// CreateSilence creates a silence. Supply either EndsAt or
+// DurationSeconds on the request.
+func (c *Client) CreateSilence(ctx context.Context, req *CreateSilenceRequest) (*Silence, error) {
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/silences", req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusCreated {
+		var result Silence
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &result, nil
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to create silence"}
+	}
+	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+}
+
+// ListSilences lists silences, optionally filtered by namespace and
+// tenant. Pass includeExpired=true to include silences whose end
+// time is in the past.
+func (c *Client) ListSilences(ctx context.Context, namespace, tenant *string, includeExpired bool) (*ListSilencesResponse, error) {
+	params := url.Values{}
+	if namespace != nil {
+		params.Set("namespace", *namespace)
+	}
+	if tenant != nil {
+		params.Set("tenant", *tenant)
+	}
+	if includeExpired {
+		params.Set("include_expired", "true")
+	}
+
+	path := "/v1/silences"
+	if len(params) > 0 {
+		path += "?" + params.Encode()
+	}
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to list silences"}
+	}
+
+	var result ListSilencesResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &result, nil
+}
+
+// GetSilence fetches a single silence by ID. Returns (nil, nil) if
+// the silence does not exist (404).
+func (c *Client) GetSilence(ctx context.Context, silenceID string) (*Silence, error) {
+	path := fmt.Sprintf("/v1/silences/%s", silenceID)
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to get silence"}
+	}
+
+	var result Silence
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &result, nil
+}
+
+// UpdateSilence extends a silence or edits its comment. Matchers
+// are immutable — to change them, expire the silence and create a
+// new one.
+func (c *Client) UpdateSilence(ctx context.Context, silenceID string, update *UpdateSilenceRequest) (*Silence, error) {
+	resp, err := c.doRequest(ctx, http.MethodPut, fmt.Sprintf("/v1/silences/%s", silenceID), update)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		var result Silence
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &result, nil
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Silence not found: %s", silenceID)}
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to update silence"}
+	}
+	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+}
+
+// DeleteSilence expires a silence immediately (soft-expire). The
+// record remains queryable for audit-trail purposes.
+func (c *Client) DeleteSilence(ctx context.Context, silenceID string) error {
+	path := fmt.Sprintf("/v1/silences/%s", silenceID)
+
+	resp, err := c.doRequest(ctx, http.MethodDelete, path, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Silence not found: %s", silenceID)}
+	}
+	return &HTTPError{Status: resp.StatusCode, Message: "Failed to delete silence"}
+}
+
+// =============================================================================
+// Time Intervals
+// =============================================================================
+
+// CreateTimeInterval creates a tenant-scoped time interval that rules
+// can reference via mute_time_intervals / active_time_intervals.
+func (c *Client) CreateTimeInterval(ctx context.Context, req *CreateTimeIntervalRequest) (*TimeInterval, error) {
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/time-intervals", req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusCreated {
+		var result TimeInterval
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &result, nil
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to create time interval"}
+	}
+	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+}
+
+// ListTimeIntervals lists time intervals filtered by namespace/tenant.
+func (c *Client) ListTimeIntervals(ctx context.Context, namespace, tenant *string) (*ListTimeIntervalsResponse, error) {
+	params := url.Values{}
+	if namespace != nil {
+		params.Set("namespace", *namespace)
+	}
+	if tenant != nil {
+		params.Set("tenant", *tenant)
+	}
+	path := "/v1/time-intervals"
+	if len(params) > 0 {
+		path += "?" + params.Encode()
+	}
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to list time intervals"}
+	}
+
+	var result ListTimeIntervalsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &result, nil
+}
+
+// GetTimeInterval fetches a single time interval. Returns (nil, nil) on 404.
+func (c *Client) GetTimeInterval(ctx context.Context, namespace, tenant, name string) (*TimeInterval, error) {
+	path := fmt.Sprintf("/v1/time-intervals/%s/%s/%s", namespace, tenant, name)
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to get time interval"}
+	}
+
+	var result TimeInterval
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &result, nil
+}
+
+// UpdateTimeInterval updates a time interval's ranges, location, or
+// description. The name + (namespace, tenant) tuple is immutable.
+func (c *Client) UpdateTimeInterval(ctx context.Context, namespace, tenant, name string, update *UpdateTimeIntervalRequest) (*TimeInterval, error) {
+	path := fmt.Sprintf("/v1/time-intervals/%s/%s/%s", namespace, tenant, name)
+	resp, err := c.doRequest(ctx, http.MethodPut, path, update)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		var result TimeInterval
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &result, nil
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Time interval not found: %s", name)}
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to update time interval"}
+	}
+	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+}
+
+// DeleteTimeInterval deletes a time interval.
+func (c *Client) DeleteTimeInterval(ctx context.Context, namespace, tenant, name string) error {
+	path := fmt.Sprintf("/v1/time-intervals/%s/%s/%s", namespace, tenant, name)
+	resp, err := c.doRequest(ctx, http.MethodDelete, path, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Time interval not found: %s", name)}
+	}
+	return &HTTPError{Status: resp.StatusCode, Message: "Failed to delete time interval"}
+}
+
+// =============================================================================
+// Retention Policies
+// =============================================================================
+
+// CreateRetention creates a retention policy.
+func (c *Client) CreateRetention(ctx context.Context, req *CreateRetentionRequest) (*RetentionPolicy, error) {
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/retention", req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusCreated {
+		var result RetentionPolicy
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &result, nil
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to create retention policy"}
+	}
+	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+}
+
+// ListRetention lists retention policies with optional namespace, tenant, limit, and offset filters.
+func (c *Client) ListRetention(ctx context.Context, namespace, tenant *string, limit, offset *int) (*ListRetentionResponse, error) {
+	params := url.Values{}
+	if namespace != nil {
+		params.Set("namespace", *namespace)
+	}
+	if tenant != nil {
+		params.Set("tenant", *tenant)
+	}
+	if limit != nil {
+		params.Set("limit", strconv.Itoa(*limit))
+	}
+	if offset != nil {
+		params.Set("offset", strconv.Itoa(*offset))
+	}
+
+	path := "/v1/retention"
+	if len(params) > 0 {
+		path += "?" + params.Encode()
+	}
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to list retention policies"}
+	}
+
+	var result ListRetentionResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &result, nil
+}
+
+// GetRetention gets a single retention policy by ID.
+func (c *Client) GetRetention(ctx context.Context, retentionID string) (*RetentionPolicy, error) {
+	path := fmt.Sprintf("/v1/retention/%s", retentionID)
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to get retention policy"}
+	}
+
+	var result RetentionPolicy
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &result, nil
+}
+
+// UpdateRetention updates a retention policy.
+func (c *Client) UpdateRetention(ctx context.Context, retentionID string, update *UpdateRetentionRequest) (*RetentionPolicy, error) {
+	resp, err := c.doRequest(ctx, http.MethodPut, fmt.Sprintf("/v1/retention/%s", retentionID), update)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		var result RetentionPolicy
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &result, nil
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Retention policy not found: %s", retentionID)}
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to update retention policy"}
+	}
+	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+}
+
+// DeleteRetention deletes a retention policy.
+func (c *Client) DeleteRetention(ctx context.Context, retentionID string) error {
+	path := fmt.Sprintf("/v1/retention/%s", retentionID)
+
+	resp, err := c.doRequest(ctx, http.MethodDelete, path, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Retention policy not found: %s", retentionID)}
+	}
+	return &HTTPError{Status: resp.StatusCode, Message: "Failed to delete retention policy"}
+}
+
+// =============================================================================
+// Payload Templates
+// =============================================================================
+
+// CreateTemplate creates a payload template.
+func (c *Client) CreateTemplate(ctx context.Context, req *CreateTemplateRequest) (*TemplateInfo, error) {
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/templates", req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusCreated {
+		var result TemplateInfo
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &result, nil
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to create template"}
+	}
+	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+}
+
+// ListTemplates lists payload templates with optional namespace and tenant filters.
+func (c *Client) ListTemplates(ctx context.Context, namespace, tenant *string) (*ListTemplatesResponse, error) {
+	params := url.Values{}
+	if namespace != nil {
+		params.Set("namespace", *namespace)
+	}
+	if tenant != nil {
+		params.Set("tenant", *tenant)
+	}
+
+	path := "/v1/templates"
+	if len(params) > 0 {
+		path += "?" + params.Encode()
+	}
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to list templates"}
+	}
+
+	var result ListTemplatesResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &result, nil
+}
+
+// GetTemplate gets a single template by ID.
+func (c *Client) GetTemplate(ctx context.Context, templateID string) (*TemplateInfo, error) {
+	path := fmt.Sprintf("/v1/templates/%s", templateID)
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to get template"}
+	}
+
+	var result TemplateInfo
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &result, nil
+}
+
+// UpdateTemplate updates a payload template.
+func (c *Client) UpdateTemplate(ctx context.Context, templateID string, update *UpdateTemplateRequest) (*TemplateInfo, error) {
+	resp, err := c.doRequest(ctx, http.MethodPut, fmt.Sprintf("/v1/templates/%s", templateID), update)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		var result TemplateInfo
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &result, nil
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Template not found: %s", templateID)}
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to update template"}
+	}
+	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+}
+
+// DeleteTemplate deletes a payload template.
+func (c *Client) DeleteTemplate(ctx context.Context, templateID string) error {
+	path := fmt.Sprintf("/v1/templates/%s", templateID)
+
+	resp, err := c.doRequest(ctx, http.MethodDelete, path, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Template not found: %s", templateID)}
+	}
+	return &HTTPError{Status: resp.StatusCode, Message: "Failed to delete template"}
+}
+
+// CreateProfile creates a template profile.
+func (c *Client) CreateProfile(ctx context.Context, req *CreateProfileRequest) (*TemplateProfileInfo, error) {
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/templates/profiles", req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusCreated {
+		var result TemplateProfileInfo
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &result, nil
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to create profile"}
+	}
+	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+}
+
+// ListProfiles lists template profiles with optional namespace and tenant filters.
+func (c *Client) ListProfiles(ctx context.Context, namespace, tenant *string) (*ListProfilesResponse, error) {
+	params := url.Values{}
+	if namespace != nil {
+		params.Set("namespace", *namespace)
+	}
+	if tenant != nil {
+		params.Set("tenant", *tenant)
+	}
+
+	path := "/v1/templates/profiles"
+	if len(params) > 0 {
+		path += "?" + params.Encode()
+	}
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to list profiles"}
+	}
+
+	var result ListProfilesResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &result, nil
+}
+
+// GetProfile gets a single template profile by ID.
+func (c *Client) GetProfile(ctx context.Context, profileID string) (*TemplateProfileInfo, error) {
+	path := fmt.Sprintf("/v1/templates/profiles/%s", profileID)
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to get profile"}
+	}
+
+	var result TemplateProfileInfo
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &result, nil
+}
+
+// UpdateProfile updates a template profile.
+func (c *Client) UpdateProfile(ctx context.Context, profileID string, update *UpdateProfileRequest) (*TemplateProfileInfo, error) {
+	resp, err := c.doRequest(ctx, http.MethodPut, fmt.Sprintf("/v1/templates/profiles/%s", profileID), update)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		var result TemplateProfileInfo
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &result, nil
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Profile not found: %s", profileID)}
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to update profile"}
+	}
+	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+}
+
+// DeleteProfile deletes a template profile.
+func (c *Client) DeleteProfile(ctx context.Context, profileID string) error {
+	path := fmt.Sprintf("/v1/templates/profiles/%s", profileID)
+
+	resp, err := c.doRequest(ctx, http.MethodDelete, path, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Profile not found: %s", profileID)}
+	}
+	return &HTTPError{Status: resp.StatusCode, Message: "Failed to delete profile"}
+}
+
+// RenderPreview renders a template profile with payload data.
+func (c *Client) RenderPreview(ctx context.Context, req *RenderPreviewRequest) (*RenderPreviewResponse, error) {
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/templates/render", req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		var result RenderPreviewResponse
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &result, nil
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to render preview"}
+	}
+	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+}
+
+// =============================================================================
+// Provider Health
+// =============================================================================
+
+// ListProviderHealth lists health and metrics for all providers.
+func (c *Client) ListProviderHealth(ctx context.Context) (*ListProviderHealthResponse, error) {
+	resp, err := c.doRequest(ctx, http.MethodGet, "/v1/providers/health", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to list provider health"}
+	}
+
+	var result ListProviderHealthResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode provider health response: %w", err)
+	}
+	return &result, nil
+}
+
+// =============================================================================
+// WASM Plugins
+// =============================================================================
+
+// ListPlugins lists all registered WASM plugins.
+func (c *Client) ListPlugins(ctx context.Context) (*ListPluginsResponse, error) {
+	resp, err := c.doRequest(ctx, http.MethodGet, "/v1/plugins", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to list plugins"}
+	}
+
+	var result ListPluginsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &result, nil
+}
+
+// RegisterPlugin registers a new WASM plugin.
+func (c *Client) RegisterPlugin(ctx context.Context, req *RegisterPluginRequest) (*WasmPlugin, error) {
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/plugins", req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated {
+		var result WasmPlugin
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &result, nil
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to register plugin"}
+	}
+	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+}
+
+// GetPlugin gets details of a registered WASM plugin by name.
+func (c *Client) GetPlugin(ctx context.Context, name string) (*WasmPlugin, error) {
+	path := fmt.Sprintf("/v1/plugins/%s", name)
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to get plugin"}
+	}
+
+	var result WasmPlugin
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &result, nil
+}
+
+// DeletePlugin unregisters (deletes) a WASM plugin by name.
+func (c *Client) DeletePlugin(ctx context.Context, name string) error {
+	path := fmt.Sprintf("/v1/plugins/%s", name)
+
+	resp, err := c.doRequest(ctx, http.MethodDelete, path, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Plugin not found: %s", name)}
+	}
+	return &HTTPError{Status: resp.StatusCode, Message: "Failed to delete plugin"}
+}
+
+// InvokePlugin test-invokes a WASM plugin.
+func (c *Client) InvokePlugin(ctx context.Context, name string, req *PluginInvocationRequest) (*PluginInvocationResponse, error) {
+	path := fmt.Sprintf("/v1/plugins/%s/invoke", name)
+
+	resp, err := c.doRequest(ctx, http.MethodPost, path, req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		var result PluginInvocationResponse
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &result, nil
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Plugin not found: %s", name)}
+	}
+	return nil, &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Failed to invoke plugin: %s", name)}
+}
+
+// =============================================================================
+// Rule Evaluation (Rule Playground)
+// =============================================================================
+
+// EvaluateRules evaluates rules against a test action without dispatching.
+func (c *Client) EvaluateRules(ctx context.Context, req EvaluateRulesRequest) (*EvaluateRulesResponse, error) {
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/rules/evaluate", req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		var result EvaluateRulesResponse
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &result, nil
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to evaluate rules"}
+	}
+	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+}
+
+// =============================================================================
+// Compliance (SOC2/HIPAA)
+// =============================================================================
+
+// GetComplianceStatus returns the current compliance configuration status.
+func (c *Client) GetComplianceStatus(ctx context.Context) (*ComplianceStatus, error) {
+	resp, err := c.doRequest(ctx, "GET", "/v1/compliance/status", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading response body: %w", err)
+	}
+
+	if resp.StatusCode == 200 {
+		var result ComplianceStatus
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, fmt.Errorf("decoding compliance status: %w", err)
+		}
+		return &result, nil
+	}
+	return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to get compliance status"}
+}
+
+// VerifyAuditChain verifies the integrity of the audit hash chain for a namespace/tenant pair.
+func (c *Client) VerifyAuditChain(ctx context.Context, req *VerifyHashChainRequest) (*HashChainVerification, error) {
+	resp, err := c.doRequest(ctx, "POST", "/v1/audit/verify", req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading response body: %w", err)
+	}
+
+	if resp.StatusCode == 200 {
+		var result HashChainVerification
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, fmt.Errorf("decoding verification result: %w", err)
+		}
+		return &result, nil
+	}
+	return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to verify audit chain"}
+}
+
+// =============================================================================
+// Chains
+// =============================================================================
+
+// ListChains lists chain executions filtered by namespace, tenant, and optional status.
+func (c *Client) ListChains(ctx context.Context, namespace, tenant string, status *string) (*ListChainsResponse, error) {
+	params := url.Values{}
+	params.Set("namespace", namespace)
+	params.Set("tenant", tenant)
+	if status != nil {
+		params.Set("status", *status)
+	}
+	path := "/v1/chains?" + params.Encode()
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to list chains"}
+	}
+
+	var result ListChainsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &result, nil
+}
+
+// GetChain gets the full details of a chain execution by ID.
+func (c *Client) GetChain(ctx context.Context, chainID, namespace, tenant string) (*ChainDetailResponse, error) {
+	params := url.Values{}
+	params.Set("namespace", namespace)
+	params.Set("tenant", tenant)
+	path := fmt.Sprintf("/v1/chains/%s?%s", chainID, params.Encode())
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Chain not found: %s", chainID)}
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to get chain"}
+	}
+
+	var detail ChainDetailResponse
+	if err := json.NewDecoder(resp.Body).Decode(&detail); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &detail, nil
+}
+
+// CancelChain cancels a running chain execution.
+func (c *Client) CancelChain(ctx context.Context, chainID string, req *CancelChainRequest) (*ChainDetailResponse, error) {
+	resp, err := c.doRequest(ctx, http.MethodPost, fmt.Sprintf("/v1/chains/%s/cancel", chainID), req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		var detail ChainDetailResponse
+		if err := json.Unmarshal(body, &detail); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &detail, nil
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Chain not found: %s", chainID)}
+	}
+	if resp.StatusCode == http.StatusConflict {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Chain is not running"}
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to cancel chain"}
+	}
+	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+}
+
+// GetChainDag returns the DAG representation for a running chain instance.
+func (c *Client) GetChainDag(ctx context.Context, chainID, namespace, tenant string) (*DagResponse, error) {
+	params := url.Values{}
+	params.Set("namespace", namespace)
+	params.Set("tenant", tenant)
+
+	resp, err := c.doRequest(ctx, http.MethodGet, fmt.Sprintf("/v1/chains/%s/dag?%s", chainID, params.Encode()), nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Chain not found: %s", chainID)}
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to get chain DAG"}
+	}
+
+	var dag DagResponse
+	if err := json.NewDecoder(resp.Body).Decode(&dag); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &dag, nil
+}
+
+// GetChainDefinitionDag returns the DAG representation for a chain definition (config only).
+func (c *Client) GetChainDefinitionDag(ctx context.Context, name string) (*DagResponse, error) {
+	resp, err := c.doRequest(ctx, http.MethodGet, fmt.Sprintf("/v1/chains/definitions/%s/dag", name), nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Chain definition not found: %s", name)}
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to get chain definition DAG"}
+	}
+
+	var dag DagResponse
+	if err := json.NewDecoder(resp.Body).Decode(&dag); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &dag, nil
+}
+
+// GetChainHistory returns the retry history for a chain execution.
+func (c *Client) GetChainHistory(ctx context.Context, chainID, namespace, tenant string) (*ChainHistoryResponse, error) {
+	params := url.Values{}
+	params.Set("namespace", namespace)
+	params.Set("tenant", tenant)
+	path := fmt.Sprintf("/v1/chains/%s/history?%s", chainID, params.Encode())
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Chain not found: %s", chainID)}
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to get chain history"}
+	}
+
+	var history ChainHistoryResponse
+	if err := json.NewDecoder(resp.Body).Decode(&history); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &history, nil
+}
+
+// =============================================================================
+// Dead Letter Queue (DLQ)
+// =============================================================================
+
+// DlqStats returns dead-letter queue statistics.
+func (c *Client) DlqStats(ctx context.Context) (*DlqStatsResponse, error) {
+	resp, err := c.doRequest(ctx, http.MethodGet, "/v1/dlq/stats", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to get DLQ stats"}
+	}
+
+	var stats DlqStatsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&stats); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &stats, nil
+}
+
+// DlqDrain drains all entries from the dead-letter queue.
+func (c *Client) DlqDrain(ctx context.Context) (*DlqDrainResponse, error) {
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/dlq/drain", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		var result DlqDrainResponse
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &result, nil
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "DLQ is not enabled"}
+	}
+	return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to drain DLQ"}
+}
+
+// =============================================================================
+// Analytics
+// =============================================================================
+
+// QueryAnalytics queries analytics data from the Acteon server.
+func (c *Client) QueryAnalytics(ctx context.Context, query *AnalyticsQuery) (*AnalyticsResponse, error) {
+	path := "/v1/analytics"
+	if query != nil {
+		params := url.Values{}
+		if query.Metric != "" {
+			params.Set("metric", query.Metric)
+		}
+		if query.Namespace != "" {
+			params.Set("namespace", query.Namespace)
+		}
+		if query.Tenant != "" {
+			params.Set("tenant", query.Tenant)
+		}
+		if query.Provider != "" {
+			params.Set("provider", query.Provider)
+		}
+		if query.ActionType != "" {
+			params.Set("action_type", query.ActionType)
+		}
+		if query.Outcome != "" {
+			params.Set("outcome", query.Outcome)
+		}
+		if query.Interval != "" {
+			params.Set("interval", query.Interval)
+		}
+		if query.From != "" {
+			params.Set("from", query.From)
+		}
+		if query.To != "" {
+			params.Set("to", query.To)
+		}
+		if query.GroupBy != "" {
+			params.Set("group_by", query.GroupBy)
+		}
+		if query.TopN > 0 {
+			params.Set("top_n", strconv.Itoa(query.TopN))
+		}
+		if len(params) > 0 {
+			path += "?" + params.Encode()
+		}
+	}
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to query analytics"}
+	}
+
+	var result AnalyticsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &result, nil
+}
+
+// =============================================================================
+// Rules Coverage
+// =============================================================================
+
+// RulesCoverage analyzes rule coverage by querying the server's aggregation
+// endpoint. The server groups audit records by
+// (namespace, tenant, provider, action_type, matched_rule) and cross-references
+// the result with the currently-loaded rule set. No raw audit records are
+// transferred over the wire.
+func (c *Client) RulesCoverage(ctx context.Context, query *CoverageQuery) (*CoverageReport, error) {
+	path := "/v1/rules/coverage"
+	if query != nil {
+		params := url.Values{}
+		if query.Namespace != "" {
+			params.Set("namespace", query.Namespace)
+		}
+		if query.Tenant != "" {
+			params.Set("tenant", query.Tenant)
+		}
+		if query.From != nil {
+			params.Set("from", query.From.Format(time.RFC3339))
+		}
+		if query.To != nil {
+			params.Set("to", query.To.Format(time.RFC3339))
+		}
+		if len(params) > 0 {
+			path = path + "?" + params.Encode()
+		}
+	}
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to get rule coverage"}
+	}
+
+	var report CoverageReport
+	if err := json.NewDecoder(resp.Body).Decode(&report); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &report, nil
+}
+
+// =============================================================================
+// Subscribe (SSE)
+// =============================================================================
+
+// Subscribe opens an SSE stream for a specific entity (chain, group, or action).
+// It returns a channel that receives SseEvent values. The channel is closed when
+// the context is cancelled, the connection drops, or the server closes the stream.
+func (c *Client) Subscribe(ctx context.Context, entityType, entityID string, opts *SubscribeOptions) (<-chan *SseEvent, error) {
+	params := url.Values{}
+	if opts != nil {
+		if opts.Namespace != nil {
+			params.Set("namespace", *opts.Namespace)
+		}
+		if opts.Tenant != nil {
+			params.Set("tenant", *opts.Tenant)
+		}
+		if opts.IncludeHistory != nil {
+			params.Set("include_history", strconv.FormatBool(*opts.IncludeHistory))
+		}
+	}
+
+	path := fmt.Sprintf("/v1/subscribe/%s/%s", entityType, entityID)
+	if len(params) > 0 {
+		path += "?" + params.Encode()
+	}
+
+	ch, err := c.openSSE(ctx, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	return ch, nil
+}
+
+// =============================================================================
+// Stream (SSE)
+// =============================================================================
+
+// Stream opens the general SSE event stream with optional filters.
+// It returns a channel that receives SseEvent values. The channel is closed when
+// the context is cancelled, the connection drops, or the server closes the stream.
+func (c *Client) Stream(ctx context.Context, opts *StreamOptions) (<-chan *SseEvent, error) {
+	params := url.Values{}
+	var lastEventID *string
+	if opts != nil {
+		if opts.Namespace != nil {
+			params.Set("namespace", *opts.Namespace)
+		}
+		if opts.ActionType != nil {
+			params.Set("action_type", *opts.ActionType)
+		}
+		if opts.Outcome != nil {
+			params.Set("outcome", *opts.Outcome)
+		}
+		if opts.EventType != nil {
+			params.Set("event_type", *opts.EventType)
+		}
+		if opts.ChainID != nil {
+			params.Set("chain_id", *opts.ChainID)
+		}
+		if opts.GroupID != nil {
+			params.Set("group_id", *opts.GroupID)
+		}
+		if opts.ActionID != nil {
+			params.Set("action_id", *opts.ActionID)
+		}
+		lastEventID = opts.LastEventID
+	}
+
+	path := "/v1/stream"
+	if len(params) > 0 {
+		path += "?" + params.Encode()
+	}
+
+	ch, err := c.openSSE(ctx, path, lastEventID)
+	if err != nil {
+		return nil, err
+	}
+	return ch, nil
+}
+
+// openSSE opens an SSE connection to the given path and returns a channel of events.
+func (c *Client) openSSE(ctx context.Context, path string, lastEventID *string) (<-chan *SseEvent, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Cache-Control", "no-cache")
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+	if lastEventID != nil {
+		req.Header.Set("Last-Event-ID", *lastEventID)
+	}
+
+	// Use a separate client without timeout for SSE (long-lived connection).
+	sseClient := &http.Client{
+		// No timeout -- the connection stays open until context cancellation.
+	}
+
+	resp, err := sseClient.Do(req)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return nil, &HTTPError{
+			Status:  resp.StatusCode,
+			Message: fmt.Sprintf("SSE connection failed: %s", string(body)),
+		}
+	}
+
+	ch := make(chan *SseEvent, 64)
+
+	go func() {
+		defer close(ch)
+		defer resp.Body.Close()
+
+		scanner := bufio.NewScanner(resp.Body)
+
+		var currentID string
+		var currentEvent string
+		var dataLines []string
+
+		for scanner.Scan() {
+			line := scanner.Text()
+
+			if line == "" {
+				// Empty line means end of event.
+				if len(dataLines) > 0 {
+					event := &SseEvent{
+						ID:    currentID,
+						Event: currentEvent,
+						Data:  strings.Join(dataLines, "\n"),
+					}
+					select {
+					case ch <- event:
+					case <-ctx.Done():
+						return
+					}
+				}
+				currentID = ""
+				currentEvent = ""
+				dataLines = nil
+				continue
+			}
+
+			if strings.HasPrefix(line, "id:") {
+				currentID = strings.TrimSpace(strings.TrimPrefix(line, "id:"))
+			} else if strings.HasPrefix(line, "event:") {
+				currentEvent = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+			} else if strings.HasPrefix(line, "data:") {
+				dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+			}
+			// Lines starting with ":" are comments (e.g., keep-alive pings); ignore them.
+		}
+	}()
+
+	return ch, nil
+}
+
+// -----------------------------------------------------------------------
+// Swarm runs
+// -----------------------------------------------------------------------
+
+// ListSwarmRuns returns all swarm runs known to the server, optionally filtered.
+func (c *Client) ListSwarmRuns(ctx context.Context, filter *SwarmRunFilter) (*ListSwarmRunsResponse, error) {
+	path := "/v1/swarm/runs"
+	if filter != nil {
+		q := url.Values{}
+		if filter.Namespace != "" {
+			q.Set("namespace", filter.Namespace)
+		}
+		if filter.Tenant != "" {
+			q.Set("tenant", filter.Tenant)
+		}
+		if filter.Status != "" {
+			q.Set("status", filter.Status)
+		}
+		if filter.Limit > 0 {
+			q.Set("limit", fmt.Sprintf("%d", filter.Limit))
+		}
+		if filter.Offset > 0 {
+			q.Set("offset", fmt.Sprintf("%d", filter.Offset))
+		}
+		if encoded := q.Encode(); encoded != "" {
+			path += "?" + encoded
+		}
+	}
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		var out ListSwarmRunsResponse
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			return nil, fmt.Errorf("decode list swarm runs: %w", err)
+		}
+		return &out, nil
+	}
+	return nil, fmt.Errorf("list swarm runs failed: status %d", resp.StatusCode)
+}
+
+// GetSwarmRun fetches one swarm run by ID. Returns (nil, nil) if unknown.
+func (c *Client) GetSwarmRun(ctx context.Context, runID string) (*SwarmRunSnapshot, error) {
+	// PathEscape so a maliciously crafted runID with '/', '?', or '#'
+	// cannot escape the path segment into query/fragment territory.
+	resp, err := c.doRequest(ctx, http.MethodGet, "/v1/swarm/runs/"+url.PathEscape(runID), nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		var out SwarmRunSnapshot
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			return nil, fmt.Errorf("decode swarm run: %w", err)
+		}
+		return &out, nil
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+	return nil, fmt.Errorf("get swarm run failed: status %d", resp.StatusCode)
+}
+
+// CancelSwarmRun requests cancellation of an inflight swarm run. Returns (nil, nil) if unknown.
+func (c *Client) CancelSwarmRun(ctx context.Context, runID string) (*SwarmRunSnapshot, error) {
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/swarm/runs/"+url.PathEscape(runID)+"/cancel", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		var out SwarmRunSnapshot
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			return nil, fmt.Errorf("decode swarm run: %w", err)
+		}
+		return &out, nil
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+	return nil, fmt.Errorf("cancel swarm run failed: status %d", resp.StatusCode)
 }

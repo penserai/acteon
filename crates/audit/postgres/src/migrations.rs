@@ -2,6 +2,7 @@ use sqlx::PgPool;
 
 /// Run the audit table migration, creating the table and indexes if they do
 /// not already exist.
+#[allow(clippy::too_many_lines)]
 pub async fn run_migrations(pool: &PgPool, prefix: &str) -> Result<(), sqlx::Error> {
     let table = format!("{prefix}audit");
 
@@ -77,6 +78,62 @@ pub async fn run_migrations(pool: &PgPool, prefix: &str) -> Result<(), sqlx::Err
     for stmt in &chain_id_stmts {
         sqlx::query(stmt).execute(pool).await?;
     }
+
+    // Add hash chain columns for compliance mode (idempotent).
+    // The UNIQUE index on (namespace, tenant, sequence_number) enforces
+    // optimistic concurrency: if two gateway replicas race for the same
+    // sequence number, one will get a unique constraint violation and retry.
+    let hash_chain_stmts = [
+        format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS record_hash TEXT"),
+        format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS previous_hash TEXT"),
+        format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS sequence_number BIGINT"),
+        format!(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_{prefix}audit_hash_chain ON {table} (namespace, tenant, sequence_number) WHERE sequence_number IS NOT NULL"
+        ),
+    ];
+    for stmt in &hash_chain_stmts {
+        sqlx::query(stmt).execute(pool).await?;
+    }
+
+    // Add attachment_metadata column (idempotent).
+    let attachment_stmt = format!(
+        "ALTER TABLE {table} ADD COLUMN IF NOT EXISTS attachment_metadata JSONB NOT NULL DEFAULT '[]'::jsonb"
+    );
+    sqlx::query(&attachment_stmt).execute(pool).await?;
+
+    // Action signing columns: Ed25519 signature + signer key id +
+    // canonical hash captured at dispatch time. These are nullable so
+    // existing records without signing data are unaffected; the
+    // signing audit row → AuditRecord conversion populates them when
+    // present.
+    let signing_stmts = [
+        format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS signature TEXT"),
+        format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS signer_id TEXT"),
+        format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS canonical_hash TEXT"),
+        // Key identifier for rotation — nullable so legacy single-key
+        // signatures (no kid) deserialize cleanly.
+        format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS kid TEXT"),
+        format!(
+            "CREATE INDEX IF NOT EXISTS idx_{prefix}audit_signer_id ON {table} (signer_id, kid, dispatched_at DESC) WHERE signer_id IS NOT NULL"
+        ),
+    ];
+    for stmt in &signing_stmts {
+        sqlx::query(stmt).execute(pool).await?;
+    }
+
+    // Covering index for rule coverage aggregation.
+    //
+    // `/v1/rules/coverage` issues
+    //   SELECT namespace, tenant, provider, action_type, matched_rule, COUNT(*)
+    //   FROM audit
+    //   WHERE namespace = ? AND tenant = ? AND dispatched_at BETWEEN ? AND ?
+    //   GROUP BY namespace, tenant, provider, action_type, matched_rule
+    // which benefits from a multi-column index matching the GROUP BY prefix.
+    let coverage_idx = format!(
+        "CREATE INDEX IF NOT EXISTS idx_{prefix}audit_coverage ON {table} \
+         (namespace, tenant, provider, action_type, matched_rule, dispatched_at DESC)"
+    );
+    sqlx::query(&coverage_idx).execute(pool).await?;
 
     Ok(())
 }

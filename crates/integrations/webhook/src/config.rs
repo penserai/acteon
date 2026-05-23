@@ -28,7 +28,7 @@ impl HttpMethod {
 }
 
 /// Authentication method for the webhook endpoint.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AuthMethod {
     /// HTTP Bearer token (`Authorization: Bearer <token>`).
@@ -44,6 +44,29 @@ pub enum AuthMethod {
     /// The signature is computed as `HMAC-SHA256(secret, body)` and
     /// hex-encoded.
     HmacSha256 { secret: String, header: String },
+}
+
+impl std::fmt::Debug for AuthMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Bearer(_) => f.debug_tuple("Bearer").field(&"[REDACTED]").finish(),
+            Self::Basic { username, .. } => f
+                .debug_struct("Basic")
+                .field("username", username)
+                .field("password", &"[REDACTED]")
+                .finish(),
+            Self::ApiKey { header, .. } => f
+                .debug_struct("ApiKey")
+                .field("header", header)
+                .field("value", &"[REDACTED]")
+                .finish(),
+            Self::HmacSha256 { header, .. } => f
+                .debug_struct("HmacSha256")
+                .field("secret", &"[REDACTED]")
+                .field("header", header)
+                .finish(),
+        }
+    }
 }
 
 /// Controls what is sent as the request body.
@@ -242,5 +265,44 @@ mod tests {
         let config =
             WebhookConfig::new("https://example.com").with_timeout(Duration::from_millis(500));
         assert_eq!(config.timeout, Duration::from_millis(500));
+    }
+
+    #[test]
+    fn auth_method_debug_redacts_secrets() {
+        let bearer_value = "test-bearer-value-placeholder";
+        let bearer = AuthMethod::Bearer(bearer_value.into());
+        let debug = format!("{bearer:?}");
+        assert!(debug.contains("[REDACTED]"));
+        assert!(!debug.contains(bearer_value));
+
+        let pw = "test-pw-placeholder";
+        let basic = AuthMethod::Basic {
+            username: "user".into(),
+            password: pw.into(),
+        };
+        let debug = format!("{basic:?}");
+        assert!(debug.contains("[REDACTED]"));
+        assert!(debug.contains("user"));
+        assert!(!debug.contains(pw));
+
+        let key_val = "test-key-placeholder";
+        let api_key = AuthMethod::ApiKey {
+            header: "X-Api-Key".into(),
+            value: key_val.into(),
+        };
+        let debug = format!("{api_key:?}");
+        assert!(debug.contains("[REDACTED]"));
+        assert!(debug.contains("X-Api-Key"));
+        assert!(!debug.contains(key_val));
+
+        let hmac_val = "test-hmac-placeholder";
+        let hmac = AuthMethod::HmacSha256 {
+            secret: hmac_val.into(),
+            header: "X-Signature".into(),
+        };
+        let debug = format!("{hmac:?}");
+        assert!(debug.contains("[REDACTED]"));
+        assert!(debug.contains("X-Signature"));
+        assert!(!debug.contains(hmac_val));
     }
 }

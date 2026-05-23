@@ -1,0 +1,32 @@
+# Session lifecycle rules.
+# Handles Discord notifications and deduplication for session events.
+
+rules:
+  # ── Send Discord notification on session complete ────────────────────────
+  - name: discord-session-complete
+    priority: 5
+    description: "Notify via Discord when the Claude Code session ends"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "claude-code-agent"
+        - field: action.action_type
+          eq: "session_complete"
+        - field: action.provider
+          eq: "discord"
+    action:
+      type: allow
+
+  # ── Dedup session completion notifications ───────────────────────────────
+  - name: dedup-session-complete
+    priority: 4
+    description: "Prevent duplicate completion notifications within 5 minutes"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "claude-code-agent"
+        - field: action.action_type
+          eq: "session_complete"
+    action:
+      type: deduplicate
+      ttl_seconds: 300

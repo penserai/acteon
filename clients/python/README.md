@@ -168,6 +168,12 @@ client = ActeonClient(
 )
 ```
 
+API keys are sent via the `Authorization: Bearer <key>` header. The server
+accepts both JWTs and raw API keys on that header. API keys are scoped by
+tenant, namespace, provider, and action type on the server side — see the
+[API Key Scoping](https://penserai.github.io/acteon/features/api-key-scoping/)
+documentation for the grant model and hierarchical tenant matching.
+
 ## Error Handling
 
 ```python
@@ -203,6 +209,7 @@ except HttpError as e:
 | `set_rule_enabled(name, enabled)` | Enable/disable a rule |
 | `query_audit(query)` | Query audit records |
 | `get_audit_record(action_id)` | Get specific audit record |
+| `fetch_signing_keys()` | Fetch the server's active signing keyring (JWKS-style discovery) |
 
 ### Action Fields
 

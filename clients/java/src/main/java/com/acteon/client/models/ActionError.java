@@ -1,7 +1,5 @@
 package com.acteon.client.models;
 
-import java.util.Map;
-
 /**
  * Error details when an action fails.
  */
@@ -31,13 +29,4 @@ public class ActionError {
 
     public int getAttempts() { return attempts; }
     public void setAttempts(int attempts) { this.attempts = attempts; }
-
-    public static ActionError fromMap(Map<String, Object> data) {
-        return new ActionError(
-            (String) data.getOrDefault("code", "UNKNOWN"),
-            (String) data.getOrDefault("message", "Unknown error"),
-            (Boolean) data.getOrDefault("retryable", false),
-            ((Number) data.getOrDefault("attempts", 0)).intValue()
-        );
-    }
 }

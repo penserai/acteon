@@ -1,5 +1,5 @@
 /// Configuration for the Slack provider.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SlackConfig {
     /// Bot or user OAuth token used to authenticate API requests.
     pub token: String,
@@ -11,6 +11,16 @@ pub struct SlackConfig {
     /// Base URL for the Slack Web API. Override this for testing against a
     /// mock server.
     pub api_base_url: String,
+}
+
+impl std::fmt::Debug for SlackConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SlackConfig")
+            .field("token", &"[REDACTED]")
+            .field("default_channel", &self.default_channel)
+            .field("api_base_url", &self.api_base_url)
+            .finish()
+    }
 }
 
 impl SlackConfig {
@@ -62,5 +72,16 @@ mod tests {
     fn with_custom_api_base_url() {
         let config = SlackConfig::new("xoxb-token").with_api_base_url("http://localhost:9999/api");
         assert_eq!(config.api_base_url, "http://localhost:9999/api");
+    }
+
+    #[test]
+    fn debug_redacts_token() {
+        let config = SlackConfig::new("xoxb-test-placeholder-value");
+        let debug = format!("{config:?}");
+        assert!(debug.contains("[REDACTED]"), "token must be redacted");
+        assert!(
+            !debug.contains("xoxb-test-placeholder-value"),
+            "token must not appear in debug output"
+        );
     }
 }

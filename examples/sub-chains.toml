@@ -1,0 +1,381 @@
+# Sub-chains demo configuration.
+# Uses log providers (mock) and in-memory state/audit.
+# Demonstrates complex, nested sub-chain hierarchies for screenshot generation.
+#
+# Start server:   cargo run -p acteon-server -- --config examples/sub-chains.toml
+# Open UI:        http://127.0.0.1:8080/ui/
+
+[server]
+host = "127.0.0.1"
+port = 8080
+
+[state]
+backend = "memory"
+
+[audit]
+enabled = true
+backend = "memory"
+store_payload = true
+
+[executor]
+max_retries = 2
+timeout_seconds = 30
+max_concurrent = 16
+
+# ── Mock providers ──────────────────────────────────────────────────────────
+
+[[providers]]
+name = "monitoring-api"
+type = "log"
+
+[[providers]]
+name = "pagerduty"
+type = "log"
+
+[[providers]]
+name = "slack"
+type = "log"
+
+[[providers]]
+name = "email"
+type = "log"
+
+[[providers]]
+name = "ticketing"
+type = "log"
+
+[[providers]]
+name = "statuspage"
+type = "log"
+
+[[providers]]
+name = "ci-runner"
+type = "log"
+
+[[providers]]
+name = "security-scanner"
+type = "log"
+
+[[providers]]
+name = "artifact-store"
+type = "log"
+
+[[providers]]
+name = "cloud-deploy"
+type = "log"
+
+[[providers]]
+name = "test-runner"
+type = "log"
+
+[[providers]]
+name = "infra-api"
+type = "log"
+
+[[providers]]
+name = "rollback-api"
+type = "log"
+
+[[providers]]
+name = "dns-api"
+type = "log"
+
+[[providers]]
+name = "metrics-api"
+type = "log"
+
+# ── Rules (trigger chains) ──────────────────────────────────────────────────
+
+[rules]
+directory = "examples/sub-chains-rules"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CHAIN DEFINITIONS
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── Top-level: incident-response ────────────────────────────────────────────
+# Depth: incident-response → escalation-workflow (L1) → page-oncall, notify-team
+#                           → remediation-workflow (L1) → apply-fix (L2) → rollback, drain, hotfix, restore
+# Total: 3 levels of nesting
+
+[[chains.definitions]]
+name = "incident-response"
+timeout_seconds = 3600
+
+[[chains.definitions.steps]]
+name = "triage"
+provider = "monitoring-api"
+action_type = "check_severity"
+payload_template = { incident_id = "{{origin.payload.incident_id}}" }
+
+[[chains.definitions.steps]]
+name = "escalate"
+sub_chain = "escalation-workflow"
+
+[[chains.definitions.steps]]
+name = "remediate"
+sub_chain = "remediation-workflow"
+on_failure = "skip"
+
+[[chains.definitions.steps]]
+name = "close-incident"
+provider = "ticketing"
+action_type = "close_ticket"
+payload_template = { incident_id = "{{origin.payload.incident_id}}", resolution = "{{prev.body}}" }
+
+[[chains.definitions.steps]]
+name = "update-statuspage"
+provider = "statuspage"
+action_type = "post_update"
+payload_template = { status = "resolved" }
+
+# ── Sub-chain L1: escalation-workflow ───────────────────────────────────────
+
+[[chains.definitions]]
+name = "escalation-workflow"
+timeout_seconds = 300
+
+[[chains.definitions.steps]]
+name = "page-oncall"
+provider = "pagerduty"
+action_type = "create_incident"
+payload_template = { urgency = "high", service = "{{origin.payload.service}}" }
+
+[[chains.definitions.steps]]
+name = "notify-team"
+provider = "slack"
+action_type = "post_message"
+payload_template = { channel = "#incidents", text = "Incident escalated: {{origin.payload.incident_id}}" }
+
+[[chains.definitions.steps]]
+name = "brief-management"
+provider = "email"
+action_type = "send_briefing"
+payload_template = { to = "management@example.com", subject = "Active incident" }
+
+# ── Sub-chain L1: remediation-workflow ──────────────────────────────────────
+# Contains a nested sub-chain (apply-fix → L2)
+
+[[chains.definitions]]
+name = "remediation-workflow"
+timeout_seconds = 600
+
+[[chains.definitions.steps]]
+name = "assess-impact"
+provider = "monitoring-api"
+action_type = "get_impact"
+payload_template = { service = "{{origin.payload.service}}" }
+
+[[chains.definitions.steps]]
+name = "apply-fix"
+sub_chain = "hotfix-deploy"
+
+[[chains.definitions.steps]]
+name = "verify-fix"
+provider = "monitoring-api"
+action_type = "health_check"
+payload_template = { service = "{{origin.payload.service}}" }
+
+# ── Sub-chain L2: hotfix-deploy ─────────────────────────────────────────────
+# Deepest level of nesting (L2, inside remediation-workflow)
+
+[[chains.definitions]]
+name = "hotfix-deploy"
+timeout_seconds = 300
+
+[[chains.definitions.steps]]
+name = "rollback-service"
+provider = "rollback-api"
+action_type = "rollback"
+payload_template = { service = "{{origin.payload.service}}", version = "previous" }
+
+[[chains.definitions.steps]]
+name = "drain-traffic"
+provider = "dns-api"
+action_type = "drain"
+payload_template = { service = "{{origin.payload.service}}" }
+
+[[chains.definitions.steps]]
+name = "deploy-hotfix"
+provider = "cloud-deploy"
+action_type = "deploy"
+payload_template = { service = "{{origin.payload.service}}", tag = "hotfix-latest" }
+
+[[chains.definitions.steps]]
+name = "restore-traffic"
+provider = "dns-api"
+action_type = "restore"
+payload_template = { service = "{{origin.payload.service}}" }
+
+# ── Top-level: deploy-pipeline ──────────────────────────────────────────────
+# Depth: deploy-pipeline → build-and-test (L1) → lint, compile, test, scan
+#                         → integration-tests (L1) → setup-env, run-e2e (L2), teardown
+# Total: 3 levels of nesting
+
+[[chains.definitions]]
+name = "deploy-pipeline"
+timeout_seconds = 1800
+
+[[chains.definitions.steps]]
+name = "validate-config"
+provider = "ci-runner"
+action_type = "validate"
+payload_template = { repo = "{{origin.payload.repo}}", branch = "{{origin.payload.branch}}" }
+
+[[chains.definitions.steps]]
+name = "build-and-test"
+sub_chain = "build-and-test"
+
+[[chains.definitions.steps]]
+name = "publish-artifacts"
+provider = "artifact-store"
+action_type = "publish"
+payload_template = { repo = "{{origin.payload.repo}}", tag = "{{origin.payload.tag}}" }
+
+[[chains.definitions.steps]]
+name = "deploy-staging"
+provider = "cloud-deploy"
+action_type = "deploy"
+payload_template = { environment = "staging", tag = "{{origin.payload.tag}}" }
+
+[[chains.definitions.steps]]
+name = "integration-tests"
+sub_chain = "integration-tests"
+on_failure = "skip"
+
+[[chains.definitions.steps]]
+name = "deploy-production"
+provider = "cloud-deploy"
+action_type = "deploy"
+payload_template = { environment = "production", tag = "{{origin.payload.tag}}" }
+
+[[chains.definitions.steps]]
+name = "notify-team"
+provider = "slack"
+action_type = "post_message"
+payload_template = { channel = "#deployments", text = "Deploy complete: {{origin.payload.repo}}@{{origin.payload.tag}}" }
+
+# ── Sub-chain L1: build-and-test ────────────────────────────────────────────
+
+[[chains.definitions]]
+name = "build-and-test"
+timeout_seconds = 600
+
+[[chains.definitions.steps]]
+name = "lint"
+provider = "ci-runner"
+action_type = "lint"
+payload_template = { repo = "{{origin.payload.repo}}" }
+
+[[chains.definitions.steps]]
+name = "compile"
+provider = "ci-runner"
+action_type = "compile"
+payload_template = { repo = "{{origin.payload.repo}}", target = "release" }
+
+[[chains.definitions.steps]]
+name = "unit-tests"
+provider = "test-runner"
+action_type = "run_tests"
+payload_template = { repo = "{{origin.payload.repo}}", suite = "unit" }
+
+[[chains.definitions.steps]]
+name = "security-scan"
+provider = "security-scanner"
+action_type = "scan"
+payload_template = { repo = "{{origin.payload.repo}}", policy = "strict" }
+
+# ── Sub-chain L1: integration-tests ─────────────────────────────────────────
+# Contains a nested sub-chain (run-e2e → L2)
+
+[[chains.definitions]]
+name = "integration-tests"
+timeout_seconds = 600
+
+[[chains.definitions.steps]]
+name = "setup-test-env"
+provider = "infra-api"
+action_type = "create_env"
+payload_template = { type = "ephemeral", ttl = 3600 }
+
+[[chains.definitions.steps]]
+name = "run-e2e"
+sub_chain = "e2e-test-suite"
+
+[[chains.definitions.steps]]
+name = "collect-coverage"
+provider = "ci-runner"
+action_type = "coverage_report"
+payload_template = { format = "lcov" }
+
+[[chains.definitions.steps]]
+name = "teardown-test-env"
+provider = "infra-api"
+action_type = "destroy_env"
+payload_template = {}
+
+# ── Sub-chain L2: e2e-test-suite ────────────────────────────────────────────
+# Deepest level (L2, inside integration-tests)
+
+[[chains.definitions]]
+name = "e2e-test-suite"
+timeout_seconds = 300
+
+[[chains.definitions.steps]]
+name = "api-tests"
+provider = "test-runner"
+action_type = "run_tests"
+payload_template = { suite = "e2e-api", parallel = true }
+
+[[chains.definitions.steps]]
+name = "ui-tests"
+provider = "test-runner"
+action_type = "run_tests"
+payload_template = { suite = "e2e-ui", browser = "chromium" }
+
+[[chains.definitions.steps]]
+name = "load-tests"
+provider = "test-runner"
+action_type = "run_tests"
+payload_template = { suite = "load", duration_seconds = 60 }
+
+# ── Top-level: user-onboarding ──────────────────────────────────────────────
+# Simpler chain with one sub-chain invocation
+
+[[chains.definitions]]
+name = "user-onboarding"
+timeout_seconds = 600
+
+[[chains.definitions.steps]]
+name = "provision-account"
+provider = "infra-api"
+action_type = "create_account"
+payload_template = { user = "{{origin.payload.user_email}}" }
+
+[[chains.definitions.steps]]
+name = "welcome-sequence"
+sub_chain = "welcome-sequence"
+
+[[chains.definitions.steps]]
+name = "assign-mentor"
+provider = "slack"
+action_type = "post_message"
+payload_template = { channel = "#onboarding", text = "New user needs mentor: {{origin.payload.user_email}}" }
+
+# ── Sub-chain L1: welcome-sequence ──────────────────────────────────────────
+
+[[chains.definitions]]
+name = "welcome-sequence"
+timeout_seconds = 120
+
+[[chains.definitions.steps]]
+name = "send-welcome-email"
+provider = "email"
+action_type = "send_email"
+payload_template = { to = "{{origin.payload.user_email}}", template = "welcome" }
+
+[[chains.definitions.steps]]
+name = "invite-to-slack"
+provider = "slack"
+action_type = "invite_user"
+payload_template = { email = "{{origin.payload.user_email}}", channels = ["#general", "#onboarding"] }

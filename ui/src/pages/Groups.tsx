@@ -8,11 +8,11 @@ import { Input } from '../components/ui/Input'
 import { Button } from '../components/ui/Button'
 import { Drawer } from '../components/ui/Drawer'
 import { Modal } from '../components/ui/Modal'
-import { JsonViewer } from '../components/ui/JsonViewer'
 import { useToast } from '../components/ui/useToast'
 import { relativeTime } from '../lib/format'
 import type { EventGroup } from '../types'
 import { Play, Trash2 } from 'lucide-react'
+import shared from '../styles/shared.module.css'
 import styles from './Groups.module.css'
 
 const col = createColumnHelper<EventGroup>()
@@ -45,22 +45,7 @@ export function Groups() {
       header: 'Group Key',
       cell: (info) => <span className={styles.groupKey}>{info.getValue().slice(0, 12)}...</span>,
     }),
-    col.display({
-      id: 'labels',
-      header: 'Labels',
-      cell: (info) => (
-        <div className={styles.labelsContainer}>
-          {Object.entries(info.row.original.labels).map(([k, v]) => (
-            <Badge key={k} variant="neutral" size="sm">{k}={v}</Badge>
-          ))}
-        </div>
-      ),
-    }),
-    col.display({
-      id: 'event_count',
-      header: 'Events',
-      cell: (info) => <span className={styles.eventCount}>{info.row.original.events.length}</span>,
-    }),
+    col.accessor('event_count', { header: 'Events' }),
     col.accessor('state', { header: 'State', cell: (info) => <Badge>{info.getValue()}</Badge> }),
     col.accessor('notify_at', {
       header: 'Notify At',
@@ -108,32 +93,11 @@ export function Groups() {
         {selected && (
           <div className={styles.drawerContent}>
             <div className={styles.detailsGrid}>
-              <div className={styles.detailRow}><span className={styles.detailLabel}>State</span><Badge>{selected.state}</Badge></div>
-              <div className={styles.detailRow}><span className={styles.detailLabel}>Events</span><span>{selected.events.length}</span></div>
-              <div className={styles.detailRow}><span className={styles.detailLabel}>Notify At</span><span>{selected.notify_at}</span></div>
-              <div className={styles.detailRow}><span className={styles.detailLabel}>Created</span><span>{selected.created_at}</span></div>
-            </div>
-            <div>
-              <h3 className={styles.sectionTitle}>Labels</h3>
-              <div className={styles.labelsGrid}>
-                {Object.entries(selected.labels).map(([k, v]) => (
-                  <Badge key={k} variant="neutral">{k}={v}</Badge>
-                ))}
-              </div>
-            </div>
-            <div>
-              <h3 className={styles.sectionTitle}>Events ({selected.events.length})</h3>
-              <div className={styles.eventsSection}>
-                {selected.events.slice(0, 10).map((evt, i) => (
-                  <div key={i} className={styles.eventCard}>
-                    <div className={styles.eventCardHeader}>
-                      <span className={styles.eventId}>{evt.action_id}</span>
-                      <span className={styles.timestamp}>{relativeTime(evt.received_at)}</span>
-                    </div>
-                    <JsonViewer data={evt.payload} collapsed />
-                  </div>
-                ))}
-              </div>
+              <div className={styles.detailRow}><span className={shared.detailLabel}>Group ID</span><span>{selected.group_id}</span></div>
+              <div className={styles.detailRow}><span className={shared.detailLabel}>State</span><Badge>{selected.state}</Badge></div>
+              <div className={styles.detailRow}><span className={shared.detailLabel}>Events</span><span>{selected.event_count}</span></div>
+              <div className={styles.detailRow}><span className={shared.detailLabel}>Notify At</span><span>{selected.notify_at}</span></div>
+              <div className={styles.detailRow}><span className={shared.detailLabel}>Created</span><span>{selected.created_at}</span></div>
             </div>
           </div>
         )}
@@ -158,7 +122,7 @@ export function Groups() {
       >
         {confirm?.action === 'flush'
           ? <p>Flush group? This will trigger the group notification immediately.</p>
-          : <p>Delete group? This will discard all {confirm?.group.events.length} grouped events. This cannot be undone.</p>}
+          : <p>Delete group? This will discard all {confirm?.group.event_count} grouped events. This cannot be undone.</p>}
       </Modal>
     </div>
   )

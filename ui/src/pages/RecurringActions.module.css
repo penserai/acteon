@@ -1,0 +1,83 @@
+@reference "../index.css";
+
+.cronCell {
+  @apply font-mono text-xs;
+}
+
+.cronDescription {
+  @apply block text-xs text-gray-500 mt-0.5;
+}
+
+.timestampCell {
+  @apply text-xs text-gray-500;
+}
+
+.countCell {
+  @apply tabular-nums text-xs;
+}
+
+/* Create / Edit modal */
+.cronPresetRow {
+  @apply flex gap-3 items-end;
+}
+
+.cronPresetSelect {
+  @apply w-48;
+}
+
+.cronHint {
+  @apply text-xs mt-1 min-h-5;
+  color: var(--text-muted);
+}
+
+.cronHintError {
+  @apply text-xs mt-1 text-error-500;
+}
+
+.textarea {
+  @apply w-full h-32 rounded-md border px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-primary-400/20 focus:border-primary-400;
+  background: var(--bg-surface);
+  border-color: var(--border-input);
+  color: var(--text-default);
+}
+
+.errorText {
+  @apply text-xs text-error-500 mt-1;
+}
+
+.optionalSection {
+  @apply border-t pt-4 mt-2;
+  border-color: var(--border-divider);
+}
+
+.optionalLabel {
+  @apply text-sm font-medium mb-3 block;
+  color: var(--text-secondary);
+}
+
+/* Detail drawer */
+.tabContainer {
+  @apply mb-4;
+}
+
+.detailContent {
+  @apply space-y-3 text-sm;
+}
+
+.detailValueWrap {
+  @apply font-mono text-xs text-right max-w-xs break-all;
+}
+
+.jsonViewerCard {
+  @apply rounded-lg p-3;
+  background: var(--bg-surface-secondary);
+}
+
+.sectionTitle {
+  @apply text-sm font-medium mb-2;
+}
+
+/* Subsection spacing in detail drawer */
+.subsection {
+  @apply mt-4;
+}

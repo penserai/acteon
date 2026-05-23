@@ -9,29 +9,37 @@ rust-version.workspace = true
 [dependencies]
 acteon-audit = { workspace = true }
 acteon-core = { workspace = true }
+acteon-crypto = { workspace = true }
 acteon-llm = { workspace = true }
 acteon-state = { workspace = true }
 acteon-state-memory = { workspace = true }
 acteon-rules = { workspace = true }
+acteon-wasm-runtime = { workspace = true }
 acteon-provider = { workspace = true }
 acteon-executor = { workspace = true }
 async-trait = { workspace = true }
+base64 = { workspace = true }
+bytes = { workspace = true }
 chrono = { workspace = true }
 chrono-tz = { workspace = true }
+croner = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 json-patch = { workspace = true }
 notify = { workspace = true }
+regex = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
+minijinja = { workspace = true }
 parking_lot = "0.12"
 sha2 = { workspace = true }
 hmac = { workspace = true }
 hex = { workspace = true }
+subtle = { workspace = true }
 
 [dev-dependencies]
 acteon-rules-yaml = { workspace = true }
@@ -40,10 +48,16 @@ chrono = { workspace = true }
 criterion = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
 
 [[bench]]
 name = "dispatch"
+harness = false
+
+[[bench]]
+name = "a2a_task_lifecycle"
 harness = false
 
 [[example]]

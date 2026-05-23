@@ -4,13 +4,13 @@ import { PageHeader } from '../components/layout/PageHeader'
 import { Badge } from '../components/ui/Badge'
 import { Button } from '../components/ui/Button'
 import { Input } from '../components/ui/Input'
-import { JsonViewer } from '../components/ui/JsonViewer'
 import { EmptyState } from '../components/ui/EmptyState'
 import { Skeleton } from '../components/ui/Skeleton'
 import { useToast } from '../components/ui/useToast'
 import { relativeTime, formatCountdown } from '../lib/format'
 import type { ApprovalStatus } from '../types'
-import { ShieldCheck, ChevronDown, ChevronUp } from 'lucide-react'
+import { ShieldCheck } from 'lucide-react'
+import shared from '../styles/shared.module.css'
 import styles from './Approvals.module.css'
 
 export function Approvals() {
@@ -22,8 +22,12 @@ export function Approvals() {
   const { toast } = useToast()
 
   const handleApprove = (a: ApprovalStatus) => {
+    if (!ns || !tenant) {
+      toast('error', 'Namespace and tenant are required to approve')
+      return
+    }
     approve.mutate(
-      { ns: a.namespace ?? '', tenant: a.tenant ?? '', id: a.approval_id },
+      { ns, tenant, id: a.token },
       {
         onSuccess: () => toast('success', 'Action approved'),
         onError: (e) => toast('error', 'Approve failed', (e as Error).message),
@@ -32,8 +36,12 @@ export function Approvals() {
   }
 
   const handleReject = (a: ApprovalStatus) => {
+    if (!ns || !tenant) {
+      toast('error', 'Namespace and tenant are required to reject')
+      return
+    }
     reject.mutate(
-      { ns: a.namespace ?? '', tenant: a.tenant ?? '', id: a.approval_id },
+      { ns, tenant, id: a.token },
       {
         onSuccess: () => toast('success', 'Action rejected'),
         onError: (e) => toast('error', 'Reject failed', (e as Error).message),
@@ -68,7 +76,7 @@ export function Approvals() {
       ) : (
         <div className={styles.approvalsList}>
           {pending.map((a) => (
-            <ApprovalCard key={a.approval_id} approval={a} onApprove={handleApprove} onReject={handleReject} />
+            <ApprovalCard key={a.token} approval={a} onApprove={handleApprove} onReject={handleReject} />
           ))}
         </div>
       )}
@@ -81,7 +89,6 @@ function ApprovalCard({ approval, onApprove, onReject }: {
   onApprove: (a: ApprovalStatus) => void
   onReject: (a: ApprovalStatus) => void
 }) {
-  const [showPayload, setShowPayload] = useState(false)
   const [countdown, setCountdown] = useState(formatCountdown(approval.expires_at))
 
   useEffect(() => {
@@ -91,7 +98,7 @@ function ApprovalCard({ approval, onApprove, onReject }: {
 
   return (
     <article
-      aria-label={`Approval for ${approval.action_id}`}
+      aria-label={`Approval ${approval.token.slice(0, 8)}`}
       className={styles.approvalCard}
     >
       <div className={styles.cardHeader}>
@@ -100,32 +107,14 @@ function ApprovalCard({ approval, onApprove, onReject }: {
       </div>
 
       <div className={styles.detailsContainer}>
-        <p><span className={styles.detailLabel}>Action:</span> {approval.action_id.slice(0, 16)}...</p>
-        <p><span className={styles.detailLabel}>Rule:</span> {approval.rule}</p>
-        {approval.message && <p><span className={styles.detailLabel}>Message:</span> {approval.message}</p>}
+        <p><span className={shared.detailLabel}>Token:</span> {approval.token.slice(0, 16)}...</p>
+        <p><span className={shared.detailLabel}>Rule:</span> {approval.rule}</p>
+        {approval.message && <p><span className={shared.detailLabel}>Message:</span> {approval.message}</p>}
       </div>
 
       <div className={styles.metadataRow}>
-        {approval.namespace && <span>ns: {approval.namespace}</span>}
-        {approval.tenant && <span>tenant: {approval.tenant}</span>}
         <span>Expires: {countdown}</span>
       </div>
-
-      {approval.payload && (
-        <button
-          onClick={() => setShowPayload(!showPayload)}
-          className={styles.toggleButton}
-        >
-          {showPayload ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
-          {showPayload ? 'Hide' : 'Show'} payload
-        </button>
-      )}
-
-      {showPayload && approval.payload && (
-        <div className={styles.payloadContainer}>
-          <JsonViewer data={approval.payload} collapsed />
-        </div>
-      )}
 
       <div className={styles.actionButtons}>
         <Button variant="danger" size="md" onClick={() => onReject(approval)}>Reject</Button>

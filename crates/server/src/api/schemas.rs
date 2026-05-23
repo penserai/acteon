@@ -26,6 +26,15 @@ pub struct MetricsResponse {
     /// Actions suppressed by rules.
     #[schema(example = 3)]
     pub suppressed: u64,
+    /// Actions silenced by a matching silence (label-pattern mute).
+    #[schema(example = 0)]
+    #[serde(default)]
+    pub silenced: u64,
+    /// Actions muted by a referenced time interval (`mute_time_intervals`
+    /// matching, or `active_time_intervals` not currently active).
+    #[schema(example = 0)]
+    #[serde(default)]
+    pub muted: u64,
     /// Actions rerouted to another provider.
     #[schema(example = 2)]
     pub rerouted: u64,
@@ -62,9 +71,108 @@ pub struct MetricsResponse {
     /// Actions rejected because the provider circuit breaker was open.
     #[schema(example = 0)]
     pub circuit_open: u64,
+    /// Circuit breaker state transitions (any direction).
+    #[schema(example = 0)]
+    pub circuit_transitions: u64,
+    /// Actions rerouted to a fallback provider due to an open circuit.
+    #[schema(example = 0)]
+    pub circuit_fallbacks: u64,
     /// Actions scheduled for delayed execution.
     #[schema(example = 0)]
     pub scheduled: u64,
+    /// Recurring actions dispatched successfully.
+    #[schema(example = 0)]
+    pub recurring_dispatched: u64,
+    /// Recurring action dispatch errors.
+    #[schema(example = 0)]
+    pub recurring_errors: u64,
+    /// Recurring actions skipped (disabled, expired, etc.).
+    #[schema(example = 0)]
+    pub recurring_skipped: u64,
+    /// Recurring actions currently scheduled and eligible for dispatch.
+    /// Refreshed once per `recurring_check_interval` tick by counting
+    /// the pending-recurring index.
+    #[schema(example = 0)]
+    #[serde(default)]
+    pub recurring_active: u64,
+    /// Actions blocked by tenant quota.
+    #[schema(example = 0)]
+    pub quota_exceeded: u64,
+    /// Actions that passed with a quota warning.
+    #[schema(example = 0)]
+    pub quota_warned: u64,
+    /// Actions degraded to a fallback provider due to quota.
+    #[schema(example = 0)]
+    pub quota_degraded: u64,
+    /// Actions that triggered a quota notification to the tenant admin.
+    #[schema(example = 0)]
+    pub quota_notified: u64,
+    /// State entries deleted by the retention reaper.
+    #[schema(example = 0)]
+    pub retention_deleted_state: u64,
+    /// Retention reaper skipped entries due to compliance hold.
+    #[schema(example = 0)]
+    pub retention_skipped_compliance: u64,
+    /// Retention reaper errors.
+    #[schema(example = 0)]
+    pub retention_errors: u64,
+    /// A2A tasks transitioned to `Failed` by the stale-task reaper.
+    #[schema(example = 0)]
+    pub stale_tasks_reaped: u64,
+    /// Stale-task reaper errors.
+    #[schema(example = 0)]
+    pub stale_task_reaper_errors: u64,
+    /// WASM plugin invocations.
+    #[schema(example = 0)]
+    pub wasm_invocations: u64,
+    /// WASM plugin invocation errors.
+    #[schema(example = 0)]
+    pub wasm_errors: u64,
+    /// Action signatures successfully verified and scope-authorized.
+    #[schema(example = 0)]
+    #[serde(default)]
+    pub signing_verified: u64,
+    /// Signed actions rejected because the Ed25519 signature did not
+    /// validate against the registered public key.
+    #[schema(example = 0)]
+    #[serde(default)]
+    pub signing_invalid: u64,
+    /// Signed actions rejected because the `signer_id` (or
+    /// `(signer_id, kid)` pair during a rotation window) is not in
+    /// the server's keyring.
+    #[schema(example = 0)]
+    #[serde(default)]
+    pub signing_unknown_signer: u64,
+    /// Signed actions rejected because the signer is not authorized
+    /// for the action's `(tenant, namespace)` pair.
+    #[schema(example = 0)]
+    #[serde(default)]
+    pub signing_scope_denied: u64,
+    /// Unsigned actions rejected because `signing.reject_unsigned`
+    /// is enabled.
+    #[schema(example = 0)]
+    #[serde(default)]
+    pub signing_unsigned_rejected: u64,
+    /// Unsigned actions passed through because
+    /// `signing.reject_unsigned` is off. Lets operators compute the
+    /// signed-vs-unsigned traffic ratio without subtracting every
+    /// rejection counter from `dispatched`.
+    #[schema(example = 0)]
+    #[serde(default)]
+    pub signing_unsigned_allowed: u64,
+    /// Actions rejected because their action ID was already seen
+    /// within the replay protection window. Replay protection is
+    /// independent of signing — this counter increments whether or
+    /// not a valid signature was presented.
+    #[schema(example = 0)]
+    #[serde(default)]
+    pub replay_rejected: u64,
+    /// Whether signing is enabled on the server. Lets the dashboard
+    /// distinguish "signing configured but idle" (show the cards with
+    /// zeros) from "signing not configured" (hide the cards).
+    #[schema(example = false)]
+    #[serde(default)]
+    pub signing_enabled: bool,
     /// Embedding cache metrics (present when embedding provider is enabled).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub embedding: Option<EmbeddingMetricsResponse>,

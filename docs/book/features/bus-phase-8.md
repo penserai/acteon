@@ -1,0 +1,290 @@
+# Agentic Bus — Phase 8
+
+> **Scope**: 5-SDK parity for the bus surface. Rust shipped with
+> Phases 1–6c. Phase 8 brings Python, Node, Go, and Java to the
+> same shape, in language-by-language sub-phases. **Phase 8a:
+> Python.** See the [master plan](../concepts/bus-master-plan.md).
+
+The Rust client carries the bus surface that Phases 1–6c built —
+topics, subscriptions, schemas, agents, conversations, tool-call
+envelopes, streaming envelopes, and HITL approvals. Phase 8 closes
+the cross-language gap so a Python (or Node, Go, Java) caller has
+the same flat method names and the same DTO shapes as the Rust
+SDK.
+
+## What ships in Phase 8a (Python)
+
+| Surface | Method names |
+|---|---|
+| Topics | `create_bus_topic`, `list_bus_topics`, `get_bus_topic`, `delete_bus_topic`, `publish_bus_message` |
+| Subscriptions | `create_bus_subscription`, `list_bus_subscriptions`, `get_bus_subscription`, `delete_bus_subscription`, `get_bus_subscription_lag` |
+| Schemas | `register_bus_schema`, `list_bus_schemas`, `get_bus_schema`, `delete_bus_schema` |
+| Agents | `register_bus_agent`, `list_bus_agents`, `get_bus_agent`, `delete_bus_agent`, `heartbeat_bus_agent` |
+| Conversations | `create_bus_conversation`, `list_bus_conversations`, `get_bus_conversation`, `delete_bus_conversation`, `transition_bus_conversation`, `append_bus_conversation_message`, `replay_bus_conversation_messages` |
+| Tool envelopes (Phase 6a) | `post_bus_tool_call`, `post_bus_tool_result`, `lookup_bus_tool_result` |
+| Streams (Phase 6b) | `post_bus_stream_chunk`, `post_bus_stream_end`, `bus_stream_consume_url` |
+| Approvals (Phase 6c) | `list_bus_approvals`, `get_bus_approval`, `approve_bus_approval`, `reject_bus_approval` |
+
+36 bus methods total, mounted onto both :class:`acteon_client.ActeonClient`
+(sync, via `_BusClientMixin`) and :class:`acteon_client.AsyncActeonClient`
+(async, via `_AsyncBusClientMixin`). The async surface uses `await
+self._request(...)` throughout so callers in asyncio runtimes —
+FastAPI handlers, agent loops, anything driven off `asyncio.run` —
+don't accidentally block their event loop on bus traffic. The
+two mixins are separate (rather than a single duck-typed mixin
+that "auto-awaits") because Python's blocking and non-blocking
+call sites are syntactically distinct; explicit two-mixin code is
+shorter and easier to reason about than a clever shim.
+
+`bus_stream_consume_url` is intentionally synchronous on both
+clients — it's a pure URL builder with no I/O, and forcing
+callers to `await` a string-format helper would be noise.
+
+DTOs live in `acteon_client.bus_models` as plain `@dataclass` types
+with explicit `to_dict` / `from_dict`, matching the existing model
+style. Every dataclass is re-exported from the package root.
+
+## Method-name parity
+
+The Python surface uses the same flat names as the Rust client
+(`client.create_bus_topic(...)`, `client.post_bus_tool_call(...)`,
+`client.approve_bus_approval(...)`). A polyglot agent can be
+mechanically translated by replacing `let` with `=` and reshaping
+struct literals into kwargs. This is intentional — the alternative
+(a `client.bus.create_topic(...)` namespace) would have read more
+Pythonic but would have forced every caller documented in Rust to
+mentally rewrite the call site.
+
+## `PostBusToolCallOutcome` — produced vs parked
+
+`post_bus_tool_call` returns a tagged sum so the caller can branch
+on whether the server produced the envelope (`outcome.produced`)
+or parked it under a Phase 6c approval (`outcome.parked`):
+
+```python
+from acteon_client import ActeonClient, PostBusToolCall
+
+client = ActeonClient("http://localhost:3000")
+outcome = client.post_bus_tool_call(
+    "agents", "demo", "planning-thread",
+    PostBusToolCall(
+        call_id="call-1",
+        tool="billing.charge",
+        arguments={"usd": 42},
+        sender="planner-1",
+        require_approval=True,            # Phase 6c gate
+        approval_reason="paid action",
+        approval_ttl_ms=600_000,
+    ),
+)
+if outcome.was_parked:
+    print(f"awaiting approval: {outcome.parked.approval_id}")
+else:
+    print(f"on Kafka at {outcome.produced.partition}:{outcome.produced.offset}")
+```
+
+A subsequent `approve_bus_approval` returns a
+`BusApprovalDecisionResponse` whose `receipt` is the
+`BusToolEnvelopeReceipt` from the post-approval produce — same
+shape the immediate path returns. The natural `lookup_bus_tool_result`
+flow then works identically.
+
+## What `bus_stream_consume_url` builds (and what it doesn't)
+
+The Python SDK does not bundle an SSE consumer — every Python
+runtime has its own preferred SSE library
+(`httpx-sse`, `aiohttp-sse-client2`, `sseclient`, `python-sse`,
+…) and we'd have to take an opinionated bet on one of them or ship
+multiple wrappers. Instead, `bus_stream_consume_url(...)` returns
+the fully-formed URL with path segments percent-encoded the same
+way the Rust SDK encodes them; plug it into your runtime's own
+SSE consumer:
+
+```python
+url = client.bus_stream_consume_url(
+    "agents", "demo", "thread-1", "story-1",
+)
+# Then with httpx-sse, for example:
+import httpx
+import httpx_sse
+async with httpx.AsyncClient() as http:
+    async with httpx_sse.aconnect_sse(http, "GET", url) as evt_stream:
+        async for sse in evt_stream.aiter_sse():
+            if sse.event == "bus.stream.end":
+                break
+            handle_chunk(sse.json())
+```
+
+A future iteration can land a small SSE iterator on the SDK if
+operator demand pushes that way, but V1 keeps the dependency
+surface minimal.
+
+## Phase 8b — Node.js / TypeScript
+
+Node parity ships next: 36 methods on `ActeonClient` covering the
+same Phases 1–6c surface. Method names are camelCase
+(`createBusTopic`, `postBusToolCall`, `approveBusApproval`, …) —
+the established convention for the Node SDK; payload shape on the
+wire is identical. DTOs live in `clients/nodejs/src/bus_models.ts`
+as TypeScript interfaces with explicit `*Body` builders that drop
+undefined fields and snake-case field names to match the server's
+JSON. Response parsers (`parseBusTopic`, …) take server JSON and
+return camelCase TypeScript objects.
+
+The Phase 6c "parked vs produced" branch surfaces as a discriminated
+union:
+
+```typescript
+import { ActeonClient } from "@acteon/client";
+
+const client = new ActeonClient("http://localhost:3000");
+const outcome = await client.postBusToolCall("agents", "demo", "thread-1", {
+  callId: "call-1",
+  tool: "billing.charge",
+  arguments: { usd: 42 },
+  sender: "planner-1",
+  requireApproval: true,
+  approvalReason: "paid action",
+});
+if (outcome.kind === "parked") {
+  console.log(`awaiting approval: ${outcome.receipt.approvalId}`);
+} else {
+  console.log(`on Kafka at ${outcome.receipt.partition}:${outcome.receipt.offset}`);
+}
+```
+
+`busStreamConsumeUrl(...)` mirrors the Python helper — returns a
+fully percent-encoded URL the caller plugs into their preferred SSE
+client (browser `EventSource`, the `eventsource` npm package, etc.).
+
+## Phase 8c — Go
+
+Go parity uses the SDK's existing convention: methods on
+`*acteon.Client`, exported PascalCase
+(`CreateBusTopic`, `PostBusToolCall`, `ApproveBusApproval`, …),
+`context.Context` first parameter, `(*T, error)` return. DTOs
+live in `clients/go/acteon/bus_models.go`; the methods themselves
+live in `bus.go`. JSON tags use the snake-case server names; Go
+struct fields stay PascalCase.
+
+The Phase 6c "parked vs produced" branch surfaces as a struct
+with two pointer fields:
+
+```go
+import (
+    "context"
+    "github.com/penserai/acteon/clients/go/acteon"
+)
+
+client := acteon.NewClient("http://localhost:3000")
+ctx := context.Background()
+reason := "paid action"
+ttl := uint64(600_000)
+
+outcome, err := client.PostBusToolCall(ctx, "agents", "demo", "thread-1",
+    &acteon.PostBusToolCall{
+        CallID:          "call-1",
+        Tool:            "billing.charge",
+        Arguments:       map[string]any{"usd": 42},
+        Sender:          ptr("planner-1"),
+        RequireApproval: true,
+        ApprovalReason:  &reason,
+        ApprovalTtlMs:   &ttl,
+    })
+if err != nil { /* ... */ }
+
+if outcome.WasParked() {
+    fmt.Printf("awaiting approval: %s\n", outcome.Parked.ApprovalID)
+} else {
+    fmt.Printf("on Kafka at %d:%d\n", outcome.Produced.Partition, outcome.Produced.Offset)
+}
+```
+
+Optional fields use pointer types (`*string`, `*int`, `*uint64`,
+…) so callers can distinguish "unset" from the zero value — the
+right ergonomics for matching the server's
+`#[serde(default, skip_serializing_if = "Option::is_none")]`.
+Slices and maps use `omitempty` instead since the server treats
+absent and empty equivalently.
+
+`BusStreamConsumeURL(...)` mirrors the Python and Node helpers —
+returns the percent-encoded URL the caller plugs into a Go SSE
+client (`r3labs/sse`, the stdlib HTTP streaming reader, etc.).
+
+## Phase 8d — Java
+
+Java parity rounds out Phase 8. 36 methods on
+`com.acteon.client.ActeonClient` covering the full Phases 1–6c
+surface. Method names are camelCase
+(`createBusTopic`, `postBusToolCall`, `approveBusApproval`, …) —
+matching the Java SDK's existing convention; wire payloads stay
+identical.
+
+Bus DTOs live as nested **records** inside a single
+`com.acteon.client.Bus` container class. Nesting them rather than
+spraying 40 separate files keeps the bus types together (mirroring
+how the Rust + Python + Node + Go SDKs organize them) and gives
+callers a familiar `Bus.CreateBusTopic`, `Bus.BusToolEnvelopeReceipt`,
+`Bus.BusApprovalView` namespace. Records pair with Jackson's
+`@JsonProperty` snake-case annotations and `@JsonInclude(NON_NULL)`
+to drop optional fields from the wire form.
+
+The Phase 6c "parked vs produced" branch is a Java 21 **sealed
+interface**, the right primitive for discriminated unions:
+
+```java
+import com.acteon.client.ActeonClient;
+import com.acteon.client.Bus;
+
+try (ActeonClient client = new ActeonClient("http://localhost:3000")) {
+    Bus.PostBusToolCall req = new Bus.PostBusToolCall(
+        "call-1", "billing.charge", Map.of("usd", 42),
+        null, null, "planner-1", null,
+        true, "paid action", 600_000L);
+    Bus.PostBusToolCallOutcome outcome = client.postBusToolCall(
+        "agents", "demo", "thread-1", req);
+    switch (outcome) {
+        case Bus.PostBusToolCallOutcome.Produced p ->
+            System.out.println("on Kafka at " + p.receipt().offset());
+        case Bus.PostBusToolCallOutcome.Parked pk ->
+            System.out.println("awaiting approval " + pk.receipt().approvalId());
+    }
+}
+```
+
+Pattern-matching `switch` on a sealed interface is exhaustive at
+compile time — Java will refuse to compile a switch that misses a
+permitted variant. That's the closest Java gets to Rust's `match`,
+and it gives the same compile-time guarantee that downstream code
+handles both branches.
+
+`busStreamConsumeUrl(...)` mirrors the other SDKs — returns the
+percent-encoded URL the caller plugs into a Java SSE client (the
+JDK's `HttpClient` streaming response, OkHttp, the `okhttp-eventsource`
+artifact, etc.).
+
+## Phase 8 complete
+
+| SDK | Status | PR |
+|---|---|---|
+| Rust | shipped (Phases 1–6c) | — |
+| Python (8a) | shipped | #138 |
+| Node (8b) | shipped | #139 |
+| Go (8c) | shipped | #140 |
+| Java (8d) | shipped | this PR |
+
+All five SDKs expose the same 36 bus methods with identical wire
+shapes. A polyglot agent fleet can mix-and-match runtimes and
+trust that a Python orchestrator can post a tool-call that an
+async Java tool service handles without any cross-language
+adapter glue.
+
+## Trust model carries through
+
+Every gate the server enforces in Rust applies identically to
+Python callers — payload validation against schema bindings,
+participant ACLs on private conversations, the read-side
+`as_agent` requirement on lookups, the approval-id audit header
+on Phase 6c-approved produces. Nothing about the Python client
+loosens those guarantees; the client is purely a DTO shim over
+the same REST surface the Rust SDK and the Phase 7 UI consume.

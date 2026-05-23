@@ -35,9 +35,10 @@ impl PostgresDistributedLock {
     /// Returns [`StateError::Connection`] if pool creation fails, or
     /// [`StateError::Backend`] if migrations fail.
     pub async fn new(config: PostgresConfig) -> Result<Self, StateError> {
+        let connect_options = crate::store::build_connect_options(&config)?;
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(config.pool_size)
-            .connect(&config.url)
+            .connect_with(connect_options)
             .await
             .map_err(|e| StateError::Connection(e.to_string()))?;
 

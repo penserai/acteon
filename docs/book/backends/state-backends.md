@@ -67,7 +67,3 @@ pub trait LockGuard: Send + Sync {
 | Redis (Sentinel) | Strong | Lock may be lost | Accept rare duplicates |
 | PostgreSQL | ACID | Locks survive failover | Strong consistency |
 | DynamoDB | Strong | Conditional writes | Strong consistency |
-| ClickHouse | None | N/A | Not for locking |
-
-!!! warning "ClickHouse"
-    ClickHouse does not provide distributed locking. It uses eventual consistency with `ReplacingMergeTree`. Under concurrent load, 10-20% of duplicate actions may be processed. Do not use ClickHouse if you require strict deduplication.

@@ -1,0 +1,108 @@
+# Routing rules: direct scaling actions to the Auto Scaling provider.
+
+rules:
+  # ── Scale-down requests → Auto Scaling provider ────────────────────────────
+  - name: route-scale-down
+    priority: 5
+    description: "Route set_desired_capacity scale-down actions to the ASG provider"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "cost-optimizer"
+        - field: action.action_type
+          eq: "set_desired_capacity"
+        - field: action.payload.tag
+          eq: "scale-down"
+    action:
+      type: modify
+      changes:
+        schedule_source: "cost-optimizer-cron"
+
+  # ── Scale-up requests → Auto Scaling provider ──────────────────────────────
+  - name: route-scale-up
+    priority: 5
+    description: "Route set_desired_capacity scale-up actions to the ASG provider"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "cost-optimizer"
+        - field: action.action_type
+          eq: "set_desired_capacity"
+        - field: action.payload.tag
+          eq: "scale-up"
+    action:
+      type: modify
+      changes:
+        schedule_source: "cost-optimizer-cron"
+
+  # ── Describe requests (health/audit queries) ───────────────────────────────
+  - name: route-describe
+    priority: 10
+    description: "Route describe_auto_scaling_groups requests to the ASG provider"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "cost-optimizer"
+        - field: action.action_type
+          eq: "describe_auto_scaling_groups"
+    action:
+      type: allow
+
+  # ── Update ASG config ──────────────────────────────────────────────────────
+  - name: route-update-asg
+    priority: 10
+    description: "Route update_auto_scaling_group requests to the ASG provider"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "cost-optimizer"
+        - field: action.action_type
+          eq: "update_auto_scaling_group"
+    action:
+      type: allow
+
+  # ── EC2 instance operations → EC2 provider ─────────────────────────────────
+  - name: route-ec2-ops
+    priority: 5
+    description: "Route EC2 instance operations to the EC2 provider"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "cost-optimizer"
+        - field: action.action_type
+          in_list: ["terminate_instances", "reboot_instances", "stop_instances", "start_instances", "describe_instances"]
+    action:
+      type: allow
+
+  # ── Enrich all cost-optimizer actions with metadata ────────────────────────
+  - name: enrich-cost-metadata
+    priority: 15
+    description: "Add cost-optimization metadata to all actions"
+    condition:
+      field: action.tenant
+      eq: "cost-optimizer"
+    action:
+      type: modify
+      changes:
+        cost_optimization: "true"
+        managed_by: "acteon-cost-optimizer"
+
+  # ── Allow remaining actions ────────────────────────────────────────────────
+  - name: allow-remaining
+    priority: 20
+    description: "Allow any cost-optimizer action that passed prior rules"
+    condition:
+      field: action.tenant
+      eq: "cost-optimizer"
+    action:
+      type: allow
+
+  # ── Catch-all: deny unmatched ──────────────────────────────────────────────
+  - name: deny-unmatched
+    priority: 100
+    description: "Suppress unmatched actions from other tenants"
+    condition:
+      field: action.tenant
+      ne: "cost-optimizer"
+    action:
+      type: suppress

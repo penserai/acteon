@@ -6,10 +6,10 @@ host = "127.0.0.1"
 port = 8080
 
 [state]
-# Backend type: "memory", "redis", "postgres", "dynamodb", or "clickhouse"
+# Backend type: "memory", "redis", "postgres", or "dynamodb"
 backend = "memory"
 
-# Connection URL (used by redis, postgres, clickhouse, and dynamodb-local)
+# Connection URL (used by redis, postgres, and dynamodb-local)
 # url = "redis://localhost:6379"
 
 # Key / table prefix

@@ -1,0 +1,108 @@
+# HIPAA rules: detect and block Protected Health Information (PHI) over insecure channels.
+
+rules:
+  # ── Block PHI in SMS messages ────────────────────────────────────────────
+  # SMS is considered insecure for PHI. Block any SMS containing SSN, MRN,
+  # diagnosis codes, or common PHI terms.
+  - name: block-phi-in-sms
+    priority: 1
+    description: "Block notifications containing PHI sent via SMS"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "metro-hospital"
+        - field: action.provider
+          eq: "sms-service"
+        - any:
+            - field: action.payload.body
+              matches: "\\b\\d{3}-\\d{2}-\\d{4}\\b"
+            - field: action.payload.body
+              matches: "\\bMRN[:\\s]*\\d{6,}\\b"
+            - field: action.payload.body
+              matches: "\\bICD-?\\d{1,2}[.\\d]*\\b"
+            - field: action.payload.body
+              contains: "diagnosis"
+            - field: action.payload.body
+              contains: "medication"
+    action:
+      type: suppress
+
+  # ── Block PHI in unencrypted email ───────────────────────────────────────
+  # Email must have encrypted=true when carrying PHI indicators.
+  - name: block-phi-unencrypted-email
+    priority: 2
+    description: "Block PHI sent via email unless encryption is enabled"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "metro-hospital"
+        - field: action.provider
+          eq: "secure-email"
+        - field: action.payload.encrypted
+          ne: true
+        - any:
+            - field: action.payload.body
+              matches: "\\b\\d{3}-\\d{2}-\\d{4}\\b"
+            - field: action.payload.body
+              matches: "\\bMRN[:\\s]*\\d{6,}\\b"
+            - field: action.payload.body
+              matches: "\\bICD-?\\d{1,2}[.\\d]*\\b"
+            - field: action.payload.body
+              contains: "diagnosis"
+            - field: action.payload.body
+              contains: "medication"
+    action:
+      type: suppress
+
+  # ── Require approval for external PHI sharing ────────────────────────────
+  # Any notification to external recipients containing PHI must be approved
+  # by a compliance officer before dispatch.
+  - name: require-approval-external-phi
+    priority: 3
+    description: "External PHI sharing requires compliance officer approval"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "metro-hospital"
+        - field: action.payload.recipient_type
+          eq: "external"
+        - any:
+            - field: action.payload.body
+              matches: "\\b\\d{3}-\\d{2}-\\d{4}\\b"
+            - field: action.payload.body
+              matches: "\\bMRN[:\\s]*\\d{6,}\\b"
+            - field: action.payload.body
+              contains: "diagnosis"
+    action:
+      type: request_approval
+      notify_provider: "compliance-log"
+      timeout_seconds: 3600
+      message: "External PHI sharing requires compliance officer approval"
+
+  # ── Reroute PHI to secure patient portal ─────────────────────────────────
+  # If a notification has PHI but is sent over an insecure channel, reroute
+  # it to the secure patient portal. Encrypted emails are already secure.
+  - name: reroute-phi-to-portal
+    priority: 4
+    description: "Reroute PHI-containing notifications to the patient portal"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "metro-hospital"
+        - field: action.payload.encrypted
+          ne: true
+        - any:
+            - field: action.provider
+              eq: "sms-service"
+            - field: action.provider
+              eq: "secure-email"
+        - any:
+            - field: action.payload.body
+              contains: "lab result"
+            - field: action.payload.body
+              contains: "test result"
+            - field: action.payload.body
+              contains: "medical record"
+    action:
+      type: reroute
+      target_provider: "patient-portal"
