@@ -72,6 +72,16 @@ fn default_true() -> bool {
 /// Maximum length for entity IDs (per security review M4).
 const MAX_ENTITY_ID_LENGTH: usize = 256;
 
+/// Per-call timeout for the entity-existence / catch-up reads
+/// performed before the SSE stream is handed back to the runtime
+/// (security review H2).
+///
+/// A slow state backend would otherwise hold an axum worker for as
+/// long as the operation takes; capping at two seconds bounds the
+/// blast radius of one bad query — the caller gets a clean
+/// `503 Service Unavailable` instead of a hanging request.
+const CATCHUP_FETCH_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// `GET /v1/subscribe/{entity_type}/{entity_id}` -- subscribe to events for a
 /// specific entity via SSE.
 ///
@@ -113,15 +123,21 @@ pub async fn subscribe(
             validate_tenant_access(allowed_tenants.as_ref(), &tenant)?;
 
             let gateway = state.gateway.read().await;
-            let chain_state = gateway
-                .get_chain_status(&ns, &tenant, &path.entity_id)
-                .await
-                .map_err(|e| {
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        axum::Json(serde_json::json!({ "error": e.to_string() })),
-                    )
-                })?;
+            // Bound the state-store fetch — a slow backend would
+            // otherwise hold this worker. Translates to 503 instead
+            // of an indefinite hang (security review H2).
+            let chain_state = tokio::time::timeout(
+                CATCHUP_FETCH_TIMEOUT,
+                gateway.get_chain_status(&ns, &tenant, &path.entity_id),
+            )
+            .await
+            .map_err(|_| catchup_timeout("chain"))?
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(serde_json::json!({ "error": e.to_string() })),
+                )
+            })?;
 
             let chain_state = chain_state.ok_or_else(forbidden_or_not_found)?;
             drop(gateway);
@@ -137,7 +153,15 @@ pub async fn subscribe(
             validate_tenant_access(allowed_tenants.as_ref(), &tenant)?;
 
             let gateway = state.gateway.read().await;
-            let group = gateway.group_manager().get_group(&path.entity_id);
+            // `get_group` is in-memory so a hang is unlikely, but
+            // wrap symmetrically with the chain path so the contract
+            // is uniform across entity types (security review H2).
+            let group = tokio::time::timeout(
+                CATCHUP_FETCH_TIMEOUT,
+                std::future::ready(gateway.group_manager().get_group(&path.entity_id)),
+            )
+            .await
+            .map_err(|_| catchup_timeout("group"))?;
             drop(gateway);
 
             let group = group.ok_or_else(forbidden_or_not_found)?;
@@ -150,14 +174,20 @@ pub async fn subscribe(
         }
         EntityType::Action => {
             // Actions are ephemeral — skip entity validation.
-            // Catch-up uses the audit store if available.
+            // Catch-up uses the audit store if available. The audit
+            // path is the most likely to be slow under load, so the
+            // timeout matters most here.
             if sub_query.include_history {
-                build_action_catchup(
-                    state.audit.as_deref(),
-                    &path.entity_id,
-                    allowed_tenants.as_ref(),
+                tokio::time::timeout(
+                    CATCHUP_FETCH_TIMEOUT,
+                    build_action_catchup(
+                        state.audit.as_deref(),
+                        &path.entity_id,
+                        allowed_tenants.as_ref(),
+                    ),
                 )
                 .await
+                .map_err(|_| catchup_timeout("action"))?
             } else {
                 Vec::new()
             }
@@ -510,6 +540,27 @@ fn forbidden_or_not_found() -> (StatusCode, axum::Json<serde_json::Value>) {
     )
 }
 
+/// `503 Service Unavailable` returned when one of the catch-up
+/// state-store reads exceeds [`CATCHUP_FETCH_TIMEOUT`]. The
+/// `entity_kind` argument lets the caller distinguish chain vs.
+/// group vs. action timeouts from the log + error body without
+/// exposing the underlying error details.
+fn catchup_timeout(entity_kind: &'static str) -> (StatusCode, axum::Json<serde_json::Value>) {
+    tracing::warn!(
+        entity_kind,
+        timeout_ms = u64::try_from(CATCHUP_FETCH_TIMEOUT.as_millis()).unwrap_or(u64::MAX),
+        "subscribe: catch-up state-store fetch timed out"
+    );
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        axum::Json(serde_json::json!({
+            "error": format!(
+                "state-store fetch for {entity_kind} timed out; try again or set include_history=false"
+            )
+        })),
+    )
+}
+
 /// Validate entity ID length and charset. Extracted for testability.
 fn validate_entity_id(id: &str) -> Result<(), (StatusCode, axum::Json<serde_json::Value>)> {
     if id.is_empty() || id.len() > MAX_ENTITY_ID_LENGTH {
@@ -539,6 +590,40 @@ mod tests {
     use super::*;
     use acteon_core::{ChainState, ChainStatus, EventGroup, GroupState, StepResult};
     use chrono::Utc;
+
+    // -- catchup_timeout helper -----------------------------------------------
+
+    #[test]
+    fn catchup_timeout_is_503_with_actionable_message() {
+        // Security review H2: timed-out catch-up reads must surface
+        // as 503 with a message that names the entity kind and hints
+        // at the `include_history=false` workaround. The `error`
+        // field must NOT leak underlying state-store details.
+        let (status, body) = catchup_timeout("chain");
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        let err = body.0.get("error").and_then(|v| v.as_str()).unwrap_or("");
+        assert!(err.contains("chain"), "should name the entity kind: {err}");
+        assert!(
+            err.contains("include_history=false"),
+            "should hint at the workaround: {err}",
+        );
+    }
+
+    #[test]
+    fn catchup_timeout_constant_is_reasonable() {
+        // Pin the constant — a regression that bumps the cap to
+        // e.g. 60s would silently undo the protection. The exact
+        // value can move, but it has to stay under the typical
+        // axum worker SLA.
+        assert!(
+            CATCHUP_FETCH_TIMEOUT.as_millis() <= 5_000,
+            "catch-up timeout must stay short to bound worker blocking",
+        );
+        assert!(
+            CATCHUP_FETCH_TIMEOUT.as_millis() >= 500,
+            "but not so tight that a healthy backend trips it",
+        );
+    }
 
     // -- EntityType deserialization -------------------------------------------
 
