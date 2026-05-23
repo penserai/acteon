@@ -479,6 +479,7 @@ pub(crate) fn stream_event_type_tag(event_type: &StreamEventType) -> &'static st
         StreamEventType::GroupEventAdded { .. } => "group_event_added",
         StreamEventType::GroupResolved { .. } => "group_resolved",
         StreamEventType::ApprovalResolved { .. } => "approval_resolved",
+        StreamEventType::ActionStatusChanged { .. } => "action_status_changed",
         StreamEventType::Unknown => "unknown",
     }
 }
