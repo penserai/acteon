@@ -477,6 +477,8 @@ function DagPreview({ dag }: { dag: DagResponse }) {
     chain_id: '',
     chain_name: dag.chain_name,
     status: dag.status ?? 'completed',
+    namespace: '',
+    tenant: '',
     current_step: 0,
     total_steps: dag.nodes.length,
     steps: [],

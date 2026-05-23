@@ -111,6 +111,10 @@ pub struct ChainStepStatus {
 pub struct ChainDetailResponse {
     /// Unique chain execution ID.
     pub chain_id: String,
+    /// Namespace the chain belongs to.
+    pub namespace: String,
+    /// Tenant the chain belongs to.
+    pub tenant: String,
     /// Name of the chain configuration.
     pub chain_name: String,
     /// Current status.
@@ -297,6 +301,8 @@ pub async fn get_chain(
 
             let detail = ChainDetailResponse {
                 chain_id: chain_state.chain_id,
+                namespace: chain_state.namespace,
+                tenant: chain_state.tenant,
                 chain_name: chain_state.chain_name,
                 status: status_to_string(&chain_state.status),
                 current_step: chain_state.current_step,
@@ -364,6 +370,8 @@ pub async fn cancel_chain(
         Ok(chain_state) => {
             let detail = ChainDetailResponse {
                 chain_id: chain_state.chain_id,
+                namespace: chain_state.namespace,
+                tenant: chain_state.tenant,
                 chain_name: chain_state.chain_name,
                 status: status_to_string(&chain_state.status),
                 current_step: chain_state.current_step,

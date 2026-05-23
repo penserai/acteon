@@ -73,7 +73,17 @@ impl GroupManager {
                 .or_else(|| parse_legacy_group(&value));
 
             match group {
-                Some(group) => {
+                Some(mut group) => {
+                    // Restore scope from the scan arguments for groups
+                    // persisted before namespace/tenant were on
+                    // EventGroup. Newer records already have them set
+                    // via #[serde(default)] -> empty fallback.
+                    if group.namespace.is_empty() {
+                        group.namespace = namespace.to_string();
+                    }
+                    if group.tenant.is_empty() {
+                        group.tenant = tenant.to_string();
+                    }
                     let group_key_local = group.group_key.clone();
                     if !groups.contains_key(&group_key_local) {
                         let event_count = group.size();

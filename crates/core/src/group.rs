@@ -33,13 +33,18 @@ pub struct EventGroup {
     /// Key used to group events (hash of `group_by` field values).
     pub group_key: String,
 
-    /// Namespace the first event was dispatched to. Used by the
-    /// background flush worker to persist updated group state back
-    /// to the state store without needing the original action.
+    /// Namespace the group lives in. Populated at creation /
+    /// recovery time so the flush-time SSE emission knows the
+    /// tenant scope without re-reading from the state store, and so
+    /// the background flush worker can persist updated group state
+    /// back to the state store without needing the original action.
+    /// `#[serde(default)]` so groups persisted before this field
+    /// existed deserialize as empty.
     #[serde(default)]
     pub namespace: String,
 
-    /// Tenant the first event was dispatched to.
+    /// Tenant the group lives in. Same back-compat note as
+    /// [`Self::namespace`].
     #[serde(default)]
     pub tenant: String,
 

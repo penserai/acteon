@@ -12,12 +12,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tokio::time::interval;
 use tracing::{debug, error, info};
 
 use acteon_audit::store::AuditStore;
-use acteon_core::{EventGroup, StateMachineConfig};
+use acteon_core::{EventGroup, StateMachineConfig, StreamEvent};
 use acteon_state::StateStore;
 
 use acteon_crypto::PayloadEncryptor;
@@ -248,6 +248,12 @@ pub struct BackgroundProcessor {
     /// Optional audit sink. When set, the stale-task reaper records an
     /// A2A task-transition audit entry for every task it reaps.
     pub(crate) audit: Option<Arc<dyn AuditStore>>,
+    /// SSE broadcast channel for real-time `StreamEvent`s. When set,
+    /// the processor emits `GroupResolved` after a flush and
+    /// `ActionStatusChanged` after a timeout-driven transition so
+    /// subscribers see the same lifecycle events the inline gateway
+    /// emits.
+    pub(crate) stream_tx: Option<broadcast::Sender<StreamEvent>>,
 }
 
 impl BackgroundProcessor {
@@ -277,6 +283,23 @@ impl BackgroundProcessor {
             retention_policies: HashMap::new(),
             gateway: None,
             audit: None,
+            stream_tx: None,
+        }
+    }
+
+    /// Set the SSE broadcast channel so background tasks can emit
+    /// real-time events to /v1/subscribe consumers.
+    #[must_use]
+    pub fn with_stream_tx(mut self, tx: broadcast::Sender<StreamEvent>) -> Self {
+        self.stream_tx = Some(tx);
+        self
+    }
+
+    /// Best-effort emission helper. Send failure means no live
+    /// subscribers, not a processor error.
+    pub(crate) fn emit_stream_event(&self, event: StreamEvent) {
+        if let Some(ref tx) = self.stream_tx {
+            let _ = tx.send(event);
         }
     }
 
@@ -532,6 +555,7 @@ pub struct BackgroundProcessorBuilder {
     metrics: Option<Arc<GatewayMetrics>>,
     gateway: Option<Arc<tokio::sync::RwLock<crate::gateway::Gateway>>>,
     audit: Option<Arc<dyn AuditStore>>,
+    stream_tx: Option<broadcast::Sender<StreamEvent>>,
 }
 
 impl BackgroundProcessorBuilder {
@@ -553,7 +577,16 @@ impl BackgroundProcessorBuilder {
             metrics: None,
             gateway: None,
             audit: None,
+            stream_tx: None,
         }
+    }
+
+    /// Set the SSE broadcast sender so background workers can emit
+    /// real-time events (e.g. `GroupResolved`, `ActionStatusChanged`).
+    #[must_use]
+    pub fn stream_tx(mut self, tx: broadcast::Sender<StreamEvent>) -> Self {
+        self.stream_tx = Some(tx);
+        self
     }
 
     /// Set the audit store. When set, the stale-task reaper records an
@@ -710,6 +743,10 @@ impl BackgroundProcessorBuilder {
 
         if let Some(audit) = self.audit {
             processor = processor.with_audit_store(audit);
+        }
+
+        if let Some(tx) = self.stream_tx {
+            processor = processor.with_stream_tx(tx);
         }
 
         Ok((processor, shutdown_tx))

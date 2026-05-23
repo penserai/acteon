@@ -1619,6 +1619,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
+    // Snapshot the SSE broadcast sender before wrapping the gateway in
+    // Arc<RwLock<>>. `.clone()` here only clones the Arc inside the
+    // tokio::broadcast::Sender (cheap, fan-out preserved).
+    let bg_stream_tx = gateway.stream_tx().clone();
     let gateway = Arc::new(RwLock::new(gateway));
     // Snapshot the Arc<GatewayMetrics> at startup so hot-path metric
     // increments can skip the gateway RwLock entirely. The inner
@@ -1705,7 +1709,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .group_manager(Arc::clone(&group_manager))
             .state(Arc::clone(&store))
             .group_flush_channel(flush_tx)
-            .timeout_channel(timeout_tx);
+            .timeout_channel(timeout_tx)
+            .stream_tx(bg_stream_tx);
 
         if config.background.enable_approval_retry {
             bg_builder = bg_builder.approval_retry_channel(approval_retry_tx);

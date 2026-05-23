@@ -13,6 +13,7 @@ interface StreamOptions {
 /** SSE event type names emitted by the server. */
 const SSE_EVENT_TYPES = [
   'action_dispatched',
+  'action_status_changed',
   'group_flushed',
   'timeout',
   'chain_advanced',

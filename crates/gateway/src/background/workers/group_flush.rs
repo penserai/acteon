@@ -3,6 +3,7 @@ use std::time::Duration;
 use chrono::Utc;
 use tracing::{debug, info, warn};
 
+use acteon_core::{StreamEvent, StreamEventType};
 use acteon_state::{KeyKind, StateKey};
 
 use crate::group_manager::persist_group;
@@ -106,6 +107,27 @@ impl BackgroundProcessor {
                     if tx.send(event).await.is_err() {
                         warn!("group flush event channel closed");
                     }
+                }
+
+                // Emit a GroupResolved SSE event so /v1/subscribe
+                // consumers see the same lifecycle the inline gateway
+                // dispatch path emits. Scope guard: legacy groups
+                // without namespace/tenant skip emission rather than
+                // firing with empty tenant that would fail every
+                // subscriber filter.
+                if !flushed_group.namespace.is_empty() && !flushed_group.tenant.is_empty() {
+                    self.emit_stream_event(StreamEvent {
+                        id: uuid::Uuid::now_v7().to_string(),
+                        timestamp: flushed_at,
+                        event_type: StreamEventType::GroupResolved {
+                            group_id: flushed_group.group_id.clone(),
+                            group_key: group_key.clone(),
+                        },
+                        namespace: flushed_group.namespace.clone(),
+                        tenant: flushed_group.tenant.clone(),
+                        action_type: None,
+                        action_id: None,
+                    });
                 }
 
                 // Ephemeral groups (no repeat_interval) are deleted

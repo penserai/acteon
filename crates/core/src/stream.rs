@@ -124,6 +124,28 @@ pub enum StreamEventType {
         /// The decision: `"approved"` or `"rejected"`.
         decision: String,
     },
+    /// A state machine transition occurred for an action's entity.
+    ///
+    /// Distinct from [`Self::Timeout`] (which is auto-fired by the
+    /// background reaper). `ActionStatusChanged` covers
+    /// dispatch-driven transitions — manual operator overrides,
+    /// rule-driven state moves, and the regular dispatch pipeline.
+    ///
+    /// Design doc section 3 calls for both events so subscribers
+    /// can tell timeout-driven changes from dispatch-driven ones
+    /// without parsing the previous/new state pair.
+    ActionStatusChanged {
+        /// The action ID whose entity transitioned.
+        action_id: String,
+        /// Fingerprint of the entity in the state machine.
+        fingerprint: String,
+        /// The state machine name.
+        state_machine: String,
+        /// State before the transition.
+        previous_status: String,
+        /// State after the transition.
+        new_status: String,
+    },
     /// An A2A Task transitioned to a new state. The transition's
     /// driving message (if any) is on the task's status row, not
     /// duplicated on the event — SSE consumers fetch the task to see
@@ -949,6 +971,16 @@ mod tests {
                 },
                 "approval_resolved",
             ),
+            (
+                StreamEventType::ActionStatusChanged {
+                    action_id: "act-1".into(),
+                    fingerprint: "fp-1".into(),
+                    state_machine: "incident".into(),
+                    previous_status: "open".into(),
+                    new_status: "investigating".into(),
+                },
+                "action_status_changed",
+            ),
         ];
         for (event_type, expected_tag) in cases {
             let event = make_event(event_type);
@@ -1557,6 +1589,61 @@ mod tests {
         }
     }
 
+    #[test]
+    fn stream_event_action_status_changed_serializes() {
+        // Same shape as `scheduled_action_due_stream_event_serializes`:
+        // the variant carries its own `action_id`, which collides
+        // with the parent `StreamEvent.action_id` on deserialize via
+        // `#[serde(flatten)]`. Test serialization via `make_event`
+        // here; the round-trip lives on the bare enum below.
+        let event = make_event(StreamEventType::ActionStatusChanged {
+            action_id: "act-9".into(),
+            fingerprint: "fp-abc".into(),
+            state_machine: "incident".into(),
+            previous_status: "open".into(),
+            new_status: "investigating".into(),
+        });
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("action_status_changed"));
+        assert!(json.contains("previous_status"));
+        assert!(json.contains("new_status"));
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["type"].as_str().unwrap(), "action_status_changed");
+        assert_eq!(value["action_id"].as_str().unwrap(), "act-9");
+    }
+
+    #[test]
+    fn action_status_changed_event_type_roundtrip() {
+        // The two state strings + the state-machine name are the
+        // fields dashboards branch on — pin them so any field
+        // rename breaks the test loudly.
+        let event_type = StreamEventType::ActionStatusChanged {
+            action_id: "act-9".into(),
+            fingerprint: "fp-abc".into(),
+            state_machine: "incident".into(),
+            previous_status: "open".into(),
+            new_status: "investigating".into(),
+        };
+        let json = serde_json::to_string(&event_type).unwrap();
+        let back: StreamEventType = serde_json::from_str(&json).unwrap();
+        match back {
+            StreamEventType::ActionStatusChanged {
+                action_id,
+                fingerprint,
+                state_machine,
+                previous_status,
+                new_status,
+            } => {
+                assert_eq!(action_id, "act-9");
+                assert_eq!(fingerprint, "fp-abc");
+                assert_eq!(state_machine, "incident");
+                assert_eq!(previous_status, "open");
+                assert_eq!(new_status, "investigating");
+            }
+            other => panic!("expected ActionStatusChanged, got {other:?}"),
+        }
+    }
+
     // -- Subscription event type tag tests ------------------------------------
 
     #[test]
@@ -1601,6 +1688,16 @@ mod tests {
                     decision: "approved".into(),
                 },
                 "approval_resolved",
+            ),
+            (
+                StreamEventType::ActionStatusChanged {
+                    action_id: "act-1".into(),
+                    fingerprint: "fp-1".into(),
+                    state_machine: "incident".into(),
+                    previous_status: "open".into(),
+                    new_status: "investigating".into(),
+                },
+                "action_status_changed",
             ),
         ];
         for (event_type, expected_tag) in cases {

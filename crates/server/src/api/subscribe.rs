@@ -19,14 +19,15 @@
 //! existence (per security review C1).
 
 use std::convert::Infallible;
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
+use futures::stream::{Stream, StreamExt};
 use serde::Deserialize;
-use tokio_stream::StreamExt;
 use tracing::debug;
 
 use acteon_core::{ChainStatus, GroupState, StreamEvent, StreamEventType};
@@ -38,12 +39,26 @@ use super::AppState;
 use super::stream::{StreamQuery, stream_event_type_tag};
 
 /// Supported entity types for subscription filtering.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EntityType {
     Chain,
     Group,
     Action,
+}
+
+impl EntityType {
+    /// Wire token. Matches the `serde(rename_all = "snake_case")`
+    /// representation. Used by the `subscription_end` SSE event
+    /// body so a client can branch on which entity kind ended.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Chain => "chain",
+            Self::Group => "group",
+            Self::Action => "action",
+        }
+    }
 }
 
 /// Path parameters for the subscribe endpoint.
@@ -71,6 +86,16 @@ fn default_true() -> bool {
 
 /// Maximum length for entity IDs (per security review M4).
 const MAX_ENTITY_ID_LENGTH: usize = 256;
+
+/// Per-call timeout for the entity-existence / catch-up reads
+/// performed before the SSE stream is handed back to the runtime
+/// (security review H2).
+///
+/// A slow state backend would otherwise hold an axum worker for as
+/// long as the operation takes; capping at two seconds bounds the
+/// blast radius of one bad query — the caller gets a clean
+/// `503 Service Unavailable` instead of a hanging request.
+const CATCHUP_FETCH_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// `GET /v1/subscribe/{entity_type}/{entity_id}` -- subscribe to events for a
 /// specific entity via SSE.
@@ -113,15 +138,21 @@ pub async fn subscribe(
             validate_tenant_access(allowed_tenants.as_ref(), &tenant)?;
 
             let gateway = state.gateway.read().await;
-            let chain_state = gateway
-                .get_chain_status(&ns, &tenant, &path.entity_id)
-                .await
-                .map_err(|e| {
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        axum::Json(serde_json::json!({ "error": e.to_string() })),
-                    )
-                })?;
+            // Bound the state-store fetch — a slow backend would
+            // otherwise hold this worker. Translates to 503 instead
+            // of an indefinite hang (security review H2).
+            let chain_state = tokio::time::timeout(
+                CATCHUP_FETCH_TIMEOUT,
+                gateway.get_chain_status(&ns, &tenant, &path.entity_id),
+            )
+            .await
+            .map_err(|_| catchup_timeout("chain"))?
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(serde_json::json!({ "error": e.to_string() })),
+                )
+            })?;
 
             let chain_state = chain_state.ok_or_else(forbidden_or_not_found)?;
             drop(gateway);
@@ -137,7 +168,15 @@ pub async fn subscribe(
             validate_tenant_access(allowed_tenants.as_ref(), &tenant)?;
 
             let gateway = state.gateway.read().await;
-            let group = gateway.group_manager().get_group(&path.entity_id);
+            // `get_group` is in-memory so a hang is unlikely, but
+            // wrap symmetrically with the chain path so the contract
+            // is uniform across entity types (security review H2).
+            let group = tokio::time::timeout(
+                CATCHUP_FETCH_TIMEOUT,
+                std::future::ready(gateway.group_manager().get_group(&path.entity_id)),
+            )
+            .await
+            .map_err(|_| catchup_timeout("group"))?;
             drop(gateway);
 
             let group = group.ok_or_else(forbidden_or_not_found)?;
@@ -150,14 +189,20 @@ pub async fn subscribe(
         }
         EntityType::Action => {
             // Actions are ephemeral — skip entity validation.
-            // Catch-up uses the audit store if available.
+            // Catch-up uses the audit store if available. The audit
+            // path is the most likely to be slow under load, so the
+            // timeout matters most here.
             if sub_query.include_history {
-                build_action_catchup(
-                    state.audit.as_deref(),
-                    &path.entity_id,
-                    allowed_tenants.as_ref(),
+                tokio::time::timeout(
+                    CATCHUP_FETCH_TIMEOUT,
+                    build_action_catchup(
+                        state.audit.as_deref(),
+                        &path.entity_id,
+                        allowed_tenants.as_ref(),
+                    ),
                 )
                 .await
+                .map_err(|_| catchup_timeout("action"))?
             } else {
                 Vec::new()
             }
@@ -208,8 +253,17 @@ pub async fn subscribe(
         })?;
 
     // 7. Subscribe to the broadcast channel.
+    //
+    // Two subscriptions are taken: one (`rx`) feeds the data stream
+    // through `make_event_stream`; the second (`detector_rx`) feeds
+    // the terminal-event detector. Both are taken before any
+    // `.await` so neither can miss events that arrive between the
+    // two subscribes — tokio broadcast::Receiver doesn't replay,
+    // and the detector running ahead of or behind the data stream
+    // is acceptable as long as both see the terminal event.
     let gateway = state.gateway.read().await;
     let rx = gateway.stream_tx().subscribe();
+    let detector_rx = gateway.stream_tx().subscribe();
     drop(gateway);
 
     // 8. Build the filtered SSE stream (catch-up + live).
@@ -218,7 +272,82 @@ pub async fn subscribe(
     let catchup_stream = futures::stream::iter(catchup_events);
     let combined = catchup_stream.chain(event_stream);
 
-    Ok(Sse::new(combined).keep_alive(
+    // 9. Auto-close on terminal entity state (design doc §2.5/2.6).
+    //
+    // Chain / Group subscriptions end when the entity reaches a
+    // terminal state. A side task watches `detector_rx`; when it
+    // sees the matching terminal event, it stores the reason in
+    // `reason_slot` and fires a oneshot. The data stream is
+    // wrapped with `take_until(signal_rx)` so it ends at the
+    // first opportunity after the signal fires; a final
+    // `subscription_end` event is then chained on.
+    //
+    // Action subscriptions have no inherent terminal in the live
+    // stream (per design §10: idle timeout, not state-driven). The
+    // wrap is skipped for them — they stay open until the client
+    // disconnects or the server drops the broadcast.
+    let entity_type = path.entity_type;
+    let entity_id_for_terminal = path.entity_id.clone();
+    // `Pin<Box<dyn Stream + Send>>` is the standard trait-object
+    // shape for heterogeneous async streams — neither branch's
+    // concrete type implements `Unpin`, so `Box::pin` is the
+    // ergonomic carrier.
+    let final_stream: std::pin::Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>> =
+        if entity_type == EntityType::Action {
+            Box::pin(combined)
+        } else {
+            let reason_slot = Arc::new(std::sync::Mutex::new(None::<String>));
+            let reason_for_detector = Arc::clone(&reason_slot);
+            let detector_entity_id = entity_id_for_terminal.clone();
+            let (signal_tx, signal_rx) = tokio::sync::oneshot::channel::<()>();
+
+            tokio::spawn(async move {
+                let mut det = tokio_stream::wrappers::BroadcastStream::new(detector_rx);
+                let mut signal_tx = Some(signal_tx);
+                while let Some(item) = det.next().await {
+                    let Ok(event) = item else { continue };
+                    if let Some(reason) =
+                        detect_terminal(entity_type, &detector_entity_id, &event.event_type)
+                    {
+                        // Store reason *before* firing the signal
+                        // so the chained terminator can read it
+                        // without a race.
+                        if let Ok(mut slot) = reason_for_detector.lock() {
+                            *slot = Some(reason);
+                        }
+                        if let Some(tx) = signal_tx.take() {
+                            let _ = tx.send(());
+                        }
+                        break;
+                    }
+                }
+            });
+
+            let truncated = combined.take_until(signal_rx);
+            let entity_type_str = entity_type.as_str();
+            let entity_id_for_final = entity_id_for_terminal;
+            let final_event = futures::stream::once(async move {
+                let reason = reason_slot
+                    .lock()
+                    .ok()
+                    .and_then(|mut s| s.take())
+                    .unwrap_or_else(|| "closed".to_string());
+                Ok::<Event, Infallible>(
+                    Event::default().event("subscription_end").data(
+                        serde_json::json!({
+                            "reason": reason,
+                            "entity_type": entity_type_str,
+                            "entity_id": entity_id_for_final,
+                        })
+                        .to_string(),
+                    ),
+                )
+            });
+
+            Box::pin(truncated.chain(final_event))
+        };
+
+    Ok(Sse::new(final_stream).keep_alive(
         KeepAlive::new()
             .interval(Duration::from_secs(15))
             .text("ping"),
@@ -505,12 +634,70 @@ fn validate_tenant_access(
     Ok(())
 }
 
+/// If `event_type` represents a terminal state for
+/// `(entity_type, entity_id)`, return the `subscription_end`
+/// reason string the SSE body should carry. Returns `None` for
+/// non-terminal events.
+///
+/// Per design doc §2.5: terminal states are
+/// - **Chain**: `ChainCompleted` (covers `completed` / `failed` /
+///   `cancelled` / `timed_out` — the status is in the event
+///   payload).
+/// - **Group**: `GroupResolved` (after manual resolve or flush).
+/// - **Action**: no inherent terminal in the live stream; the
+///   detector is not wired for actions.
+///
+/// The reason string is the `snake_case` event-type tag, which
+/// lets a client correlate it with the data event that preceded
+/// it.
+fn detect_terminal(
+    entity_type: EntityType,
+    entity_id: &str,
+    event_type: &StreamEventType,
+) -> Option<String> {
+    match (entity_type, event_type) {
+        (
+            EntityType::Chain,
+            StreamEventType::ChainCompleted {
+                chain_id, status, ..
+            },
+        ) if chain_id == entity_id => Some(format!("chain_{status}")),
+        (EntityType::Group, StreamEventType::GroupResolved { group_id, .. })
+            if group_id == entity_id =>
+        {
+            Some("group_resolved".to_string())
+        }
+        _ => None,
+    }
+}
+
 /// Uniform 403 for both "not found" and "wrong tenant" (security review C1).
 fn forbidden_or_not_found() -> (StatusCode, axum::Json<serde_json::Value>) {
     (
         StatusCode::FORBIDDEN,
         axum::Json(serde_json::json!({
             "error": "forbidden or not found"
+        })),
+    )
+}
+
+/// `503 Service Unavailable` returned when one of the catch-up
+/// state-store reads exceeds [`CATCHUP_FETCH_TIMEOUT`]. The
+/// `entity_kind` argument lets the caller distinguish chain vs.
+/// group vs. action timeouts from the log + error body without
+/// exposing the underlying error details.
+fn catchup_timeout(entity_kind: &'static str) -> (StatusCode, axum::Json<serde_json::Value>) {
+    tracing::warn!(
+        entity_kind,
+        timeout_ms = u64::try_from(CATCHUP_FETCH_TIMEOUT.as_millis()).unwrap_or(u64::MAX),
+        "subscribe: catch-up state-store fetch timed out"
+    );
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        axum::Json(serde_json::json!({
+            "error": format!(
+                "state-store fetch for {entity_kind} timed out; try again or set include_history=false"
+            )
         })),
     )
 }
@@ -544,6 +731,140 @@ mod tests {
     use super::*;
     use acteon_core::{ChainState, ChainStatus, EventGroup, GroupState, StepResult};
     use chrono::Utc;
+
+    // -- catchup_timeout helper -----------------------------------------------
+
+    #[test]
+    fn catchup_timeout_is_503_with_actionable_message() {
+        // Security review H2: timed-out catch-up reads must surface
+        // as 503 with a message that names the entity kind and hints
+        // at the `include_history=false` workaround. The `error`
+        // field must NOT leak underlying state-store details.
+        let (status, body) = catchup_timeout("chain");
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        let err = body.0.get("error").and_then(|v| v.as_str()).unwrap_or("");
+        assert!(err.contains("chain"), "should name the entity kind: {err}");
+        assert!(
+            err.contains("include_history=false"),
+            "should hint at the workaround: {err}",
+        );
+    }
+
+    #[test]
+    fn catchup_timeout_constant_is_reasonable() {
+        // Pin the constant — a regression that bumps the cap to
+        // e.g. 60s would silently undo the protection. The exact
+        // value can move, but it has to stay under the typical
+        // axum worker SLA.
+        assert!(
+            CATCHUP_FETCH_TIMEOUT.as_millis() <= 5_000,
+            "catch-up timeout must stay short to bound worker blocking",
+        );
+        assert!(
+            CATCHUP_FETCH_TIMEOUT.as_millis() >= 500,
+            "but not so tight that a healthy backend trips it",
+        );
+    }
+
+    // -- detect_terminal (subscription_end auto-close) ------------------------
+
+    #[test]
+    fn detect_terminal_fires_on_chain_completion_for_matching_id() {
+        let ev = StreamEventType::ChainCompleted {
+            chain_id: "chain-7".into(),
+            status: "completed".into(),
+            execution_path: vec![],
+        };
+        // The reason string folds the status into the tag so a
+        // client can distinguish completed / failed / cancelled
+        // without parsing the data field.
+        assert_eq!(
+            detect_terminal(EntityType::Chain, "chain-7", &ev),
+            Some("chain_completed".to_string()),
+        );
+    }
+
+    #[test]
+    fn detect_terminal_carries_chain_failed_status() {
+        let ev = StreamEventType::ChainCompleted {
+            chain_id: "chain-7".into(),
+            status: "failed".into(),
+            execution_path: vec![],
+        };
+        assert_eq!(
+            detect_terminal(EntityType::Chain, "chain-7", &ev),
+            Some("chain_failed".to_string()),
+        );
+    }
+
+    #[test]
+    fn detect_terminal_ignores_other_chain_ids() {
+        // Two chains can complete on the same broadcast; the
+        // detector for "chain-7" must NOT fire on a sibling's
+        // terminal event.
+        let ev = StreamEventType::ChainCompleted {
+            chain_id: "other-chain".into(),
+            status: "completed".into(),
+            execution_path: vec![],
+        };
+        assert_eq!(detect_terminal(EntityType::Chain, "chain-7", &ev), None);
+    }
+
+    #[test]
+    fn detect_terminal_fires_on_group_resolved() {
+        let ev = StreamEventType::GroupResolved {
+            group_id: "group-3".into(),
+            group_key: "k".into(),
+        };
+        assert_eq!(
+            detect_terminal(EntityType::Group, "group-3", &ev),
+            Some("group_resolved".to_string()),
+        );
+    }
+
+    #[test]
+    fn detect_terminal_does_not_fire_on_intermediate_chain_step() {
+        // A step-completion is not the chain terminal — must NOT
+        // end the subscription.
+        let ev = StreamEventType::ChainStepCompleted {
+            chain_id: "chain-7".into(),
+            step_name: "validate".into(),
+            step_index: 0,
+            success: true,
+            next_step: Some("dispatch".into()),
+        };
+        assert_eq!(detect_terminal(EntityType::Chain, "chain-7", &ev), None);
+    }
+
+    #[test]
+    fn detect_terminal_does_not_fire_on_action_for_any_event() {
+        // Per design §10 actions have no inherent terminal event —
+        // the live-stream wrap is intentionally skipped for them.
+        // This test pins that contract: there is no event type that
+        // turns this branch on.
+        let ev = StreamEventType::ChainCompleted {
+            chain_id: "anything".into(),
+            status: "completed".into(),
+            execution_path: vec![],
+        };
+        assert_eq!(detect_terminal(EntityType::Action, "anything", &ev), None);
+    }
+
+    #[test]
+    fn entity_type_as_str_matches_serde_repr() {
+        // The subscription_end body uses `as_str`; the round-trip
+        // tests below cover the serde direction. These must agree
+        // so a client can branch on the same token whether it
+        // came over the wire or from the helper.
+        for et in [EntityType::Chain, EntityType::Group, EntityType::Action] {
+            let token = match et {
+                EntityType::Chain => "chain",
+                EntityType::Group => "group",
+                EntityType::Action => "action",
+            };
+            assert_eq!(et.as_str(), token);
+        }
+    }
 
     // -- EntityType deserialization -------------------------------------------
 

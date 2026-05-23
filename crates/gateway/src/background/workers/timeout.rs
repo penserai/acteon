@@ -1,6 +1,7 @@
 use chrono::Utc;
 use tracing::{debug, info, warn};
 
+use acteon_core::{StreamEvent, StreamEventType};
 use acteon_state::{KeyKind, StateKey};
 
 use super::super::{BackgroundProcessor, TimeoutEvent};
@@ -126,6 +127,25 @@ impl BackgroundProcessor {
             // Delete the processed timeout entry and remove from index
             self.state.delete(&timeout_key).await?;
             self.state.remove_timeout_index(&timeout_key).await?;
+
+            // Emit ActionStatusChanged so /v1/subscribe consumers see
+            // timeout-driven transitions. Best-effort; no live
+            // subscribers is not an error.
+            self.emit_stream_event(StreamEvent {
+                id: uuid::Uuid::now_v7().to_string(),
+                timestamp: now,
+                event_type: StreamEventType::ActionStatusChanged {
+                    action_id: String::new(),
+                    fingerprint: fingerprint.clone(),
+                    state_machine: state_machine_name.clone(),
+                    previous_status: current_state.clone(),
+                    new_status: transition_to.clone(),
+                },
+                namespace: namespace.clone(),
+                tenant: tenant.clone(),
+                action_type: None,
+                action_id: None,
+            });
 
             // Send timeout event if channel is configured
             if let Some(ref tx) = self.timeout_tx {

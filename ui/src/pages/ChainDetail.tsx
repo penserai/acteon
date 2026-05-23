@@ -1,7 +1,9 @@
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom'
+import { useQueryClient } from '@tanstack/react-query'
 import { XCircle, ArrowUpRight, GitBranch, Layers } from 'lucide-react'
 import { useChainDetail, useCancelChain, useChainDag } from '../api/hooks/useChains'
+import { useEntityStream } from '../api/hooks/useEntityStream'
 import { PageHeader } from '../components/layout/PageHeader'
 import { Badge } from '../components/ui/Badge'
 import { Button } from '../components/ui/Button'
@@ -23,10 +25,24 @@ export function ChainDetail() {
   const { data: chain, isLoading } = useChainDetail(chainId, { namespace: ns, tenant })
   const cancel = useCancelChain()
   const { toast } = useToast()
+  const qc = useQueryClient()
   const [cancelOpen, setCancelOpen] = useState(false)
   const [selectedStep, setSelectedStep] = useState<string | null>(null)
 
   const { data: dag } = useChainDag(chainId, { namespace: ns, tenant })
+
+  const handleStreamEvent = useCallback(() => {
+    void qc.invalidateQueries({ queryKey: ['chain', chainId] })
+  }, [qc, chainId])
+
+  useEntityStream({
+    entityType: 'chain',
+    entityId: chainId,
+    namespace: ns,
+    tenant,
+    enabled: !!chainId && !!ns && !!tenant,
+    onEvent: handleStreamEvent,
+  })
 
   if (isLoading || !chain) {
     return (
