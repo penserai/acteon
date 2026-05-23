@@ -43,7 +43,8 @@ pub use analytics::{
 };
 pub use attachment::{Attachment, ResolvedAttachment};
 pub use bus_agent::{
-    Agent, AgentStatus, AgentValidationError, DEFAULT_AGENT_INBOX_SUFFIX, DEFAULT_HEARTBEAT_TTL_MS,
+    Agent, AgentAdminState, AgentStatus, AgentValidationError, DEFAULT_AGENT_INBOX_SUFFIX,
+    DEFAULT_HEARTBEAT_TTL_MS,
 };
 pub use bus_agent_card::{
     AgentCapabilities, AgentCard, AgentCardValidationError, Extension as AgentCardExtension,

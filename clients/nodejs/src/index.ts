@@ -162,6 +162,7 @@ export {
   type ReconnectConfig,
   type RegisterBusAgent,
   type RegisterBusSchema,
+  type SetBusAgentAdminState,
   type StreamChunkEnvelope,
   type StreamEndEnvelope,
   type StreamEndEnvelopeStatus,

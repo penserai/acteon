@@ -307,6 +307,24 @@ func (c *Client) HeartbeatBusAgent(ctx context.Context, namespace, tenant, agent
 	return &out, nil
 }
 
+// SetBusAgentAdminState sets the operator admin state on an agent
+// (active / suspended / banned). Requires the standard ManageAgent
+// permission. The server returns 400 if req.ExpiresAt is set on
+// anything other than "suspended".
+func (c *Client) SetBusAgentAdminState(
+	ctx context.Context,
+	namespace, tenant, agentID string,
+	req *SetBusAgentAdminState,
+) (*BusAgent, error) {
+	path := fmt.Sprintf("/v1/bus/agents/%s/%s/%s/admin-state",
+		busSeg(namespace), busSeg(tenant), busSeg(agentID))
+	var out BusAgent
+	if _, err := c.busDoJSON(ctx, http.MethodPut, path, req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // =============================================================================
 // Phase 5: Conversations
 // =============================================================================

@@ -53,6 +53,7 @@ from .bus_models import (
     ReconnectedInfo,
     RegisterBusAgent,
     RegisterBusSchema,
+    SetBusAgentAdminState,
     StreamChunkEnvelope,
     StreamEndEnvelope,
 )
@@ -279,6 +280,27 @@ class _BusClientMixin:
         resp = self._request(
             "PATCH",
             f"/v1/bus/agents/{_seg(namespace)}/{_seg(tenant)}/{_seg(agent_id)}/heartbeat",
+        )
+        _raise_for_status(resp)
+        return BusAgent.from_dict(resp.json())
+
+    def set_bus_agent_admin_state(
+        self,
+        namespace: str,
+        tenant: str,
+        agent_id: str,
+        req: SetBusAgentAdminState,
+    ) -> BusAgent:
+        """Set the operator admin state on an agent.
+
+        Requires the ``ManageAgent`` permission. The server returns
+        400 if ``req.expires_at`` is set on anything other than
+        ``"suspended"``.
+        """
+        resp = self._request(
+            "PUT",
+            f"/v1/bus/agents/{_seg(namespace)}/{_seg(tenant)}/{_seg(agent_id)}/admin-state",
+            json=req.to_dict(),
         )
         _raise_for_status(resp)
         return BusAgent.from_dict(resp.json())
@@ -863,6 +885,22 @@ class _AsyncBusClientMixin:
         resp = await self._request(
             "PATCH",
             f"/v1/bus/agents/{_seg(namespace)}/{_seg(tenant)}/{_seg(agent_id)}/heartbeat",
+        )
+        _raise_for_status(resp)
+        return BusAgent.from_dict(resp.json())
+
+    async def set_bus_agent_admin_state(
+        self,
+        namespace: str,
+        tenant: str,
+        agent_id: str,
+        req: SetBusAgentAdminState,
+    ) -> BusAgent:
+        """Async counterpart of the sync method of the same name."""
+        resp = await self._request(
+            "PUT",
+            f"/v1/bus/agents/{_seg(namespace)}/{_seg(tenant)}/{_seg(agent_id)}/admin-state",
+            json=req.to_dict(),
         )
         _raise_for_status(resp)
         return BusAgent.from_dict(resp.json())

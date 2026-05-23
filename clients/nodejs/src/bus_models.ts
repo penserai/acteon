@@ -151,6 +151,37 @@ export interface BusAgent {
   labels: Record<string, string>;
   createdAt: string;
   updatedAt: string;
+  /**
+   * Operator lifecycle state: `"active"`, `"suspended"`, or
+   * `"banned"`. Defaults to `"active"` if a server pre-dating
+   * this field returns the agent without it.
+   */
+  adminState: string;
+  adminReason: string | null;
+  adminSetBy: string | null;
+  adminSetAt: string | null;
+  adminExpiresAt: string | null;
+}
+
+/**
+ * Body for `setBusAgentAdminState`. `expiresAt` is honored only
+ * for `adminState === "suspended"`; the server returns 400 if it
+ * is set alongside another state.
+ */
+export interface SetBusAgentAdminState {
+  adminState: "active" | "suspended" | "banned";
+  reason?: string;
+  /** RFC-3339 timestamp. */
+  expiresAt?: string;
+}
+
+export function setBusAgentAdminStateBody(
+  req: SetBusAgentAdminState,
+): Record<string, unknown> {
+  const body: Record<string, unknown> = { admin_state: req.adminState };
+  if (req.reason !== undefined) body.reason = req.reason;
+  if (req.expiresAt !== undefined) body.expires_at = req.expiresAt;
+  return body;
 }
 
 // =============================================================================
@@ -752,6 +783,13 @@ export function parseBusAgent(d: Record<string, unknown>): BusAgent {
     labels: (d.labels as Record<string, string> | undefined) ?? {},
     createdAt: d.created_at as string,
     updatedAt: d.updated_at as string,
+    // Default to "active" for back-compat with servers that
+    // pre-date the admin-state surface.
+    adminState: (d.admin_state as string | undefined) ?? "active",
+    adminReason: (d.admin_reason as string | null | undefined) ?? null,
+    adminSetBy: (d.admin_set_by as string | null | undefined) ?? null,
+    adminSetAt: (d.admin_set_at as string | null | undefined) ?? null,
+    adminExpiresAt: (d.admin_expires_at as string | null | undefined) ?? null,
   };
 }
 

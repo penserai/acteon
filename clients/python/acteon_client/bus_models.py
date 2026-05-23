@@ -331,6 +331,14 @@ class BusAgent:
     labels: dict[str, str]
     created_at: str
     updated_at: str
+    # Operator lifecycle state: "active", "suspended", or "banned".
+    # Defaults to "active" so a response from a pre-admin-state
+    # server (or a row that pre-dates the field) round-trips cleanly.
+    admin_state: str = "active"
+    admin_reason: Optional[str] = None
+    admin_set_by: Optional[str] = None
+    admin_set_at: Optional[str] = None
+    admin_expires_at: Optional[str] = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "BusAgent":
@@ -347,7 +355,33 @@ class BusAgent:
             labels=d.get("labels", {}) or {},
             created_at=d["created_at"],
             updated_at=d["updated_at"],
+            admin_state=d.get("admin_state", "active"),
+            admin_reason=d.get("admin_reason"),
+            admin_set_by=d.get("admin_set_by"),
+            admin_set_at=d.get("admin_set_at"),
+            admin_expires_at=d.get("admin_expires_at"),
         )
+
+
+@dataclass
+class SetBusAgentAdminState:
+    """Request body for ``set_bus_agent_admin_state``.
+
+    ``expires_at`` is honored only for ``admin_state="suspended"``;
+    the server returns 400 if it is set alongside another state.
+    """
+
+    admin_state: str  # "active" | "suspended" | "banned"
+    reason: Optional[str] = None
+    expires_at: Optional[str] = None  # RFC-3339
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {"admin_state": self.admin_state}
+        if self.reason is not None:
+            d["reason"] = self.reason
+        if self.expires_at is not None:
+            d["expires_at"] = self.expires_at
+        return d
 
 
 # ============================================================================

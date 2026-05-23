@@ -3384,6 +3384,21 @@ public class ActeonClient implements AutoCloseable {
             null, Bus.BusAgent.class);
     }
 
+    /**
+     * Set the operator admin state on an agent (active / suspended
+     * / banned). Requires the standard {@code ManageAgent}
+     * permission. The server returns 400 if
+     * {@code req.expiresAt()} is set on anything other than
+     * {@code "suspended"}.
+     */
+    public Bus.BusAgent setBusAgentAdminState(
+        String namespace, String tenant, String agentId, Bus.SetBusAgentAdminState req
+    ) throws ActeonException {
+        return busSend("PUT",
+            "/v1/bus/agents/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(agentId) + "/admin-state",
+            req, Bus.BusAgent.class);
+    }
+
     // --------------- Phase 5: Conversations ---------------
 
     public Bus.BusConversation createBusConversation(Bus.CreateBusConversation req) throws ActeonException {

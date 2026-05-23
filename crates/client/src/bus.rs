@@ -778,6 +778,35 @@ impl ActeonClient {
         }
     }
 
+    /// Set the operator admin state on an agent (active / suspended
+    /// / banned). Returns the updated agent row.
+    ///
+    /// Requires the standard `ManageAgent` permission on the
+    /// `(namespace, tenant)`. The server returns 400 if `expires_at`
+    /// is set on anything other than `suspended`.
+    pub async fn set_bus_agent_admin_state(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        agent_id: &str,
+        req: &SetBusAgentAdminState,
+    ) -> Result<BusAgent, Error> {
+        let url = self.agent_url(namespace, tenant, agent_id, Some("admin-state"));
+        let resp = self
+            .add_auth(self.client.put(&url))
+            .json(req)
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+        if resp.status().is_success() {
+            resp.json::<BusAgent>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))
+        } else {
+            Err(map_error(resp).await)
+        }
+    }
+
     /// Record a heartbeat. Agents typically call this once per
     /// `heartbeat_ttl_ms / 3` to stay `Online`.
     pub async fn heartbeat_bus_agent(
@@ -1517,10 +1546,28 @@ pub struct BusAgent {
     #[serde(default)]
     pub last_heartbeat_at: Option<String>,
     pub status: String,
+    /// Operator lifecycle state — `"active"`, `"suspended"`, or
+    /// `"banned"`. Defaults to `"active"` (via `#[serde(default)]`)
+    /// for backward compatibility with server responses that
+    /// pre-date the admin-state surface.
+    #[serde(default = "default_admin_state")]
+    pub admin_state: String,
+    #[serde(default)]
+    pub admin_reason: Option<String>,
+    #[serde(default)]
+    pub admin_set_by: Option<String>,
+    #[serde(default)]
+    pub admin_set_at: Option<String>,
+    #[serde(default)]
+    pub admin_expires_at: Option<String>,
     #[serde(default)]
     pub labels: HashMap<String, String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+fn default_admin_state() -> String {
+    "active".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1539,6 +1586,27 @@ pub struct BusAgentFilter {
     pub capability: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    /// Filter by operator admin state (`"active"`, `"suspended"`,
+    /// `"banned"`). Compared against the *effective* state — a
+    /// suspended row past its expiry filters as `"active"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub admin_state: Option<String>,
+}
+
+/// Body for [`ActeonClient::set_bus_agent_admin_state`]. The
+/// `expires_at` field is honored only for `admin_state = "suspended"`;
+/// the server returns 400 if it is set alongside another state.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct SetBusAgentAdminState {
+    /// Target state. One of `"active"`, `"suspended"`, `"banned"`.
+    pub admin_state: String,
+    /// Operator-supplied reason. Surfaced to the agent owner on the
+    /// 403 returned by a blocked `send_to_bus_agent`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Optional RFC-3339 expiry (only honored for `suspended`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

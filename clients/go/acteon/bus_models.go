@@ -187,6 +187,42 @@ type BusAgent struct {
 	Labels          map[string]string `json:"labels,omitempty"`
 	CreatedAt       string            `json:"created_at"`
 	UpdatedAt       string            `json:"updated_at"`
+	// AdminState is the operator lifecycle state ("active",
+	// "suspended", or "banned"). Defaults to "active" — see
+	// UnmarshalJSON below.
+	AdminState     string  `json:"admin_state,omitempty"`
+	AdminReason    *string `json:"admin_reason,omitempty"`
+	AdminSetBy     *string `json:"admin_set_by,omitempty"`
+	AdminSetAt     *string `json:"admin_set_at,omitempty"`
+	AdminExpiresAt *string `json:"admin_expires_at,omitempty"`
+}
+
+// UnmarshalJSON is overridden so a server response that pre-dates
+// the admin-state surface (the field is absent entirely) reads as
+// "active" rather than the empty string — keeps operator
+// dashboards from rendering "(empty)" for legacy rows.
+func (a *BusAgent) UnmarshalJSON(data []byte) error {
+	type alias BusAgent // shadow type to avoid recursion
+	var tmp alias
+	if err := json.Unmarshal(data, &tmp); err != nil {
+		return err
+	}
+	if tmp.AdminState == "" {
+		tmp.AdminState = "active"
+	}
+	*a = BusAgent(tmp)
+	return nil
+}
+
+// SetBusAgentAdminState is the request body for
+// Client.SetBusAgentAdminState. ExpiresAt is honored only for
+// AdminState = "suspended"; the server returns 400 if it is set
+// alongside another state.
+type SetBusAgentAdminState struct {
+	AdminState string  `json:"admin_state"`
+	Reason     *string `json:"reason,omitempty"`
+	// RFC-3339 timestamp.
+	ExpiresAt *string `json:"expires_at,omitempty"`
 }
 
 type ListBusAgentsResponse struct {

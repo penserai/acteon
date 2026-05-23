@@ -11,7 +11,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import { createColumnHelper } from '@tanstack/react-table'
-import { ShieldCheck, Trash2 } from 'lucide-react'
+import { Ban, Pause, Play, ShieldCheck, Trash2 } from 'lucide-react'
 
 import { PageHeader } from '../components/layout/PageHeader'
 import { DataTable } from '../components/ui/DataTable'
@@ -22,12 +22,14 @@ import { Select } from '../components/ui/Select'
 import { Tabs } from '../components/ui/Tabs'
 import { EmptyState } from '../components/ui/EmptyState'
 import { DeleteConfirmModal } from '../components/ui/DeleteConfirmModal'
+import { Modal } from '../components/ui/Modal'
 import { useToast } from '../components/ui/useToast'
 import { relativeTime, formatCountdown } from '../lib/format'
 import {
   useBusTopics,
   useBusSubscriptions,
   useBusAgents,
+  useSetBusAgentAdminState,
   useBusConversations,
   useBusApprovals,
   useBusSubscriptionLag,
@@ -39,6 +41,7 @@ import {
   type BusTopic,
   type BusSubscription,
   type BusAgent,
+  type SetBusAgentAdminState,
   type BusConversation,
   type BusApprovalStatus,
   type BusApprovalView,
@@ -315,10 +318,20 @@ function LagPill({ lag }: { lag: number }) {
 const agentCol = createColumnHelper<BusAgent>()
 
 function AgentsPanel({ ns, tenant }: { ns: string; tenant: string }) {
-  const { data, isLoading } = useBusAgents({ namespace: ns || undefined, tenant: tenant || undefined })
+  // Admin-state filter is local UI state — passed through as a
+  // query param so the server's /v1/bus/agents handler does the
+  // filtering rather than the browser. An empty string means "all
+  // states" (the absence of the param to the server).
+  const [adminFilter, setAdminFilter] = useState<'' | 'active' | 'suspended' | 'banned'>('')
+  const { data, isLoading } = useBusAgents({
+    namespace: ns || undefined,
+    tenant: tenant || undefined,
+    admin_state: adminFilter || undefined,
+  })
   const del = useDeleteBusAgent()
   const { toast } = useToast()
   const [pending, setPending] = useState<BusAgent | null>(null)
+  const [adminTarget, setAdminTarget] = useState<BusAgent | null>(null)
 
   const columns = [
     agentCol.accessor('agent_id', { header: 'Agent', cell: (i) => <span className={styles.idCell}>{i.getValue()}</span> }),
@@ -331,6 +344,11 @@ function AgentsPanel({ ns, tenant }: { ns: string; tenant: string }) {
     }),
     agentCol.accessor('status', { header: 'Status', cell: (i) => <Badge>{i.getValue()}</Badge> }),
     agentCol.display({
+      id: 'admin_state',
+      header: 'Admin',
+      cell: (i) => <AdminStateBadge row={i.row.original} />,
+    }),
+    agentCol.display({
       id: 'heartbeat',
       header: 'Heartbeat',
       cell: (i) => <Heartbeat row={i.row.original} />,
@@ -339,22 +357,55 @@ function AgentsPanel({ ns, tenant }: { ns: string; tenant: string }) {
       id: 'actions',
       header: '',
       cell: (i) => (
-        <Button
-          variant="danger"
-          size="sm"
-          onClick={(e) => {
-            e.stopPropagation()
-            setPending(i.row.original)
-          }}
-        >
-          <Trash2 className="h-4 w-4" />
-        </Button>
+        <div style={{ display: 'flex', gap: '0.25rem' }}>
+          <Button
+            variant="secondary"
+            size="sm"
+            title="Set admin state"
+            onClick={(e) => {
+              e.stopPropagation()
+              setAdminTarget(i.row.original)
+            }}
+          >
+            <ShieldCheck className="h-4 w-4" />
+          </Button>
+          <Button
+            variant="danger"
+            size="sm"
+            onClick={(e) => {
+              e.stopPropagation()
+              setPending(i.row.original)
+            }}
+          >
+            <Trash2 className="h-4 w-4" />
+          </Button>
+        </div>
       ),
     }),
   ]
 
   return (
     <>
+      <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginBottom: '0.75rem' }}>
+        <label style={{ fontSize: '0.875rem', color: 'var(--color-fg-muted, #6b7280)' }}>
+          Admin state:
+        </label>
+        <select
+          value={adminFilter}
+          onChange={(e) => setAdminFilter(e.target.value as typeof adminFilter)}
+          style={{
+            padding: '0.25rem 0.5rem',
+            borderRadius: '0.375rem',
+            border: '1px solid var(--color-border, #d1d5db)',
+            background: 'var(--color-bg, #fff)',
+          }}
+        >
+          <option value="">All</option>
+          <option value="active">Active</option>
+          <option value="suspended">Suspended</option>
+          <option value="banned">Banned</option>
+        </select>
+      </div>
       <DataTable
         data={data ?? []}
         columns={columns}
@@ -383,7 +434,231 @@ function AgentsPanel({ ns, tenant }: { ns: string; tenant: string }) {
           )
         }}
       />
+      {/*
+        The `key` forces a fresh AdminStateModal instance per agent
+        so its internal useState defaults pick up the new agent's
+        admin_state / admin_reason on open, with no effect-driven
+        sync (the React Compiler rejects `setState` inside
+        useEffect).
+      */}
+      {adminTarget && (
+        <AdminStateModal
+          key={`${adminTarget.namespace}/${adminTarget.tenant}/${adminTarget.agent_id}`}
+          agent={adminTarget}
+          onClose={() => setAdminTarget(null)}
+        />
+      )}
     </>
+  )
+}
+
+/**
+ * Tiny coloured badge for the admin-state column. Active = neutral
+ * (it's the boring default and shouldn't dominate the row);
+ * Suspended = warning; Banned = danger.
+ */
+function AdminStateBadge({ row }: { row: BusAgent }) {
+  const state = row.admin_state ?? 'active'
+  const colors: Record<string, { bg: string; fg: string; ring: string }> = {
+    active: { bg: '#f3f4f6', fg: '#374151', ring: '#d1d5db' },
+    suspended: { bg: '#fef3c7', fg: '#92400e', ring: '#fcd34d' },
+    banned: { bg: '#fee2e2', fg: '#991b1b', ring: '#fca5a5' },
+  }
+  const c = colors[state] ?? colors.active
+  return (
+    <span
+      title={row.admin_reason ?? undefined}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        padding: '0.125rem 0.5rem',
+        borderRadius: '9999px',
+        background: c.bg,
+        color: c.fg,
+        boxShadow: `inset 0 0 0 1px ${c.ring}`,
+        fontSize: '0.75rem',
+        fontWeight: 500,
+      }}
+    >
+      {state}
+    </span>
+  )
+}
+
+/**
+ * Admin-state mutation modal. Three buttons (one per state). When
+ * Suspended is chosen, the operator can also set a duration —
+ * server stamps the expiry and auto-reinstates on read past it.
+ *
+ * Banned is one-shot from the UI: we don't expose an `expires_at`
+ * field for it because the server drops the expiry on Banned and a
+ * banned-with-expiry UI would imply auto-reinstate, which is
+ * intentionally not how bans work.
+ */
+// The parent always wraps this in `{agent && <AdminStateModal …
+// key=… />}` so the component only mounts when an agent is
+// selected — every useState default below evaluates exactly once
+// per (agent, open) pair. That keeps us out of the React Compiler's
+// "no setState in useEffect" rule.
+function AdminStateModal({ agent, onClose }: { agent: BusAgent; onClose: () => void }) {
+  const mut = useSetBusAgentAdminState()
+  const { toast } = useToast()
+  const [target, setTarget] = useState<'active' | 'suspended' | 'banned'>(
+    (agent.admin_state as 'active' | 'suspended' | 'banned' | undefined) ?? 'active',
+  )
+  const [reason, setReason] = useState(agent.admin_reason ?? '')
+  // Suspension duration in minutes. 0 = no expiry (operator must
+  // manually reinstate).
+  const [durationMin, setDurationMin] = useState(60)
+
+  const submit = () => {
+    const body: SetBusAgentAdminState = { admin_state: target }
+    if (reason.trim()) body.reason = reason.trim()
+    if (target === 'suspended' && durationMin > 0) {
+      body.expires_at = new Date(Date.now() + durationMin * 60_000).toISOString()
+    }
+    mut.mutate(
+      { namespace: agent.namespace, tenant: agent.tenant, agentId: agent.agent_id, body },
+      {
+        onSuccess: () => {
+          toast('success', `Agent set to ${target}`)
+          onClose()
+        },
+        onError: (err) => toast('error', 'Admin state change failed', (err as Error).message),
+      },
+    )
+  }
+
+  return (
+    <Modal
+      open={!!agent}
+      onClose={onClose}
+      title={`Admin state — ${agent.agent_id}`}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose} disabled={mut.isPending}>
+            Cancel
+          </Button>
+          <Button onClick={submit} disabled={mut.isPending}>
+            {mut.isPending ? 'Applying…' : 'Apply'}
+          </Button>
+        </>
+      }
+    >
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+        <div>
+          <div style={{ fontSize: '0.875rem', color: 'var(--color-fg-muted, #6b7280)', marginBottom: '0.5rem' }}>
+            Current state: <strong>{agent.admin_state ?? 'active'}</strong>
+            {agent.admin_set_by && (
+              <span> (set by {agent.admin_set_by})</span>
+            )}
+          </div>
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <StateChoice
+              icon={<Play className="h-4 w-4" />}
+              label="Active"
+              value="active"
+              selected={target}
+              onSelect={setTarget}
+            />
+            <StateChoice
+              icon={<Pause className="h-4 w-4" />}
+              label="Suspended"
+              value="suspended"
+              selected={target}
+              onSelect={setTarget}
+            />
+            <StateChoice
+              icon={<Ban className="h-4 w-4" />}
+              label="Banned"
+              value="banned"
+              selected={target}
+              onSelect={setTarget}
+            />
+          </div>
+        </div>
+
+        {target === 'suspended' && (
+          <div>
+            <label style={{ display: 'block', fontSize: '0.875rem', marginBottom: '0.25rem' }}>
+              Auto-reinstate after (minutes, 0 = no expiry)
+            </label>
+            <input
+              type="number"
+              min={0}
+              value={durationMin}
+              onChange={(e) => setDurationMin(Math.max(0, Number(e.target.value) || 0))}
+              style={{
+                width: '100%',
+                padding: '0.375rem 0.5rem',
+                borderRadius: '0.375rem',
+                border: '1px solid var(--color-border, #d1d5db)',
+              }}
+            />
+          </div>
+        )}
+
+        <div>
+          <label style={{ display: 'block', fontSize: '0.875rem', marginBottom: '0.25rem' }}>
+            Reason (surfaced on the 403 to callers; keep terse)
+          </label>
+          <textarea
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            rows={3}
+            maxLength={4096}
+            placeholder={target === 'banned' ? 'e.g. exfiltration attempt' : 'e.g. flaky retries'}
+            style={{
+              width: '100%',
+              padding: '0.375rem 0.5rem',
+              borderRadius: '0.375rem',
+              border: '1px solid var(--color-border, #d1d5db)',
+              fontFamily: 'inherit',
+              resize: 'vertical',
+            }}
+          />
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+function StateChoice({
+  icon,
+  label,
+  value,
+  selected,
+  onSelect,
+}: {
+  icon: React.ReactNode
+  label: string
+  value: 'active' | 'suspended' | 'banned'
+  selected: string
+  onSelect: (v: 'active' | 'suspended' | 'banned') => void
+}) {
+  const isSelected = selected === value
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(value)}
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: '0.25rem',
+        flex: 1,
+        padding: '0.75rem',
+        borderRadius: '0.5rem',
+        border: `1px solid ${isSelected ? 'var(--color-primary, #2563eb)' : 'var(--color-border, #d1d5db)'}`,
+        background: isSelected ? 'var(--color-primary-soft, #dbeafe)' : 'transparent',
+        cursor: 'pointer',
+        fontSize: '0.875rem',
+      }}
+    >
+      {icon}
+      <span>{label}</span>
+    </button>
   )
 }
 

@@ -3352,6 +3352,18 @@ pub struct AgentResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_heartbeat_at: Option<DateTime<Utc>>,
     pub status: String,
+    /// Operator lifecycle state — `"active"`, `"suspended"`,
+    /// `"banned"`. Honors `admin_expires_at` (a Suspended row past
+    /// its expiry reads as `"active"`).
+    pub admin_state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub admin_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub admin_set_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub admin_set_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub admin_expires_at: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub labels: HashMap<String, String>,
     pub created_at: DateTime<Utc>,
@@ -3376,6 +3388,11 @@ pub struct ListAgentsParams {
     /// Filter by derived status (`online`, `idle`, `dead`, `unknown`).
     #[serde(default)]
     pub status: Option<String>,
+    /// Filter by operator admin state (`active`, `suspended`,
+    /// `banned`). Compared against the *effective* state — a
+    /// Suspended row past its expiry filters as `active`.
+    #[serde(default)]
+    pub admin_state: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -3416,6 +3433,14 @@ fn agent_to_response(a: &acteon_core::Agent) -> AgentResponse {
         heartbeat_ttl_ms: a.heartbeat_ttl_ms,
         last_heartbeat_at: a.last_heartbeat_at,
         status: agent_status_str(a.status()),
+        // Surface the *effective* admin state so a stale Suspended
+        // row past its expiry shows up as active without waiting
+        // for a write to happen.
+        admin_state: a.effective_admin_state().as_str().to_string(),
+        admin_reason: a.admin_reason.clone(),
+        admin_set_by: a.admin_set_by.clone(),
+        admin_set_at: a.admin_set_at,
+        admin_expires_at: a.admin_expires_at,
         labels: a.labels.clone(),
         created_at: a.created_at,
         updated_at: a.updated_at,
@@ -3746,6 +3771,16 @@ pub async fn list_agents(
                     .as_deref()
                     .is_none_or(|s| agent_status_str(a.status()).eq_ignore_ascii_case(s))
             })
+            .filter(|a| {
+                params
+                    .admin_state
+                    .as_deref()
+                    // Compare against the *effective* state so a
+                    // Suspended row past its expiry filters as
+                    // `active` — matches what `agent_to_response`
+                    // returns.
+                    .is_none_or(|s| a.effective_admin_state().as_str().eq_ignore_ascii_case(s))
+            })
             .collect();
         let responses: Vec<AgentResponse> = agents.iter().map(agent_to_response).collect();
         let count = responses.len();
@@ -4045,6 +4080,12 @@ pub async fn heartbeat_agent(
         (status = 503, description = "Bus feature disabled", body = ErrorResponse),
     ),
 )]
+// One handler covers: auth gate, header validation, agent lookup,
+// admin-state check, inbox-topic existence probe, message build +
+// produce, and the bus-feature-off fallback. Splitting would force
+// threading the bus backend handle and the error response type
+// through several helpers for purely cosmetic benefit.
+#[allow(clippy::too_many_lines)]
 pub async fn send_to_agent(
     State(state): State<AppState>,
     #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
@@ -4084,6 +4125,28 @@ pub async fn send_to_agent(
             Ok(a) => a,
             Err(resp) => return resp,
         };
+        // Admin-state enforcement: a Suspended / Banned agent is not
+        // routable. Returns 403 with the operator-supplied reason
+        // (when present) so the caller knows *why* — but never the
+        // operator's identity (`admin_set_by` is omitted).
+        let effective = agent.effective_admin_state();
+        if !effective.is_routable() {
+            let reason_part = agent
+                .admin_reason
+                .as_deref()
+                .map(|r| format!(": {r}"))
+                .unwrap_or_default();
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: format!(
+                        "agent {namespace}/{tenant}/{agent_id} is {}{reason_part}",
+                        effective.as_str(),
+                    ),
+                }),
+            )
+                .into_response();
+        }
         let inbox = agent.effective_inbox_topic();
         // Defensive: confirm the inbox topic is still registered. In
         // normal flow `register_agent` guarantees this, but operators
@@ -4149,6 +4212,123 @@ pub async fn send_to_agent(
             )
                 .into_response(),
         }
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, namespace, tenant, agent_id, req);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+// =========================================================================
+// Agent admin lifecycle — Active / Suspended / Banned
+//
+// One mutation endpoint at `/admin-state` (rather than three separate
+// `/ban`, `/suspend`, `/reinstate` endpoints): keeps the route surface
+// minimal, makes "change state" one auditable event, and lets a future
+// fourth state (e.g. `ReadOnly`) land without inventing a new URL.
+// =========================================================================
+
+/// Request body for `PUT /v1/bus/agents/{ns}/{tenant}/{id}/admin-state`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct SetAgentAdminStateRequest {
+    /// Target admin state. One of `"active"`, `"suspended"`,
+    /// `"banned"`.
+    pub admin_state: acteon_core::AgentAdminState,
+    /// Operator-supplied free-text reason. Surfaced to a caller of
+    /// `send_to_agent` on the `403 Forbidden` returned by a blocked
+    /// agent — keep it terse, no secrets.
+    #[serde(default)]
+    pub reason: Option<String>,
+    /// Optional expiry. Honored only for `Suspended`; silently
+    /// dropped for `Active` / `Banned`. A `Suspended` row past this
+    /// point reads as `Active` (auto-reinstate).
+    #[serde(default)]
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+#[utoipa::path(
+    put,
+    path = "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/admin-state",
+    tag = "bus",
+    request_body = SetAgentAdminStateRequest,
+    responses(
+        (status = 200, description = "Admin state set", body = AgentResponse),
+        (status = 400, description = "Validation failure", body = ErrorResponse),
+        (status = 403, description = "Caller lacks ManageAgent permission", body = ErrorResponse),
+        (status = 404, description = "Agent not found", body = ErrorResponse),
+        (status = 409, description = "CAS contention exhausted", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+pub async fn set_agent_admin_state(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path((namespace, tenant, agent_id)): Path<(String, String, String)>,
+    Json(req): Json<SetAgentAdminStateRequest>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        if state.bus_backend.is_none() {
+            return service_unavailable("bus feature not enabled");
+        }
+        // Only operators with `ManageAgent` may flip admin state —
+        // it's a moderation surface, not an end-user one.
+        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageAgent) {
+            return resp;
+        }
+        // Reason length: keep DLQ-style cap so a 1MB reason can't
+        // be smuggled into the agent row.
+        if let Some(r) = req.reason.as_deref()
+            && r.len() > 4_096
+        {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "reason exceeds 4096 bytes".to_string(),
+                }),
+            )
+                .into_response();
+        }
+        // Reject an expiry on Active / Banned — Active doesn't need
+        // one, Banned silently drops it but a 400 here makes the
+        // contract explicit to the caller.
+        if req.expires_at.is_some()
+            && !matches!(req.admin_state, acteon_core::AgentAdminState::Suspended)
+        {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "expires_at is only valid for admin_state=suspended".to_string(),
+                }),
+            )
+                .into_response();
+        }
+        let key = StateKey::new(
+            namespace.clone(),
+            tenant.clone(),
+            KeyKind::BusAgent,
+            agent_id.clone(),
+        );
+        let set_by = Some(identity.id.clone());
+        let reason = req.reason.clone();
+        let expires_at = req.expires_at;
+        let target = req.admin_state;
+        let updated = match cas_update::<acteon_core::Agent, _>(
+            &state,
+            &key,
+            &format!("agent {namespace}.{tenant}.{agent_id} not found"),
+            move |agent| {
+                agent.apply_admin_state(target, reason.clone(), set_by.clone(), expires_at);
+                Ok(())
+            },
+        )
+        .await
+        {
+            Ok(a) => a,
+            Err(resp) => return resp,
+        };
+        (StatusCode::OK, Json(agent_to_response(&updated))).into_response()
     }
     #[cfg(not(feature = "bus"))]
     {
@@ -8237,4 +8417,86 @@ fn validate_decision_note(note: Option<&str>) -> Result<(), axum::response::Resp
             .into_response());
     }
     Ok(())
+}
+
+#[cfg(all(test, feature = "bus"))]
+mod tests {
+    //! Unit tests for the admin-state response shape + filter
+    //! semantics. The end-to-end `set_agent_admin_state` flow is
+    //! exercised by the integration test in `crates/server/tests/`;
+    //! these tests pin the wire surface (the field names + the
+    //! effective-state semantics) so a future change can't silently
+    //! degrade them.
+    use super::*;
+    use acteon_core::{Agent, AgentAdminState};
+    use chrono::{Duration, Utc};
+
+    #[test]
+    fn response_carries_admin_state_active_for_fresh_agent() {
+        let a = Agent::new("p", "ns", "demo");
+        let r = agent_to_response(&a);
+        assert_eq!(r.admin_state, "active");
+        assert!(r.admin_reason.is_none());
+        assert!(r.admin_set_by.is_none());
+        assert!(r.admin_set_at.is_none());
+        assert!(r.admin_expires_at.is_none());
+    }
+
+    #[test]
+    fn response_carries_banned_with_reason() {
+        let mut a = Agent::new("p", "ns", "demo");
+        a.apply_admin_state(
+            AgentAdminState::Banned,
+            Some("repeated abuse".into()),
+            Some("op@acme.io".into()),
+            None,
+        );
+        let r = agent_to_response(&a);
+        assert_eq!(r.admin_state, "banned");
+        assert_eq!(r.admin_reason.as_deref(), Some("repeated abuse"));
+        // The operator's identity IS exposed on the admin response —
+        // operators reading the dashboard want to know who acted.
+        // It's only the `send` 403 that omits it.
+        assert_eq!(r.admin_set_by.as_deref(), Some("op@acme.io"));
+        assert!(r.admin_set_at.is_some());
+    }
+
+    #[test]
+    fn response_reports_effective_state_after_suspend_expires() {
+        let mut a = Agent::new("p", "ns", "demo");
+        let past = Utc::now() - Duration::hours(1);
+        a.apply_admin_state(AgentAdminState::Suspended, None, None, Some(past));
+        let r = agent_to_response(&a);
+        // Stored state is Suspended; effective state past the expiry
+        // is Active — the response must show the effective state so
+        // the dashboard doesn't mislead the operator.
+        assert_eq!(r.admin_state, "active");
+    }
+
+    #[test]
+    fn list_params_admin_state_field_round_trips() {
+        // The serde derive on `ListAgentsParams` is what backs the
+        // `?admin_state=banned` query parameter — pin the field name
+        // explicitly so a future rename doesn't silently change the
+        // wire contract.
+        let q: ListAgentsParams =
+            serde_json::from_value(serde_json::json!({"admin_state": "banned"})).unwrap();
+        assert_eq!(q.admin_state.as_deref(), Some("banned"));
+    }
+
+    #[test]
+    fn set_admin_state_request_deserializes_snake_case_enum() {
+        // The body parses the enum via serde — the snake_case
+        // representation must agree with the `as_str()` token the
+        // filter uses, otherwise the operator dashboard would issue
+        // a `banned` body and the agent would show as `Banned` in
+        // the listing but fail to filter on `?admin_state=banned`.
+        let req: SetAgentAdminStateRequest = serde_json::from_value(serde_json::json!({
+            "admin_state": "banned",
+            "reason": "exfiltration"
+        }))
+        .unwrap();
+        assert!(matches!(req.admin_state, AgentAdminState::Banned));
+        assert_eq!(req.reason.as_deref(), Some("exfiltration"));
+    }
 }

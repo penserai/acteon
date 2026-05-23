@@ -2684,6 +2684,10 @@ impl ActeonMcpServer {
                     tenant: p.tenant,
                     capability: p.capability,
                     status: p.status,
+                    // MCP params don't surface admin-state yet;
+                    // add it to ManageBusAgentsParams in a
+                    // follow-up if MCP-driven moderation needs it.
+                    admin_state: None,
                 };
                 ok_or_err(client.list_bus_agents(&filter).await)
             }

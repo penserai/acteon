@@ -125,6 +125,10 @@ pub async fn run(ops: &OpsClient, args: &AgentsArgs, format: &OutputFormat) -> a
                 tenant: tenant.clone(),
                 capability: capability.clone(),
                 status: status.clone(),
+                // CLI surface doesn't expose admin-state filtering
+                // yet — add a flag in a follow-up if operator
+                // workflows need it.
+                admin_state: None,
             };
             let resp = ops.client().list_bus_agents(&filter).await?;
             match format {

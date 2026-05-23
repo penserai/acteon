@@ -191,6 +191,13 @@ public final class Bus {
         }
     }
 
+    /**
+     * Bus agent record. {@code adminState} reflects the operator
+     * lifecycle ("active" / "suspended" / "banned"); the
+     * {@link #adminState()} accessor below defaults a {@code null}
+     * value (server response pre-dated the field) to "active" so
+     * dashboards never render {@code null}.
+     */
     public record BusAgent(
         @JsonProperty("agent_id") String agentId,
         String namespace,
@@ -203,13 +210,47 @@ public final class Bus {
         String description,
         Map<String, String> labels,
         @JsonProperty("created_at") String createdAt,
-        @JsonProperty("updated_at") String updatedAt
-    ) {}
+        @JsonProperty("updated_at") String updatedAt,
+        @JsonProperty("admin_state") String adminStateRaw,
+        @JsonProperty("admin_reason") String adminReason,
+        @JsonProperty("admin_set_by") String adminSetBy,
+        @JsonProperty("admin_set_at") String adminSetAt,
+        @JsonProperty("admin_expires_at") String adminExpiresAt
+    ) {
+        /**
+         * Effective admin state: returns the raw value when set,
+         * otherwise {@code "active"}. Use this instead of
+         * {@link #adminStateRaw()} when rendering or branching on
+         * the state.
+         */
+        public String adminState() {
+            return (adminStateRaw == null || adminStateRaw.isEmpty())
+                ? "active"
+                : adminStateRaw;
+        }
+    }
 
     public record ListBusAgentsResponse(
         List<BusAgent> agents,
         int count
     ) {}
+
+    /**
+     * Body for {@link ActeonClient#setBusAgentAdminState}. The
+     * server returns 400 if {@code expiresAt} is set on anything
+     * other than {@code "suspended"}.
+     */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record SetBusAgentAdminState(
+        @JsonProperty("admin_state") String adminState,
+        String reason,
+        @JsonProperty("expires_at") String expiresAt
+    ) {
+        /** Minimal — only the target state. */
+        public SetBusAgentAdminState(String adminState) {
+            this(adminState, null, null);
+        }
+    }
 
     // =========================================================================
     // Phase 5: Conversations

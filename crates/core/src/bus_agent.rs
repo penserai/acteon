@@ -46,6 +46,57 @@ pub enum AgentStatus {
     Unknown,
 }
 
+/// **Operator** lifecycle state — distinct from [`AgentStatus`] which
+/// answers "is it alive?". `AgentAdminState` answers "is it
+/// *allowed*?": it is set by the operator and persists across
+/// heartbeats. The two states compose — a `Banned` agent that is
+/// still heartbeating is both `Online` *and* `Banned`, and the route
+/// / discovery / send paths refuse to talk to it.
+///
+/// Defaults to [`AgentAdminState::Active`] for backwards
+/// compatibility — every Agent row registered before this field
+/// existed deserializes as Active via the `#[serde(default)]` on the
+/// field.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub enum AgentAdminState {
+    /// Normal: routable, discoverable, accepts heartbeats and sends.
+    #[default]
+    Active,
+    /// Temporarily parked. Reversible via `reinstate`. Optionally
+    /// time-boxed by `admin_expires_at`; when set, the agent
+    /// auto-reinstates on read once the expiry has passed.
+    Suspended,
+    /// Operator-banned (compromised / abusive). Kept for the audit
+    /// trail rather than deleted. Reinstating is allowed but
+    /// generally avoided.
+    Banned,
+}
+
+impl AgentAdminState {
+    /// Wire / log token. Matches the `serde(rename_all = "snake_case")`
+    /// representation so admin-state queries on `?admin_state=banned`
+    /// line up.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Suspended => "suspended",
+            Self::Banned => "banned",
+        }
+    }
+
+    /// Whether the route / discovery / send paths should treat this
+    /// agent as usable. `Active` only. The dispatch-time check is
+    /// just this predicate — kept as a method on the state so adding
+    /// a future state (e.g. `ReadOnly`) is one place to edit.
+    #[must_use]
+    pub fn is_routable(self) -> bool {
+        matches!(self, Self::Active)
+    }
+}
+
 /// A bus-resident agent identity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -88,6 +139,34 @@ pub struct Agent {
     /// and is fetched only by the A2A discovery handler.
     #[serde(default)]
     pub has_agent_card: bool,
+    /// Operator lifecycle state. `Active` by default; set to
+    /// `Suspended` / `Banned` via the `/admin-state` endpoint. The
+    /// route / discovery / send paths consult this on every call —
+    /// see [`AgentAdminState::is_routable`].
+    ///
+    /// `#[serde(default)]` so rows registered before this field
+    /// existed deserialize as `Active`. No migration needed.
+    #[serde(default)]
+    pub admin_state: AgentAdminState,
+    /// Free-form reason recorded by the operator at the time of the
+    /// last admin-state change. Surfaced to the agent owner on the
+    /// `403 Forbidden` returned by a blocked `send`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admin_reason: Option<String>,
+    /// Caller id of the operator who set the current admin state.
+    /// Recorded for the audit trail; never displayed to the agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admin_set_by: Option<String>,
+    /// Wall-clock time the current admin state was set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admin_set_at: Option<DateTime<Utc>>,
+    /// Optional expiry — when set on a `Suspended` agent, a read
+    /// past this point auto-reinstates the agent (a `Banned` agent
+    /// never auto-reinstates; this field is ignored on `Banned`).
+    /// Lets an operator park a flaky agent for an hour without
+    /// having to remember to come back and flip it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admin_expires_at: Option<DateTime<Utc>>,
     /// Registration time.
     pub created_at: DateTime<Utc>,
     /// Last time the agent record was mutated (register / update /
@@ -119,6 +198,11 @@ impl Agent {
             last_heartbeat_at: None,
             labels: HashMap::new(),
             has_agent_card: false,
+            admin_state: AgentAdminState::Active,
+            admin_reason: None,
+            admin_set_by: None,
+            admin_set_at: None,
+            admin_expires_at: None,
             created_at: now,
             updated_at: now,
         }
@@ -170,6 +254,60 @@ impl Agent {
     #[must_use]
     pub fn status(&self) -> AgentStatus {
         self.status_at(Utc::now())
+    }
+
+    /// Effective admin state as of `now`. Honors `admin_expires_at`:
+    /// a `Suspended` row past its expiry reads as `Active`. A
+    /// `Banned` row ignores the expiry (a ban is not time-boxed by
+    /// design — operator must explicitly reinstate).
+    ///
+    /// This is the predicate the dispatch path should consult; the
+    /// raw `admin_state` field is the *stored* value, not the
+    /// *effective* one.
+    #[must_use]
+    pub fn effective_admin_state_at(&self, now: DateTime<Utc>) -> AgentAdminState {
+        match self.admin_state {
+            AgentAdminState::Suspended => match self.admin_expires_at {
+                Some(expiry) if now >= expiry => AgentAdminState::Active,
+                _ => AgentAdminState::Suspended,
+            },
+            other => other,
+        }
+    }
+
+    /// Convenience — [`Self::effective_admin_state_at`] with
+    /// `Utc::now()`. Most callers want this.
+    #[must_use]
+    pub fn effective_admin_state(&self) -> AgentAdminState {
+        self.effective_admin_state_at(Utc::now())
+    }
+
+    /// Mutate this Agent in-place to the supplied admin state, with
+    /// the operator metadata bundled. Stamps `admin_set_at = now()`
+    /// and `updated_at = now()` so the audit trail captures the
+    /// transition.
+    ///
+    /// `expires_at` is honored only for `Suspended`; a `Banned`
+    /// transition silently drops any supplied expiry (a ban is not
+    /// time-boxed by design — encode the intent in the type rather
+    /// than relying on the caller to remember the rule).
+    pub fn apply_admin_state(
+        &mut self,
+        next: AgentAdminState,
+        reason: Option<String>,
+        set_by: Option<String>,
+        expires_at: Option<DateTime<Utc>>,
+    ) {
+        let now = Utc::now();
+        self.admin_state = next;
+        self.admin_reason = reason;
+        self.admin_set_by = set_by;
+        self.admin_set_at = Some(now);
+        self.admin_expires_at = match next {
+            AgentAdminState::Suspended => expires_at,
+            _ => None,
+        };
+        self.updated_at = now;
     }
 
     /// Validate the agent's identity fields.
@@ -364,5 +502,108 @@ mod tests {
         assert_eq!(back.agent_id, a.agent_id);
         assert_eq!(back.capabilities, a.capabilities);
         assert_eq!(back.labels, a.labels);
+    }
+
+    // --- Admin state ---
+
+    #[test]
+    fn fresh_agent_is_admin_active_by_default() {
+        let a = Agent::new("p", "ns", "t");
+        assert_eq!(a.admin_state, AgentAdminState::Active);
+        assert!(a.admin_reason.is_none());
+        assert!(a.admin_set_by.is_none());
+        assert!(a.admin_set_at.is_none());
+        assert!(a.admin_expires_at.is_none());
+        assert_eq!(a.effective_admin_state(), AgentAdminState::Active);
+    }
+
+    #[test]
+    fn pre_admin_state_json_round_trips_as_active() {
+        // A row persisted before the field existed must deserialize
+        // as Active — the `#[serde(default)]` is what makes the
+        // change non-breaking.
+        let legacy = serde_json::json!({
+            "agent_id": "p",
+            "namespace": "ns",
+            "tenant": "t",
+            "capabilities": [],
+            "heartbeat_ttl_ms": 60_000,
+            "has_agent_card": false,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z"
+        });
+        let a: Agent = serde_json::from_value(legacy).unwrap();
+        assert_eq!(a.admin_state, AgentAdminState::Active);
+    }
+
+    #[test]
+    fn apply_admin_state_bans_and_stamps_metadata() {
+        let mut a = Agent::new("p", "ns", "t");
+        a.apply_admin_state(
+            AgentAdminState::Banned,
+            Some("exfiltration attempt".into()),
+            Some("op@acme.io".into()),
+            // Expiry on a ban is intentionally dropped.
+            Some(Utc::now() + Duration::hours(1)),
+        );
+        assert_eq!(a.admin_state, AgentAdminState::Banned);
+        assert_eq!(a.admin_reason.as_deref(), Some("exfiltration attempt"));
+        assert_eq!(a.admin_set_by.as_deref(), Some("op@acme.io"));
+        assert!(a.admin_set_at.is_some());
+        assert!(
+            a.admin_expires_at.is_none(),
+            "ban must drop the expiry — bans are not time-boxed",
+        );
+    }
+
+    #[test]
+    fn suspend_with_expiry_auto_reinstates_on_effective_read() {
+        let mut a = Agent::new("p", "ns", "t");
+        let now = Utc::now();
+        a.apply_admin_state(
+            AgentAdminState::Suspended,
+            Some("flaky retries".into()),
+            None,
+            Some(now + Duration::minutes(30)),
+        );
+        // Within the window: still Suspended.
+        assert_eq!(
+            a.effective_admin_state_at(now + Duration::minutes(10)),
+            AgentAdminState::Suspended,
+        );
+        // Past the window: reads as Active even though the stored
+        // field is still Suspended (a write only happens on the next
+        // mutating call).
+        assert_eq!(
+            a.effective_admin_state_at(now + Duration::hours(1)),
+            AgentAdminState::Active,
+        );
+        assert_eq!(a.admin_state, AgentAdminState::Suspended);
+    }
+
+    #[test]
+    fn admin_state_is_routable_only_when_active() {
+        assert!(AgentAdminState::Active.is_routable());
+        assert!(!AgentAdminState::Suspended.is_routable());
+        assert!(!AgentAdminState::Banned.is_routable());
+    }
+
+    #[test]
+    fn admin_state_as_str_matches_serde_repr() {
+        // The `?admin_state=banned` query parameter compares
+        // case-sensitively against this token, so the snake_case
+        // serde representation and this string must agree.
+        for state in [
+            AgentAdminState::Active,
+            AgentAdminState::Suspended,
+            AgentAdminState::Banned,
+        ] {
+            let serde_token = serde_json::to_value(state)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_string();
+            assert_eq!(serde_token, state.as_str(), "state={state:?}");
+        }
     }
 }
