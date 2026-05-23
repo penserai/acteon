@@ -121,8 +121,9 @@ impl AuditStore for MemoryAuditStore {
             })
             .collect();
 
-        // Sort by dispatched_at descending.
-        matching.sort_by(|a, b| b.dispatched_at.cmp(&a.dispatched_at));
+        // Sort by dispatched_at descending. `sort_by_key` with a
+        // reversed key keeps clippy quiet without a custom closure.
+        matching.sort_by_key(|r| std::cmp::Reverse(r.dispatched_at));
 
         let total = matching.len() as u64;
         let records: Vec<AuditRecord> = matching
