@@ -54,11 +54,21 @@ Topic ──┐
 | **Topic** | Kafka topic + Acteon metadata (name, partitions, retention, schema binding). | Long-lived event channels. Created once per workload. |
 | **Schema** | A versioned JSON Schema bound to a topic. Validates every payload at publish time. | Hard contracts between producers and consumers. |
 | **Subscription** | A consumer group with first-class identity (id, ack-mode, dead-letter-topic, lag reporting). | A consumer that needs operator-visible state. |
-| **Agent** | Stable identity for a long-running process. Inbox topic + heartbeat + capabilities. | Anything that needs to be *addressed* on the bus. |
+| **Agent** | Stable identity for a long-running process. Inbox topic + heartbeat + capabilities + operator lifecycle state. | Anything that needs to be *addressed* on the bus. |
 | **Conversation** | State-machine-bounded thread. Participant ACL, optional custom events topic. Per-conversation Kafka partitioning so ordering is FIFO within a thread. | Multi-turn sessions, planning loops, tool-using agents. |
 | **Tool envelopes** | `ToolCall` / `ToolResult` typed records on the conversation events topic. Server stamps `acteon.envelope.kind` / `acteon.tool.call_id` / `acteon.correlation_id` headers. | Request/response between agents. |
 | **Stream envelopes** | `StreamChunk` + `StreamEnd` per-chunk records with `acteon.stream.id` header. SSE consume endpoint that stops on the terminator. | LLM token streaming, progressive results. |
 | **Approvals** | `BusApproval` row that parks a tool-call in Acteon state. Approve produces to Kafka; reject leaves no Kafka record. | Sensitive operations that need a human in the loop *before* execution. |
+
+### A note on terminology: "agent registry"
+
+There is no separate "agent registry" component. The **Agent** primitive
+*is* the registry — `POST /v1/bus/agents/{ns}/{tenant}` registers, the
+list endpoint discovers, the heartbeat keeps a row warm, and the
+[operator lifecycle](../features/operator-lifecycle.md) state machine
+controls visibility and routability. A2A clients that walk the
+[`.well-known/agent-card`](../features/a2a.md#discovery) endpoint see
+the same set of agents, filtered by `admin_state` and card presence.
 
 ## Layered design
 

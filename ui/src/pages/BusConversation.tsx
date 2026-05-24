@@ -106,7 +106,7 @@ export function BusConversation() {
                     )}
                   </div>
                   <span className={styles.timestamp}>
-                    p{msg.partition}/o{msg.offset} • {relativeTime(msg.produced_at)}
+                    p{msg.partition}/o{msg.offset} • {relativeTime(msg.timestamp)}
                   </span>
                 </div>
                 <pre className={styles.payload}>

@@ -275,7 +275,8 @@ export interface ListBusConversationsResponse {
 export interface BusReplayMessage {
   partition: number
   offset: number
-  produced_at: string
+  /** Server emits `timestamp` on the replay endpoint, not `produced_at`. */
+  timestamp: string
   sender?: string | null
   payload: unknown
   headers: Record<string, string>

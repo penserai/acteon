@@ -264,8 +264,19 @@ POST. The delivery worker:
 - Bounds total in-flight HTTP deliveries at 64, so a misbehaving
   destination cannot starve the rest of the fleet.
 
-**No DLQ in v1.** Terminal and exhausted failures are counted in
-`PushDeliveryMetrics` and emitted with `error!` logs.
+**Persistent DLQ.** Terminal failures (`4xx` other than `408/425/429`)
+and exhausted-retry failures land in a per-tenant dead-letter queue
+keyed by task. List, inspect, and purge entries via:
+
+```text
+GET    /v1/tasks/{task_id}/pushNotificationDLQ
+GET    /v1/tasks/{task_id}/pushNotificationDLQ/{entry_id}
+DELETE /v1/tasks/{task_id}/pushNotificationDLQ/{entry_id}
+```
+
+Counters for both delivery outcomes are also exported via
+`PushDeliveryMetrics` and shown on the [Provider Health](provider-health.md)
+dashboard.
 
 ### URL validation
 
