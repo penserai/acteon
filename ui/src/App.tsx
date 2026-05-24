@@ -72,6 +72,8 @@ const Settings = lazyPage(() => import('./pages/Settings'), 'Settings')
 const SwarmRuns = lazyPage(() => import('./pages/SwarmRuns'), 'SwarmRuns')
 const Bus = lazyPage(() => import('./pages/Bus'), 'Bus')
 const BusConversation = lazyPage(() => import('./pages/BusConversation'), 'BusConversation')
+const Agents = lazyPage(() => import('./pages/Agents'), 'Agents')
+const AgentDetail = lazyPage(() => import('./pages/AgentDetail'), 'AgentDetail')
 
 function App() {
   useEffect(() => {
@@ -123,6 +125,11 @@ function App() {
           <Route
             path="bus/conversations/:namespace/:tenant/:id"
             element={<BusConversation />}
+          />
+          <Route path="agents" element={<Agents />} />
+          <Route
+            path="agents/:namespace/:tenant/:agentId"
+            element={<AgentDetail />}
           />
           <Route path="settings/*" element={<Settings />} />
         </Route>

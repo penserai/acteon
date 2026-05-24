@@ -1,0 +1,83 @@
+@reference "../index.css";
+
+.badgeRow {
+  @apply flex flex-wrap items-center gap-1;
+}
+
+.muted {
+  @apply text-xs;
+  color: var(--text-muted);
+}
+
+.idCell {
+  @apply font-mono text-xs;
+  color: var(--text-primary);
+}
+
+.formStack {
+  @apply space-y-3;
+}
+
+.formStack > label {
+  @apply flex flex-col gap-1 text-sm;
+  color: var(--text-secondary);
+}
+
+.formStack > label > span {
+  @apply font-medium;
+  color: var(--text-secondary);
+}
+
+.formRow {
+  @apply grid grid-cols-2 gap-3;
+}
+
+/* ---- Detail page ---- */
+
+.headerActions {
+  @apply flex items-center gap-2;
+}
+
+.metaGrid {
+  @apply grid gap-x-6 gap-y-2 text-sm;
+  grid-template-columns: max-content 1fr;
+}
+
+.metaLabel {
+  color: var(--text-muted);
+}
+
+.metaValue {
+  @apply font-mono text-xs;
+  color: var(--text-primary);
+}
+
+.section {
+  @apply mt-6;
+}
+
+.sectionHeader {
+  @apply flex items-center justify-between mb-3;
+}
+
+.sectionTitle {
+  @apply text-base font-semibold;
+  color: var(--text-primary);
+}
+
+.adminWarning {
+  @apply text-sm rounded-md p-3 mt-2;
+  background: var(--surface-subtle);
+  color: var(--text-secondary);
+}
+
+.cardEmpty {
+  @apply text-center py-8;
+  color: var(--text-muted);
+}
+
+.cardJson {
+  @apply font-mono text-xs whitespace-pre-wrap rounded-md p-3 max-h-96 overflow-auto;
+  background: var(--bg-input);
+  color: var(--text-primary);
+}

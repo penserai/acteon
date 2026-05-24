@@ -170,9 +170,11 @@ export interface BusAgent {
   agent_id: string
   namespace: string
   tenant: string
+  display_name?: string | null
   capabilities: string[]
   inbox_topic: string
   status: string
+  has_agent_card?: boolean
   last_heartbeat_at?: string | null
   heartbeat_ttl_ms: number
   description?: string | null
@@ -247,7 +249,135 @@ export function useSetBusAgentAdminState() {
         `/v1/bus/agents/${encodeURIComponent(namespace)}/${encodeURIComponent(tenant)}/${encodeURIComponent(agentId)}/admin-state`,
         body,
       ),
+    onSuccess: (_data, vars) => {
+      void qc.invalidateQueries({ queryKey: ['bus', 'agents'] })
+      void qc.invalidateQueries({
+        queryKey: ['bus', 'agent', vars.namespace, vars.tenant, vars.agentId],
+      })
+    },
+  })
+}
+
+// Single-agent fetch used by the detail page.
+export function useBusAgent(namespace?: string, tenant?: string, agentId?: string) {
+  return useQuery({
+    queryKey: ['bus', 'agent', namespace, tenant, agentId],
+    queryFn: () =>
+      apiGet<BusAgent>(
+        `/v1/bus/agents/${encodeURIComponent(namespace!)}/${encodeURIComponent(tenant!)}/${encodeURIComponent(agentId!)}`,
+      ),
+    enabled: !!namespace && !!tenant && !!agentId,
+    refetchInterval: 5_000,
+  })
+}
+
+export interface RegisterBusAgentReq {
+  agent_id: string
+  namespace: string
+  tenant: string
+  display_name?: string
+  capabilities?: string[]
+  inbox_topic?: string
+  heartbeat_ttl_ms?: number
+  labels?: Record<string, string>
+}
+
+export function useRegisterBusAgent() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (req: RegisterBusAgentReq) => apiPost<BusAgent>('/v1/bus/agents', req),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['bus', 'agents'] }),
+  })
+}
+
+// --------------- A2A AgentCard ---------------
+
+// The card body is the full A2A AgentCard JSON; the server validates
+// camelCase shape + identity match against the path. We type the
+// minimum the UI needs to render and otherwise pass through.
+export interface AgentCard {
+  agentId: string
+  namespace: string
+  tenant: string
+  name: string
+  description?: string | null
+  version: string
+  capabilities?: Record<string, unknown>
+  skills?: Array<{ id: string; name: string; description?: string }>
+  interfaces?: Array<Record<string, unknown>>
+  // Catch-all for the rest of the A2A spec the UI doesn't render
+  // explicitly but should round-trip through edit/save.
+  [key: string]: unknown
+}
+
+export function useBusAgentCard(namespace?: string, tenant?: string, agentId?: string) {
+  return useQuery({
+    queryKey: ['bus', 'agent', namespace, tenant, agentId, 'card'],
+    queryFn: async () => {
+      // 404 means "no card yet" — return null instead of throwing so
+      // the detail page can render its empty state without an error
+      // banner.
+      try {
+        return await apiGet<AgentCard>(
+          `/v1/bus/agents/${encodeURIComponent(namespace!)}/${encodeURIComponent(tenant!)}/${encodeURIComponent(agentId!)}/card`,
+        )
+      } catch (e) {
+        if (e instanceof Error && /404/.test(e.message)) return null
+        throw e
+      }
+    },
+    enabled: !!namespace && !!tenant && !!agentId,
+  })
+}
+
+export function useUpsertBusAgentCard() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      namespace,
+      tenant,
+      agentId,
+      card,
+    }: {
+      namespace: string
+      tenant: string
+      agentId: string
+      card: AgentCard
+    }) =>
+      apiPut<AgentCard>(
+        `/v1/bus/agents/${encodeURIComponent(namespace)}/${encodeURIComponent(tenant)}/${encodeURIComponent(agentId)}/card`,
+        card,
+      ),
+    onSuccess: (_d, v) => {
+      void qc.invalidateQueries({
+        queryKey: ['bus', 'agent', v.namespace, v.tenant, v.agentId, 'card'],
+      })
+      void qc.invalidateQueries({ queryKey: ['bus', 'agents'] })
+    },
+  })
+}
+
+export function useDeleteBusAgentCard() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      namespace,
+      tenant,
+      agentId,
+    }: {
+      namespace: string
+      tenant: string
+      agentId: string
+    }) =>
+      apiDelete<void>(
+        `/v1/bus/agents/${encodeURIComponent(namespace)}/${encodeURIComponent(tenant)}/${encodeURIComponent(agentId)}/card`,
+      ),
+    onSuccess: (_d, v) => {
+      void qc.invalidateQueries({
+        queryKey: ['bus', 'agent', v.namespace, v.tenant, v.agentId, 'card'],
+      })
+      void qc.invalidateQueries({ queryKey: ['bus', 'agents'] })
+    },
   })
 }
 
