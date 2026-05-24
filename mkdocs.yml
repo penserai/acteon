@@ -123,6 +123,7 @@ nav:
     - State Machines: features/state-machines.md
     - Human Approvals: features/approvals.md
     - Agent2Agent (A2A) Protocol: features/a2a.md
+    - Operator Lifecycle (Active/Suspended/Banned): features/operator-lifecycle.md
     - Task Chains: features/chains.md
     - Sub-Chains: features/sub-chains.md
     - LLM Guardrails: features/llm-guardrails.md
@@ -198,6 +199,7 @@ nav:
     - Phase 9 (Docs, migration, demo, benchmarks): features/bus-phase-9.md
   - Guides:
     - guides/index.md
+    - A2A & Agent Registry — End-to-End Tutorial: guides/a2a-agent-registry-tutorial.md
     - AI Agent Swarm Coordination: guides/agent-swarm-coordination.md
     - AWS Event-Driven Pipeline: guides/aws-event-pipeline.md
     - Incident Response Pipeline: guides/incident-response-pipeline.md

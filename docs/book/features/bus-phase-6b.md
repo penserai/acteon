@@ -291,6 +291,16 @@ way to distinguish "stream still in flight" from "producer crashed."
 For long-running streams, consider an upstream watchdog that emits
 `StreamEnd { status: aborted }` on producer death.
 
+## Try it locally
+
+```bash
+cargo run -p acteon-simulation --features bus --example bus_stream_simulation
+```
+
+The example spins up an in-memory bus backend, publishes a
+multi-chunk stream, and tails the SSE endpoint until the terminal
+`StreamEnd` record closes the connection — no Kafka required.
+
 ## What comes next
 
 - **Phase 6c** — HITL pre-publish approvals: park a tool-call (or

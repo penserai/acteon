@@ -251,14 +251,14 @@ async fn decide_approval(
             // handler does: re-stamp the envelope headers, produce
             // to the events topic with the same key + audit
             // metadata, then transition the row.
-            let BusApprovalEnvelope::ToolCall(envelope) = &approval.envelope;
+            let Some(BusApprovalEnvelope::ToolCall(envelope)) = &approval.envelope else {
+                return Err("approval has no tool-call envelope to produce".into());
+            };
             let payload = serde_json::to_value(envelope)?;
-            let mut msg =
-                BusMessage::new(topic.to_string(), payload).with_key(&approval.conversation_id);
-            msg.headers.insert(
-                "acteon.conversation.id".into(),
-                approval.conversation_id.clone(),
-            );
+            let conversation_id = approval.conversation_id.clone().unwrap_or_default();
+            let mut msg = BusMessage::new(topic.to_string(), payload).with_key(&conversation_id);
+            msg.headers
+                .insert("acteon.conversation.id".into(), conversation_id);
             if let Some(s) = &envelope.sender {
                 msg.headers
                     .insert("acteon.conversation.sender".into(), s.clone());

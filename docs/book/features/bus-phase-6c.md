@@ -305,6 +305,17 @@ A `Rejected` row cannot transition back to `Pending` or to
 `Approved`. The terminal-status check on both decision handlers
 makes this explicit; double-decision races land on `409 Conflict`.
 
+## Try it locally
+
+```bash
+cargo run -p acteon-simulation --features bus --example bus_approval_simulation
+```
+
+Walks through a complete approve / reject cycle on an in-memory bus
+backend — parks a tool-call envelope, lists the pending approval,
+approves it, then verifies the envelope reaches Kafka. No external
+broker required.
+
 ## What comes next
 
 - **Phase 7** — UI: an approvals queue page, plus inline approve/reject from the conversation thread view.

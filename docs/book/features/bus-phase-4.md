@@ -175,6 +175,21 @@ cargo run -p acteon-simulation --features bus --example bus_agent_simulation
 For end-to-end HTTP, start the server with the bus feature and use the
 SDK methods above.
 
+## Operator lifecycle (added post-Phase-4)
+
+Phase 4 shipped with just `AgentStatus` (heartbeat-driven liveness).
+A subsequent change layered an **operator** state — `Active` /
+`Suspended` / `Banned` — onto every agent row. The two states
+compose: a `Banned` agent that still heartbeats is `Online` *and*
+`Banned`, and discovery / route / send all refuse it with `403`.
+
+```text
+PUT /v1/bus/agents/{namespace}/{tenant}/{agent_id}/admin-state
+```
+
+See the dedicated [Operator Lifecycle](operator-lifecycle.md) guide
+for the API surface, auto-reinstate semantics, and worked examples.
+
 ## What comes next (Phase 5)
 
 - `Conversation` type: per-conversation partitioning on a shared
