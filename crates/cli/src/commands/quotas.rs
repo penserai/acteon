@@ -27,6 +27,12 @@ pub enum QuotasCommand {
         /// policies for that provider.
         #[arg(long)]
         provider: Option<String>,
+        /// Filter by principal (caller) scope. Pass the literal
+        /// `any` to list only policies without a principal scope,
+        /// or a caller id to list only policies scoped to that
+        /// caller.
+        #[arg(long)]
+        principal: Option<String>,
     },
     /// Get a quota policy by ID.
     Get {
@@ -80,12 +86,14 @@ pub async fn run(ops: &OpsClient, args: &QuotasArgs, format: &OutputFormat) -> a
             namespace,
             tenant,
             provider,
+            principal,
         } => {
             run_list(
                 ops,
                 namespace.as_ref(),
                 tenant.as_ref(),
                 provider.as_ref(),
+                principal.as_ref(),
                 format,
             )
             .await
@@ -111,6 +119,7 @@ async fn run_list(
     namespace: Option<&String>,
     tenant: Option<&String>,
     provider: Option<&String>,
+    principal: Option<&String>,
     format: &OutputFormat,
 ) -> anyhow::Result<()> {
     let resp = ops
@@ -118,6 +127,7 @@ async fn run_list(
             namespace.map(String::as_str),
             tenant.map(String::as_str),
             provider.map(String::as_str),
+            principal.map(String::as_str),
         )
         .await?;
     match format {
@@ -128,13 +138,15 @@ async fn run_list(
             info!(count = resp.count, "Quotas");
             for q in &resp.quotas {
                 let enabled = if q.enabled { "ON " } else { "OFF" };
-                let scope = q.provider.as_deref().unwrap_or("*");
+                let provider_scope = q.provider.as_deref().unwrap_or("*");
+                let principal_scope = q.principal.as_deref().unwrap_or("*");
                 info!(
                     enabled = %enabled,
                     id = %&q.id[..8.min(q.id.len())],
                     namespace = %q.namespace,
                     tenant = %q.tenant,
-                    provider = %scope,
+                    provider = %provider_scope,
+                    principal = %principal_scope,
                     max_actions = q.max_actions,
                     window = %q.window,
                     overage_behavior = %q.overage_behavior,
@@ -160,6 +172,10 @@ async fn run_get(ops: &OpsClient, id: &str, format: &OutputFormat) -> anyhow::Re
                 info!(
                     provider = %q.provider.as_deref().unwrap_or("* (generic)"),
                     "  Provider"
+                );
+                info!(
+                    principal = %q.principal.as_deref().unwrap_or("* (any caller)"),
+                    "  Principal"
                 );
                 info!(max_actions = q.max_actions, window = %q.window, "  Max");
                 info!(overage_behavior = %q.overage_behavior, "  Behavior");

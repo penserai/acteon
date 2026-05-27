@@ -150,6 +150,12 @@ export function Quotas() {
       header: 'Namespace',
       cell: (info) => <span className={shared.detailValue}>{info.getValue()}</span>,
     }),
+    col.accessor('principal', {
+      header: 'Principal',
+      cell: (info) => (
+        <span className={shared.detailValue}>{info.getValue() ?? '*'}</span>
+      ),
+    }),
     col.accessor('max_actions', {
       header: 'Limit',
       cell: (info) => <span className={shared.detailValue}>{info.getValue().toLocaleString()}</span>,
@@ -350,6 +356,7 @@ function QuotaFormModal({ open, onClose, onSubmit, loading, title, initial }: {
 }) {
   const [formNs, setFormNs] = useState(initial?.namespace ?? '')
   const [formTenant, setFormTenant] = useState(initial?.tenant ?? '')
+  const [formPrincipal, setFormPrincipal] = useState(initial?.principal ?? '')
   const [maxActions, setMaxActions] = useState(initial?.max_actions?.toString() ?? '1000')
   const [window, setWindow] = useState<QuotaWindow>(initial?.window ?? 'daily')
   const [behavior, setBehavior] = useState<OverageBehavior>(initial?.overage_behavior ?? 'block')
@@ -367,6 +374,7 @@ function QuotaFormModal({ open, onClose, onSubmit, loading, title, initial }: {
     onSubmit({
       namespace: formNs,
       tenant: formTenant,
+      principal: formPrincipal.trim() ? formPrincipal.trim() : undefined,
       max_actions: parseInt(maxActions, 10) || 0,
       window,
       overage_behavior: behavior,
@@ -414,6 +422,16 @@ function QuotaFormModal({ open, onClose, onSubmit, loading, title, initial }: {
             value={formTenant}
             onChange={(e) => setFormTenant(e.target.value)}
             placeholder="acme"
+            disabled={isEdit}
+          />
+        </div>
+
+        <div className={shared.formGrid}>
+          <Input
+            label="Principal (caller id, optional)"
+            value={formPrincipal}
+            onChange={(e) => setFormPrincipal(e.target.value)}
+            placeholder="leave blank to apply to all callers"
             disabled={isEdit}
           />
         </div>
@@ -514,6 +532,7 @@ function QuotaDetailView({ quota, usage, tab, onTabChange, onEdit, onDelete }: {
             'ID': quota.id,
             'Namespace': quota.namespace,
             'Tenant': quota.tenant,
+            'Principal': quota.principal ?? '* (any caller)',
             'Max Actions': quota.max_actions.toLocaleString(),
             'Window': capitalize(quota.window),
             'Overage Behavior': capitalize(quota.overage_behavior),

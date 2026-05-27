@@ -90,17 +90,20 @@ impl std::fmt::Display for OverageBehavior {
 /// A quota policy defining the usage limit for a tenant.
 ///
 /// A policy can be **generic** (applies to every dispatch for the
-/// `(namespace, tenant)` pair regardless of target provider) or
-/// **provider-scoped** (applies only when the action's `provider`
-/// matches this field). Multiple policies may coexist for the same
+/// `(namespace, tenant)` pair regardless of target provider or
+/// caller) or **scoped** along the `provider` and/or `principal`
+/// dimensions. Multiple policies may coexist for the same
 /// `(namespace, tenant)`; all of them are evaluated in parallel and
-/// the **strictest** result wins. Typical use: stack a daily
-/// tenant-wide cap with per-provider burst caps.
+/// the **strictest** result wins. Typical uses: stack a daily
+/// tenant-wide cap with per-provider burst caps, or carve out a
+/// per-API-key budget on top of the tenant total.
 ///
 /// | Policy | Matches | Counted against |
 /// |---|---|---|
-/// | `provider: None` | Any dispatch for the tenant | Generic counter bucket |
-/// | `provider: Some("slack")` | Only dispatches to the `slack` provider | Provider-scoped counter bucket |
+/// | `provider: None`, `principal: None` | Any dispatch for the tenant | Tenant-wide bucket |
+/// | `provider: Some("slack")` | Only dispatches to the `slack` provider | Provider bucket |
+/// | `principal: Some("svc-billing")` | Only dispatches by caller `svc-billing` | Principal bucket |
+/// | both set | Only dispatches by that caller to that provider | Per-(principal,provider) bucket |
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct QuotaPolicy {
@@ -117,6 +120,17 @@ pub struct QuotaPolicy {
     /// against (and are enforced by) this policy.
     #[serde(default)]
     pub provider: Option<String>,
+    /// Optional caller identifier (API key name, JWT subject, etc.)
+    /// this quota applies to. When `None`, the policy ignores the
+    /// caller and counts all dispatches for its scope. When
+    /// `Some(principal)`, only dispatches made by that caller count
+    /// against (and are enforced by) this policy.
+    ///
+    /// Dispatches without an authenticated caller (background jobs,
+    /// chain steps, scheduled re-dispatches) never match a
+    /// principal-scoped policy and so are not affected by it.
+    #[serde(default)]
+    pub principal: Option<String>,
     /// Maximum number of actions allowed per window.
     pub max_actions: u64,
     /// Time window for the quota.
@@ -230,6 +244,21 @@ impl QuotaPolicy {
         }
     }
 
+    /// Whether this policy applies to a dispatch made by the given
+    /// caller. A policy without a `principal` scope (`principal:
+    /// None`) applies to every caller. A principal-scoped policy
+    /// applies only when the caller's id matches exactly; dispatches
+    /// without an authenticated caller (`principal = None` argument)
+    /// never match a principal-scoped policy.
+    #[must_use]
+    pub fn applies_to_principal(&self, principal: Option<&str>) -> bool {
+        match (&self.principal, principal) {
+            (None, _) => true,
+            (Some(_), None) => false,
+            (Some(scoped), Some(actual)) => scoped.as_str() == actual,
+        }
+    }
+
     /// Validate that this policy's scope identifiers are safe to
     /// use as state-store key components and that the time window
     /// and `max_actions` are non-zero. Callers use this both at
@@ -249,6 +278,9 @@ impl QuotaPolicy {
             .map_err(|e| format!("invalid tenant: {e}"))?;
         if let Some(ref p) = self.provider {
             validate_quota_scope_identifier(p).map_err(|e| format!("invalid provider: {e}"))?;
+        }
+        if let Some(ref p) = self.principal {
+            validate_quota_scope_identifier(p).map_err(|e| format!("invalid principal: {e}"))?;
         }
         if self.window.duration_seconds() == 0 {
             return Err("quota window duration must be greater than 0".to_string());
@@ -310,21 +342,23 @@ pub fn compute_window_boundaries(
 
 /// Build a state key suffix for a quota usage counter.
 ///
-/// Format: `{namespace}:{tenant}:{provider_or_wildcard}:{window_label}:{window_index}`
+/// Format: `{namespace}:{tenant}:{principal_or_*}:{provider_or_*}:{window_label}:{window_index}`
 ///
-/// The `provider` component is `"*"` for generic policies (those
-/// with `provider: None`) and the literal provider name otherwise.
-/// This ensures that a generic tenant-wide policy and one or more
-/// provider-scoped policies all maintain independent counters —
-/// a burst of `slack` dispatches does not consume the `email`
-/// policy's window, and neither provider-specific counter
-/// interferes with the tenant-wide counter.
+/// The `principal` and `provider` components are `"*"` when the
+/// policy is unscoped along that dimension, and the literal
+/// identifier otherwise. This guarantees that policies along
+/// orthogonal dimensions (tenant-wide / per-provider /
+/// per-principal / per-(principal,provider)) all maintain
+/// independent counters — a burst of `slack` dispatches by one
+/// API key does not consume the `email` budget or another caller's
+/// budget, and a per-caller policy does not interfere with the
+/// tenant-wide counter.
 ///
 /// Returns `None` instead of panicking when any of these would
 /// produce an unsafe or nonsensical key:
 ///
 /// * The window duration is zero (would divide by zero).
-/// * `namespace`, `tenant`, or `provider` fails
+/// * `namespace`, `tenant`, `provider`, or `principal` fails
 ///   [`validate_quota_scope_identifier`] (e.g., contains the
 ///   reserved `:` separator that would enable cross-tenant key
 ///   collisions).
@@ -336,6 +370,7 @@ pub fn compute_window_boundaries(
 pub fn quota_counter_key(
     namespace: &str,
     tenant: &str,
+    principal: Option<&str>,
     provider: Option<&str>,
     window: &QuotaWindow,
     now: &DateTime<Utc>,
@@ -354,13 +389,19 @@ pub fn quota_counter_key(
     {
         return None;
     }
+    if let Some(p) = principal
+        && validate_quota_scope_identifier(p).is_err()
+    {
+        return None;
+    }
     let epoch = DateTime::UNIX_EPOCH;
     let elapsed = now.signed_duration_since(epoch);
     let window_secs = secs.cast_signed();
     let window_index = elapsed.num_seconds() / window_secs;
+    let principal_part = principal.unwrap_or("*");
     let provider_part = provider.unwrap_or("*");
     Some(format!(
-        "{namespace}:{tenant}:{provider_part}:{}:{window_index}",
+        "{namespace}:{tenant}:{principal_part}:{provider_part}:{}:{window_index}",
         window.label()
     ))
 }
@@ -433,6 +474,7 @@ mod tests {
             namespace: "notifications".into(),
             tenant: "tenant-1".into(),
             provider: None,
+            principal: None,
             max_actions: 1000,
             window: QuotaWindow::Daily,
             overage_behavior: OverageBehavior::Block,
@@ -542,22 +584,24 @@ mod tests {
         let now = chrono::DateTime::parse_from_rfc3339("2026-02-10T14:30:00Z")
             .unwrap()
             .with_timezone(&Utc);
-        let key = quota_counter_key("ns", "tenant-1", None, &QuotaWindow::Hourly, &now).unwrap();
-        // Generic (no provider) policies encode as "*" in the counter key.
-        assert!(key.starts_with("ns:tenant-1:*:hourly:"));
+        let key =
+            quota_counter_key("ns", "tenant-1", None, None, &QuotaWindow::Hourly, &now).unwrap();
+        // Generic (no principal, no provider) policies encode as "*:*".
+        assert!(key.starts_with("ns:tenant-1:*:*:hourly:"));
         // Same time should produce the same key.
-        let key2 = quota_counter_key("ns", "tenant-1", None, &QuotaWindow::Hourly, &now).unwrap();
+        let key2 =
+            quota_counter_key("ns", "tenant-1", None, None, &QuotaWindow::Hourly, &now).unwrap();
         assert_eq!(key, key2);
     }
 
     #[test]
     fn quota_counter_key_per_provider_isolation() {
         let now = Utc::now();
-        let generic = quota_counter_key("ns", "t", None, &QuotaWindow::Hourly, &now).unwrap();
+        let generic = quota_counter_key("ns", "t", None, None, &QuotaWindow::Hourly, &now).unwrap();
         let slack =
-            quota_counter_key("ns", "t", Some("slack"), &QuotaWindow::Hourly, &now).unwrap();
+            quota_counter_key("ns", "t", None, Some("slack"), &QuotaWindow::Hourly, &now).unwrap();
         let email =
-            quota_counter_key("ns", "t", Some("email"), &QuotaWindow::Hourly, &now).unwrap();
+            quota_counter_key("ns", "t", None, Some("email"), &QuotaWindow::Hourly, &now).unwrap();
         // All three live in separate counter buckets.
         assert_ne!(generic, slack);
         assert_ne!(generic, email);
@@ -567,10 +611,35 @@ mod tests {
     }
 
     #[test]
+    fn quota_counter_key_per_principal_isolation() {
+        let now = Utc::now();
+        let generic = quota_counter_key("ns", "t", None, None, &QuotaWindow::Hourly, &now).unwrap();
+        let alice =
+            quota_counter_key("ns", "t", Some("alice"), None, &QuotaWindow::Hourly, &now).unwrap();
+        let bob =
+            quota_counter_key("ns", "t", Some("bob"), None, &QuotaWindow::Hourly, &now).unwrap();
+        let alice_slack = quota_counter_key(
+            "ns",
+            "t",
+            Some("alice"),
+            Some("slack"),
+            &QuotaWindow::Hourly,
+            &now,
+        )
+        .unwrap();
+        // Each (principal, provider) combination keys its own bucket.
+        assert_ne!(generic, alice);
+        assert_ne!(alice, bob);
+        assert_ne!(alice, alice_slack);
+        assert!(alice.contains(":alice:*:"));
+        assert!(alice_slack.contains(":alice:slack:"));
+    }
+
+    #[test]
     fn quota_counter_key_different_windows() {
         let now = Utc::now();
-        let k1 = quota_counter_key("ns", "t", None, &QuotaWindow::Hourly, &now);
-        let k2 = quota_counter_key("ns", "t", None, &QuotaWindow::Daily, &now);
+        let k1 = quota_counter_key("ns", "t", None, None, &QuotaWindow::Hourly, &now);
+        let k2 = quota_counter_key("ns", "t", None, None, &QuotaWindow::Daily, &now);
         assert_ne!(k1, k2);
     }
 
@@ -578,29 +647,53 @@ mod tests {
     fn quota_counter_key_returns_none_on_zero_window() {
         let now = Utc::now();
         assert!(
-            quota_counter_key("ns", "t", None, &QuotaWindow::Custom { seconds: 0 }, &now).is_none(),
+            quota_counter_key(
+                "ns",
+                "t",
+                None,
+                None,
+                &QuotaWindow::Custom { seconds: 0 },
+                &now
+            )
+            .is_none(),
             "zero window must return None (fail-closed) instead of panicking"
         );
     }
 
     #[test]
     fn quota_counter_key_rejects_colon_in_identifiers() {
-        // Cross-tenant key injection attempt: a malicious provider
-        // name containing `:` must not produce a key that could
-        // collide with another tenant's counter bucket.
+        // Cross-tenant key injection attempt: a malicious provider or
+        // principal name containing `:` must not produce a key that
+        // could collide with another tenant's counter bucket.
         let now = Utc::now();
         assert!(
             quota_counter_key(
                 "acme",
                 "t",
+                None,
                 Some("slack:acme:*"),
                 &QuotaWindow::Hourly,
                 &now
             )
             .is_none()
         );
-        assert!(quota_counter_key("ns:rogue", "t", None, &QuotaWindow::Hourly, &now).is_none());
-        assert!(quota_counter_key("ns", "t:rogue", None, &QuotaWindow::Hourly, &now).is_none());
+        assert!(
+            quota_counter_key(
+                "acme",
+                "t",
+                Some("alice:rogue"),
+                None,
+                &QuotaWindow::Hourly,
+                &now
+            )
+            .is_none()
+        );
+        assert!(
+            quota_counter_key("ns:rogue", "t", None, None, &QuotaWindow::Hourly, &now).is_none()
+        );
+        assert!(
+            quota_counter_key("ns", "t:rogue", None, None, &QuotaWindow::Hourly, &now).is_none()
+        );
     }
 
     #[test]
@@ -651,6 +744,7 @@ mod tests {
             namespace: "ns".into(),
             tenant: "t".into(),
             provider: None,
+            principal: None,
             max_actions: 100,
             window: QuotaWindow::Hourly,
             overage_behavior: OverageBehavior::Block,
@@ -671,8 +765,13 @@ mod tests {
         policy.provider = Some("bad:provider".into());
         assert!(policy.validate_scope().is_err());
 
-        // Zero max_actions is rejected.
+        // Colon in principal is rejected (key injection).
         policy.provider = None;
+        policy.principal = Some("bad:principal".into());
+        assert!(policy.validate_scope().is_err());
+
+        // Zero max_actions is rejected.
+        policy.principal = None;
         policy.max_actions = 0;
         assert!(policy.validate_scope().is_err());
     }
@@ -695,6 +794,7 @@ mod tests {
             namespace: "ns".into(),
             tenant: "t".into(),
             provider: Some("slack".into()),
+            principal: None,
             max_actions: 10_000,
             window: QuotaWindow::Monthly,
             overage_behavior: OverageBehavior::Degrade {
@@ -725,6 +825,7 @@ mod tests {
             namespace: "ns".into(),
             tenant: "t".into(),
             provider: None,
+            principal: None,
             max_actions: 100,
             window: QuotaWindow::Hourly,
             overage_behavior: OverageBehavior::Block,
@@ -767,12 +868,61 @@ mod tests {
     }
 
     #[test]
+    fn quota_policy_applies_to_principal() {
+        let mut policy = QuotaPolicy {
+            id: "q-p".into(),
+            namespace: "ns".into(),
+            tenant: "t".into(),
+            provider: None,
+            principal: None,
+            max_actions: 100,
+            window: QuotaWindow::Hourly,
+            overage_behavior: OverageBehavior::Block,
+            enabled: true,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            description: None,
+            labels: HashMap::new(),
+        };
+        // Unscoped policy matches every caller, including anonymous.
+        assert!(policy.applies_to_principal(Some("alice")));
+        assert!(policy.applies_to_principal(Some("svc-billing")));
+        assert!(policy.applies_to_principal(None));
+
+        // Principal-scoped policy only matches the exact caller, and
+        // never matches an unauthenticated dispatch.
+        policy.principal = Some("alice".into());
+        assert!(policy.applies_to_principal(Some("alice")));
+        assert!(!policy.applies_to_principal(Some("bob")));
+        assert!(!policy.applies_to_principal(None));
+    }
+
+    #[test]
+    fn quota_policy_defaults_principal_to_none() {
+        let json = r#"{
+            "id": "q-legacy-p",
+            "namespace": "ns",
+            "tenant": "t",
+            "max_actions": 500,
+            "window": "daily",
+            "overage_behavior": "block",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z"
+        }"#;
+        let policy: QuotaPolicy = serde_json::from_str(json).unwrap();
+        assert!(policy.principal.is_none());
+        assert!(policy.applies_to_principal(Some("anyone")));
+        assert!(policy.applies_to_principal(None));
+    }
+
+    #[test]
     fn quota_policy_disabled() {
         let policy = QuotaPolicy {
             id: "q-dis".into(),
             namespace: "ns".into(),
             tenant: "t".into(),
             provider: None,
+            principal: None,
             max_actions: 100,
             window: QuotaWindow::Hourly,
             overage_behavior: OverageBehavior::Block,

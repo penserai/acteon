@@ -492,16 +492,22 @@ impl OpsClient {
     }
 
     /// List quota policies filtered by optional namespace, tenant,
-    /// and provider scope (`Some("generic")` matches only policies
-    /// with `provider: None`; any other value matches policies with
-    /// that exact provider scope).
+    /// provider scope, and principal scope. Pass `Some("generic")`
+    /// as `provider` to match only policies with `provider: None`,
+    /// or a provider name for that exact scope. Pass `Some("any")`
+    /// as `principal` to match only policies with `principal: None`,
+    /// or a caller id for that exact scope.
     pub async fn list_quotas(
         &self,
         namespace: Option<&str>,
         tenant: Option<&str>,
         provider: Option<&str>,
+        principal: Option<&str>,
     ) -> Result<ListQuotasResponse, OpsError> {
-        Ok(self.inner.list_quotas(namespace, tenant, provider).await?)
+        Ok(self
+            .inner
+            .list_quotas(namespace, tenant, provider, principal)
+            .await?)
     }
 
     /// Get a quota policy by ID.

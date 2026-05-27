@@ -26,6 +26,14 @@ public class CreateQuotaRequest {
     @JsonProperty("provider")
     private String provider;
 
+    /**
+     * Optional principal (caller-id) scope. Null applies to every
+     * caller. When set, only dispatches by that caller (API key
+     * name or JWT subject) count against the policy.
+     */
+    @JsonProperty("principal")
+    private String principal;
+
     @JsonProperty("max_actions")
     private long maxActions;
 
@@ -59,6 +67,9 @@ public class CreateQuotaRequest {
 
     public String getProvider() { return provider; }
     public void setProvider(String provider) { this.provider = provider; }
+
+    public String getPrincipal() { return principal; }
+    public void setPrincipal(String principal) { this.principal = principal; }
 
     public long getMaxActions() { return maxActions; }
     public void setMaxActions(long maxActions) { this.maxActions = maxActions; }

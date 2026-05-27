@@ -24,6 +24,7 @@ Each quota policy defines:
 
 - A **tenant** and **namespace** scope
 - An optional **provider** scope (`None` = generic catch-all, `Some("slack")` = per-provider)
+- An optional **principal** scope (`None` = every caller, `Some("svc-billing")` = per-caller)
 - A **maximum number of actions** per **time window**
 - An **overage behavior** that determines what happens when the limit is exceeded
 
@@ -43,13 +44,30 @@ provider cannot consume another provider's budget.
 
 | Policy (`provider` field) | Matches dispatches to | Counter bucket |
 |---|---|---|
-| `None` (generic) | Any provider for the tenant | `{ns}:{tenant}:*:{window}:{idx}` |
-| `Some("slack")` | Only `slack` | `{ns}:{tenant}:slack:{window}:{idx}` |
-| `Some("email")` | Only `email` | `{ns}:{tenant}:email:{window}:{idx}` |
+| `None` (generic) | Any provider for the tenant | `{ns}:{tenant}:*:*:{window}:{idx}` |
+| `Some("slack")` | Only `slack` | `{ns}:{tenant}:*:slack:{window}:{idx}` |
+| `Some("email")` | Only `email` | `{ns}:{tenant}:*:email:{window}:{idx}` |
 
 When any applicable policy blocks a dispatch, every counter
 incremented during that call is rolled back — the blocked
 request does not consume budget on sibling policies.
+
+### Per-principal policies
+
+In addition to the `provider` dimension, policies may scope to a
+specific **caller** (API key name or JWT subject) via the
+`principal` field. This is useful for carving out per-API-key
+budgets on top of a tenant-wide cap — e.g. "the `svc-billing`
+service account gets 100 actions/hour, on top of the tenant's
+10,000/day overall budget." A dispatch with no authenticated
+caller (background jobs, chain steps, scheduled re-dispatches)
+never matches a principal-scoped policy.
+
+| Policy scope | Matches | Counter bucket |
+|---|---|---|
+| `principal: None`, `provider: None` | Every dispatch | `{ns}:{tenant}:*:*:{window}:{idx}` |
+| `principal: Some("alice")`, `provider: None` | Only dispatches by `alice` | `{ns}:{tenant}:alice:*:{window}:{idx}` |
+| `principal: Some("alice")`, `provider: Some("slack")` | Only `alice` → `slack` | `{ns}:{tenant}:alice:slack:{window}:{idx}` |
 
 ## Configuration
 

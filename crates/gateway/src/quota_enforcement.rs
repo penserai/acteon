@@ -43,8 +43,9 @@ impl Gateway {
     pub(crate) async fn check_quota(
         &self,
         action: &Action,
+        principal: Option<&str>,
     ) -> Result<Option<ActionOutcome>, GatewayError> {
-        self.check_quota_inner(action, false).await
+        self.check_quota_inner(action, principal, false).await
     }
 
     /// Re-check quota after a degrade-driven provider swap.
@@ -61,13 +62,15 @@ impl Gateway {
     pub(crate) async fn check_quota_fallback(
         &self,
         action: &Action,
+        principal: Option<&str>,
     ) -> Result<Option<ActionOutcome>, GatewayError> {
-        self.check_quota_inner(action, true).await
+        self.check_quota_inner(action, principal, true).await
     }
 
     async fn check_quota_inner(
         &self,
         action: &Action,
+        principal: Option<&str>,
         only_provider_scoped: bool,
     ) -> Result<Option<ActionOutcome>, GatewayError> {
         const CACHE_TTL_SECS: i64 = 60;
@@ -155,6 +158,7 @@ impl Gateway {
             .filter(|p| {
                 p.enabled
                     && p.applies_to_provider(&action.provider)
+                    && p.applies_to_principal(principal)
                     && (!only_provider_scoped || p.provider.is_some())
             })
             .collect();
@@ -259,6 +263,7 @@ impl Gateway {
             let Some(counter_id) = acteon_core::quota_counter_key(
                 &action.namespace,
                 &action.tenant,
+                policy.principal.as_deref(),
                 policy.provider.as_deref(),
                 &policy.window,
                 now,

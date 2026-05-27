@@ -157,6 +157,7 @@ fn build_create_quota(v: &serde_json::Value) -> Result<CreateQuotaRequest, McpEr
         namespace: val_str(v, "namespace")?,
         tenant: val_str(v, "tenant")?,
         provider: val_opt_str(v, "provider"),
+        principal: val_opt_str(v, "principal"),
         max_actions: val_u64(v, "max_actions")?,
         window: val_str(v, "window")?,
         overage_behavior: val_str(v, "overage_behavior")?,
@@ -465,6 +466,11 @@ pub struct ListQuotasParams {
     /// provider.
     #[serde(default)]
     pub provider: Option<String>,
+    /// Filter by principal (caller) scope: pass `"any"` to match
+    /// only policies with no principal scope, or a caller id to
+    /// match only policies scoped to that caller.
+    #[serde(default)]
+    pub principal: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -669,6 +675,11 @@ pub struct ManageQuotasParams {
     /// only per-provider policies for that provider.
     #[serde(default)]
     pub provider: Option<String>,
+    /// Principal (caller) scope filter for list: `"any"` matches
+    /// policies without a principal scope; any other value matches
+    /// only policies scoped to that caller.
+    #[serde(default)]
+    pub principal: Option<String>,
     /// JSON data for create or update operations.
     #[serde(default)]
     pub data: Option<serde_json::Value>,
@@ -1518,6 +1529,7 @@ impl ActeonMcpServer {
                 p.namespace.as_deref(),
                 p.tenant.as_deref(),
                 p.provider.as_deref(),
+                p.principal.as_deref(),
             )
             .await
         {
@@ -1822,6 +1834,7 @@ impl ActeonMcpServer {
                         p.namespace.as_deref(),
                         p.tenant.as_deref(),
                         p.provider.as_deref(),
+                        p.principal.as_deref(),
                     )
                     .await
                 {

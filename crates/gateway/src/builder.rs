@@ -579,20 +579,23 @@ impl GatewayBuilder {
                 GatewayError::Configuration(format!("quota policy '{label}' invalid: {e}"))
             })?;
         }
-        // Reject duplicate (ns, tenant, provider) tuples — operators
-        // should pick exactly one policy per scope; silent override
-        // would be surprising.
-        let mut seen: HashMap<(String, String, Option<String>), String> = HashMap::new();
+        // Reject duplicate (ns, tenant, provider, principal) tuples —
+        // operators should pick exactly one policy per scope; silent
+        // override would be surprising. Policies along orthogonal
+        // dimensions (different providers or principals) may coexist.
+        let mut seen: HashMap<(String, String, Option<String>, Option<String>), String> =
+            HashMap::new();
         for policy in &policies {
             let key = (
                 policy.namespace.clone(),
                 policy.tenant.clone(),
                 policy.provider.clone(),
+                policy.principal.clone(),
             );
             if let Some(existing_id) = seen.get(&key) {
                 return Err(GatewayError::Configuration(format!(
-                    "duplicate quota policy for (namespace={}, tenant={}, provider={:?}): ids {existing_id} and {}",
-                    policy.namespace, policy.tenant, policy.provider, policy.id
+                    "duplicate quota policy for (namespace={}, tenant={}, provider={:?}, principal={:?}): ids {existing_id} and {}",
+                    policy.namespace, policy.tenant, policy.provider, policy.principal, policy.id
                 )));
             }
             seen.insert(key, policy.id.clone());
@@ -1104,6 +1107,7 @@ mod tests {
             namespace: "ns".into(),
             tenant: "t".into(),
             provider: None,
+            principal: None,
             max_actions: 0,
             window: acteon_core::quota::QuotaWindow::Daily,
             overage_behavior: acteon_core::quota::OverageBehavior::Block,
@@ -1137,6 +1141,7 @@ mod tests {
             namespace: "ns".into(),
             tenant: "t".into(),
             provider: None,
+            principal: None,
             max_actions: 100,
             window: acteon_core::quota::QuotaWindow::Custom { seconds: 0 },
             overage_behavior: acteon_core::quota::OverageBehavior::Block,

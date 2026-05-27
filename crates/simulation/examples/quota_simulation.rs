@@ -94,6 +94,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             namespace: "notifications".into(),
             tenant: "tenant-a".into(),
             provider: None,
+            principal: None,
             max_actions: 10,
             window: QuotaWindow::Hourly,
             overage_behavior: OverageBehavior::Block,
@@ -180,6 +181,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             namespace: "analytics".into(),
             tenant: "tenant-b".into(),
             provider: None,
+            principal: None,
             max_actions: 100,
             window: QuotaWindow::Daily,
             overage_behavior: OverageBehavior::Warn,
@@ -265,6 +267,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             namespace: "messaging".into(),
             tenant: "tenant-c".into(),
             provider: None,
+            principal: None,
             max_actions: 5,
             window: QuotaWindow::Hourly,
             overage_behavior: OverageBehavior::Degrade {
