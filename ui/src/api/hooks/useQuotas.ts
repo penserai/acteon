@@ -9,7 +9,12 @@ import type {
   UpdateQuotaRequest,
 } from '../../types'
 
-export function useQuotas(params: { namespace?: string; tenant?: string }) {
+export function useQuotas(params: {
+  namespace?: string
+  tenant?: string
+  provider?: string
+  principal?: string
+}) {
   return useQuery({
     queryKey: ['quotas', params],
     queryFn: () => apiGet<QuotaListResponse>('/v1/quotas', params),

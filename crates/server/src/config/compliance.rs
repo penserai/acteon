@@ -31,6 +31,21 @@ pub struct QuotaConfig {
     /// Default overage behavior for new quota policies (e.g., `"block"`).
     #[serde(default)]
     pub default_overage_behavior: Option<String>,
+    /// Optional path to a TOML file containing a `[[quotas]]` array
+    /// of static quota policies. When set, the server loads the
+    /// file at startup, materializes the entries with deterministic
+    /// `UUIDv5` IDs, tags them with `_source = "toml"`, and reconciles
+    /// against any previously TOML-loaded records (deleting entries
+    /// removed from the file). API-managed policies are not touched.
+    ///
+    /// Hot reload: the file is watched for changes (debounced 500ms);
+    /// reloads also fire on `POST /v1/quotas/reload`.
+    #[serde(default)]
+    pub policies_file: Option<String>,
+    /// Whether to watch `policies_file` for changes and hot-reload.
+    /// Defaults to `true` when a `policies_file` is configured.
+    #[serde(default = "default_quotas_watch")]
+    pub watch: bool,
 }
 
 impl Default for QuotaConfig {
@@ -39,8 +54,14 @@ impl Default for QuotaConfig {
             enabled: default_quotas_enabled(),
             default_window: None,
             default_overage_behavior: None,
+            policies_file: None,
+            watch: default_quotas_watch(),
         }
     }
+}
+
+fn default_quotas_watch() -> bool {
+    true
 }
 
 fn default_quotas_enabled() -> bool {

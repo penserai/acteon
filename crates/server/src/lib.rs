@@ -6,6 +6,7 @@ pub mod auth;
 pub mod bus_reconciler;
 pub mod config;
 pub mod error;
+pub mod quotas_loader;
 pub mod ratelimit;
 pub mod state_factory;
 pub mod telemetry;

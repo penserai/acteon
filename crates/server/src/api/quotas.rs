@@ -906,3 +906,42 @@ pub async fn get_quota_usage(
 
     (StatusCode::OK, Json(serde_json::json!(usage))).into_response()
 }
+
+/// `POST /v1/quotas/reload` -- re-read the static quotas TOML file
+/// and reconcile it against the running gateway + state store.
+///
+/// Only operates on records carrying the `_source = "toml"` label;
+/// API-managed quotas are untouched. The file path is fixed at
+/// server startup via `[server.quotas].policies_file`.
+#[utoipa::path(
+    post,
+    path = "/v1/quotas/reload",
+    tag = "Quotas",
+    summary = "Reload static quotas",
+    description = "Re-reads the configured static-quotas TOML file and reconciles its entries against the gateway. Returns counts of upserted, deleted, and skipped entries.",
+    responses(
+        (status = 200, description = "Reload complete", body = serde_json::Value),
+        (status = 400, description = "No policies_file configured", body = ErrorResponse),
+        (status = 500, description = "Reload failed", body = ErrorResponse),
+    )
+)]
+pub async fn reload_static_quotas(State(state): State<AppState>) -> impl IntoResponse {
+    let Some(handle) = state.static_quotas.clone() else {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "no static quotas file configured ([server.quotas].policies_file is unset)",
+        );
+    };
+    let gw = state.gateway.read().await;
+    let state_store = gw.state_store().clone();
+    drop(gw);
+    match crate::quotas_loader::reload_from_file(&handle.path, &state.gateway, &state_store).await {
+        Ok(report) => {
+            // Wake the file watcher (if any) so it doesn't double-fire
+            // immediately after we mutated the file's records.
+            handle.nudge.notify_waiters();
+            (StatusCode::OK, Json(serde_json::json!(report))).into_response()
+        }
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
+    }
+}

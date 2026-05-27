@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use acteon_ops::OpsClient;
 use acteon_ops::acteon_client::{CreateQuotaRequest, UpdateQuotaRequest};
 use clap::{Args, Subcommand};
@@ -39,19 +41,85 @@ pub enum QuotasCommand {
         /// Quota policy ID.
         id: String,
     },
-    /// Create a quota policy.
+    /// Create a quota policy. Use either --data for a raw JSON
+    /// payload, or the individual --field flags for an ergonomic
+    /// inline form.
     Create {
-        /// JSON data (string or @file path).
+        /// JSON data (string or @file path). When set, all other
+        /// --field flags are ignored.
+        #[arg(long, conflicts_with_all = [
+            "namespace", "tenant", "provider", "principal", "per_principal",
+            "max_actions", "window", "overage_behavior", "description", "label",
+        ])]
+        data: Option<String>,
+        /// Namespace scope.
+        #[arg(long, required_unless_present = "data")]
+        namespace: Option<String>,
+        /// Tenant scope.
+        #[arg(long, required_unless_present = "data")]
+        tenant: Option<String>,
+        /// Provider scope. Omit for tenant-wide.
         #[arg(long)]
-        data: String,
+        provider: Option<String>,
+        /// Principal (caller id) scope. Omit to apply to every
+        /// caller. Mutually exclusive with --per-principal.
+        #[arg(long, conflicts_with = "per_principal")]
+        principal: Option<String>,
+        /// Maintain a separate counter per authenticated caller.
+        #[arg(long)]
+        per_principal: bool,
+        /// Maximum actions allowed in the window.
+        #[arg(long, required_unless_present = "data")]
+        max_actions: Option<u64>,
+        /// Time window: hourly | daily | weekly | monthly | <seconds>.
+        #[arg(long, required_unless_present = "data")]
+        window: Option<String>,
+        /// Overage behavior: block | warn | degrade:<provider> | notify:<target>.
+        #[arg(long, required_unless_present = "data")]
+        overage_behavior: Option<String>,
+        /// Optional human-readable description.
+        #[arg(long)]
+        description: Option<String>,
+        /// Label in `key=value` form. Pass multiple times for multiple labels.
+        #[arg(long, value_parser = parse_kv)]
+        label: Vec<(String, String)>,
     },
-    /// Update a quota policy.
+    /// Update a quota policy. Use either --data for a raw JSON
+    /// payload, or the individual --field flags for an ergonomic
+    /// inline form.
     Update {
         /// Quota policy ID.
         id: String,
-        /// JSON data (string or @file path).
+        /// JSON data (string or @file path). When set, all other
+        /// --field flags are ignored.
+        #[arg(long, conflicts_with_all = [
+            "max_actions", "window", "overage_behavior", "enabled",
+            "per_principal", "description", "label",
+        ])]
+        data: Option<String>,
+        /// Updated maximum actions.
         #[arg(long)]
-        data: String,
+        max_actions: Option<u64>,
+        /// Updated time window.
+        #[arg(long)]
+        window: Option<String>,
+        /// Updated overage behavior.
+        #[arg(long)]
+        overage_behavior: Option<String>,
+        /// Updated enabled state.
+        #[arg(long)]
+        enabled: Option<bool>,
+        /// Updated per-principal flag.
+        #[arg(long)]
+        per_principal: Option<bool>,
+        /// Updated description.
+        #[arg(long)]
+        description: Option<String>,
+        /// Replacement label set, each in `key=value` form. Pass
+        /// multiple times to set multiple labels; passing none
+        /// leaves the existing label set unchanged.
+        #[arg(long, value_parser = parse_kv)]
+        label: Vec<(String, String)>,
     },
     /// Delete a quota policy.
     Delete {
@@ -80,6 +148,25 @@ fn parse_json_data(input: &str) -> anyhow::Result<serde_json::Value> {
     }
 }
 
+/// Parse a `key=value` pair for `--label`. Rejects empty keys.
+fn parse_kv(input: &str) -> Result<(String, String), String> {
+    let (k, v) = input
+        .split_once('=')
+        .ok_or_else(|| format!("expected key=value, got {input:?}"))?;
+    if k.is_empty() {
+        return Err("label key must not be empty".into());
+    }
+    Ok((k.to_string(), v.to_string()))
+}
+
+fn labels_vec_to_map(labels: Vec<(String, String)>) -> Option<HashMap<String, String>> {
+    if labels.is_empty() {
+        None
+    } else {
+        Some(labels.into_iter().collect())
+    }
+}
+
 pub async fn run(ops: &OpsClient, args: &QuotasArgs, format: &OutputFormat) -> anyhow::Result<()> {
     match &args.command {
         QuotasCommand::List {
@@ -99,8 +186,72 @@ pub async fn run(ops: &OpsClient, args: &QuotasArgs, format: &OutputFormat) -> a
             .await
         }
         QuotasCommand::Get { id } => run_get(ops, id, format).await,
-        QuotasCommand::Create { data } => run_create(ops, data, format).await,
-        QuotasCommand::Update { id, data } => run_update(ops, id, data, format).await,
+        QuotasCommand::Create {
+            data,
+            namespace,
+            tenant,
+            provider,
+            principal,
+            per_principal,
+            max_actions,
+            window,
+            overage_behavior,
+            description,
+            label,
+        } => {
+            let req = if let Some(raw) = data.as_ref() {
+                let value = parse_json_data(raw)?;
+                serde_json::from_value::<CreateQuotaRequest>(value)?
+            } else {
+                CreateQuotaRequest {
+                    namespace: namespace.clone().unwrap_or_default(),
+                    tenant: tenant.clone().unwrap_or_default(),
+                    provider: provider.clone(),
+                    principal: principal.clone(),
+                    per_principal: *per_principal,
+                    max_actions: max_actions.unwrap_or_default(),
+                    window: window.clone().unwrap_or_default(),
+                    overage_behavior: overage_behavior.clone().unwrap_or_default(),
+                    description: description.clone(),
+                    labels: labels_vec_to_map(label.clone()),
+                }
+            };
+            run_create(ops, &req, format).await
+        }
+        QuotasCommand::Update {
+            id,
+            data,
+            max_actions,
+            window,
+            overage_behavior,
+            enabled,
+            per_principal,
+            description,
+            label,
+        } => {
+            let req = if let Some(raw) = data.as_ref() {
+                let value = parse_json_data(raw)?;
+                serde_json::from_value::<UpdateQuotaRequest>(value)?
+            } else {
+                // The Rust client's UpdateQuotaRequest insists on
+                // namespace/tenant for legacy key-lookup reasons,
+                // but the v1 PATCH route ignores them — pass empty
+                // strings so the field is present on the wire and
+                // the server does its own lookup by id.
+                UpdateQuotaRequest {
+                    namespace: String::new(),
+                    tenant: String::new(),
+                    max_actions: *max_actions,
+                    window: window.clone(),
+                    overage_behavior: overage_behavior.clone(),
+                    description: description.clone(),
+                    enabled: *enabled,
+                    per_principal: *per_principal,
+                    labels: labels_vec_to_map(label.clone()),
+                }
+            };
+            run_update(ops, id, &req, format).await
+        }
         QuotasCommand::Delete {
             id,
             namespace,
@@ -200,10 +351,12 @@ async fn run_get(ops: &OpsClient, id: &str, format: &OutputFormat) -> anyhow::Re
     Ok(())
 }
 
-async fn run_create(ops: &OpsClient, data: &str, format: &OutputFormat) -> anyhow::Result<()> {
-    let value = parse_json_data(data)?;
-    let req: CreateQuotaRequest = serde_json::from_value(value)?;
-    let resp = ops.create_quota(&req).await?;
+async fn run_create(
+    ops: &OpsClient,
+    req: &CreateQuotaRequest,
+    format: &OutputFormat,
+) -> anyhow::Result<()> {
+    let resp = ops.create_quota(req).await?;
     match format {
         OutputFormat::Json => {
             info!("{}", serde_json::to_string_pretty(&resp)?);
@@ -218,12 +371,10 @@ async fn run_create(ops: &OpsClient, data: &str, format: &OutputFormat) -> anyho
 async fn run_update(
     ops: &OpsClient,
     id: &str,
-    data: &str,
+    req: &UpdateQuotaRequest,
     format: &OutputFormat,
 ) -> anyhow::Result<()> {
-    let value = parse_json_data(data)?;
-    let req: UpdateQuotaRequest = serde_json::from_value(value)?;
-    let resp = ops.update_quota(id, &req).await?;
+    let resp = ops.update_quota(id, req).await?;
     match format {
         OutputFormat::Json => {
             info!("{}", serde_json::to_string_pretty(&resp)?);

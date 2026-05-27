@@ -49,6 +49,7 @@ async fn ui_serves_index_html() {
         ),
         dispatch_semaphore: Arc::new(tokio::sync::Semaphore::new(1000)),
         config: ConfigSnapshot::default(),
+        static_quotas: None,
         ui_path: Some(ui_config.dist_path.clone()),
         ui_enabled: ui_config.enabled,
         cors_allowed_origins: Vec::new(),

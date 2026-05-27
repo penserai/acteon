@@ -66,6 +66,9 @@ pub struct UpdateQuotaRequest {
     /// Whether the quota applies per-principal.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub per_principal: Option<bool>,
+    /// Replacement label set. `None` leaves existing labels unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub labels: Option<std::collections::HashMap<String, String>>,
 }
 
 /// A quota policy.

@@ -2363,6 +2363,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
+    // Bootstrap static quotas if a policies_file is configured.
+    // Runs once before the router sees its first request so the
+    // gateway is warm by then. Failures are logged but don't abort
+    // startup — operators can still manage quotas via the API.
+    let static_quotas = if let Some(ref policies_file) = config.quotas.policies_file {
+        let path = std::path::PathBuf::from(policies_file);
+        let nudge = Arc::new(tokio::sync::Notify::new());
+        let gw_for_load = gateway.read().await;
+        let state_store_for_load = gw_for_load.state_store().clone();
+        drop(gw_for_load);
+        match acteon_server::quotas_loader::reload_from_file(&path, &gateway, &state_store_for_load)
+            .await
+        {
+            Ok(report) => info!(
+                path = %path.display(),
+                upserted = report.upserted,
+                deleted = report.deleted,
+                skipped = report.skipped,
+                "static quotas loaded at startup"
+            ),
+            Err(e) => warn!(
+                path = %path.display(),
+                error = %e,
+                "failed to load static quotas at startup (continuing without)"
+            ),
+        }
+        if config.quotas.watch {
+            let watcher = acteon_server::quotas_loader::QuotaWatcher::new(
+                path.clone(),
+                Arc::clone(&gateway),
+                state_store_for_load,
+                Arc::clone(&nudge),
+            );
+            watcher.spawn();
+        }
+        Some(acteon_server::quotas_loader::StaticQuotasHandle { path, nudge })
+    } else {
+        None
+    };
+
     let state = AppState {
         gateway: Arc::clone(&gateway),
         metrics: gateway_metrics,
@@ -2380,6 +2420,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
         dispatch_semaphore,
         config: config_snapshot,
+        static_quotas,
         ui_path: Some(config.ui.dist_path.clone()),
         ui_enabled: config.ui.enabled,
         cors_allowed_origins: config.server.cors_allowed_origins.clone(),

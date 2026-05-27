@@ -177,6 +177,7 @@ fn build_update_quota(v: &serde_json::Value) -> Result<UpdateQuotaRequest, McpEr
         description: val_opt_str(v, "description"),
         enabled: val_opt_bool(v, "enabled"),
         per_principal: val_opt_bool(v, "per_principal"),
+        labels: val_opt_hashmap_str(v, "labels"),
     })
 }
 

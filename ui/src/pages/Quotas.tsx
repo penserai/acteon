@@ -101,6 +101,8 @@ export function Quotas() {
   // Filter state
   const [ns, setNs] = useState('')
   const [tenant, setTenant] = useState('')
+  const [providerFilter, setProviderFilter] = useState('')
+  const [principalFilter, setPrincipalFilter] = useState('')
 
   // Create modal
   const [showCreate, setShowCreate] = useState(false)
@@ -119,6 +121,8 @@ export function Quotas() {
   const { data, isLoading } = useQuotas({
     namespace: ns || undefined,
     tenant: tenant || undefined,
+    provider: providerFilter.trim() || undefined,
+    principal: principalFilter.trim() || undefined,
   })
 
   const { data: selectedQuota } = useQuota(selectedId ?? undefined)
@@ -249,6 +253,16 @@ export function Quotas() {
           placeholder="Tenant"
           value={tenant}
           onChange={(e) => setTenant(e.target.value)}
+        />
+        <Input
+          placeholder="Provider (or `generic`)"
+          value={providerFilter}
+          onChange={(e) => setProviderFilter(e.target.value)}
+        />
+        <Input
+          placeholder="Principal (or `any`)"
+          value={principalFilter}
+          onChange={(e) => setPrincipalFilter(e.target.value)}
         />
       </div>
 
