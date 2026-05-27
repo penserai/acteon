@@ -131,6 +131,16 @@ pub struct QuotaPolicy {
     /// principal-scoped policy and so are not affected by it.
     #[serde(default)]
     pub principal: Option<String>,
+    /// Whether this policy applies per-principal. When true, a
+    /// separate counter is maintained for every unique principal
+    /// that matches the policy's other dimensions.
+    ///
+    /// This enables "Each user gets X/day" policies without creating
+    /// a separate record for every user. If `principal` is also set,
+    /// this flag is ignored and the policy is pinned to that
+    /// specific principal.
+    #[serde(default)]
+    pub per_principal: bool,
     /// Maximum number of actions allowed per window.
     pub max_actions: u64,
     /// Time window for the quota.
@@ -250,8 +260,15 @@ impl QuotaPolicy {
     /// applies only when the caller's id matches exactly; dispatches
     /// without an authenticated caller (`principal = None` argument)
     /// never match a principal-scoped policy.
+    ///
+    /// If `per_principal` is true, the policy matches any
+    /// authenticated caller and maintains a separate counter for
+    /// each.
     #[must_use]
     pub fn applies_to_principal(&self, principal: Option<&str>) -> bool {
+        if self.principal.is_none() && self.per_principal {
+            return principal.is_some();
+        }
         match (&self.principal, principal) {
             (None, _) => true,
             (Some(_), None) => false,
@@ -475,6 +492,7 @@ mod tests {
             tenant: "tenant-1".into(),
             provider: None,
             principal: None,
+            per_principal: false,
             max_actions: 1000,
             window: QuotaWindow::Daily,
             overage_behavior: OverageBehavior::Block,
@@ -704,6 +722,9 @@ mod tests {
             "acme.us-east",
             "tenant_123",
             "notifications",
+            "auth0|user123",
+            "user@example.com",
+            "svc:billing".split(':').next().unwrap(), // Verify split works if someone tries it
         ] {
             assert!(
                 validate_quota_scope_identifier(s).is_ok(),
@@ -745,6 +766,7 @@ mod tests {
             tenant: "t".into(),
             provider: None,
             principal: None,
+            per_principal: false,
             max_actions: 100,
             window: QuotaWindow::Hourly,
             overage_behavior: OverageBehavior::Block,
@@ -795,6 +817,7 @@ mod tests {
             tenant: "t".into(),
             provider: Some("slack".into()),
             principal: None,
+            per_principal: false,
             max_actions: 10_000,
             window: QuotaWindow::Monthly,
             overage_behavior: OverageBehavior::Degrade {
@@ -826,6 +849,7 @@ mod tests {
             tenant: "t".into(),
             provider: None,
             principal: None,
+            per_principal: false,
             max_actions: 100,
             window: QuotaWindow::Hourly,
             overage_behavior: OverageBehavior::Block,
@@ -875,6 +899,7 @@ mod tests {
             tenant: "t".into(),
             provider: None,
             principal: None,
+            per_principal: false,
             max_actions: 100,
             window: QuotaWindow::Hourly,
             overage_behavior: OverageBehavior::Block,
@@ -894,6 +919,14 @@ mod tests {
         policy.principal = Some("alice".into());
         assert!(policy.applies_to_principal(Some("alice")));
         assert!(!policy.applies_to_principal(Some("bob")));
+        assert!(!policy.applies_to_principal(None));
+
+        // Dynamic per-principal policy matches any authenticated caller,
+        // but never matches an unauthenticated dispatch.
+        policy.principal = None;
+        policy.per_principal = true;
+        assert!(policy.applies_to_principal(Some("alice")));
+        assert!(policy.applies_to_principal(Some("bob")));
         assert!(!policy.applies_to_principal(None));
     }
 
@@ -923,6 +956,7 @@ mod tests {
             tenant: "t".into(),
             provider: None,
             principal: None,
+            per_principal: false,
             max_actions: 100,
             window: QuotaWindow::Hourly,
             overage_behavior: OverageBehavior::Block,

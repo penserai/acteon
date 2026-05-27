@@ -24,6 +24,9 @@ pub struct CreateQuotaRequest {
     /// of a tenant-wide cap.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub principal: Option<String>,
+    /// Whether this policy applies per-principal.
+    #[serde(default)]
+    pub per_principal: bool,
     /// Maximum number of actions allowed in the window.
     pub max_actions: u64,
     /// Time window (e.g., "1h", "24h", "7d").
@@ -60,6 +63,9 @@ pub struct UpdateQuotaRequest {
     /// Whether the quota is enabled.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
+    /// Whether the quota applies per-principal.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub per_principal: Option<bool>,
 }
 
 /// A quota policy.
@@ -77,6 +83,8 @@ pub struct QuotaPolicy {
     /// Optional principal scope (`None` = applies to every caller).
     #[serde(default)]
     pub principal: Option<String>,
+    /// Whether this policy applies per-principal.
+    pub per_principal: bool,
     /// Maximum number of actions allowed in the window.
     pub max_actions: u64,
     /// Time window (e.g., "1h", "24h", "7d").

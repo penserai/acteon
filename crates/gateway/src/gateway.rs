@@ -9126,6 +9126,7 @@ mod tests {
             tenant: tenant.into(),
             provider: None,
             principal: None,
+            per_principal: false,
             max_actions,
             window,
             overage_behavior,
@@ -10311,6 +10312,49 @@ mod tests {
         for _ in 0..5 {
             let outcome = gw.dispatch(test_action(), None).await.unwrap();
             assert!(matches!(outcome, ActionOutcome::Executed(_)));
+        }
+    }
+
+    #[tokio::test]
+    async fn quota_dynamic_per_principal_isolates_callers() {
+        // A single policy with `per_principal: true`. It matches
+        // any authenticated caller and maintains separate buckets.
+        let mut policy = make_quota_policy(
+            "notifications",
+            "tenant-1",
+            2,
+            acteon_core::QuotaWindow::Hourly,
+            acteon_core::OverageBehavior::Block,
+            true,
+        );
+        policy.per_principal = true;
+        let gw = build_gateway_with_quota(vec![policy]);
+
+        let alice = make_caller("alice");
+        let bob = make_caller("bob");
+
+        // Alice burns her 2 slots.
+        for _ in 0..2 {
+            let res = gw.dispatch(test_action(), Some(&alice)).await.unwrap();
+            assert!(matches!(res, ActionOutcome::Executed(_)));
+        }
+        let blocked = gw.dispatch(test_action(), Some(&alice)).await.unwrap();
+        assert!(matches!(blocked, ActionOutcome::QuotaExceeded { .. }));
+
+        // Bob still has his 2 slots (isolated from Alice even though
+        // they share the same policy record).
+        for _ in 0..2 {
+            let res = gw.dispatch(test_action(), Some(&bob)).await.unwrap();
+            assert!(matches!(res, ActionOutcome::Executed(_)));
+        }
+        let blocked_bob = gw.dispatch(test_action(), Some(&bob)).await.unwrap();
+        assert!(matches!(blocked_bob, ActionOutcome::QuotaExceeded { .. }));
+
+        // Anonymous dispatches don't match this policy at all, so they
+        // are not capped by it.
+        for _ in 0..10 {
+            let res = gw.dispatch(test_action(), None).await.unwrap();
+            assert!(matches!(res, ActionOutcome::Executed(_)));
         }
     }
 

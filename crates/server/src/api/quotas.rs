@@ -50,6 +50,11 @@ pub struct CreateQuotaRequest {
     #[serde(default)]
     #[schema(example = "svc-billing")]
     pub principal: Option<String>,
+    /// Whether this policy applies per-principal. When true, a
+    /// separate counter is maintained for every unique principal
+    /// that matches the policy's other dimensions.
+    #[serde(default)]
+    pub per_principal: bool,
     /// Maximum number of actions allowed per window.
     #[schema(example = 1000)]
     pub max_actions: u64,
@@ -82,6 +87,9 @@ pub struct UpdateQuotaRequest {
     /// Updated enabled state.
     #[serde(default)]
     pub enabled: Option<bool>,
+    /// Updated per-principal state.
+    #[serde(default)]
+    pub per_principal: Option<bool>,
     /// Updated description.
     #[serde(default)]
     pub description: Option<String>,
@@ -105,6 +113,8 @@ pub struct QuotaResponse {
     /// Optional principal (caller) scope (`None` = applies to every caller).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub principal: Option<String>,
+    /// Whether this quota applies per-principal.
+    pub per_principal: bool,
     /// Maximum actions per window.
     pub max_actions: u64,
     /// Time window.
@@ -215,6 +225,7 @@ fn policy_to_response(policy: &QuotaPolicy, usage: Option<QuotaUsageResponse>) -
         tenant: policy.tenant.clone(),
         provider: policy.provider.clone(),
         principal: policy.principal.clone(),
+        per_principal: policy.per_principal,
         max_actions: policy.max_actions,
         window: policy.window.clone(),
         overage_behavior: policy.overage_behavior.clone(),
@@ -484,6 +495,7 @@ pub async fn create_quota(
         tenant: req.tenant.clone(),
         provider: req.provider.clone(),
         principal: req.principal.clone(),
+        per_principal: req.per_principal,
         max_actions: req.max_actions,
         window,
         overage_behavior: req.overage_behavior,
@@ -712,6 +724,9 @@ pub async fn update_quota(
     }
     if let Some(enabled) = req.enabled {
         policy.enabled = enabled;
+    }
+    if let Some(per) = req.per_principal {
+        policy.per_principal = per;
     }
     if let Some(desc) = req.description {
         policy.description = Some(desc);
