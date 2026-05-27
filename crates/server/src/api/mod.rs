@@ -66,6 +66,7 @@ use crate::config::ConfigSnapshot;
 use crate::quotas_loader::StaticQuotasHandle;
 use crate::ratelimit::RateLimiter;
 use crate::ratelimit::middleware::RateLimitLayer;
+use crate::templates_loader::StaticTemplatesHandle;
 
 pub use self::verify::SignatureVerifier;
 
@@ -108,6 +109,9 @@ pub struct AppState {
     /// `POST /v1/quotas/reload` writes through the nudger so an
     /// optional file watcher coalesces with manual reloads.
     pub static_quotas: Option<StaticQuotasHandle>,
+    /// Path to the static templates TOML manifest plus a manual
+    /// reload nudger. `None` when no `manifest_file` is configured.
+    pub static_templates: Option<StaticTemplatesHandle>,
     /// Path to the Admin UI static files.
     pub ui_path: Option<String>,
     /// Whether the Admin UI is enabled.
@@ -354,6 +358,10 @@ pub fn router(state: AppState) -> Router {
                 .delete(templates::delete_profile),
         )
         .route("/v1/templates/render", post(templates::render_preview))
+        .route(
+            "/v1/templates/reload",
+            post(templates::reload_static_templates),
+        )
         .route(
             "/v1/templates",
             get(templates::list_templates).post(templates::create_template),

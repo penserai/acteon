@@ -725,3 +725,43 @@ preview.getRendered().forEach((field, value) ->
   cause a render error.
 - **No async data fetching**: Templates cannot fetch external data. Use
   enrichments for that, then reference the enriched data in templates.
+
+## Static templates via TOML (with hot reload)
+
+Operators can declare templates and profiles in a TOML manifest and have the server materialize them on startup, with file-change hot reload and an explicit reload endpoint:
+
+```toml
+# server config
+[server.templates]
+manifest_file = "/etc/acteon/templates.toml"
+watch = true   # default; mirrors the auth + quotas watchers
+```
+
+```toml
+# /etc/acteon/templates.toml
+[[templates]]
+namespace = "notifications"
+tenant = "acme"
+name = "greeting"
+content = "Hello {{ user.name }}, your order is ready."
+
+[[templates]]
+namespace = "notifications"
+tenant = "acme"
+name = "long-body"
+content_file = "templates/long-body.jinja"   # relative to manifest
+
+[[profiles]]
+namespace = "notifications"
+tenant = "acme"
+name = "welcome"
+fields = { subject = "Hi {{ user.name }}", body = { "$ref" = "greeting" } }
+```
+
+Each entry gets a deterministic UUIDv5 ID derived from `(namespace, tenant, name)` and is tagged `_source = "toml"`. Reloads diff-prune only their own records — API-managed templates are never touched.
+
+Triggers:
+- **File watcher** — debounced 500ms; runs on every save to the manifest file.
+- **`POST /v1/templates/reload`** — explicit; returns `{ templates_upserted, templates_deleted, profiles_upserted, profiles_deleted, skipped }`.
+
+Cross-instance propagation is the same as quotas: each gateway re-fetches from the state store on its next cache miss/expiry, so a single instance handling the reload is sufficient for the cluster to converge.

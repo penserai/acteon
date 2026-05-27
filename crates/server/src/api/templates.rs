@@ -1040,3 +1040,39 @@ pub async fn render_preview(
         Err(e) => error_response(StatusCode::BAD_REQUEST, &e.to_string()),
     }
 }
+
+/// `POST /v1/templates/reload` -- re-read the static templates TOML
+/// manifest and reconcile its entries against the running gateway +
+/// state store. Touches only records carrying `_source = "toml"`.
+#[utoipa::path(
+    post,
+    path = "/v1/templates/reload",
+    tag = "Templates",
+    summary = "Reload static templates",
+    description = "Re-reads the configured templates manifest and reconciles its entries. Returns counts of upserted/deleted templates and profiles plus any skipped entries.",
+    responses(
+        (status = 200, description = "Reload complete", body = serde_json::Value),
+        (status = 400, description = "No manifest_file configured", body = ErrorResponse),
+        (status = 500, description = "Reload failed", body = ErrorResponse),
+    )
+)]
+pub async fn reload_static_templates(State(state): State<AppState>) -> impl IntoResponse {
+    let Some(handle) = state.static_templates.clone() else {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "no static templates manifest configured ([server.templates].manifest_file is unset)",
+        );
+    };
+    let gw = state.gateway.read().await;
+    let state_store = gw.state_store().clone();
+    drop(gw);
+    match crate::templates_loader::reload_from_file(&handle.path, &state.gateway, &state_store)
+        .await
+    {
+        Ok(report) => {
+            handle.nudge.notify_waiters();
+            (StatusCode::OK, Json(serde_json::json!(report))).into_response()
+        }
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
+    }
+}

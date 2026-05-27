@@ -10,6 +10,15 @@ pub struct RulesConfig {
     /// When set, `time.*` fields use this timezone unless a rule provides its
     /// own `timezone` override. If not set, UTC is used.
     pub default_timezone: Option<String>,
+    /// Whether to watch `directory` for changes and hot-reload rules.
+    /// Defaults to `true` when a `directory` is configured.
+    /// Equivalent to repeatedly calling `POST /v1/rules/reload`.
+    #[serde(default = "default_rules_watch")]
+    pub watch: bool,
+}
+
+fn default_rules_watch() -> bool {
+    true
 }
 
 /// Configuration for the action executor.

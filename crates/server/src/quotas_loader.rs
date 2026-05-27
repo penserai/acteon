@@ -110,9 +110,7 @@ impl WindowSpec {
                     "invalid window {other:?} (expected hourly/daily/weekly/monthly or integer seconds)"
                 )),
             },
-            Self::Seconds(0) => {
-                Err("invalid window: custom seconds must be greater than 0".into())
-            }
+            Self::Seconds(0) => Err("invalid window: custom seconds must be greater than 0".into()),
             Self::Seconds(s) => Ok(QuotaWindow::Custom { seconds: s }),
         }
     }

@@ -1624,6 +1624,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // tokio::broadcast::Sender (cheap, fan-out preserved).
     let bg_stream_tx = gateway.stream_tx().clone();
     let gateway = Arc::new(RwLock::new(gateway));
+
+    // Rules directory hot-reload watcher. Mirrors the auth/quotas
+    // pattern: debounced (500ms) notify watcher on the configured
+    // directory, recursive so changes to nested files trip a
+    // reload, runs the same routine `POST /v1/rules/reload` would.
+    if config.rules.watch
+        && let Some(ref dir) = config.rules.directory
+    {
+        let dir_path = std::path::PathBuf::from(dir);
+        if dir_path.is_dir() {
+            let gw = Arc::clone(&gateway);
+            acteon_server::file_watcher::spawn_watcher(
+                dir_path.clone(),
+                acteon_server::file_watcher::WatchMode::Directory,
+                acteon_server::file_watcher::DEFAULT_DEBOUNCE,
+                None,
+                move || {
+                    let gw = Arc::clone(&gw);
+                    let dir = dir_path.clone();
+                    async move {
+                        info!(directory = %dir.display(), "reloading rules from directory");
+                        let yaml_frontend = YamlFrontend;
+                        let frontends: Vec<&dyn acteon_rules::RuleFrontend> = vec![&yaml_frontend];
+                        let mut gw = gw.write().await;
+                        match gw.load_rules_from_directory(&dir, &frontends) {
+                            Ok(count) => info!(count, "rules reloaded"),
+                            Err(e) => warn!(error = %e, "rules reload failed"),
+                        }
+                    }
+                },
+            );
+        }
+    }
     // Snapshot the Arc<GatewayMetrics> at startup so hot-path metric
     // increments can skip the gateway RwLock entirely. The inner
     // counters are AtomicU64 — no lock needed once we hold the Arc.
@@ -2367,6 +2400,79 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Runs once before the router sees its first request so the
     // gateway is warm by then. Failures are logged but don't abort
     // startup — operators can still manage quotas via the API.
+    // Warn once if the deprecated template directory fields are set.
+    if config.templates.directory.is_some() || config.templates.profiles_directory.is_some() {
+        warn!(
+            "[server.templates].directory / .profiles_directory are deprecated and ignored — use `manifest_file` instead"
+        );
+    }
+
+    // Bootstrap static templates if a manifest_file is configured.
+    let static_templates = if let Some(ref manifest) = config.templates.manifest_file {
+        let path = std::path::PathBuf::from(manifest);
+        let nudge = Arc::new(tokio::sync::Notify::new());
+        let gw_for_load = gateway.read().await;
+        let state_store_for_load = gw_for_load.state_store().clone();
+        drop(gw_for_load);
+        match acteon_server::templates_loader::reload_from_file(
+            &path,
+            &gateway,
+            &state_store_for_load,
+        )
+        .await
+        {
+            Ok(report) => info!(
+                path = %path.display(),
+                templates_upserted = report.templates_upserted,
+                templates_deleted = report.templates_deleted,
+                profiles_upserted = report.profiles_upserted,
+                profiles_deleted = report.profiles_deleted,
+                skipped = report.skipped,
+                "static templates loaded at startup"
+            ),
+            Err(e) => warn!(
+                path = %path.display(),
+                error = %e,
+                "failed to load static templates at startup (continuing without)"
+            ),
+        }
+        if config.templates.watch {
+            let gw = Arc::clone(&gateway);
+            let store_for_watch = state_store_for_load.clone();
+            let path_for_watch = path.clone();
+            acteon_server::file_watcher::spawn_watcher(
+                path.clone(),
+                acteon_server::file_watcher::WatchMode::SingleFile,
+                acteon_server::file_watcher::DEFAULT_DEBOUNCE,
+                Some(Arc::clone(&nudge)),
+                move || {
+                    let gw = Arc::clone(&gw);
+                    let store = store_for_watch.clone();
+                    let path = path_for_watch.clone();
+                    async move {
+                        info!(path = %path.display(), "reloading static templates");
+                        match acteon_server::templates_loader::reload_from_file(&path, &gw, &store)
+                            .await
+                        {
+                            Ok(report) => info!(
+                                templates_upserted = report.templates_upserted,
+                                templates_deleted = report.templates_deleted,
+                                profiles_upserted = report.profiles_upserted,
+                                profiles_deleted = report.profiles_deleted,
+                                skipped = report.skipped,
+                                "static templates reloaded"
+                            ),
+                            Err(e) => warn!(error = %e, "static template reload failed"),
+                        }
+                    }
+                },
+            );
+        }
+        Some(acteon_server::templates_loader::StaticTemplatesHandle { path, nudge })
+    } else {
+        None
+    };
+
     let static_quotas = if let Some(ref policies_file) = config.quotas.policies_file {
         let path = std::path::PathBuf::from(policies_file);
         let nudge = Arc::new(tokio::sync::Notify::new());
@@ -2421,6 +2527,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         dispatch_semaphore,
         config: config_snapshot,
         static_quotas,
+        static_templates,
         ui_path: Some(config.ui.dist_path.clone()),
         ui_enabled: config.ui.enabled,
         cors_allowed_origins: config.server.cors_allowed_origins.clone(),
