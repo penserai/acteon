@@ -564,6 +564,7 @@ impl GatewayBuilder {
     fn validate_and_wrap_quota_policies(
         policies: Vec<acteon_core::QuotaPolicy>,
     ) -> Result<HashMap<String, crate::gateway::CachedPolicy>, GatewayError> {
+        type DedupeKey = (String, String, Option<String>, Option<String>, bool);
         for policy in &policies {
             let label = format!(
                 "{}:{}{}",
@@ -579,23 +580,31 @@ impl GatewayBuilder {
                 GatewayError::Configuration(format!("quota policy '{label}' invalid: {e}"))
             })?;
         }
-        // Reject duplicate (ns, tenant, provider, principal) tuples —
-        // operators should pick exactly one policy per scope; silent
-        // override would be surprising. Policies along orthogonal
-        // dimensions (different providers or principals) may coexist.
-        let mut seen: HashMap<(String, String, Option<String>, Option<String>), String> =
-            HashMap::new();
+        // Reject duplicate (ns, tenant, provider, principal,
+        // per_principal) tuples — operators should pick exactly one
+        // policy per scope; silent override would be surprising.
+        // `per_principal` is part of the key because a shared-bucket
+        // unscoped policy and a per-caller-bucket unscoped policy are
+        // semantically distinct ("10k/day total" vs "100/day per
+        // user") and operators legitimately want both to coexist.
+        let mut seen: HashMap<DedupeKey, String> = HashMap::new();
         for policy in &policies {
             let key = (
                 policy.namespace.clone(),
                 policy.tenant.clone(),
                 policy.provider.clone(),
                 policy.principal.clone(),
+                policy.per_principal,
             );
             if let Some(existing_id) = seen.get(&key) {
                 return Err(GatewayError::Configuration(format!(
-                    "duplicate quota policy for (namespace={}, tenant={}, provider={:?}, principal={:?}): ids {existing_id} and {}",
-                    policy.namespace, policy.tenant, policy.provider, policy.principal, policy.id
+                    "duplicate quota policy for (namespace={}, tenant={}, provider={:?}, principal={:?}, per_principal={}): ids {existing_id} and {}",
+                    policy.namespace,
+                    policy.tenant,
+                    policy.provider,
+                    policy.principal,
+                    policy.per_principal,
+                    policy.id
                 )));
             }
             seen.insert(key, policy.id.clone());

@@ -455,14 +455,18 @@ pub async fn create_quota(
         );
     }
 
-    // Reject duplicates with the same (ns, tenant, provider, principal)
-    // tuple: operators should pick exactly one policy per scope.
-    // Different providers and/or principals (or generic vs scoped)
-    // may coexist.
+    // Reject duplicates with the same (ns, tenant, provider,
+    // principal, per_principal) tuple: operators should pick exactly
+    // one policy per scope. `per_principal` is part of the key
+    // because a shared-bucket unscoped policy and a per-caller-bucket
+    // unscoped policy are semantically distinct ("10k/day total" vs
+    // "100/day per user") and operators legitimately want both to
+    // coexist.
     for existing_id in &existing_ids {
         if let Ok(Some(p)) = load_quota(state_store.as_ref(), existing_id).await
             && p.provider == req.provider
             && p.principal == req.principal
+            && p.per_principal == req.per_principal
         {
             let mut scope_parts: Vec<String> = Vec::new();
             if let Some(ref pr) = req.provider {
@@ -470,6 +474,9 @@ pub async fn create_quota(
             }
             if let Some(ref pn) = req.principal {
                 scope_parts.push(format!("principal={pn}"));
+            }
+            if req.per_principal {
+                scope_parts.push("per_principal=true".to_string());
             }
             let scope = if scope_parts.is_empty() {
                 "generic scope".to_string()

@@ -158,6 +158,7 @@ fn build_create_quota(v: &serde_json::Value) -> Result<CreateQuotaRequest, McpEr
         tenant: val_str(v, "tenant")?,
         provider: val_opt_str(v, "provider"),
         principal: val_opt_str(v, "principal"),
+        per_principal: val_bool_or(v, "per_principal", false),
         max_actions: val_u64(v, "max_actions")?,
         window: val_str(v, "window")?,
         overage_behavior: val_str(v, "overage_behavior")?,
@@ -175,6 +176,7 @@ fn build_update_quota(v: &serde_json::Value) -> Result<UpdateQuotaRequest, McpEr
         overage_behavior: val_opt_str(v, "overage_behavior"),
         description: val_opt_str(v, "description"),
         enabled: val_opt_bool(v, "enabled"),
+        per_principal: val_opt_bool(v, "per_principal"),
     })
 }
 

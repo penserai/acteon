@@ -1206,6 +1206,7 @@ class CreateQuotaRequest:
     overage_behavior: str
     provider: Optional[str] = None
     principal: Optional[str] = None
+    per_principal: bool = False
     description: Optional[str] = None
     labels: Optional[dict[str, str]] = None
 
@@ -1222,6 +1223,8 @@ class CreateQuotaRequest:
             result["provider"] = self.provider
         if self.principal is not None:
             result["principal"] = self.principal
+        if self.per_principal:
+            result["per_principal"] = True
         if self.description is not None:
             result["description"] = self.description
         if self.labels is not None:
@@ -1278,6 +1281,7 @@ class QuotaPolicy:
     updated_at: str
     provider: Optional[str] = None
     principal: Optional[str] = None
+    per_principal: bool = False
     description: Optional[str] = None
     labels: Optional[dict[str, str]] = None
 
@@ -1289,6 +1293,7 @@ class QuotaPolicy:
             tenant=data["tenant"],
             provider=data.get("provider"),
             principal=data.get("principal"),
+            per_principal=data.get("per_principal", False),
             max_actions=data["max_actions"],
             window=data["window"],
             overage_behavior=data["overage_behavior"],

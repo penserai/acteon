@@ -139,7 +139,11 @@ async fn run_list(
             for q in &resp.quotas {
                 let enabled = if q.enabled { "ON " } else { "OFF" };
                 let provider_scope = q.provider.as_deref().unwrap_or("*");
-                let principal_scope = q.principal.as_deref().unwrap_or("*");
+                let principal_scope = if q.per_principal {
+                    "*per-caller".to_string()
+                } else {
+                    q.principal.as_deref().unwrap_or("*").to_string()
+                };
                 info!(
                     enabled = %enabled,
                     id = %&q.id[..8.min(q.id.len())],
@@ -173,8 +177,15 @@ async fn run_get(ops: &OpsClient, id: &str, format: &OutputFormat) -> anyhow::Re
                     provider = %q.provider.as_deref().unwrap_or("* (generic)"),
                     "  Provider"
                 );
+                let principal_display = if q.per_principal {
+                    "* (per caller bucket)".to_string()
+                } else {
+                    q.principal
+                        .clone()
+                        .unwrap_or_else(|| "* (any caller)".to_string())
+                };
                 info!(
-                    principal = %q.principal.as_deref().unwrap_or("* (any caller)"),
+                    principal = %principal_display,
                     "  Principal"
                 );
                 info!(max_actions = q.max_actions, window = %q.window, "  Max");

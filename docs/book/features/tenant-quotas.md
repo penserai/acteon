@@ -63,9 +63,17 @@ service account gets 100 actions/hour, on top of the tenant's
 caller (background jobs, chain steps, scheduled re-dispatches)
 never matches a principal-scoped policy.
 
+For the common "every user gets X/day" case, set
+`per_principal: true` instead of creating one policy per caller.
+A single record then maintains a separate counter per
+authenticated caller. The flag is ignored when `principal` is
+also set (the pinned scope wins). Unauthenticated dispatches
+never match a `per_principal` policy.
+
 | Policy scope | Matches | Counter bucket |
 |---|---|---|
-| `principal: None`, `provider: None` | Every dispatch | `{ns}:{tenant}:*:*:{window}:{idx}` |
+| `principal: None`, `provider: None`, `per_principal: false` | Every dispatch (shared bucket) | `{ns}:{tenant}:*:*:{window}:{idx}` |
+| `principal: None`, `provider: None`, `per_principal: true` | Any authenticated caller (one bucket each) | `{ns}:{tenant}:{caller_id}:*:{window}:{idx}` |
 | `principal: Some("alice")`, `provider: None` | Only dispatches by `alice` | `{ns}:{tenant}:alice:*:{window}:{idx}` |
 | `principal: Some("alice")`, `provider: Some("slack")` | Only `alice` → `slack` | `{ns}:{tenant}:alice:slack:{window}:{idx}` |
 

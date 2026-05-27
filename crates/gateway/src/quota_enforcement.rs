@@ -167,7 +167,8 @@ impl Gateway {
             return Ok(None);
         }
 
-        self.enforce_quota_policies(action, principal, applicable, &now).await
+        self.enforce_quota_policies(action, principal, applicable, &now)
+            .await
     }
 
     /// Evaluate every applicable quota policy for a dispatch and
@@ -484,19 +485,34 @@ impl Gateway {
             return Ok(Vec::new());
         };
 
-        let policy_ids: Vec<String> = match serde_json::from_str::<Vec<String>>(&raw) {
+        let all_ids: Vec<String> = match serde_json::from_str::<Vec<String>>(&raw) {
             Ok(ids) => ids,
             Err(_) => vec![raw], // legacy: bare policy ID
         };
 
+        // Cap the fan-out at MAX_POLICIES_PER_BUCKET *before* issuing
+        // any state-store gets. The API write path enforces the same
+        // cap, so reaching this branch implies a malicious or
+        // corrupted index — fetching every ID concurrently would turn
+        // an oversized index into an unbounded state-store burst.
+        let capped = all_ids.len() > acteon_core::MAX_POLICIES_PER_BUCKET;
+        let policy_ids: Vec<String> = all_ids
+            .into_iter()
+            .take(acteon_core::MAX_POLICIES_PER_BUCKET)
+            .collect();
+        if capped {
+            warn!(
+                namespace = %namespace,
+                tenant = %tenant,
+                cap = acteon_core::MAX_POLICIES_PER_BUCKET,
+                "quota index exceeds per-tenant policy cap; ignoring trailing IDs before fetch"
+            );
+        }
+
         let mut fetch_futures = Vec::with_capacity(policy_ids.len());
         for id in &policy_ids {
-            let policy_key = acteon_state::StateKey::new(
-                "_system",
-                "_quotas",
-                acteon_state::KeyKind::Quota,
-                id,
-            );
+            let policy_key =
+                acteon_state::StateKey::new("_system", "_quotas", acteon_state::KeyKind::Quota, id);
             let state = self.state.clone();
             fetch_futures.push(async move { (id.clone(), state.get(&policy_key).await) });
         }
@@ -522,15 +538,6 @@ impl Gateway {
             }
 
             policies.push(policy);
-            if policies.len() >= acteon_core::MAX_POLICIES_PER_BUCKET {
-                warn!(
-                    namespace = %namespace,
-                    tenant = %tenant,
-                    cap = acteon_core::MAX_POLICIES_PER_BUCKET,
-                    "quota bucket hit per-tenant policy cap; ignoring remaining policy IDs from the index"
-                );
-                break;
-            }
         }
         Ok(policies)
     }

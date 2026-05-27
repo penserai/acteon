@@ -723,7 +723,12 @@ type CreateQuotaRequest struct {
 	// policy applies to every caller. When set, only dispatches
 	// made by that caller (API key name or JWT subject) count
 	// against the policy.
-	Principal       string            `json:"principal,omitempty"`
+	Principal string `json:"principal,omitempty"`
+	// PerPrincipal, when true, maintains a separate counter per
+	// authenticated caller — useful for "every user gets X/day"
+	// policies without a record per user. Ignored if Principal
+	// is also set.
+	PerPrincipal    bool              `json:"per_principal,omitempty"`
 	MaxActions      int64             `json:"max_actions"`
 	Window          string            `json:"window"`
 	OverageBehavior string            `json:"overage_behavior"`
@@ -755,7 +760,10 @@ type QuotaPolicy struct {
 	// Principal is the optional caller-id scope: empty ("") to
 	// apply to every caller, or a caller id (API key name or JWT
 	// subject) to scope the policy to that caller only.
-	Principal       string            `json:"principal,omitempty"`
+	Principal string `json:"principal,omitempty"`
+	// PerPrincipal indicates the policy maintains a separate
+	// counter per authenticated caller.
+	PerPrincipal    bool              `json:"per_principal"`
 	MaxActions      int64             `json:"max_actions"`
 	Window          string            `json:"window"`
 	OverageBehavior string            `json:"overage_behavior"`

@@ -357,6 +357,7 @@ function QuotaFormModal({ open, onClose, onSubmit, loading, title, initial }: {
   const [formNs, setFormNs] = useState(initial?.namespace ?? '')
   const [formTenant, setFormTenant] = useState(initial?.tenant ?? '')
   const [formPrincipal, setFormPrincipal] = useState(initial?.principal ?? '')
+  const [perPrincipal, setPerPrincipal] = useState(initial?.per_principal ?? false)
   const [maxActions, setMaxActions] = useState(initial?.max_actions?.toString() ?? '1000')
   const [window, setWindow] = useState<QuotaWindow>(initial?.window ?? 'daily')
   const [behavior, setBehavior] = useState<OverageBehavior>(initial?.overage_behavior ?? 'block')
@@ -375,6 +376,7 @@ function QuotaFormModal({ open, onClose, onSubmit, loading, title, initial }: {
       namespace: formNs,
       tenant: formTenant,
       principal: formPrincipal.trim() ? formPrincipal.trim() : undefined,
+      per_principal: perPrincipal || undefined,
       max_actions: parseInt(maxActions, 10) || 0,
       window,
       overage_behavior: behavior,
@@ -432,7 +434,17 @@ function QuotaFormModal({ open, onClose, onSubmit, loading, title, initial }: {
             value={formPrincipal}
             onChange={(e) => setFormPrincipal(e.target.value)}
             placeholder="leave blank to apply to all callers"
-            disabled={isEdit}
+            disabled={isEdit || perPrincipal}
+          />
+          <Select
+            label="Per-Principal Counter"
+            options={[
+              { value: 'false', label: 'Shared (one counter for the scope)' },
+              { value: 'true', label: 'Per caller (separate counter per user)' },
+            ]}
+            value={perPrincipal ? 'true' : 'false'}
+            onChange={(e) => setPerPrincipal(e.target.value === 'true')}
+            disabled={isEdit || !!formPrincipal.trim()}
           />
         </div>
 
@@ -532,7 +544,7 @@ function QuotaDetailView({ quota, usage, tab, onTabChange, onEdit, onDelete }: {
             'ID': quota.id,
             'Namespace': quota.namespace,
             'Tenant': quota.tenant,
-            'Principal': quota.principal ?? '* (any caller)',
+            'Principal': quota.principal ?? (quota.per_principal ? '* (per caller)' : '* (any caller)'),
             'Max Actions': quota.max_actions.toLocaleString(),
             'Window': capitalize(quota.window),
             'Overage Behavior': capitalize(quota.overage_behavior),

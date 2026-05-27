@@ -724,7 +724,6 @@ mod tests {
             "notifications",
             "auth0|user123",
             "user@example.com",
-            "svc:billing".split(':').next().unwrap(), // Verify split works if someone tries it
         ] {
             assert!(
                 validate_quota_scope_identifier(s).is_ok(),

@@ -34,6 +34,14 @@ public class CreateQuotaRequest {
     @JsonProperty("principal")
     private String principal;
 
+    /**
+     * When true, a separate counter is maintained per authenticated
+     * caller — enables "every user gets X/day" policies without one
+     * record per user. Ignored when {@code principal} is also set.
+     */
+    @JsonProperty("per_principal")
+    private boolean perPrincipal;
+
     @JsonProperty("max_actions")
     private long maxActions;
 
@@ -70,6 +78,9 @@ public class CreateQuotaRequest {
 
     public String getPrincipal() { return principal; }
     public void setPrincipal(String principal) { this.principal = principal; }
+
+    public boolean isPerPrincipal() { return perPrincipal; }
+    public void setPerPrincipal(boolean perPrincipal) { this.perPrincipal = perPrincipal; }
 
     public long getMaxActions() { return maxActions; }
     public void setMaxActions(long maxActions) { this.maxActions = maxActions; }
