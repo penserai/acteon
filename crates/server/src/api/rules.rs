@@ -15,7 +15,7 @@ use acteon_core::coverage::{CoverageQuery, CoverageReport, build_report};
 use acteon_rules::{RuleTraceEntry, SemanticMatchDetail};
 use acteon_rules_yaml::YamlFrontend;
 
-use crate::auth::identity::CallerIdentity;
+use crate::auth::identity::{CallerIdentity, TenantFilterError};
 use crate::auth::role::Permission;
 
 use super::AppState;
@@ -441,6 +441,7 @@ pub struct CoverageParams {
     params(CoverageParams),
     responses(
         (status = 200, description = "Coverage report", body = CoverageReport),
+        (status = 400, description = "Caller is scoped to multiple tenants and gave no `tenant` filter", body = ErrorResponse),
         (status = 404, description = "Analytics not available", body = ErrorResponse),
         (status = 403, description = "Tenant access denied", body = ErrorResponse)
     )
@@ -459,27 +460,30 @@ pub async fn rule_coverage(
         );
     };
 
-    // Enforce tenant access.
-    if let Some(ref requested_tenant) = params.tenant
-        && let Some(allowed) = identity.allowed_tenants()
-        && !allowed.contains(&requested_tenant.as_str())
-    {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(serde_json::json!(ErrorResponse {
-                error: format!("no grant covers tenant={requested_tenant}"),
-            })),
-        );
-    }
-
-    let mut tenant = params.tenant.clone();
-    // Inject single-tenant caller's tenant if not specified.
-    if tenant.is_none()
-        && let Some(allowed) = identity.allowed_tenants()
-        && allowed.len() == 1
-    {
-        tenant = Some(allowed[0].to_owned());
-    }
+    // Enforce tenant access. Coverage aggregates server-side over the audit
+    // store and cannot post-filter, so a multi-tenant caller who names no
+    // tenant must be rejected rather than aggregating across every tenant.
+    let tenant = match identity.resolve_tenant_filter(params.tenant.as_deref()) {
+        Ok(tenant) => tenant,
+        Err(TenantFilterError::NotGranted(requested)) => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!(ErrorResponse {
+                    error: format!("no grant covers tenant={requested}"),
+                })),
+            );
+        }
+        Err(TenantFilterError::Ambiguous(_)) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!(ErrorResponse {
+                    error:
+                        "caller is scoped to multiple tenants; specify an explicit ?tenant= filter"
+                            .into(),
+                })),
+            );
+        }
+    };
 
     let query = CoverageQuery {
         namespace: params.namespace,

@@ -301,7 +301,13 @@ pub async fn replay_audit(
         );
     };
 
-    // Build the audit query from replay parameters.
+    // Build the audit query from replay parameters. NOTE: tenant scoping is
+    // enforced per-record below via `identity.is_authorized(...)` before each
+    // dispatch — records outside the caller's grants are skipped, never
+    // replayed or returned. That per-record gate (not an up-front tenant
+    // filter) is the authorization boundary here, which is why a scoped
+    // caller can replay across a hierarchical tenant subtree; do not replace
+    // it with `resolve_tenant_filter`, which would over-narrow to exact match.
     let audit_query = AuditQuery {
         namespace: query.namespace,
         tenant: query.tenant,

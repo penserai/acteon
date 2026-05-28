@@ -182,6 +182,60 @@ impl CallerIdentity {
         }
         Ok(found)
     }
+
+    /// Resolve the single-tenant equality filter to apply for a query
+    /// endpoint whose backend can only filter by **one** tenant value at a
+    /// time (audit, analytics, rule-coverage). These endpoints delegate
+    /// filtering to the store/aggregator, so an unscoped query returns
+    /// records from *every* tenant — they must never run unfiltered for a
+    /// caller who is restricted to specific tenants.
+    ///
+    /// Returns:
+    /// - `Ok(None)` — caller has wildcard tenant access and named no
+    ///   tenant; run the query unfiltered.
+    /// - `Ok(Some(tenant))` — apply `tenant == <tenant>`. Either the tenant
+    ///   the caller explicitly requested (verified covered by a grant) or,
+    ///   for a caller scoped to exactly one tenant, that tenant.
+    /// - `Err(TenantFilterError::NotGranted)` — the requested tenant is not
+    ///   covered by any grant; map to `403 Forbidden`.
+    /// - `Err(TenantFilterError::Ambiguous)` — the caller is scoped to more
+    ///   than one tenant and named none; map to `400 Bad Request` and
+    ///   require an explicit `?tenant=` filter. Running unfiltered here is
+    ///   the cross-tenant data leak this helper exists to prevent.
+    ///
+    /// Note: tenant grants are hierarchical prefixes (a grant on `acme`
+    /// covers `acme.us-east`), but the store filter is exact equality, so a
+    /// caller scoped to `acme` who names no tenant only sees exactly-`acme`
+    /// records, not `acme.*`. That narrowing is intentional — it fails
+    /// closed. Endpoints that must return records across a hierarchical
+    /// subtree should authorize per-record (as `replay` does) rather than
+    /// use this helper.
+    pub fn resolve_tenant_filter(
+        &self,
+        requested: Option<&str>,
+    ) -> Result<Option<String>, TenantFilterError> {
+        match (requested, self.allowed_tenants()) {
+            // Wildcard tenant access: honor an explicit request, else run
+            // unfiltered. No grant check — the caller can read every tenant.
+            (requested, None) => Ok(requested.map(str::to_owned)),
+            // Scoped caller naming a tenant: it must be covered by a grant.
+            (Some(requested), Some(allowed)) => {
+                if allowed.contains(&requested) {
+                    Ok(Some(requested.to_owned()))
+                } else {
+                    Err(TenantFilterError::NotGranted(requested.to_owned()))
+                }
+            }
+            // Scoped caller, no tenant named: inject iff exactly one is
+            // allowed; otherwise the query is ambiguous and must be rejected.
+            (None, Some(allowed)) => match allowed.as_slice() {
+                [only] => Ok(Some((*only).to_owned())),
+                _ => Err(TenantFilterError::Ambiguous(
+                    allowed.iter().map(|s| (*s).to_owned()).collect(),
+                )),
+            },
+        }
+    }
 }
 
 /// Error returned by [`CallerIdentity::bus_agent_id_for_scope`] when
@@ -195,6 +249,22 @@ pub enum BusAgentIdResolutionError {
         "ambiguous bus agent identity for caller: grants bind to both '{first}' and '{second}'"
     )]
     ConflictingGrants { first: String, second: String },
+}
+
+/// Outcome of [`CallerIdentity::resolve_tenant_filter`] that the caller
+/// must surface as an HTTP error instead of running the query.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TenantFilterError {
+    /// The caller requested a tenant not covered by any of their grants.
+    /// Map to `403 Forbidden`.
+    NotGranted(String),
+    /// The caller is scoped to multiple tenants and did not name one. The
+    /// endpoint's backend can only filter by a single tenant, so running
+    /// unfiltered would return records from every granted tenant (or, for
+    /// an unscoped store scan, all tenants). Map to `400 Bad Request` and
+    /// require an explicit `?tenant=`. Carries the caller's allowed tenants
+    /// for a helpful error message.
+    Ambiguous(Vec<String>),
 }
 
 #[cfg(test)]
@@ -383,6 +453,76 @@ mod tests {
         assert_eq!(
             id.bus_agent_id_for_scope("acme.us-east", "agents"),
             Ok(Some("planner-1")),
+        );
+    }
+
+    // ---- resolve_tenant_filter -------------------------------------------
+
+    #[test]
+    fn tenant_filter_wildcard_caller_runs_unfiltered() {
+        let id = identity_with(vec![grant(&["*"], &["*"], &["*"], &["*"])]);
+        // No tenant named: unfiltered (admin sees all).
+        assert_eq!(id.resolve_tenant_filter(None), Ok(None));
+        // Named tenant: honored without a grant check.
+        assert_eq!(
+            id.resolve_tenant_filter(Some("acme")),
+            Ok(Some("acme".to_owned())),
+        );
+    }
+
+    #[test]
+    fn tenant_filter_single_tenant_caller_is_injected() {
+        let id = identity_with(vec![grant(&["acme"], &["*"], &["*"], &["*"])]);
+        // No tenant named: inject the only allowed tenant.
+        assert_eq!(id.resolve_tenant_filter(None), Ok(Some("acme".to_owned())),);
+        // Naming the granted tenant is fine.
+        assert_eq!(
+            id.resolve_tenant_filter(Some("acme")),
+            Ok(Some("acme".to_owned())),
+        );
+    }
+
+    #[test]
+    fn tenant_filter_rejects_uncovered_tenant() {
+        let id = identity_with(vec![grant(&["acme"], &["*"], &["*"], &["*"])]);
+        assert_eq!(
+            id.resolve_tenant_filter(Some("globex")),
+            Err(TenantFilterError::NotGranted("globex".to_owned())),
+        );
+    }
+
+    #[test]
+    fn tenant_filter_multi_tenant_caller_without_filter_is_ambiguous() {
+        // The cross-tenant leak this guard prevents: a caller scoped to
+        // two tenants who names none must NOT run an unfiltered query.
+        let id = identity_with(vec![
+            grant(&["acme"], &["*"], &["*"], &["*"]),
+            grant(&["globex"], &["*"], &["*"], &["*"]),
+        ]);
+        match id.resolve_tenant_filter(None) {
+            Err(TenantFilterError::Ambiguous(allowed)) => {
+                assert!(allowed.contains(&"acme".to_owned()));
+                assert!(allowed.contains(&"globex".to_owned()));
+            }
+            other => panic!("expected Ambiguous, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tenant_filter_multi_tenant_caller_naming_a_tenant_is_scoped() {
+        let id = identity_with(vec![
+            grant(&["acme"], &["*"], &["*"], &["*"]),
+            grant(&["globex"], &["*"], &["*"], &["*"]),
+        ]);
+        // Naming a covered tenant scopes the query to it.
+        assert_eq!(
+            id.resolve_tenant_filter(Some("globex")),
+            Ok(Some("globex".to_owned())),
+        );
+        // Naming an uncovered tenant is still forbidden.
+        assert_eq!(
+            id.resolve_tenant_filter(Some("initech")),
+            Err(TenantFilterError::NotGranted("initech".to_owned())),
         );
     }
 }
