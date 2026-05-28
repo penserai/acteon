@@ -94,7 +94,7 @@ pub async fn query_analytics(
                 })),
             );
         }
-        Err(TenantFilterError::Ambiguous(_)) => {
+        Err(TenantFilterError::Ambiguous) => {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!(ErrorResponse {

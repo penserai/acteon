@@ -473,7 +473,7 @@ pub async fn rule_coverage(
                 })),
             );
         }
-        Err(TenantFilterError::Ambiguous(_)) => {
+        Err(TenantFilterError::Ambiguous) => {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!(ErrorResponse {
