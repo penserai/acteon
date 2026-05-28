@@ -30,6 +30,7 @@ impl ActeonClient {
     ///     to: None,
     ///     group_by: None,
     ///     top_n: None,
+    ///     tenant_scope: Vec::new(), // server-set from grants; leave empty
     /// };
     ///
     /// let response = client.query_analytics(&query).await?;
