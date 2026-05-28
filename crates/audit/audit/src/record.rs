@@ -205,6 +205,25 @@ pub struct AuditQuery {
     /// records in chain order with bounded memory.
     #[serde(default)]
     pub sort_by_sequence_asc: bool,
+    /// Server-set tenant authorization scope. The set of tenant grant
+    /// patterns the caller may read; backends restrict results to tenants
+    /// covered hierarchically by one of these (see
+    /// [`acteon_core::tenant_scope`]). Empty = unrestricted.
+    ///
+    /// `#[serde(skip)]` so it can never be set from client input — it is the
+    /// authorization boundary and is populated by the server from grants.
+    #[serde(skip)]
+    pub tenant_scope: Vec<String>,
+}
+
+impl AuditQuery {
+    /// Returns `true` if `tenant` is within this query's authorization scope.
+    /// An empty scope is unrestricted. Used by backends that filter records
+    /// in memory (the in-memory store and the `DynamoDB` scan fallback).
+    #[must_use]
+    pub fn tenant_in_scope(&self, tenant: &str) -> bool {
+        crate::tenant_scope::tenant_in_scope(&self.tenant_scope, tenant)
+    }
 }
 
 impl AuditQuery {

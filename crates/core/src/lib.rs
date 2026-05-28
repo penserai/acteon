@@ -33,6 +33,7 @@ pub mod state_machine;
 pub mod stream;
 pub mod task_push;
 pub mod template;
+pub mod tenant_scope;
 pub mod time_interval;
 pub mod types;
 

@@ -218,6 +218,7 @@ async fn main() {
         tenant: Some("acme".to_string()),
         from: None, // default: last 7 days
         to: None,
+        ..Default::default()
     };
     let aggregates = analytics.rule_coverage(&query).await.unwrap();
 

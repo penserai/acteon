@@ -8,6 +8,7 @@ use acteon_audit::cursor::{AuditCursor, CursorKind};
 use acteon_audit::error::AuditError;
 use acteon_audit::record::{AuditPage, AuditQuery, AuditRecord};
 use acteon_audit::store::AuditStore;
+use acteon_core::tenant_scope::like_descendants_pattern;
 
 use crate::analytics::ClickHouseAnalyticsStore;
 use crate::config::ClickHouseAuditConfig;
@@ -216,6 +217,19 @@ fn build_where_clause(query: &AuditQuery) -> (String, Vec<String>) {
             conditions.push(format!("{col} = ?"));
             binds.push(v.clone());
         }
+    }
+
+    // Hierarchical tenant authorization scope (server-set). Empty scope is
+    // unrestricted; otherwise the record's tenant must be covered by ANY of the
+    // caller's granted patterns (exact match OR dot-descendant).
+    if !query.tenant_scope.is_empty() {
+        let mut scope_terms: Vec<String> = Vec::with_capacity(query.tenant_scope.len());
+        for p in &query.tenant_scope {
+            scope_terms.push("(tenant = ? OR tenant LIKE ?)".to_string());
+            binds.push(p.clone());
+            binds.push(like_descendants_pattern(p));
+        }
+        conditions.push(format!("({})", scope_terms.join(" OR ")));
     }
 
     if let Some(from) = query.from {
@@ -514,5 +528,88 @@ impl AuditStore for ClickHouseAuditStore {
             self.client.clone(),
             self.table.clone(),
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AuditQuery, build_where_clause};
+
+    #[test]
+    fn build_where_clause_no_filters_is_empty() {
+        let (clause, binds) = build_where_clause(&AuditQuery::default());
+        assert!(clause.is_empty());
+        assert!(binds.is_empty());
+    }
+
+    #[test]
+    fn build_where_clause_empty_scope_adds_nothing() {
+        // A query with no tenant_scope must be byte-for-byte identical to a
+        // no-filter query (preserves today's behavior exactly).
+        let baseline = build_where_clause(&AuditQuery::default());
+        let scoped = build_where_clause(&AuditQuery {
+            tenant_scope: Vec::new(),
+            ..Default::default()
+        });
+        assert_eq!(baseline, scoped);
+    }
+
+    #[test]
+    fn build_where_clause_single_scope_pattern() {
+        let (clause, binds) = build_where_clause(&AuditQuery {
+            tenant_scope: vec!["acme".to_owned()],
+            ..Default::default()
+        });
+        assert_eq!(clause, "WHERE ((tenant = ? OR tenant LIKE ?))");
+        assert_eq!(binds, vec!["acme".to_owned(), "acme.%".to_owned()]);
+    }
+
+    #[test]
+    fn build_where_clause_multi_scope_or_group() {
+        let (clause, binds) = build_where_clause(&AuditQuery {
+            tenant_scope: vec!["acme".to_owned(), "globex".to_owned()],
+            ..Default::default()
+        });
+        assert_eq!(
+            clause,
+            "WHERE ((tenant = ? OR tenant LIKE ?) OR (tenant = ? OR tenant LIKE ?))"
+        );
+        assert_eq!(
+            binds,
+            vec![
+                "acme".to_owned(),
+                "acme.%".to_owned(),
+                "globex".to_owned(),
+                "globex.%".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn build_where_clause_scope_anded_with_exact_tenant() {
+        // The scope group is ANDed with the existing exact tenant filter; binds
+        // appear in SQL order (exact tenant first, then the scope pair).
+        let (clause, binds) = build_where_clause(&AuditQuery {
+            tenant: Some("acme".to_owned()),
+            tenant_scope: vec!["acme".to_owned()],
+            ..Default::default()
+        });
+        assert_eq!(
+            clause,
+            "WHERE tenant = ? AND ((tenant = ? OR tenant LIKE ?))"
+        );
+        assert_eq!(
+            binds,
+            vec!["acme".to_owned(), "acme".to_owned(), "acme.%".to_owned()]
+        );
+    }
+
+    #[test]
+    fn build_where_clause_scope_escapes_like_metachars() {
+        let (_clause, binds) = build_where_clause(&AuditQuery {
+            tenant_scope: vec!["ac_me".to_owned()],
+            ..Default::default()
+        });
+        assert_eq!(binds, vec!["ac_me".to_owned(), "ac\\_me.%".to_owned()]);
     }
 }

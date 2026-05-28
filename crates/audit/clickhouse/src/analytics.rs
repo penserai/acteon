@@ -8,6 +8,7 @@ use acteon_core::analytics::{
     AnalyticsTopEntry,
 };
 use acteon_core::coverage::{CoverageAggregate, CoverageQuery};
+use acteon_core::tenant_scope::like_descendants_pattern;
 
 /// Map an `AnalyticsInterval` to the `ClickHouse` time-truncation function.
 fn interval_to_ch_func(interval: AnalyticsInterval) -> &'static str {
@@ -50,6 +51,19 @@ fn build_analytics_where(
             conditions.push(format!("{col} = ?"));
             binds.push(BindValue::Str(v.clone()));
         }
+    }
+
+    // Hierarchical tenant authorization scope (server-set). Empty scope is
+    // unrestricted; otherwise the record's tenant must be covered by ANY of the
+    // caller's granted patterns (exact match OR dot-descendant).
+    if !query.tenant_scope.is_empty() {
+        let mut scope_terms: Vec<String> = Vec::with_capacity(query.tenant_scope.len());
+        for p in &query.tenant_scope {
+            scope_terms.push("(tenant = ? OR tenant LIKE ?)".to_string());
+            binds.push(BindValue::Str(p.clone()));
+            binds.push(BindValue::Str(like_descendants_pattern(p)));
+        }
+        conditions.push(format!("({})", scope_terms.join(" OR ")));
     }
 
     // Time range: dispatched_at is stored as milliseconds since epoch.
@@ -321,6 +335,19 @@ impl AnalyticsStore for ClickHouseAnalyticsStore {
             binds.push(BindValue::Str(t.clone()));
         }
 
+        // Hierarchical tenant authorization scope (server-set). Empty scope is
+        // unrestricted; otherwise the record's tenant must be covered by ANY of
+        // the caller's granted patterns (exact match OR dot-descendant).
+        if !query.tenant_scope.is_empty() {
+            let mut scope_terms: Vec<String> = Vec::with_capacity(query.tenant_scope.len());
+            for p in &query.tenant_scope {
+                scope_terms.push("(tenant = ? OR tenant LIKE ?)".to_string());
+                binds.push(BindValue::Str(p.clone()));
+                binds.push(BindValue::Str(like_descendants_pattern(p)));
+            }
+            conditions.push(format!("({})", scope_terms.join(" OR ")));
+        }
+
         conditions.push("dispatched_at >= ?".to_string());
         binds.push(BindValue::Millis(from.timestamp_millis()));
         conditions.push("dispatched_at <= ?".to_string());
@@ -357,5 +384,149 @@ impl AnalyticsStore for ClickHouseAnalyticsStore {
                 count: row.cnt,
             })
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::{TimeZone, Utc};
+
+    use super::{AnalyticsQuery, BindValue, build_analytics_where};
+    use acteon_core::analytics::{AnalyticsInterval, AnalyticsMetric};
+
+    /// `AnalyticsQuery` has no `Default`; build a minimal base with no filters.
+    fn base_query() -> AnalyticsQuery {
+        AnalyticsQuery {
+            metric: AnalyticsMetric::Volume,
+            namespace: None,
+            tenant: None,
+            provider: None,
+            action_type: None,
+            outcome: None,
+            interval: AnalyticsInterval::Daily,
+            from: None,
+            to: None,
+            group_by: None,
+            top_n: None,
+            tenant_scope: Vec::new(),
+        }
+    }
+
+    /// Render a bind list as comparable strings: `Str` verbatim, `Millis`
+    /// prefixed so the two variants can never collide.
+    fn binds_repr(binds: &[BindValue]) -> Vec<String> {
+        binds
+            .iter()
+            .map(|b| match b {
+                BindValue::Str(s) => format!("s:{s}"),
+                BindValue::Millis(ms) => format!("m:{ms}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn build_analytics_where_empty_scope_adds_no_scope_predicate() {
+        // An empty scope must be byte-for-byte identical to a no-scope query:
+        // only the time-range conditions remain.
+        let from = Utc.timestamp_opt(1_000, 0).unwrap();
+        let to = Utc.timestamp_opt(2_000, 0).unwrap();
+        let (clause, binds) = build_analytics_where(&base_query(), from, to);
+        assert_eq!(clause, "WHERE dispatched_at >= ? AND dispatched_at <= ?");
+        assert_eq!(
+            binds_repr(&binds),
+            vec![
+                format!("m:{}", from.timestamp_millis()),
+                format!("m:{}", to.timestamp_millis()),
+            ]
+        );
+    }
+
+    #[test]
+    fn build_analytics_where_single_scope_pattern() {
+        let from = Utc.timestamp_opt(1_000, 0).unwrap();
+        let to = Utc.timestamp_opt(2_000, 0).unwrap();
+        let (clause, binds) = build_analytics_where(
+            &AnalyticsQuery {
+                tenant_scope: vec!["acme".to_owned()],
+                ..base_query()
+            },
+            from,
+            to,
+        );
+        assert_eq!(
+            clause,
+            "WHERE ((tenant = ? OR tenant LIKE ?)) \
+             AND dispatched_at >= ? AND dispatched_at <= ?"
+        );
+        assert_eq!(
+            binds_repr(&binds),
+            vec![
+                "s:acme".to_owned(),
+                "s:acme.%".to_owned(),
+                format!("m:{}", from.timestamp_millis()),
+                format!("m:{}", to.timestamp_millis()),
+            ]
+        );
+    }
+
+    #[test]
+    fn build_analytics_where_multi_scope_or_group() {
+        let from = Utc.timestamp_opt(1_000, 0).unwrap();
+        let to = Utc.timestamp_opt(2_000, 0).unwrap();
+        let (clause, binds) = build_analytics_where(
+            &AnalyticsQuery {
+                tenant_scope: vec!["acme".to_owned(), "ac_me".to_owned()],
+                ..base_query()
+            },
+            from,
+            to,
+        );
+        assert_eq!(
+            clause,
+            "WHERE ((tenant = ? OR tenant LIKE ?) OR (tenant = ? OR tenant LIKE ?)) \
+             AND dispatched_at >= ? AND dispatched_at <= ?"
+        );
+        // Note the LIKE-escape of `_` in the second pattern.
+        assert_eq!(
+            binds_repr(&binds),
+            vec![
+                "s:acme".to_owned(),
+                "s:acme.%".to_owned(),
+                "s:ac_me".to_owned(),
+                "s:ac\\_me.%".to_owned(),
+                format!("m:{}", from.timestamp_millis()),
+                format!("m:{}", to.timestamp_millis()),
+            ]
+        );
+    }
+
+    #[test]
+    fn build_analytics_where_scope_anded_with_exact_tenant() {
+        let from = Utc.timestamp_opt(1_000, 0).unwrap();
+        let to = Utc.timestamp_opt(2_000, 0).unwrap();
+        let (clause, binds) = build_analytics_where(
+            &AnalyticsQuery {
+                tenant: Some("acme".to_owned()),
+                tenant_scope: vec!["acme".to_owned()],
+                ..base_query()
+            },
+            from,
+            to,
+        );
+        assert_eq!(
+            clause,
+            "WHERE tenant = ? AND ((tenant = ? OR tenant LIKE ?)) \
+             AND dispatched_at >= ? AND dispatched_at <= ?"
+        );
+        assert_eq!(
+            binds_repr(&binds),
+            vec![
+                "s:acme".to_owned(),
+                "s:acme".to_owned(),
+                "s:acme.%".to_owned(),
+                format!("m:{}", from.timestamp_millis()),
+                format!("m:{}", to.timestamp_millis()),
+            ]
+        );
     }
 }

@@ -423,6 +423,24 @@ fn build_where_clause(query: &AuditQuery) -> (String, Vec<String>, Option<u32>, 
         }
     }
 
+    // Tenant-scope OR-group: restrict to tenants covered hierarchically by any
+    // pattern in the scope. Empty scope adds nothing (preserves prior behavior).
+    if !query.tenant_scope.is_empty() {
+        let mut scope_terms = Vec::with_capacity(query.tenant_scope.len());
+        for p in &query.tenant_scope {
+            let exact_idx = bind_idx;
+            binds.push(p.clone());
+            bind_idx += 1;
+            let like_idx = bind_idx;
+            binds.push(acteon_core::tenant_scope::like_descendants_pattern(p));
+            bind_idx += 1;
+            scope_terms.push(format!(
+                "(tenant = ${exact_idx} OR tenant LIKE ${like_idx})"
+            ));
+        }
+        conditions.push(format!("({})", scope_terms.join(" OR ")));
+    }
+
     let from_idx = if query.from.is_some() {
         conditions.push(format!("dispatched_at >= ${bind_idx}"));
         let idx = bind_idx;
@@ -528,5 +546,80 @@ impl From<AuditRow> for AuditRecord {
             kid: row.kid,
             canonical_hash: row.canonical_hash,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_scope_adds_no_tenant_scope_predicate() {
+        // A fully-empty query (no filters, empty scope) must produce exactly
+        // the same WHERE clause and binds as today — byte-for-byte unchanged.
+        let query = AuditQuery::default();
+        let (where_clause, binds, from_idx, to_idx, bind_idx) = build_where_clause(&query);
+
+        assert_eq!(where_clause, "");
+        assert!(binds.is_empty());
+        assert_eq!(from_idx, None);
+        assert_eq!(to_idx, None);
+        assert_eq!(bind_idx, 1);
+    }
+
+    #[test]
+    fn non_empty_scope_produces_or_group() {
+        let mut query = AuditQuery::default();
+        query.tenant_scope = vec!["acme".to_string(), "globex.eu".to_string()];
+
+        let (where_clause, binds, from_idx, to_idx, bind_idx) = build_where_clause(&query);
+
+        // One parenthesized OR-group, two terms (one per pattern).
+        assert_eq!(
+            where_clause,
+            "WHERE ((tenant = $1 OR tenant LIKE $2) OR (tenant = $3 OR tenant LIKE $4))"
+        );
+        // Two binds per pattern: exact value + descendant LIKE pattern.
+        assert_eq!(
+            binds,
+            vec![
+                "acme".to_string(),
+                "acme.%".to_string(),
+                "globex.eu".to_string(),
+                "globex.eu.%".to_string(),
+            ]
+        );
+        assert_eq!(from_idx, None);
+        assert_eq!(to_idx, None);
+        assert_eq!(bind_idx, 5);
+    }
+
+    #[test]
+    fn scope_anded_with_exact_tenant_and_time_range() {
+        let now = chrono::Utc::now();
+        let mut query = AuditQuery::default();
+        query.tenant = Some("acme.team".to_string());
+        query.tenant_scope = vec!["acme".to_string()];
+        query.from = Some(now);
+        query.to = Some(now);
+
+        let (where_clause, binds, from_idx, to_idx, bind_idx) = build_where_clause(&query);
+
+        assert_eq!(
+            where_clause,
+            "WHERE tenant = $1 AND ((tenant = $2 OR tenant LIKE $3)) \
+             AND dispatched_at >= $4 AND dispatched_at <= $5"
+        );
+        assert_eq!(
+            binds,
+            vec![
+                "acme.team".to_string(),
+                "acme".to_string(),
+                "acme.%".to_string(),
+            ]
+        );
+        assert_eq!(from_idx, Some(4));
+        assert_eq!(to_idx, Some(5));
+        assert_eq!(bind_idx, 6);
     }
 }

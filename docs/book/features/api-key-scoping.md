@@ -227,11 +227,32 @@ or reads scoped data:
 |----------|----------------|
 | `POST /v1/dispatch` | Each action against the full `(tenant, namespace, provider, action_type)` tuple |
 | `POST /v1/dispatch/batch` | Every action in the batch; **one failure rejects the whole batch** |
+| `GET /v1/audit` | Restricted to the caller's tenant scope (see below) |
 | `GET /v1/audit/{id}` | The audit record's tenant/namespace/provider/action_type |
 | `POST /v1/audit/{id}/replay` | Same as dispatch |
 | `POST /v1/audit/replay` | Each record individually; out-of-scope records are skipped |
-| `GET /v1/analytics` | Tenant filter auto-injected for single-tenant callers |
-| `GET /v1/rules/coverage` | Tenant filter auto-injected for single-tenant callers |
+| `GET /v1/analytics` | Restricted to the caller's tenant scope (see below) |
+| `GET /v1/rules/coverage` | Restricted to the caller's tenant scope (see below) |
+
+### Tenant scoping of read queries
+
+`GET /v1/audit`, `GET /v1/analytics`, and `GET /v1/rules/coverage` delegate
+filtering to the audit/analytics backend, so the server constrains every
+query to the caller's authorized tenants — hierarchically, matching grant
+semantics:
+
+- **Wildcard caller** (`tenants = ["*"]`) — unrestricted; an explicit
+  `?tenant=` is honored as-is.
+- **Caller names a tenant** (`?tenant=acme.us-east`) — allowed only if a grant
+  covers it (a grant on `acme` covers `acme.us-east`); the query is pinned to
+  that exact tenant. A tenant outside every grant returns **403**.
+- **Scoped caller, no `?tenant=`** — the query returns the **union of the
+  caller's granted subtrees**. A grant on `acme` returns `acme` and every
+  `acme.*` record; grants on `acme` + `globex` aggregate across both. No
+  tenant needs to be named, and no records outside the grants are ever
+  returned.
+
+This boundary is server-set and cannot be influenced by client input.
 
 Role-based permissions (admin / operator / viewer) are enforced separately
 and orthogonally — a viewer cannot dispatch even with a matching grant, and

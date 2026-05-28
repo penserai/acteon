@@ -1645,6 +1645,9 @@ impl ActeonMcpServer {
             to,
             group_by: p.group_by,
             top_n: p.top_n,
+            // Authorization scope is applied server-side from grants; clients
+            // never set it (the field is `#[serde(skip)]`).
+            tenant_scope: Vec::new(),
         };
 
         match self.ops.query_analytics(query).await {

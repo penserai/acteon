@@ -171,6 +171,7 @@ async fn main() {
             to: None,
             group_by: None,
             top_n: None,
+            tenant_scope: Vec::new(),
         })
         .await
         .unwrap();
@@ -190,6 +191,7 @@ async fn main() {
             to: None,
             group_by: Some("outcome".to_string()),
             top_n: None,
+            tenant_scope: Vec::new(),
         })
         .await
         .unwrap();
@@ -209,6 +211,7 @@ async fn main() {
             to: None,
             group_by: None,
             top_n: Some(5),
+            tenant_scope: Vec::new(),
         })
         .await
         .unwrap();
@@ -228,6 +231,7 @@ async fn main() {
             to: None,
             group_by: None,
             top_n: None,
+            tenant_scope: Vec::new(),
         })
         .await
         .unwrap();
@@ -247,6 +251,7 @@ async fn main() {
             to: Some(now),
             group_by: None,
             top_n: None,
+            tenant_scope: Vec::new(),
         })
         .await
         .unwrap();
@@ -266,6 +271,7 @@ async fn main() {
             to: None,
             group_by: Some("provider".to_string()),
             top_n: None,
+            tenant_scope: Vec::new(),
         })
         .await
         .unwrap();

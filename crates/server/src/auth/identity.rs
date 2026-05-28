@@ -183,69 +183,65 @@ impl CallerIdentity {
         Ok(found)
     }
 
-    /// Resolve the tenant equality-filter to apply for a query endpoint
-    /// whose backend can only filter by **one** tenant value at a time
-    /// (audit, analytics, rule-coverage). These endpoints delegate filtering
-    /// to the store/aggregator, so an unscoped query returns records from
-    /// *every* tenant — they must never run unfiltered for a caller who is
-    /// restricted to specific tenants.
+    /// Resolve the tenant filter **and** authorization scope to apply for a
+    /// query endpoint whose backend delegates filtering to the store/aggregator
+    /// (audit, analytics, rule-coverage). Such a query must never run unscoped
+    /// for a caller restricted to specific tenants, or it would return records
+    /// from every tenant.
     ///
-    /// Returns:
-    /// - `Ok(None)` — caller has wildcard tenant access and named no tenant;
-    ///   run the query unfiltered.
-    /// - `Ok(Some(tenant))` — apply `tenant == <tenant>`. Either the tenant
-    ///   the caller explicitly requested (verified covered by a grant,
-    ///   *hierarchically*) or, for a caller scoped to exactly one tenant,
-    ///   that tenant.
-    /// - `Err(TenantFilterError::NotGranted)` — the requested tenant is not
-    ///   covered by any grant; map to `403 Forbidden`.
-    /// - `Err(TenantFilterError::Ambiguous)` — the caller is scoped to more
-    ///   than one tenant and named none; map to `400 Bad Request` and
-    ///   require an explicit `?tenant=` filter. Running unfiltered here is
-    ///   the cross-tenant data leak this helper exists to prevent.
+    /// The returned [`TenantQueryScope`] carries two complementary pieces:
+    /// - `tenant`: an explicit single-tenant filter the caller requested
+    ///   (validated to be within their grants), or `None`.
+    /// - `scope`: the caller's hierarchical grant patterns. The backend
+    ///   restricts results to tenants covered by one of these (`p` covers `p`
+    ///   and `p.*`). Empty = unrestricted.
     ///
-    /// Authorization for a *named* tenant is hierarchical: a grant on `acme`
-    /// covers `acme`, `acme.prod`, `acme.us-east`, … (see [`tenant_matches`]),
-    /// so a regional admin can target a sub-tenant by naming it explicitly.
-    ///
-    /// Limitation: the store filter applied to the returned value is exact
-    /// equality, so naming `acme` matches only exactly-`acme` records, not
-    /// `acme.*`, and a caller scoped to multiple tenants cannot aggregate
-    /// across them in one call (hence the `Ambiguous` 400). Returning a whole
-    /// hierarchical subtree, or a union across several granted tenants, in a
-    /// single query requires pushing a prefix/`IN` predicate down into each
-    /// audit/analytics backend — tracked as follow-up work; this helper is
-    /// the fail-closed authorization boundary in the meantime.
+    /// Behavior:
+    /// - Caller names a tenant → it must be covered by a grant
+    ///   (hierarchically, via [`tenant_matches`], so a grant on `acme`
+    ///   authorizes `acme.prod`). The exact filter fully bounds the query, so
+    ///   `scope` is left empty — this keeps key-addressed backends (`DynamoDB`)
+    ///   on their efficient exact-match path. `Err(NotGranted)` (→ 403) if not
+    ///   covered.
+    /// - Caller names nothing, wildcard tenant access → unrestricted
+    ///   (`tenant = None`, empty `scope`).
+    /// - Caller names nothing, scoped → `tenant = None` with `scope` set to the
+    ///   caller's grant patterns. The backend returns the **union of the
+    ///   granted subtrees** — multi-tenant callers aggregate across their
+    ///   tenants without having to name one.
     ///
     /// [`tenant_matches`]: super::config::tenant_matches
-    pub fn resolve_tenant_filter(
+    pub fn resolve_tenant_query_scope(
         &self,
         requested: Option<&str>,
-    ) -> Result<Option<String>, TenantFilterError> {
+    ) -> Result<TenantQueryScope, TenantFilterError> {
         match requested {
-            // Scoped caller naming a tenant: a grant must cover it
-            // hierarchically. `tenant_matches` also returns true for a `*`
-            // grant, so wildcard callers fall through here as authorized.
+            // Named tenant: a grant must cover it hierarchically. `tenant_matches`
+            // also returns true for a `*` grant, so wildcard callers are
+            // authorized here. The exact equality filter fully bounds the query.
             Some(requested) => {
                 if self
                     .grants
                     .iter()
                     .any(|g| super::config::tenant_matches(&g.tenants, requested))
                 {
-                    Ok(Some(requested.to_owned()))
+                    Ok(TenantQueryScope {
+                        tenant: Some(requested.to_owned()),
+                        scope: Vec::new(),
+                    })
                 } else {
                     Err(TenantFilterError::NotGranted(requested.to_owned()))
                 }
             }
-            // No tenant named: wildcard callers run unfiltered; a caller
-            // scoped to exactly one tenant gets it injected; a multi-tenant
-            // caller is ambiguous and must name one.
+            // No tenant named: wildcard callers run unrestricted; a scoped
+            // caller's grant patterns become the authorization scope so the
+            // backend returns the union of their granted subtrees.
             None => match self.allowed_tenants() {
-                None => Ok(None),
-                Some(allowed) => match allowed.as_slice() {
-                    [only] => Ok(Some((*only).to_owned())),
-                    _ => Err(TenantFilterError::Ambiguous),
-                },
+                None => Ok(TenantQueryScope::default()),
+                Some(allowed) => Ok(TenantQueryScope {
+                    tenant: None,
+                    scope: allowed.into_iter().map(str::to_owned).collect(),
+                }),
             },
         }
     }
@@ -264,21 +260,26 @@ pub enum BusAgentIdResolutionError {
     ConflictingGrants { first: String, second: String },
 }
 
-/// Outcome of [`CallerIdentity::resolve_tenant_filter`] that the caller
-/// must surface as an HTTP error instead of running the query.
+/// The tenant filter and authorization scope resolved by
+/// [`CallerIdentity::resolve_tenant_query_scope`] for a query endpoint.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TenantQueryScope {
+    /// Explicit single-tenant filter the caller requested, validated to be
+    /// within their grants. `None` = no explicit narrowing.
+    pub tenant: Option<String>,
+    /// Hierarchical grant patterns bounding which tenants the caller may read.
+    /// Empty = unrestricted (wildcard caller, or an explicit in-grant `tenant`
+    /// already bounds the query). Fed into the backend query's `tenant_scope`.
+    pub scope: Vec<String>,
+}
+
+/// Error returned by [`CallerIdentity::resolve_tenant_query_scope`] that the
+/// caller must surface as an HTTP error instead of running the query.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TenantFilterError {
     /// The caller requested a tenant not covered by any of their grants.
     /// Map to `403 Forbidden`.
     NotGranted(String),
-    /// The caller is scoped to multiple tenants and did not name one. The
-    /// endpoint's backend can only filter by a single tenant, so running
-    /// unfiltered would return records from every granted tenant (or, for
-    /// an unscoped store scan, all tenants). Map to `400 Bad Request` and
-    /// require an explicit `?tenant=`. Deliberately carries no payload — the
-    /// caller's tenant set is not echoed back, to avoid disclosing tenant
-    /// topology to a holder of a single key.
-    Ambiguous,
 }
 
 #[cfg(test)]
@@ -470,91 +471,98 @@ mod tests {
         );
     }
 
-    // ---- resolve_tenant_filter -------------------------------------------
+    // ---- resolve_tenant_query_scope --------------------------------------
+
+    fn scope(tenant: Option<&str>, patterns: &[&str]) -> TenantQueryScope {
+        TenantQueryScope {
+            tenant: tenant.map(str::to_owned),
+            scope: patterns.iter().map(|s| (*s).to_owned()).collect(),
+        }
+    }
 
     #[test]
-    fn tenant_filter_wildcard_caller_runs_unfiltered() {
+    fn tenant_scope_wildcard_caller_is_unrestricted() {
         let id = identity_with(vec![grant(&["*"], &["*"], &["*"], &["*"])]);
-        // No tenant named: unfiltered (admin sees all).
-        assert_eq!(id.resolve_tenant_filter(None), Ok(None));
-        // Named tenant: honored without a grant check.
+        // No tenant named: unrestricted (no filter, empty scope → sees all).
+        assert_eq!(id.resolve_tenant_query_scope(None), Ok(scope(None, &[])));
+        // Named tenant: honored as an exact filter, no extra scope.
         assert_eq!(
-            id.resolve_tenant_filter(Some("acme")),
-            Ok(Some("acme".to_owned())),
+            id.resolve_tenant_query_scope(Some("acme")),
+            Ok(scope(Some("acme"), &[])),
         );
     }
 
     #[test]
-    fn tenant_filter_single_tenant_caller_is_injected() {
+    fn tenant_scope_single_tenant_caller_gets_subtree_scope() {
         let id = identity_with(vec![grant(&["acme"], &["*"], &["*"], &["*"])]);
-        // No tenant named: inject the only allowed tenant.
-        assert_eq!(id.resolve_tenant_filter(None), Ok(Some("acme".to_owned())),);
-        // Naming the granted tenant is fine.
+        // No tenant named: scope to the granted pattern so the backend returns
+        // the whole `acme` subtree (acme, acme.prod, …), not just exact `acme`.
         assert_eq!(
-            id.resolve_tenant_filter(Some("acme")),
-            Ok(Some("acme".to_owned())),
+            id.resolve_tenant_query_scope(None),
+            Ok(scope(None, &["acme"])),
+        );
+        // Naming the granted tenant pins it exactly (no extra scope needed).
+        assert_eq!(
+            id.resolve_tenant_query_scope(Some("acme")),
+            Ok(scope(Some("acme"), &[])),
         );
     }
 
     #[test]
-    fn tenant_filter_rejects_uncovered_tenant() {
+    fn tenant_scope_rejects_uncovered_named_tenant() {
         let id = identity_with(vec![grant(&["acme"], &["*"], &["*"], &["*"])]);
         assert_eq!(
-            id.resolve_tenant_filter(Some("globex")),
+            id.resolve_tenant_query_scope(Some("globex")),
             Err(TenantFilterError::NotGranted("globex".to_owned())),
         );
     }
 
     #[test]
-    fn tenant_filter_allows_named_hierarchical_subtenant() {
-        // A grant on `acme` authorizes targeting a sub-tenant by name (a
-        // regional admin querying `?tenant=acme.prod`), matching the
-        // hierarchical model `is_authorized` already uses.
+    fn tenant_scope_allows_named_hierarchical_subtenant() {
+        // A grant on `acme` authorizes naming a sub-tenant (a regional admin
+        // querying `?tenant=acme.prod`), matching the hierarchical model.
         let id = identity_with(vec![grant(&["acme"], &["*"], &["*"], &["*"])]);
         assert_eq!(
-            id.resolve_tenant_filter(Some("acme.prod")),
-            Ok(Some("acme.prod".to_owned())),
-        );
-        assert_eq!(
-            id.resolve_tenant_filter(Some("acme.us-east")),
-            Ok(Some("acme.us-east".to_owned())),
+            id.resolve_tenant_query_scope(Some("acme.prod")),
+            Ok(scope(Some("acme.prod"), &[])),
         );
         // Segment boundary: `acme` must NOT cover the sibling `acmecorp`.
         assert_eq!(
-            id.resolve_tenant_filter(Some("acmecorp")),
+            id.resolve_tenant_query_scope(Some("acmecorp")),
             Err(TenantFilterError::NotGranted("acmecorp".to_owned())),
         );
     }
 
     #[test]
-    fn tenant_filter_multi_tenant_caller_without_filter_is_ambiguous() {
-        // The cross-tenant leak this guard prevents: a caller scoped to
-        // two tenants who names none must NOT run an unfiltered query. The
-        // error carries no payload so the tenant set is not disclosed.
+    fn tenant_scope_multi_tenant_caller_without_filter_unions_grants() {
+        // The former `Ambiguous` 400 case: a caller scoped to two tenants who
+        // names none now aggregates across both granted subtrees via `scope`.
         let id = identity_with(vec![
             grant(&["acme"], &["*"], &["*"], &["*"]),
             grant(&["globex"], &["*"], &["*"], &["*"]),
         ]);
-        assert_eq!(
-            id.resolve_tenant_filter(None),
-            Err(TenantFilterError::Ambiguous),
-        );
+        let resolved = id
+            .resolve_tenant_query_scope(None)
+            .expect("multi-tenant caller is no longer rejected");
+        assert_eq!(resolved.tenant, None);
+        assert!(resolved.scope.contains(&"acme".to_owned()));
+        assert!(resolved.scope.contains(&"globex".to_owned()));
     }
 
     #[test]
-    fn tenant_filter_multi_tenant_caller_naming_a_tenant_is_scoped() {
+    fn tenant_scope_multi_tenant_caller_naming_a_tenant_pins_it() {
         let id = identity_with(vec![
             grant(&["acme"], &["*"], &["*"], &["*"]),
             grant(&["globex"], &["*"], &["*"], &["*"]),
         ]);
-        // Naming a covered tenant scopes the query to it.
+        // Naming a covered tenant pins the query to it (exact filter).
         assert_eq!(
-            id.resolve_tenant_filter(Some("globex")),
-            Ok(Some("globex".to_owned())),
+            id.resolve_tenant_query_scope(Some("globex")),
+            Ok(scope(Some("globex"), &[])),
         );
         // Naming an uncovered tenant is still forbidden.
         assert_eq!(
-            id.resolve_tenant_filter(Some("initech")),
+            id.resolve_tenant_query_scope(Some("initech")),
             Err(TenantFilterError::NotGranted("initech".to_owned())),
         );
     }

@@ -194,6 +194,48 @@ impl DynamoDbAuditStore {
 
         (filters, values, names)
     }
+
+    /// Build a tenant-scope `FilterExpression` group for a hierarchical
+    /// authorization scope, used on the Scan path (the `ns_tenant` GSI key is
+    /// exact-match only, so a subtree scope is not expressible as a key
+    /// condition — a documented Scan-vs-GSI perf tradeoff).
+    ///
+    /// For each pattern `p` in `scope`, emits the predicate
+    /// `(#tenant = :scopeN OR begins_with(#tenant, :scopeN_dot))`, where the
+    /// exact match covers `p` itself and `begins_with(p.)` covers dot
+    /// descendants — `begins_with("acme.")` matches `acme.prod` / `acme.x.y`
+    /// but not the sibling `acmecorp`. All patterns are `OR`-ed inside one
+    /// parenthesized group. Values are bound as expression attribute values,
+    /// never interpolated, and `#tenant` is aliased defensively.
+    ///
+    /// Returns `(group, values, names)`. When `scope` is empty, returns
+    /// `(None, empty, empty)` — adds nothing, preserving today's behavior.
+    fn build_scope_filter(
+        scope: &[String],
+    ) -> (
+        Option<String>,
+        HashMap<String, AttributeValue>,
+        HashMap<String, String>,
+    ) {
+        let mut values = HashMap::new();
+        let mut names = HashMap::new();
+        if scope.is_empty() {
+            return (None, values, names);
+        }
+
+        names.insert("#tenant".to_owned(), "tenant".to_owned());
+        let mut terms = Vec::with_capacity(scope.len());
+        for (i, p) in scope.iter().enumerate() {
+            let exact = format!(":scope{i}");
+            let prefix = format!(":scope{i}_dot");
+            terms.push(format!(
+                "(#tenant = {exact} OR begins_with(#tenant, {prefix}))"
+            ));
+            values.insert(exact, AttributeValue::S(p.clone()));
+            values.insert(prefix, AttributeValue::S(format!("{p}.")));
+        }
+        (Some(format!("({})", terms.join(" OR "))), values, names)
+    }
 }
 
 #[async_trait]
@@ -264,11 +306,19 @@ impl AuditStore for DynamoDbAuditStore {
         let limit = query.effective_limit();
 
         // Require at least namespace + tenant for GSI queries, UNLESS
-        // we're searching for specific signing data (IR use case).
+        // we're searching for specific signing data (IR use case) or a
+        // hierarchical tenant scope is in play. `ns_tenant` is a GSI partition
+        // key (exact match only), so a subtree scope (`acme` covering
+        // `acme.prod`, …) is NOT expressible as a key condition and must go
+        // through a Scan with a FilterExpression. This is a deliberate
+        // perf tradeoff (Scan vs GSI) for multi-tenant/subtree reads on
+        // DynamoDB. The server sets EITHER `tenant` (scope empty, GSI path) OR
+        // `tenant_scope` (tenant None, scan path), never both.
         let is_signer_query = query.signer_id.is_some() || query.kid.is_some();
+        let is_scope_query = !query.tenant_scope.is_empty();
         let (namespace, tenant) = match (&query.namespace, &query.tenant) {
             (Some(ns), Some(t)) => (Some(ns.clone()), Some(t.clone())),
-            _ if is_signer_query => (None, None),
+            _ if is_signer_query || is_scope_query => (None, None),
             _ => {
                 // Without namespace+tenant we cannot use the GSI efficiently.
                 // Return empty for now (a full table scan would be expensive).
@@ -441,18 +491,44 @@ impl AuditStore for DynamoDbAuditStore {
                     .map_err(|e| AuditError::Storage(e.to_string()))?;
                 (resp.items().to_vec(), None)
             } else {
-                // IR MODE: Perform a full table scan. This is expensive and should
-                // only be used for cross-tenant investigations by signer_id or kid.
+                // IR / SCOPE MODE: Perform a full table scan. This is expensive
+                // and is used for cross-tenant investigations by signer_id or
+                // kid, and for hierarchical tenant-scope (subtree) reads which
+                // the exact-match `ns_tenant` GSI key cannot express — a
+                // documented Scan-vs-GSI perf tradeoff.
                 tracing::warn!(
                     signer_id = ?query.signer_id,
                     kid = ?query.kid,
+                    scope_patterns = query.tenant_scope.len(),
                     "performing cross-tenant DynamoDB scan for audit records"
                 );
 
-                let filter_expression = if filter_parts.is_empty() {
+                // The scan has no key condition, so AND together: the existing
+                // build_filters() output (provider, fence exclusion, …), a
+                // namespace filter when the query pins a namespace, and the
+                // hierarchical tenant-scope OR-group.
+                let mut scan_parts = filter_parts;
+                let mut scan_values = filter_values;
+                let mut scan_names = filter_names;
+
+                if let Some(ref ns) = query.namespace {
+                    scan_parts.push("#namespace = :ns".to_owned());
+                    scan_values.insert(":ns".to_owned(), AttributeValue::S(ns.clone()));
+                    scan_names.insert("#namespace".to_owned(), "namespace".to_owned());
+                }
+
+                let (scope_group, scope_values, scope_names) =
+                    Self::build_scope_filter(&query.tenant_scope);
+                if let Some(group) = scope_group {
+                    scan_parts.push(group);
+                    scan_values.extend(scope_values);
+                    scan_names.extend(scope_names);
+                }
+
+                let filter_expression = if scan_parts.is_empty() {
                     None
                 } else {
-                    Some(filter_parts.join(" AND "))
+                    Some(scan_parts.join(" AND "))
                 };
 
                 let probe_limit = i32::try_from(limit).unwrap_or(50).saturating_add(1);
@@ -462,10 +538,10 @@ impl AuditStore for DynamoDbAuditStore {
                     .table_name(&self.table_name)
                     .limit(probe_limit);
 
-                for (k, v) in &filter_values {
+                for (k, v) in &scan_values {
                     s = s.expression_attribute_values(k, v.clone());
                 }
-                for (k, v) in &filter_names {
+                for (k, v) in &scan_names {
                     s = s.expression_attribute_names(k, v);
                 }
                 if let Some(ref fe) = filter_expression {
@@ -1020,6 +1096,64 @@ mod tests {
         assert!(parts.iter().any(|p| p.contains("provider")));
         assert!(values.contains_key(":provider"));
         assert!(names.contains_key("#provider"));
+    }
+
+    #[test]
+    fn build_scope_filter_empty_adds_nothing() {
+        let (group, values, names) = DynamoDbAuditStore::build_scope_filter(&[]);
+        assert!(group.is_none());
+        assert!(values.is_empty());
+        assert!(names.is_empty());
+    }
+
+    #[test]
+    fn build_scope_filter_single_pattern() {
+        let scope = vec!["acme".to_owned()];
+        let (group, values, names) = DynamoDbAuditStore::build_scope_filter(&scope);
+
+        // One OR-group with the exact + begins_with(prefix) predicate.
+        assert_eq!(
+            group.as_deref(),
+            Some("((#tenant = :scope0 OR begins_with(#tenant, :scope0_dot)))")
+        );
+        // Two bound values: the exact pattern and the dot-prefix.
+        assert_eq!(values.len(), 2);
+        assert_eq!(
+            values.get(":scope0"),
+            Some(&AttributeValue::S("acme".to_owned()))
+        );
+        assert_eq!(
+            values.get(":scope0_dot"),
+            Some(&AttributeValue::S("acme.".to_owned()))
+        );
+        // The aliased attribute name.
+        assert_eq!(names.get("#tenant"), Some(&"tenant".to_owned()));
+        assert_eq!(names.len(), 1);
+    }
+
+    #[test]
+    fn build_scope_filter_multiple_patterns_ored() {
+        let scope = vec!["acme".to_owned(), "globex".to_owned()];
+        let (group, values, names) = DynamoDbAuditStore::build_scope_filter(&scope);
+
+        assert_eq!(
+            group.as_deref(),
+            Some(
+                "((#tenant = :scope0 OR begins_with(#tenant, :scope0_dot)) \
+                 OR (#tenant = :scope1 OR begins_with(#tenant, :scope1_dot)))"
+            )
+        );
+        // Two patterns -> four bound values.
+        assert_eq!(values.len(), 4);
+        assert_eq!(
+            values.get(":scope1"),
+            Some(&AttributeValue::S("globex".to_owned()))
+        );
+        assert_eq!(
+            values.get(":scope1_dot"),
+            Some(&AttributeValue::S("globex.".to_owned()))
+        );
+        assert_eq!(names.len(), 1);
     }
 
     #[test]
