@@ -71,10 +71,10 @@ pub enum QuotasCommand {
         /// Maximum actions allowed in the window.
         #[arg(long, required_unless_present = "data")]
         max_actions: Option<u64>,
-        /// Time window: hourly | daily | weekly | monthly | <seconds>.
+        /// Time window: `hourly` | `daily` | `weekly` | `monthly` | integer seconds.
         #[arg(long, required_unless_present = "data")]
         window: Option<String>,
-        /// Overage behavior: block | warn | degrade:<provider> | notify:<target>.
+        /// Overage behavior: `block` | `warn` | `degrade:PROVIDER` | `notify:TARGET`.
         #[arg(long, required_unless_present = "data")]
         overage_behavior: Option<String>,
         /// Optional human-readable description.
