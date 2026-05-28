@@ -13,6 +13,13 @@ Planned features and enhancements for Acteon, ordered by estimated value/effort 
 
 ## Medium Effort
 
+### DynamoDB Hierarchical Tenant Index
+
+Hierarchical/multi-tenant audit reads currently fall back to a table `Scan` on the DynamoDB backend, because the `ns_tenant` composite partition key only supports exact match (see [DynamoDB Audit Backend](../backends/dynamodb-audit.md)). Add a sparse GSI keyed on `namespace` (PK) + `tenant` (SK) so a scoped read becomes a `begins_with(tenant, "acme.")` **Query** (indexed range) instead of a full Scan. Requires a write-time projection of the new key attributes and a one-time backfill. Only worth doing if users run scoped multi-tenant audit reads at volume on DynamoDB (ClickHouse/Postgres already handle this as an indexed prefix range).
+
+**Crates:** `acteon-audit-dynamodb`
+**Complexity:** Medium (~600 LOC + backfill/migration)
+
 ### Cursor-Based Audit Pagination
 
 `AuditQuery` currently uses offset-based pagination exclusively. This is efficient for Postgres/ClickHouse because rule coverage aggregation uses native `GROUP BY` and bypasses paging, but non-SQL audit backends (Memory, Elasticsearch, DynamoDB) fall through to `InMemoryAnalytics`, which pages with offsets internally and hits the classic linear-degradation anti-pattern on large scans.

@@ -49,6 +49,19 @@ The `ns_tenant` attribute is a composite key in the format `"{namespace}#{tenant
 
 All GSIs use `ALL` projection for flexibility.
 
+> ⚠️ **Performance: hierarchical/multi-tenant reads trigger a table Scan.**
+> Because `ns_tenant` is an exact-match partition key, it cannot express a
+> hierarchical or multi-tenant authorization scope (e.g. a caller granted
+> `acme` reading the whole `acme.*` subtree, or a caller scoped to several
+> tenants). When such a caller queries `GET /v1/audit` **without** naming an
+> exact `?tenant=`, the backend falls back to a DynamoDB **`Scan`** with a
+> `begins_with(tenant, …)` filter — which reads the whole table and is far
+> more expensive than the GSI key path. To stay on the efficient path,
+> scoped callers should pass an explicit `?tenant=` (an exact, in-grant
+> tenant), or use the ClickHouse/PostgreSQL audit backends — both do
+> hierarchical scope matching as an indexed prefix range. See
+> [API Key Scoping](../features/api-key-scoping.md#tenant-scoping-of-read-queries).
+
 ## Hash Chain Support
 
 DynamoDB supports hash chain integrity for [SOC2/HIPAA compliance mode](../features/compliance-mode.md). When `hash_chain = true`:
