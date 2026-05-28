@@ -5,7 +5,7 @@ use axum::response::IntoResponse;
 
 use acteon_audit::record::AuditQuery;
 
-use crate::auth::identity::CallerIdentity;
+use crate::auth::identity::{CallerIdentity, TenantFilterError};
 
 use super::AppState;
 use super::schemas::ErrorResponse;
@@ -36,6 +36,8 @@ use super::schemas::ErrorResponse;
     ),
     responses(
         (status = 200, description = "Audit records matching query", body = acteon_audit::AuditPage),
+        (status = 400, description = "Caller is scoped to multiple tenants and gave no `tenant` filter", body = ErrorResponse),
+        (status = 403, description = "Requested tenant is not covered by the caller's grants", body = ErrorResponse),
         (status = 404, description = "Audit not enabled", body = ErrorResponse)
     )
 )]
@@ -53,27 +55,30 @@ pub async fn query_audit(
         );
     };
 
-    // Restrict query to only tenants the caller has access to.
-    // If the caller has a specific tenant filter, verify it's covered by grants.
-    if let Some(ref requested_tenant) = query.tenant {
-        if let Some(allowed) = identity.allowed_tenants()
-            && !allowed.contains(&requested_tenant.as_str())
-        {
+    // Restrict the query to tenants the caller is granted. The audit store
+    // can only filter by a single tenant, so a multi-tenant caller who names
+    // none must be rejected — running unfiltered would return every tenant's
+    // records (see `resolve_tenant_filter`).
+    match identity.resolve_tenant_filter(query.tenant.as_deref()) {
+        Ok(tenant) => query.tenant = tenant,
+        Err(TenantFilterError::NotGranted(requested)) => {
             return (
                 StatusCode::FORBIDDEN,
                 Json(serde_json::json!(ErrorResponse {
-                    error: format!("no grant covers tenant={requested_tenant}"),
+                    error: format!("no grant covers tenant={requested}"),
                 })),
             );
         }
-    } else if let Some(allowed) = identity.allowed_tenants() {
-        // No tenant filter requested but caller is scoped — inject first allowed tenant.
-        // For multi-tenant callers, the API requires an explicit tenant filter.
-        if allowed.len() == 1 {
-            query.tenant = Some(allowed[0].to_owned());
+        Err(TenantFilterError::Ambiguous) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!(ErrorResponse {
+                    error:
+                        "caller is scoped to multiple tenants; specify an explicit ?tenant= filter"
+                            .into(),
+                })),
+            );
         }
-        // If multiple tenants allowed and no filter, we let the query through
-        // and results will contain records from all their granted tenants.
     }
 
     match audit.query(&query).await {
