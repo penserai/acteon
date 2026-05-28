@@ -3423,3 +3423,121 @@ async fn silence_create_requires_silences_manage_permission() {
         silence_crud_request(app, http::Method::POST, "/v1/silences", Some(body)).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
+
+// ── A2A operator-lifecycle (Suspend / Ban) enforcement ──────────────────────
+
+/// Grant covering the synthetic `a2a` provider on `agents/acme`,
+/// optionally bound to the bus agent `planner-1`.
+fn a2a_grant(agent_id: Option<&str>) -> Grant {
+    Grant {
+        tenants: vec!["acme".to_string()],
+        namespaces: vec!["agents".to_string()],
+        providers: vec!["a2a".to_string()],
+        actions: vec!["*".to_string()],
+        agent_id: agent_id.map(str::to_string),
+    }
+}
+
+/// Write a `planner-1` agent record into the gateway's state store with
+/// the given operator admin state.
+async fn seed_a2a_agent(state: &AppState, admin: acteon_core::AgentAdminState) {
+    use acteon_state::{KeyKind, StateKey};
+    let mut agent = acteon_core::Agent::new("planner-1", "agents", "acme");
+    agent.apply_admin_state(
+        admin,
+        Some("policy".into()),
+        Some("op@acme.io".into()),
+        None,
+    );
+    let key = StateKey::new("agents", "acme", KeyKind::BusAgent, "planner-1");
+    let gw = state.gateway.read().await;
+    gw.state_store()
+        .set(&key, &serde_json::to_string(&agent).unwrap(), None)
+        .await
+        .unwrap();
+}
+
+/// POST a single JSON-RPC request to the A2A endpoint with the test key.
+async fn a2a_rpc_request(
+    app: axum::Router,
+    method: &str,
+    params: serde_json::Value,
+) -> (StatusCode, String) {
+    let (hk, hv) = auth_headers();
+    let body = serde_json::json!({"jsonrpc": "2.0", "method": method, "params": params, "id": 1});
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/a2a/agents/acme")
+                .header(hk, hv)
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .header("a2a-version", "1.0")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, String::from_utf8_lossy(&bytes).to_string())
+}
+
+#[tokio::test]
+async fn a2a_message_send_rejected_for_banned_agent() {
+    let state = build_test_state_with_auth(vec![a2a_grant(Some("planner-1"))]);
+    seed_a2a_agent(&state, acteon_core::AgentAdminState::Banned).await;
+    let app = build_app(state);
+
+    // `message/send` is a write method → the lifecycle gate fires before the
+    // params are even parsed, so a Banned bound agent is rejected with 403.
+    let (status, body) = a2a_rpc_request(app, "message/send", serde_json::json!({})).await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "banned agent must be blocked from message/send: {body}"
+    );
+    assert!(
+        body.contains("banned"),
+        "403 should explain the ban: {body}"
+    );
+    // The operator's identity is never leaked in the rejection.
+    assert!(
+        !body.contains("op@acme.io"),
+        "must not leak operator: {body}"
+    );
+}
+
+#[tokio::test]
+async fn a2a_tasks_get_allowed_for_banned_agent() {
+    let state = build_test_state_with_auth(vec![a2a_grant(Some("planner-1"))]);
+    seed_a2a_agent(&state, acteon_core::AgentAdminState::Banned).await;
+    let app = build_app(state);
+
+    // Reads are NOT gated: a banned agent can still observe task state. An
+    // unknown task id yields a JSON-RPC error at HTTP 200, never a 403.
+    let (status, _) = a2a_rpc_request(app, "tasks/get", serde_json::json!({"id": "missing"})).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "tasks/get must stay open for a banned agent"
+    );
+}
+
+#[tokio::test]
+async fn a2a_message_send_allowed_for_unbound_caller() {
+    // A grant with no agent_id binding has no managed agent → no lifecycle to
+    // enforce. The gate passes; invalid params then yield a JSON-RPC error at
+    // HTTP 200 — crucially NOT a 403 from the lifecycle gate.
+    let state = build_test_state_with_auth(vec![a2a_grant(None)]);
+    let app = build_app(state);
+
+    let (status, body) = a2a_rpc_request(app, "message/send", serde_json::json!({})).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "an unbound caller must pass the lifecycle gate: {body}"
+    );
+}
