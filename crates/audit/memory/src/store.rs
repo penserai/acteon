@@ -86,6 +86,12 @@ impl AuditStore for MemoryAuditStore {
                 if !matches_filter(query.tenant.as_ref(), &rec.tenant) {
                     return None;
                 }
+                // Hierarchical tenant authorization scope (server-set). Empty
+                // scope is unrestricted; otherwise the record's tenant must be
+                // covered by one of the caller's granted patterns.
+                if !query.tenant_in_scope(&rec.tenant) {
+                    return None;
+                }
                 if !matches_filter(query.provider.as_ref(), &rec.provider) {
                     return None;
                 }
@@ -586,5 +592,74 @@ mod tests {
         let page = store.query(&q).await.unwrap();
         assert_eq!(page.total, Some(1));
         assert_eq!(page.records[0].id, "r2");
+    }
+
+    /// Seed one record per tenant and return the store.
+    async fn store_with_tenants(tenants: &[&str]) -> MemoryAuditStore {
+        let store = MemoryAuditStore::new();
+        for (i, t) in tenants.iter().enumerate() {
+            let mut r = make_record(&format!("r{i}"), &format!("a{i}"));
+            r.tenant = (*t).to_owned();
+            store.record(r).await.unwrap();
+        }
+        store
+    }
+
+    #[tokio::test]
+    async fn tenant_scope_returns_union_of_granted_subtrees() {
+        let store = store_with_tenants(&[
+            "acme",
+            "acme.prod",
+            "acme.prod.eu",
+            "acmecorp", // sibling — must NOT match `acme`
+            "globex",
+            "initech", // ungranted
+        ])
+        .await;
+
+        let page = store
+            .query(&AuditQuery {
+                tenant_scope: vec!["acme".to_owned(), "globex".to_owned()],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let mut got: Vec<String> = page.records.iter().map(|r| r.tenant.clone()).collect();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                "acme".to_owned(),
+                "acme.prod".to_owned(),
+                "acme.prod.eu".to_owned(),
+                "globex".to_owned(),
+            ],
+            "scope must return the acme + globex subtrees, excluding acmecorp and initech",
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_tenant_scope_is_unrestricted() {
+        let store = store_with_tenants(&["acme", "globex", "initech"]).await;
+        let page = store.query(&AuditQuery::default()).await.unwrap();
+        assert_eq!(page.records.len(), 3, "empty scope returns every tenant");
+    }
+
+    #[tokio::test]
+    async fn explicit_tenant_intersects_with_scope() {
+        // Defensive: when both an exact tenant and a scope are present they are
+        // ANDed (the server normally sets one or the other, never both).
+        let store = store_with_tenants(&["acme", "acme.prod"]).await;
+        let page = store
+            .query(&AuditQuery {
+                tenant: Some("acme.prod".to_owned()),
+                tenant_scope: vec!["acme".to_owned()],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(page.records.len(), 1);
+        assert_eq!(page.records[0].tenant, "acme.prod");
     }
 }

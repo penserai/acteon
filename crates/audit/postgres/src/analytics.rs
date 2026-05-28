@@ -50,6 +50,24 @@ fn build_analytics_where(
         }
     }
 
+    // Tenant-scope OR-group: restrict to tenants covered hierarchically by any
+    // pattern in the scope. Empty scope adds nothing (preserves prior behavior).
+    if !query.tenant_scope.is_empty() {
+        let mut scope_terms = Vec::with_capacity(query.tenant_scope.len());
+        for p in &query.tenant_scope {
+            let exact_idx = idx;
+            binds.push(p.clone());
+            idx += 1;
+            let like_idx = idx;
+            binds.push(acteon_core::tenant_scope::like_descendants_pattern(p));
+            idx += 1;
+            scope_terms.push(format!(
+                "(tenant = ${exact_idx} OR tenant LIKE ${like_idx})"
+            ));
+        }
+        conditions.push(format!("({})", scope_terms.join(" OR ")));
+    }
+
     // Time range is always applied.
     conditions.push(format!("dispatched_at >= ${idx}"));
     let from_idx = idx;
@@ -327,6 +345,24 @@ impl AnalyticsStore for PostgresAnalyticsStore {
             idx += 1;
         }
 
+        // Tenant-scope OR-group: restrict to tenants covered hierarchically by
+        // any pattern in the scope. Empty scope adds nothing.
+        if !query.tenant_scope.is_empty() {
+            let mut scope_terms = Vec::with_capacity(query.tenant_scope.len());
+            for p in &query.tenant_scope {
+                let exact_idx = idx;
+                binds.push(p.clone());
+                idx += 1;
+                let like_idx = idx;
+                binds.push(acteon_core::tenant_scope::like_descendants_pattern(p));
+                idx += 1;
+                scope_terms.push(format!(
+                    "(tenant = ${exact_idx} OR tenant LIKE ${like_idx})"
+                ));
+            }
+            conditions.push(format!("({})", scope_terms.join(" OR ")));
+        }
+
         conditions.push(format!("dispatched_at >= ${idx}"));
         idx += 1;
         conditions.push(format!("dispatched_at <= ${idx}"));
@@ -364,5 +400,90 @@ impl AnalyticsStore for PostgresAnalyticsStore {
                 count: row.cnt as u64,
             })
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base_query() -> AnalyticsQuery {
+        AnalyticsQuery {
+            metric: AnalyticsMetric::Volume,
+            namespace: None,
+            tenant: None,
+            provider: None,
+            action_type: None,
+            outcome: None,
+            interval: AnalyticsInterval::Daily,
+            from: None,
+            to: None,
+            group_by: None,
+            top_n: None,
+            tenant_scope: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn empty_scope_adds_no_tenant_scope_predicate() {
+        let now = Utc::now();
+        // With no string filters and an empty scope, the only conditions are
+        // the always-applied time range — unchanged from prior behavior.
+        let query = base_query();
+        let (clause, binds, next_idx) = build_analytics_where(&query, now, now);
+
+        assert_eq!(clause, "WHERE dispatched_at >= $1 AND dispatched_at <= $2");
+        assert!(binds.is_empty());
+        assert_eq!(next_idx, 3);
+    }
+
+    #[test]
+    fn non_empty_scope_produces_or_group() {
+        let now = Utc::now();
+        let mut query = base_query();
+        query.tenant_scope = vec!["acme".to_string(), "globex.eu".to_string()];
+
+        let (clause, binds, next_idx) = build_analytics_where(&query, now, now);
+
+        assert_eq!(
+            clause,
+            "WHERE ((tenant = $1 OR tenant LIKE $2) OR (tenant = $3 OR tenant LIKE $4)) \
+             AND dispatched_at >= $5 AND dispatched_at <= $6"
+        );
+        assert_eq!(
+            binds,
+            vec![
+                "acme".to_string(),
+                "acme.%".to_string(),
+                "globex.eu".to_string(),
+                "globex.eu.%".to_string(),
+            ]
+        );
+        assert_eq!(next_idx, 7);
+    }
+
+    #[test]
+    fn scope_anded_with_exact_tenant_filter() {
+        let now = Utc::now();
+        let mut query = base_query();
+        query.tenant = Some("acme.team".to_string());
+        query.tenant_scope = vec!["acme".to_string()];
+
+        let (clause, binds, next_idx) = build_analytics_where(&query, now, now);
+
+        assert_eq!(
+            clause,
+            "WHERE tenant = $1 AND ((tenant = $2 OR tenant LIKE $3)) \
+             AND dispatched_at >= $4 AND dispatched_at <= $5"
+        );
+        assert_eq!(
+            binds,
+            vec![
+                "acme.team".to_string(),
+                "acme".to_string(),
+                "acme.%".to_string(),
+            ]
+        );
+        assert_eq!(next_idx, 6);
     }
 }

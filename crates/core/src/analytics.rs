@@ -69,6 +69,14 @@ pub struct AnalyticsQuery {
     /// Number of top entries to return for `TopActionTypes` (default: 10).
     #[serde(default)]
     pub top_n: Option<usize>,
+    /// Server-set tenant authorization scope (hierarchical grant patterns the
+    /// caller may read). Backends restrict aggregation to tenants covered by
+    /// one of these; empty = unrestricted. See [`crate::tenant_scope`].
+    ///
+    /// `#[serde(skip)]` so clients can never set it — it is populated by the
+    /// server from the caller's grants.
+    #[serde(skip)]
+    pub tenant_scope: Vec<String>,
 }
 
 fn default_interval() -> AnalyticsInterval {

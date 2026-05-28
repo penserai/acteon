@@ -213,6 +213,9 @@ impl<S: AuditStore + ?Sized + 'static> AnalyticsStore for InMemoryAnalytics<S> {
                 to: Some(to),
                 limit: Some(batch_size),
                 cursor: cursor.clone(),
+                // Propagate the server-set authorization scope so the paged
+                // store query restricts to the caller's granted tenants.
+                tenant_scope: query.tenant_scope.clone(),
                 ..Default::default()
             };
 
@@ -333,6 +336,8 @@ impl<S: AuditStore + ?Sized + 'static> AnalyticsStore for InMemoryAnalytics<S> {
                 to: Some(to),
                 limit: Some(batch_size),
                 cursor: cursor.clone(),
+                // Propagate the server-set authorization scope to the store.
+                tenant_scope: query.tenant_scope.clone(),
                 ..Default::default()
             };
 
@@ -610,6 +615,7 @@ mod tests {
             to: None,
             group_by: None,
             top_n: None,
+            tenant_scope: Vec::new(),
         };
 
         let result = analytics.query_analytics(&query).await.unwrap();
@@ -638,6 +644,7 @@ mod tests {
             to: None,
             group_by: Some("outcome".to_string()),
             top_n: None,
+            tenant_scope: Vec::new(),
         };
 
         let result = analytics.query_analytics(&query).await.unwrap();
@@ -669,6 +676,7 @@ mod tests {
             to: None,
             group_by: None,
             top_n: Some(3),
+            tenant_scope: Vec::new(),
         };
 
         let result = analytics.query_analytics(&query).await.unwrap();
@@ -700,6 +708,7 @@ mod tests {
             to: None,
             group_by: None,
             top_n: None,
+            tenant_scope: Vec::new(),
         };
 
         let result = analytics.query_analytics(&query).await.unwrap();
@@ -734,6 +743,7 @@ mod tests {
             to: None,
             group_by: None,
             top_n: None,
+            tenant_scope: Vec::new(),
         };
 
         let result = analytics.query_analytics(&query).await.unwrap();
@@ -761,6 +771,7 @@ mod tests {
             to: None,
             group_by: None,
             top_n: None,
+            tenant_scope: Vec::new(),
         };
 
         let result = analytics.query_analytics(&query).await.unwrap();
@@ -810,6 +821,7 @@ mod tests {
             to: None,
             group_by: None,
             top_n: None,
+            tenant_scope: Vec::new(),
         };
 
         let result = analytics.query_analytics(&query).await.unwrap();
@@ -920,6 +932,7 @@ mod tests {
             tenant: Some("acme".into()),
             from: None,
             to: None,
+            tenant_scope: Vec::new(),
         };
         let aggregates = analytics.rule_coverage(&query).await.unwrap();
 
@@ -975,6 +988,7 @@ mod tests {
             tenant: None,
             from: None,
             to: None,
+            tenant_scope: Vec::new(),
         };
         let aggregates = analytics.rule_coverage(&query).await.unwrap();
 
@@ -1014,6 +1028,7 @@ mod tests {
             tenant: None,
             from: Some(now - Duration::hours(3)),
             to: Some(now),
+            tenant_scope: Vec::new(),
         };
         let aggregates = analytics.rule_coverage(&query).await.unwrap();
 

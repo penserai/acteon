@@ -489,6 +489,26 @@ fn build_es_query(query: &AuditQuery) -> serde_json::Value {
         }));
     }
 
+    // Hierarchical tenant authorization scope (server-set). Empty scope is
+    // unrestricted; otherwise the record's tenant must be covered by ANY
+    // granted pattern `p` — either `tenant == p` or `tenant` is a dot
+    // descendant of `p` (prefix `p.`). `serde_json::json!` escapes the
+    // string values, so there is no DSL injection. ES `prefix` matches are
+    // literal (not LIKE), so we use the raw `format!("{p}.")` prefix.
+    if !query.tenant_scope.is_empty() {
+        let mut should: Vec<serde_json::Value> = Vec::with_capacity(query.tenant_scope.len() * 2);
+        for p in &query.tenant_scope {
+            should.push(serde_json::json!({ "term": { "tenant": p } }));
+            should.push(serde_json::json!({ "prefix": { "tenant": format!("{p}.") } }));
+        }
+        filter_clauses.push(serde_json::json!({
+            "bool": {
+                "should": should,
+                "minimum_should_match": 1
+            }
+        }));
+    }
+
     if must_clauses.is_empty() && filter_clauses.is_empty() {
         serde_json::json!({ "match_all": {} })
     } else {
@@ -498,5 +518,69 @@ fn build_es_query(query: &AuditQuery) -> serde_json::Value {
                 "filter": filter_clauses
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_es_query;
+    use acteon_audit::record::AuditQuery;
+
+    #[test]
+    fn tenant_scope_embeds_should_term_and_prefix_clauses() {
+        let query = AuditQuery {
+            tenant_scope: vec!["acme".to_owned(), "globex.eu".to_owned()],
+            ..Default::default()
+        };
+
+        let json = build_es_query(&query);
+        let filter = json["bool"]["filter"]
+            .as_array()
+            .expect("filter clauses present");
+
+        // Exactly one tenant-scope clause (the bool/should group).
+        let scope_clause = filter
+            .iter()
+            .find(|c| c.get("bool").is_some())
+            .expect("tenant-scope bool clause present");
+
+        assert_eq!(scope_clause["bool"]["minimum_should_match"], 1);
+
+        let should = scope_clause["bool"]["should"]
+            .as_array()
+            .expect("should array present");
+
+        // Two clauses per pattern: an exact term plus a dot-descendant prefix.
+        assert_eq!(should.len(), 4);
+        assert_eq!(
+            should[0],
+            serde_json::json!({ "term": { "tenant": "acme" } })
+        );
+        assert_eq!(
+            should[1],
+            serde_json::json!({ "prefix": { "tenant": "acme." } })
+        );
+        assert_eq!(
+            should[2],
+            serde_json::json!({ "term": { "tenant": "globex.eu" } })
+        );
+        assert_eq!(
+            should[3],
+            serde_json::json!({ "prefix": { "tenant": "globex.eu." } })
+        );
+    }
+
+    #[test]
+    fn empty_tenant_scope_adds_no_clause() {
+        let scoped = build_es_query(&AuditQuery {
+            tenant_scope: Vec::new(),
+            ..Default::default()
+        });
+
+        // Byte-for-byte identical to a fully-default (no-filter) query.
+        let baseline = build_es_query(&AuditQuery::default());
+        assert_eq!(scoped, baseline);
+        // And no `bool`/`should` group sneaks in — it's a bare match_all.
+        assert_eq!(scoped, serde_json::json!({ "match_all": {} }));
     }
 }

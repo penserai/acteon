@@ -196,6 +196,8 @@ async fn run_coverage(
         tenant: tenant.clone(),
         from: effective_from,
         to: effective_to,
+        // Authorization scope is applied server-side from grants.
+        ..Default::default()
     };
 
     let report = ops.rules_coverage(&query).await?;

@@ -26,6 +26,15 @@ pub struct CoverageQuery {
     /// End of the time range (inclusive). Defaults to now.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to: Option<DateTime<Utc>>,
+    /// Server-set tenant authorization scope (hierarchical grant patterns the
+    /// caller may read). The coverage aggregation is restricted to tenants
+    /// covered by one of these; empty = unrestricted. See
+    /// [`crate::tenant_scope`].
+    ///
+    /// `#[serde(skip)]` so clients can never set it — it is populated by the
+    /// server from the caller's grants.
+    #[serde(skip)]
+    pub tenant_scope: Vec<String>,
 }
 
 /// A single aggregated row emitted by an audit backend for rule coverage.

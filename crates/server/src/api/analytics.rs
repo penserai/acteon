@@ -62,7 +62,6 @@ pub struct AnalyticsParams {
     ),
     responses(
         (status = 200, description = "Analytics results", body = acteon_core::AnalyticsResponse),
-        (status = 400, description = "Caller is scoped to multiple tenants and gave no `tenant` filter", body = ErrorResponse),
         (status = 403, description = "Requested tenant is not covered by the caller's grants", body = ErrorResponse),
         (status = 404, description = "Analytics not available", body = ErrorResponse)
     )
@@ -81,11 +80,11 @@ pub async fn query_analytics(
         );
     };
 
-    // Enforce tenant access. Analytics aggregates server-side and cannot
-    // post-filter, so a multi-tenant caller who names no tenant must be
-    // rejected rather than aggregating across every granted tenant.
-    let tenant = match identity.resolve_tenant_filter(params.tenant.as_deref()) {
-        Ok(tenant) => tenant,
+    // Enforce tenant access. A named tenant is pinned exactly; an unnamed
+    // scoped caller gets a hierarchical authorization scope so analytics
+    // aggregates across the union of their granted subtrees.
+    let resolved = match identity.resolve_tenant_query_scope(params.tenant.as_deref()) {
+        Ok(resolved) => resolved,
         Err(TenantFilterError::NotGranted(requested)) => {
             return (
                 StatusCode::FORBIDDEN,
@@ -94,22 +93,12 @@ pub async fn query_analytics(
                 })),
             );
         }
-        Err(TenantFilterError::Ambiguous) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!(ErrorResponse {
-                    error:
-                        "caller is scoped to multiple tenants; specify an explicit ?tenant= filter"
-                            .into(),
-                })),
-            );
-        }
     };
 
     let query = AnalyticsQuery {
         metric: params.metric,
         namespace: params.namespace,
-        tenant,
+        tenant: resolved.tenant,
         provider: params.provider,
         action_type: params.action_type,
         outcome: params.outcome,
@@ -118,6 +107,7 @@ pub async fn query_analytics(
         to: params.to,
         group_by: params.group_by,
         top_n: params.top_n,
+        tenant_scope: resolved.scope,
     };
 
     match analytics.query_analytics(&query).await {
