@@ -164,6 +164,27 @@ The cancel verb is split off in-handler (axum routes whole segments).
 Acteon also propagates the cancel to any linked Acteon Chain via the
 Task ↔ Chain bridge.
 
+## Chain-backed Tasks
+
+A Task can be **backed by an Acteon Chain**: the chain's progress
+projects onto the Task's state (chain running → `Working`, terminal
+chain status → the matching terminal Task state).
+
+When the chain settles, its **step results fold into the Task** so a
+federated caller gets the output through the standard protocol rather
+than an opaque `Completed`:
+
+- one **`Artifact`** per chain step — `artifactId` `step-{index}`,
+  `name` the step name, with the step's response body as a data part
+  (parallel sub-steps project as `substep-{name}`);
+- a summary **`history`** message naming the chain and how many step
+  results were recorded.
+
+A step body larger than the 256&nbsp;KB part cap is replaced by a small
+`{"truncated": true, …}` marker — the full body stays queryable through
+the chain API. Projection is best-effort: an enrichment failure is
+logged and never blocks the Task from settling.
+
 ## Pause for human (HITL)
 
 Two of the eight Task states represent agent-initiated pauses:
