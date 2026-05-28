@@ -342,19 +342,32 @@ impl Gateway {
     /// Record an audit entry, either synchronously (blocking the pipeline) or
     /// asynchronously (fire-and-forget), depending on the compliance configuration.
     ///
-    /// When `sync_audit_writes` is enabled, the caller awaits the write inline
-    /// so the audit record is guaranteed to be persisted before the dispatch
-    /// pipeline returns.
-    async fn emit_audit_record(&self, audit: &Arc<dyn AuditStore>, record: AuditRecord) {
+    /// When `sync_audit_writes` is enabled (SOC2/HIPAA mode), the caller awaits
+    /// the write inline so the record is guaranteed to be persisted before
+    /// dispatch returns — and a **failed** write now **fails closed**:
+    /// [`GatewayError::AuditWriteFailed`] is returned rather than swallowed, so
+    /// the gateway never reports success for an action it could not durably
+    /// audit. Callers must release any held dedup lock before propagating this
+    /// error (the action's provider side effect has already run).
+    ///
+    /// Without `sync_audit_writes` the write is fire-and-forget: failures are
+    /// logged and `Ok(())` is returned, preserving the non-compliance latency
+    /// profile.
+    async fn emit_audit_record(
+        &self,
+        audit: &Arc<dyn AuditStore>,
+        record: AuditRecord,
+    ) -> Result<(), GatewayError> {
         let sync = self
             .compliance_config
             .as_ref()
             .is_some_and(|c| c.sync_audit_writes);
 
         if sync {
-            if let Err(e) = audit.record(record).await {
-                warn!(error = %e, "audit recording failed (sync)");
-            }
+            audit.record(record).await.map_err(|e| {
+                warn!(error = %e, "audit recording failed (sync) — failing dispatch closed");
+                GatewayError::AuditWriteFailed(e.to_string())
+            })?;
         } else {
             let audit = Arc::clone(audit);
             self.audit_tracker.spawn(async move {
@@ -363,6 +376,7 @@ impl Gateway {
                 }
             });
         }
+        Ok(())
     }
 
     /// Encrypt a state value if a payload encryptor is configured, otherwise passthrough.
@@ -528,7 +542,7 @@ impl Gateway {
             }
             if let Some(outcome) = terminal {
                 let dummy_verdict = RuleVerdict::Allow(None);
-                if let Some(ref audit) = self.audit {
+                let audit_result = if let Some(ref audit) = self.audit {
                     let record = build_audit_record(
                         event_id.clone(),
                         &action,
@@ -540,8 +554,10 @@ impl Gateway {
                         self.audit_store_payload,
                         caller,
                     );
-                    self.emit_audit_record(audit, record).await;
-                }
+                    self.emit_audit_record(audit, record).await
+                } else {
+                    Ok(())
+                };
                 let stream_event = StreamEvent {
                     id: event_id,
                     timestamp: dispatched_at,
@@ -558,6 +574,9 @@ impl Gateway {
                 if let Some(g) = guard {
                     let _ = g.release().await;
                 }
+                // Compliance fail-closed: surface a failed sync audit write
+                // only after releasing the lock (the action already ran).
+                audit_result?;
                 return Ok(outcome);
             }
         }
@@ -665,7 +684,7 @@ impl Gateway {
             // Emit audit + stream events and release the lock, mirroring
             // the happy-path tail below. We intentionally do not call
             // `execute_action` or any verdict handler.
-            if let Some(ref audit) = self.audit {
+            let audit_result = if let Some(ref audit) = self.audit {
                 let record = build_audit_record(
                     event_id.clone(),
                     &action,
@@ -677,8 +696,10 @@ impl Gateway {
                     self.audit_store_payload,
                     caller,
                 );
-                self.emit_audit_record(audit, record).await;
-            }
+                self.emit_audit_record(audit, record).await
+            } else {
+                Ok(())
+            };
 
             let stream_event = StreamEvent {
                 id: event_id,
@@ -701,6 +722,9 @@ impl Gateway {
                     .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
             }
 
+            // Compliance fail-closed: surface a failed sync audit write only
+            // after releasing the lock.
+            audit_result?;
             info!(?outcome, "dispatch complete (silenced)");
             return Ok(outcome);
         }
@@ -724,7 +748,7 @@ impl Gateway {
                 matched_rule: matched_rule_name(&verdict),
             };
 
-            if let Some(ref audit) = self.audit {
+            let audit_result = if let Some(ref audit) = self.audit {
                 let record = build_audit_record(
                     event_id.clone(),
                     &action,
@@ -736,8 +760,10 @@ impl Gateway {
                     self.audit_store_payload,
                     caller,
                 );
-                self.emit_audit_record(audit, record).await;
-            }
+                self.emit_audit_record(audit, record).await
+            } else {
+                Ok(())
+            };
 
             let stream_event = StreamEvent {
                 id: event_id,
@@ -760,6 +786,9 @@ impl Gateway {
                     .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
             }
 
+            // Compliance fail-closed: surface a failed sync audit write only
+            // after releasing the lock.
+            audit_result?;
             info!(?outcome, "dispatch complete (muted by time interval)");
             return Ok(outcome);
         }
@@ -841,7 +870,7 @@ impl Gateway {
         };
 
         // 5. Emit audit record (sync when compliance requires it, async otherwise).
-        if let Some(ref audit) = self.audit {
+        let audit_result = if let Some(ref audit) = self.audit {
             let record = build_audit_record(
                 event_id.clone(),
                 &action,
@@ -853,8 +882,10 @@ impl Gateway {
                 self.audit_store_payload,
                 caller,
             );
-            self.emit_audit_record(audit, record).await;
-        }
+            self.emit_audit_record(audit, record).await
+        } else {
+            Ok(())
+        };
 
         // 6. Emit SSE stream event (fire-and-forget; no-op if no subscribers).
         //    The outcome is sanitized to strip provider response bodies,
@@ -882,6 +913,10 @@ impl Gateway {
                 .await
                 .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
         }
+
+        // Compliance fail-closed: surface a failed sync audit write only after
+        // releasing the lock (the provider side effect has already run).
+        audit_result?;
 
         info!(?outcome, "dispatch complete");
 
@@ -10407,6 +10442,105 @@ mod tests {
         assert!(
             matches!(tenant_blocked, ActionOutcome::QuotaExceeded { .. }),
             "11th dispatch should trip the tenant-wide cap"
+        );
+    }
+
+    // -- Compliance fail-closed audit -----------------------------------------
+
+    struct FailingAudit;
+
+    #[async_trait]
+    impl acteon_audit::AuditStore for FailingAudit {
+        async fn record(
+            &self,
+            _: acteon_audit::AuditRecord,
+        ) -> Result<(), acteon_audit::AuditError> {
+            Err(acteon_audit::AuditError::Storage(
+                "synthetic audit failure".into(),
+            ))
+        }
+        async fn get_by_action_id(
+            &self,
+            _: &str,
+        ) -> Result<Option<acteon_audit::AuditRecord>, acteon_audit::AuditError> {
+            Ok(None)
+        }
+        async fn get_by_id(
+            &self,
+            _: &str,
+        ) -> Result<Option<acteon_audit::AuditRecord>, acteon_audit::AuditError> {
+            Ok(None)
+        }
+        async fn query(
+            &self,
+            _: &acteon_audit::AuditQuery,
+        ) -> Result<acteon_audit::AuditPage, acteon_audit::AuditError> {
+            Ok(acteon_audit::AuditPage {
+                records: Vec::new(),
+                total: Some(0),
+                limit: 0,
+                offset: 0,
+                next_cursor: None,
+            })
+        }
+        async fn cleanup_expired(&self) -> Result<u64, acteon_audit::AuditError> {
+            Ok(0)
+        }
+    }
+
+    fn build_gateway_with_audit(
+        audit: Arc<dyn acteon_audit::AuditStore>,
+        compliance: Option<acteon_core::ComplianceConfig>,
+    ) -> crate::gateway::Gateway {
+        let mut builder = GatewayBuilder::new()
+            .state(Arc::new(MemoryStateStore::new()))
+            .lock(Arc::new(MemoryDistributedLock::new()))
+            .rules(vec![])
+            .provider(Arc::new(MockProvider::new("email")))
+            .audit(audit)
+            .executor_config(ExecutorConfig {
+                max_retries: 0,
+                execution_timeout: Duration::from_secs(5),
+                max_concurrent: 10,
+                ..ExecutorConfig::default()
+            });
+        if let Some(c) = compliance {
+            builder = builder.compliance_config(c);
+        }
+        builder.build().expect("gateway should build")
+    }
+
+    #[tokio::test]
+    async fn compliance_sync_audit_failure_fails_dispatch_closed() {
+        // SOC2 mode enables sync_audit_writes — a failed audit write must
+        // fail the dispatch closed rather than return success with no
+        // durable audit trail.
+        let gw = build_gateway_with_audit(
+            Arc::new(FailingAudit),
+            Some(acteon_core::ComplianceConfig::new(
+                acteon_core::ComplianceMode::Soc2,
+            )),
+        );
+        let err = gw
+            .dispatch(test_action(), None)
+            .await
+            .expect_err("sync audit failure must fail dispatch in compliance mode");
+        assert!(
+            matches!(err, crate::error::GatewayError::AuditWriteFailed(_)),
+            "expected AuditWriteFailed, got {err:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn non_compliance_audit_failure_does_not_fail_dispatch() {
+        // With no compliance config the audit write is fire-and-forget; a
+        // failing audit store must NOT fail the dispatch (preserves the
+        // non-compliance latency profile and behavior).
+        let gw = build_gateway_with_audit(Arc::new(FailingAudit), None);
+        let outcome = gw.dispatch(test_action(), None).await;
+        assert!(
+            outcome.is_ok(),
+            "fire-and-forget audit must not fail dispatch: {outcome:?}",
         );
     }
 }

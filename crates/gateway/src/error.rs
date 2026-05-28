@@ -50,6 +50,19 @@ pub enum GatewayError {
     /// An attachment could not be resolved.
     #[error("attachment error: {0}")]
     Attachment(String),
+
+    /// A synchronous (compliance-mode) audit write failed. In SOC2/HIPAA
+    /// mode (`sync_audit_writes`) the audit record must be durably persisted
+    /// before dispatch returns; when that write fails the gateway fails
+    /// closed and surfaces this rather than returning success without a
+    /// durable audit trail.
+    ///
+    /// Note: the provider side effect may already have executed by the time
+    /// the (post-execution) audit write is attempted — this error tells the
+    /// caller the action could not be durably recorded, not that it was
+    /// prevented. A pre-execution intent record is a separate follow-up.
+    #[error("audit write failed (compliance fail-closed): {0}")]
+    AuditWriteFailed(String),
 }
 
 impl GatewayError {
