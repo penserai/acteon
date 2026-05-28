@@ -480,15 +480,16 @@ impl Gateway {
             let mut hops = 0usize;
             let mut terminal: Option<ActionOutcome> = None;
             loop {
+                let principal = caller.map(|c| c.id.as_str());
                 let outcome = if hops == 0 {
-                    self.check_quota(&action).await?
+                    self.check_quota(&action, principal).await?
                 } else {
                     // After a degrade swap, only re-evaluate
                     // provider-scoped policies so we do not
                     // double-charge the generic (tenant-wide)
                     // budget that already produced the initial
                     // degrade verdict.
-                    self.check_quota_fallback(&action).await?
+                    self.check_quota_fallback(&action, principal).await?
                 };
                 let Some(outcome) = outcome else {
                     break;
@@ -2878,14 +2879,19 @@ impl Gateway {
             let mut hops = 0usize;
             let mut blocked: Option<ActionOutcome> = None;
             loop {
+                // Chain steps run asynchronously from the original
+                // dispatch — the user-facing caller is not in scope,
+                // so principal-scoped policies never match a chain
+                // step. Tenant-wide and provider-scoped budgets are
+                // still enforced normally.
                 let quota_outcome = if hops == 0 {
-                    self.check_quota(&step_action).await?
+                    self.check_quota(&step_action, None).await?
                 } else {
                     // Fallback mode: only provider-scoped policies
                     // are re-evaluated so the generic tenant-wide
                     // budget is not double-charged on each degrade
                     // hop.
-                    self.check_quota_fallback(&step_action).await?
+                    self.check_quota_fallback(&step_action, None).await?
                 };
                 let Some(quota_outcome) = quota_outcome else {
                     break;
@@ -9119,6 +9125,8 @@ mod tests {
             namespace: namespace.into(),
             tenant: tenant.into(),
             provider: None,
+            principal: None,
+            per_principal: false,
             max_actions,
             window,
             overage_behavior,
@@ -9148,6 +9156,27 @@ mod tests {
             enabled,
         );
         p.provider = Some(provider.into());
+        p
+    }
+
+    fn make_quota_policy_for_principal(
+        namespace: &str,
+        tenant: &str,
+        principal: &str,
+        max_actions: u64,
+        window: acteon_core::QuotaWindow,
+        overage_behavior: acteon_core::OverageBehavior,
+        enabled: bool,
+    ) -> acteon_core::QuotaPolicy {
+        let mut p = make_quota_policy(
+            namespace,
+            tenant,
+            max_actions,
+            window,
+            overage_behavior,
+            enabled,
+        );
+        p.principal = Some(principal.into());
         p
     }
 
@@ -10216,5 +10245,168 @@ mod tests {
         let count = gw.sync_templates_from_store().await.unwrap();
         assert_eq!(count, 1);
         assert!(gw.template_exists("ns", "t", "synced"));
+    }
+
+    // -- Per-principal quota tests ------------------------------------------
+
+    fn make_caller(id: &str) -> acteon_core::Caller {
+        acteon_core::Caller {
+            id: id.to_string(),
+            auth_method: "api_key".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn quota_principal_isolates_callers() {
+        // Two principal-scoped policies (alice and bob), each
+        // capped at 2. Alice exhausting her budget must not affect
+        // bob, and dispatches with no caller never charge either.
+        let alice = make_quota_policy_for_principal(
+            "notifications",
+            "tenant-1",
+            "alice",
+            2,
+            acteon_core::QuotaWindow::Hourly,
+            acteon_core::OverageBehavior::Block,
+            true,
+        );
+        let bob = make_quota_policy_for_principal(
+            "notifications",
+            "tenant-1",
+            "bob",
+            2,
+            acteon_core::QuotaWindow::Hourly,
+            acteon_core::OverageBehavior::Block,
+            true,
+        );
+        let gw = build_gateway_with_quota(vec![alice, bob]);
+
+        let alice_caller = make_caller("alice");
+        let bob_caller = make_caller("bob");
+
+        // Alice burns through her cap.
+        for _ in 0..2 {
+            let outcome = gw
+                .dispatch(test_action(), Some(&alice_caller))
+                .await
+                .unwrap();
+            assert!(matches!(outcome, ActionOutcome::Executed(_)));
+        }
+        let blocked = gw
+            .dispatch(test_action(), Some(&alice_caller))
+            .await
+            .unwrap();
+        assert!(matches!(blocked, ActionOutcome::QuotaExceeded { .. }));
+
+        // Bob still has his full budget.
+        for _ in 0..2 {
+            let outcome = gw.dispatch(test_action(), Some(&bob_caller)).await.unwrap();
+            assert!(
+                matches!(outcome, ActionOutcome::Executed(_)),
+                "bob's bucket must be independent of alice's"
+            );
+        }
+        // Unauthenticated dispatches never match a principal-scoped
+        // policy, so they sail past both Alice's exhausted bucket
+        // and Bob's.
+        for _ in 0..5 {
+            let outcome = gw.dispatch(test_action(), None).await.unwrap();
+            assert!(matches!(outcome, ActionOutcome::Executed(_)));
+        }
+    }
+
+    #[tokio::test]
+    async fn quota_dynamic_per_principal_isolates_callers() {
+        // A single policy with `per_principal: true`. It matches
+        // any authenticated caller and maintains separate buckets.
+        let mut policy = make_quota_policy(
+            "notifications",
+            "tenant-1",
+            2,
+            acteon_core::QuotaWindow::Hourly,
+            acteon_core::OverageBehavior::Block,
+            true,
+        );
+        policy.per_principal = true;
+        let gw = build_gateway_with_quota(vec![policy]);
+
+        let alice = make_caller("alice");
+        let bob = make_caller("bob");
+
+        // Alice burns her 2 slots.
+        for _ in 0..2 {
+            let res = gw.dispatch(test_action(), Some(&alice)).await.unwrap();
+            assert!(matches!(res, ActionOutcome::Executed(_)));
+        }
+        let blocked = gw.dispatch(test_action(), Some(&alice)).await.unwrap();
+        assert!(matches!(blocked, ActionOutcome::QuotaExceeded { .. }));
+
+        // Bob still has his 2 slots (isolated from Alice even though
+        // they share the same policy record).
+        for _ in 0..2 {
+            let res = gw.dispatch(test_action(), Some(&bob)).await.unwrap();
+            assert!(matches!(res, ActionOutcome::Executed(_)));
+        }
+        let blocked_bob = gw.dispatch(test_action(), Some(&bob)).await.unwrap();
+        assert!(matches!(blocked_bob, ActionOutcome::QuotaExceeded { .. }));
+
+        // Anonymous dispatches don't match this policy at all, so they
+        // are not capped by it.
+        for _ in 0..10 {
+            let res = gw.dispatch(test_action(), None).await.unwrap();
+            assert!(matches!(res, ActionOutcome::Executed(_)));
+        }
+    }
+
+    #[tokio::test]
+    async fn quota_principal_layers_on_top_of_tenant_cap() {
+        // A tenant-wide cap of 10 plus a per-principal cap of 2
+        // for alice. Alice gets blocked at 2 even though the
+        // tenant cap is far from exhausted; bob can keep going
+        // until the tenant cap hits.
+        let tenant_cap = make_quota_policy(
+            "notifications",
+            "tenant-1",
+            10,
+            acteon_core::QuotaWindow::Hourly,
+            acteon_core::OverageBehavior::Block,
+            true,
+        );
+        let alice_cap = make_quota_policy_for_principal(
+            "notifications",
+            "tenant-1",
+            "alice",
+            2,
+            acteon_core::QuotaWindow::Hourly,
+            acteon_core::OverageBehavior::Block,
+            true,
+        );
+        let gw = build_gateway_with_quota(vec![tenant_cap, alice_cap]);
+
+        let alice = make_caller("alice");
+        let bob = make_caller("bob");
+
+        // Alice: 2 succeed, 3rd blocked by her per-principal cap.
+        for _ in 0..2 {
+            let outcome = gw.dispatch(test_action(), Some(&alice)).await.unwrap();
+            assert!(matches!(outcome, ActionOutcome::Executed(_)));
+        }
+        let blocked = gw.dispatch(test_action(), Some(&alice)).await.unwrap();
+        assert!(
+            matches!(blocked, ActionOutcome::QuotaExceeded { .. }),
+            "alice should be blocked by her own per-principal cap before the tenant cap"
+        );
+
+        // Bob can fill the rest of the tenant budget (2 already
+        // consumed by alice, so 8 more dispatches fit).
+        for _ in 0..8 {
+            let outcome = gw.dispatch(test_action(), Some(&bob)).await.unwrap();
+            assert!(matches!(outcome, ActionOutcome::Executed(_)));
+        }
+        let tenant_blocked = gw.dispatch(test_action(), Some(&bob)).await.unwrap();
+        assert!(
+            matches!(tenant_blocked, ActionOutcome::QuotaExceeded { .. }),
+            "11th dispatch should trip the tenant-wide cap"
+        );
     }
 }

@@ -43,8 +43,9 @@ impl Gateway {
     pub(crate) async fn check_quota(
         &self,
         action: &Action,
+        principal: Option<&str>,
     ) -> Result<Option<ActionOutcome>, GatewayError> {
-        self.check_quota_inner(action, false).await
+        self.check_quota_inner(action, principal, false).await
     }
 
     /// Re-check quota after a degrade-driven provider swap.
@@ -61,13 +62,15 @@ impl Gateway {
     pub(crate) async fn check_quota_fallback(
         &self,
         action: &Action,
+        principal: Option<&str>,
     ) -> Result<Option<ActionOutcome>, GatewayError> {
-        self.check_quota_inner(action, true).await
+        self.check_quota_inner(action, principal, true).await
     }
 
     async fn check_quota_inner(
         &self,
         action: &Action,
+        principal: Option<&str>,
         only_provider_scoped: bool,
     ) -> Result<Option<ActionOutcome>, GatewayError> {
         const CACHE_TTL_SECS: i64 = 60;
@@ -155,6 +158,7 @@ impl Gateway {
             .filter(|p| {
                 p.enabled
                     && p.applies_to_provider(&action.provider)
+                    && p.applies_to_principal(principal)
                     && (!only_provider_scoped || p.provider.is_some())
             })
             .collect();
@@ -163,7 +167,8 @@ impl Gateway {
             return Ok(None);
         }
 
-        self.enforce_quota_policies(action, applicable, &now).await
+        self.enforce_quota_policies(action, principal, applicable, &now)
+            .await
     }
 
     /// Evaluate every applicable quota policy for a dispatch and
@@ -177,6 +182,7 @@ impl Gateway {
     async fn enforce_quota_policies(
         &self,
         action: &Action,
+        principal: Option<&str>,
         policies: Vec<acteon_core::QuotaPolicy>,
         now: &chrono::DateTime<Utc>,
     ) -> Result<Option<ActionOutcome>, GatewayError> {
@@ -185,7 +191,7 @@ impl Gateway {
         // so we do not penalize dispatches during state-store
         // outages.
         let Ok(incremented) = self
-            .increment_all_quota_counters(action, policies, now)
+            .increment_all_quota_counters(action, principal, policies, now)
             .await
         else {
             return Ok(None);
@@ -242,6 +248,7 @@ impl Gateway {
     async fn increment_all_quota_counters(
         &self,
         action: &Action,
+        principal: Option<&str>,
         policies: Vec<acteon_core::QuotaPolicy>,
         now: &chrono::DateTime<Utc>,
     ) -> Result<Vec<Incremented>, ()> {
@@ -256,9 +263,19 @@ impl Gateway {
         }
         let mut prepared: Vec<Prepared> = Vec::with_capacity(policies.len());
         for policy in policies {
+            // For dynamic per-principal policies, use the actual caller ID
+            // as the counter key segment. For pinned policies, use the
+            // policy's configured principal.
+            let key_principal = if policy.principal.is_none() && policy.per_principal {
+                principal
+            } else {
+                policy.principal.as_deref()
+            };
+
             let Some(counter_id) = acteon_core::quota_counter_key(
                 &action.namespace,
                 &action.tenant,
+                key_principal,
                 policy.provider.as_deref(),
                 &policy.window,
                 now,
@@ -468,48 +485,59 @@ impl Gateway {
             return Ok(Vec::new());
         };
 
-        let policy_ids: Vec<String> = match serde_json::from_str::<Vec<String>>(&raw) {
+        let all_ids: Vec<String> = match serde_json::from_str::<Vec<String>>(&raw) {
             Ok(ids) => ids,
             Err(_) => vec![raw], // legacy: bare policy ID
         };
 
-        let mut policies = Vec::with_capacity(policy_ids.len());
-        for id in policy_ids {
-            let policy_key = acteon_state::StateKey::new(
-                "_system",
-                "_quotas",
-                acteon_state::KeyKind::Quota,
-                &id,
+        // Cap the fan-out at MAX_POLICIES_PER_BUCKET *before* issuing
+        // any state-store gets. The API write path enforces the same
+        // cap, so reaching this branch implies a malicious or
+        // corrupted index — fetching every ID concurrently would turn
+        // an oversized index into an unbounded state-store burst.
+        let capped = all_ids.len() > acteon_core::MAX_POLICIES_PER_BUCKET;
+        let policy_ids: Vec<String> = all_ids
+            .into_iter()
+            .take(acteon_core::MAX_POLICIES_PER_BUCKET)
+            .collect();
+        if capped {
+            warn!(
+                namespace = %namespace,
+                tenant = %tenant,
+                cap = acteon_core::MAX_POLICIES_PER_BUCKET,
+                "quota index exceeds per-tenant policy cap; ignoring trailing IDs before fetch"
             );
-            if let Some(data) = self.state.get(&policy_key).await? {
-                let policy = serde_json::from_str::<acteon_core::QuotaPolicy>(&data)
-                    .map_err(|e| GatewayError::Configuration(e.to_string()))?;
-                // Reject obviously-bad records (colon injection,
-                // zero window, zero max_actions) at the cold-path
-                // boundary so the enforcement path can assume
-                // well-formed policies. The defense-in-depth means
-                // a manually-inserted or pre-validation record
-                // can't crash the gateway — worst case that policy
-                // silently skips enforcement until it's repaired.
-                if let Err(e) = policy.validate_scope() {
-                    warn!(
-                        policy_id = %id,
-                        error = %e,
-                        "skipping invalid quota policy loaded from state store"
-                    );
-                    continue;
-                }
-                policies.push(policy);
-                if policies.len() >= acteon_core::MAX_POLICIES_PER_BUCKET {
-                    warn!(
-                        namespace = %namespace,
-                        tenant = %tenant,
-                        cap = acteon_core::MAX_POLICIES_PER_BUCKET,
-                        "quota bucket hit per-tenant policy cap; ignoring remaining policy IDs from the index"
-                    );
-                    break;
-                }
+        }
+
+        let mut fetch_futures = Vec::with_capacity(policy_ids.len());
+        for id in &policy_ids {
+            let policy_key =
+                acteon_state::StateKey::new("_system", "_quotas", acteon_state::KeyKind::Quota, id);
+            let state = self.state.clone();
+            fetch_futures.push(async move { (id.clone(), state.get(&policy_key).await) });
+        }
+
+        let results = futures::future::join_all(fetch_futures).await;
+        let mut policies = Vec::with_capacity(policy_ids.len());
+
+        for (id, res) in results {
+            let Some(data) = res? else {
+                continue;
+            };
+
+            let policy = serde_json::from_str::<acteon_core::QuotaPolicy>(&data)
+                .map_err(|e| GatewayError::Configuration(e.to_string()))?;
+
+            if let Err(e) = policy.validate_scope() {
+                warn!(
+                    policy_id = %id,
+                    error = %e,
+                    "skipping invalid quota policy loaded from state store"
+                );
+                continue;
             }
+
+            policies.push(policy);
         }
         Ok(policies)
     }

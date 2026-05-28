@@ -1127,6 +1127,10 @@ export interface CreateQuotaRequest {
   namespace: string;
   tenant: string;
   provider?: string;
+  /** Caller-id scope. When set, only dispatches by that principal count against the policy. */
+  principal?: string;
+  /** When true, a separate counter is maintained per unique caller. Ignored if `principal` is set. */
+  perPrincipal?: boolean;
   maxActions: number;
   window: string;
   overageBehavior: string;
@@ -1144,6 +1148,8 @@ export function createQuotaRequestToApi(req: CreateQuotaRequest): Record<string,
     overage_behavior: req.overageBehavior,
   };
   if (req.provider !== undefined) result.provider = req.provider;
+  if (req.principal !== undefined) result.principal = req.principal;
+  if (req.perPrincipal !== undefined) result.per_principal = req.perPrincipal;
   if (req.description !== undefined) result.description = req.description;
   if (req.labels !== undefined) result.labels = req.labels;
   return result;
@@ -1181,6 +1187,10 @@ export interface QuotaPolicy {
   tenant: string;
   /** Provider scope (``undefined`` for generic catch-all policies). */
   provider?: string;
+  /** Principal (caller-id) scope (``undefined`` to apply to every caller). */
+  principal?: string;
+  /** Whether this policy maintains a separate counter per caller. */
+  perPrincipal: boolean;
   maxActions: number;
   window: string;
   overageBehavior: string;
@@ -1198,6 +1208,8 @@ export function parseQuotaPolicy(data: Record<string, unknown>): QuotaPolicy {
     namespace: data.namespace as string,
     tenant: data.tenant as string,
     provider: data.provider as string | undefined,
+    principal: data.principal as string | undefined,
+    perPrincipal: (data.per_principal as boolean | undefined) ?? false,
     maxActions: data.max_actions as number,
     window: data.window as string,
     overageBehavior: data.overage_behavior as string,

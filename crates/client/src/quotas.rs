@@ -17,6 +17,16 @@ pub struct CreateQuotaRequest {
     /// per-provider burst caps.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
+    /// Optional principal (caller) scope. When omitted, the policy
+    /// applies to every caller. When set, only dispatches made by
+    /// that caller (API key name or JWT subject) count against the
+    /// policy — useful for carving out per-API-key budgets on top
+    /// of a tenant-wide cap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub principal: Option<String>,
+    /// Whether this policy applies per-principal.
+    #[serde(default)]
+    pub per_principal: bool,
     /// Maximum number of actions allowed in the window.
     pub max_actions: u64,
     /// Time window (e.g., "1h", "24h", "7d").
@@ -53,6 +63,12 @@ pub struct UpdateQuotaRequest {
     /// Whether the quota is enabled.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
+    /// Whether the quota applies per-principal.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub per_principal: Option<bool>,
+    /// Replacement label set. `None` leaves existing labels unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub labels: Option<std::collections::HashMap<String, String>>,
 }
 
 /// A quota policy.
@@ -67,6 +83,11 @@ pub struct QuotaPolicy {
     /// Optional provider scope (`None` = generic catch-all).
     #[serde(default)]
     pub provider: Option<String>,
+    /// Optional principal scope (`None` = applies to every caller).
+    #[serde(default)]
+    pub principal: Option<String>,
+    /// Whether this policy applies per-principal.
+    pub per_principal: bool,
     /// Maximum number of actions allowed in the window.
     pub max_actions: u64,
     /// Time window (e.g., "1h", "24h", "7d").
@@ -149,14 +170,18 @@ impl ActeonClient {
     }
 
     /// List quota policies filtered by optional namespace, tenant,
-    /// and provider scope. Pass `Some("generic")` as `provider` to
-    /// match only policies without a provider scope, or a provider
-    /// name to match only per-provider policies for that provider.
+    /// provider scope, and principal scope. Pass `Some("generic")`
+    /// as `provider` to match only policies without a provider
+    /// scope, or a provider name for that provider. Pass
+    /// `Some("any")` as `principal` to match only policies without
+    /// a principal scope, or a caller id to match only policies
+    /// scoped to that caller.
     pub async fn list_quotas(
         &self,
         namespace: Option<&str>,
         tenant: Option<&str>,
         provider: Option<&str>,
+        principal: Option<&str>,
     ) -> Result<ListQuotasResponse, Error> {
         let url = format!("{}/v1/quotas", self.base_url);
 
@@ -169,6 +194,9 @@ impl ActeonClient {
         }
         if let Some(p) = provider {
             query.push(("provider", p));
+        }
+        if let Some(pn) = principal {
+            query.push(("principal", pn));
         }
 
         let response = self

@@ -41,6 +41,20 @@ pub struct CreateQuotaRequest {
     #[serde(default)]
     #[schema(example = "slack")]
     pub provider: Option<String>,
+    /// Optional principal (caller) scope. When omitted, the policy
+    /// counts every caller. When set, only dispatches made by the
+    /// matching caller (API key name or JWT subject) count against
+    /// this policy. Unauthenticated and internal (chain step,
+    /// scheduled, recurring) dispatches never match a
+    /// principal-scoped policy.
+    #[serde(default)]
+    #[schema(example = "svc-billing")]
+    pub principal: Option<String>,
+    /// Whether this policy applies per-principal. When true, a
+    /// separate counter is maintained for every unique principal
+    /// that matches the policy's other dimensions.
+    #[serde(default)]
+    pub per_principal: bool,
     /// Maximum number of actions allowed per window.
     #[schema(example = 1000)]
     pub max_actions: u64,
@@ -73,6 +87,9 @@ pub struct UpdateQuotaRequest {
     /// Updated enabled state.
     #[serde(default)]
     pub enabled: Option<bool>,
+    /// Updated per-principal state.
+    #[serde(default)]
+    pub per_principal: Option<bool>,
     /// Updated description.
     #[serde(default)]
     pub description: Option<String>,
@@ -93,6 +110,11 @@ pub struct QuotaResponse {
     /// Optional provider scope (`None` = generic catch-all).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
+    /// Optional principal (caller) scope (`None` = applies to every caller).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub principal: Option<String>,
+    /// Whether this quota applies per-principal.
+    pub per_principal: bool,
     /// Maximum actions per window.
     pub max_actions: u64,
     /// Time window.
@@ -153,6 +175,12 @@ pub struct ListQuotasParams {
     /// per-provider policies for that provider.
     #[serde(default)]
     pub provider: Option<String>,
+    /// Filter by principal (caller) scope (optional). Pass the
+    /// literal string `any` to match only policies without a
+    /// principal scope (`principal: None`), or a caller id to
+    /// match only policies scoped to that caller.
+    #[serde(default)]
+    pub principal: Option<String>,
     /// Maximum number of results (default: 100).
     #[serde(default = "default_limit")]
     pub limit: usize,
@@ -196,6 +224,8 @@ fn policy_to_response(policy: &QuotaPolicy, usage: Option<QuotaUsageResponse>) -
         namespace: policy.namespace.clone(),
         tenant: policy.tenant.clone(),
         provider: policy.provider.clone(),
+        principal: policy.principal.clone(),
+        per_principal: policy.per_principal,
         max_actions: policy.max_actions,
         window: policy.window.clone(),
         overage_behavior: policy.overage_behavior.clone(),
@@ -299,6 +329,7 @@ async fn read_usage(
     let Some(counter_id) = quota_counter_key(
         &policy.namespace,
         &policy.tenant,
+        policy.principal.as_deref(),
         policy.provider.as_deref(),
         &policy.window,
         &now,
@@ -363,6 +394,7 @@ fn error_response(status: StatusCode, message: &str) -> axum::response::Response
         (status = 500, description = "Internal server error", body = ErrorResponse),
     )
 )]
+#[allow(clippy::too_many_lines)]
 pub async fn create_quota(
     State(state): State<AppState>,
     Json(req): Json<CreateQuotaRequest>,
@@ -379,6 +411,11 @@ pub async fn create_quota(
         && let Err(e) = validate_quota_scope_identifier(p)
     {
         return error_response(StatusCode::BAD_REQUEST, &format!("invalid provider: {e}"));
+    }
+    if let Some(ref p) = req.principal
+        && let Err(e) = validate_quota_scope_identifier(p)
+    {
+        return error_response(StatusCode::BAD_REQUEST, &format!("invalid principal: {e}"));
     }
     // Validate window.
     let window = match parse_window(&req.window) {
@@ -418,17 +455,34 @@ pub async fn create_quota(
         );
     }
 
-    // Reject duplicates with the same (ns, tenant, provider) tuple:
-    // operators should pick exactly one policy per scope. Different
-    // providers (or generic vs provider-scoped) may coexist.
+    // Reject duplicates with the same (ns, tenant, provider,
+    // principal, per_principal) tuple: operators should pick exactly
+    // one policy per scope. `per_principal` is part of the key
+    // because a shared-bucket unscoped policy and a per-caller-bucket
+    // unscoped policy are semantically distinct ("10k/day total" vs
+    // "100/day per user") and operators legitimately want both to
+    // coexist.
     for existing_id in &existing_ids {
         if let Ok(Some(p)) = load_quota(state_store.as_ref(), existing_id).await
             && p.provider == req.provider
+            && p.principal == req.principal
+            && p.per_principal == req.per_principal
         {
-            let scope = req
-                .provider
-                .as_deref()
-                .map_or_else(|| "generic scope".to_string(), |p| format!("provider={p}"));
+            let mut scope_parts: Vec<String> = Vec::new();
+            if let Some(ref pr) = req.provider {
+                scope_parts.push(format!("provider={pr}"));
+            }
+            if let Some(ref pn) = req.principal {
+                scope_parts.push(format!("principal={pn}"));
+            }
+            if req.per_principal {
+                scope_parts.push("per_principal=true".to_string());
+            }
+            let scope = if scope_parts.is_empty() {
+                "generic scope".to_string()
+            } else {
+                scope_parts.join(", ")
+            };
             return error_response(
                 StatusCode::CONFLICT,
                 &format!(
@@ -447,6 +501,8 @@ pub async fn create_quota(
         namespace: req.namespace.clone(),
         tenant: req.tenant.clone(),
         provider: req.provider.clone(),
+        principal: req.principal.clone(),
+        per_principal: req.per_principal,
         max_actions: req.max_actions,
         window,
         overage_behavior: req.overage_behavior,
@@ -549,6 +605,20 @@ pub async fn list_quotas(
                 policy.provider.is_none()
             } else {
                 policy.provider.as_deref() == Some(p.as_str())
+            };
+            if !matches {
+                continue;
+            }
+        }
+
+        // Apply principal filter: `"any"` matches only policies
+        // without a principal scope; any other value matches only
+        // policies scoped to that exact caller.
+        if let Some(ref pn) = params.principal {
+            let matches = if pn == "any" {
+                policy.principal.is_none()
+            } else {
+                policy.principal.as_deref() == Some(pn.as_str())
             };
             if !matches {
                 continue;
@@ -661,6 +731,9 @@ pub async fn update_quota(
     }
     if let Some(enabled) = req.enabled {
         policy.enabled = enabled;
+    }
+    if let Some(per) = req.per_principal {
+        policy.per_principal = per;
     }
     if let Some(desc) = req.description {
         policy.description = Some(desc);
@@ -786,6 +859,7 @@ pub async fn get_quota_usage(
     let Some(counter_id) = quota_counter_key(
         &policy.namespace,
         &policy.tenant,
+        policy.principal.as_deref(),
         policy.provider.as_deref(),
         &policy.window,
         &now,
@@ -831,4 +905,43 @@ pub async fn get_quota_usage(
     };
 
     (StatusCode::OK, Json(serde_json::json!(usage))).into_response()
+}
+
+/// `POST /v1/quotas/reload` -- re-read the static quotas TOML file
+/// and reconcile it against the running gateway + state store.
+///
+/// Only operates on records carrying the `_source = "toml"` label;
+/// API-managed quotas are untouched. The file path is fixed at
+/// server startup via `[server.quotas].policies_file`.
+#[utoipa::path(
+    post,
+    path = "/v1/quotas/reload",
+    tag = "Quotas",
+    summary = "Reload static quotas",
+    description = "Re-reads the configured static-quotas TOML file and reconciles its entries against the gateway. Returns counts of upserted, deleted, and skipped entries.",
+    responses(
+        (status = 200, description = "Reload complete", body = serde_json::Value),
+        (status = 400, description = "No policies_file configured", body = ErrorResponse),
+        (status = 500, description = "Reload failed", body = ErrorResponse),
+    )
+)]
+pub async fn reload_static_quotas(State(state): State<AppState>) -> impl IntoResponse {
+    let Some(handle) = state.static_quotas.clone() else {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "no static quotas file configured ([server.quotas].policies_file is unset)",
+        );
+    };
+    let gw = state.gateway.read().await;
+    let state_store = gw.state_store().clone();
+    drop(gw);
+    match crate::quotas_loader::reload_from_file(&handle.path, &state.gateway, &state_store).await {
+        Ok(report) => {
+            // Wake the file watcher (if any) so it doesn't double-fire
+            // immediately after we mutated the file's records.
+            handle.nudge.notify_waiters();
+            (StatusCode::OK, Json(serde_json::json!(report))).into_response()
+        }
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
+    }
 }

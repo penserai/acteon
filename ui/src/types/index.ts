@@ -846,6 +846,9 @@ export interface QuotaPolicy {
   id: string
   namespace: string
   tenant: string
+  provider?: string | null
+  principal?: string | null
+  per_principal?: boolean
   max_actions: number
   window: QuotaWindow
   overage_behavior: OverageBehavior
@@ -875,6 +878,9 @@ export interface QuotaListResponse {
 export interface CreateQuotaRequest {
   namespace: string
   tenant: string
+  provider?: string | null
+  principal?: string | null
+  per_principal?: boolean
   max_actions: number
   window: QuotaWindow
   overage_behavior: OverageBehavior

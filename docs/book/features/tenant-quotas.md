@@ -24,6 +24,7 @@ Each quota policy defines:
 
 - A **tenant** and **namespace** scope
 - An optional **provider** scope (`None` = generic catch-all, `Some("slack")` = per-provider)
+- An optional **principal** scope (`None` = every caller, `Some("svc-billing")` = per-caller)
 - A **maximum number of actions** per **time window**
 - An **overage behavior** that determines what happens when the limit is exceeded
 
@@ -43,13 +44,38 @@ provider cannot consume another provider's budget.
 
 | Policy (`provider` field) | Matches dispatches to | Counter bucket |
 |---|---|---|
-| `None` (generic) | Any provider for the tenant | `{ns}:{tenant}:*:{window}:{idx}` |
-| `Some("slack")` | Only `slack` | `{ns}:{tenant}:slack:{window}:{idx}` |
-| `Some("email")` | Only `email` | `{ns}:{tenant}:email:{window}:{idx}` |
+| `None` (generic) | Any provider for the tenant | `{ns}:{tenant}:*:*:{window}:{idx}` |
+| `Some("slack")` | Only `slack` | `{ns}:{tenant}:*:slack:{window}:{idx}` |
+| `Some("email")` | Only `email` | `{ns}:{tenant}:*:email:{window}:{idx}` |
 
 When any applicable policy blocks a dispatch, every counter
 incremented during that call is rolled back — the blocked
 request does not consume budget on sibling policies.
+
+### Per-principal policies
+
+In addition to the `provider` dimension, policies may scope to a
+specific **caller** (API key name or JWT subject) via the
+`principal` field. This is useful for carving out per-API-key
+budgets on top of a tenant-wide cap — e.g. "the `svc-billing`
+service account gets 100 actions/hour, on top of the tenant's
+10,000/day overall budget." A dispatch with no authenticated
+caller (background jobs, chain steps, scheduled re-dispatches)
+never matches a principal-scoped policy.
+
+For the common "every user gets X/day" case, set
+`per_principal: true` instead of creating one policy per caller.
+A single record then maintains a separate counter per
+authenticated caller. The flag is ignored when `principal` is
+also set (the pinned scope wins). Unauthenticated dispatches
+never match a `per_principal` policy.
+
+| Policy scope | Matches | Counter bucket |
+|---|---|---|
+| `principal: None`, `provider: None`, `per_principal: false` | Every dispatch (shared bucket) | `{ns}:{tenant}:*:*:{window}:{idx}` |
+| `principal: None`, `provider: None`, `per_principal: true` | Any authenticated caller (one bucket each) | `{ns}:{tenant}:{caller_id}:*:{window}:{idx}` |
+| `principal: Some("alice")`, `provider: None` | Only dispatches by `alice` | `{ns}:{tenant}:alice:*:{window}:{idx}` |
+| `principal: Some("alice")`, `provider: Some("slack")` | Only `alice` → `slack` | `{ns}:{tenant}:alice:slack:{window}:{idx}` |
 
 ## Configuration
 
@@ -99,30 +125,57 @@ let gateway = GatewayBuilder::new()
 
 Create, read, update, and delete quota policies through the `/v1/quotas` endpoints. See the [API Reference](#api-reference) below.
 
-### Via TOML Configuration
+### Via static TOML file (with hot reload)
+
+Point the server config at a quotas file:
+
+```toml
+# in your server config TOML
+[server.quotas]
+policies_file = "/etc/acteon/quotas.toml"
+watch = true                # default; set to false to disable file watching
+```
+
+Then in `/etc/acteon/quotas.toml`:
 
 ```toml
 [[quotas]]
-id = "q-acme-daily"
 namespace = "notifications"
 tenant = "acme"
-# provider field omitted → generic tenant-wide policy
+# provider omitted → generic tenant-wide policy
 max_actions = 1000
 window = "daily"
 overage_behavior = "block"
-enabled = true
 description = "Acme daily limit"
 
 [[quotas]]
-id = "q-acme-slack-burst"
 namespace = "notifications"
 tenant = "acme"
-provider = "slack"            # per-provider burst cap
+provider = "slack"
 max_actions = 50
-window = { custom = { seconds = 60 } }
+window = 60                  # custom: integer seconds
 overage_behavior = "block"
-enabled = true
 description = "Acme Slack burst cap"
+
+[[quotas]]
+namespace = "messaging"
+tenant = "acme"
+per_principal = true         # separate counter per authenticated caller
+max_actions = 100
+window = "hourly"
+overage_behavior = { degrade = { fallback_provider = "log" } }
+```
+
+**Reconciliation**: each entry gets a deterministic UUIDv5 ID derived from `(namespace, tenant, provider, principal, per_principal)`, and is tagged with the reserved label `_source = "toml"`. On reload the loader upserts the desired set and deletes only TOML-tagged records that disappeared from the file — API-managed quotas are never touched.
+
+**Hot reload triggers**:
+- **File watcher** (default when `watch = true`) — debounced 500ms; mirrors the auth-config watcher.
+- **`POST /v1/quotas/reload`** — explicit, cluster-friendly. Each instance must be called individually; counters live in the shared state store so usage is consistent immediately. Other instances pick up state-store-persisted changes via the 60-second in-memory cache TTL even without an explicit reload.
+
+Responses include counts:
+
+```json
+{ "upserted": 3, "deleted": 0, "skipped": 0 }
 ```
 
 ## Quota Windows

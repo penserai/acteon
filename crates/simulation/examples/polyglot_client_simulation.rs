@@ -73,6 +73,8 @@ impl TestServer {
             ),
             dispatch_semaphore: Arc::new(tokio::sync::Semaphore::new(1000)),
             config: acteon_server::config::ConfigSnapshot::default(),
+            static_quotas: None,
+            static_templates: None,
             ui_path: None,
             ui_enabled: false,
             cors_allowed_origins: Vec::new(),

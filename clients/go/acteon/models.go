@@ -716,9 +716,19 @@ type RecurringLifecycleRequest struct {
 // (and are enforced by) this policy. Generic and per-provider
 // policies may coexist for the same (Namespace, Tenant) pair.
 type CreateQuotaRequest struct {
-	Namespace       string            `json:"namespace"`
-	Tenant          string            `json:"tenant"`
-	Provider        string            `json:"provider,omitempty"`
+	Namespace string `json:"namespace"`
+	Tenant    string `json:"tenant"`
+	Provider  string `json:"provider,omitempty"`
+	// Principal is an optional caller-id scope. When empty, the
+	// policy applies to every caller. When set, only dispatches
+	// made by that caller (API key name or JWT subject) count
+	// against the policy.
+	Principal string `json:"principal,omitempty"`
+	// PerPrincipal, when true, maintains a separate counter per
+	// authenticated caller — useful for "every user gets X/day"
+	// policies without a record per user. Ignored if Principal
+	// is also set.
+	PerPrincipal    bool              `json:"per_principal,omitempty"`
 	MaxActions      int64             `json:"max_actions"`
 	Window          string            `json:"window"`
 	OverageBehavior string            `json:"overage_behavior"`
@@ -743,10 +753,17 @@ type UpdateQuotaRequest struct {
 // catch-all policies, or a provider name (e.g. "slack") when the
 // policy is scoped to a single provider.
 type QuotaPolicy struct {
-	ID              string            `json:"id"`
-	Namespace       string            `json:"namespace"`
-	Tenant          string            `json:"tenant"`
-	Provider        string            `json:"provider,omitempty"`
+	ID        string `json:"id"`
+	Namespace string `json:"namespace"`
+	Tenant    string `json:"tenant"`
+	Provider  string `json:"provider,omitempty"`
+	// Principal is the optional caller-id scope: empty ("") to
+	// apply to every caller, or a caller id (API key name or JWT
+	// subject) to scope the policy to that caller only.
+	Principal string `json:"principal,omitempty"`
+	// PerPrincipal indicates the policy maintains a separate
+	// counter per authenticated caller.
+	PerPrincipal    bool              `json:"per_principal"`
 	MaxActions      int64             `json:"max_actions"`
 	Window          string            `json:"window"`
 	OverageBehavior string            `json:"overage_behavior"`

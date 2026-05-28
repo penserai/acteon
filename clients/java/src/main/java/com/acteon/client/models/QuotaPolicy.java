@@ -21,6 +21,14 @@ public class QuotaPolicy {
     @JsonProperty("provider")
     private String provider;
 
+    /** Principal (caller-id) scope: null to apply to every caller, or an exact caller id. */
+    @JsonProperty("principal")
+    private String principal;
+
+    /** Whether this policy maintains a separate counter per authenticated caller. */
+    @JsonProperty("per_principal")
+    private boolean perPrincipal;
+
     @JsonProperty("max_actions")
     private long maxActions;
 
@@ -49,6 +57,8 @@ public class QuotaPolicy {
     public String getNamespace() { return namespace; }
     public String getTenant() { return tenant; }
     public String getProvider() { return provider; }
+    public String getPrincipal() { return principal; }
+    public boolean isPerPrincipal() { return perPrincipal; }
     public long getMaxActions() { return maxActions; }
     public String getWindow() { return window; }
     public String getOverageBehavior() { return overageBehavior; }
