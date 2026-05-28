@@ -71,6 +71,8 @@ Every `send_to_agent` call computes the effective admin state and short-circuits
 
 The reason is included so the caller knows *why*; `admin_set_by` is deliberately omitted from the error so the operator's identity is not leaked across the trust boundary.
 
+The same gate covers the **A2A protocol entrypoint**, which shares the agent identity model. When a caller's API-key grant is bound to an agent (via `agent_id`), the task-driving A2A methods — `message/send` and `tasks/cancel`, over both the JSON-RPC and REST bindings — short-circuit to the same `403` if that agent is not `Active`. Read methods (`tasks/get`, the task-events stream) and discovery stay open, so a paused agent can still observe its in-flight work but cannot start or cancel tasks. A grant with no `agent_id` binding has no managed agent and is unaffected.
+
 Discovery (`GET /v1/bus/agents/{...}/card` and the `/.well-known/agent-card` walker) hides non-`Active` agents the same way.
 
 ## Audit trail

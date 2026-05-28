@@ -39,8 +39,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::Duration;
 
-use acteon_core::{AgentCard, Task, TaskMessage, TaskState};
+use acteon_core::{Agent, AgentCard, Task, TaskMessage, TaskState};
 use acteon_gateway::{TaskEngine, TaskEngineError, TaskScope};
+use acteon_state::{KeyKind, StateKey};
 
 use super::AppState;
 use super::schemas::ErrorResponse;
@@ -559,6 +560,134 @@ fn authorize(
     Ok(())
 }
 
+/// A2A methods that drive or mutate task state. A caller whose bound
+/// agent has been suspended or banned by an operator is blocked from
+/// these (mirroring the bus `is_routable` gate); read methods
+/// (`tasks/get`, task events) and discovery stay open so a paused agent
+/// can still observe its in-flight work.
+fn is_write_method(method: &str) -> bool {
+    matches!(method, "message/send" | "tasks/cancel")
+}
+
+/// Whether a parsed JSON-RPC payload (a single request object or a batch
+/// array) contains any write method — i.e. whether the agent-lifecycle
+/// gate must run for this request.
+fn payload_has_write_method(parsed: &Value) -> bool {
+    fn is_write_obj(v: &Value) -> bool {
+        v.get("method")
+            .and_then(Value::as_str)
+            .is_some_and(is_write_method)
+    }
+    match parsed {
+        Value::Array(items) => items.iter().any(is_write_obj),
+        other => is_write_obj(other),
+    }
+}
+
+/// Pure routability decision: the 403 a Suspended/Banned agent must
+/// receive, or `None` when the agent's effective state is routable.
+/// Mirrors the bus send-path message — it includes the operator's reason
+/// when present but never the operator's identity (`admin_set_by`).
+fn agent_routability_rejection(
+    agent: &Agent,
+    namespace: &str,
+    tenant: &str,
+    agent_id: &str,
+) -> Option<(StatusCode, ErrorResponse)> {
+    let effective = agent.effective_admin_state();
+    if effective.is_routable() {
+        return None;
+    }
+    let reason_part = agent
+        .admin_reason
+        .as_deref()
+        .map(|r| format!(": {r}"))
+        .unwrap_or_default();
+    Some((
+        StatusCode::FORBIDDEN,
+        ErrorResponse {
+            error: format!(
+                "agent {namespace}/{tenant}/{agent_id} is {}{reason_part}",
+                effective.as_str(),
+            ),
+        },
+    ))
+}
+
+/// Enforce the operator lifecycle on the caller's bound agent before a
+/// task-driving A2A method (`message/send`, `tasks/cancel`): a Suspended
+/// or Banned agent is rejected with 403, mirroring the bus `is_routable`
+/// gate so the two protocols that share the agent identity model also
+/// share its kill-switch.
+///
+/// The agent is resolved from the caller's grant binding for this
+/// `(tenant, namespace)` scope. A caller bound to no agent (`Ok(None)`),
+/// or bound to an id that was never registered, is unaffected — only a
+/// registered, non-routable agent is rejected. Conflicting bindings are
+/// an operator misconfiguration and are refused.
+async fn enforce_agent_routable(
+    state: &AppState,
+    identity: &CallerIdentity,
+    namespace: &str,
+    tenant: &str,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    let agent_id = match identity.bus_agent_id_for_scope(tenant, namespace) {
+        Ok(Some(id)) => id.to_string(),
+        Ok(None) => return Ok(()),
+        Err(e) => {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            ));
+        }
+    };
+    let Some(agent) = load_caller_agent(state, namespace, tenant, &agent_id).await? else {
+        return Ok(());
+    };
+    match agent_routability_rejection(&agent, namespace, tenant, &agent_id) {
+        Some((status, body)) => Err((status, Json(body))),
+        None => Ok(()),
+    }
+}
+
+/// Load the caller's agent record from its bus-agent state key.
+/// `Ok(None)` when the record does not exist (a binding to an
+/// unregistered id has no lifecycle to enforce); `Err` only on a
+/// store/decode failure.
+async fn load_caller_agent(
+    state: &AppState,
+    namespace: &str,
+    tenant: &str,
+    agent_id: &str,
+) -> Result<Option<Agent>, (StatusCode, Json<ErrorResponse>)> {
+    let key = StateKey::new(
+        namespace.to_string(),
+        tenant.to_string(),
+        KeyKind::BusAgent,
+        agent_id.to_string(),
+    );
+    let gw = state.gateway.read().await;
+    match gw.state_store().get(&key).await {
+        Ok(Some(raw)) => serde_json::from_str::<Agent>(&raw).map(Some).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("corrupt agent record for {namespace}.{tenant}.{agent_id}: {e}"),
+                }),
+            )
+        }),
+        Ok(None) => Ok(None),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )),
+    }
+}
+
 /// The `A2A-Version` response header, attached to every A2A response.
 fn version_header() -> [(&'static str, &'static str); 1] {
     [(A2A_VERSION_HEADER, A2A_PROTOCOL_VERSION)]
@@ -828,6 +957,15 @@ pub async fn a2a_rpc(
             return rpc_single_error(&A2aError::new(PARSE_ERROR, format!("parse error: {e}")));
         }
     };
+    // Operator lifecycle: block a Suspended/Banned caller agent from any
+    // request that drives or mutates tasks. Read-only payloads (tasks/get)
+    // stay open, so the gate runs only when a write method is present.
+    if payload_has_write_method(&parsed)
+        && let Err((status, body)) =
+            enforce_agent_routable(&state, &identity, &namespace, &tenant).await
+    {
+        return (status, version_header(), body).into_response();
+    }
     let scope = TaskScope::new(&namespace, &tenant);
     let engine = task_engine(&state).await;
     match handle_rpc_payload(Some(&state), &engine, &scope, parsed).await {
@@ -869,6 +1007,11 @@ pub async fn a2a_rest_message_send(
         return rest_result(Err(e));
     }
     if let Err((status, body)) = authorize(&identity, &namespace, &tenant) {
+        return (status, version_header(), body).into_response();
+    }
+    if let Err((status, body)) =
+        enforce_agent_routable(&state, &identity, &namespace, &tenant).await
+    {
         return (status, version_header(), body).into_response();
     }
     let scope = TaskScope::new(&namespace, &tenant);
@@ -927,6 +1070,11 @@ pub async fn a2a_rest_task_cancel(
         return rest_result(Err(e));
     }
     if let Err((status, body)) = authorize(&identity, &namespace, &tenant) {
+        return (status, version_header(), body).into_response();
+    }
+    if let Err((status, body)) =
+        enforce_agent_routable(&state, &identity, &namespace, &tenant).await
+    {
         return (status, version_header(), body).into_response();
     }
     let Some(task_id) = id_and_verb.strip_suffix(":cancel") else {
@@ -1601,5 +1749,96 @@ mod tests {
                 })?;
             }
         }
+    }
+
+    // ---- operator-lifecycle gate ----------------------------------------
+
+    #[test]
+    fn write_methods_are_gated_reads_are_not() {
+        assert!(is_write_method("message/send"));
+        assert!(is_write_method("tasks/cancel"));
+        assert!(!is_write_method("tasks/get"));
+        assert!(!is_write_method("agent/getAuthenticatedExtendedCard"));
+        assert!(!is_write_method("unknown"));
+    }
+
+    #[test]
+    fn payload_write_detection_single_and_batch() {
+        // Single read → no gate.
+        assert!(!payload_has_write_method(
+            &json!({"jsonrpc":"2.0","method":"tasks/get","params":{"id":"t"},"id":1})
+        ));
+        // Single write → gate.
+        assert!(payload_has_write_method(
+            &json!({"jsonrpc":"2.0","method":"message/send","params":{},"id":1})
+        ));
+        // Batch of only reads → no gate.
+        assert!(!payload_has_write_method(&json!([
+            {"jsonrpc":"2.0","method":"tasks/get","params":{"id":"a"},"id":1},
+            {"jsonrpc":"2.0","method":"tasks/get","params":{"id":"b"},"id":2},
+        ])));
+        // Batch containing one write → gate (the whole request is gated).
+        assert!(payload_has_write_method(&json!([
+            {"jsonrpc":"2.0","method":"tasks/get","params":{"id":"a"},"id":1},
+            {"jsonrpc":"2.0","method":"tasks/cancel","params":{"id":"b"},"id":2},
+        ])));
+        // Non-object scalar → no method, no gate.
+        assert!(!payload_has_write_method(&json!("nope")));
+    }
+
+    #[test]
+    fn active_agent_is_routable() {
+        let agent = Agent::new("planner-1", "agents", "demo");
+        assert!(agent_routability_rejection(&agent, "agents", "demo", "planner-1").is_none());
+    }
+
+    #[test]
+    fn banned_agent_is_rejected_with_reason_but_not_operator() {
+        use acteon_core::AgentAdminState;
+        let mut agent = Agent::new("planner-1", "agents", "demo");
+        agent.apply_admin_state(
+            AgentAdminState::Banned,
+            Some("exfiltration".into()),
+            Some("op@acme.io".into()),
+            None,
+        );
+        let (status, body) = agent_routability_rejection(&agent, "agents", "demo", "planner-1")
+            .expect("banned agent must be rejected");
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(body.error.contains("banned"), "{}", body.error);
+        assert!(body.error.contains("exfiltration"), "{}", body.error);
+        assert!(
+            body.error.contains("agents/demo/planner-1"),
+            "{}",
+            body.error
+        );
+        // The operator's identity is never leaked in the 403.
+        assert!(!body.error.contains("op@acme.io"), "{}", body.error);
+    }
+
+    #[test]
+    fn suspended_agent_is_rejected_but_expired_suspension_is_routable() {
+        use acteon_core::AgentAdminState;
+        use chrono::{Duration, Utc};
+
+        let mut suspended = Agent::new("planner-1", "agents", "demo");
+        suspended.apply_admin_state(AgentAdminState::Suspended, None, None, None);
+        assert!(
+            agent_routability_rejection(&suspended, "agents", "demo", "planner-1").is_some(),
+            "an active suspension must reject",
+        );
+
+        // A suspension whose expiry is in the past reads as Active.
+        let mut expired = Agent::new("planner-1", "agents", "demo");
+        expired.apply_admin_state(
+            AgentAdminState::Suspended,
+            None,
+            None,
+            Some(Utc::now() - Duration::hours(1)),
+        );
+        assert!(
+            agent_routability_rejection(&expired, "agents", "demo", "planner-1").is_none(),
+            "an expired suspension must be routable",
+        );
     }
 }
