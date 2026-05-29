@@ -49,7 +49,7 @@ impl AuditEventKind {
 pub const A2A_AUDIT_PROVIDER: &str = "a2a";
 
 /// The `outcome` value stamped on a **pre-execution intent** audit record
-/// (compliance two-phase fail-closed). It is never a real [`ActionOutcome`]
+/// (compliance two-phase fail-closed). It is never a real `ActionOutcome`
 /// tag, so it uniquely identifies an intent record. Intent records stay on
 /// the (tamper-evident) audit trail and are returned by raw audit queries —
 /// an auditor pairs each with its outcome record, and a *lone* intent record
