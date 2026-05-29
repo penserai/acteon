@@ -1379,12 +1379,13 @@ public class ActeonClient implements AutoCloseable {
     }
 
     /**
-     * Lists quota policies with optional namespace, tenant, and
-     * provider filters. Pass "generic" as the provider filter to
+     * Lists quota policies with optional namespace, tenant, provider,
+     * and principal filters. Pass "generic" as the provider filter to
      * match only policies without a provider scope, or a provider
-     * name (e.g. "slack") to match only per-provider policies.
+     * name (e.g. "slack") to match only per-provider policies. The
+     * principal filter matches policies scoped to a given caller.
      */
-    public ListQuotasResponse listQuotas(String namespace, String tenant, String provider) throws ActeonException {
+    public ListQuotasResponse listQuotas(String namespace, String tenant, String provider, String principal) throws ActeonException {
         try {
             List<String> params = new ArrayList<>();
             if (namespace != null) {
@@ -1395,6 +1396,9 @@ public class ActeonClient implements AutoCloseable {
             }
             if (provider != null) {
                 params.add("provider=" + URLEncoder.encode(provider, StandardCharsets.UTF_8));
+            }
+            if (principal != null) {
+                params.add("principal=" + URLEncoder.encode(principal, StandardCharsets.UTF_8));
             }
 
             String path = "/v1/quotas";

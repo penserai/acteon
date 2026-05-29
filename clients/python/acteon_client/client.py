@@ -1108,6 +1108,7 @@ class ActeonClient(_A2AClientMixin, _BusClientMixin):
         namespace: Optional[str] = None,
         tenant: Optional[str] = None,
         provider: Optional[str] = None,
+        principal: Optional[str] = None,
     ) -> "ListQuotasResponse":
         """List quota policies.
 
@@ -1119,6 +1120,8 @@ class ActeonClient(_A2AClientMixin, _BusClientMixin):
                 without a provider scope, or a provider name (e.g.
                 ``"slack"``) to match only per-provider policies
                 for that provider.
+            principal: Optional principal (caller) scope filter. Matches
+                policies scoped to that principal.
 
         Returns:
             List of quota policies.
@@ -1134,6 +1137,8 @@ class ActeonClient(_A2AClientMixin, _BusClientMixin):
             params["tenant"] = tenant
         if provider is not None:
             params["provider"] = provider
+        if principal is not None:
+            params["principal"] = principal
         response = self._request("GET", "/v1/quotas", params=params)
 
         if response.status_code == 200:
@@ -3151,10 +3156,12 @@ class AsyncActeonClient(_AsyncA2AClientMixin, _AsyncBusClientMixin):
         namespace: Optional[str] = None,
         tenant: Optional[str] = None,
         provider: Optional[str] = None,
+        principal: Optional[str] = None,
     ) -> "ListQuotasResponse":
         """List quota policies, optionally filtered by namespace,
-        tenant, and provider scope (``"generic"`` matches generic
-        policies; a provider name matches per-provider policies)."""
+        tenant, provider scope (``"generic"`` matches generic policies;
+        a provider name matches per-provider policies), and principal
+        (caller) scope."""
         params: dict = {}
         if namespace is not None:
             params["namespace"] = namespace
@@ -3162,6 +3169,8 @@ class AsyncActeonClient(_AsyncA2AClientMixin, _AsyncBusClientMixin):
             params["tenant"] = tenant
         if provider is not None:
             params["provider"] = provider
+        if principal is not None:
+            params["principal"] = principal
         response = await self._request("GET", "/v1/quotas", params=params)
         if response.status_code == 200:
             return ListQuotasResponse.from_dict(response.json())

@@ -1145,11 +1145,13 @@ export class ActeonClient {
     namespace?: string,
     tenant?: string,
     provider?: string,
+    principal?: string,
   ): Promise<ListQuotasResponse> {
     const params = new URLSearchParams();
     if (namespace !== undefined) params.set("namespace", namespace);
     if (tenant !== undefined) params.set("tenant", tenant);
     if (provider !== undefined) params.set("provider", provider);
+    if (principal !== undefined) params.set("principal", principal);
     const response = await this.request("GET", "/v1/quotas", { params: params.toString() ? params : undefined });
 
     if (response.ok) {
