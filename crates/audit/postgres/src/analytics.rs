@@ -68,6 +68,12 @@ fn build_analytics_where(
         conditions.push(format!("({})", scope_terms.join(" OR ")));
     }
 
+    // Exclude pre-execution intent records (compliance two-phase): they live
+    // on the audit trail but must never count toward analytics metrics.
+    conditions.push(format!("outcome <> ${idx}"));
+    binds.push(acteon_audit::INTENT_OUTCOME.to_owned());
+    idx += 1;
+
     // Time range is always applied.
     conditions.push(format!("dispatched_at >= ${idx}"));
     let from_idx = idx;
@@ -363,6 +369,11 @@ impl AnalyticsStore for PostgresAnalyticsStore {
             conditions.push(format!("({})", scope_terms.join(" OR ")));
         }
 
+        // Exclude pre-execution intent records from coverage counts.
+        conditions.push(format!("outcome <> ${idx}"));
+        binds.push(acteon_audit::INTENT_OUTCOME.to_owned());
+        idx += 1;
+
         conditions.push(format!("dispatched_at >= ${idx}"));
         idx += 1;
         conditions.push(format!("dispatched_at <= ${idx}"));
@@ -427,14 +438,17 @@ mod tests {
     #[test]
     fn empty_scope_adds_no_tenant_scope_predicate() {
         let now = Utc::now();
-        // With no string filters and an empty scope, the only conditions are
-        // the always-applied time range — unchanged from prior behavior.
+        // No string filters / empty scope: only the intent-exclusion guard
+        // and the always-applied time range remain.
         let query = base_query();
         let (clause, binds, next_idx) = build_analytics_where(&query, now, now);
 
-        assert_eq!(clause, "WHERE dispatched_at >= $1 AND dispatched_at <= $2");
-        assert!(binds.is_empty());
-        assert_eq!(next_idx, 3);
+        assert_eq!(
+            clause,
+            "WHERE outcome <> $1 AND dispatched_at >= $2 AND dispatched_at <= $3"
+        );
+        assert_eq!(binds, vec!["pending".to_string()]);
+        assert_eq!(next_idx, 4);
     }
 
     #[test]
@@ -448,7 +462,7 @@ mod tests {
         assert_eq!(
             clause,
             "WHERE ((tenant = $1 OR tenant LIKE $2) OR (tenant = $3 OR tenant LIKE $4)) \
-             AND dispatched_at >= $5 AND dispatched_at <= $6"
+             AND outcome <> $5 AND dispatched_at >= $6 AND dispatched_at <= $7"
         );
         assert_eq!(
             binds,
@@ -457,9 +471,10 @@ mod tests {
                 "acme.%".to_string(),
                 "globex.eu".to_string(),
                 "globex.eu.%".to_string(),
+                "pending".to_string(),
             ]
         );
-        assert_eq!(next_idx, 7);
+        assert_eq!(next_idx, 8);
     }
 
     #[test]
@@ -474,7 +489,7 @@ mod tests {
         assert_eq!(
             clause,
             "WHERE tenant = $1 AND ((tenant = $2 OR tenant LIKE $3)) \
-             AND dispatched_at >= $4 AND dispatched_at <= $5"
+             AND outcome <> $4 AND dispatched_at >= $5 AND dispatched_at <= $6"
         );
         assert_eq!(
             binds,
@@ -482,8 +497,9 @@ mod tests {
                 "acme.team".to_string(),
                 "acme".to_string(),
                 "acme.%".to_string(),
+                "pending".to_string(),
             ]
         );
-        assert_eq!(next_idx, 6);
+        assert_eq!(next_idx, 7);
     }
 }

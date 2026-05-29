@@ -427,7 +427,7 @@ pub(crate) fn build_intent_audit_record(
         action_type: action.action_type.clone(),
         verdict: verdict.as_tag().to_owned(),
         matched_rule: matched_rule_name(verdict),
-        outcome: "pending".to_owned(),
+        outcome: acteon_audit::INTENT_OUTCOME.to_owned(),
         action_payload,
         verdict_details: serde_json::json!({ "verdict": verdict.as_tag() }),
         outcome_details: serde_json::json!({ "phase": "intent" }),

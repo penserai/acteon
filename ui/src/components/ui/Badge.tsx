@@ -32,6 +32,9 @@ const outcomeVariant: Record<string, keyof typeof variants> = {
   CircuitOpen: 'error',
   Scheduled: 'pending',
   StateChanged: 'info',
+  // Compliance two-phase: a pre-execution intent record, surfaced distinctly
+  // so it isn't mistaken for a stuck/in-flight job.
+  'Audit Intent': 'info',
   // Chain statuses
   running: 'info',
   completed: 'success',

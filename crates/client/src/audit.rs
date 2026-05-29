@@ -58,6 +58,12 @@ pub struct AuditPage {
     pub next_cursor: Option<String>,
 }
 
+/// The `outcome` value stamped on a pre-execution **intent** audit record in
+/// compliance (two-phase fail-closed) mode. Such records are part of the audit
+/// trail but represent "about to execute," not a completed outcome — display
+/// them distinctly so an operator doesn't mistake one for a stuck job.
+pub const INTENT_OUTCOME: &str = "pending";
+
 /// An audit record.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditRecord {
@@ -92,6 +98,15 @@ pub struct AuditRecord {
     /// Monotonic sequence number within the `(namespace, tenant)` pair (compliance mode).
     #[serde(default)]
     pub sequence_number: Option<u64>,
+}
+
+impl AuditRecord {
+    /// Whether this is a compliance pre-execution **intent** record (see
+    /// [`INTENT_OUTCOME`]) rather than a completed action outcome.
+    #[must_use]
+    pub fn is_intent(&self) -> bool {
+        self.outcome == INTENT_OUTCOME
+    }
 }
 
 /// Query parameters for bulk audit replay.
