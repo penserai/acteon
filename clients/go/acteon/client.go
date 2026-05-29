@@ -1147,10 +1147,11 @@ func (c *Client) CreateQuota(ctx context.Context, req *CreateQuotaRequest) (*Quo
 }
 
 // ListQuotas lists quota policies with optional namespace, tenant,
-// and provider filters. Pass "generic" as the provider filter to
-// match only policies without a provider scope; pass a provider
-// name (e.g. "slack") to match only per-provider policies.
-func (c *Client) ListQuotas(ctx context.Context, namespace, tenant, provider *string) (*ListQuotasResponse, error) {
+// provider, and principal filters. Pass "generic" as the provider
+// filter to match only policies without a provider scope; pass a
+// provider name (e.g. "slack") to match only per-provider policies.
+// principal filters to policies scoped to a given caller.
+func (c *Client) ListQuotas(ctx context.Context, namespace, tenant, provider, principal *string) (*ListQuotasResponse, error) {
 	params := url.Values{}
 	if namespace != nil {
 		params.Set("namespace", *namespace)
@@ -1160,6 +1161,9 @@ func (c *Client) ListQuotas(ctx context.Context, namespace, tenant, provider *st
 	}
 	if provider != nil {
 		params.Set("provider", *provider)
+	}
+	if principal != nil {
+		params.Set("principal", *principal)
 	}
 
 	path := "/v1/quotas"
