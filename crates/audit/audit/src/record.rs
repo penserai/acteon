@@ -48,6 +48,15 @@ impl AuditEventKind {
 /// dispatches, so they share this synthetic marker.
 pub const A2A_AUDIT_PROVIDER: &str = "a2a";
 
+/// The `outcome` value stamped on a **pre-execution intent** audit record
+/// (compliance two-phase fail-closed). It is never a real `ActionOutcome`
+/// tag, so it uniquely identifies an intent record. Intent records stay on
+/// the (tamper-evident) audit trail and are returned by raw audit queries —
+/// an auditor pairs each with its outcome record, and a *lone* intent record
+/// signals a crash mid-dispatch — but they are **excluded from analytics and
+/// rule coverage** so they don't double-count operational metrics.
+pub const INTENT_OUTCOME: &str = "pending";
+
 /// A single audit record capturing the full lifecycle of a dispatched action.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -144,6 +153,17 @@ pub struct AuditRecord {
     /// the audit record does not carry in its entirety).
     #[serde(default)]
     pub canonical_hash: Option<String>,
+}
+
+impl AuditRecord {
+    /// Whether this is a pre-execution **intent** record (compliance
+    /// two-phase fail-closed), identified by its synthetic [`INTENT_OUTCOME`].
+    /// Such records are part of the audit trail but are excluded from
+    /// analytics / rule coverage so they don't double-count metrics.
+    #[must_use]
+    pub fn is_intent(&self) -> bool {
+        self.outcome == INTENT_OUTCOME
+    }
 }
 
 /// Query parameters for searching audit records.

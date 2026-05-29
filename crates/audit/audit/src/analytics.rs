@@ -228,6 +228,11 @@ impl<S: AuditStore + ?Sized + 'static> AnalyticsStore for InMemoryAnalytics<S> {
             }
         }
 
+        // Exclude pre-execution intent records (compliance two-phase): they
+        // are part of the audit trail but must not double-count operational
+        // metrics (volume, outcome breakdown, error rate, top-N).
+        all_records.retain(|r| !r.is_intent());
+
         let total_count = all_records.len() as u64;
 
         // Group records into buckets.
@@ -344,6 +349,11 @@ impl<S: AuditStore + ?Sized + 'static> AnalyticsStore for InMemoryAnalytics<S> {
             let page = self.store.query(&audit_query).await?;
 
             for record in page.records {
+                // Skip pre-execution intent records — coverage counts real
+                // outcomes, not the two-phase compliance intent markers.
+                if record.is_intent() {
+                    continue;
+                }
                 let key = (
                     record.namespace,
                     record.tenant,
@@ -625,6 +635,47 @@ mod tests {
         // All bucket counts should sum to total_count.
         let sum: u64 = result.buckets.iter().map(|b| b.count).sum();
         assert_eq!(sum, 30);
+    }
+
+    #[tokio::test]
+    async fn analytics_excludes_intent_records() {
+        // Pre-execution intent (`pending`) records are on the audit trail but
+        // must not double-count operational metrics.
+        let store = Arc::new(MemoryAuditStore::new());
+        let now = Utc::now();
+        store.add_record(make_record(
+            "default", "t1", "email", "send", "executed", 10, now,
+        ));
+        store.add_record(make_record(
+            "default",
+            "t1",
+            "email",
+            "send",
+            crate::INTENT_OUTCOME,
+            0,
+            now,
+        ));
+        let analytics = InMemoryAnalytics::new(store);
+
+        let query = AnalyticsQuery {
+            metric: AnalyticsMetric::Volume,
+            namespace: None,
+            tenant: None,
+            provider: None,
+            action_type: None,
+            outcome: None,
+            interval: AnalyticsInterval::Daily,
+            from: None,
+            to: None,
+            group_by: None,
+            top_n: None,
+            tenant_scope: Vec::new(),
+        };
+        let result = analytics.query_analytics(&query).await.unwrap();
+        assert_eq!(
+            result.total_count, 1,
+            "the pending intent record must be excluded; only the executed record counts",
+        );
     }
 
     #[tokio::test]

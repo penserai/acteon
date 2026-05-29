@@ -22,6 +22,12 @@ const col = createColumnHelper<AuditRecord>()
 
 const outcomeOptions = ['Executed', 'Failed', 'Suppressed', 'Deduplicated', 'Rerouted', 'Throttled', 'PendingApproval', 'ChainStarted', 'CircuitOpen', 'Scheduled', 'DryRun'].map((v) => ({ value: v, label: v }))
 
+// The server stamps `pending` on a compliance pre-execution intent record
+// (two-phase fail-closed). Show it as "Audit Intent" so operators don't read
+// it as a stuck/in-flight job.
+const INTENT_OUTCOME = 'pending'
+const outcomeLabel = (outcome: string) => (outcome === INTENT_OUTCOME ? 'Audit Intent' : outcome)
+
 export function Actions() {
   const [searchParams, setSearchParams] = useSearchParams()
   const { toast } = useToast()
@@ -76,7 +82,7 @@ export function Actions() {
     col.accessor('tenant', { header: 'Tenant' }),
     col.accessor('action_type', { header: 'Type' }),
     col.accessor('verdict', { header: 'Verdict', cell: (info) => <Badge>{info.getValue()}</Badge> }),
-    col.accessor('outcome', { header: 'Outcome', cell: (info) => <Badge>{info.getValue()}</Badge> }),
+    col.accessor('outcome', { header: 'Outcome', cell: (info) => <Badge>{outcomeLabel(info.getValue())}</Badge> }),
     col.accessor('duration_ms', {
       header: 'Duration',
       cell: (info) => <span className={styles.durationCell}>{info.getValue()}ms</span>,
@@ -164,7 +170,7 @@ export function Actions() {
                   'Action Type': selected.action_type,
                   'Verdict': selected.verdict,
                   'Matched Rule': selected.matched_rule ?? '-',
-                  'Outcome': selected.outcome,
+                  'Outcome': outcomeLabel(selected.outcome),
                   'Duration': `${selected.duration_ms}ms`,
                   'Dispatched': selected.dispatched_at,
                   'Caller': selected.caller_id,

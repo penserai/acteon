@@ -166,12 +166,19 @@ async fn run_query(
                     "Audit query results"
                 );
                 for rec in &page.records {
+                    // Mark compliance intent ("pending") records so they aren't
+                    // mistaken for stuck/in-flight jobs.
+                    let outcome = if rec.is_intent() {
+                        format!("{} (audit intent)", rec.outcome)
+                    } else {
+                        rec.outcome.clone()
+                    };
                     info!(
                         timestamp = %rec.dispatched_at,
                         action_type = %rec.action_type,
                         provider = %rec.provider,
                         verdict = %rec.verdict,
-                        outcome = %rec.outcome,
+                        outcome = %outcome,
                         id = %&rec.action_id[..8.min(rec.action_id.len())],
                         "Audit record"
                     );
@@ -211,7 +218,12 @@ async fn run_get(ops: &OpsClient, action_id: &str, format: &OutputFormat) -> any
                 info!(provider = %rec.provider, "  Provider");
                 info!(action_type = %rec.action_type, "  Action Type");
                 info!(verdict = %rec.verdict, "  Verdict");
-                info!(outcome = %rec.outcome, "  Outcome");
+                let outcome = if rec.is_intent() {
+                    format!("{} (audit intent)", rec.outcome)
+                } else {
+                    rec.outcome.clone()
+                };
+                info!(outcome = %outcome, "  Outcome");
                 info!(duration_ms = rec.duration_ms, "  Duration");
                 info!(dispatched_at = %rec.dispatched_at, "  Dispatched");
                 if let Some(ref rule) = rec.matched_rule {

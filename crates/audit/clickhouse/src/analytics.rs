@@ -66,6 +66,11 @@ fn build_analytics_where(
         conditions.push(format!("({})", scope_terms.join(" OR ")));
     }
 
+    // Exclude pre-execution intent records (compliance two-phase): on the
+    // audit trail but never counted in analytics.
+    conditions.push("outcome <> ?".to_string());
+    binds.push(BindValue::Str(acteon_audit::INTENT_OUTCOME.to_owned()));
+
     // Time range: dispatched_at is stored as milliseconds since epoch.
     conditions.push("dispatched_at >= ?".to_string());
     binds.push(BindValue::Millis(from.timestamp_millis()));
@@ -348,6 +353,10 @@ impl AnalyticsStore for ClickHouseAnalyticsStore {
             conditions.push(format!("({})", scope_terms.join(" OR ")));
         }
 
+        // Exclude pre-execution intent records from coverage counts.
+        conditions.push("outcome <> ?".to_string());
+        binds.push(BindValue::Str(acteon_audit::INTENT_OUTCOME.to_owned()));
+
         conditions.push("dispatched_at >= ?".to_string());
         binds.push(BindValue::Millis(from.timestamp_millis()));
         conditions.push("dispatched_at <= ?".to_string());
@@ -431,10 +440,14 @@ mod tests {
         let from = Utc.timestamp_opt(1_000, 0).unwrap();
         let to = Utc.timestamp_opt(2_000, 0).unwrap();
         let (clause, binds) = build_analytics_where(&base_query(), from, to);
-        assert_eq!(clause, "WHERE dispatched_at >= ? AND dispatched_at <= ?");
+        assert_eq!(
+            clause,
+            "WHERE outcome <> ? AND dispatched_at >= ? AND dispatched_at <= ?"
+        );
         assert_eq!(
             binds_repr(&binds),
             vec![
+                "s:pending".to_owned(),
                 format!("m:{}", from.timestamp_millis()),
                 format!("m:{}", to.timestamp_millis()),
             ]
@@ -456,13 +469,14 @@ mod tests {
         assert_eq!(
             clause,
             "WHERE ((tenant = ? OR tenant LIKE ?)) \
-             AND dispatched_at >= ? AND dispatched_at <= ?"
+             AND outcome <> ? AND dispatched_at >= ? AND dispatched_at <= ?"
         );
         assert_eq!(
             binds_repr(&binds),
             vec![
                 "s:acme".to_owned(),
                 "s:acme.%".to_owned(),
+                "s:pending".to_owned(),
                 format!("m:{}", from.timestamp_millis()),
                 format!("m:{}", to.timestamp_millis()),
             ]
@@ -484,7 +498,7 @@ mod tests {
         assert_eq!(
             clause,
             "WHERE ((tenant = ? OR tenant LIKE ?) OR (tenant = ? OR tenant LIKE ?)) \
-             AND dispatched_at >= ? AND dispatched_at <= ?"
+             AND outcome <> ? AND dispatched_at >= ? AND dispatched_at <= ?"
         );
         // Note the LIKE-escape of `_` in the second pattern.
         assert_eq!(
@@ -494,6 +508,7 @@ mod tests {
                 "s:acme.%".to_owned(),
                 "s:ac_me".to_owned(),
                 "s:ac\\_me.%".to_owned(),
+                "s:pending".to_owned(),
                 format!("m:{}", from.timestamp_millis()),
                 format!("m:{}", to.timestamp_millis()),
             ]
@@ -516,7 +531,7 @@ mod tests {
         assert_eq!(
             clause,
             "WHERE tenant = ? AND ((tenant = ? OR tenant LIKE ?)) \
-             AND dispatched_at >= ? AND dispatched_at <= ?"
+             AND outcome <> ? AND dispatched_at >= ? AND dispatched_at <= ?"
         );
         assert_eq!(
             binds_repr(&binds),
@@ -524,6 +539,7 @@ mod tests {
                 "s:acme".to_owned(),
                 "s:acme".to_owned(),
                 "s:acme.%".to_owned(),
+                "s:pending".to_owned(),
                 format!("m:{}", from.timestamp_millis()),
                 format!("m:{}", to.timestamp_millis()),
             ]
