@@ -49,6 +49,19 @@ pub struct StateConfig {
     /// Accept invalid certificates for Redis (dev/test only).
     #[serde(default)]
     pub tls_insecure: Option<bool>,
+
+    /// How often (seconds) the `memory` backend sweeps TTL-expired entries
+    /// and locks. The memory store evicts lazily on read, so entries that
+    /// are never read again (one-shot dedup keys, settled counters, locks
+    /// whose holder crashed) would otherwise accumulate. Defaults to 60s;
+    /// set to `0` to disable the background sweeper. Ignored by other
+    /// backends, which delegate expiry to the underlying store.
+    #[serde(default = "default_memory_sweep_interval_secs")]
+    pub memory_sweep_interval_secs: u64,
+}
+
+fn default_memory_sweep_interval_secs() -> u64 {
+    60
 }
 
 impl Default for StateConfig {
@@ -66,6 +79,7 @@ impl Default for StateConfig {
             tls_enabled: None,
             tls_ca_cert_path: None,
             tls_insecure: None,
+            memory_sweep_interval_secs: default_memory_sweep_interval_secs(),
         }
     }
 }

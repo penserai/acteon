@@ -33,9 +33,10 @@ fn expiry_from_ttl(ttl: Option<Duration>) -> Option<Instant> {
 
 /// In-memory [`StateStore`] backed by a [`DashMap`].
 ///
-/// Entries are lazily evicted on read when their TTL has elapsed. This
-/// implementation is fully synchronous internally; the async trait methods
-/// return immediately.
+/// Entries are lazily evicted on read when their TTL has elapsed; call
+/// [`sweep_expired`](MemoryStateStore::sweep_expired) periodically to also
+/// reclaim entries that are never read again. This implementation is fully
+/// synchronous internally; the async trait methods return immediately.
 pub struct MemoryStateStore {
     data: DashMap<String, Entry>,
     /// Sorted index for timeout queries: maps `expiration_ms` -> set of keys.
@@ -69,6 +70,40 @@ impl MemoryStateStore {
     /// Create a new, empty in-memory state store.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Proactively evict every entry whose TTL has elapsed and drop any
+    /// empty index buckets. Returns the number of data entries removed.
+    ///
+    /// Expired entries are normally evicted lazily — `Entry::is_expired`
+    /// is only consulted when a key is read (`get`, `scan_*`). A TTL'd
+    /// entry that is never read again — a one-shot dedup key, a counter
+    /// that settles and is never inspected — would otherwise occupy the
+    /// map forever, a slow leak in long-running processes. Call this
+    /// periodically from a background task to bound memory.
+    ///
+    /// The `timeout` and `chain_ready` indexes are drained by their
+    /// `remove_*_index` counterparts as keys are processed, so this only
+    /// GCs empty buckets defensively, ensuring the `BTreeMap`s never
+    /// retain dead timestamp keys.
+    pub fn sweep_expired(&self) -> usize {
+        let mut removed = 0usize;
+        self.data.retain(|_, entry| {
+            let keep = !entry.is_expired();
+            if !keep {
+                removed += 1;
+            }
+            keep
+        });
+
+        if let Ok(mut index) = self.timeout_index.write() {
+            index.retain(|_, keys| !keys.is_empty());
+        }
+        if let Ok(mut index) = self.chain_ready_index.write() {
+            index.retain(|_, keys| !keys.is_empty());
+        }
+
+        removed
     }
 
     /// Render a [`StateKey`] into the string used as the map key.
@@ -425,6 +460,63 @@ mod tests {
         // Lazy eviction: get should return None.
         let val = store.get(&key).await.unwrap();
         assert!(val.is_none(), "value should be expired");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn sweep_expired_removes_unread_ttl_entries() {
+        let store = MemoryStateStore::new();
+
+        // A one-shot dedup key with a TTL that nothing ever reads back.
+        let transient = test_key(KeyKind::Dedup, "one-shot");
+        store
+            .set(&transient, "v", Some(Duration::from_secs(60)))
+            .await
+            .unwrap();
+        // A key with no TTL that must survive sweeps forever.
+        let permanent = test_key(KeyKind::State, "permanent");
+        store.set(&permanent, "keep", None).await.unwrap();
+
+        // Before the TTL elapses the sweep removes nothing.
+        assert_eq!(store.sweep_expired(), 0);
+
+        // Advance past the TTL *without ever reading* the transient key, so
+        // lazy eviction never had a chance to fire.
+        tokio::time::advance(Duration::from_secs(61)).await;
+
+        // The sweep reclaims the expired entry proactively, and a second
+        // pass is a no-op. The permanent entry is untouched.
+        assert_eq!(store.sweep_expired(), 1);
+        assert_eq!(store.sweep_expired(), 0);
+        assert_eq!(
+            store.get(&permanent).await.unwrap().as_deref(),
+            Some("keep"),
+            "no-TTL entry must survive sweeps"
+        );
+    }
+
+    #[tokio::test]
+    async fn sweep_expired_drops_empty_index_buckets() {
+        let store = MemoryStateStore::new();
+
+        // Simulate a drained-but-not-removed bucket (e.g. a key removed via
+        // a path that left the bucket empty) lingering in the index.
+        store.timeout_index.write().unwrap().insert(123, Vec::new());
+        store
+            .chain_ready_index
+            .write()
+            .unwrap()
+            .insert(456, Vec::new());
+
+        let _ = store.sweep_expired();
+
+        assert!(
+            store.timeout_index.read().unwrap().is_empty(),
+            "empty timeout buckets should be GC'd"
+        );
+        assert!(
+            store.chain_ready_index.read().unwrap().is_empty(),
+            "empty chain-ready buckets should be GC'd"
+        );
     }
 
     #[tokio::test(start_paused = true)]

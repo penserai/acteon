@@ -25,7 +25,9 @@ impl LockEntry {
 /// In-memory [`DistributedLock`] backed by a [`DashMap`].
 ///
 /// Lock expiry is lazy: expired entries are evicted on the next acquire
-/// attempt for the same lock name.
+/// attempt for the same lock name. Call
+/// [`sweep_expired`](MemoryDistributedLock::sweep_expired) periodically to
+/// also reclaim locks whose name is never contended again.
 #[derive(Debug, Clone, Default)]
 pub struct MemoryDistributedLock {
     locks: Arc<DashMap<String, LockEntry>>,
@@ -35,6 +37,27 @@ impl MemoryDistributedLock {
     /// Create a new in-memory distributed lock manager.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Proactively evict every lock whose TTL has elapsed. Returns the
+    /// number of expired locks removed.
+    ///
+    /// Lock expiry is otherwise lazy — an expired lock is only removed on
+    /// the next [`try_acquire`](MemoryDistributedLock::try_acquire) for the
+    /// *same* name. A lock whose holder crashed (so
+    /// [`MemoryLockGuard::release`] never runs) and whose name is never
+    /// contended again would linger forever. Call this periodically from a
+    /// background task to bound memory.
+    pub fn sweep_expired(&self) -> usize {
+        let mut removed = 0usize;
+        self.locks.retain(|_, entry| {
+            let keep = !entry.is_expired();
+            if !keep {
+                removed += 1;
+            }
+            keep
+        });
+        removed
     }
 }
 
@@ -177,6 +200,30 @@ mod tests {
             .await
             .unwrap();
         assert!(guard2.is_some(), "should acquire after TTL expiry");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn sweep_expired_reclaims_unreleased_locks() {
+        let lock = MemoryDistributedLock::new();
+
+        // Acquire and deliberately leak the guard (model a holder that
+        // crashed without calling `release`).
+        let _guard = lock
+            .try_acquire("orphaned", Duration::from_secs(30))
+            .await
+            .unwrap()
+            .expect("should acquire");
+
+        // While the TTL is live, the sweep leaves it alone.
+        assert_eq!(lock.sweep_expired(), 0);
+
+        // Advance past the TTL *without re-acquiring* the same name, so the
+        // lazy eviction in `try_acquire` never runs.
+        tokio::time::advance(Duration::from_secs(31)).await;
+
+        // The sweep reclaims the expired lock; a second pass is a no-op.
+        assert_eq!(lock.sweep_expired(), 1);
+        assert_eq!(lock.sweep_expired(), 0);
     }
 
     #[tokio::test(start_paused = true)]

@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use acteon_state::{DistributedLock, StateStore};
 #[cfg(feature = "dynamodb")]
@@ -21,7 +22,7 @@ pub type StatePair = (Arc<dyn StateStore>, Arc<dyn DistributedLock>);
 #[allow(clippy::unused_async)]
 pub async fn create_state(config: &StateConfig) -> Result<StatePair, ServerError> {
     match config.backend.as_str() {
-        "memory" => Ok(create_memory()),
+        "memory" => Ok(create_memory(config.memory_sweep_interval_secs)),
         #[cfg(feature = "redis")]
         "redis" => create_redis(config),
         #[cfg(feature = "postgres")]
@@ -34,10 +35,49 @@ pub async fn create_state(config: &StateConfig) -> Result<StatePair, ServerError
     }
 }
 
-fn create_memory() -> StatePair {
+fn create_memory(sweep_interval_secs: u64) -> StatePair {
     let store = Arc::new(MemoryStateStore::new());
     let lock = Arc::new(MemoryDistributedLock::new());
+
+    // The memory backend evicts TTL'd entries lazily on read, so a
+    // background sweeper is needed to reclaim entries that are never read
+    // again. Other backends delegate expiry to the underlying store.
+    if sweep_interval_secs > 0 {
+        spawn_memory_sweeper(
+            Arc::clone(&store),
+            Arc::clone(&lock),
+            Duration::from_secs(sweep_interval_secs),
+        );
+    }
+
     (store, lock)
+}
+
+/// Spawn a background task that periodically reclaims TTL-expired entries
+/// and locks from the in-memory backend.
+fn spawn_memory_sweeper(
+    store: Arc<MemoryStateStore>,
+    lock: Arc<MemoryDistributedLock>,
+    interval: Duration,
+) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(interval);
+        // The first tick fires immediately; skip it so the first real sweep
+        // happens one interval in, by which point entries may have expired.
+        ticker.tick().await;
+        loop {
+            ticker.tick().await;
+            let entries = store.sweep_expired();
+            let locks = lock.sweep_expired();
+            if entries > 0 || locks > 0 {
+                tracing::debug!(
+                    entries,
+                    locks,
+                    "memory backend swept TTL-expired entries and locks"
+                );
+            }
+        }
+    });
 }
 
 #[cfg(feature = "redis")]
