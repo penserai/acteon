@@ -19,6 +19,12 @@ backend = "memory"
 # region = "us-east-1"
 # table_name = "acteon_state"
 
+# Memory backend only: how often (seconds) to sweep TTL-expired entries and
+# locks. The in-memory store evicts lazily on read, so this reclaims entries
+# that are never read again (one-shot dedup keys, settled counters, locks
+# whose holder crashed). Default 60; set to 0 to disable the sweeper.
+# memory_sweep_interval_secs = 60
+
 [audit]
 # Set to true to enable audit trail recording
 enabled = false
