@@ -2554,6 +2554,50 @@ impl Gateway {
             .unwrap_or_default();
 
         let step_idx = chain_state.current_step;
+
+        // Defensive bounds check. A chain definition can be replaced
+        // mid-flight (`PUT /v1/chains`) with FEWER steps than an in-flight
+        // chain has already advanced past — the no-back-compat policy allows
+        // shrinking a definition. The persisted `current_step` would then index
+        // the freshly-loaded (shrunk) `chain_config.steps` out of bounds and
+        // panic the background advancer. Fail the chain closed instead, in the
+        // same shape as the timeout terminal path above.
+        if step_idx >= chain_config.steps.len() {
+            chain_state.status = ChainStatus::Failed;
+            chain_state.updated_at = Utc::now();
+            self.persist_chain_state(&chain_key, &chain_state, self.completed_chain_ttl)
+                .await?;
+            self.cleanup_pending_chain(namespace, tenant, chain_id)
+                .await?;
+            self.metrics.increment_chains_failed();
+            self.emit_chain_terminal_audit(&chain_state, "chain_definition_shrunk");
+            self.emit_stream_event(StreamEvent {
+                id: uuid::Uuid::now_v7().to_string(),
+                timestamp: Utc::now(),
+                event_type: StreamEventType::ChainCompleted {
+                    chain_id: chain_id.to_string(),
+                    status: "failed".to_string(),
+                    execution_path: chain_state.execution_path.clone(),
+                },
+                namespace: namespace.to_string(),
+                tenant: tenant.to_string(),
+                action_type: Some(chain_state.chain_name.clone()),
+                action_id: Some(chain_state.origin_action.id.to_string()),
+            });
+            guard
+                .release()
+                .await
+                .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+            warn!(
+                chain_id = %chain_id,
+                chain_name = %chain_state.chain_name,
+                step_idx,
+                steps = chain_config.steps.len(),
+                "chain definition shrank below the in-flight step index; failing the chain"
+            );
+            return Ok(());
+        }
+
         let step_config = &chain_config.steps[step_idx];
 
         // --- Sub-chain step handling ---
@@ -3567,7 +3611,10 @@ impl Gateway {
         step_result: &StepResult,
         step_index_map: &HashMap<String, usize>,
     ) -> Option<usize> {
-        let step_config = &chain_config.steps[step_idx];
+        // Defensive: `step_idx` comes from persisted chain state and the
+        // definition may have shrunk under it (see `advance_chain`). Treat an
+        // out-of-bounds index as "no next step" rather than panicking.
+        let step_config = chain_config.steps.get(step_idx)?;
 
         // If the step has branches, evaluate them.
         if step_config.has_branches() {
@@ -10603,6 +10650,93 @@ mod tests {
             captured.lock().unwrap().len(),
             1,
             "provider runs normally without compliance",
+        );
+    }
+
+    // -- advance_chain bounds check (definition shrunk mid-flight) ------------
+
+    #[test]
+    fn resolve_next_step_out_of_bounds_is_none_not_panic() {
+        use acteon_core::{ChainConfig, ChainStepConfig, StepResult};
+        use chrono::Utc;
+
+        let config = ChainConfig::new("c").with_step(ChainStepConfig::new(
+            "s0",
+            "email",
+            "send",
+            serde_json::json!({}),
+        ));
+        let result = StepResult::new("s0", true, None, None, Utc::now());
+        // A step index past the (1-step) definition must yield None, never panic.
+        let next = crate::gateway::Gateway::resolve_next_step(&config, 5, &result, &HashMap::new());
+        assert_eq!(next, None);
+    }
+
+    #[tokio::test]
+    async fn advance_chain_fails_closed_when_definition_shrinks() {
+        use acteon_core::{ChainConfig, ChainState, ChainStatus, ChainStepConfig};
+        use acteon_state::{KeyKind, StateKey};
+        use chrono::Utc;
+
+        let gw = build_gateway(vec![]);
+        let step = |n: &str| ChainStepConfig::new(n, "email", "send_email", serde_json::json!({}));
+
+        // Register a 2-step definition, then seed a chain mid-flight at step 1.
+        gw.set_chain_config(
+            ChainConfig::new("shrink-test")
+                .with_step(step("s0"))
+                .with_step(step("s1")),
+        )
+        .expect("2-step config is valid");
+
+        let now = Utc::now();
+        let chain_state = ChainState {
+            chain_id: "c1".into(),
+            chain_name: "shrink-test".into(),
+            origin_action: test_action(),
+            current_step: 1,
+            total_steps: 2,
+            status: ChainStatus::Running,
+            step_results: vec![None, None],
+            started_at: now,
+            updated_at: now,
+            expires_at: None,
+            namespace: "notifications".into(),
+            tenant: "tenant-1".into(),
+            cancel_reason: None,
+            cancelled_by: None,
+            execution_path: Vec::new(),
+            parent_chain_id: None,
+            parent_step_index: None,
+            child_chain_ids: Vec::new(),
+            task_id: None,
+            parallel_state: None,
+            parallel_sub_results: HashMap::new(),
+            step_attempts: Vec::new(),
+            step_history: Vec::new(),
+        };
+        let key = StateKey::new("notifications", "tenant-1", KeyKind::Chain, "c1");
+        gw.state_store()
+            .set(&key, &serde_json::to_string(&chain_state).unwrap(), None)
+            .await
+            .unwrap();
+
+        // Now SHRINK the definition to 1 step, so the persisted current_step
+        // (1) indexes the new config out of bounds.
+        gw.set_chain_config(ChainConfig::new("shrink-test").with_step(step("s0")))
+            .expect("1-step config is valid");
+
+        // Must NOT panic — the chain settles as Failed instead.
+        gw.advance_chain("notifications", "tenant-1", "c1")
+            .await
+            .expect("advance_chain handles the shrunk definition gracefully");
+
+        let raw = gw.state_store().get(&key).await.unwrap().unwrap();
+        let reloaded: ChainState = serde_json::from_str(&raw).unwrap();
+        assert_eq!(
+            reloaded.status,
+            ChainStatus::Failed,
+            "chain must fail closed when its definition shrank below current_step",
         );
     }
 }
