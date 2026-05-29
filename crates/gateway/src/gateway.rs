@@ -345,13 +345,18 @@ impl Gateway {
     /// When `sync_audit_writes` is enabled, the caller awaits the write inline
     /// so the audit record is guaranteed to be persisted before the dispatch
     /// pipeline returns.
-    async fn emit_audit_record(&self, audit: &Arc<dyn AuditStore>, record: AuditRecord) {
-        let sync = self
-            .compliance_config
+    /// Whether compliance mode requires synchronous, durable audit writes
+    /// (SOC2/HIPAA `sync_audit_writes`). When true, the dispatch pipeline
+    /// writes a pre-execution intent record and fails closed if it cannot be
+    /// persisted, so an action that can't be recorded is never executed.
+    fn sync_audit_writes(&self) -> bool {
+        self.compliance_config
             .as_ref()
-            .is_some_and(|c| c.sync_audit_writes);
+            .is_some_and(|c| c.sync_audit_writes)
+    }
 
-        if sync {
+    async fn emit_audit_record(&self, audit: &Arc<dyn AuditStore>, record: AuditRecord) {
+        if self.sync_audit_writes() {
             if let Err(e) = audit.record(record).await {
                 warn!(error = %e, "audit recording failed (sync)");
             }
@@ -447,7 +452,7 @@ impl Gateway {
         );
 
         // In dry-run mode, skip lock acquisition, state mutation, and audit.
-        let guard = if dry_run {
+        let mut guard = if dry_run {
             None
         } else {
             // 2. Acquire the distributed lock with a 30-second TTL and 5-second timeout.
@@ -762,6 +767,38 @@ impl Gateway {
 
             info!(?outcome, "dispatch complete (muted by time interval)");
             return Ok(outcome);
+        }
+
+        // 3f. Compliance fail-closed (pre-execution intent record).
+        //     In `sync_audit_writes` mode, durably record the INTENT to handle
+        //     this action *before* any provider side effect. If the record
+        //     cannot be persisted we abort here — nothing executes, so there
+        //     is no unaudited or duplicated side effect (the genuine
+        //     compliance guarantee). Other deployments are unaffected: they
+        //     keep the single post-execution (async, best-effort) outcome
+        //     record written in step 5.
+        if self.sync_audit_writes()
+            && let Some(ref audit) = self.audit
+        {
+            let intent = build_intent_audit_record(
+                format!("{event_id}-intent"),
+                &action,
+                &verdict,
+                dispatched_at,
+                self.effective_audit_ttl(&action.namespace, &action.tenant),
+                self.audit_store_payload,
+                caller,
+            );
+            if let Err(e) = audit.record(intent).await {
+                warn!(error = %e, "intent audit write failed — failing dispatch closed before execution");
+                // Release the lock before aborting so a retry is not blocked
+                // until the lock TTL. Nothing has executed, so there is no
+                // side effect to reconcile.
+                if let Some(g) = guard.take() {
+                    let _ = g.release().await;
+                }
+                return Err(GatewayError::AuditWriteFailed(e.to_string()));
+            }
         }
 
         // 4. Handle the verdict.
@@ -6112,7 +6149,8 @@ impl acteon_state::StateStore for BorrowedStateStore<'_> {
 // -- Audit helpers (moved to audit_helpers.rs) -------------------------------
 
 use crate::audit_helpers::{
-    build_audit_record, enrich_audit_metadata, is_adjacent_in_path, matched_rule_name,
+    build_audit_record, build_intent_audit_record, enrich_audit_metadata, is_adjacent_in_path,
+    matched_rule_name,
 };
 
 #[cfg(test)]
@@ -10407,6 +10445,164 @@ mod tests {
         assert!(
             matches!(tenant_blocked, ActionOutcome::QuotaExceeded { .. }),
             "11th dispatch should trip the tenant-wide cap"
+        );
+    }
+
+    // -- Compliance two-phase (intent) audit ----------------------------------
+
+    /// Audit store for compliance tests: collects every record, or fails
+    /// every write when `fail` is set.
+    struct TestAudit {
+        fail: bool,
+        records: Arc<Mutex<Vec<acteon_audit::AuditRecord>>>,
+    }
+
+    #[async_trait]
+    impl acteon_audit::AuditStore for TestAudit {
+        async fn record(
+            &self,
+            entry: acteon_audit::AuditRecord,
+        ) -> Result<(), acteon_audit::AuditError> {
+            if self.fail {
+                return Err(acteon_audit::AuditError::Storage(
+                    "synthetic failure".into(),
+                ));
+            }
+            self.records.lock().unwrap().push(entry);
+            Ok(())
+        }
+        async fn get_by_action_id(
+            &self,
+            _: &str,
+        ) -> Result<Option<acteon_audit::AuditRecord>, acteon_audit::AuditError> {
+            Ok(None)
+        }
+        async fn get_by_id(
+            &self,
+            _: &str,
+        ) -> Result<Option<acteon_audit::AuditRecord>, acteon_audit::AuditError> {
+            Ok(None)
+        }
+        async fn query(
+            &self,
+            _: &acteon_audit::AuditQuery,
+        ) -> Result<acteon_audit::AuditPage, acteon_audit::AuditError> {
+            Ok(acteon_audit::AuditPage {
+                records: Vec::new(),
+                total: Some(0),
+                limit: 0,
+                offset: 0,
+                next_cursor: None,
+            })
+        }
+        async fn cleanup_expired(&self) -> Result<u64, acteon_audit::AuditError> {
+            Ok(0)
+        }
+    }
+
+    /// Build a gateway with a `CapturingProvider` (so we can assert whether
+    /// the provider was actually invoked), the given audit store, and an
+    /// optional compliance config. Returns the gateway and the provider's
+    /// captured-payloads handle.
+    fn build_compliance_gateway(
+        audit: Arc<dyn acteon_audit::AuditStore>,
+        compliance: Option<acteon_core::ComplianceConfig>,
+    ) -> (crate::gateway::Gateway, Arc<Mutex<Vec<serde_json::Value>>>) {
+        let (provider, captured) = CapturingProvider::new("email");
+        let mut builder = GatewayBuilder::new()
+            .state(Arc::new(MemoryStateStore::new()))
+            .lock(Arc::new(MemoryDistributedLock::new()))
+            .rules(vec![])
+            .provider(Arc::new(provider))
+            .audit(audit)
+            .executor_config(ExecutorConfig {
+                max_retries: 0,
+                execution_timeout: Duration::from_secs(5),
+                max_concurrent: 10,
+                ..ExecutorConfig::default()
+            });
+        if let Some(c) = compliance {
+            builder = builder.compliance_config(c);
+        }
+        (builder.build().expect("gateway should build"), captured)
+    }
+
+    #[tokio::test]
+    async fn compliance_intent_write_failure_aborts_before_execution() {
+        // The whole point: in compliance mode, if the pre-execution intent
+        // record can't be persisted, the dispatch fails closed BEFORE the
+        // provider runs — no side effect, so nothing unaudited or duplicated.
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let (gw, captured) = build_compliance_gateway(
+            Arc::new(TestAudit {
+                fail: true,
+                records,
+            }),
+            Some(acteon_core::ComplianceConfig::new(
+                acteon_core::ComplianceMode::Soc2,
+            )),
+        );
+        let err = gw
+            .dispatch(test_action(), None)
+            .await
+            .expect_err("intent audit failure must fail dispatch closed");
+        assert!(
+            matches!(err, crate::error::GatewayError::AuditWriteFailed(_)),
+            "expected AuditWriteFailed, got {err:?}",
+        );
+        assert!(
+            captured.lock().unwrap().is_empty(),
+            "provider must NOT be invoked when the intent audit write fails",
+        );
+    }
+
+    #[tokio::test]
+    async fn compliance_happy_path_writes_intent_then_outcome() {
+        // Healthy audit in compliance mode: the provider runs and BOTH a
+        // pending intent record and the outcome record are persisted.
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let (gw, captured) = build_compliance_gateway(
+            Arc::new(TestAudit {
+                fail: false,
+                records: Arc::clone(&records),
+            }),
+            Some(acteon_core::ComplianceConfig::new(
+                acteon_core::ComplianceMode::Soc2,
+            )),
+        );
+        let outcome = gw.dispatch(test_action(), None).await.unwrap();
+        assert!(matches!(outcome, ActionOutcome::Executed(_)));
+        assert_eq!(captured.lock().unwrap().len(), 1, "provider invoked once");
+        let recs = records.lock().unwrap();
+        assert_eq!(recs.len(), 2, "one intent + one outcome record");
+        assert_eq!(recs[0].outcome, "pending", "first record is the intent");
+        assert_ne!(recs[1].outcome, "pending", "second record is the outcome");
+        // Both records share the action id; the intent id is derived from it.
+        assert_eq!(recs[0].action_id, recs[1].action_id);
+    }
+
+    #[tokio::test]
+    async fn non_compliance_audit_failure_does_not_fail_dispatch() {
+        // Without compliance there is no intent record and audit writes are
+        // fire-and-forget — a failing store must NOT fail the dispatch, and
+        // the provider still runs (unchanged behavior).
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let (gw, captured) = build_compliance_gateway(
+            Arc::new(TestAudit {
+                fail: true,
+                records,
+            }),
+            None,
+        );
+        let outcome = gw.dispatch(test_action(), None).await;
+        assert!(
+            outcome.is_ok(),
+            "fire-and-forget audit must not fail dispatch: {outcome:?}",
+        );
+        assert_eq!(
+            captured.lock().unwrap().len(),
+            1,
+            "provider runs normally without compliance",
         );
     }
 }

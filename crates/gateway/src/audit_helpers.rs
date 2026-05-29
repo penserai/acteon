@@ -393,3 +393,64 @@ pub(crate) fn build_audit_record(
         },
     }
 }
+
+/// Build a **pre-execution intent** audit record: a durable "about to handle
+/// this action with this verdict" marker written *before* the provider side
+/// effect. In compliance mode the gateway writes this synchronously and fails
+/// closed if it cannot be persisted — so an action that can't be recorded is
+/// never executed. Mirrors [`build_audit_record`] but carries a synthetic
+/// `pending` outcome (no result is known yet); the matching outcome record is
+/// appended after execution.
+#[allow(clippy::cast_possible_wrap)]
+pub(crate) fn build_intent_audit_record(
+    id: String,
+    action: &Action,
+    verdict: &RuleVerdict,
+    dispatched_at: chrono::DateTime<chrono::Utc>,
+    ttl_seconds: Option<u64>,
+    store_payload: bool,
+    caller: Option<&Caller>,
+) -> AuditRecord {
+    let expires_at = ttl_seconds.map(|secs| dispatched_at + chrono::Duration::seconds(secs as i64));
+    let action_payload = if store_payload {
+        Some(action.payload.clone())
+    } else {
+        None
+    };
+    AuditRecord {
+        id,
+        action_id: action.id.to_string(),
+        chain_id: None,
+        namespace: action.namespace.to_string(),
+        tenant: action.tenant.to_string(),
+        provider: action.provider.to_string(),
+        action_type: action.action_type.clone(),
+        verdict: verdict.as_tag().to_owned(),
+        matched_rule: matched_rule_name(verdict),
+        outcome: "pending".to_owned(),
+        action_payload,
+        verdict_details: serde_json::json!({ "verdict": verdict.as_tag() }),
+        outcome_details: serde_json::json!({ "phase": "intent" }),
+        metadata: enrich_audit_metadata(action),
+        dispatched_at,
+        completed_at: dispatched_at,
+        duration_ms: 0,
+        expires_at,
+        caller_id: caller.map_or_else(String::new, |c| c.id.clone()),
+        auth_method: caller.map_or_else(String::new, |c| c.auth_method.clone()),
+        record_hash: None,
+        previous_hash: None,
+        sequence_number: None,
+        attachment_metadata: Vec::new(),
+        signature: action.signature.clone(),
+        signer_id: action.signer_id.clone(),
+        kid: action.kid.clone(),
+        canonical_hash: if action.signature.is_some() {
+            use sha2::Digest;
+            let hash = sha2::Sha256::digest(action.canonical_bytes());
+            Some(hex::encode(hash))
+        } else {
+            None
+        },
+    }
+}

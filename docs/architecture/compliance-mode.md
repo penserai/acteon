@@ -250,22 +250,31 @@ pipeline:
 
 ```
 Normal mode (sync_audit_writes = false):
-  1. Build audit record
-  2. tokio::spawn(audit_store.record(record))    ← fire and forget
-  3. Return dispatch outcome immediately
+  1. Execute action
+  2. Build audit record
+  3. tokio::spawn(audit_store.record(record))    ← fire and forget
+  4. Return dispatch outcome immediately
 
-Compliance mode (sync_audit_writes = true):
-  1. Build audit record
-  2. audit_store.record(record).await             ← inline await
-  3. Return dispatch outcome after write confirmed
+Compliance mode (sync_audit_writes = true) — two-phase, fail-closed:
+  1. Build + write INTENT record (pending)        ← inline await, BEFORE execute
+       └─ on failure: release lock, return AuditWriteFailed, DO NOT execute
+  2. Execute action
+  3. Build + write OUTCOME record                 ← inline await; best-effort
+       └─ on failure: warn (intent record already durable ⇒ recoverable)
+  4. Return dispatch outcome
 ```
+
+The intent record is what makes the guarantee real: an action that cannot be
+durably recorded is **never executed**, so a degraded audit backend rejects
+new dispatches instead of producing unaudited (or, on caller retry,
+duplicated) side effects.
 
 ### Trade-offs
 
 | Aspect | Async (default) | Sync (compliance) |
 |--------|----------------|-------------------|
-| Dispatch latency | Lower (audit write off critical path) | Higher (audit write on critical path) |
-| Audit completeness | Best effort (crash before write = lost record) | Guaranteed (response implies persisted) |
+| Dispatch latency | Lower (audit write off critical path) | Higher (two writes on critical path) |
+| Audit completeness | Best effort (crash before write = lost record) | Guaranteed (intent persisted before execution) |
 | Throughput | Higher (write buffered) | Lower (serialized with dispatch) |
 | Regulatory compliance | Insufficient for SOC2/HIPAA | Meets audit trail requirements |
 
