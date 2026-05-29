@@ -50,6 +50,15 @@ pub enum GatewayError {
     /// An attachment could not be resolved.
     #[error("attachment error: {0}")]
     Attachment(String),
+
+    /// The pre-execution **intent** audit record could not be durably
+    /// persisted in compliance mode (`sync_audit_writes`). The gateway fails
+    /// **closed before executing the provider**, so the action did NOT run —
+    /// no side effect occurred and there is nothing unaudited to reconcile.
+    /// This is the genuine compliance guarantee: an action that cannot be
+    /// recorded is never executed.
+    #[error("intent audit write failed; action not executed (compliance fail-closed): {0}")]
+    AuditWriteFailed(String),
 }
 
 impl GatewayError {

@@ -16,20 +16,23 @@ When compliance mode is enabled, the gateway wraps the audit store with two deco
 
 2. **`ComplianceAuditStore`** -- enforces immutability by rejecting delete and update operations on audit records. Only active when `immutable_audit = true`.
 
-Additionally, when `sync_audit_writes = true`, the dispatch pipeline awaits the audit write inline rather than spawning it as a background task. This guarantees the audit record is persisted before the dispatch response is returned.
+Additionally, when `sync_audit_writes = true`, the dispatch pipeline writes audit records **synchronously** and uses a **two-phase, fail-closed** scheme so an action that cannot be durably recorded is never executed:
+
+1. **Intent record (before execution).** A `pending` audit record is written *before* the provider runs. If this write fails, the dispatch **fails closed** with `AuditWriteFailed` and the provider is never called — no side effect occurs, so there is nothing unaudited or duplicated to reconcile. (The lock is released first, so a retry isn't blocked.)
+2. **Outcome record (after execution).** Once the action runs, the outcome record is appended. This write is awaited but best-effort: if it fails, the `pending` intent record is already on the hash-chained trail, so the action is recoverable from the audit log rather than invisible. (A retry-storm fail-closed *here* is deliberately avoided — the side effect already happened, and failing the caller would invite duplicate, still-executed actions.)
+
+Outside compliance mode the audit write is a single fire-and-forget background task (no intent record), unchanged.
 
 ```
-Dispatch Pipeline with Compliance Mode:
+Dispatch Pipeline with Compliance Mode (sync_audit_writes = true):
 
   1. Acquire distributed lock
   2. Check quotas
   3. Evaluate rules
-  4. Execute action
-  5. Build audit record
-  6. Hash chain decorator:  compute hash, link to previous
-  7. Compliance decorator:  enforce immutability
-  8. Write audit record     (sync when sync_audit_writes = true)
-  9. Return outcome
+  4. Write INTENT record (pending)   ← fail here ⇒ FAIL CLOSED, do not execute
+  5. Execute action
+  6. Build + hash-chain + write OUTCOME record (best-effort; intent already durable)
+  7. Return outcome
 ```
 
 ## Configuration
@@ -205,11 +208,11 @@ This interacts with [data retention policies](data-retention.md): when both `imm
 
 When `sync_audit_writes = true`, the dispatch pipeline blocks until the audit record is confirmed written to the backend. This guarantees:
 
-- Every executed action has a corresponding audit record
-- No audit record is lost due to process crash between dispatch and async write
+- Every executed action has a corresponding audit record — guaranteed by the **pre-execution intent record**: if it can't be written, the action never runs (`AuditWriteFailed`)
+- No audit record is lost due to a process crash between dispatch and an async write — the intent record is durable before the provider is called
 - Regulatory requirements for complete audit trails are satisfied
 
-The trade-off is higher dispatch latency (the audit write is on the critical path).
+The trade-off is higher dispatch latency (two synchronous audit writes are on the critical path), and that a degraded audit backend will **reject** new dispatches in compliance mode rather than execute them unrecorded.
 
 ## API Reference
 
