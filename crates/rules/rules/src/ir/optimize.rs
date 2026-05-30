@@ -81,8 +81,15 @@ fn fold_binary(op: BinaryOp, lhs: Expr, rhs: Expr) -> Expr {
         (BinaryOp::Add, Expr::Int(a), Expr::Int(b)) => Expr::Int(a.wrapping_add(*b)),
         (BinaryOp::Sub, Expr::Int(a), Expr::Int(b)) => Expr::Int(a.wrapping_sub(*b)),
         (BinaryOp::Mul, Expr::Int(a), Expr::Int(b)) => Expr::Int(a.wrapping_mul(*b)),
-        (BinaryOp::Div, Expr::Int(a), Expr::Int(b)) if *b != 0 => Expr::Int(a / b),
-        (BinaryOp::Mod, Expr::Int(a), Expr::Int(b)) if *b != 0 => Expr::Int(a % b),
+        // Guard `i64::MIN / -1` (and `% -1`) as well as zero: both panic. When
+        // the guard fails the node is left un-folded and the evaluator's
+        // checked div/rem surfaces it as an error instead of crashing.
+        (BinaryOp::Div, Expr::Int(a), Expr::Int(b)) if *b != 0 && !(*a == i64::MIN && *b == -1) => {
+            Expr::Int(a / b)
+        }
+        (BinaryOp::Mod, Expr::Int(a), Expr::Int(b)) if *b != 0 && !(*a == i64::MIN && *b == -1) => {
+            Expr::Int(a % b)
+        }
 
         // Float arithmetic
         (BinaryOp::Add, Expr::Float(a), Expr::Float(b)) => Expr::Float(a + b),
@@ -303,6 +310,24 @@ mod tests {
             Box::new(Expr::Int(0)),
         );
         assert!(matches!(optimize(expr), Expr::Binary(BinaryOp::Div, _, _)));
+    }
+
+    #[test]
+    fn fold_no_div_or_mod_i64_min_by_neg_one() {
+        // `i64::MIN / -1` and `i64::MIN % -1` overflow and panic; the folder
+        // must leave them un-folded (the evaluator surfaces them as errors)
+        // rather than crashing the optimizer.
+        for op in [BinaryOp::Div, BinaryOp::Mod] {
+            let expr = Expr::Binary(
+                op.clone(),
+                Box::new(Expr::Int(i64::MIN)),
+                Box::new(Expr::Int(-1)),
+            );
+            assert!(
+                matches!(optimize(expr), Expr::Binary(_, _, _)),
+                "{op:?} of i64::MIN by -1 must not be folded",
+            );
+        }
     }
 
     #[test]

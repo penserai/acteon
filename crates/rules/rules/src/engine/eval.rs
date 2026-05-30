@@ -307,8 +307,14 @@ pub(crate) async fn eval_binary(
     match op {
         // Arithmetic
         BinaryOp::Add => eval_add(&left, &right),
-        BinaryOp::Sub => eval_arithmetic(&left, &right, |a, b| a - b, |a, b| a - b, "subtract"),
-        BinaryOp::Mul => eval_arithmetic(&left, &right, |a, b| a * b, |a, b| a * b, "multiply"),
+        // Use wrapping integer ops (matching `eval_add`) so an overflowing
+        // rule expression over a user payload can't panic the evaluator thread.
+        BinaryOp::Sub => {
+            eval_arithmetic(&left, &right, i64::wrapping_sub, |a, b| a - b, "subtract")
+        }
+        BinaryOp::Mul => {
+            eval_arithmetic(&left, &right, i64::wrapping_mul, |a, b| a * b, "multiply")
+        }
         BinaryOp::Div => eval_div(&left, &right),
         BinaryOp::Mod => eval_mod(&left, &right),
 
@@ -381,7 +387,11 @@ fn eval_div(left: &Value, right: &Value) -> Result<Value, RuleError> {
         (Value::Int(_) | Value::Float(_), Value::Float(f)) if *f == 0.0 => {
             Err(RuleError::Evaluation("division by zero".into()))
         }
-        (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a / b)),
+        // `b == 0` is handled above, so `checked_div` only returns `None` for
+        // `i64::MIN / -1`, which would otherwise panic the evaluator thread.
+        (Value::Int(a), Value::Int(b)) => a.checked_div(*b).map(Value::Int).ok_or_else(|| {
+            RuleError::Evaluation("integer division overflow (i64::MIN / -1)".into())
+        }),
         (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a / b)),
         (Value::Int(a), Value::Float(b)) => Ok(Value::Float(*a as f64 / b)),
         (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a / *b as f64)),
@@ -398,7 +408,11 @@ fn eval_div(left: &Value, right: &Value) -> Result<Value, RuleError> {
 fn eval_mod(left: &Value, right: &Value) -> Result<Value, RuleError> {
     match (left, right) {
         (Value::Int(_), Value::Int(0)) => Err(RuleError::Evaluation("modulo by zero".into())),
-        (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a % b)),
+        // As with division, guard `i64::MIN % -1`, which panics.
+        (Value::Int(a), Value::Int(b)) => a
+            .checked_rem(*b)
+            .map(Value::Int)
+            .ok_or_else(|| RuleError::Evaluation("integer modulo overflow (i64::MIN % -1)".into())),
         (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a % b)),
         (Value::Int(a), Value::Float(b)) => Ok(Value::Float(*a as f64 % b)),
         (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a % *b as f64)),
@@ -533,5 +547,56 @@ fn eval_in(left: &Value, right: &Value) -> Result<Value, RuleError> {
             "in: right-hand side must be list, map, or string, got {}",
             right.type_name()
         ))),
+    }
+}
+
+#[cfg(test)]
+mod arithmetic_safety_tests {
+    use super::*;
+
+    #[test]
+    fn division_of_i64_min_by_neg_one_errors_not_panics() {
+        // `i64::MIN / -1` overflows and panics with the raw `/` operator —
+        // reachable from a rule like `payload.a / payload.b` over user input.
+        let r = eval_div(&Value::Int(i64::MIN), &Value::Int(-1));
+        assert!(matches!(r, Err(RuleError::Evaluation(_))), "got {r:?}");
+    }
+
+    #[test]
+    fn modulo_of_i64_min_by_neg_one_errors_not_panics() {
+        let r = eval_mod(&Value::Int(i64::MIN), &Value::Int(-1));
+        assert!(matches!(r, Err(RuleError::Evaluation(_))), "got {r:?}");
+    }
+
+    #[test]
+    fn division_and_modulo_by_zero_still_error() {
+        assert!(matches!(
+            eval_div(&Value::Int(5), &Value::Int(0)),
+            Err(RuleError::Evaluation(_))
+        ));
+        assert!(matches!(
+            eval_mod(&Value::Int(5), &Value::Int(0)),
+            Err(RuleError::Evaluation(_))
+        ));
+    }
+
+    #[test]
+    fn normal_division_and_modulo_unaffected() {
+        assert!(matches!(
+            eval_div(&Value::Int(10), &Value::Int(3)),
+            Ok(Value::Int(3))
+        ));
+        assert!(matches!(
+            eval_mod(&Value::Int(10), &Value::Int(3)),
+            Ok(Value::Int(1))
+        ));
+    }
+
+    #[test]
+    fn subtract_and_multiply_int_ops_wrap_not_panic() {
+        // The Sub/Mul dispatch now uses wrapping ops (matching Add), so an
+        // overflowing constant can't panic the evaluator in a debug build.
+        assert_eq!((i64::MIN).wrapping_sub(1), i64::MAX);
+        assert_eq!((i64::MAX).wrapping_mul(2), -2);
     }
 }
