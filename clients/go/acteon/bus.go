@@ -167,8 +167,8 @@ func (c *Client) ListBusSubscriptions(ctx context.Context, filter *ListBusSubscr
 	return out.Subscriptions, nil
 }
 
-func (c *Client) GetBusSubscription(ctx context.Context, subID string) (*BusSubscription, error) {
-	path := fmt.Sprintf("/v1/bus/subscriptions/%s", busSeg(subID))
+func (c *Client) GetBusSubscription(ctx context.Context, namespace, tenant, subID string) (*BusSubscription, error) {
+	path := fmt.Sprintf("/v1/bus/subscriptions/%s/%s/%s", busSeg(namespace), busSeg(tenant), busSeg(subID))
 	var out BusSubscription
 	if _, err := c.busDoJSON(ctx, http.MethodGet, path, nil, &out); err != nil {
 		return nil, err
@@ -176,14 +176,14 @@ func (c *Client) GetBusSubscription(ctx context.Context, subID string) (*BusSubs
 	return &out, nil
 }
 
-func (c *Client) DeleteBusSubscription(ctx context.Context, subID string) error {
-	path := fmt.Sprintf("/v1/bus/subscriptions/%s", busSeg(subID))
+func (c *Client) DeleteBusSubscription(ctx context.Context, namespace, tenant, subID string) error {
+	path := fmt.Sprintf("/v1/bus/subscriptions/%s/%s/%s", busSeg(namespace), busSeg(tenant), busSeg(subID))
 	_, err := c.busDoJSON(ctx, http.MethodDelete, path, nil, nil)
 	return err
 }
 
-func (c *Client) GetBusSubscriptionLag(ctx context.Context, subID string) (*BusLag, error) {
-	path := fmt.Sprintf("/v1/bus/subscriptions/%s/lag", busSeg(subID))
+func (c *Client) GetBusSubscriptionLag(ctx context.Context, namespace, tenant, subID string) (*BusLag, error) {
+	path := fmt.Sprintf("/v1/bus/subscriptions/%s/%s/%s/lag", busSeg(namespace), busSeg(tenant), busSeg(subID))
 	var out BusLag
 	if _, err := c.busDoJSON(ctx, http.MethodGet, path, nil, &out); err != nil {
 		return nil, err

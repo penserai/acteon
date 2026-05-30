@@ -176,17 +176,30 @@ class _BusClientMixin:
         _raise_for_status(resp)
         return [BusSubscription.from_dict(s) for s in resp.json().get("subscriptions", [])]
 
-    def get_bus_subscription(self, sub_id: str) -> BusSubscription:
-        resp = self._request("GET", f"/v1/bus/subscriptions/{_seg(sub_id)}")
+    def get_bus_subscription(
+        self, namespace: str, tenant: str, sub_id: str
+    ) -> BusSubscription:
+        resp = self._request(
+            "GET",
+            f"/v1/bus/subscriptions/{_seg(namespace)}/{_seg(tenant)}/{_seg(sub_id)}",
+        )
         _raise_for_status(resp)
         return BusSubscription.from_dict(resp.json())
 
-    def delete_bus_subscription(self, sub_id: str) -> None:
-        resp = self._request("DELETE", f"/v1/bus/subscriptions/{_seg(sub_id)}")
+    def delete_bus_subscription(self, namespace: str, tenant: str, sub_id: str) -> None:
+        resp = self._request(
+            "DELETE",
+            f"/v1/bus/subscriptions/{_seg(namespace)}/{_seg(tenant)}/{_seg(sub_id)}",
+        )
         _raise_for_status(resp)
 
-    def get_bus_subscription_lag(self, sub_id: str) -> BusLag:
-        resp = self._request("GET", f"/v1/bus/subscriptions/{_seg(sub_id)}/lag")
+    def get_bus_subscription_lag(
+        self, namespace: str, tenant: str, sub_id: str
+    ) -> BusLag:
+        resp = self._request(
+            "GET",
+            f"/v1/bus/subscriptions/{_seg(namespace)}/{_seg(tenant)}/{_seg(sub_id)}/lag",
+        )
         _raise_for_status(resp)
         return BusLag.from_dict(resp.json())
 
@@ -779,17 +792,32 @@ class _AsyncBusClientMixin:
         _raise_for_status(resp)
         return [BusSubscription.from_dict(s) for s in resp.json().get("subscriptions", [])]
 
-    async def get_bus_subscription(self, sub_id: str) -> BusSubscription:
-        resp = await self._request("GET", f"/v1/bus/subscriptions/{_seg(sub_id)}")
+    async def get_bus_subscription(
+        self, namespace: str, tenant: str, sub_id: str
+    ) -> BusSubscription:
+        resp = await self._request(
+            "GET",
+            f"/v1/bus/subscriptions/{_seg(namespace)}/{_seg(tenant)}/{_seg(sub_id)}",
+        )
         _raise_for_status(resp)
         return BusSubscription.from_dict(resp.json())
 
-    async def delete_bus_subscription(self, sub_id: str) -> None:
-        resp = await self._request("DELETE", f"/v1/bus/subscriptions/{_seg(sub_id)}")
+    async def delete_bus_subscription(
+        self, namespace: str, tenant: str, sub_id: str
+    ) -> None:
+        resp = await self._request(
+            "DELETE",
+            f"/v1/bus/subscriptions/{_seg(namespace)}/{_seg(tenant)}/{_seg(sub_id)}",
+        )
         _raise_for_status(resp)
 
-    async def get_bus_subscription_lag(self, sub_id: str) -> BusLag:
-        resp = await self._request("GET", f"/v1/bus/subscriptions/{_seg(sub_id)}/lag")
+    async def get_bus_subscription_lag(
+        self, namespace: str, tenant: str, sub_id: str
+    ) -> BusLag:
+        resp = await self._request(
+            "GET",
+            f"/v1/bus/subscriptions/{_seg(namespace)}/{_seg(tenant)}/{_seg(sub_id)}/lag",
+        )
         _raise_for_status(resp)
         return BusLag.from_dict(resp.json())
 
