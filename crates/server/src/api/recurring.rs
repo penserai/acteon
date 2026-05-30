@@ -22,6 +22,15 @@ use acteon_state::{KeyKind, StateKey};
 
 use super::AppState;
 use super::schemas::ErrorResponse;
+use crate::auth::identity::CallerIdentity;
+
+/// `403 Forbidden` for a caller whose grants don't cover `(namespace, tenant)`.
+fn tenant_forbidden(namespace: &str, tenant: &str) -> axum::response::Response {
+    error_response(
+        StatusCode::FORBIDDEN,
+        &format!("forbidden: no grant covers tenant={tenant} namespace={namespace}"),
+    )
+}
 
 // ---------------------------------------------------------------------------
 // Request / response types
@@ -545,8 +554,12 @@ fn validate_cron_input(
 )]
 pub async fn create_recurring(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
     Json(req): Json<CreateRecurringRequest>,
 ) -> impl IntoResponse {
+    if !identity.can_manage_scope(&req.tenant, &req.namespace) {
+        return tenant_forbidden(&req.namespace, &req.tenant);
+    }
     let gw = state.gateway.read().await;
     let state_store = gw.state_store();
     let enc = gw.payload_encryptor();
@@ -642,8 +655,12 @@ pub async fn create_recurring(
 )]
 pub async fn list_recurring(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
     Query(params): Query<ListRecurringParams>,
 ) -> impl IntoResponse {
+    if !identity.can_manage_scope(&params.tenant, &params.namespace) {
+        return tenant_forbidden(&params.namespace, &params.tenant);
+    }
     let gw = state.gateway.read().await;
     let state_store = gw.state_store();
     let enc = gw.payload_encryptor();
@@ -738,9 +755,13 @@ pub async fn list_recurring(
 )]
 pub async fn get_recurring(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(id): Path<String>,
     Query(params): Query<RecurringNamespaceParams>,
 ) -> impl IntoResponse {
+    if !identity.can_manage_scope(&params.tenant, &params.namespace) {
+        return tenant_forbidden(&params.namespace, &params.tenant);
+    }
     let gw = state.gateway.read().await;
     let state_store = gw.state_store();
     let enc = gw.payload_encryptor();
@@ -794,9 +815,13 @@ pub async fn get_recurring(
 #[allow(clippy::similar_names)]
 pub async fn update_recurring(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(id): Path<String>,
     Json(req): Json<UpdateRecurringRequest>,
 ) -> impl IntoResponse {
+    if !identity.can_manage_scope(&req.tenant, &req.namespace) {
+        return tenant_forbidden(&req.namespace, &req.tenant);
+    }
     let gw = state.gateway.read().await;
     let state_store = gw.state_store();
     let enc = gw.payload_encryptor();
@@ -973,9 +998,13 @@ pub async fn update_recurring(
 )]
 pub async fn delete_recurring(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(id): Path<String>,
     Query(params): Query<RecurringNamespaceParams>,
 ) -> impl IntoResponse {
+    if !identity.can_manage_scope(&params.tenant, &params.namespace) {
+        return tenant_forbidden(&params.namespace, &params.tenant);
+    }
     let gw = state.gateway.read().await;
     let state_store = gw.state_store();
     let enc = gw.payload_encryptor();
@@ -1059,9 +1088,13 @@ pub async fn delete_recurring(
 #[allow(clippy::similar_names)]
 pub async fn pause_recurring(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(id): Path<String>,
     Json(req): Json<RecurringLifecycleRequest>,
 ) -> impl IntoResponse {
+    if !identity.can_manage_scope(&req.tenant, &req.namespace) {
+        return tenant_forbidden(&req.namespace, &req.tenant);
+    }
     let gw = state.gateway.read().await;
     let state_store = gw.state_store();
     let enc = gw.payload_encryptor();
@@ -1146,9 +1179,13 @@ pub async fn pause_recurring(
 #[allow(clippy::similar_names)]
 pub async fn resume_recurring(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(id): Path<String>,
     Json(req): Json<RecurringLifecycleRequest>,
 ) -> impl IntoResponse {
+    if !identity.can_manage_scope(&req.tenant, &req.namespace) {
+        return tenant_forbidden(&req.namespace, &req.tenant);
+    }
     let gw = state.gateway.read().await;
     let state_store = gw.state_store();
     let enc = gw.payload_encryptor();

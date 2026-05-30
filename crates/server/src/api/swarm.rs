@@ -14,6 +14,7 @@ use utoipa::{IntoParams, ToSchema};
 
 use super::AppState;
 use super::schemas::ErrorResponse;
+use crate::auth::identity::CallerIdentity;
 
 /// Query parameters for listing swarm runs.
 #[derive(Debug, Deserialize, IntoParams)]
@@ -114,6 +115,7 @@ const MAX_API_PAGE: usize = 500;
 )]
 pub async fn list_swarm_runs(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
     Query(params): Query<ListSwarmRunsParams>,
 ) -> impl IntoResponse {
     #[cfg(feature = "swarm")]
@@ -157,7 +159,14 @@ pub async fn list_swarm_runs(
             limit: effective_limit,
             offset: params.offset,
         };
-        let (runs, total) = registry.list(&filter);
+        let (runs, _total) = registry.list(&filter);
+        // Tenant authorization: drop runs outside the caller's grants so a
+        // `?tenant=victim` (or unscoped) query cannot read other tenants' runs.
+        let runs: Vec<_> = runs
+            .into_iter()
+            .filter(|r| identity.can_manage_scope(&r.tenant, &r.namespace))
+            .collect();
+        let total = runs.len();
         let body = SwarmRunList {
             runs: runs.into_iter().map(to_api_snapshot).collect(),
             total,
@@ -166,7 +175,7 @@ pub async fn list_swarm_runs(
     }
     #[cfg(not(feature = "swarm"))]
     {
-        let _ = (state, params);
+        let _ = (state, params, identity);
         (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(ErrorResponse {
@@ -189,6 +198,7 @@ pub async fn list_swarm_runs(
 )]
 pub async fn get_swarm_run(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(run_id): Path<String>,
 ) -> impl IntoResponse {
     #[cfg(feature = "swarm")]
@@ -203,7 +213,21 @@ pub async fn get_swarm_run(
                 .into_response();
         };
         match registry.get(&run_id) {
-            Some(snap) => (StatusCode::OK, Json(to_api_snapshot(snap))).into_response(),
+            Some(snap) => {
+                if !identity.can_manage_scope(&snap.tenant, &snap.namespace) {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(ErrorResponse {
+                            error: format!(
+                                "forbidden: no grant covers tenant={} namespace={}",
+                                snap.tenant, snap.namespace
+                            ),
+                        }),
+                    )
+                        .into_response();
+                }
+                (StatusCode::OK, Json(to_api_snapshot(snap))).into_response()
+            }
             None => (
                 StatusCode::NOT_FOUND,
                 Json(ErrorResponse {
@@ -215,7 +239,7 @@ pub async fn get_swarm_run(
     }
     #[cfg(not(feature = "swarm"))]
     {
-        let _ = (state, run_id);
+        let _ = (state, run_id, identity);
         (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(ErrorResponse {
@@ -238,6 +262,7 @@ pub async fn get_swarm_run(
 )]
 pub async fn cancel_swarm_run(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(run_id): Path<String>,
 ) -> impl IntoResponse {
     #[cfg(feature = "swarm")]
@@ -251,6 +276,29 @@ pub async fn cancel_swarm_run(
             )
                 .into_response();
         };
+        // Authorize against the run's own scope *before* mutating it.
+        let Some(snap) = registry.get(&run_id) else {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: format!("swarm run not found: {run_id}"),
+                }),
+            )
+                .into_response();
+        };
+        if !identity.can_manage_scope(&snap.tenant, &snap.namespace) {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: format!(
+                        "forbidden: no grant covers tenant={} namespace={}",
+                        snap.tenant, snap.namespace
+                    ),
+                }),
+            )
+                .into_response();
+        }
+        drop(snap);
         match registry.cancel(&run_id).await {
             Ok(snap) => (StatusCode::OK, Json(to_api_snapshot(snap))).into_response(),
             Err(acteon_swarm_provider::SwarmProviderError::NotFound(_)) => (
@@ -271,7 +319,7 @@ pub async fn cancel_swarm_run(
     }
     #[cfg(not(feature = "swarm"))]
     {
-        let _ = (state, run_id);
+        let _ = (state, run_id, identity);
         (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(ErrorResponse {

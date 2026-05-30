@@ -121,7 +121,21 @@ pub async fn list_groups(
     let group_manager = gw.group_manager();
 
     let pending = group_manager.list_pending_groups();
-    let total = group_manager.active_group_count();
+    let active_total = group_manager.active_group_count();
+
+    // Tenant authorization: only surface groups the caller's grants cover
+    // (hierarchical). Prevents cross-tenant enumeration of event groups.
+    let pending: Vec<_> = pending
+        .into_iter()
+        .filter(|g| identity.can_manage_scope(&g.tenant, &g.namespace))
+        .collect();
+    // Wildcard callers see the true global active count; scoped callers see
+    // only their visible groups, to avoid leaking cross-tenant volume.
+    let total = if identity.allowed_tenants().is_none() {
+        active_total
+    } else {
+        pending.len()
+    };
 
     let groups: Vec<GroupSummary> = pending.iter().map(GroupSummary::from).collect();
 
@@ -167,6 +181,17 @@ pub async fn get_group(
 
     match group_manager.get_group(&group_key) {
         Some(group) => {
+            if !identity.can_manage_scope(&group.tenant, &group.namespace) {
+                return Ok((
+                    StatusCode::FORBIDDEN,
+                    Json(serde_json::json!(ErrorResponse {
+                        error: format!(
+                            "forbidden: no grant covers tenant={} namespace={}",
+                            group.tenant, group.namespace
+                        ),
+                    })),
+                ));
+            }
             let event_fingerprints: Vec<String> = group
                 .events
                 .iter()
@@ -224,6 +249,23 @@ pub async fn flush_group(
 
     let gw = state.gateway.read().await;
     let group_manager = gw.group_manager();
+
+    // Authorize against the group's own scope *before* mutating it. A group
+    // that exists but is outside the caller's grants → 403; a non-existent
+    // group falls through to the flush below and returns 404.
+    if let Some(group) = group_manager.get_group(&group_key)
+        && !identity.can_manage_scope(&group.tenant, &group.namespace)
+    {
+        return Ok((
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!(ErrorResponse {
+                error: format!(
+                    "forbidden: no grant covers tenant={} namespace={}",
+                    group.tenant, group.namespace
+                ),
+            })),
+        ));
+    }
 
     // Try to flush the group
     match group_manager.flush_group(&group_key) {

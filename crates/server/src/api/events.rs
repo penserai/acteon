@@ -129,6 +129,17 @@ pub async fn list_events(
             })),
         ));
     }
+    if !identity.can_manage_scope(&params.tenant, &params.namespace) {
+        return Ok((
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!(ErrorResponse {
+                error: format!(
+                    "forbidden: no grant covers tenant={} namespace={}",
+                    params.tenant, params.namespace
+                ),
+            })),
+        ));
+    }
 
     let gw = state.gateway.read().await;
     let state_store = gw.state_store();
@@ -238,6 +249,17 @@ pub async fn get_event(
             })),
         ));
     }
+    if !identity.can_manage_scope(&params.tenant, &params.namespace) {
+        return Ok((
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!(ErrorResponse {
+                error: format!(
+                    "forbidden: no grant covers tenant={} namespace={}",
+                    params.tenant, params.namespace
+                ),
+            })),
+        ));
+    }
 
     let gw = state.gateway.read().await;
     let state_store = gw.state_store();
@@ -319,6 +341,17 @@ pub async fn transition_event(
             StatusCode::FORBIDDEN,
             Json(serde_json::json!(ErrorResponse {
                 error: "insufficient permissions".into(),
+            })),
+        ));
+    }
+    if !identity.can_manage_scope(&request.tenant, &request.namespace) {
+        return Ok((
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!(ErrorResponse {
+                error: format!(
+                    "forbidden: no grant covers tenant={} namespace={}",
+                    request.tenant, request.namespace
+                ),
             })),
         ));
     }

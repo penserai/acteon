@@ -11,6 +11,19 @@ use acteon_state::{KeyKind, StateKey};
 
 use super::AppState;
 use super::schemas::ErrorResponse;
+use crate::auth::identity::CallerIdentity;
+
+/// Build a `403 Forbidden` response for a caller whose grants don't cover
+/// the requested `(namespace, tenant)`.
+fn tenant_forbidden(namespace: &str, tenant: &str) -> axum::response::Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(ErrorResponse {
+            error: format!("forbidden: no grant covers tenant={tenant} namespace={namespace}"),
+        }),
+    )
+        .into_response()
+}
 
 /// Query parameters for listing chain executions.
 #[derive(Debug, Deserialize, IntoParams)]
@@ -188,8 +201,12 @@ fn status_to_string(s: &ChainStatus) -> String {
 )]
 pub async fn list_chains(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
     Query(params): Query<ChainQueryParams>,
 ) -> impl IntoResponse {
+    if !identity.can_manage_scope(&params.tenant, &params.namespace) {
+        return tenant_forbidden(&params.namespace, &params.tenant);
+    }
     let gw = state.gateway.read().await;
     let status_filter = params.status.as_deref().and_then(parse_status_filter);
 
@@ -245,9 +262,13 @@ pub async fn list_chains(
 )]
 pub async fn get_chain(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(chain_id): Path<String>,
     Query(params): Query<ChainNamespaceParams>,
 ) -> impl IntoResponse {
+    if !identity.can_manage_scope(&params.tenant, &params.namespace) {
+        return tenant_forbidden(&params.namespace, &params.tenant);
+    }
     let gw = state.gateway.read().await;
 
     match gw
@@ -352,9 +373,13 @@ pub async fn get_chain(
 )]
 pub async fn cancel_chain(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(chain_id): Path<String>,
     Json(params): Json<ChainCancelRequest>,
 ) -> impl IntoResponse {
+    if !identity.can_manage_scope(&params.tenant, &params.namespace) {
+        return tenant_forbidden(&params.namespace, &params.tenant);
+    }
     let gw = state.gateway.read().await;
 
     match gw
@@ -423,9 +448,13 @@ pub async fn cancel_chain(
 )]
 pub async fn get_chain_dag(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(chain_id): Path<String>,
     Query(params): Query<ChainNamespaceParams>,
 ) -> impl IntoResponse {
+    if !identity.can_manage_scope(&params.tenant, &params.namespace) {
+        return tenant_forbidden(&params.namespace, &params.tenant);
+    }
     let gw = state.gateway.read().await;
 
     // Load the chain state to find the chain name and build the DAG.
@@ -891,9 +920,13 @@ pub struct StepAttemptResponse {
 )]
 pub async fn get_chain_history(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(chain_id): Path<String>,
     Query(params): Query<ChainNamespaceParams>,
 ) -> impl IntoResponse {
+    if !identity.can_manage_scope(&params.tenant, &params.namespace) {
+        return tenant_forbidden(&params.namespace, &params.tenant);
+    }
     let gw = state.gateway.read().await;
 
     match gw

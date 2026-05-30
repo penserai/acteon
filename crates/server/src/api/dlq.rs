@@ -9,6 +9,35 @@ use utoipa::ToSchema;
 
 use super::AppState;
 use super::schemas::ErrorResponse;
+use crate::auth::identity::CallerIdentity;
+use crate::auth::role::Permission;
+
+/// `403` for a caller that is not fully unrestricted. The DLQ is a single
+/// global queue and the gateway offers no per-scope draining; each entry
+/// exposes its namespace, tenant, and provider. A caller may therefore only
+/// touch it if it holds a grant that is wildcard on EVERY one of those
+/// dimensions — a wildcard *tenant* grant that is still namespace- or
+/// provider-scoped must not pass, or it would read entries for namespaces /
+/// providers it holds no grant for.
+fn require_global_access(identity: &CallerIdentity) -> Option<axum::response::Response> {
+    let unrestricted = identity.allowed_tenants().is_none()
+        && identity.allowed_namespaces().is_none()
+        && identity.allowed_providers().is_none();
+    if !unrestricted {
+        return Some(
+            (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!(ErrorResponse {
+                    error: "the dead-letter queue spans all tenants, namespaces, and \
+                            providers; access requires fully unrestricted (wildcard) grants"
+                        .into(),
+                })),
+            )
+                .into_response(),
+        );
+    }
+    None
+}
 
 /// Response for DLQ stats endpoint.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -71,11 +100,17 @@ pub struct DlqDrainResponse {
         (status = 200, description = "DLQ statistics", body = DlqStatsResponse)
     )
 )]
-pub async fn dlq_stats(State(state): State<AppState>) -> impl IntoResponse {
+pub async fn dlq_stats(
+    State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
+) -> impl IntoResponse {
+    if let Some(resp) = require_global_access(&identity) {
+        return resp;
+    }
     let gw = state.gateway.read().await;
     let enabled = gw.dlq_enabled();
     let count = gw.dlq_len().await.unwrap_or(0);
-    (StatusCode::OK, Json(DlqStatsResponse { enabled, count }))
+    (StatusCode::OK, Json(DlqStatsResponse { enabled, count })).into_response()
 }
 
 /// `POST /v1/dlq/drain` -- drain all entries from the dead-letter queue.
@@ -90,7 +125,25 @@ pub async fn dlq_stats(State(state): State<AppState>) -> impl IntoResponse {
         (status = 404, description = "DLQ not enabled", body = ErrorResponse)
     )
 )]
-pub async fn dlq_drain(State(state): State<AppState>) -> impl IntoResponse {
+pub async fn dlq_drain(
+    State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
+) -> impl IntoResponse {
+    // Draining is a destructive, cross-tenant operation: require a write
+    // role and unrestricted tenant access.
+    if !identity.role.has_permission(Permission::Dispatch) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!(ErrorResponse {
+                error: "draining the dead-letter queue requires admin or operator role".into(),
+            })),
+        )
+            .into_response();
+    }
+    if let Some(resp) = require_global_access(&identity) {
+        return resp;
+    }
+
     let gw = state.gateway.read().await;
 
     if !gw.dlq_enabled() {
@@ -99,7 +152,8 @@ pub async fn dlq_drain(State(state): State<AppState>) -> impl IntoResponse {
             Json(serde_json::json!(ErrorResponse {
                 error: "dead-letter queue is not enabled".into(),
             })),
-        );
+        )
+            .into_response();
     }
 
     let entries: Vec<DlqEntry> = gw
@@ -126,4 +180,5 @@ pub async fn dlq_drain(State(state): State<AppState>) -> impl IntoResponse {
         StatusCode::OK,
         Json(serde_json::json!(DlqDrainResponse { entries, count })),
     )
+        .into_response()
 }

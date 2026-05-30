@@ -17,6 +17,7 @@ use acteon_state::{KeyKind, StateKey};
 
 use super::AppState;
 use super::schemas::ErrorResponse;
+use crate::auth::identity::CallerIdentity;
 
 // ---------------------------------------------------------------------------
 // Request / response types
@@ -218,6 +219,14 @@ fn error_response(status: StatusCode, message: &str) -> axum::response::Response
         .into_response()
 }
 
+/// `403 Forbidden` for a caller whose grants don't cover `(namespace, tenant)`.
+fn tenant_forbidden(namespace: &str, tenant: &str) -> axum::response::Response {
+    error_response(
+        StatusCode::FORBIDDEN,
+        &format!("forbidden: no grant covers tenant={tenant} namespace={namespace}"),
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -238,8 +247,12 @@ fn error_response(status: StatusCode, message: &str) -> axum::response::Response
 )]
 pub async fn create_retention(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
     Json(req): Json<CreateRetentionRequest>,
 ) -> impl IntoResponse {
+    if !identity.can_manage_scope(&req.tenant, &req.namespace) {
+        return tenant_forbidden(&req.namespace, &req.tenant);
+    }
     let gw = state.gateway.read().await;
     let state_store = gw.state_store();
 
@@ -323,6 +336,7 @@ pub async fn create_retention(
 )]
 pub async fn list_retention(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
     Query(params): Query<ListRetentionParams>,
 ) -> impl IntoResponse {
     let gw = state.gateway.read().await;
@@ -342,6 +356,12 @@ pub async fn list_retention(
         let Ok(policy) = serde_json::from_str::<RetentionPolicy>(&value) else {
             continue;
         };
+
+        // Tenant authorization: only surface policies the caller's grants
+        // cover (hierarchical). Prevents cross-tenant enumeration.
+        if !identity.can_manage_scope(&policy.tenant, &policy.namespace) {
+            continue;
+        }
 
         // Apply namespace filter.
         if let Some(ref ns) = params.namespace
@@ -394,17 +414,23 @@ pub async fn list_retention(
 )]
 pub async fn get_retention(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let gw = state.gateway.read().await;
     let state_store = gw.state_store();
 
     match load_retention(state_store.as_ref(), &id).await {
-        Ok(Some(policy)) => (
-            StatusCode::OK,
-            Json(serde_json::json!(policy_to_response(&policy))),
-        )
-            .into_response(),
+        Ok(Some(policy)) => {
+            if !identity.can_manage_scope(&policy.tenant, &policy.namespace) {
+                return tenant_forbidden(&policy.namespace, &policy.tenant);
+            }
+            (
+                StatusCode::OK,
+                Json(serde_json::json!(policy_to_response(&policy))),
+            )
+                .into_response()
+        }
         Ok(None) => error_response(
             StatusCode::NOT_FOUND,
             &format!("retention policy not found: {id}"),
@@ -430,6 +456,7 @@ pub async fn get_retention(
 )]
 pub async fn update_retention(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(id): Path<String>,
     Json(req): Json<UpdateRetentionRequest>,
 ) -> impl IntoResponse {
@@ -446,6 +473,10 @@ pub async fn update_retention(
         }
         Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
     };
+
+    if !identity.can_manage_scope(&policy.tenant, &policy.namespace) {
+        return tenant_forbidden(&policy.namespace, &policy.tenant);
+    }
 
     // Apply updates.
     if let Some(enabled) = req.enabled {
@@ -512,6 +543,7 @@ pub async fn update_retention(
 )]
 pub async fn delete_retention(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let gw = state.gateway.read().await;
@@ -527,6 +559,10 @@ pub async fn delete_retention(
         }
         Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
     };
+
+    if !identity.can_manage_scope(&policy.tenant, &policy.namespace) {
+        return tenant_forbidden(&policy.namespace, &policy.tenant);
+    }
 
     // Remove from state store.
     let key = retention_state_key(&id);
