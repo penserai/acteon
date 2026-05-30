@@ -3680,3 +3680,20 @@ async fn tenant_authz_dlq_stats_allows_wildcard() {
     let status = auth_get_status(app, "/v1/dlq/stats").await;
     assert_ne!(status, StatusCode::FORBIDDEN);
 }
+
+#[tokio::test]
+async fn tenant_authz_dlq_stats_denies_namespace_scoped_wildcard_tenant() {
+    // A grant that is wildcard on tenant but scoped on namespace must NOT
+    // pass the global-access gate: the DLQ spans every namespace and exposes
+    // each entry's namespace, so wildcard-tenant alone is insufficient.
+    let grant = Grant {
+        tenants: vec!["*".to_string()],
+        namespaces: vec!["notifications".to_string()],
+        providers: vec!["*".to_string()],
+        actions: vec!["*".to_string()],
+        agent_id: None,
+    };
+    let app = build_app(build_test_state_with_auth(vec![grant]));
+    let status = auth_get_status(app, "/v1/dlq/stats").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}

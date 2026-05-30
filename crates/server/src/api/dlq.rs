@@ -12,18 +12,24 @@ use super::schemas::ErrorResponse;
 use crate::auth::identity::CallerIdentity;
 use crate::auth::role::Permission;
 
-/// `403` for a caller without unrestricted (wildcard) tenant grants. The DLQ
-/// is a single global queue spanning every tenant; the gateway does not
-/// support draining a tenant-scoped slice, so cross-tenant callers must be
-/// fully unrestricted to read or drain it.
+/// `403` for a caller that is not fully unrestricted. The DLQ is a single
+/// global queue and the gateway offers no per-scope draining; each entry
+/// exposes its namespace, tenant, and provider. A caller may therefore only
+/// touch it if it holds a grant that is wildcard on EVERY one of those
+/// dimensions — a wildcard *tenant* grant that is still namespace- or
+/// provider-scoped must not pass, or it would read entries for namespaces /
+/// providers it holds no grant for.
 fn require_global_access(identity: &CallerIdentity) -> Option<axum::response::Response> {
-    if identity.allowed_tenants().is_some() {
+    let unrestricted = identity.allowed_tenants().is_none()
+        && identity.allowed_namespaces().is_none()
+        && identity.allowed_providers().is_none();
+    if !unrestricted {
         return Some(
             (
                 StatusCode::FORBIDDEN,
                 Json(serde_json::json!(ErrorResponse {
-                    error: "the dead-letter queue spans all tenants; access requires \
-                            unrestricted (wildcard) tenant grants"
+                    error: "the dead-letter queue spans all tenants, namespaces, and \
+                            providers; access requires fully unrestricted (wildcard) grants"
                         .into(),
                 })),
             )

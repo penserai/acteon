@@ -21,6 +21,7 @@ use acteon_state::{KeyKind, StateKey};
 use super::AppState;
 use super::schemas::ErrorResponse;
 use crate::auth::identity::CallerIdentity;
+use crate::auth::role::Permission;
 
 // ---------------------------------------------------------------------------
 // Request / response types
@@ -967,7 +968,20 @@ pub async fn get_quota_usage(
         (status = 500, description = "Reload failed", body = ErrorResponse),
     )
 )]
-pub async fn reload_static_quotas(State(state): State<AppState>) -> impl IntoResponse {
+pub async fn reload_static_quotas(
+    State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
+) -> impl IntoResponse {
+    // Reconciling the static-quotas file is a global, cross-tenant
+    // operation (it can upsert and delete TOML-sourced policies across every
+    // tenant), so require a write role rather than letting any authenticated
+    // caller trigger it.
+    if !identity.role.has_permission(Permission::Dispatch) {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "reloading static quotas requires admin or operator role",
+        );
+    }
     let Some(handle) = state.static_quotas.clone() else {
         return error_response(
             StatusCode::BAD_REQUEST,
