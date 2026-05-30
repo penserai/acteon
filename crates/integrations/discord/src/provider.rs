@@ -98,6 +98,20 @@ impl DiscordProvider {
             return Err(DiscordError::RateLimited.into());
         }
 
+        // 5xx (server error) and 408 (Request Timeout) are transient: the
+        // request body was fine, the server was temporarily unable to handle
+        // it. These must be retried rather than dropped, otherwise a brief
+        // Discord blip would permanently lose the notification.
+        if status.is_server_error() || status == reqwest::StatusCode::REQUEST_TIMEOUT {
+            let response_body = response.text().await.unwrap_or_default();
+            warn!(%status, "Discord transient error — will be retried by gateway");
+            return Err(DiscordError::Transient(format!(
+                "HTTP {status}: {}",
+                truncate_error_body(&response_body)
+            ))
+            .into());
+        }
+
         if !status.is_success() {
             let response_body = response.text().await.unwrap_or_default();
             return Err(DiscordError::Api(format!(

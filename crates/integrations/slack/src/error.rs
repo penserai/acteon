@@ -15,6 +15,16 @@ pub enum SlackError {
     #[error("Slack API error: {0}")]
     Api(String),
 
+    /// The Slack API returned a **transient** non-success response
+    /// (5xx server error or 408 Request Timeout). The request body was
+    /// fine; the server was temporarily unable to handle it.
+    ///
+    /// Surfaced as `ProviderError::Connection` so the gateway's retry
+    /// logic re-queues the dispatch instead of dropping the notification
+    /// on the floor during a brief Slack outage.
+    #[error("Slack transient error: {0}")]
+    Transient(String),
+
     /// The action payload is missing required fields or has invalid structure.
     #[error("invalid payload: {0}")]
     InvalidPayload(String),
@@ -29,6 +39,7 @@ impl From<SlackError> for ProviderError {
         match err {
             SlackError::Http(e) => ProviderError::Connection(e.to_string()),
             SlackError::Api(msg) => ProviderError::ExecutionFailed(msg),
+            SlackError::Transient(msg) => ProviderError::Connection(msg),
             SlackError::InvalidPayload(msg) => ProviderError::Serialization(msg),
             SlackError::RateLimited => ProviderError::RateLimited,
         }
@@ -51,6 +62,19 @@ mod tests {
         let provider_err: ProviderError = SlackError::Api("invalid_auth".into()).into();
         assert!(!provider_err.is_retryable());
         assert!(matches!(provider_err, ProviderError::ExecutionFailed(_)));
+    }
+
+    #[test]
+    fn transient_error_maps_to_retryable_connection() {
+        // 5xx / 408 live-blip errors must be retried instead of
+        // dropping the notification on the floor.
+        let provider_err: ProviderError =
+            SlackError::Transient("HTTP 503: service unavailable".into()).into();
+        assert!(
+            provider_err.is_retryable(),
+            "transient errors must be retryable"
+        );
+        assert!(matches!(provider_err, ProviderError::Connection(_)));
     }
 
     #[test]

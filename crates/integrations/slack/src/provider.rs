@@ -88,6 +88,19 @@ impl SlackProvider {
             return Err(SlackError::RateLimited);
         }
 
+        // 5xx (server error) and 408 (Request Timeout) are transient: the
+        // request body was fine, the server was temporarily unable to handle
+        // it. These must be retried rather than dropped, otherwise a brief
+        // Slack blip would permanently lose the notification.
+        if status.is_server_error() || status == reqwest::StatusCode::REQUEST_TIMEOUT {
+            let body = response.text().await.unwrap_or_default();
+            warn!(%status, "Slack transient error — will be retried by gateway");
+            return Err(SlackError::Transient(format!(
+                "HTTP {status}: {}",
+                truncate_error_body(&body)
+            )));
+        }
+
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             return Err(SlackError::Api(format!(

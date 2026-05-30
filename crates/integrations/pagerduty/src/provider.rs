@@ -80,6 +80,16 @@ impl PagerDutyProvider {
             return Err(PagerDutyError::RateLimited);
         }
 
+        // 5xx and 408 are transient: retry rather than drop the notification.
+        if status.is_server_error() || status == reqwest::StatusCode::REQUEST_TIMEOUT {
+            let body = response.text().await.unwrap_or_default();
+            warn!(%status, "PagerDuty transient error — will be retried by gateway");
+            return Err(PagerDutyError::Transient(format!(
+                "HTTP {status}: {}",
+                truncate_error_body(&body)
+            )));
+        }
+
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             return Err(PagerDutyError::Api(format!(

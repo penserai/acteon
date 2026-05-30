@@ -99,6 +99,19 @@ impl TwilioProvider {
             return Err(TwilioError::RateLimited);
         }
 
+        // 5xx (server error) and 408 (Request Timeout) are transient: the
+        // request body was fine, the server was temporarily unable to handle
+        // it. These must be retried rather than dropped, otherwise a brief
+        // Twilio blip would permanently lose the notification.
+        if status.is_server_error() || status == reqwest::StatusCode::REQUEST_TIMEOUT {
+            let body = response.text().await.unwrap_or_default();
+            warn!(%status, "Twilio transient error — will be retried by gateway");
+            return Err(TwilioError::Transient(format!(
+                "HTTP {status}: {}",
+                truncate_error_body(&body)
+            )));
+        }
+
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             return Err(TwilioError::Api(format!(
