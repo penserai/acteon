@@ -2596,7 +2596,14 @@ impl Gateway {
         // the freshly-loaded (shrunk) `chain_config.steps` out of bounds and
         // panic the background advancer. Fail the chain closed instead, in the
         // same shape as the timeout terminal path above.
-        if step_idx >= chain_config.steps.len() {
+        // A definition edited mid-flight can leave `step_idx` (the persisted
+        // `current_step`) inconsistent with the freshly-loaded config (shrunk →
+        // out of bounds on `chain_config.steps`) OR with the chain's own
+        // per-step vectors (grown → out of bounds on `step_results` /
+        // `step_attempts` / `step_history`, which are sized to the chain's
+        // ORIGINAL length). Either way, fail the chain closed instead of
+        // panicking the background advancer.
+        if step_idx >= chain_config.steps.len() || step_idx >= chain_state.step_results.len() {
             chain_state.status = ChainStatus::Failed;
             chain_state.updated_at = Utc::now();
             self.persist_chain_state(&chain_key, &chain_state, self.completed_chain_ttl)
@@ -2604,7 +2611,7 @@ impl Gateway {
             self.cleanup_pending_chain(namespace, tenant, chain_id)
                 .await?;
             self.metrics.increment_chains_failed();
-            self.emit_chain_terminal_audit(&chain_state, "chain_definition_shrunk");
+            self.emit_chain_terminal_audit(&chain_state, "chain_definition_changed");
             self.emit_stream_event(StreamEvent {
                 id: uuid::Uuid::now_v7().to_string(),
                 timestamp: Utc::now(),
@@ -2627,7 +2634,8 @@ impl Gateway {
                 chain_name = %chain_state.chain_name,
                 step_idx,
                 steps = chain_config.steps.len(),
-                "chain definition shrank below the in-flight step index; failing the chain"
+                step_results = chain_state.step_results.len(),
+                "chain definition changed incompatibly with the in-flight step index; failing the chain"
             );
             return Ok(());
         }
@@ -4727,7 +4735,11 @@ impl Gateway {
 
             for (i, step) in chain_config.steps.iter().enumerate() {
                 let step_status = chain_state.map(|s| {
-                    if let Some(ref result) = s.step_results[i] {
+                    // `step_results` is sized to the chain's ORIGINAL length; if
+                    // the definition has since grown, `i` can exceed it. Use
+                    // `.get` so a not-yet-recorded step reads as pending rather
+                    // than panicking (reachable via the public DAG endpoints).
+                    if let Some(result) = s.step_results.get(i).and_then(Option::as_ref) {
                         if result.success {
                             "completed".to_string()
                         } else {
@@ -10836,6 +10848,137 @@ mod tests {
             reloaded.status,
             ChainStatus::Failed,
             "chain must fail closed when its definition shrank below current_step",
+        );
+    }
+
+    #[tokio::test]
+    async fn advance_chain_fails_closed_when_definition_grows() {
+        use acteon_core::{ChainConfig, ChainState, ChainStatus, ChainStepConfig};
+        use acteon_state::{KeyKind, StateKey};
+        use chrono::Utc;
+
+        let gw = build_gateway(vec![]);
+        let step = |n: &str| ChainStepConfig::new(n, "email", "send_email", serde_json::json!({}));
+
+        // A 2-step chain that has run past its original last step: current_step
+        // is 2, and the per-step vectors are sized to the original 2.
+        gw.set_chain_config(
+            ChainConfig::new("grow-test")
+                .with_step(step("s0"))
+                .with_step(step("s1")),
+        )
+        .expect("2-step config is valid");
+
+        let now = Utc::now();
+        let chain_state = ChainState {
+            chain_id: "g1".into(),
+            chain_name: "grow-test".into(),
+            origin_action: test_action(),
+            current_step: 2,
+            total_steps: 2,
+            status: ChainStatus::Running,
+            step_results: vec![None, None],
+            started_at: now,
+            updated_at: now,
+            expires_at: None,
+            namespace: "notifications".into(),
+            tenant: "tenant-1".into(),
+            cancel_reason: None,
+            cancelled_by: None,
+            execution_path: Vec::new(),
+            parent_chain_id: None,
+            parent_step_index: None,
+            child_chain_ids: Vec::new(),
+            task_id: None,
+            parallel_state: None,
+            parallel_sub_results: HashMap::new(),
+            step_attempts: vec![0, 0],
+            step_history: vec![Vec::new(), Vec::new()],
+        };
+        let key = StateKey::new("notifications", "tenant-1", KeyKind::Chain, "g1");
+        gw.state_store()
+            .set(&key, &serde_json::to_string(&chain_state).unwrap(), None)
+            .await
+            .unwrap();
+
+        // GROW the definition to 4 steps. current_step (2) is now < config len
+        // (4) — so it passes the shrink guard — but >= step_results.len() (2):
+        // indexing step_results[2] would panic. It must fail closed instead.
+        gw.set_chain_config(
+            ChainConfig::new("grow-test")
+                .with_step(step("s0"))
+                .with_step(step("s1"))
+                .with_step(step("s2"))
+                .with_step(step("s3")),
+        )
+        .expect("4-step config is valid");
+
+        gw.advance_chain("notifications", "tenant-1", "g1")
+            .await
+            .expect("advance_chain handles the grown definition without panicking");
+
+        let raw = gw.state_store().get(&key).await.unwrap().unwrap();
+        let reloaded: ChainState = serde_json::from_str(&raw).unwrap();
+        assert_eq!(
+            reloaded.status,
+            ChainStatus::Failed,
+            "chain must fail closed when its definition grew beyond its per-step vectors",
+        );
+    }
+
+    #[tokio::test]
+    async fn build_chain_dag_tolerates_grown_definition() {
+        use acteon_core::{ChainConfig, ChainState, ChainStatus, ChainStepConfig};
+        use chrono::Utc;
+
+        // The public GET /v1/chains/{id}/dag endpoint reaches build_chain_dag,
+        // which iterates the (possibly grown) config while indexing the chain's
+        // original-sized step_results. A grown definition must not panic it.
+        let gw = build_gateway(vec![]);
+        let step = |n: &str| ChainStepConfig::new(n, "email", "send_email", serde_json::json!({}));
+        gw.set_chain_config(
+            ChainConfig::new("dag-grow")
+                .with_step(step("s0"))
+                .with_step(step("s1"))
+                .with_step(step("s2")),
+        )
+        .expect("3-step config is valid");
+
+        let now = Utc::now();
+        let chain_state = ChainState {
+            chain_id: "d1".into(),
+            chain_name: "dag-grow".into(),
+            origin_action: test_action(),
+            current_step: 0,
+            total_steps: 1,
+            status: ChainStatus::Running,
+            step_results: vec![None], // sized to 1, config now has 3 steps
+            started_at: now,
+            updated_at: now,
+            expires_at: None,
+            namespace: "notifications".into(),
+            tenant: "tenant-1".into(),
+            cancel_reason: None,
+            cancelled_by: None,
+            execution_path: Vec::new(),
+            parent_chain_id: None,
+            parent_step_index: None,
+            child_chain_ids: Vec::new(),
+            task_id: None,
+            parallel_state: None,
+            parallel_sub_results: HashMap::new(),
+            step_attempts: vec![0],
+            step_history: vec![Vec::new()],
+        };
+
+        let dag = gw
+            .build_chain_dag("dag-grow", Some(&chain_state), 0)
+            .await
+            .expect("DAG builds without panicking on a grown definition");
+        assert!(
+            dag.nodes.len() >= 3,
+            "all config steps should appear as DAG nodes, got {}",
+            dag.nodes.len(),
         );
     }
 
