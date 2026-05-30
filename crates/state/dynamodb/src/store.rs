@@ -62,6 +62,7 @@ impl DynamoStateStore {
         &self,
         partition_key: &str,
         canonical: &str,
+        keep_sort_key: Option<&str>,
     ) -> Result<(), StateError> {
         let mut exclusive_start_key = None;
         loop {
@@ -86,6 +87,11 @@ impl DynamoStateStore {
 
             for item in response.items() {
                 if let Some(AttributeValue::S(sk)) = item.get("sk") {
+                    // Never delete the entry the caller just wrote (the
+                    // put-before-delete ordering in `index_*` relies on this).
+                    if keep_sort_key == Some(sk.as_str()) {
+                        continue;
+                    }
                     self.client
                         .delete_item()
                         .table_name(&self.table_name)
@@ -614,18 +620,20 @@ impl StateStore for DynamoStateStore {
         let partition_key = format!("{}:timeout_index", self.prefix);
         let sort_key = format!("{expires_at_ms:020}#{canonical}");
 
-        // Replace-by-key: drop any prior entry (under a different timestamp
-        // sort key) so re-indexing updates the deadline rather than leaving a
-        // stale duplicate that re-fires.
-        self.delete_index_entries(&partition_key, &canonical)
-            .await?;
-
+        // Replace-by-key, written PUT-BEFORE-DELETE so a transient error or
+        // crash can never leave the key un-indexed (which would orphan a
+        // recurring action or in-flight chain). Write the new entry first,
+        // then drop any stale entries under OLDER timestamp sort keys (keeping
+        // the one we just wrote). If the cleanup delete fails, a transient
+        // duplicate lingers — self-healing on the next re-index/remove and
+        // guarded by the per-key CAS claim — which is strictly safer than
+        // losing the entry.
         self.client
             .put_item()
             .table_name(&self.table_name)
-            .item("pk", AttributeValue::S(partition_key))
-            .item("sk", AttributeValue::S(sort_key))
-            .item("key", AttributeValue::S(canonical))
+            .item("pk", AttributeValue::S(partition_key.clone()))
+            .item("sk", AttributeValue::S(sort_key.clone()))
+            .item("key", AttributeValue::S(canonical.clone()))
             .item(
                 "expires_at_ms",
                 AttributeValue::N(expires_at_ms.to_string()),
@@ -634,12 +642,24 @@ impl StateStore for DynamoStateStore {
             .await
             .map_err(|e| StateError::Backend(e.to_string()))?;
 
+        if let Err(e) = self
+            .delete_index_entries(&partition_key, &canonical, Some(&sort_key))
+            .await
+        {
+            tracing::warn!(
+                error = %e,
+                key = %canonical,
+                "failed to prune stale timeout-index entries after re-index; \
+                 a transient duplicate may linger until the next re-index"
+            );
+        }
+
         Ok(())
     }
 
     async fn remove_timeout_index(&self, key: &StateKey) -> Result<(), StateError> {
         let partition_key = format!("{}:timeout_index", self.prefix);
-        self.delete_index_entries(&partition_key, &key.canonical())
+        self.delete_index_entries(&partition_key, &key.canonical(), None)
             .await
     }
 
@@ -690,28 +710,39 @@ impl StateStore for DynamoStateStore {
         let partition_key = format!("{}:chain_ready_index", self.prefix);
         let sort_key = format!("{ready_at_ms:020}#{canonical}");
 
-        // Replace-by-key: drop any prior entry so re-indexing updates the
-        // ready time rather than leaving a stale duplicate that re-fires.
-        self.delete_index_entries(&partition_key, &canonical)
-            .await?;
-
+        // Replace-by-key, PUT-BEFORE-DELETE: write the new entry first so a
+        // transient error / crash can never orphan an in-flight chain, then
+        // prune stale entries under older sort keys (keeping the new one). A
+        // failed cleanup leaves a self-healing duplicate, never a lost entry.
         self.client
             .put_item()
             .table_name(&self.table_name)
-            .item("pk", AttributeValue::S(partition_key))
-            .item("sk", AttributeValue::S(sort_key))
-            .item("key", AttributeValue::S(canonical))
+            .item("pk", AttributeValue::S(partition_key.clone()))
+            .item("sk", AttributeValue::S(sort_key.clone()))
+            .item("key", AttributeValue::S(canonical.clone()))
             .item("ready_at_ms", AttributeValue::N(ready_at_ms.to_string()))
             .send()
             .await
             .map_err(|e| StateError::Backend(e.to_string()))?;
+
+        if let Err(e) = self
+            .delete_index_entries(&partition_key, &canonical, Some(&sort_key))
+            .await
+        {
+            tracing::warn!(
+                error = %e,
+                key = %canonical,
+                "failed to prune stale chain-ready-index entries after re-index; \
+                 a transient duplicate may linger until the next re-index"
+            );
+        }
 
         Ok(())
     }
 
     async fn remove_chain_ready_index(&self, key: &StateKey) -> Result<(), StateError> {
         let partition_key = format!("{}:chain_ready_index", self.prefix);
-        self.delete_index_entries(&partition_key, &key.canonical())
+        self.delete_index_entries(&partition_key, &key.canonical(), None)
             .await
     }
 
