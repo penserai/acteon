@@ -1,5 +1,8 @@
 use acteon_core::{Action, ProviderResponse};
-use acteon_provider::{Provider, ProviderError, truncate_error_body};
+use acteon_provider::{
+    MAX_ERROR_BODY_READ_BYTES, MAX_RESPONSE_BODY_READ_BYTES, Provider, ProviderError,
+    read_bounded_body, truncate_error_body,
+};
 use reqwest::Client;
 use serde::Deserialize;
 use tracing::{debug, instrument, warn};
@@ -107,7 +110,7 @@ impl Provider for TeamsProvider {
 
         // 5xx and 408 are transient: retry rather than drop the notification.
         if status.is_server_error() || status == reqwest::StatusCode::REQUEST_TIMEOUT {
-            let body = response.text().await.unwrap_or_default();
+            let body = read_bounded_body(response, MAX_ERROR_BODY_READ_BYTES).await;
             warn!(%status, "Teams transient error — will be retried by gateway");
             return Err(TeamsError::Transient(format!(
                 "HTTP {status}: {}",
@@ -117,7 +120,7 @@ impl Provider for TeamsProvider {
         }
 
         if !status.is_success() {
-            let response_body = response.text().await.unwrap_or_default();
+            let response_body = read_bounded_body(response, MAX_ERROR_BODY_READ_BYTES).await;
             return Err(TeamsError::Api(format!(
                 "HTTP {status}: {}",
                 truncate_error_body(&response_body)
@@ -126,7 +129,7 @@ impl Provider for TeamsProvider {
         }
 
         // Teams returns literal "1" with HTTP 200 on success (not JSON).
-        let response_text = response.text().await.unwrap_or_default();
+        let response_text = read_bounded_body(response, MAX_RESPONSE_BODY_READ_BYTES).await;
 
         let response_body = serde_json::json!({
             "ok": true,
@@ -158,7 +161,7 @@ impl Provider for TeamsProvider {
         }
 
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
+            let body = read_bounded_body(response, MAX_ERROR_BODY_READ_BYTES).await;
             return Err(ProviderError::Connection(format!(
                 "HTTP {status}: {}",
                 truncate_error_body(&body)

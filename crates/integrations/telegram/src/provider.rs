@@ -1,5 +1,7 @@
 use acteon_core::{Action, ProviderResponse};
-use acteon_provider::{Provider, ProviderError, truncate_error_body};
+use acteon_provider::{
+    MAX_ERROR_BODY_READ_BYTES, Provider, ProviderError, read_bounded_body, truncate_error_body,
+};
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use reqwest::Client;
 use serde::Deserialize;
@@ -201,7 +203,7 @@ impl TelegramProvider {
             // a duration, but surfacing the hint in the log lets
             // operators see how long Telegram wants the bot to
             // back off without digging into request traces.
-            let body = response.text().await.unwrap_or_default();
+            let body = read_bounded_body(response, MAX_ERROR_BODY_READ_BYTES).await;
             let retry_after = serde_json::from_str::<TelegramApiResponse>(&body)
                 .ok()
                 .and_then(|r| r.parameters)
@@ -223,14 +225,14 @@ impl TelegramProvider {
                 | reqwest::StatusCode::FORBIDDEN
                 | reqwest::StatusCode::NOT_FOUND
         ) {
-            let body = response.text().await.unwrap_or_default();
+            let body = read_bounded_body(response, MAX_ERROR_BODY_READ_BYTES).await;
             return Err(TelegramError::Unauthorized(format!(
                 "HTTP {status}: {}",
                 truncate_error_body(&body)
             )));
         }
         if status.is_server_error() || status == reqwest::StatusCode::REQUEST_TIMEOUT {
-            let body = response.text().await.unwrap_or_default();
+            let body = read_bounded_body(response, MAX_ERROR_BODY_READ_BYTES).await;
             warn!(%status, "Telegram transient error — will be retried by gateway");
             return Err(TelegramError::Transient(format!(
                 "HTTP {status}: {}",
@@ -238,7 +240,7 @@ impl TelegramProvider {
             )));
         }
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
+            let body = read_bounded_body(response, MAX_ERROR_BODY_READ_BYTES).await;
             return Err(TelegramError::Api(format!(
                 "HTTP {status}: {}",
                 truncate_error_body(&body)

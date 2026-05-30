@@ -1,5 +1,7 @@
 use acteon_core::{Action, ProviderResponse};
-use acteon_provider::{Provider, ProviderError, truncate_error_body};
+use acteon_provider::{
+    MAX_ERROR_BODY_READ_BYTES, Provider, ProviderError, read_bounded_body, truncate_error_body,
+};
 use reqwest::Client;
 use serde::Deserialize;
 use tracing::{debug, instrument, warn};
@@ -104,7 +106,7 @@ impl TwilioProvider {
         // it. These must be retried rather than dropped, otherwise a brief
         // Twilio blip would permanently lose the notification.
         if status.is_server_error() || status == reqwest::StatusCode::REQUEST_TIMEOUT {
-            let body = response.text().await.unwrap_or_default();
+            let body = read_bounded_body(response, MAX_ERROR_BODY_READ_BYTES).await;
             warn!(%status, "Twilio transient error — will be retried by gateway");
             return Err(TwilioError::Transient(format!(
                 "HTTP {status}: {}",
@@ -113,7 +115,7 @@ impl TwilioProvider {
         }
 
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
+            let body = read_bounded_body(response, MAX_ERROR_BODY_READ_BYTES).await;
             return Err(TwilioError::Api(format!(
                 "HTTP {status}: {}",
                 truncate_error_body(&body)
@@ -192,7 +194,7 @@ impl Provider for TwilioProvider {
         }
 
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
+            let body = read_bounded_body(response, MAX_ERROR_BODY_READ_BYTES).await;
             return Err(ProviderError::Connection(format!(
                 "HTTP {status}: {}",
                 truncate_error_body(&body)

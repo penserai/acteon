@@ -1,5 +1,8 @@
 use acteon_core::{Action, ProviderResponse};
-use acteon_provider::{DispatchContext, Provider, ProviderError, truncate_error_body};
+use acteon_provider::{
+    DispatchContext, MAX_ERROR_BODY_READ_BYTES, Provider, ProviderError, read_bounded_body,
+    truncate_error_body,
+};
 use reqwest::Client;
 use serde::Deserialize;
 use tracing::{debug, info, instrument, warn};
@@ -103,7 +106,7 @@ impl DiscordProvider {
         // it. These must be retried rather than dropped, otherwise a brief
         // Discord blip would permanently lose the notification.
         if status.is_server_error() || status == reqwest::StatusCode::REQUEST_TIMEOUT {
-            let response_body = response.text().await.unwrap_or_default();
+            let response_body = read_bounded_body(response, MAX_ERROR_BODY_READ_BYTES).await;
             warn!(%status, "Discord transient error — will be retried by gateway");
             return Err(DiscordError::Transient(format!(
                 "HTTP {status}: {}",
@@ -113,7 +116,7 @@ impl DiscordProvider {
         }
 
         if !status.is_success() {
-            let response_body = response.text().await.unwrap_or_default();
+            let response_body = read_bounded_body(response, MAX_ERROR_BODY_READ_BYTES).await;
             return Err(DiscordError::Api(format!(
                 "HTTP {status}: {}",
                 truncate_error_body(&response_body)
@@ -236,7 +239,7 @@ impl Provider for DiscordProvider {
         }
 
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
+            let body = read_bounded_body(response, MAX_ERROR_BODY_READ_BYTES).await;
             return Err(ProviderError::Connection(format!(
                 "HTTP {status}: {}",
                 truncate_error_body(&body)

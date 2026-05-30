@@ -1,5 +1,8 @@
 use acteon_core::{Action, ProviderResponse};
-use acteon_provider::{DispatchContext, Provider, ProviderError, truncate_error_body};
+use acteon_provider::{
+    DispatchContext, MAX_ERROR_BODY_READ_BYTES, Provider, ProviderError, read_bounded_body,
+    truncate_error_body,
+};
 use reqwest::Client;
 use serde::Deserialize;
 use tracing::{debug, info, instrument, warn};
@@ -93,7 +96,7 @@ impl SlackProvider {
         // it. These must be retried rather than dropped, otherwise a brief
         // Slack blip would permanently lose the notification.
         if status.is_server_error() || status == reqwest::StatusCode::REQUEST_TIMEOUT {
-            let body = response.text().await.unwrap_or_default();
+            let body = read_bounded_body(response, MAX_ERROR_BODY_READ_BYTES).await;
             warn!(%status, "Slack transient error — will be retried by gateway");
             return Err(SlackError::Transient(format!(
                 "HTTP {status}: {}",
@@ -102,7 +105,7 @@ impl SlackProvider {
         }
 
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
+            let body = read_bounded_body(response, MAX_ERROR_BODY_READ_BYTES).await;
             return Err(SlackError::Api(format!(
                 "HTTP {status}: {}",
                 truncate_error_body(&body)
@@ -212,7 +215,7 @@ impl Provider for SlackProvider {
                     })?;
 
                 if !upload_response.status().is_success() {
-                    let body = upload_response.text().await.unwrap_or_default();
+                    let body = read_bounded_body(upload_response, MAX_ERROR_BODY_READ_BYTES).await;
                     warn!(filename = %resolved.filename, "Slack file upload failed: {body}");
                 }
             }
@@ -247,7 +250,7 @@ impl Provider for SlackProvider {
         }
 
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
+            let body = read_bounded_body(response, MAX_ERROR_BODY_READ_BYTES).await;
             return Err(ProviderError::Connection(format!(
                 "HTTP {status}: {}",
                 truncate_error_body(&body)
