@@ -25,6 +25,8 @@ pub async fn run_store_conformance_tests(store: &dyn StateStore) -> Result<(), S
     test_increment(store).await?;
     test_compare_and_swap(store).await?;
     test_ttl_set(store).await?;
+    test_timeout_index_reindex_replaces(store).await?;
+    test_chain_ready_index_reindex_replaces(store).await?;
     Ok(())
 }
 
@@ -124,6 +126,64 @@ async fn test_ttl_set(store: &dyn StateStore) -> Result<(), StateError> {
         .await?;
     let val = store.get(&key).await?;
     assert_eq!(val.as_deref(), Some("ephemeral"));
+    Ok(())
+}
+
+/// Re-indexing a timeout for a key must REPLACE its deadline, not leave a
+/// stale duplicate in the old bucket. Redis (`ZADD`) and Postgres (`UPSERT`)
+/// do this natively; memory and `DynamoDB` must too, or a re-scheduled
+/// recurring/event-timeout fires off-schedule (and the stale entry never
+/// drains).
+async fn test_timeout_index_reindex_replaces(store: &dyn StateStore) -> Result<(), StateError> {
+    let key = test_key(KeyKind::EventTimeout, "reindex");
+    let canonical = key.canonical();
+
+    store.index_timeout(&key, 1_000).await?;
+    // Re-index forward WITHOUT removing first (the recurring/event re-arm path).
+    store.index_timeout(&key, 5_000).await?;
+
+    // The key moved forward: it must NOT still be due at the old time.
+    let due_early = store.get_expired_timeouts(2_000).await?;
+    assert!(
+        !due_early.contains(&canonical),
+        "re-indexed timeout key must not linger in its old, earlier bucket",
+    );
+
+    // At/after the new deadline it must appear EXACTLY ONCE.
+    let due_late = store.get_expired_timeouts(6_000).await?;
+    let count = due_late.iter().filter(|k| **k == canonical).count();
+    assert_eq!(
+        count, 1,
+        "re-indexed timeout key must appear exactly once, not duplicated",
+    );
+
+    store.remove_timeout_index(&key).await?;
+    Ok(())
+}
+
+/// Same contract as [`test_timeout_index_reindex_replaces`] for the
+/// chain-ready index.
+async fn test_chain_ready_index_reindex_replaces(store: &dyn StateStore) -> Result<(), StateError> {
+    let key = test_key(KeyKind::PendingChains, "reindex");
+    let canonical = key.canonical();
+
+    store.index_chain_ready(&key, 1_000).await?;
+    store.index_chain_ready(&key, 5_000).await?;
+
+    let ready_early = store.get_ready_chains(2_000).await?;
+    assert!(
+        !ready_early.contains(&canonical),
+        "re-indexed chain-ready key must not linger in its old, earlier bucket",
+    );
+
+    let ready_late = store.get_ready_chains(6_000).await?;
+    let count = ready_late.iter().filter(|k| **k == canonical).count();
+    assert_eq!(
+        count, 1,
+        "re-indexed chain-ready key must appear exactly once, not duplicated",
+    );
+
+    store.remove_chain_ready_index(&key).await?;
     Ok(())
 }
 

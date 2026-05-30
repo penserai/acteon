@@ -110,6 +110,27 @@ impl MemoryStateStore {
     fn render_key(key: &StateKey) -> String {
         key.canonical()
     }
+
+    /// Remove every occurrence of `canonical` from a sorted timeout/ready
+    /// index, dropping any bucket left empty.
+    ///
+    /// Shared by the `index_*` methods (so a re-index *replaces* the key's
+    /// deadline instead of leaving a stale duplicate in an older bucket —
+    /// matching Redis `ZADD` and Postgres `UPSERT`) and the `remove_*`
+    /// methods. `O(N)` over the buckets, but (re)indexing and removal are
+    /// infrequent relative to reads.
+    fn remove_key_from_index(index: &mut BTreeMap<i64, Vec<String>>, canonical: &str) {
+        let mut empty_buckets = Vec::new();
+        for (ts, keys) in index.iter_mut() {
+            keys.retain(|k| k != canonical);
+            if keys.is_empty() {
+                empty_buckets.push(*ts);
+            }
+        }
+        for bucket in empty_buckets {
+            index.remove(&bucket);
+        }
+    }
 }
 
 #[async_trait]
@@ -333,6 +354,9 @@ impl StateStore for MemoryStateStore {
             .timeout_index
             .write()
             .map_err(|_| StateError::Backend("timeout index lock poisoned".into()))?;
+        // Replace-by-key: drop any prior entry so re-indexing updates the
+        // deadline rather than leaving a stale duplicate that re-fires.
+        Self::remove_key_from_index(&mut index, &canonical);
         index.entry(expires_at_ms).or_default().push(canonical);
         Ok(())
     }
@@ -343,20 +367,7 @@ impl StateStore for MemoryStateStore {
             .timeout_index
             .write()
             .map_err(|_| StateError::Backend("timeout index lock poisoned".into()))?;
-
-        // We need to find and remove the key from the index.
-        // Since we don't know the expiration time, we iterate through all entries.
-        // This is O(N) in the worst case, but removal is infrequent.
-        let mut empty_buckets = Vec::new();
-        for (expires_at, keys) in index.iter_mut() {
-            keys.retain(|k| k != &canonical);
-            if keys.is_empty() {
-                empty_buckets.push(*expires_at);
-            }
-        }
-        for bucket in empty_buckets {
-            index.remove(&bucket);
-        }
+        Self::remove_key_from_index(&mut index, &canonical);
         Ok(())
     }
 
@@ -381,6 +392,9 @@ impl StateStore for MemoryStateStore {
             .chain_ready_index
             .write()
             .map_err(|_| StateError::Backend("chain ready index lock poisoned".into()))?;
+        // Replace-by-key: drop any prior entry so re-indexing updates the
+        // ready time rather than leaving a stale duplicate that re-fires.
+        Self::remove_key_from_index(&mut index, &canonical);
         index.entry(ready_at_ms).or_default().push(canonical);
         Ok(())
     }
@@ -391,17 +405,7 @@ impl StateStore for MemoryStateStore {
             .chain_ready_index
             .write()
             .map_err(|_| StateError::Backend("chain ready index lock poisoned".into()))?;
-
-        let mut empty_buckets = Vec::new();
-        for (ready_at, keys) in index.iter_mut() {
-            keys.retain(|k| k != &canonical);
-            if keys.is_empty() {
-                empty_buckets.push(*ready_at);
-            }
-        }
-        for bucket in empty_buckets {
-            index.remove(&bucket);
-        }
+        Self::remove_key_from_index(&mut index, &canonical);
         Ok(())
     }
 
