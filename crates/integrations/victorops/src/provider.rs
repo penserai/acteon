@@ -1,5 +1,7 @@
 use acteon_core::{Action, ProviderResponse};
-use acteon_provider::{Provider, ProviderError, truncate_error_body};
+use acteon_provider::{
+    MAX_ERROR_BODY_READ_BYTES, Provider, ProviderError, read_bounded_body, truncate_error_body,
+};
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use reqwest::Client;
 use serde::Deserialize;
@@ -149,14 +151,14 @@ impl VictorOpsProvider {
             return Err(VictorOpsError::RateLimited);
         }
         if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-            let body = response.text().await.unwrap_or_default();
+            let body = read_bounded_body(response, MAX_ERROR_BODY_READ_BYTES).await;
             return Err(VictorOpsError::Unauthorized(format!(
                 "HTTP {status}: {}",
                 truncate_error_body(&body)
             )));
         }
         if status.is_server_error() || status == reqwest::StatusCode::REQUEST_TIMEOUT {
-            let body = response.text().await.unwrap_or_default();
+            let body = read_bounded_body(response, MAX_ERROR_BODY_READ_BYTES).await;
             warn!(%status, "VictorOps transient error — will be retried by gateway");
             return Err(VictorOpsError::Transient(format!(
                 "HTTP {status}: {}",
@@ -164,7 +166,7 @@ impl VictorOpsProvider {
             )));
         }
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
+            let body = read_bounded_body(response, MAX_ERROR_BODY_READ_BYTES).await;
             return Err(VictorOpsError::Api(format!(
                 "HTTP {status}: {}",
                 truncate_error_body(&body)

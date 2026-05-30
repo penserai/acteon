@@ -1,5 +1,8 @@
 use acteon_core::{Action, ProviderResponse};
-use acteon_provider::{DispatchContext, Provider, ProviderError, truncate_error_body};
+use acteon_provider::{
+    DispatchContext, MAX_ERROR_BODY_READ_BYTES, MAX_RESPONSE_BODY_READ_BYTES, Provider,
+    ProviderError, read_bounded_body, truncate_error_body,
+};
 use hmac::{Hmac, Mac};
 use reqwest::Client;
 use sha2::Sha256;
@@ -9,6 +12,17 @@ use crate::config::{AuthMethod, HttpMethod, PayloadMode, WebhookConfig};
 use crate::error::WebhookError;
 
 type HmacSha256 = Hmac<Sha256>;
+
+/// Parse a response body string into a JSON value, falling back to a structured
+/// envelope (`status_code` + raw `body`) when the body is not valid JSON.
+fn parse_response_body(status_code: u16, response_text: &str) -> serde_json::Value {
+    serde_json::from_str(response_text).unwrap_or_else(|_| {
+        serde_json::json!({
+            "status_code": status_code,
+            "body": response_text,
+        })
+    })
+}
 
 /// Generic HTTP webhook provider that dispatches actions to any HTTP endpoint.
 ///
@@ -140,20 +154,22 @@ impl WebhookProvider {
             return Err(WebhookError::RateLimited.into());
         }
 
-        let response_text = response.text().await.unwrap_or_default();
-        let response_body: serde_json::Value =
-            serde_json::from_str(&response_text).unwrap_or_else(|_| {
-                serde_json::json!({
-                    "status_code": status_code,
-                    "body": response_text,
-                })
-            });
-
         if self.is_success_status(status_code) {
+            // Success path: the endpoint URL is caller-supplied, so bound the
+            // read — a hostile/compromised endpoint must not be able to OOM the
+            // gateway by replying 2xx with a giant body.
+            let response_text = read_bounded_body(response, MAX_RESPONSE_BODY_READ_BYTES).await;
+            let response_body = parse_response_body(status_code, &response_text);
             let mut provider_response = ProviderResponse::success(response_body);
             provider_response.headers = response_headers;
             Ok(provider_response)
         } else {
+            // Error path: bound the read so a hostile endpoint can't OOM the
+            // gateway with a giant error body. `truncate_error_body` still
+            // trims the stored message — the two are complementary.
+            let response_text =
+                truncate_error_body(&read_bounded_body(response, MAX_ERROR_BODY_READ_BYTES).await);
+            let response_body = parse_response_body(status_code, &response_text);
             let mut provider_response = ProviderResponse::failure(response_body);
             provider_response.headers = response_headers;
             Ok(provider_response)
@@ -284,7 +300,7 @@ impl Provider for WebhookProvider {
         }
 
         if status.is_server_error() {
-            let body = response.text().await.unwrap_or_default();
+            let body = read_bounded_body(response, MAX_ERROR_BODY_READ_BYTES).await;
             return Err(ProviderError::Connection(format!(
                 "health check failed: HTTP {status}: {}",
                 truncate_error_body(&body)

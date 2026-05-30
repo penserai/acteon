@@ -1,5 +1,7 @@
 use acteon_core::{Action, ProviderResponse};
-use acteon_provider::{Provider, ProviderError, truncate_error_body};
+use acteon_provider::{
+    MAX_ERROR_BODY_READ_BYTES, Provider, ProviderError, read_bounded_body, truncate_error_body,
+};
 use reqwest::Client;
 use serde::Deserialize;
 use tracing::{debug, instrument, warn};
@@ -82,7 +84,7 @@ impl PagerDutyProvider {
 
         // 5xx and 408 are transient: retry rather than drop the notification.
         if status.is_server_error() || status == reqwest::StatusCode::REQUEST_TIMEOUT {
-            let body = response.text().await.unwrap_or_default();
+            let body = read_bounded_body(response, MAX_ERROR_BODY_READ_BYTES).await;
             warn!(%status, "PagerDuty transient error — will be retried by gateway");
             return Err(PagerDutyError::Transient(format!(
                 "HTTP {status}: {}",
@@ -91,7 +93,7 @@ impl PagerDutyProvider {
         }
 
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
+            let body = read_bounded_body(response, MAX_ERROR_BODY_READ_BYTES).await;
             return Err(PagerDutyError::Api(format!(
                 "HTTP {status}: {}",
                 truncate_error_body(&body)

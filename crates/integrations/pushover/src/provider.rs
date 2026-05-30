@@ -1,5 +1,7 @@
 use acteon_core::{Action, ProviderResponse};
-use acteon_provider::{Provider, ProviderError, truncate_error_body};
+use acteon_provider::{
+    MAX_ERROR_BODY_READ_BYTES, Provider, ProviderError, read_bounded_body, truncate_error_body,
+};
 use reqwest::Client;
 use serde::Deserialize;
 use tracing::{debug, instrument, warn};
@@ -220,14 +222,14 @@ impl PushoverProvider {
             return Err(PushoverError::RateLimited);
         }
         if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-            let body = response.text().await.unwrap_or_default();
+            let body = read_bounded_body(response, MAX_ERROR_BODY_READ_BYTES).await;
             return Err(PushoverError::Unauthorized(format!(
                 "HTTP {status}: {}",
                 truncate_error_body(&body)
             )));
         }
         if status.is_server_error() || status == reqwest::StatusCode::REQUEST_TIMEOUT {
-            let body = response.text().await.unwrap_or_default();
+            let body = read_bounded_body(response, MAX_ERROR_BODY_READ_BYTES).await;
             warn!(%status, "Pushover transient error — will be retried by gateway");
             return Err(PushoverError::Transient(format!(
                 "HTTP {status}: {}",
@@ -235,7 +237,7 @@ impl PushoverProvider {
             )));
         }
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
+            let body = read_bounded_body(response, MAX_ERROR_BODY_READ_BYTES).await;
             return Err(PushoverError::Api(format!(
                 "HTTP {status}: {}",
                 truncate_error_body(&body)

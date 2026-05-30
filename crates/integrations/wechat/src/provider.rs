@@ -3,7 +3,9 @@ use std::time::{Duration, Instant};
 
 use acteon_core::{Action, ProviderResponse};
 use acteon_crypto::{ExposeSecret, SecretString};
-use acteon_provider::{Provider, ProviderError, truncate_error_body};
+use acteon_provider::{
+    MAX_ERROR_BODY_READ_BYTES, Provider, ProviderError, read_bounded_body, truncate_error_body,
+};
 use reqwest::Client;
 use serde::Deserialize;
 use tokio::sync::Mutex;
@@ -15,46 +17,6 @@ use crate::types::{
     WeChatApiResponse, WeChatMsgType, WeChatSendRequest, WeChatTextBody, WeChatTextCardBody,
     WeChatTokenResponse,
 };
-
-/// Maximum number of bytes to read from an error-response body
-/// before giving up. A misbehaving upstream (or malicious
-/// man-in-the-middle proxy) could otherwise stream an unbounded
-/// body and force Acteon to allocate gigabytes just to produce
-/// an error message. 2 KiB is plenty for the `errcode + errmsg`
-/// envelope that `WeChat` actually returns — the rest would be
-/// truncated by [`truncate_error_body`] anyway.
-const MAX_ERROR_BODY_READ_BYTES: usize = 2048;
-
-/// Read at most `max_bytes` bytes from a `reqwest::Response`
-/// body and return them as a lossy UTF-8 string.
-///
-/// Unlike [`reqwest::Response::text`], which reads the entire
-/// body into memory before returning, this helper pumps
-/// `Response::chunk()` in a loop and stops as soon as the
-/// configured byte limit is reached. A response whose
-/// `Content-Length` is huge (or unbounded) gets truncated at
-/// the caller's hard limit rather than `OOMing` the process.
-async fn read_bounded_body(mut response: reqwest::Response, max_bytes: usize) -> String {
-    let mut buf: Vec<u8> = Vec::with_capacity(max_bytes.min(1024));
-    while buf.len() < max_bytes {
-        match response.chunk().await {
-            Ok(Some(chunk)) => {
-                let remaining = max_bytes - buf.len();
-                let take = chunk.len().min(remaining);
-                buf.extend_from_slice(&chunk[..take]);
-                if chunk.len() > remaining {
-                    // Hit the cap mid-chunk — drop the rest of
-                    // this chunk and stop pulling.
-                    break;
-                }
-            }
-            // End of stream or transport error — either way,
-            // stop reading and return whatever we have so far.
-            Ok(None) | Err(_) => break,
-        }
-    }
-    String::from_utf8_lossy(&buf).to_string()
-}
 
 // -- WeChat errcode classification ---------------------------------------
 //

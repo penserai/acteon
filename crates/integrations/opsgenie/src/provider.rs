@@ -1,5 +1,7 @@
 use acteon_core::{Action, ProviderResponse};
-use acteon_provider::{Provider, ProviderError, truncate_error_body};
+use acteon_provider::{
+    MAX_ERROR_BODY_READ_BYTES, Provider, ProviderError, read_bounded_body, truncate_error_body,
+};
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use reqwest::Client;
 use serde::Deserialize;
@@ -160,7 +162,7 @@ impl OpsGenieProvider {
             return Err(OpsGenieError::RateLimited);
         }
         if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-            let body = response.text().await.unwrap_or_default();
+            let body = read_bounded_body(response, MAX_ERROR_BODY_READ_BYTES).await;
             return Err(OpsGenieError::Unauthorized(format!(
                 "HTTP {status}: {}",
                 truncate_error_body(&body)
@@ -172,7 +174,7 @@ impl OpsGenieProvider {
         // rather than dropped, otherwise a 10-second OpsGenie blip
         // would permanently lose alerts.
         if status.is_server_error() || status == reqwest::StatusCode::REQUEST_TIMEOUT {
-            let body = response.text().await.unwrap_or_default();
+            let body = read_bounded_body(response, MAX_ERROR_BODY_READ_BYTES).await;
             warn!(%status, "OpsGenie transient error — will be retried by gateway");
             return Err(OpsGenieError::Transient(format!(
                 "HTTP {status}: {}",
@@ -180,7 +182,7 @@ impl OpsGenieProvider {
             )));
         }
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
+            let body = read_bounded_body(response, MAX_ERROR_BODY_READ_BYTES).await;
             return Err(OpsGenieError::Api(format!(
                 "HTTP {status}: {}",
                 truncate_error_body(&body)
