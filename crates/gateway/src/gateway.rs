@@ -381,11 +381,11 @@ impl Gateway {
     /// cannot be recorded never runs, so there is no unaudited side effect.
     /// Intent records carry the `pending` outcome and are excluded from
     /// analytics, so duplicates across retries are harmless.
-    async fn write_step_intent(&self, action: &Action) -> Result<(), GatewayError> {
+    async fn write_step_intent(&self, action: &Action, chain_id: &str) -> Result<(), GatewayError> {
         if self.sync_audit_writes()
             && let Some(ref audit) = self.audit
         {
-            let intent = build_intent_audit_record(
+            let mut intent = build_intent_audit_record(
                 format!("{}-intent", uuid::Uuid::now_v7()),
                 action,
                 &RuleVerdict::Allow(None),
@@ -394,6 +394,9 @@ impl Gateway {
                 self.audit_store_payload,
                 None,
             );
+            // Correlate the intent back to its chain (the shared builder, used
+            // by single dispatch too, leaves `chain_id` unset).
+            intent.chain_id = Some(chain_id.to_owned());
             if let Err(e) = audit.record(intent).await {
                 return Err(GatewayError::AuditWriteFailed(e.to_string()));
             }
@@ -3097,9 +3100,13 @@ impl Gateway {
 
         // Compliance fail-closed (pre-execution intent record), mirroring the
         // single-dispatch step 3f. If the intent cannot be durably recorded we
-        // release the per-step dedup claim and the chain lock and abort —
-        // nothing has executed, so the chain simply retries on the next tick.
-        if let Err(e) = self.write_step_intent(&step_action).await {
+        // abort before any side effect: drop the per-step dedup claim so the
+        // retry re-claims, re-arm the chain in the ready index (it was removed
+        // at the top of advance_chain, and the worker only re-drives via that
+        // index — so without this the chain would be orphaned), release the
+        // lock, and return. Nothing has executed, so a transient audit outage
+        // is simply retried on a later tick.
+        if let Err(e) = self.write_step_intent(&step_action, chain_id).await {
             warn!(
                 error = %e,
                 chain_id = %chain_id,
@@ -3107,6 +3114,8 @@ impl Gateway {
                 "chain step intent audit write failed — failing closed before execution"
             );
             let _ = self.state.delete(&step_dedup_key).await;
+            let retry_at = (Utc::now() + chrono::Duration::seconds(5)).timestamp_millis();
+            let _ = self.state.index_chain_ready(&pending_key, retry_at).await;
             guard
                 .release()
                 .await
@@ -3860,28 +3869,50 @@ impl Gateway {
                 let sub_name = sub_step.name.clone();
                 async move {
                     let start = std::time::Instant::now();
-                    // Compliance fail-closed: record intent before any side
-                    // effect. On failure the sub-step is marked failed and the
-                    // provider is never called.
-                    if let Err(e) = self.write_step_intent(&sub_action).await {
-                        warn!(
-                            error = %e,
-                            sub_step = %sub_name,
-                            "parallel sub-step intent audit write failed — failing closed"
-                        );
-                        let outcome = ActionOutcome::Failed(acteon_core::ActionError {
-                            code: "intent_audit_failed".to_owned(),
-                            message: format!("compliance intent audit write failed: {e}"),
-                            retryable: true,
-                            attempts: 0,
-                        });
-                        return (sub_name, outcome, start.elapsed());
-                    }
                     let outcome = self.execute_action(&sub_action).await;
                     (sub_name, outcome, start.elapsed())
                 }
             })
             .collect();
+
+        // Compliance fail-closed (pre-pass): durably record intent for EVERY
+        // pending sub-step BEFORE any provider runs. The futures above are lazy
+        // (not yet awaited), so a single intent-write failure here aborts the
+        // whole group with nothing executed and nothing recorded into
+        // `parallel_sub_results`. We drop the per-sub-step dedup claims and
+        // re-arm the chain in the ready index so the entire group re-runs on a
+        // later tick — giving the parallel path the same all-or-nothing,
+        // transient-retry semantics as the sequential step path (rather than
+        // recording a sub-step as failed, which is permanent and asymmetric).
+        if self.sync_audit_writes() && self.audit.is_some() {
+            for (sub_step, sub_payload) in pending_sub_steps.iter().zip(sub_payloads.iter()) {
+                let sub_action = Action::new(
+                    namespace,
+                    tenant,
+                    sub_step.provider.as_str(),
+                    &sub_step.action_type,
+                    sub_payload.clone(),
+                );
+                if let Err(e) = self.write_step_intent(&sub_action, chain_id).await {
+                    warn!(
+                        error = %e,
+                        sub_step = %sub_step.name,
+                        chain_id = %chain_id,
+                        "parallel sub-step intent audit write failed — failing the group closed for retry"
+                    );
+                    for k in &sub_dedup_keys {
+                        let _ = self.state.delete(k).await;
+                    }
+                    let retry_at = (Utc::now() + chrono::Duration::seconds(5)).timestamp_millis();
+                    let _ = self.state.index_chain_ready(pending_key, retry_at).await;
+                    guard
+                        .release()
+                        .await
+                        .map_err(|le| GatewayError::LockFailed(le.to_string()))?;
+                    return Err(e);
+                }
+            }
+        }
 
         // On resumption, honour the original deadline rather than starting a
         // fresh full timeout. Falls back to the configured (or default) value
@@ -10924,6 +10955,107 @@ mod tests {
                 .iter()
                 .any(|r| r.outcome == "pending"),
             "a pending intent record must be written before the step executes",
+        );
+    }
+
+    #[tokio::test]
+    async fn compliance_parallel_substep_intent_failure_fails_group_closed_for_retry() {
+        use acteon_core::chain::{
+            ChainConfig, ChainState, ChainStatus, ChainStepConfig, ParallelFailurePolicy,
+            ParallelJoinPolicy, ParallelStepGroup,
+        };
+        use acteon_state::{KeyKind, StateKey};
+        use chrono::Utc;
+
+        // Compliance mode + a failing audit store on a PARALLEL step: the
+        // pre-pass aborts the whole group before ANY sub-step provider runs,
+        // and the chain is left re-armed (not terminally failed) for retry —
+        // symmetric with the sequential path, never a silently-dropped side
+        // effect.
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let (gw, captured) = build_compliance_gateway(
+            Arc::new(TestAudit {
+                fail: true,
+                records,
+            }),
+            Some(acteon_core::ComplianceConfig::new(
+                acteon_core::ComplianceMode::Soc2,
+            )),
+        );
+
+        let group = ParallelStepGroup {
+            steps: vec![
+                ChainStepConfig::new("sub-a", "email", "send_email", serde_json::json!({})),
+                ChainStepConfig::new("sub-b", "email", "send_email", serde_json::json!({})),
+            ],
+            join: ParallelJoinPolicy::All,
+            on_failure: ParallelFailurePolicy::FailFast,
+            timeout_seconds: None,
+            max_concurrency: None,
+        };
+        gw.set_chain_config(
+            ChainConfig::new("compliance-parallel")
+                .with_step(ChainStepConfig::new_parallel("p0", group)),
+        )
+        .expect("parallel config is valid");
+
+        let now = Utc::now();
+        let chain_state = ChainState {
+            chain_id: "cp1".into(),
+            chain_name: "compliance-parallel".into(),
+            origin_action: test_action(),
+            current_step: 0,
+            total_steps: 1,
+            status: ChainStatus::Running,
+            step_results: vec![None],
+            started_at: now,
+            updated_at: now,
+            expires_at: None,
+            namespace: "notifications".into(),
+            tenant: "tenant-1".into(),
+            cancel_reason: None,
+            cancelled_by: None,
+            execution_path: Vec::new(),
+            parent_chain_id: None,
+            parent_step_index: None,
+            child_chain_ids: Vec::new(),
+            task_id: None,
+            parallel_state: None,
+            parallel_sub_results: HashMap::new(),
+            step_attempts: vec![0],
+            step_history: Vec::new(),
+        };
+        let key = StateKey::new("notifications", "tenant-1", KeyKind::Chain, "cp1");
+        gw.state_store()
+            .set(&key, &serde_json::to_string(&chain_state).unwrap(), None)
+            .await
+            .unwrap();
+
+        let err = gw
+            .advance_chain("notifications", "tenant-1", "cp1")
+            .await
+            .expect_err("parallel intent failure must fail the group closed");
+        assert!(
+            matches!(err, crate::error::GatewayError::AuditWriteFailed(_)),
+            "expected AuditWriteFailed, got {err:?}",
+        );
+        assert!(
+            captured.lock().unwrap().is_empty(),
+            "no sub-step provider may run when the group's intent write fails",
+        );
+
+        // The chain must NOT be terminally failed — it stays waiting so the
+        // whole group is retried once the audit store recovers.
+        let raw = gw.state_store().get(&key).await.unwrap().unwrap();
+        let reloaded: ChainState = serde_json::from_str(&raw).unwrap();
+        assert_ne!(
+            reloaded.status,
+            ChainStatus::Failed,
+            "a transient audit outage must not terminally fail the chain",
+        );
+        assert!(
+            reloaded.parallel_sub_results.is_empty(),
+            "no sub-step may be recorded when the group failed closed",
         );
     }
 }
