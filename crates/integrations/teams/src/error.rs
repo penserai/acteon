@@ -22,6 +22,12 @@ pub enum TeamsError {
     /// The provider received an HTTP 429 (Too Many Requests) response.
     #[error("rate limited by Teams")]
     RateLimited,
+
+    /// 5xx server error or 408 Request Timeout — the request was fine, the
+    /// server was temporarily unable to handle it. Surfaced as
+    /// `ProviderError::Connection` so the gateway retries instead of dropping.
+    #[error("Teams transient error: {0}")]
+    Transient(String),
 }
 
 impl From<TeamsError> for ProviderError {
@@ -31,6 +37,7 @@ impl From<TeamsError> for ProviderError {
             TeamsError::Api(msg) => ProviderError::ExecutionFailed(msg),
             TeamsError::InvalidPayload(msg) => ProviderError::Serialization(msg),
             TeamsError::RateLimited => ProviderError::RateLimited,
+            TeamsError::Transient(msg) => ProviderError::Connection(msg),
         }
     }
 }
@@ -44,6 +51,14 @@ mod tests {
         let provider_err: ProviderError = TeamsError::RateLimited.into();
         assert!(provider_err.is_retryable());
         assert!(matches!(provider_err, ProviderError::RateLimited));
+    }
+
+    #[test]
+    fn transient_maps_to_retryable() {
+        let provider_err: ProviderError =
+            TeamsError::Transient("HTTP 503: service unavailable".into()).into();
+        assert!(provider_err.is_retryable());
+        assert!(matches!(provider_err, ProviderError::Connection(_)));
     }
 
     #[test]

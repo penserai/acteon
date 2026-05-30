@@ -23,6 +23,12 @@ pub enum PagerDutyError {
     #[error("rate limited by PagerDuty")]
     RateLimited,
 
+    /// 5xx server error or 408 Request Timeout — the request was fine, the
+    /// server was temporarily unable to handle it. Surfaced as
+    /// `ProviderError::Connection` so the gateway retries instead of dropping.
+    #[error("PagerDuty transient error: {0}")]
+    Transient(String),
+
     /// The requested `PagerDuty` service ID is not in the configured services map.
     #[error("unknown PagerDuty service: {0}")]
     UnknownService(String),
@@ -39,6 +45,7 @@ impl From<PagerDutyError> for ProviderError {
             PagerDutyError::Api(msg) => ProviderError::ExecutionFailed(msg),
             PagerDutyError::InvalidPayload(msg) => ProviderError::Serialization(msg),
             PagerDutyError::RateLimited => ProviderError::RateLimited,
+            PagerDutyError::Transient(msg) => ProviderError::Connection(msg),
             PagerDutyError::UnknownService(msg) => ProviderError::Configuration(msg),
             PagerDutyError::NoDefaultService => ProviderError::Configuration(
                 "no service_id in payload and no default service configured".into(),
@@ -63,6 +70,14 @@ mod tests {
         let provider_err: ProviderError = PagerDutyError::Api("bad request".into()).into();
         assert!(!provider_err.is_retryable());
         assert!(matches!(provider_err, ProviderError::ExecutionFailed(_)));
+    }
+
+    #[test]
+    fn transient_maps_to_retryable_connection() {
+        let provider_err: ProviderError =
+            PagerDutyError::Transient("HTTP 503: service unavailable".into()).into();
+        assert!(provider_err.is_retryable());
+        assert!(matches!(provider_err, ProviderError::Connection(_)));
     }
 
     #[test]

@@ -105,6 +105,17 @@ impl Provider for TeamsProvider {
             return Err(TeamsError::RateLimited.into());
         }
 
+        // 5xx and 408 are transient: retry rather than drop the notification.
+        if status.is_server_error() || status == reqwest::StatusCode::REQUEST_TIMEOUT {
+            let body = response.text().await.unwrap_or_default();
+            warn!(%status, "Teams transient error — will be retried by gateway");
+            return Err(TeamsError::Transient(format!(
+                "HTTP {status}: {}",
+                truncate_error_body(&body)
+            ))
+            .into());
+        }
+
         if !status.is_success() {
             let response_body = response.text().await.unwrap_or_default();
             return Err(TeamsError::Api(format!(
