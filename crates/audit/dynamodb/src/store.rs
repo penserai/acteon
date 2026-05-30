@@ -305,10 +305,13 @@ impl AuditStore for DynamoDbAuditStore {
     async fn query(&self, query: &AuditQuery) -> Result<AuditPage, AuditError> {
         // A `FilterExpression` is applied AFTER DynamoDB's `Limit`, so a
         // filtered page can return far fewer than `limit` matches even when
-        // more exist — we must follow `LastEvaluatedKey` across pages. This
-        // caps how many pages we'll chase for a single result page so a filter
-        // that matches almost nothing can't scan unbounded; hitting it logs a
-        // warning instead of silently returning a short page.
+        // more exist — we must follow `LastEvaluatedKey` across pages. This is
+        // a SOFT cap on how many pages we chase for one result page: it only
+        // takes effect once we have at least one matching record to anchor a
+        // continuation cursor on, so the page is always resumable. A query that
+        // has matched nothing keeps paging to true exhaustion (it can't return
+        // an empty, cursorless page that the caller would read as end-of-stream
+        // and silently undercount).
         const MAX_QUERY_PAGES: usize = 32;
 
         let limit = query.effective_limit();
@@ -522,12 +525,19 @@ impl AuditStore for DynamoDbAuditStore {
                     items.extend(resp.items().iter().cloned());
                     page_start = resp.last_evaluated_key().cloned();
 
-                    if items.len() >= target || page_start.is_none() || pages >= MAX_QUERY_PAGES {
-                        if pages >= MAX_QUERY_PAGES && page_start.is_some() {
-                            tracing::warn!(
+                    // Honor the page cap only once we have at least one
+                    // matching record to anchor the continuation cursor on. A
+                    // still-empty result keeps paging to true exhaustion, so a
+                    // very selective filter can never return an empty page with
+                    // no cursor — which the analytics loop would treat as
+                    // end-of-stream and silently undercount.
+                    let cap_reached = pages >= MAX_QUERY_PAGES && !items.is_empty();
+                    if items.len() >= target || page_start.is_none() || cap_reached {
+                        if cap_reached && page_start.is_some() {
+                            tracing::debug!(
                                 pages,
-                                "DynamoDB audit GSI query hit the page cap under a \
-                                 selective filter; this result page may be incomplete"
+                                "DynamoDB audit GSI query hit the page cap; returning a \
+                                 resumable partial page (caller continues via next_cursor)"
                             );
                         }
                         break;
@@ -620,12 +630,16 @@ impl AuditStore for DynamoDbAuditStore {
                     items.extend(resp.items().iter().cloned());
                     page_start = resp.last_evaluated_key().cloned();
 
-                    if items.len() >= target || page_start.is_none() || pages >= MAX_QUERY_PAGES {
-                        if pages >= MAX_QUERY_PAGES && page_start.is_some() {
-                            tracing::warn!(
+                    // See the GSI branch: cap only once we have an anchorable
+                    // record, so a selective filter never returns an empty,
+                    // cursorless (and thus non-resumable) page.
+                    let cap_reached = pages >= MAX_QUERY_PAGES && !items.is_empty();
+                    if items.len() >= target || page_start.is_none() || cap_reached {
+                        if cap_reached && page_start.is_some() {
+                            tracing::debug!(
                                 pages,
-                                "DynamoDB audit scan hit the page cap under a selective \
-                                 filter; this result page may be incomplete"
+                                "DynamoDB audit scan hit the page cap; returning a \
+                                 resumable partial page (caller continues via next_cursor)"
                             );
                         }
                         break;
