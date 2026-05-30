@@ -2536,27 +2536,39 @@ export class ActeonClient {
     return (body.subscriptions ?? []).map(parseBusSubscription);
   }
 
-  async getBusSubscription(subId: string): Promise<BusSubscription> {
+  async getBusSubscription(
+    namespace: string,
+    tenant: string,
+    subId: string,
+  ): Promise<BusSubscription> {
     const response = await this.request(
       "GET",
-      `/v1/bus/subscriptions/${this.busSeg(subId)}`,
+      `/v1/bus/subscriptions/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(subId)}`,
     );
     if (!response.ok) await this.busThrowFromResponse(response);
     return parseBusSubscription((await response.json()) as Record<string, unknown>);
   }
 
-  async deleteBusSubscription(subId: string): Promise<void> {
+  async deleteBusSubscription(
+    namespace: string,
+    tenant: string,
+    subId: string,
+  ): Promise<void> {
     const response = await this.request(
       "DELETE",
-      `/v1/bus/subscriptions/${this.busSeg(subId)}`,
+      `/v1/bus/subscriptions/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(subId)}`,
     );
     if (!response.ok) await this.busThrowFromResponse(response);
   }
 
-  async getBusSubscriptionLag(subId: string): Promise<BusLag> {
+  async getBusSubscriptionLag(
+    namespace: string,
+    tenant: string,
+    subId: string,
+  ): Promise<BusLag> {
     const response = await this.request(
       "GET",
-      `/v1/bus/subscriptions/${this.busSeg(subId)}/lag`,
+      `/v1/bus/subscriptions/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(subId)}/lag`,
     );
     if (!response.ok) await this.busThrowFromResponse(response);
     return parseBusLag((await response.json()) as Record<string, unknown>);

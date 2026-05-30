@@ -3314,16 +3314,21 @@ public class ActeonClient implements AutoCloseable {
         return resp.subscriptions() == null ? List.of() : resp.subscriptions();
     }
 
-    public Bus.BusSubscription getBusSubscription(String subId) throws ActeonException {
-        return busSend("GET", "/v1/bus/subscriptions/" + busSeg(subId), null, Bus.BusSubscription.class);
+    public Bus.BusSubscription getBusSubscription(String namespace, String tenant, String subId) throws ActeonException {
+        return busSend("GET",
+            "/v1/bus/subscriptions/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(subId),
+            null, Bus.BusSubscription.class);
     }
 
-    public void deleteBusSubscription(String subId) throws ActeonException {
-        busSendVoid("DELETE", "/v1/bus/subscriptions/" + busSeg(subId), null);
+    public void deleteBusSubscription(String namespace, String tenant, String subId) throws ActeonException {
+        busSendVoid("DELETE",
+            "/v1/bus/subscriptions/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(subId), null);
     }
 
-    public Bus.BusLag getBusSubscriptionLag(String subId) throws ActeonException {
-        return busSend("GET", "/v1/bus/subscriptions/" + busSeg(subId) + "/lag", null, Bus.BusLag.class);
+    public Bus.BusLag getBusSubscriptionLag(String namespace, String tenant, String subId) throws ActeonException {
+        return busSend("GET",
+            "/v1/bus/subscriptions/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(subId) + "/lag",
+            null, Bus.BusLag.class);
     }
 
     // --------------- Phase 3: Schemas ---------------
