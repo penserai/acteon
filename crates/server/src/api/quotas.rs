@@ -20,6 +20,7 @@ use acteon_state::{KeyKind, StateKey};
 
 use super::AppState;
 use super::schemas::ErrorResponse;
+use crate::auth::identity::CallerIdentity;
 
 // ---------------------------------------------------------------------------
 // Request / response types
@@ -375,6 +376,14 @@ fn error_response(status: StatusCode, message: &str) -> axum::response::Response
         .into_response()
 }
 
+/// `403 Forbidden` for a caller whose grants don't cover `(namespace, tenant)`.
+fn tenant_forbidden(namespace: &str, tenant: &str) -> axum::response::Response {
+    error_response(
+        StatusCode::FORBIDDEN,
+        &format!("forbidden: no grant covers tenant={tenant} namespace={namespace}"),
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -397,8 +406,12 @@ fn error_response(status: StatusCode, message: &str) -> axum::response::Response
 #[allow(clippy::too_many_lines)]
 pub async fn create_quota(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
     Json(req): Json<CreateQuotaRequest>,
 ) -> impl IntoResponse {
+    if !identity.can_manage_scope(&req.tenant, &req.namespace) {
+        return tenant_forbidden(&req.namespace, &req.tenant);
+    }
     // Validate identifiers first — reject colon injection and
     // oversized names before we touch the state store.
     if let Err(e) = validate_quota_scope_identifier(&req.namespace) {
@@ -563,6 +576,7 @@ pub async fn create_quota(
 )]
 pub async fn list_quotas(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
     Query(params): Query<ListQuotasParams>,
 ) -> impl IntoResponse {
     let gw = state.gateway.read().await;
@@ -582,6 +596,12 @@ pub async fn list_quotas(
         let Ok(policy) = serde_json::from_str::<QuotaPolicy>(&value) else {
             continue;
         };
+
+        // Tenant authorization: only surface policies the caller's grants
+        // cover (hierarchical). Prevents cross-tenant enumeration.
+        if !identity.can_manage_scope(&policy.tenant, &policy.namespace) {
+            continue;
+        }
 
         // Apply namespace filter.
         if let Some(ref ns) = params.namespace
@@ -660,12 +680,19 @@ pub async fn list_quotas(
         (status = 500, description = "Internal server error", body = ErrorResponse),
     )
 )]
-pub async fn get_quota(State(state): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+pub async fn get_quota(
+    State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
     let gw = state.gateway.read().await;
     let state_store = gw.state_store();
 
     match load_quota(state_store.as_ref(), &id).await {
         Ok(Some(policy)) => {
+            if !identity.can_manage_scope(&policy.tenant, &policy.namespace) {
+                return tenant_forbidden(&policy.namespace, &policy.tenant);
+            }
             let usage = read_usage(state_store.as_ref(), &policy).await.ok();
             (
                 StatusCode::OK,
@@ -699,6 +726,7 @@ pub async fn get_quota(State(state): State<AppState>, Path(id): Path<String>) ->
 )]
 pub async fn update_quota(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(id): Path<String>,
     Json(req): Json<UpdateQuotaRequest>,
 ) -> impl IntoResponse {
@@ -715,6 +743,10 @@ pub async fn update_quota(
         }
         Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
     };
+
+    if !identity.can_manage_scope(&policy.tenant, &policy.namespace) {
+        return tenant_forbidden(&policy.namespace, &policy.tenant);
+    }
 
     // Apply updates.
     if let Some(max) = req.max_actions {
@@ -784,6 +816,7 @@ pub async fn update_quota(
 )]
 pub async fn delete_quota(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let gw = state.gateway.read().await;
@@ -799,6 +832,10 @@ pub async fn delete_quota(
         }
         Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
     };
+
+    if !identity.can_manage_scope(&policy.tenant, &policy.namespace) {
+        return tenant_forbidden(&policy.namespace, &policy.tenant);
+    }
 
     // Remove from state store.
     let key = quota_state_key(&id);
@@ -839,6 +876,7 @@ pub async fn delete_quota(
 )]
 pub async fn get_quota_usage(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let gw = state.gateway.read().await;
@@ -854,6 +892,10 @@ pub async fn get_quota_usage(
         }
         Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
     };
+
+    if !identity.can_manage_scope(&policy.tenant, &policy.namespace) {
+        return tenant_forbidden(&policy.namespace, &policy.tenant);
+    }
 
     let now = Utc::now();
     let Some(counter_id) = quota_counter_key(

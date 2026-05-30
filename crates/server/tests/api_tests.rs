@@ -3541,3 +3541,142 @@ async fn a2a_message_send_allowed_for_unbound_caller() {
         "an unbound caller must pass the lifecycle gate: {body}"
     );
 }
+
+// -- Tenant-authorization sweep -------------------------------------------
+//
+// Cross-tenant isolation on the CRUD/query endpoint families that previously
+// trusted caller-supplied `namespace`/`tenant` with no grant check (chains,
+// recurring, quotas, retention, events, dlq, …). A caller scoped to
+// `tenant-1` must be refused (`403`) when it names another tenant, and a
+// wildcard caller must still be allowed. These run through the real auth
+// middleware, so they also prove the `Extension<CallerIdentity>` wiring.
+
+fn wildcard_admin_grant() -> Grant {
+    Grant {
+        tenants: vec!["*".to_string()],
+        namespaces: vec!["*".to_string()],
+        providers: vec!["*".to_string()],
+        actions: vec!["*".to_string()],
+        agent_id: None,
+    }
+}
+
+async fn auth_get_status(app: axum::Router, uri: &str) -> StatusCode {
+    app.oneshot(
+        Request::builder()
+            .method(http::Method::GET)
+            .uri(uri)
+            .header(http::header::AUTHORIZATION, "Bearer test-raw-key")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await
+    .unwrap()
+    .status()
+}
+
+async fn auth_post_status(app: axum::Router, uri: &str, body: serde_json::Value) -> StatusCode {
+    app.oneshot(
+        Request::builder()
+            .method(http::Method::POST)
+            .uri(uri)
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::AUTHORIZATION, "Bearer test-raw-key")
+            .body(Body::from(body.to_string()))
+            .unwrap(),
+    )
+    .await
+    .unwrap()
+    .status()
+}
+
+#[tokio::test]
+async fn tenant_authz_chains_list_denies_cross_tenant() {
+    let app = build_app(build_test_state_with_auth(vec![default_test_grant()]));
+    let status = auth_get_status(app, "/v1/chains?namespace=notifications&tenant=tenant-2").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn tenant_authz_chains_list_allows_in_scope() {
+    let app = build_app(build_test_state_with_auth(vec![default_test_grant()]));
+    let status = auth_get_status(app, "/v1/chains?namespace=notifications&tenant=tenant-1").await;
+    assert_ne!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn tenant_authz_chains_get_denies_cross_tenant() {
+    let app = build_app(build_test_state_with_auth(vec![default_test_grant()]));
+    let status = auth_get_status(
+        app,
+        "/v1/chains/some-id?namespace=notifications&tenant=tenant-2",
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn tenant_authz_recurring_list_denies_cross_tenant() {
+    let app = build_app(build_test_state_with_auth(vec![default_test_grant()]));
+    let status =
+        auth_get_status(app, "/v1/recurring?namespace=notifications&tenant=tenant-2").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn tenant_authz_events_list_denies_cross_tenant() {
+    let app = build_app(build_test_state_with_auth(vec![default_test_grant()]));
+    let status = auth_get_status(app, "/v1/events?namespace=notifications&tenant=tenant-2").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn tenant_authz_quota_create_denies_cross_tenant() {
+    let app = build_app(build_test_state_with_auth(vec![default_test_grant()]));
+    let body = serde_json::json!({
+        "namespace": "notifications",
+        "tenant": "tenant-2",
+        "max_actions": 1000,
+        "window": "daily",
+        "overage_behavior": "block",
+    });
+    let status = auth_post_status(app, "/v1/quotas", body).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn tenant_authz_quota_create_allows_wildcard() {
+    let app = build_app(build_test_state_with_auth(vec![wildcard_admin_grant()]));
+    let body = serde_json::json!({
+        "namespace": "notifications",
+        "tenant": "tenant-2",
+        "max_actions": 1000,
+        "window": "daily",
+        "overage_behavior": "block",
+    });
+    let status = auth_post_status(app, "/v1/quotas", body).await;
+    assert_ne!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn tenant_authz_retention_create_denies_cross_tenant() {
+    let app = build_app(build_test_state_with_auth(vec![default_test_grant()]));
+    let body = serde_json::json!({ "namespace": "notifications", "tenant": "tenant-2" });
+    let status = auth_post_status(app, "/v1/retention", body).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn tenant_authz_dlq_stats_denies_scoped_caller() {
+    // The DLQ is a single global queue; a tenant-scoped caller must be refused.
+    let app = build_app(build_test_state_with_auth(vec![default_test_grant()]));
+    let status = auth_get_status(app, "/v1/dlq/stats").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn tenant_authz_dlq_stats_allows_wildcard() {
+    let app = build_app(build_test_state_with_auth(vec![wildcard_admin_grant()]));
+    let status = auth_get_status(app, "/v1/dlq/stats").await;
+    assert_ne!(status, StatusCode::FORBIDDEN);
+}
