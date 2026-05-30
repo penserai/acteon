@@ -303,6 +303,14 @@ impl AuditStore for DynamoDbAuditStore {
     }
 
     async fn query(&self, query: &AuditQuery) -> Result<AuditPage, AuditError> {
+        // A `FilterExpression` is applied AFTER DynamoDB's `Limit`, so a
+        // filtered page can return far fewer than `limit` matches even when
+        // more exist — we must follow `LastEvaluatedKey` across pages. This
+        // caps how many pages we'll chase for a single result page so a filter
+        // that matches almost nothing can't scan unbounded; hitting it logs a
+        // warning instead of silently returning a short page.
+        const MAX_QUERY_PAGES: usize = 32;
+
         let limit = query.effective_limit();
 
         // Require at least namespace + tenant for GSI queries, UNLESS
@@ -345,7 +353,15 @@ impl AuditStore for DynamoDbAuditStore {
         // `(items, total)` shape so the downstream record-building code
         // stays untouched — `QueryOutput` and `ScanOutput` are distinct
         // SDK types and can't be merged at the if-expression level.
-        let (items, total): (Vec<HashMap<String, AttributeValue>>, Option<u64>) =
+        // Over-fetch one matching record so a non-final page is detectable.
+        let probe_limit = i32::try_from(limit).unwrap_or(50).saturating_add(1);
+
+        // `more_pages_exist` carries out of the branch whether the last page
+        // had a `LastEvaluatedKey` — i.e. more matching records may remain. It
+        // makes the result page advertise `has_more` (and a continuation
+        // cursor) even when this call stopped at the page cap, so a selective
+        // filter never silently drops the tail.
+        let (items, more_pages_exist): (Vec<HashMap<String, AttributeValue>>, bool) =
             if let (Some(ns), Some(t)) = (namespace, tenant) {
                 let ns_tenant = Self::ns_tenant(&ns, &t);
 
@@ -457,39 +473,68 @@ impl AuditStore for DynamoDbAuditStore {
                 // on large tenants, and offset paging on DynamoDB GSIs is a
                 // bad pattern anyway).
                 let scan_forward = query.sort_by_sequence_asc;
-                // Fetch limit + 1 so we can detect a definitive last page
-                // without returning an empty trailing cursor. DynamoDB also
-                // exposes LastEvaluatedKey, but it can lag behind filter
-                // expressions: relying on the over-fetch sidesteps those edge
-                // cases.
-                let probe_limit = i32::try_from(limit).unwrap_or(50).saturating_add(1);
-                let mut q = self
-                    .client
-                    .query()
-                    .table_name(&self.table_name)
-                    .index_name(index_name)
-                    .key_condition_expression(&key_condition)
-                    .scan_index_forward(scan_forward)
-                    .limit(probe_limit);
+                // Collect until we have `limit + 1` MATCHING records (the extra
+                // one lets the caller detect a non-final page) or the index is
+                // exhausted, following `LastEvaluatedKey` across pages. A single
+                // page can be short of matches under a filter even when more
+                // exist, so stopping at the first page would silently drop
+                // records (undercounting analytics).
+                let target = limit as usize + 1;
+                // No filter: returned == evaluated, so one exact page suffices.
+                // Filter present: evaluate a larger batch per page to find
+                // matches in fewer round-trips.
+                let page_limit = if filter_expression.is_some() {
+                    probe_limit.max(256)
+                } else {
+                    probe_limit
+                };
+                let mut items: Vec<HashMap<String, AttributeValue>> = Vec::new();
+                let mut page_start = exclusive_start_key;
+                let mut pages = 0usize;
+                loop {
+                    pages += 1;
+                    let mut q = self
+                        .client
+                        .query()
+                        .table_name(&self.table_name)
+                        .index_name(index_name)
+                        .key_condition_expression(&key_condition)
+                        .scan_index_forward(scan_forward)
+                        .limit(page_limit);
 
-                for (k, v) in &expr_values {
-                    q = q.expression_attribute_values(k, v.clone());
-                }
-                for (k, v) in &filter_names {
-                    q = q.expression_attribute_names(k, v);
-                }
-                if let Some(ref fe) = filter_expression {
-                    q = q.filter_expression(fe);
-                }
-                if let Some(key) = exclusive_start_key {
-                    q = q.set_exclusive_start_key(Some(key));
-                }
+                    for (k, v) in &expr_values {
+                        q = q.expression_attribute_values(k, v.clone());
+                    }
+                    for (k, v) in &filter_names {
+                        q = q.expression_attribute_names(k, v);
+                    }
+                    if let Some(ref fe) = filter_expression {
+                        q = q.filter_expression(fe);
+                    }
+                    if let Some(key) = page_start.take() {
+                        q = q.set_exclusive_start_key(Some(key));
+                    }
 
-                let resp = q
-                    .send()
-                    .await
-                    .map_err(|e| AuditError::Storage(e.to_string()))?;
-                (resp.items().to_vec(), None)
+                    let resp = q
+                        .send()
+                        .await
+                        .map_err(|e| AuditError::Storage(e.to_string()))?;
+                    items.extend(resp.items().iter().cloned());
+                    page_start = resp.last_evaluated_key().cloned();
+
+                    if items.len() >= target || page_start.is_none() || pages >= MAX_QUERY_PAGES {
+                        if pages >= MAX_QUERY_PAGES && page_start.is_some() {
+                            tracing::warn!(
+                                pages,
+                                "DynamoDB audit GSI query hit the page cap under a \
+                                 selective filter; this result page may be incomplete"
+                            );
+                        }
+                        break;
+                    }
+                }
+                let more = page_start.is_some();
+                (items, more)
             } else {
                 // IR / SCOPE MODE: Perform a full table scan. This is expensive
                 // and is used for cross-tenant investigations by signer_id or
@@ -531,37 +576,68 @@ impl AuditStore for DynamoDbAuditStore {
                     Some(scan_parts.join(" AND "))
                 };
 
-                let probe_limit = i32::try_from(limit).unwrap_or(50).saturating_add(1);
-                let mut s = self
-                    .client
-                    .scan()
-                    .table_name(&self.table_name)
-                    .limit(probe_limit);
+                let target = limit as usize + 1;
+                let initial_start: Option<HashMap<String, AttributeValue>> =
+                    cursor.as_ref().map(|c| {
+                        let mut start = HashMap::new();
+                        start.insert(
+                            "id".to_owned(),
+                            AttributeValue::S(c.id.clone().unwrap_or_default()),
+                        );
+                        start
+                    });
+                // A scan always filters client-side, so evaluate a larger batch
+                // per page to reach `target` matches in fewer round-trips.
+                let page_limit = probe_limit.max(256);
+                let mut items: Vec<HashMap<String, AttributeValue>> = Vec::new();
+                let mut page_start = initial_start;
+                let mut pages = 0usize;
+                loop {
+                    pages += 1;
+                    let mut s = self
+                        .client
+                        .scan()
+                        .table_name(&self.table_name)
+                        .limit(page_limit);
 
-                for (k, v) in &scan_values {
-                    s = s.expression_attribute_values(k, v.clone());
-                }
-                for (k, v) in &scan_names {
-                    s = s.expression_attribute_names(k, v);
-                }
-                if let Some(ref fe) = filter_expression {
-                    s = s.filter_expression(fe);
-                }
-                if let Some(ref cursor) = cursor {
-                    let mut start = HashMap::new();
-                    start.insert(
-                        "id".to_owned(),
-                        AttributeValue::S(cursor.id.clone().unwrap_or_default()),
-                    );
-                    s = s.set_exclusive_start_key(Some(start));
-                }
+                    for (k, v) in &scan_values {
+                        s = s.expression_attribute_values(k, v.clone());
+                    }
+                    for (k, v) in &scan_names {
+                        s = s.expression_attribute_names(k, v);
+                    }
+                    if let Some(ref fe) = filter_expression {
+                        s = s.filter_expression(fe);
+                    }
+                    if let Some(key) = page_start.take() {
+                        s = s.set_exclusive_start_key(Some(key));
+                    }
 
-                let resp = s
-                    .send()
-                    .await
-                    .map_err(|e| AuditError::Storage(e.to_string()))?;
-                (resp.items().to_vec(), None)
+                    let resp = s
+                        .send()
+                        .await
+                        .map_err(|e| AuditError::Storage(e.to_string()))?;
+                    items.extend(resp.items().iter().cloned());
+                    page_start = resp.last_evaluated_key().cloned();
+
+                    if items.len() >= target || page_start.is_none() || pages >= MAX_QUERY_PAGES {
+                        if pages >= MAX_QUERY_PAGES && page_start.is_some() {
+                            tracing::warn!(
+                                pages,
+                                "DynamoDB audit scan hit the page cap under a selective \
+                                 filter; this result page may be incomplete"
+                            );
+                        }
+                        break;
+                    }
+                }
+                let more = page_start.is_some();
+                (items, more)
             };
+
+        // `total` is intentionally best-effort/None (counting every match is
+        // O(matching items) and was a source of linear degradation).
+        let total: Option<u64> = None;
 
         let mut records: Vec<AuditRecord> = Vec::with_capacity(items.len());
         for item in &items {
@@ -573,15 +649,21 @@ impl AuditStore for DynamoDbAuditStore {
             }
         }
 
-        let has_more = records.len() > limit as usize;
-        if has_more {
+        // More records remain if we over-fetched past `limit`, OR the last
+        // page still had a `LastEvaluatedKey` (e.g. we stopped at the page cap
+        // under a selective filter). In the latter case we still hand back a
+        // continuation cursor so the caller resumes rather than treating a
+        // short page as the end.
+        let overflowed = records.len() > limit as usize;
+        if overflowed {
             records.truncate(limit as usize);
         }
+        let has_more = overflowed || more_pages_exist;
 
-        // Build next_cursor only if the over-fetch detected another
-        // record. We re-encode it as our opaque AuditCursor so the wire
-        // format stays consistent across backends.
-        let next_cursor = if has_more {
+        // Build next_cursor whenever more records remain (and we have a record
+        // to anchor it to). We re-encode it as our opaque AuditCursor so the
+        // wire format stays consistent across backends.
+        let next_cursor = if has_more && !records.is_empty() {
             records
                 .last()
                 .map(|rec| {
