@@ -52,6 +52,59 @@ impl DynamoStateStore {
         }
     }
 
+    /// Delete every index item in `partition_key` whose `key` attribute equals
+    /// `canonical`. The sort key embeds the timestamp, so a given key may have
+    /// items under several sort keys after re-indexing; this removes all of
+    /// them. Shared by the `index_*` methods (to make re-indexing replace the
+    /// key's deadline rather than leave a stale duplicate, matching Redis /
+    /// Postgres) and the `remove_*` methods.
+    async fn delete_index_entries(
+        &self,
+        partition_key: &str,
+        canonical: &str,
+    ) -> Result<(), StateError> {
+        let mut exclusive_start_key = None;
+        loop {
+            let mut query = self
+                .client
+                .query()
+                .table_name(&self.table_name)
+                .key_condition_expression("pk = :pk")
+                .filter_expression("#key_attr = :key_val")
+                .expression_attribute_names("#key_attr", "key")
+                .expression_attribute_values(":pk", AttributeValue::S(partition_key.to_owned()))
+                .expression_attribute_values(":key_val", AttributeValue::S(canonical.to_owned()));
+
+            if let Some(start_key) = exclusive_start_key {
+                query = query.set_exclusive_start_key(Some(start_key));
+            }
+
+            let response = query
+                .send()
+                .await
+                .map_err(|e| StateError::Backend(e.to_string()))?;
+
+            for item in response.items() {
+                if let Some(AttributeValue::S(sk)) = item.get("sk") {
+                    self.client
+                        .delete_item()
+                        .table_name(&self.table_name)
+                        .key("pk", AttributeValue::S(partition_key.to_owned()))
+                        .key("sk", AttributeValue::S(sk.clone()))
+                        .send()
+                        .await
+                        .map_err(|e| StateError::Backend(e.to_string()))?;
+                }
+            }
+
+            exclusive_start_key = response.last_evaluated_key().cloned();
+            if exclusive_start_key.is_none() {
+                break;
+            }
+        }
+        Ok(())
+    }
+
     /// Return the current epoch seconds.
     fn now_epoch() -> i64 {
         chrono::Utc::now().timestamp()
@@ -561,6 +614,12 @@ impl StateStore for DynamoStateStore {
         let partition_key = format!("{}:timeout_index", self.prefix);
         let sort_key = format!("{expires_at_ms:020}#{canonical}");
 
+        // Replace-by-key: drop any prior entry (under a different timestamp
+        // sort key) so re-indexing updates the deadline rather than leaving a
+        // stale duplicate that re-fires.
+        self.delete_index_entries(&partition_key, &canonical)
+            .await?;
+
         self.client
             .put_item()
             .table_name(&self.table_name)
@@ -579,53 +638,9 @@ impl StateStore for DynamoStateStore {
     }
 
     async fn remove_timeout_index(&self, key: &StateKey) -> Result<(), StateError> {
-        let canonical = key.canonical();
         let partition_key = format!("{}:timeout_index", self.prefix);
-
-        // We need to find and delete the item. Since we don't know the expires_at_ms,
-        // we query for items with this key and delete them.
-        let mut exclusive_start_key = None;
-
-        loop {
-            let mut query = self
-                .client
-                .query()
-                .table_name(&self.table_name)
-                .key_condition_expression("pk = :pk")
-                .filter_expression("#key_attr = :key_val")
-                .expression_attribute_names("#key_attr", "key")
-                .expression_attribute_values(":pk", AttributeValue::S(partition_key.clone()))
-                .expression_attribute_values(":key_val", AttributeValue::S(canonical.clone()));
-
-            if let Some(start_key) = exclusive_start_key {
-                query = query.set_exclusive_start_key(Some(start_key));
-            }
-
-            let response = query
-                .send()
-                .await
-                .map_err(|e| StateError::Backend(e.to_string()))?;
-
-            for item in response.items() {
-                if let Some(AttributeValue::S(sk)) = item.get("sk") {
-                    self.client
-                        .delete_item()
-                        .table_name(&self.table_name)
-                        .key("pk", AttributeValue::S(partition_key.clone()))
-                        .key("sk", AttributeValue::S(sk.clone()))
-                        .send()
-                        .await
-                        .map_err(|e| StateError::Backend(e.to_string()))?;
-                }
-            }
-
-            exclusive_start_key = response.last_evaluated_key().cloned();
-            if exclusive_start_key.is_none() {
-                break;
-            }
-        }
-
-        Ok(())
+        self.delete_index_entries(&partition_key, &key.canonical())
+            .await
     }
 
     async fn get_expired_timeouts(&self, now_ms: i64) -> Result<Vec<String>, StateError> {
@@ -675,6 +690,11 @@ impl StateStore for DynamoStateStore {
         let partition_key = format!("{}:chain_ready_index", self.prefix);
         let sort_key = format!("{ready_at_ms:020}#{canonical}");
 
+        // Replace-by-key: drop any prior entry so re-indexing updates the
+        // ready time rather than leaving a stale duplicate that re-fires.
+        self.delete_index_entries(&partition_key, &canonical)
+            .await?;
+
         self.client
             .put_item()
             .table_name(&self.table_name)
@@ -690,52 +710,9 @@ impl StateStore for DynamoStateStore {
     }
 
     async fn remove_chain_ready_index(&self, key: &StateKey) -> Result<(), StateError> {
-        let canonical = key.canonical();
         let partition_key = format!("{}:chain_ready_index", self.prefix);
-
-        // We don't know the ready_at_ms, so query for items with this key and delete them.
-        let mut exclusive_start_key = None;
-
-        loop {
-            let mut query = self
-                .client
-                .query()
-                .table_name(&self.table_name)
-                .key_condition_expression("pk = :pk")
-                .filter_expression("#key_attr = :key_val")
-                .expression_attribute_names("#key_attr", "key")
-                .expression_attribute_values(":pk", AttributeValue::S(partition_key.clone()))
-                .expression_attribute_values(":key_val", AttributeValue::S(canonical.clone()));
-
-            if let Some(start_key) = exclusive_start_key {
-                query = query.set_exclusive_start_key(Some(start_key));
-            }
-
-            let response = query
-                .send()
-                .await
-                .map_err(|e| StateError::Backend(e.to_string()))?;
-
-            for item in response.items() {
-                if let Some(AttributeValue::S(sk)) = item.get("sk") {
-                    self.client
-                        .delete_item()
-                        .table_name(&self.table_name)
-                        .key("pk", AttributeValue::S(partition_key.clone()))
-                        .key("sk", AttributeValue::S(sk.clone()))
-                        .send()
-                        .await
-                        .map_err(|e| StateError::Backend(e.to_string()))?;
-                }
-            }
-
-            exclusive_start_key = response.last_evaluated_key().cloned();
-            if exclusive_start_key.is_none() {
-                break;
-            }
-        }
-
-        Ok(())
+        self.delete_index_entries(&partition_key, &key.canonical())
+            .await
     }
 
     async fn get_ready_chains(&self, now_ms: i64) -> Result<Vec<String>, StateError> {
