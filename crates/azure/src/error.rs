@@ -4,9 +4,17 @@ use thiserror::Error;
 /// Errors specific to Azure provider operations.
 #[derive(Debug, Error)]
 pub enum AzureProviderError {
-    /// The Azure service returned an error.
+    /// The Azure service returned a **permanent** error (malformed or
+    /// unauthorized request). Surfaced as `ExecutionFailed` and not retried.
     #[error("Azure service error: {0}")]
     ServiceError(String),
+
+    /// A **transient** Azure service error (5xx / `ServiceUnavailable` /
+    /// `InternalServerError` / `ServerBusy`). The request was fine; the
+    /// service was briefly unavailable. Surfaced as `ProviderError::Connection`
+    /// so the gateway retries instead of dropping the action.
+    #[error("Azure transient service error: {0}")]
+    Transient(String),
 
     /// The request was throttled by the Azure service.
     #[error("Azure request throttled")]
@@ -38,7 +46,10 @@ impl From<AzureProviderError> for ProviderError {
         match err {
             AzureProviderError::ServiceError(msg) => ProviderError::ExecutionFailed(msg),
             AzureProviderError::Throttled => ProviderError::RateLimited,
-            AzureProviderError::Connection(msg) => ProviderError::Connection(msg),
+            // Transient 5xx and genuine connection errors are both retryable.
+            AzureProviderError::Transient(msg) | AzureProviderError::Connection(msg) => {
+                ProviderError::Connection(msg)
+            }
             AzureProviderError::Timeout => {
                 ProviderError::Timeout(std::time::Duration::from_secs(30))
             }
@@ -70,6 +81,18 @@ pub fn classify_azure_error(error_str: &str) -> AzureProviderError {
         || lower.contains("network")
     {
         AzureProviderError::Connection(error_str.to_owned())
+    } else if lower.contains("serviceunavailable")
+        || lower.contains("service unavailable")
+        || lower.contains("internalservererror")
+        || lower.contains("internal server error")
+        || lower.contains("internalerror")
+        || lower.contains("internal error")
+        || lower.contains("serverbusy")
+        || lower.contains("server busy")
+    {
+        // 5xx-class service errors are transient: the request was valid, the
+        // service was briefly unavailable. Retry rather than drop.
+        AzureProviderError::Transient(error_str.to_owned())
     } else {
         AzureProviderError::ServiceError(error_str.to_owned())
     }
@@ -144,6 +167,31 @@ mod tests {
     fn classify_connection() {
         let err = classify_azure_error("Connection refused: 10.0.0.1:443");
         assert!(matches!(err, AzureProviderError::Connection(_)));
+    }
+
+    #[test]
+    fn service_unavailable_is_transient_and_retryable() {
+        let err = classify_azure_error("ServiceUnavailable (status: 503)");
+        assert!(matches!(err, AzureProviderError::Transient(_)));
+        let perr: ProviderError = err.into();
+        assert!(perr.is_retryable());
+        assert!(matches!(perr, ProviderError::Connection(_)));
+    }
+
+    #[test]
+    fn server_busy_is_transient() {
+        assert!(matches!(
+            classify_azure_error("ServerBusy: the service bus is currently busy"),
+            AzureProviderError::Transient(_)
+        ));
+    }
+
+    #[test]
+    fn permanent_service_error_stays_permanent() {
+        let err = classify_azure_error("AuthorizationFailure: invalid signature");
+        assert!(matches!(err, AzureProviderError::ServiceError(_)));
+        let perr: ProviderError = err.into();
+        assert!(!perr.is_retryable());
     }
 
     #[test]

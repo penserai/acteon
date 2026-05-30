@@ -4,9 +4,17 @@ use thiserror::Error;
 /// Errors specific to AWS provider operations.
 #[derive(Debug, Error)]
 pub enum AwsProviderError {
-    /// The AWS SDK returned an error from the service.
+    /// The AWS SDK returned a **permanent** service error (a malformed or
+    /// unauthorized request). Surfaced as `ExecutionFailed` and not retried.
     #[error("AWS service error: {0}")]
     ServiceError(String),
+
+    /// A **transient** AWS service error (5xx / `ServiceUnavailable` /
+    /// `InternalError` / `SlowDown`). The request was fine; the service was
+    /// briefly unavailable. Surfaced as `ProviderError::Connection` so the
+    /// gateway retries instead of dropping the action on a momentary blip.
+    #[error("AWS transient service error: {0}")]
+    Transient(String),
 
     /// The request was throttled by the AWS service.
     #[error("AWS request throttled")]
@@ -38,7 +46,10 @@ impl From<AwsProviderError> for ProviderError {
         match err {
             AwsProviderError::ServiceError(msg) => ProviderError::ExecutionFailed(msg),
             AwsProviderError::Throttled => ProviderError::RateLimited,
-            AwsProviderError::Connection(msg) => ProviderError::Connection(msg),
+            // Transient 5xx and genuine connection errors are both retryable.
+            AwsProviderError::Transient(msg) | AwsProviderError::Connection(msg) => {
+                ProviderError::Connection(msg)
+            }
             AwsProviderError::Timeout => ProviderError::Timeout(std::time::Duration::from_secs(30)),
             AwsProviderError::InvalidPayload(msg) => ProviderError::Serialization(msg),
             AwsProviderError::CredentialError(msg) | AwsProviderError::Configuration(msg) => {
@@ -64,6 +75,19 @@ pub fn classify_sdk_error(error_str: &str) -> AwsProviderError {
         || lower.contains("network")
     {
         AwsProviderError::Connection(error_str.to_owned())
+    } else if lower.contains("serviceunavailable")
+        || lower.contains("service unavailable")
+        || lower.contains("internalerror")
+        || lower.contains("internal error")
+        || lower.contains("internalfailure")
+        || lower.contains("internalservererror")
+        || lower.contains("internal server error")
+        || lower.contains("slowdown")
+        || lower.contains("slow down")
+    {
+        // 5xx-class service errors are transient: the request was valid, the
+        // service was briefly unavailable. Retry rather than drop.
+        AwsProviderError::Transient(error_str.to_owned())
     } else {
         AwsProviderError::ServiceError(error_str.to_owned())
     }
@@ -85,6 +109,36 @@ mod tests {
         let err: ProviderError = AwsProviderError::Timeout.into();
         assert!(matches!(err, ProviderError::Timeout(_)));
         assert!(err.is_retryable());
+    }
+
+    #[test]
+    fn service_unavailable_is_transient_and_retryable() {
+        let err = classify_sdk_error("ServiceUnavailable: SNS is temporarily unavailable");
+        assert!(matches!(err, AwsProviderError::Transient(_)));
+        let perr: ProviderError = err.into();
+        assert!(perr.is_retryable());
+        assert!(matches!(perr, ProviderError::Connection(_)));
+    }
+
+    #[test]
+    fn internal_error_is_transient() {
+        assert!(matches!(
+            classify_sdk_error("InternalError: an internal error occurred"),
+            AwsProviderError::Transient(_)
+        ));
+        assert!(matches!(
+            classify_sdk_error("InternalServerError (status 500)"),
+            AwsProviderError::Transient(_)
+        ));
+    }
+
+    #[test]
+    fn permanent_service_error_stays_permanent() {
+        // A genuine 4xx-class error (bad request) must NOT become retryable.
+        let err = classify_sdk_error("ValidationError: topic ARN is malformed");
+        assert!(matches!(err, AwsProviderError::ServiceError(_)));
+        let perr: ProviderError = err.into();
+        assert!(!perr.is_retryable());
     }
 
     #[test]

@@ -4,9 +4,18 @@ use thiserror::Error;
 /// Errors specific to GCP provider operations.
 #[derive(Debug, Error)]
 pub enum GcpProviderError {
-    /// The GCP service returned an error.
+    /// The GCP service returned a **permanent** error (malformed or
+    /// unauthorized request). Surfaced as `ExecutionFailed` and not retried.
     #[error("GCP service error: {0}")]
     ServiceError(String),
+
+    /// A **transient** GCP service error (`INTERNAL` / `ABORTED` / 5xx /
+    /// backend error). The request was fine; the service was briefly unable to
+    /// handle it. Surfaced as `ProviderError::Connection` so the gateway
+    /// retries instead of dropping the action. (`UNAVAILABLE` is already
+    /// routed to `Connection`.)
+    #[error("GCP transient service error: {0}")]
+    Transient(String),
 
     /// The request was throttled by the GCP service.
     #[error("GCP request throttled")]
@@ -38,7 +47,10 @@ impl From<GcpProviderError> for ProviderError {
         match err {
             GcpProviderError::ServiceError(msg) => ProviderError::ExecutionFailed(msg),
             GcpProviderError::Throttled => ProviderError::RateLimited,
-            GcpProviderError::Connection(msg) => ProviderError::Connection(msg),
+            // Transient 5xx and genuine connection errors are both retryable.
+            GcpProviderError::Transient(msg) | GcpProviderError::Connection(msg) => {
+                ProviderError::Connection(msg)
+            }
             GcpProviderError::Timeout => ProviderError::Timeout(std::time::Duration::from_secs(30)),
             GcpProviderError::InvalidPayload(msg) => ProviderError::Serialization(msg),
             GcpProviderError::CredentialError(msg) | GcpProviderError::Configuration(msg) => {
@@ -73,6 +85,17 @@ pub fn classify_gcp_error(error_str: &str) -> GcpProviderError {
         || lower.contains("unavailable")
     {
         GcpProviderError::Connection(error_str.to_owned())
+    } else if lower.contains("internal")
+        || lower.contains("aborted")
+        || lower.contains("backend error")
+        || lower.contains("backenderror")
+        || lower.contains("bad gateway")
+        || lower.contains("gateway timeout")
+    {
+        // 5xx-class / INTERNAL / ABORTED are transient: the request was valid,
+        // the service was briefly unable to handle it. Retry rather than drop.
+        // (UNAVAILABLE is handled in the connection arm above.)
+        GcpProviderError::Transient(error_str.to_owned())
     } else {
         GcpProviderError::ServiceError(error_str.to_owned())
     }
@@ -157,6 +180,36 @@ mod tests {
     fn classify_unavailable() {
         let err = classify_gcp_error("UNAVAILABLE: service is not reachable");
         assert!(matches!(err, GcpProviderError::Connection(_)));
+    }
+
+    #[test]
+    fn internal_is_transient_and_retryable() {
+        let err = classify_gcp_error("status: INTERNAL, message: backend transient failure");
+        assert!(matches!(err, GcpProviderError::Transient(_)));
+        let perr: ProviderError = err.into();
+        assert!(perr.is_retryable());
+        assert!(matches!(perr, ProviderError::Connection(_)));
+    }
+
+    #[test]
+    fn aborted_and_backend_error_are_transient() {
+        assert!(matches!(
+            classify_gcp_error("ABORTED: the operation was aborted due to a conflict"),
+            GcpProviderError::Transient(_)
+        ));
+        assert!(matches!(
+            classify_gcp_error("503: backend error"),
+            GcpProviderError::Transient(_)
+        ));
+    }
+
+    #[test]
+    fn permanent_service_error_stays_permanent() {
+        // PERMISSION_DENIED / NOT_FOUND etc. must stay non-retryable.
+        let err = classify_gcp_error("PERMISSION_DENIED: caller lacks permission");
+        assert!(matches!(err, GcpProviderError::ServiceError(_)));
+        let perr: ProviderError = err.into();
+        assert!(!perr.is_retryable());
     }
 
     #[test]
