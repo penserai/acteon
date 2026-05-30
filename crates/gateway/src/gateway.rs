@@ -370,6 +370,37 @@ impl Gateway {
         }
     }
 
+    /// Compliance: in `sync_audit_writes` mode, durably record the INTENT to
+    /// execute `action` *before* any provider side effect, returning
+    /// [`GatewayError::AuditWriteFailed`] if it cannot be persisted so the
+    /// caller can fail closed. A no-op outside compliance mode (or when no
+    /// audit store is configured).
+    ///
+    /// This gives the chain step and parallel sub-step paths the same
+    /// pre-execution guarantee as single dispatch (step 3f): an action that
+    /// cannot be recorded never runs, so there is no unaudited side effect.
+    /// Intent records carry the `pending` outcome and are excluded from
+    /// analytics, so duplicates across retries are harmless.
+    async fn write_step_intent(&self, action: &Action) -> Result<(), GatewayError> {
+        if self.sync_audit_writes()
+            && let Some(ref audit) = self.audit
+        {
+            let intent = build_intent_audit_record(
+                format!("{}-intent", uuid::Uuid::now_v7()),
+                action,
+                &RuleVerdict::Allow(None),
+                Utc::now(),
+                self.effective_audit_ttl(&action.namespace, &action.tenant),
+                self.audit_store_payload,
+                None,
+            );
+            if let Err(e) = audit.record(intent).await {
+                return Err(GatewayError::AuditWriteFailed(e.to_string()));
+            }
+        }
+        Ok(())
+    }
+
     /// Encrypt a state value if a payload encryptor is configured, otherwise passthrough.
     pub fn encrypt_state_value(&self, value: &str) -> Result<String, GatewayError> {
         match self.payload_encryptor {
@@ -3063,6 +3094,26 @@ impl Gateway {
         }
 
         let step_started_at = Utc::now();
+
+        // Compliance fail-closed (pre-execution intent record), mirroring the
+        // single-dispatch step 3f. If the intent cannot be durably recorded we
+        // release the per-step dedup claim and the chain lock and abort —
+        // nothing has executed, so the chain simply retries on the next tick.
+        if let Err(e) = self.write_step_intent(&step_action).await {
+            warn!(
+                error = %e,
+                chain_id = %chain_id,
+                step_idx,
+                "chain step intent audit write failed — failing closed before execution"
+            );
+            let _ = self.state.delete(&step_dedup_key).await;
+            guard
+                .release()
+                .await
+                .map_err(|le| GatewayError::LockFailed(le.to_string()))?;
+            return Err(e);
+        }
+
         let step_start = std::time::Instant::now();
         let outcome = self.execute_action(&step_action).await;
         let step_duration = step_start.elapsed();
@@ -3809,6 +3860,23 @@ impl Gateway {
                 let sub_name = sub_step.name.clone();
                 async move {
                     let start = std::time::Instant::now();
+                    // Compliance fail-closed: record intent before any side
+                    // effect. On failure the sub-step is marked failed and the
+                    // provider is never called.
+                    if let Err(e) = self.write_step_intent(&sub_action).await {
+                        warn!(
+                            error = %e,
+                            sub_step = %sub_name,
+                            "parallel sub-step intent audit write failed — failing closed"
+                        );
+                        let outcome = ActionOutcome::Failed(acteon_core::ActionError {
+                            code: "intent_audit_failed".to_owned(),
+                            message: format!("compliance intent audit write failed: {e}"),
+                            retryable: true,
+                            attempts: 0,
+                        });
+                        return (sub_name, outcome, start.elapsed());
+                    }
                     let outcome = self.execute_action(&sub_action).await;
                     (sub_name, outcome, start.elapsed())
                 }
@@ -10737,6 +10805,125 @@ mod tests {
             reloaded.status,
             ChainStatus::Failed,
             "chain must fail closed when its definition shrank below current_step",
+        );
+    }
+
+    // -- Compliance two-phase on the chain step path -------------------------
+
+    fn seed_single_step_chain(
+        gw: &crate::gateway::Gateway,
+        chain_id: &str,
+    ) -> impl std::future::Future<Output = ()> {
+        use acteon_core::{ChainConfig, ChainState, ChainStatus, ChainStepConfig};
+        use acteon_state::{KeyKind, StateKey};
+        use chrono::Utc;
+
+        gw.set_chain_config(
+            ChainConfig::new("compliance-chain").with_step(ChainStepConfig::new(
+                "s0",
+                "email",
+                "send_email",
+                serde_json::json!({}),
+            )),
+        )
+        .expect("1-step config is valid");
+
+        let now = Utc::now();
+        let chain_state = ChainState {
+            chain_id: chain_id.to_owned(),
+            chain_name: "compliance-chain".into(),
+            origin_action: test_action(),
+            current_step: 0,
+            total_steps: 1,
+            status: ChainStatus::Running,
+            step_results: vec![None],
+            started_at: now,
+            updated_at: now,
+            expires_at: None,
+            namespace: "notifications".into(),
+            tenant: "tenant-1".into(),
+            cancel_reason: None,
+            cancelled_by: None,
+            execution_path: Vec::new(),
+            parent_chain_id: None,
+            parent_step_index: None,
+            child_chain_ids: Vec::new(),
+            task_id: None,
+            parallel_state: None,
+            parallel_sub_results: HashMap::new(),
+            step_attempts: vec![0],
+            step_history: Vec::new(),
+        };
+        let key = StateKey::new("notifications", "tenant-1", KeyKind::Chain, chain_id);
+        let store = gw.state_store();
+        let json = serde_json::to_string(&chain_state).unwrap();
+        async move {
+            store.set(&key, &json, None).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn compliance_chain_step_intent_failure_aborts_before_execution() {
+        // In compliance mode, if a chain step's pre-execution intent record
+        // can't be persisted, the step fails closed BEFORE the provider runs.
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let (gw, captured) = build_compliance_gateway(
+            Arc::new(TestAudit {
+                fail: true,
+                records,
+            }),
+            Some(acteon_core::ComplianceConfig::new(
+                acteon_core::ComplianceMode::Soc2,
+            )),
+        );
+        seed_single_step_chain(&gw, "cc1").await;
+
+        let err = gw
+            .advance_chain("notifications", "tenant-1", "cc1")
+            .await
+            .expect_err("chain step intent audit failure must fail closed");
+        assert!(
+            matches!(err, crate::error::GatewayError::AuditWriteFailed(_)),
+            "expected AuditWriteFailed, got {err:?}",
+        );
+        assert!(
+            captured.lock().unwrap().is_empty(),
+            "provider must NOT be invoked when the chain-step intent write fails",
+        );
+    }
+
+    #[tokio::test]
+    async fn compliance_chain_step_writes_intent_then_executes() {
+        // Healthy audit in compliance mode: the chain step runs and a pending
+        // intent record is durably written before the provider is invoked.
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let (gw, captured) = build_compliance_gateway(
+            Arc::new(TestAudit {
+                fail: false,
+                records: Arc::clone(&records),
+            }),
+            Some(acteon_core::ComplianceConfig::new(
+                acteon_core::ComplianceMode::Soc2,
+            )),
+        );
+        seed_single_step_chain(&gw, "cc2").await;
+
+        gw.advance_chain("notifications", "tenant-1", "cc2")
+            .await
+            .expect("advance_chain succeeds with a healthy audit store");
+
+        assert_eq!(
+            captured.lock().unwrap().len(),
+            1,
+            "provider invoked once for the single chain step",
+        );
+        assert!(
+            records
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|r| r.outcome == "pending"),
+            "a pending intent record must be written before the step executes",
         );
     }
 }
