@@ -52,9 +52,12 @@ impl SignerScope {
 pub struct SignatureVerifier {
     keyring: Arc<Keyring>,
     reject_unsigned: bool,
-    /// Per-signer scope restrictions. Missing entries default to
-    /// allow-all (the server key is inserted without scope limits).
-    scopes: std::collections::HashMap<String, SignerScope>,
+    /// Per-`(signer_id, kid)` scope restrictions. Keyed by key, not by signer,
+    /// so a rotation that introduces a second `kid` for the same `signer_id`
+    /// keeps each key's configured scope instead of the last-loaded one
+    /// overwriting the rest. Missing entries default to allow-all (the server
+    /// key is inserted without scope limits).
+    scopes: std::collections::HashMap<(String, String), SignerScope>,
 }
 
 impl SignatureVerifier {
@@ -68,9 +71,14 @@ impl SignatureVerifier {
         }
     }
 
-    /// Register a scope restriction for a signer.
-    pub fn add_scope(&mut self, signer_id: impl Into<String>, scope: SignerScope) {
-        self.scopes.insert(signer_id.into(), scope);
+    /// Register a scope restriction for a specific `(signer_id, kid)` key.
+    pub fn add_scope(
+        &mut self,
+        signer_id: impl Into<String>,
+        kid: impl Into<String>,
+        scope: SignerScope,
+    ) {
+        self.scopes.insert((signer_id.into(), kid.into()), scope);
     }
 
     /// Number of keys in the keyring.
@@ -91,12 +99,12 @@ impl SignatureVerifier {
         self.keyring.iter_keys()
     }
 
-    /// Look up the scope restrictions registered for `signer_id`,
-    /// if any. Used by the JWKS-style discovery endpoint so clients
-    /// can see which `(tenant, namespace)` pairs each key is
-    /// authorized for.
-    pub fn scope_for(&self, signer_id: &str) -> Option<&SignerScope> {
-        self.scopes.get(signer_id)
+    /// Look up the scope restrictions registered for a specific
+    /// `(signer_id, kid)` key, if any. Used by the JWKS-style discovery
+    /// endpoint so clients can see which `(tenant, namespace)` pairs each
+    /// key is authorized for.
+    pub fn scope_for(&self, signer_id: &str, kid: &str) -> Option<&SignerScope> {
+        self.scopes.get(&(signer_id.to_owned(), kid.to_owned()))
     }
 
     /// Verify an action's signature inline during dispatch.
@@ -154,10 +162,25 @@ impl SignatureVerifier {
             };
         }
 
-        // 2. Scope enforcement.
-        if let Some(scope) = self.scopes.get(signer_id.as_str())
-            && !scope.allows(&action.tenant, &action.namespace)
-        {
+        // 2. Scope enforcement, per key (signer_id, kid).
+        let scope_denied = if let Some(ref kid) = action.kid {
+            // The signature was verified against exactly this key, so enforce
+            // exactly this key's scope (allow-all when none is configured).
+            self.scopes
+                .get(&(signer_id.clone(), kid.clone()))
+                .is_some_and(|scope| !scope.allows(&action.tenant, &action.namespace))
+        } else {
+            // Legacy kid-less action: `keyring.verify` accepted it against one
+            // of the signer's keys but does not report which, so fail closed —
+            // the action must satisfy EVERY scope configured for this signer.
+            // (When all of a signer's keys share one scope, this is identical
+            // to the per-key check; it only tightens the ambiguous case.)
+            self.scopes
+                .iter()
+                .filter(|((s, _), _)| s == signer_id)
+                .any(|(_, scope)| !scope.allows(&action.tenant, &action.namespace))
+        };
+        if scope_denied {
             return VerifyOutcome::ScopeDenied {
                 signer_id: signer_id.clone(),
                 tenant: action.tenant.to_string(),
@@ -344,22 +367,35 @@ impl VerifyOutcome {
 }
 
 /// Response from the `GET /v1/actions/{id}/verify` endpoint.
+///
+/// IMPORTANT: this endpoint does NOT perform a full cryptographic
+/// verification. The audit record stores only the SHA-256 `canonical_hash` of
+/// the bytes that were signed, not the bytes themselves, so the original
+/// Ed25519 signature cannot be re-checked server-side. It reports whether the
+/// signer is known and whether the stored signature is well-formed, and
+/// returns the `canonical_hash` so a caller holding the original action can
+/// verify independently. There is deliberately no single `verified: true`
+/// field, which previously over-claimed cryptographic verification.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct VerifyResponse {
-    /// Whether the signature is structurally valid and the signer is
-    /// known to the keyring.
-    pub verified: bool,
+    /// Whether the action's `signer_id` is present in the server keyring.
+    pub signer_known: bool,
+    /// Whether the stored signature is well-formed — it base64-decodes to a
+    /// 64-byte Ed25519 signature. This is a structural check only, NOT a
+    /// cryptographic verification (see the type-level note).
+    pub signature_well_formed: bool,
     /// The `signer_id` from the action (if signed).
     pub signer_id: Option<String>,
     /// The algorithm used.
     pub algorithm: Option<String>,
-    /// SHA-256 hex digest of the canonical bytes that were signed.
-    /// Callers can independently verify by computing
-    /// `Action::canonical_bytes()` on the original action and
-    /// comparing the hash.
+    /// SHA-256 hex digest of the canonical bytes that were signed. To fully
+    /// verify, recompute `Action::canonical_bytes()` on the original action,
+    /// confirm its SHA-256 equals this value, then verify the signature
+    /// against those bytes with the signer's public key.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub canonical_hash: Option<String>,
-    /// Human-readable reason when `verified` is false.
+    /// Human-readable detail: the verification caveat on success, or why the
+    /// signer is unknown / signature malformed / record unsigned otherwise.
     pub reason: Option<String>,
 }
 
@@ -369,7 +405,7 @@ pub struct VerifyResponse {
     path = "/v1/actions/{id}/verify",
     tag = "Signing",
     summary = "Verify action signature",
-    description = "Looks up an audit record by action ID and verifies the stored Ed25519 signature against the server's keyring.",
+    description = "Looks up an audit record by action ID and reports whether its signer is known and the stored Ed25519 signature is well-formed. NOTE: this is not a full cryptographic verification — the audit record stores only the canonical-bytes hash, so re-verification requires the original action (the canonical_hash is returned for that purpose).",
     params(("id" = String, Path, description = "Action ID")),
     responses(
         (status = 200, description = "Verification result", body = VerifyResponse),
@@ -419,7 +455,8 @@ pub async fn verify_action(
         return (
             StatusCode::OK,
             Json(serde_json::json!(VerifyResponse {
-                verified: false,
+                signer_known: false,
+                signature_well_formed: false,
                 signer_id: record.signer_id.clone(),
                 algorithm: None,
                 canonical_hash: None,
@@ -434,7 +471,8 @@ pub async fn verify_action(
         return (
             StatusCode::OK,
             Json(serde_json::json!(VerifyResponse {
-                verified: false,
+                signer_known: false,
+                signature_well_formed: false,
                 signer_id: Some(signer_id.clone()),
                 algorithm: Some("Ed25519".into()),
                 canonical_hash: None,
@@ -456,7 +494,8 @@ pub async fn verify_action(
         return (
             StatusCode::OK,
             Json(serde_json::json!(VerifyResponse {
-                verified: false,
+                signer_known: verifier.keyring_contains(signer_id),
+                signature_well_formed: false,
                 signer_id: Some(signer_id.clone()),
                 algorithm: Some("Ed25519".into()),
                 canonical_hash: None,
@@ -470,23 +509,21 @@ pub async fn verify_action(
             .into_response();
     };
 
-    // Confirm the signer is known and the signature is structurally
-    // valid (correct length, decodable). Full content verification
-    // requires the caller to supply the original action and
-    // recompute canonical_bytes — the stored hash lets them confirm
-    // the content matches.
-    //
-    // We can't call keyring.verify() without the original message
-    // bytes, so we do a structural check: signer exists + signature
-    // decodes to 64 bytes (Ed25519 signature size).
+    // We cannot cryptographically verify the signature here: that needs the
+    // original signed bytes, and the audit record keeps only their hash. So we
+    // report the two facts we CAN establish — the signer is known to the
+    // keyring, and the stored signature is well-formed (decodes to 64 bytes,
+    // the Ed25519 signature size) — and hand back the canonical_hash for the
+    // caller to verify independently.
     if !verifier.keyring_contains(signer_id) {
         return (
             StatusCode::OK,
             Json(serde_json::json!(VerifyResponse {
-                verified: false,
+                signer_known: false,
+                signature_well_formed: false,
                 signer_id: Some(signer_id.clone()),
                 algorithm: Some("Ed25519".into()),
-                canonical_hash: None,
+                canonical_hash: Some(stored_hash.clone()),
                 reason: Some(format!("unknown signer: {signer_id}")),
             })),
         )
@@ -494,21 +531,117 @@ pub async fn verify_action(
     }
 
     let sig_bytes = base64::engine::general_purpose::STANDARD.decode(signature);
-    let structurally_valid = sig_bytes.as_ref().is_ok_and(|b| b.len() == 64);
+    let signature_well_formed = sig_bytes.as_ref().is_ok_and(|b| b.len() == 64);
 
     (
         StatusCode::OK,
         Json(serde_json::json!(VerifyResponse {
-            verified: structurally_valid,
+            signer_known: true,
+            signature_well_formed,
             signer_id: Some(signer_id.clone()),
             algorithm: Some("Ed25519".into()),
             canonical_hash: Some(stored_hash.clone()),
-            reason: if structurally_valid {
-                None
+            reason: Some(if signature_well_formed {
+                "signer known and signature well-formed; this is NOT a full \
+                 cryptographic verification — recompute canonical_bytes() on \
+                 the original action and check it against canonical_hash, then \
+                 verify the signature against those bytes"
+                    .into()
             } else {
-                Some("signature is malformed (expected 64-byte Ed25519)".into())
-            },
+                "signature is malformed (expected 64-byte Ed25519)".to_owned()
+            }),
         })),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use acteon_core::Action;
+    use acteon_crypto::signing::{ActionSigningKey, Keyring, generate_keypair_with_kid};
+
+    fn scope(tenants: &[&str]) -> SignerScope {
+        SignerScope {
+            tenants: tenants.iter().map(|t| (*t).to_owned()).collect(),
+            namespaces: vec!["*".to_owned()],
+        }
+    }
+
+    fn sign(sk: &ActionSigningKey, signer_id: &str, kid: Option<&str>, tenant: &str) -> Action {
+        let mut action = Action::new("n", tenant, "email", "send", serde_json::json!({}));
+        action.signer_id = Some(signer_id.to_owned());
+        action.kid = kid.map(ToOwned::to_owned);
+        let canonical = action.canonical_bytes();
+        action.signature = Some(sk.sign(&canonical));
+        action
+    }
+
+    #[test]
+    fn scope_is_enforced_per_kid_not_collapsed_on_rotation() {
+        // Signer "s1" rotated: k1 is scoped to t1, k2 to t2.
+        let (sk1, vk1) = generate_keypair_with_kid("s1", "k1");
+        let (sk2, vk2) = generate_keypair_with_kid("s1", "k2");
+        let mut keyring = Keyring::new();
+        keyring.insert(vk1);
+        keyring.insert(vk2);
+        let mut verifier = SignatureVerifier::new(keyring, false);
+        verifier.add_scope("s1", "k1", scope(&["t1"]));
+        verifier.add_scope("s1", "k2", scope(&["t2"]));
+
+        // k1 signing for its own tenant t1 → verified.
+        let a = sign(&sk1, "s1", Some("k1"), "t1");
+        assert!(matches!(
+            verifier.verify_action(&a),
+            VerifyOutcome::Verified { .. }
+        ));
+
+        // k1 signing for t2 → DENIED. Before keying scopes by kid, the single
+        // signer-wide scope was whichever entry loaded last; if that were k2's
+        // (allows t2) this k1-signed action would be wrongly accepted.
+        let b = sign(&sk1, "s1", Some("k1"), "t2");
+        assert!(
+            matches!(
+                verifier.verify_action(&b),
+                VerifyOutcome::ScopeDenied { .. }
+            ),
+            "a k1-signed action for t2 must be scope-denied"
+        );
+
+        // k2 signing for t2 → verified (its own scope).
+        let c = sign(&sk2, "s1", Some("k2"), "t2");
+        assert!(matches!(
+            verifier.verify_action(&c),
+            VerifyOutcome::Verified { .. }
+        ));
+    }
+
+    #[test]
+    fn kidless_action_must_satisfy_every_signer_scope() {
+        // A legacy action without a kid is accepted by `keyring.verify` against
+        // any of the signer's keys without reporting which, so it must satisfy
+        // EVERY scope for the signer (fail closed).
+        let (sk1, vk1) = generate_keypair_with_kid("s1", "k1");
+        let (_sk2, vk2) = generate_keypair_with_kid("s1", "k2");
+        let mut keyring = Keyring::new();
+        keyring.insert(vk1);
+        keyring.insert(vk2);
+        let mut verifier = SignatureVerifier::new(keyring, false);
+        verifier.add_scope("s1", "k1", scope(&["t1"])); // narrow
+        verifier.add_scope("s1", "k2", scope(&["t1", "t2"])); // broad
+
+        // t2 is allowed by k2 but not k1 → fail closed → denied.
+        let denied = sign(&sk1, "s1", None, "t2");
+        assert!(matches!(
+            verifier.verify_action(&denied),
+            VerifyOutcome::ScopeDenied { .. }
+        ));
+
+        // t1 is allowed by both → verified.
+        let ok = sign(&sk1, "s1", None, "t1");
+        assert!(matches!(
+            verifier.verify_action(&ok),
+            VerifyOutcome::Verified { .. }
+        ));
+    }
 }
