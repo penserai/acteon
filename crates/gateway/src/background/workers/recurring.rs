@@ -185,6 +185,40 @@ impl BackgroundProcessor {
                 }
             }
 
+            // Advance the schedule to the next occurrence BEFORE handing off
+            // the dispatch. The dispatch (consumer-side) can outlive the 60s
+            // claim TTL — a chain, an approval, or a slow webhook — and until
+            // the consumer re-indexes after it returns, this occurrence stays
+            // "due" with a stale `last_executed_at`. A poll in that window
+            // would re-claim (the TTL has lapsed) and dispatch the SAME
+            // occurrence again. Re-arming the index here moves the entry past
+            // `now`, so only genuinely-later occurrences can re-fire; the
+            // consumer still performs the authoritative state update after
+            // dispatch (and removes the entry if the action becomes inactive).
+            // Missed occurrences are not backfilled, matching the contract —
+            // and unlike a delete-before-dispatch, a consumer crash leaves the
+            // action armed for its next occurrence rather than stranded.
+            let pending_key =
+                StateKey::new(namespace, tenant, KeyKind::PendingRecurring, recurring_id);
+            let next_at = acteon_core::validate_cron_expr(&recurring.cron_expr)
+                .ok()
+                .and_then(|cron| {
+                    acteon_core::validate_timezone(&recurring.timezone)
+                        .ok()
+                        .and_then(|tz| acteon_core::next_occurrence(&cron, tz, &now))
+                });
+            if let Some(next) = next_at {
+                let next_ms = next.timestamp_millis();
+                self.state
+                    .set(&pending_key, &next_ms.to_string(), None)
+                    .await?;
+                self.state.index_timeout(&pending_key, next_ms).await?;
+            } else {
+                // No further occurrence (exhausted or unparsable) — drop it.
+                self.state.delete(&pending_key).await?;
+                self.state.remove_timeout_index(&pending_key).await?;
+            }
+
             info!(
                 recurring_id = %recurring_id,
                 namespace = %namespace,

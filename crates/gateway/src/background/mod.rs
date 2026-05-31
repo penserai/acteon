@@ -1401,6 +1401,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn recurring_reindexes_to_next_occurrence_before_dispatch() {
+        // The worker must advance the pending/timeout index to the NEXT
+        // occurrence BEFORE handing off the dispatch, so a dispatch that
+        // outlives the claim TTL cannot be re-polled and double-dispatched.
+        // No consumer runs in this test, so only the worker's pre-arm can
+        // move the index off the original past-due timestamp.
+        let group_manager = Arc::new(GroupManager::new());
+        let state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let namespace = "test-ns";
+        let tenant = "test-tenant";
+
+        let recurring_id = "rec-rearm-001";
+        let recurring =
+            make_test_recurring_action(recurring_id, namespace, tenant, "*/5 * * * *", true);
+        let rec_key = StateKey::new(namespace, tenant, KeyKind::RecurringAction, recurring_id);
+        state
+            .set(&rec_key, &serde_json::to_string(&recurring).unwrap(), None)
+            .await
+            .unwrap();
+
+        let past_due = Utc::now() - chrono::Duration::seconds(10);
+        let pending_key = StateKey::new(namespace, tenant, KeyKind::PendingRecurring, recurring_id);
+        state
+            .set(&pending_key, &past_due.timestamp_millis().to_string(), None)
+            .await
+            .unwrap();
+        state
+            .index_timeout(&pending_key, past_due.timestamp_millis())
+            .await
+            .unwrap();
+
+        let (rec_tx, mut rec_rx) = mpsc::channel(10);
+        let (mut processor, shutdown_tx) = BackgroundProcessorBuilder::new()
+            .metrics(Arc::new(GatewayMetrics::default()))
+            .config(BackgroundConfig {
+                enable_group_flush: false,
+                enable_timeout_processing: false,
+                enable_approval_retry: false,
+                enable_chain_advancement: false,
+                enable_scheduled_actions: false,
+                enable_recurring_actions: true,
+                recurring_check_interval: Duration::from_millis(50),
+                ..BackgroundConfig::default()
+            })
+            .group_manager(group_manager)
+            .state(Arc::clone(&state))
+            .recurring_action_channel(rec_tx)
+            .build()
+            .unwrap();
+        let handle = tokio::spawn(async move {
+            processor.run().await;
+        });
+
+        // Drain the dispatch event (proves the worker reached the hand-off).
+        let event = tokio::time::timeout(Duration::from_secs(2), rec_rx.recv())
+            .await
+            .expect("should receive a recurring event")
+            .expect("event present");
+        assert_eq!(event.recurring_id, recurring_id);
+
+        // The pending index must now point to a FUTURE occurrence. Before the
+        // fix it would still be the original past-due timestamp (no consumer
+        // re-indexes here), leaving the same occurrence eligible for re-poll.
+        let now_ms = Utc::now().timestamp_millis();
+        let pending_val = state
+            .get(&pending_key)
+            .await
+            .unwrap()
+            .expect("pending key should persist (action repeats)");
+        let armed_ms: i64 = pending_val
+            .parse()
+            .expect("pending value is a millis timestamp");
+        assert!(
+            armed_ms > now_ms,
+            "pending index must be re-armed to the next occurrence, got {armed_ms} <= {now_ms}"
+        );
+
+        let _ = shutdown_tx.send(()).await;
+        let _ = tokio::time::timeout(Duration::from_secs(1), handle).await;
+    }
+
+    #[tokio::test]
     async fn skips_disabled_recurring_action() {
         let group_manager = Arc::new(GroupManager::new());
         let state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
