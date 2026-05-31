@@ -431,33 +431,50 @@ impl StorageProvider {
         let bucket_path = Self::bucket_path(bucket);
         debug!(bucket = %bucket, prefix = %prefix, "listing objects");
 
-        let mut request = self.storage_control.list_objects().set_parent(&bucket_path);
-        if !prefix.is_empty() {
-            request = request.set_prefix(&prefix);
-        }
-        if let Some(max) = payload.max_results {
-            request = request.set_page_size(max);
-        }
+        // Page through results: a single list response is capped and carries a
+        // `next_page_token`; dropping it silently truncated the listing to the
+        // first page. `max_results`, when set, is a TOTAL cap — accumulate
+        // across pages until it is reached or the listing is exhausted.
+        let max_results = payload.max_results.and_then(|m| usize::try_from(m).ok());
+        let mut objects: Vec<serde_json::Value> = Vec::new();
+        let mut page_token = String::new();
+        loop {
+            let mut request = self.storage_control.list_objects().set_parent(&bucket_path);
+            if !prefix.is_empty() {
+                request = request.set_prefix(&prefix);
+            }
+            if let Some(max) = payload.max_results {
+                request = request.set_page_size(max);
+            }
+            if !page_token.is_empty() {
+                request = request.set_page_token(&page_token);
+            }
 
-        let response = request.send().await.map_err(|e| {
-            let err_str = e.to_string();
-            error!(error = %err_str, "Cloud Storage list failed");
-            let gcp_err: ProviderError = classify_gcp_error(&err_str).into();
-            gcp_err
-        })?;
+            let response = request.send().await.map_err(|e| {
+                let err_str = e.to_string();
+                error!(error = %err_str, "Cloud Storage list failed");
+                let gcp_err: ProviderError = classify_gcp_error(&err_str).into();
+                gcp_err
+            })?;
 
-        let objects: Vec<_> = response
-            .objects
-            .into_iter()
-            .map(|obj| {
-                serde_json::json!({
+            let next = response.next_page_token.clone();
+            for obj in response.objects {
+                objects.push(serde_json::json!({
                     "name": obj.name,
                     "size": obj.size,
                     "content_type": obj.content_type,
                     "update_time": obj.update_time.map(|t| t.seconds()),
-                })
-            })
-            .collect();
+                }));
+                if max_results.is_some_and(|m| objects.len() >= m) {
+                    break;
+                }
+            }
+
+            if max_results.is_some_and(|m| objects.len() >= m) || next.is_empty() {
+                break;
+            }
+            page_token = next;
+        }
 
         info!(bucket = %bucket, count = objects.len(), "objects listed");
 
