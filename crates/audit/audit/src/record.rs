@@ -225,6 +225,17 @@ pub struct AuditQuery {
     /// records in chain order with bounded memory.
     #[serde(default)]
     pub sort_by_sequence_asc: bool,
+    /// When true, sort by `sequence_number DESC` (greatest first). Used with
+    /// `limit = 1` to fetch the current hash-chain tip — the record with the
+    /// highest sequence number for a `(namespace, tenant)`. The previous tip
+    /// selection relied on the default `dispatched_at DESC` ordering, which
+    /// mis-ranks records that share a `dispatched_at` (an intent and its
+    /// outcome are written in the same millisecond), so the wrong tip could be
+    /// returned and the next sequence number would collide. Mutually exclusive
+    /// with `sort_by_sequence_asc` (which takes precedence); the tip fetch does
+    /// not paginate, so this is never combined with `cursor`.
+    #[serde(default)]
+    pub sort_by_sequence_desc: bool,
     /// Server-set tenant authorization scope. The set of tenant grant
     /// patterns the caller may read; backends restrict results to tenants
     /// covered hierarchically by one of these (see

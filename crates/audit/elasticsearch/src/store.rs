@@ -276,6 +276,12 @@ impl AuditStore for ElasticsearchAuditStore {
                 { "sequence_number": { "order": "asc", "missing": "_last" } },
                 { "id": { "order": "asc" } }
             ])
+        } else if query.sort_by_sequence_desc {
+            // Hash-chain tip selection: greatest sequence number first.
+            serde_json::json!([
+                { "sequence_number": { "order": "desc", "missing": "_last" } },
+                { "id": { "order": "desc" } }
+            ])
         } else {
             serde_json::json!([
                 { "dispatched_at": "desc" },

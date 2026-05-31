@@ -83,10 +83,18 @@ impl HashChainAuditStore {
         namespace: &str,
         tenant: &str,
     ) -> Result<Option<(String, u64)>, AuditError> {
+        // The tip is the record with the GREATEST sequence number, not the
+        // most recent `dispatched_at`. An intent and its outcome share a
+        // `dispatched_at`, so a `dispatched_at DESC` ordering can return the
+        // lower-sequence record of the pair, and the next write would then be
+        // assigned a colliding sequence number (Postgres rejects it and the
+        // dispatch fails closed; ClickHouse silently forks the chain). Order by
+        // sequence number descending and take the first.
         let query = AuditQuery {
             namespace: Some(namespace.to_string()),
             tenant: Some(tenant.to_string()),
             limit: Some(1),
+            sort_by_sequence_desc: true,
             ..AuditQuery::default()
         };
 
@@ -445,9 +453,25 @@ mod tests {
             if query.sort_by_sequence_asc {
                 // Ascending sequence order (used by chain verification).
                 filtered.sort_by_key(|r| r.sequence_number.unwrap_or(0));
+            } else if query.sort_by_sequence_desc {
+                // Hash-chain tip: greatest sequence number first.
+                filtered.sort_by(|a, b| {
+                    b.sequence_number
+                        .unwrap_or(0)
+                        .cmp(&a.sequence_number.unwrap_or(0))
+                        .then_with(|| b.id.cmp(&a.id))
+                });
             } else {
-                // Default: descending by sequence (mimics Postgres dispatched_at DESC).
-                filtered.sort_by(|a, b| b.sequence_number.cmp(&a.sequence_number));
+                // Default: `dispatched_at DESC, id DESC`, faithfully mirroring
+                // the real Postgres/ClickHouse backends. (This previously sorted
+                // by sequence_number DESC, which accidentally returned the
+                // correct tip and so MASKED the dispatched_at-ordering bug that
+                // `fetch_tip` now fixes via `sort_by_sequence_desc`.)
+                filtered.sort_by(|a, b| {
+                    b.dispatched_at
+                        .cmp(&a.dispatched_at)
+                        .then_with(|| b.id.cmp(&a.id))
+                });
             }
 
             let total = filtered.len() as u64;
@@ -551,6 +575,63 @@ mod tests {
         assert!(r.previous_hash.is_none(), "first record has no previous");
         assert!(r.record_hash.is_some(), "first record should have a hash");
         assert_eq!(r.sequence_number, Some(0));
+    }
+
+    #[tokio::test]
+    async fn hash_chain_tip_is_max_sequence_not_latest_dispatched_at() {
+        // Regression: the chain tip is the record with the GREATEST sequence
+        // number, not the most recent `dispatched_at`. An intent (seq N) and
+        // its outcome (seq N+1) share a `dispatched_at`, and the intent's id
+        // sorts AFTER the outcome's under `dispatched_at DESC, id DESC`
+        // ("<uuid>-intent" > "<uuid>"). A dispatched_at-ordered tip fetch
+        // therefore returns the intent (seq N), so the next write is assigned a
+        // COLLIDING seq N+1 — which, under the Postgres unique constraint
+        // simulated here, fails the dispatch closed after exhausting retries.
+        // `fetch_tip` now orders by `sequence_number DESC`, so it returns the
+        // outcome (the true tip) and the chain continues cleanly.
+        let inner = Arc::new(MemoryAudit::with_unique_constraint());
+        let store = HashChainAuditStore::new(Arc::clone(&inner) as Arc<dyn AuditStore>);
+
+        let ts = chrono::Utc::now();
+        // Action A: intent (id sorts high) then outcome (id sorts low), same ts.
+        let mut intent = make_record("act-a-intent", "ns", "t1");
+        intent.dispatched_at = ts;
+        intent.completed_at = ts;
+        store.record(intent).await.unwrap(); // seq 0
+
+        let mut outcome = make_record("act-a", "ns", "t1");
+        outcome.dispatched_at = ts;
+        outcome.completed_at = ts;
+        store.record(outcome).await.unwrap(); // seq 1
+
+        // Action B must continue from seq 1 (the outcome), not collide on it.
+        // With a dispatched_at-ordered tip this write fails closed.
+        let mut next = make_record("act-b-intent", "ns", "t1");
+        next.dispatched_at = ts;
+        next.completed_at = ts;
+        store
+            .record(next)
+            .await
+            .expect("next write must continue the chain, not collide on sequence_number");
+
+        let mut records = inner.raw_records();
+        records.sort_by_key(|r| r.sequence_number.unwrap_or(0));
+        let seqs: Vec<u64> = records
+            .iter()
+            .map(|r| r.sequence_number.unwrap_or(u64::MAX))
+            .collect();
+        assert_eq!(
+            seqs,
+            vec![0, 1, 2],
+            "sequence numbers must be contiguous with no collision"
+        );
+
+        let result = store.verify_chain("ns", "t1", None, None).await.unwrap();
+        assert!(
+            result.valid,
+            "hash chain must verify end-to-end: {result:?}"
+        );
+        assert_eq!(result.records_checked, 3);
     }
 
     #[tokio::test]

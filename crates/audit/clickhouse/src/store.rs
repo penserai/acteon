@@ -424,6 +424,9 @@ impl AuditStore for ClickHouseAuditStore {
         // Data query.
         let order_clause = if query.sort_by_sequence_asc {
             "ORDER BY sequence_number ASC, id ASC"
+        } else if query.sort_by_sequence_desc {
+            // Hash-chain tip selection: greatest sequence number first.
+            "ORDER BY sequence_number DESC, id DESC"
         } else {
             "ORDER BY dispatched_at DESC, id DESC"
         };
