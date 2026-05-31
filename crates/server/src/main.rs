@@ -2323,10 +2323,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         let mut verifier =
             acteon_server::api::SignatureVerifier::new(keyring, config.signing.reject_unsigned);
-        // Wire per-signer scope restrictions from config.
+        // Wire per-key (signer_id, kid) scope restrictions from config.
         for entry in &config.signing.keyring {
             verifier.add_scope(
                 &entry.signer_id,
+                &entry.kid,
                 acteon_server::api::verify::SignerScope {
                     tenants: entry.tenants.clone(),
                     namespaces: entry.namespaces.clone(),
