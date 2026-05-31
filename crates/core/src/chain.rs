@@ -3,6 +3,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::Caller;
+
 /// Failure policy applied at the chain level when a step fails.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -936,6 +938,14 @@ pub struct ChainState {
     /// attempt number.
     #[serde(default)]
     pub step_history: Vec<Vec<StepAttempt>>,
+    /// Identity of the caller that initiated the chain. Propagated to every
+    /// step, terminal, and pre-execution intent audit record so compliance
+    /// trails attribute the originating principal (chain audit records
+    /// previously left `caller_id`/`auth_method` empty). `None` for chains
+    /// started without an authenticated caller, and for sub-chains it is
+    /// inherited from the parent.
+    #[serde(default)]
+    pub caller: Option<Caller>,
 }
 
 /// DFS coloring for cycle detection.

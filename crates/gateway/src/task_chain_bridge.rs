@@ -526,6 +526,7 @@ mod tests {
             parallel_sub_results: HashMap::new(),
             step_attempts: vec![0],
             step_history: vec![Vec::new()],
+            caller: None,
         }
     }
 
