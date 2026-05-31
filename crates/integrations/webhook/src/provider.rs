@@ -218,7 +218,9 @@ impl Provider for WebhookProvider {
             if e.is_timeout() {
                 warn!("webhook request timed out");
             }
-            WebhookError::Http(e)
+            // Route through `from` so the URL (which may carry secrets in a
+            // user-supplied webhook URL) is stripped before it can be logged.
+            WebhookError::from(e)
         })?;
 
         self.interpret_response(response).await
@@ -276,7 +278,9 @@ impl Provider for WebhookProvider {
             if e.is_timeout() {
                 warn!("webhook request timed out");
             }
-            WebhookError::Http(e)
+            // Route through `from` so the URL (which may carry secrets in a
+            // user-supplied webhook URL) is stripped before it can be logged.
+            WebhookError::from(e)
         })?;
 
         self.interpret_response(response).await

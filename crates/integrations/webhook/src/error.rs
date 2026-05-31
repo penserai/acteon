@@ -9,7 +9,7 @@ use thiserror::Error;
 pub enum WebhookError {
     /// An HTTP-level transport error occurred.
     #[error("HTTP error: {0}")]
-    Http(#[from] reqwest::Error),
+    Http(reqwest::Error),
 
     /// The remote endpoint returned an unexpected status code.
     #[error("unexpected status {status}: {body}")]
@@ -26,6 +26,15 @@ pub enum WebhookError {
     /// HMAC signature computation failed.
     #[error("HMAC signing error: {0}")]
     SigningError(String),
+}
+
+impl From<reqwest::Error> for WebhookError {
+    fn from(err: reqwest::Error) -> Self {
+        // Redact the request URL: for several providers it carries the bot
+        // token, webhook secret, or access token, which must never reach
+        // error messages, audit records, or the DLQ.
+        Self::Http(err.without_url())
+    }
 }
 
 impl From<WebhookError> for ProviderError {

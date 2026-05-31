@@ -9,7 +9,7 @@ use thiserror::Error;
 pub enum PagerDutyError {
     /// An HTTP-level transport error occurred.
     #[error("HTTP error: {0}")]
-    Http(#[from] reqwest::Error),
+    Http(reqwest::Error),
 
     /// The `PagerDuty` API returned a non-success response.
     #[error("PagerDuty API error: {0}")]
@@ -36,6 +36,15 @@ pub enum PagerDutyError {
     /// No `service_id` was provided and no default service is configured.
     #[error("no service_id in payload and no default service configured")]
     NoDefaultService,
+}
+
+impl From<reqwest::Error> for PagerDutyError {
+    fn from(err: reqwest::Error) -> Self {
+        // Redact the request URL: for several providers it carries the bot
+        // token, webhook secret, or access token, which must never reach
+        // error messages, audit records, or the DLQ.
+        Self::Http(err.without_url())
+    }
 }
 
 impl From<PagerDutyError> for ProviderError {

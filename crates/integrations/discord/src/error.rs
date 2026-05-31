@@ -9,7 +9,7 @@ use thiserror::Error;
 pub enum DiscordError {
     /// An HTTP-level transport error occurred.
     #[error("HTTP error: {0}")]
-    Http(#[from] reqwest::Error),
+    Http(reqwest::Error),
 
     /// The Discord API returned an error response.
     #[error("Discord API error: {0}")]
@@ -32,6 +32,15 @@ pub enum DiscordError {
     /// The provider received an HTTP 429 (Too Many Requests) response.
     #[error("rate limited by Discord")]
     RateLimited,
+}
+
+impl From<reqwest::Error> for DiscordError {
+    fn from(err: reqwest::Error) -> Self {
+        // Redact the request URL: for several providers it carries the bot
+        // token, webhook secret, or access token, which must never reach
+        // error messages, audit records, or the DLQ.
+        Self::Http(err.without_url())
+    }
 }
 
 impl From<DiscordError> for ProviderError {

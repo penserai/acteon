@@ -9,7 +9,7 @@ use thiserror::Error;
 pub enum TeamsError {
     /// An HTTP-level transport error occurred.
     #[error("HTTP error: {0}")]
-    Http(#[from] reqwest::Error),
+    Http(reqwest::Error),
 
     /// The Teams webhook returned an error response.
     #[error("Teams webhook error: {0}")]
@@ -28,6 +28,15 @@ pub enum TeamsError {
     /// `ProviderError::Connection` so the gateway retries instead of dropping.
     #[error("Teams transient error: {0}")]
     Transient(String),
+}
+
+impl From<reqwest::Error> for TeamsError {
+    fn from(err: reqwest::Error) -> Self {
+        // Redact the request URL: for several providers it carries the bot
+        // token, webhook secret, or access token, which must never reach
+        // error messages, audit records, or the DLQ.
+        Self::Http(err.without_url())
+    }
 }
 
 impl From<TeamsError> for ProviderError {
