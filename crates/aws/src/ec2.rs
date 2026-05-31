@@ -582,7 +582,12 @@ impl Ec2Provider {
                     })?,
             )
             .min_count(payload.min_count)
-            .max_count(payload.max_count);
+            .max_count(payload.max_count)
+            // Idempotency: derive the EC2 ClientToken from the action id so a
+            // gateway retry of the same action (a lost response, a timeout
+            // after AWS already committed) does not launch a SECOND set of
+            // instances. EC2 dedupes RunInstances on this token for 24h.
+            .client_token(action.id.to_string());
 
         if let Some(kn) = key_name {
             request = request.key_name(kn);
@@ -741,32 +746,49 @@ impl Ec2Provider {
 
         debug!(instance_ids = ?payload.instance_ids, "describing EC2 instances");
 
-        let mut request = self.client.describe_instances();
-        if !payload.instance_ids.is_empty() {
-            request = request.set_instance_ids(Some(payload.instance_ids.clone()));
+        // Page through ALL results: a single DescribeInstances returns at most
+        // ~1000 instances plus a NextToken; ignoring it silently truncated the
+        // result, so downstream logic (cleanup, inventory) only ever saw the
+        // first page.
+        let mut instances: Vec<serde_json::Value> = Vec::new();
+        let mut next_token: Option<String> = None;
+        loop {
+            let mut request = self.client.describe_instances();
+            if !payload.instance_ids.is_empty() {
+                request = request.set_instance_ids(Some(payload.instance_ids.clone()));
+            }
+            if let Some(ref token) = next_token {
+                request = request.next_token(token);
+            }
+
+            let result = request.send().await.map_err(|e| {
+                let err_str = e.to_string();
+                error!(error = %err_str, "EC2 describe_instances failed");
+                let aws_err: ProviderError = classify_sdk_error(&err_str).into();
+                aws_err
+            })?;
+
+            instances.extend(
+                result
+                    .reservations()
+                    .iter()
+                    .flat_map(aws_sdk_ec2::types::Reservation::instances)
+                    .map(|i| {
+                        serde_json::json!({
+                            "instance_id": i.instance_id().unwrap_or_default(),
+                            "instance_type": i.instance_type().map_or("unknown", aws_sdk_ec2::types::InstanceType::as_str),
+                            "state": i.state().and_then(|s| s.name()).map_or("unknown", aws_sdk_ec2::types::InstanceStateName::as_str),
+                            "public_ip": i.public_ip_address().unwrap_or_default(),
+                            "private_ip": i.private_ip_address().unwrap_or_default(),
+                        })
+                    }),
+            );
+
+            match result.next_token() {
+                Some(token) if !token.is_empty() => next_token = Some(token.to_owned()),
+                _ => break,
+            }
         }
-
-        let result = request.send().await.map_err(|e| {
-            let err_str = e.to_string();
-            error!(error = %err_str, "EC2 describe_instances failed");
-            let aws_err: ProviderError = classify_sdk_error(&err_str).into();
-            aws_err
-        })?;
-
-        let instances: Vec<_> = result
-            .reservations()
-            .iter()
-            .flat_map(aws_sdk_ec2::types::Reservation::instances)
-            .map(|i| {
-                serde_json::json!({
-                    "instance_id": i.instance_id().unwrap_or_default(),
-                    "instance_type": i.instance_type().map_or("unknown", aws_sdk_ec2::types::InstanceType::as_str),
-                    "state": i.state().and_then(|s| s.name()).map_or("unknown", aws_sdk_ec2::types::InstanceStateName::as_str),
-                    "public_ip": i.public_ip_address().unwrap_or_default(),
-                    "private_ip": i.private_ip_address().unwrap_or_default(),
-                })
-            })
-            .collect();
 
         info!(count = instances.len(), "EC2 instances described");
 

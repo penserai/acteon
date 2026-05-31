@@ -202,23 +202,29 @@ impl AutoScalingProvider {
 
         debug!(group_names = ?payload.auto_scaling_group_names, "describing Auto Scaling Groups");
 
-        let mut request = self.client.describe_auto_scaling_groups();
-        if !payload.auto_scaling_group_names.is_empty() {
-            request = request
-                .set_auto_scaling_group_names(Some(payload.auto_scaling_group_names.clone()));
-        }
+        // Page through ALL groups: DescribeAutoScalingGroups caps each response
+        // (default 100) and returns a NextToken; ignoring it silently truncated
+        // the result to the first page.
+        let mut groups: Vec<serde_json::Value> = Vec::new();
+        let mut next_token: Option<String> = None;
+        loop {
+            let mut request = self.client.describe_auto_scaling_groups();
+            if !payload.auto_scaling_group_names.is_empty() {
+                request = request
+                    .set_auto_scaling_group_names(Some(payload.auto_scaling_group_names.clone()));
+            }
+            if let Some(ref token) = next_token {
+                request = request.next_token(token);
+            }
 
-        let result = request.send().await.map_err(|e| {
-            let err_str = e.to_string();
-            error!(error = %err_str, "describe_auto_scaling_groups failed");
-            let aws_err: ProviderError = classify_sdk_error(&err_str).into();
-            aws_err
-        })?;
+            let result = request.send().await.map_err(|e| {
+                let err_str = e.to_string();
+                error!(error = %err_str, "describe_auto_scaling_groups failed");
+                let aws_err: ProviderError = classify_sdk_error(&err_str).into();
+                aws_err
+            })?;
 
-        let groups: Vec<_> = result
-            .auto_scaling_groups()
-            .iter()
-            .map(|g| {
+            groups.extend(result.auto_scaling_groups().iter().map(|g| {
                 serde_json::json!({
                     "auto_scaling_group_name": g.auto_scaling_group_name(),
                     "min_size": g.min_size(),
@@ -227,8 +233,13 @@ impl AutoScalingProvider {
                     "instance_count": g.instances().len(),
                     "health_check_type": g.health_check_type().unwrap_or_default(),
                 })
-            })
-            .collect();
+            }));
+
+            match result.next_token() {
+                Some(token) if !token.is_empty() => next_token = Some(token.to_owned()),
+                _ => break,
+            }
+        }
 
         info!(count = groups.len(), "Auto Scaling Groups described");
 

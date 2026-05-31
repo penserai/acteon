@@ -107,7 +107,11 @@ impl PagerDutyProvider {
 
     /// Build a [`PagerDutyEvent`] from the deserialized action payload,
     /// applying config defaults where appropriate.
-    fn build_event(&self, payload: EventPayload) -> Result<PagerDutyEvent, PagerDutyError> {
+    fn build_event(
+        &self,
+        payload: EventPayload,
+        action_id: &str,
+    ) -> Result<PagerDutyEvent, PagerDutyError> {
         let routing_key = self
             .config
             .resolve_routing_key(payload.service_id.as_deref())?
@@ -121,6 +125,13 @@ impl PagerDutyProvider {
                     )
                 })?;
 
+                // Default the dedup_key to the action id when the caller didn't
+                // supply one, so a gateway retry of the same trigger collapses
+                // onto a single incident instead of paging the on-call once per
+                // attempt. Only triggers default it — acknowledge/resolve must
+                // reference the existing incident's key, which the caller owns.
+                let dedup_key = payload.dedup_key.or_else(|| Some(action_id.to_owned()));
+
                 let severity = payload
                     .severity
                     .unwrap_or_else(|| self.config.default_severity.clone());
@@ -133,7 +144,7 @@ impl PagerDutyProvider {
                 Ok(PagerDutyEvent {
                     routing_key,
                     event_action: "trigger".into(),
-                    dedup_key: payload.dedup_key,
+                    dedup_key,
                     payload: Some(PagerDutyPayload {
                         summary,
                         source,
@@ -182,7 +193,7 @@ impl Provider for PagerDutyProvider {
         let payload: EventPayload = serde_json::from_value(action.payload.clone())
             .map_err(|e| PagerDutyError::InvalidPayload(format!("failed to parse payload: {e}")))?;
 
-        let event = self.build_event(payload)?;
+        let event = self.build_event(payload, action.id.as_ref())?;
         let api_response = self.send_event(&event).await?;
 
         let body = serde_json::json!({
@@ -311,6 +322,37 @@ mod tests {
         let config = PagerDutyConfig::single_service("test-svc", "test-routing-key");
         let provider = PagerDutyProvider::new(config);
         assert_eq!(provider.name(), "pagerduty");
+    }
+
+    #[test]
+    fn trigger_defaults_dedup_key_to_action_id() {
+        let provider =
+            PagerDutyProvider::new(PagerDutyConfig::single_service("test-svc", "test-key"));
+        let payload: EventPayload = serde_json::from_value(serde_json::json!({
+            "event_action": "trigger",
+            "summary": "no dedup key supplied",
+        }))
+        .unwrap();
+        let event = provider.build_event(payload, "act-xyz").unwrap();
+        assert_eq!(
+            event.dedup_key.as_deref(),
+            Some("act-xyz"),
+            "a trigger without a dedup_key must default to the action id so retries collapse onto one incident"
+        );
+    }
+
+    #[test]
+    fn trigger_keeps_caller_supplied_dedup_key() {
+        let provider =
+            PagerDutyProvider::new(PagerDutyConfig::single_service("test-svc", "test-key"));
+        let payload: EventPayload = serde_json::from_value(serde_json::json!({
+            "event_action": "trigger",
+            "summary": "x",
+            "dedup_key": "caller-key",
+        }))
+        .unwrap();
+        let event = provider.build_event(payload, "act-xyz").unwrap();
+        assert_eq!(event.dedup_key.as_deref(), Some("caller-key"));
     }
 
     #[tokio::test]
