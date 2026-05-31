@@ -475,7 +475,12 @@ fn eval_contains(left: &Value, right: &Value) -> Result<Value, RuleError> {
         (Value::String(haystack), Value::String(needle)) => {
             Ok(Value::Bool(haystack.contains(needle.as_str())))
         }
-        (Value::List(list), needle) => Ok(Value::Bool(list.contains(needle))),
+        // Use the numeric-coercing `values_equal` (as `==` does) so a list of
+        // floats `contains` an int and vice versa; `Vec::contains` uses the
+        // exact derived `PartialEq` and would miss `[5.0] contains 5`.
+        (Value::List(list), needle) => Ok(Value::Bool(
+            list.iter().any(|item| values_equal(item, needle)),
+        )),
         _ => Err(RuleError::TypeError(format!(
             "contains: unsupported types {} and {}",
             left.type_name(),
@@ -528,7 +533,11 @@ fn eval_matches(left: &Value, right: &Value) -> Result<Value, RuleError> {
 /// Membership test: `value in collection`.
 fn eval_in(left: &Value, right: &Value) -> Result<Value, RuleError> {
     match right {
-        Value::List(list) => Ok(Value::Bool(list.contains(left))),
+        // Coerce numerics like `==` does (`5 in [5.0]` is true); `Vec::contains`
+        // uses the exact derived `PartialEq` and would miss it.
+        Value::List(list) => Ok(Value::Bool(
+            list.iter().any(|item| values_equal(left, item)),
+        )),
         Value::Map(map) => match left {
             Value::String(key) => Ok(Value::Bool(map.contains_key(key))),
             _ => Err(RuleError::TypeError(format!(
@@ -598,5 +607,30 @@ mod arithmetic_safety_tests {
         // overflowing constant can't panic the evaluator in a debug build.
         assert_eq!((i64::MIN).wrapping_sub(1), i64::MAX);
         assert_eq!((i64::MAX).wrapping_mul(2), -2);
+    }
+
+    #[test]
+    fn in_and_contains_coerce_numerics_like_eq() {
+        use Value::{Bool, Float, Int, List};
+        // `in`: int member vs float list and vice versa — must match, as `==`
+        // does (5 == 5.0 is true), where `Vec::contains` would not.
+        assert_eq!(
+            eval_in(&Int(5), &List(vec![Float(5.0)])).unwrap(),
+            Bool(true)
+        );
+        assert_eq!(
+            eval_in(&Float(5.0), &List(vec![Int(5)])).unwrap(),
+            Bool(true)
+        );
+        // `contains`: float list contains an int.
+        assert_eq!(
+            eval_contains(&List(vec![Float(5.0)]), &Int(5)).unwrap(),
+            Bool(true)
+        );
+        // A genuine non-member is still false.
+        assert_eq!(
+            eval_in(&Int(6), &List(vec![Float(5.0)])).unwrap(),
+            Bool(false)
+        );
     }
 }
