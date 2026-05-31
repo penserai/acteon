@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
 use acteon_core::{
-    MAX_POLICIES_PER_BUCKET, OverageBehavior, QuotaPolicy, QuotaUsage, QuotaWindow,
-    compute_window_boundaries, quota_counter_key, validate_quota_scope_identifier,
+    MAX_POLICIES_PER_BUCKET, MAX_WINDOW_SECONDS, OverageBehavior, QuotaPolicy, QuotaUsage,
+    QuotaWindow, compute_window_boundaries, quota_counter_key, validate_quota_scope_identifier,
 };
 use acteon_state::{KeyKind, StateKey};
 
@@ -212,6 +212,10 @@ fn parse_window(s: &str) -> Result<QuotaWindow, String> {
             .and_then(|seconds| {
                 if seconds == 0 {
                     Err("invalid window: custom seconds must be greater than 0".to_string())
+                } else if seconds > MAX_WINDOW_SECONDS {
+                    Err(format!(
+                        "invalid window: custom seconds must not exceed {MAX_WINDOW_SECONDS}"
+                    ))
                 } else {
                     Ok(QuotaWindow::Custom { seconds })
                 }

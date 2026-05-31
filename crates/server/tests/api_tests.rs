@@ -3669,6 +3669,50 @@ async fn tenant_authz_templates_render_cross_tenant_forbidden() {
 }
 
 #[tokio::test]
+async fn silence_huge_duration_returns_400_not_panic() {
+    // An unbounded duration_seconds previously overflowed chrono and panicked
+    // the handler; it must now be rejected with 400.
+    let app = build_app(build_test_state_with_auth(vec![Grant {
+        tenants: vec!["*".to_string()],
+        namespaces: vec!["*".to_string()],
+        providers: vec!["*".to_string()],
+        actions: vec!["*".to_string()],
+        agent_id: None,
+    }]));
+    let body = serde_json::json!({
+        "namespace": "notifications",
+        "tenant": "tenant-1",
+        "matchers": [{ "name": "alertname", "value": "x" }],
+        "comment": "test",
+        "duration_seconds": u64::MAX,
+    });
+    let status = auth_post_status(app, "/v1/silences", body).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn quota_huge_custom_window_returns_400_not_panic() {
+    // A custom window larger than MAX_WINDOW_SECONDS must be rejected at
+    // create time rather than panicking later in the usage endpoint.
+    let app = build_app(build_test_state_with_auth(vec![Grant {
+        tenants: vec!["*".to_string()],
+        namespaces: vec!["*".to_string()],
+        providers: vec!["*".to_string()],
+        actions: vec!["*".to_string()],
+        agent_id: None,
+    }]));
+    let body = serde_json::json!({
+        "namespace": "notifications",
+        "tenant": "tenant-1",
+        "max_actions": 10,
+        "window": u64::MAX.to_string(),
+        "overage_behavior": "block",
+    });
+    let status = auth_post_status(app, "/v1/quotas", body).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn tenant_authz_chains_list_denies_cross_tenant() {
     let app = build_app(build_test_state_with_auth(vec![default_test_grant()]));
     let status = auth_get_status(app, "/v1/chains?namespace=notifications&tenant=tenant-2").await;

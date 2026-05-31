@@ -210,9 +210,22 @@ pub async fn create_silence(
     let ends_at = match (req.ends_at, req.duration_seconds) {
         (Some(end), _) => end,
         (None, Some(secs)) => {
-            #[allow(clippy::cast_possible_wrap)]
-            let secs = secs as i64;
-            starts_at + Duration::seconds(secs)
+            // Guard every step: a u64 that overflows i64, exceeds chrono's
+            // representable range, or pushes the end past the DateTime range
+            // must return 400 — never panic the handler (DoS surface).
+            let computed = i64::try_from(secs)
+                .ok()
+                .and_then(Duration::try_seconds)
+                .and_then(|d| starts_at.checked_add_signed(d));
+            match computed {
+                Some(end) => end,
+                None => {
+                    return error_response(
+                        StatusCode::BAD_REQUEST,
+                        "duration_seconds is too large",
+                    );
+                }
+            }
         }
         (None, None) => {
             return error_response(
