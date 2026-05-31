@@ -268,14 +268,29 @@ Looks up the audit record by action ID and returns:
 
 ```json
 {
-  "verified": true,
+  "signer_known": true,
+  "signature_well_formed": true,
   "signer_id": "ci-bot",
   "algorithm": "Ed25519",
-  "canonical_hash": "sha256-hex-of-canonical-bytes"
+  "canonical_hash": "sha256-hex-of-canonical-bytes",
+  "reason": "signer known and signature well-formed; this is NOT a full cryptographic verification — recompute canonical_bytes() on the original action and check it against canonical_hash, then verify the signature against those bytes"
 }
 ```
 
-Callers can independently verify by computing `canonical_bytes` on the original action, hashing with SHA-256, and comparing to `canonical_hash`.
+> **This endpoint does not perform a full cryptographic verification.** The
+> audit record stores only the SHA-256 `canonical_hash` of the bytes that were
+> signed, not the bytes themselves, so the original Ed25519 signature cannot be
+> re-checked server-side. The response reports two facts it *can* establish —
+> `signer_known` (the `signer_id` is in the keyring) and `signature_well_formed`
+> (the stored signature base64-decodes to a 64-byte Ed25519 signature) — and
+> returns `canonical_hash` for independent verification. There is deliberately
+> no single `verified` field, which previously over-claimed cryptographic
+> verification.
+
+To fully verify, recompute `canonical_bytes()` on the original action, hash it
+with SHA-256 and confirm it equals `canonical_hash`, then verify the signature
+against those bytes with the signer's public key (available from the discovery
+endpoint above).
 
 ## Querying audit records by signer
 
