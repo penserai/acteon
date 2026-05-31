@@ -139,6 +139,44 @@ pub(crate) struct CachedPolicy {
     pub(crate) cached_at: chrono::DateTime<Utc>,
 }
 
+/// Holds the per-dispatch distributed lock and guarantees it is released on
+/// every exit path of the dispatch pipeline.
+///
+/// The pipeline's explicit release sites `take()` the inner guard and `await`
+/// the release, so the common paths stay synchronous and surface lock errors.
+/// Any *other* early return — a rule-evaluation error, an enrichment or
+/// template-render failure, a `?` anywhere in the locked section — drops this
+/// wrapper, whose `Drop` spawns the async release. Without it, an error path
+/// would drop the raw guard without releasing, leaving the lock held for its
+/// full 30s TTL and blocking every retry that reuses the same (client-settable)
+/// `action.id` until the TTL lapses.
+struct DispatchLockGuard(Option<Box<dyn acteon_state::LockGuard>>);
+
+impl DispatchLockGuard {
+    /// Take the inner guard so the caller can `await` an explicit release.
+    /// Leaves the wrapper empty, so its `Drop` becomes a no-op.
+    fn take(&mut self) -> Option<Box<dyn acteon_state::LockGuard>> {
+        self.0.take()
+    }
+}
+
+impl Drop for DispatchLockGuard {
+    fn drop(&mut self) {
+        if let Some(guard) = self.0.take() {
+            // Release is async; the explicit pipeline paths awaited it, so this
+            // only runs for early-return/error paths. Spawn it (best-effort) so
+            // the lock frees immediately instead of waiting out its TTL. If no
+            // runtime is current (e.g. dropped during shutdown), fall back to
+            // TTL expiry.
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn(async move {
+                    let _ = guard.release().await;
+                });
+            }
+        }
+    }
+}
+
 /// The central gateway that orchestrates the action dispatch pipeline.
 ///
 /// The dispatch pipeline for each action:
@@ -491,7 +529,7 @@ impl Gateway {
         );
 
         // In dry-run mode, skip lock acquisition, state mutation, and audit.
-        let mut guard = if dry_run {
+        let mut guard = DispatchLockGuard(if dry_run {
             None
         } else {
             // 2. Acquire the distributed lock with a 30-second TTL and 5-second timeout.
@@ -501,7 +539,7 @@ impl Gateway {
                     .await
                     .map_err(|e| GatewayError::LockFailed(e.to_string()))?,
             )
-        };
+        });
 
         if !dry_run {
             info!("distributed lock acquired");
@@ -599,7 +637,7 @@ impl Gateway {
                     action_id: Some(action.id.to_string()),
                 };
                 let _ = self.stream_tx.send(stream_event);
-                if let Some(g) = guard {
+                if let Some(g) = guard.take() {
                     let _ = g.release().await;
                 }
                 return Ok(outcome);
@@ -738,7 +776,7 @@ impl Gateway {
             };
             let _ = self.stream_tx.send(stream_event);
 
-            if let Some(guard) = guard {
+            if let Some(guard) = guard.take() {
                 guard
                     .release()
                     .await
@@ -797,7 +835,7 @@ impl Gateway {
             };
             let _ = self.stream_tx.send(stream_event);
 
-            if let Some(guard) = guard {
+            if let Some(guard) = guard.take() {
                 guard
                     .release()
                     .await
@@ -953,8 +991,9 @@ impl Gateway {
             let _ = self.stream_tx.send(stream_event);
         }
 
-        // 7. Release the lock explicitly.
-        if let Some(guard) = guard {
+        // 7. Release the lock explicitly (any earlier exit released via
+        //    `DispatchLockGuard`'s `Drop`).
+        if let Some(guard) = guard.take() {
             guard
                 .release()
                 .await
@@ -6576,6 +6615,35 @@ mod tests {
     }
 
     // -- Tests ----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn dispatch_lock_guard_releases_lock_on_drop() {
+        // An early-return / error path in dispatch_inner drops the
+        // DispatchLockGuard without an explicit take()+release. The Drop must
+        // still free the lock, so a retry that reuses the same action.id is not
+        // blocked until the 30s TTL lapses.
+        use acteon_state::DistributedLock;
+        let lock: Arc<dyn DistributedLock> = Arc::new(MemoryDistributedLock::new());
+        let g = lock
+            .acquire("leak-test", Duration::from_secs(30), Duration::from_secs(5))
+            .await
+            .expect("first acquire should succeed");
+        {
+            let _wrapper = super::DispatchLockGuard(Some(g));
+            // dropped here without take() — simulates a `?` early return
+        }
+        // The release is spawned onto the runtime; yield so it runs.
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+        }
+        let again = lock
+            .acquire("leak-test", Duration::from_secs(30), Duration::from_secs(2))
+            .await;
+        assert!(
+            again.is_ok(),
+            "lock must be re-acquirable after the guard wrapper is dropped"
+        );
+    }
 
     #[tokio::test]
     async fn dispatch_allow_no_rules() {
