@@ -20,6 +20,8 @@ use acteon_state::{KeyKind, StateKey};
 
 use super::AppState;
 use super::schemas::ErrorResponse;
+use crate::auth::identity::CallerIdentity;
+use crate::auth::role::Permission;
 
 // ---------------------------------------------------------------------------
 // Request / response types
@@ -345,6 +347,26 @@ fn validate_template_syntax(content: &str) -> Result<(), String> {
 }
 
 // ---------------------------------------------------------------------------
+// Authorization helpers
+// ---------------------------------------------------------------------------
+
+/// `403 Forbidden` for a caller whose grants don't cover `(namespace, tenant)`.
+fn tenant_forbidden(namespace: &str, tenant: &str) -> axum::response::Response {
+    error_response(
+        StatusCode::FORBIDDEN,
+        &format!("forbidden: no grant covers tenant={tenant} namespace={namespace}"),
+    )
+}
+
+/// `403 Forbidden` for a caller whose role lacks template-management rights.
+fn manage_forbidden() -> axum::response::Response {
+    error_response(
+        StatusCode::FORBIDDEN,
+        "insufficient permissions: templates manage requires admin or operator role",
+    )
+}
+
+// ---------------------------------------------------------------------------
 // Template handlers
 // ---------------------------------------------------------------------------
 
@@ -365,8 +387,15 @@ fn validate_template_syntax(content: &str) -> Result<(), String> {
 )]
 pub async fn create_template(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
     Json(req): Json<CreateTemplateRequest>,
 ) -> impl IntoResponse {
+    if !identity.role.has_permission(Permission::TemplatesManage) {
+        return manage_forbidden();
+    }
+    if !identity.can_manage_scope(&req.tenant, &req.namespace) {
+        return tenant_forbidden(&req.namespace, &req.tenant);
+    }
     if let Err(e) = validate_template_name(&req.name) {
         return error_response(StatusCode::BAD_REQUEST, &e);
     }
@@ -451,6 +480,7 @@ pub async fn create_template(
 )]
 pub async fn list_templates(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
     Query(params): Query<ListTemplatesParams>,
 ) -> impl IntoResponse {
     let gw = state.gateway.read().await;
@@ -469,6 +499,12 @@ pub async fn list_templates(
         let Ok(tpl) = serde_json::from_str::<Template>(&value) else {
             continue;
         };
+
+        // Tenant scoping: never surface templates the caller's grants don't
+        // cover, regardless of the requested namespace/tenant filter.
+        if !identity.can_manage_scope(&tpl.tenant, &tpl.namespace) {
+            continue;
+        }
 
         if let Some(ref ns) = params.namespace
             && tpl.namespace != *ns
@@ -519,17 +555,23 @@ pub async fn list_templates(
 )]
 pub async fn get_template(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let gw = state.gateway.read().await;
     let state_store = gw.state_store();
 
     match load_template(state_store.as_ref(), &id).await {
-        Ok(Some(tpl)) => (
-            StatusCode::OK,
-            Json(serde_json::json!(template_to_response(&tpl))),
-        )
-            .into_response(),
+        Ok(Some(tpl)) => {
+            if !identity.can_manage_scope(&tpl.tenant, &tpl.namespace) {
+                return tenant_forbidden(&tpl.namespace, &tpl.tenant);
+            }
+            (
+                StatusCode::OK,
+                Json(serde_json::json!(template_to_response(&tpl))),
+            )
+                .into_response()
+        }
         Ok(None) => error_response(StatusCode::NOT_FOUND, &format!("template not found: {id}")),
         Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
     }
@@ -553,9 +595,14 @@ pub async fn get_template(
 )]
 pub async fn update_template(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(id): Path<String>,
     Json(req): Json<UpdateTemplateRequest>,
 ) -> impl IntoResponse {
+    if !identity.role.has_permission(Permission::TemplatesManage) {
+        return manage_forbidden();
+    }
+
     let gw = state.gateway.read().await;
     let state_store = gw.state_store();
 
@@ -566,6 +613,10 @@ pub async fn update_template(
         }
         Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
     };
+
+    if !identity.can_manage_scope(&tpl.tenant, &tpl.namespace) {
+        return tenant_forbidden(&tpl.namespace, &tpl.tenant);
+    }
 
     if let Some(ref content) = req.content {
         if let Err(e) = validate_template_content(content) {
@@ -623,8 +674,13 @@ pub async fn update_template(
 )]
 pub async fn delete_template(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if !identity.role.has_permission(Permission::TemplatesManage) {
+        return manage_forbidden();
+    }
+
     let gw = state.gateway.read().await;
     let state_store = gw.state_store();
 
@@ -635,6 +691,10 @@ pub async fn delete_template(
         }
         Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
     };
+
+    if !identity.can_manage_scope(&tpl.tenant, &tpl.namespace) {
+        return tenant_forbidden(&tpl.namespace, &tpl.tenant);
+    }
 
     // Check if any profiles reference this template.
     let referencing: Vec<String> = gw
@@ -694,8 +754,15 @@ pub async fn delete_template(
 )]
 pub async fn create_profile(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
     Json(req): Json<CreateProfileRequest>,
 ) -> impl IntoResponse {
+    if !identity.role.has_permission(Permission::TemplatesManage) {
+        return manage_forbidden();
+    }
+    if !identity.can_manage_scope(&req.tenant, &req.namespace) {
+        return tenant_forbidden(&req.namespace, &req.tenant);
+    }
     if let Err(e) = validate_template_name(&req.name) {
         return error_response(StatusCode::BAD_REQUEST, &e);
     }
@@ -786,6 +853,7 @@ pub async fn create_profile(
 )]
 pub async fn list_profiles(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
     Query(params): Query<ListTemplatesParams>,
 ) -> impl IntoResponse {
     let gw = state.gateway.read().await;
@@ -806,6 +874,11 @@ pub async fn list_profiles(
         let Ok(prof) = serde_json::from_str::<TemplateProfile>(&value) else {
             continue;
         };
+
+        // Tenant scoping: never surface profiles outside the caller's grants.
+        if !identity.can_manage_scope(&prof.tenant, &prof.namespace) {
+            continue;
+        }
 
         if let Some(ref ns) = params.namespace
             && prof.namespace != *ns
@@ -853,17 +926,23 @@ pub async fn list_profiles(
 )]
 pub async fn get_profile(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let gw = state.gateway.read().await;
     let state_store = gw.state_store();
 
     match load_profile(state_store.as_ref(), &id).await {
-        Ok(Some(prof)) => (
-            StatusCode::OK,
-            Json(serde_json::json!(profile_to_response(&prof))),
-        )
-            .into_response(),
+        Ok(Some(prof)) => {
+            if !identity.can_manage_scope(&prof.tenant, &prof.namespace) {
+                return tenant_forbidden(&prof.namespace, &prof.tenant);
+            }
+            (
+                StatusCode::OK,
+                Json(serde_json::json!(profile_to_response(&prof))),
+            )
+                .into_response()
+        }
         Ok(None) => error_response(StatusCode::NOT_FOUND, &format!("profile not found: {id}")),
         Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
     }
@@ -887,9 +966,14 @@ pub async fn get_profile(
 )]
 pub async fn update_profile(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(id): Path<String>,
     Json(req): Json<UpdateProfileRequest>,
 ) -> impl IntoResponse {
+    if !identity.role.has_permission(Permission::TemplatesManage) {
+        return manage_forbidden();
+    }
+
     let gw = state.gateway.read().await;
     let state_store = gw.state_store();
 
@@ -900,6 +984,10 @@ pub async fn update_profile(
         }
         Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
     };
+
+    if !identity.can_manage_scope(&prof.tenant, &prof.namespace) {
+        return tenant_forbidden(&prof.namespace, &prof.tenant);
+    }
 
     if let Some(ref fields) = req.fields {
         // Validate $ref templates exist.
@@ -961,8 +1049,13 @@ pub async fn update_profile(
 )]
 pub async fn delete_profile(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if !identity.role.has_permission(Permission::TemplatesManage) {
+        return manage_forbidden();
+    }
+
     let gw = state.gateway.read().await;
     let state_store = gw.state_store();
 
@@ -973,6 +1066,10 @@ pub async fn delete_profile(
         }
         Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
     };
+
+    if !identity.can_manage_scope(&prof.tenant, &prof.namespace) {
+        return tenant_forbidden(&prof.namespace, &prof.tenant);
+    }
 
     let key = profile_state_key(&id);
     if let Err(e) = state_store.delete(&key).await {
@@ -1009,8 +1106,13 @@ pub async fn delete_profile(
 )]
 pub async fn render_preview(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
     Json(req): Json<RenderPreviewRequest>,
 ) -> impl IntoResponse {
+    if !identity.can_manage_scope(&req.tenant, &req.namespace) {
+        return tenant_forbidden(&req.namespace, &req.tenant);
+    }
+
     let gw = state.gateway.read().await;
 
     let Some(profile) = gw.template_profile_by_scope(&req.namespace, &req.tenant, &req.profile)
@@ -1056,7 +1158,13 @@ pub async fn render_preview(
         (status = 500, description = "Reload failed", body = ErrorResponse),
     )
 )]
-pub async fn reload_static_templates(State(state): State<AppState>) -> impl IntoResponse {
+pub async fn reload_static_templates(
+    State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
+) -> impl IntoResponse {
+    if !identity.role.has_permission(Permission::TemplatesManage) {
+        return manage_forbidden();
+    }
     let Some(handle) = state.static_templates.clone() else {
         return error_response(
             StatusCode::BAD_REQUEST,

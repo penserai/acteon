@@ -30,7 +30,8 @@ impl Role {
             | Permission::CircuitBreakerManage
             | Permission::PluginsManage
             | Permission::SilencesManage
-            | Permission::TimeIntervalsManage => matches!(self, Self::Admin | Self::Operator),
+            | Permission::TimeIntervalsManage
+            | Permission::TemplatesManage => matches!(self, Self::Admin | Self::Operator),
             Permission::AuditRead
             | Permission::RulesRead
             | Permission::RulesTest
@@ -64,4 +65,8 @@ pub enum Permission {
     SilencesManage,
     /// Create, update, or delete time intervals. Held by admin and operator.
     TimeIntervalsManage,
+    /// Create, update, delete, or reload payload templates and profiles.
+    /// Held by admin and operator. Reads (get/list/render preview) are open
+    /// to all roles but remain tenant-scoped.
+    TemplatesManage,
 }
