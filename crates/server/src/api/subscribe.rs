@@ -1176,6 +1176,7 @@ mod tests {
             parallel_sub_results: std::collections::HashMap::new(),
             step_attempts: vec![],
             step_history: vec![],
+            caller: None,
         }
     }
 

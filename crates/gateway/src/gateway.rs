@@ -381,7 +381,12 @@ impl Gateway {
     /// cannot be recorded never runs, so there is no unaudited side effect.
     /// Intent records carry the `pending` outcome and are excluded from
     /// analytics, so duplicates across retries are harmless.
-    async fn write_step_intent(&self, action: &Action, chain_id: &str) -> Result<(), GatewayError> {
+    async fn write_step_intent(
+        &self,
+        action: &Action,
+        chain_id: &str,
+        caller: Option<&Caller>,
+    ) -> Result<(), GatewayError> {
         if self.sync_audit_writes()
             && let Some(ref audit) = self.audit
         {
@@ -392,7 +397,7 @@ impl Gateway {
                 Utc::now(),
                 self.effective_audit_ttl(&action.namespace, &action.tenant),
                 self.audit_store_payload,
-                None,
+                caller,
             );
             // Correlate the intent back to its chain (the shared builder, used
             // by single dispatch too, leaves `chain_id` unset).
@@ -904,7 +909,9 @@ impl Gateway {
                 )
                 .await?
             }
-            RuleVerdict::Chain { rule: _, chain } => self.handle_chain(&action, chain).await?,
+            RuleVerdict::Chain { rule: _, chain } => {
+                self.handle_chain(&action, chain, caller).await?
+            }
             RuleVerdict::Schedule {
                 rule: _,
                 delay_seconds,
@@ -2378,6 +2385,7 @@ impl Gateway {
         &self,
         action: &Action,
         chain_name: &str,
+        caller: Option<&Caller>,
     ) -> Result<ActionOutcome, GatewayError> {
         let chain_config = self.chains.read().get(chain_name).cloned().ok_or_else(|| {
             GatewayError::ChainError(format!("chain configuration not found: {chain_name}"))
@@ -2435,6 +2443,7 @@ impl Gateway {
             parallel_sub_results: HashMap::new(),
             step_attempts: vec![0; total_steps],
             step_history: vec![Vec::new(); total_steps],
+            caller: caller.cloned(),
         };
 
         // Persist chain state.
@@ -3124,7 +3133,10 @@ impl Gateway {
         // index — so without this the chain would be orphaned), release the
         // lock, and return. Nothing has executed, so a transient audit outage
         // is simply retried on a later tick.
-        if let Err(e) = self.write_step_intent(&step_action, chain_id).await {
+        if let Err(e) = self
+            .write_step_intent(&step_action, chain_id, chain_state.caller.as_ref())
+            .await
+        {
             warn!(
                 error = %e,
                 chain_id = %chain_id,
@@ -3924,7 +3936,10 @@ impl Gateway {
                     &sub_step.action_type,
                     sub_payload.clone(),
                 );
-                if let Err(e) = self.write_step_intent(&sub_action, chain_id).await {
+                if let Err(e) = self
+                    .write_step_intent(&sub_action, chain_id, chain_state.caller.as_ref())
+                    .await
+                {
                     warn!(
                         error = %e,
                         sub_step = %sub_step.name,
@@ -4639,6 +4654,8 @@ impl Gateway {
             parallel_sub_results: HashMap::new(),
             step_attempts: vec![0; total_steps],
             step_history: vec![Vec::new(); total_steps],
+            // Sub-chains inherit the originating caller for audit attribution.
+            caller: parent.caller.clone(),
         };
 
         // Persist child chain state.
@@ -5084,6 +5101,7 @@ impl Gateway {
     /// Inner implementation shared by [`emit_chain_step_audit`] and
     /// [`emit_parallel_step_audit`].
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_lines)]
     async fn emit_chain_step_audit_inner(
         &self,
         chain_state: &ChainState,
@@ -5189,8 +5207,16 @@ impl Gateway {
                 completed_at: step_result.completed_at,
                 duration_ms: u64::try_from(step_duration.as_millis()).unwrap_or(u64::MAX),
                 expires_at,
-                caller_id: String::new(),
-                auth_method: String::new(),
+                caller_id: chain_state
+                    .caller
+                    .as_ref()
+                    .map(|c| c.id.clone())
+                    .unwrap_or_default(),
+                auth_method: chain_state
+                    .caller
+                    .as_ref()
+                    .map(|c| c.auth_method.clone())
+                    .unwrap_or_default(),
                 record_hash: None,
                 previous_hash: None,
                 sequence_number: None,
@@ -5313,8 +5339,16 @@ impl Gateway {
                 completed_at: now,
                 duration_ms,
                 expires_at,
-                caller_id: String::new(),
-                auth_method: String::new(),
+                caller_id: chain_state
+                    .caller
+                    .as_ref()
+                    .map(|c| c.id.clone())
+                    .unwrap_or_default(),
+                auth_method: chain_state
+                    .caller
+                    .as_ref()
+                    .map(|c| c.auth_method.clone())
+                    .unwrap_or_default(),
                 record_hash: None,
                 previous_hash: None,
                 sequence_number: None,
@@ -11080,6 +11114,7 @@ mod tests {
             parallel_sub_results: HashMap::new(),
             step_attempts: Vec::new(),
             step_history: Vec::new(),
+            caller: None,
         };
         let key = StateKey::new("notifications", "tenant-1", KeyKind::Chain, "c1");
         gw.state_store()
@@ -11149,6 +11184,7 @@ mod tests {
             parallel_sub_results: HashMap::new(),
             step_attempts: vec![0, 0],
             step_history: vec![Vec::new(), Vec::new()],
+            caller: None,
         };
         let key = StateKey::new("notifications", "tenant-1", KeyKind::Chain, "g1");
         gw.state_store()
@@ -11224,6 +11260,7 @@ mod tests {
             parallel_sub_results: HashMap::new(),
             step_attempts: vec![0],
             step_history: vec![Vec::new()],
+            caller: None,
         };
 
         let dag = gw
@@ -11242,6 +11279,7 @@ mod tests {
     fn seed_single_step_chain(
         gw: &crate::gateway::Gateway,
         chain_id: &str,
+        caller: Option<acteon_core::Caller>,
     ) -> impl std::future::Future<Output = ()> {
         use acteon_core::{ChainConfig, ChainState, ChainStatus, ChainStepConfig};
         use acteon_state::{KeyKind, StateKey};
@@ -11282,6 +11320,7 @@ mod tests {
             parallel_sub_results: HashMap::new(),
             step_attempts: vec![0],
             step_history: Vec::new(),
+            caller,
         };
         let key = StateKey::new("notifications", "tenant-1", KeyKind::Chain, chain_id);
         let store = gw.state_store();
@@ -11305,7 +11344,7 @@ mod tests {
                 acteon_core::ComplianceMode::Soc2,
             )),
         );
-        seed_single_step_chain(&gw, "cc1").await;
+        seed_single_step_chain(&gw, "cc1", None).await;
 
         let err = gw
             .advance_chain("notifications", "tenant-1", "cc1")
@@ -11335,7 +11374,7 @@ mod tests {
                 acteon_core::ComplianceMode::Soc2,
             )),
         );
-        seed_single_step_chain(&gw, "cc2").await;
+        seed_single_step_chain(&gw, "cc2", None).await;
 
         gw.advance_chain("notifications", "tenant-1", "cc2")
             .await
@@ -11372,7 +11411,7 @@ mod tests {
                 acteon_core::ComplianceMode::Soc2,
             )),
         );
-        seed_single_step_chain(&gw, "cc3").await;
+        seed_single_step_chain(&gw, "cc3", None).await;
 
         gw.advance_chain("notifications", "tenant-1", "cc3")
             .await
@@ -11390,6 +11429,50 @@ mod tests {
         assert!(
             chain_records >= 2,
             "step + terminal chain audit records must be durable; got {chain_records}",
+        );
+    }
+
+    #[tokio::test]
+    async fn compliance_chain_audit_carries_caller_identity() {
+        // Chain audit records previously left caller_id/auth_method empty. The
+        // initiating caller is now stored on ChainState and stamped onto every
+        // chain audit record: the pre-execution intent, the per-step outcome,
+        // and the terminal summary.
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let (gw, _captured) = build_compliance_gateway(
+            Arc::new(TestAudit {
+                fail: false,
+                records: Arc::clone(&records),
+            }),
+            Some(acteon_core::ComplianceConfig::new(
+                acteon_core::ComplianceMode::Soc2,
+            )),
+        );
+        seed_single_step_chain(&gw, "cc-caller", Some(make_caller("alice@corp"))).await;
+
+        gw.advance_chain("notifications", "tenant-1", "cc-caller")
+            .await
+            .expect("advance_chain succeeds");
+
+        let recs = records.lock().unwrap();
+        let chain_recs: Vec<_> = recs
+            .iter()
+            .filter(|r| r.chain_id.as_deref() == Some("cc-caller"))
+            .collect();
+        assert!(
+            chain_recs.len() >= 3,
+            "intent + step + terminal records present; got {}",
+            chain_recs.len(),
+        );
+        assert!(
+            chain_recs
+                .iter()
+                .all(|r| r.caller_id == "alice@corp" && r.auth_method == "api_key"),
+            "every chain audit record must attribute the originating caller; got {:?}",
+            chain_recs
+                .iter()
+                .map(|r| (r.caller_id.clone(), r.auth_method.clone()))
+                .collect::<Vec<_>>(),
         );
     }
 
@@ -11459,6 +11542,7 @@ mod tests {
             parallel_sub_results: HashMap::new(),
             step_attempts: vec![0],
             step_history: Vec::new(),
+            caller: None,
         };
         let key = StateKey::new("notifications", "tenant-1", KeyKind::Chain, "cp1");
         gw.state_store()
