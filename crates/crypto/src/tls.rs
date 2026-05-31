@@ -232,7 +232,15 @@ pub fn build_reqwest_client(
         })?;
         let ca_cert = reqwest::Certificate::from_pem(&ca_pem)
             .map_err(|e| TlsError::ReqwestBuild(format!("invalid CA bundle: {e}")))?;
-        builder = builder.add_root_certificate(ca_cert);
+        // Pin to the provided CA *only*: drop the built-in public root set so a
+        // certificate signed by any other (publicly-trusted) CA is rejected.
+        // `add_root_certificate` otherwise merely ADDS to reqwest's default
+        // roots, which would let a MITM presenting any public-CA cert for the
+        // host succeed and defeat the pin. This matches the rustls
+        // `build_client_config` path, which trusts the pinned CA exclusively.
+        builder = builder
+            .tls_built_in_root_certs(false)
+            .add_root_certificate(ca_cert);
     }
 
     if let (Some(cert_path), Some(key_path)) = (client_cert_path, client_key_path) {
