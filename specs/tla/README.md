@@ -23,12 +23,16 @@ for the full research document.
 | **Hash Chain** | `HashChain.tla` | `audit/compliance.rs` `HashChainAuditStore` (the PR #227 max-tip fix) | The committed audit chain is contiguous — no duplicate sequence number, no fork — for every interleaving of concurrent writers |
 | **Recurring Dispatch** | `RecurringDispatch.tla` | `background/workers/recurring.rs` claim + index re-arm (the PR #235 fix) | Each occurrence is dispatched **at most once**, even when a dispatch outlives the 60s claim TTL |
 | **Message Bus** | `MessageBus.tla` | `gateway/group_manager.rs` `flush_group` notify-once | A grouped notification is emitted onto the bus **at most once** per window, despite concurrent flush workers / replicas |
+| **Chain Ordering** | `ChainOrdering.tla` | `gateway.rs` `advance_chain` fresh re-read CAS (line 2986) | Each chain step is executed **at most once** and recorded **in contiguous order**, under concurrent `advance_chain` workers (isolates the idempotency-CAS layer) |
+| **Approval Lifecycle** | `ApprovalLifecycle.tla` | `gateway.rs` `execute_approval` / `reject_approval` (the PR #225 two-phase) | An approval is decided once; the side-effect runs **at most once and only if approved**, only after the durable intent is recorded (intent-before-execute) |
+| **Quota Counter** | `QuotaCounter.tla` | `gateway/quota_enforcement.rs` atomic check-and-increment + Block refund | **No counter drift** (no lost increment) and **no over-admission** past the limit, under concurrent dispatchers |
 
 Each spec is self-contained: it inlines its own lock / state-store state machine
 rather than sharing a module, so each can be model-checked independently.
 
 Each spec is also adversarially validated: reverting the specific fix it models
-(the max-tip read, the pre-dispatch re-arm, the flush mutex) makes TLC report the
+(the max-tip read, the pre-dispatch re-arm, the flush mutex, the step re-read CAS,
+the intent-before-flip ordering, the increment atomicity) makes TLC report the
 corresponding safety violation. The specs catch the real bug, not just a tautology.
 
 ## Quick Start
@@ -71,9 +75,9 @@ tla-specs:
     - run: make -C specs/tla check-all
 ```
 
-The CI configuration uses small model parameters (2 gateways/writers/flushers)
-for fast feedback (all five specs finish in a few seconds total). For nightly
-runs, increase the constants in the `.cfg` files for deeper coverage.
+The CI configuration uses small model parameters (2 of each principal) for fast
+feedback (all eight specs finish in a few seconds total). For nightly runs,
+increase the constants in the `.cfg` files for deeper coverage.
 
 ## Project Structure
 
@@ -89,6 +93,12 @@ specs/tla/
   RecurringDispatch.cfg
   MessageBus.tla           # Spec: grouped-notification notify-once delivery
   MessageBus.cfg
+  ChainOrdering.tla        # Spec: chain step at-most-once + in-order advance
+  ChainOrdering.cfg
+  ApprovalLifecycle.tla    # Spec: approval decided-once + intent-before-execute (#225)
+  ApprovalLifecycle.cfg
+  QuotaCounter.tla         # Spec: quota counter no-drift + no-over-admit
+  QuotaCounter.cfg
   ci/
     run-tlc.sh             # CI runner (auto-discovers every *.cfg)
   Makefile                 # Convenience targets
