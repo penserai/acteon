@@ -368,49 +368,53 @@ impl AuditStore for DynamoDbAuditStore {
             if let (Some(ns), Some(t)) = (namespace, tenant) {
                 let ns_tenant = Self::ns_tenant(&ns, &t);
 
-                // Choose GSI based on sort order.
-                let (index_name, key_condition, mut expr_values) = if query.sort_by_sequence_asc {
-                    (
-                        "ns_tenant_sequence",
-                        "ns_tenant = :ns_tenant".to_owned(),
-                        HashMap::from([(
+                // Choose GSI based on sort order. Both the ascending (chain
+                // verification) and descending (hash-chain tip fetch) sequence
+                // orders use the sequence GSI; `scan_forward` below selects the
+                // direction (forward = asc, backward = desc/tip).
+                let (index_name, key_condition, mut expr_values) =
+                    if query.sort_by_sequence_asc || query.sort_by_sequence_desc {
+                        (
+                            "ns_tenant_sequence",
+                            "ns_tenant = :ns_tenant".to_owned(),
+                            HashMap::from([(
+                                ":ns_tenant".to_owned(),
+                                AttributeValue::S(ns_tenant.clone()),
+                            )]),
+                        )
+                    } else {
+                        let mut kc = "ns_tenant = :ns_tenant".to_owned();
+                        let mut ev = HashMap::from([(
                             ":ns_tenant".to_owned(),
                             AttributeValue::S(ns_tenant.clone()),
-                        )]),
-                    )
-                } else {
-                    let mut kc = "ns_tenant = :ns_tenant".to_owned();
-                    let mut ev = HashMap::from([(
-                        ":ns_tenant".to_owned(),
-                        AttributeValue::S(ns_tenant.clone()),
-                    )]);
+                        )]);
 
-                    // Add time range conditions on the SK.
-                    if let Some(ref from) = query.from {
-                        kc.push_str(" AND dispatched_at_ms >= :from_ms");
-                        ev.insert(
-                            ":from_ms".to_owned(),
-                            AttributeValue::N(from.timestamp_millis().to_string()),
-                        );
-                    }
-                    if let Some(ref to) = query.to {
-                        if query.from.is_some() {
-                            // Already have a range start, add end.
-                            kc = kc.replace(
-                                " AND dispatched_at_ms >= :from_ms",
-                                " AND dispatched_at_ms BETWEEN :from_ms AND :to_ms",
+                        // Add time range conditions on the SK.
+                        if let Some(ref from) = query.from {
+                            kc.push_str(" AND dispatched_at_ms >= :from_ms");
+                            ev.insert(
+                                ":from_ms".to_owned(),
+                                AttributeValue::N(from.timestamp_millis().to_string()),
                             );
-                        } else {
-                            kc.push_str(" AND dispatched_at_ms <= :to_ms");
                         }
-                        ev.insert(
-                            ":to_ms".to_owned(),
-                            AttributeValue::N(to.timestamp_millis().to_string()),
-                        );
-                    }
+                        if let Some(ref to) = query.to {
+                            if query.from.is_some() {
+                                // Already have a range start, add end.
+                                kc = kc.replace(
+                                    " AND dispatched_at_ms >= :from_ms",
+                                    " AND dispatched_at_ms BETWEEN :from_ms AND :to_ms",
+                                );
+                            } else {
+                                kc.push_str(" AND dispatched_at_ms <= :to_ms");
+                            }
+                            ev.insert(
+                                ":to_ms".to_owned(),
+                                AttributeValue::N(to.timestamp_millis().to_string()),
+                            );
+                        }
 
-                    ("ns_tenant_dispatched", kc, ev)
-                };
+                        ("ns_tenant_dispatched", kc, ev)
+                    };
 
                 // Merge filter values.
                 expr_values.extend(filter_values);

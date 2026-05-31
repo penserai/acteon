@@ -148,6 +148,14 @@ impl AuditStore for MemoryAuditStore {
                     .cmp(&b.sequence_number.unwrap_or(u64::MAX))
                     .then_with(|| a.id.cmp(&b.id))
             });
+        } else if query.sort_by_sequence_desc {
+            // Hash-chain tip selection: greatest sequence number first.
+            matching.sort_by(|a, b| {
+                b.sequence_number
+                    .unwrap_or(0)
+                    .cmp(&a.sequence_number.unwrap_or(0))
+                    .then_with(|| b.id.cmp(&a.id))
+            });
         } else {
             matching.sort_by(|a, b| {
                 b.dispatched_at

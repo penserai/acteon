@@ -284,6 +284,9 @@ impl AuditStore for PostgresAuditStore {
         // Data query.
         let order_clause = if query.sort_by_sequence_asc {
             "ORDER BY sequence_number ASC NULLS LAST, id ASC"
+        } else if query.sort_by_sequence_desc {
+            // Hash-chain tip selection: greatest sequence number first.
+            "ORDER BY sequence_number DESC NULLS LAST, id DESC"
         } else {
             "ORDER BY dispatched_at DESC, id DESC"
         };
