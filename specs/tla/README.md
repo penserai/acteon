@@ -26,14 +26,17 @@ for the full research document.
 | **Chain Ordering** | `ChainOrdering.tla` | `gateway.rs` `advance_chain` fresh re-read CAS (line 2986) | Each chain step is executed **at most once** and recorded **in contiguous order**, under concurrent `advance_chain` workers (isolates the idempotency-CAS layer) |
 | **Approval Lifecycle** | `ApprovalLifecycle.tla` | `gateway.rs` `execute_approval` / `reject_approval` (the PR #225 two-phase) | An approval is decided once; the side-effect runs **at most once and only if approved**, only after the durable intent is recorded (intent-before-execute) |
 | **Quota Counter** | `QuotaCounter.tla` | `gateway/quota_enforcement.rs` atomic check-and-increment + Block refund | **No counter drift** (no lost increment) and **no over-admission** past the limit, under concurrent dispatchers |
+| **Bus Approval** | `BusApproval.tla` | `core/bus_approval.rs` + `api/bus.rs` Kafka pre-publish two-phase (Phase-10) | The parked envelope is published **at most once** and **only if approved** — `Approving` is committed before the produce; idempotent producer + reconciler |
+| **Multi-Quota Rollback** | `MultiQuotaRollback.tla` | `gateway/quota_enforcement.rs` `enforce_quota_policies` block rollback | On a block, **every** counter touched is rolled back (all-or-nothing) — no partial leak on a non-blocking policy; no over-admit on any policy |
 
 Each spec is self-contained: it inlines its own lock / state-store state machine
 rather than sharing a module, so each can be model-checked independently.
 
 Each spec is also adversarially validated: reverting the specific fix it models
 (the max-tip read, the pre-dispatch re-arm, the flush mutex, the step re-read CAS,
-the intent-before-flip ordering, the increment atomicity) makes TLC report the
-corresponding safety violation. The specs catch the real bug, not just a tautology.
+the intent-before-flip ordering, the increment atomicity, the two-phase produce
+ordering, the all-or-nothing rollback) makes TLC report the corresponding safety
+violation. The specs catch the real bug, not just a tautology.
 
 ## Quick Start
 
@@ -76,7 +79,7 @@ tla-specs:
 ```
 
 The CI configuration uses small model parameters (2 of each principal) for fast
-feedback (all eight specs finish in a few seconds total). For nightly runs,
+feedback (all ten specs finish in a few seconds total). For nightly runs,
 increase the constants in the `.cfg` files for deeper coverage.
 
 ## Project Structure
@@ -99,6 +102,10 @@ specs/tla/
   ApprovalLifecycle.cfg
   QuotaCounter.tla         # Spec: quota counter no-drift + no-over-admit
   QuotaCounter.cfg
+  BusApproval.tla          # Spec: Kafka pre-publish approval, publish-once two-phase
+  BusApproval.cfg
+  MultiQuotaRollback.tla   # Spec: multi-policy quota all-or-nothing rollback on block
+  MultiQuotaRollback.cfg
   ci/
     run-tlc.sh             # CI runner (auto-discovers every *.cfg)
   Makefile                 # Convenience targets
