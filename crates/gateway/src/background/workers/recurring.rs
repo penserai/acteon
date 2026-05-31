@@ -200,21 +200,35 @@ impl BackgroundProcessor {
             // action armed for its next occurrence rather than stranded.
             let pending_key =
                 StateKey::new(namespace, tenant, KeyKind::PendingRecurring, recurring_id);
-            let next_at = acteon_core::validate_cron_expr(&recurring.cron_expr)
+            // Re-arm ONLY if the action remains active after THIS dispatch,
+            // mirroring the consumer's post-dispatch `still_active` check but
+            // using the pre-increment count + 1 (this dispatch is the
+            // `execution_count + 1`-th). Without the max/ends bound, a consumer
+            // crash on the final occurrence would leave a post-final entry
+            // armed and over-fire it once; with it, the final occurrence drops
+            // the index so nothing further can be polled.
+            let rearm_to = acteon_core::validate_cron_expr(&recurring.cron_expr)
                 .ok()
                 .and_then(|cron| {
                     acteon_core::validate_timezone(&recurring.timezone)
                         .ok()
                         .and_then(|tz| acteon_core::next_occurrence(&cron, tz, &now))
+                })
+                .filter(|next| {
+                    recurring.ends_at.is_none_or(|ends| *next <= ends)
+                        && recurring
+                            .max_executions
+                            .is_none_or(|max| recurring.execution_count + 1 < max)
                 });
-            if let Some(next) = next_at {
+            if let Some(next) = rearm_to {
                 let next_ms = next.timestamp_millis();
                 self.state
                     .set(&pending_key, &next_ms.to_string(), None)
                     .await?;
                 self.state.index_timeout(&pending_key, next_ms).await?;
             } else {
-                // No further occurrence (exhausted or unparsable) — drop it.
+                // No further occurrence (exhausted, past ends_at, at max, or
+                // unparsable) — drop it from the index.
                 self.state.delete(&pending_key).await?;
                 self.state.remove_timeout_index(&pending_key).await?;
             }

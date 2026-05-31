@@ -1483,6 +1483,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn recurring_drops_index_on_final_occurrence() {
+        // When this dispatch is the last allowed (execution_count + 1 == max),
+        // the worker must DROP the index rather than re-arm — otherwise a
+        // consumer crash would leave a post-final occurrence armed and over-fire
+        // it once beyond max_executions.
+        let group_manager = Arc::new(GroupManager::new());
+        let state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let namespace = "test-ns";
+        let tenant = "test-tenant";
+
+        let recurring_id = "rec-final-001";
+        let mut recurring =
+            make_test_recurring_action(recurring_id, namespace, tenant, "*/5 * * * *", true);
+        recurring.max_executions = Some(1);
+        recurring.execution_count = 0; // this dispatch is the 1st and final one
+        let rec_key = StateKey::new(namespace, tenant, KeyKind::RecurringAction, recurring_id);
+        state
+            .set(&rec_key, &serde_json::to_string(&recurring).unwrap(), None)
+            .await
+            .unwrap();
+
+        let past_due = Utc::now() - chrono::Duration::seconds(10);
+        let pending_key = StateKey::new(namespace, tenant, KeyKind::PendingRecurring, recurring_id);
+        state
+            .set(&pending_key, &past_due.timestamp_millis().to_string(), None)
+            .await
+            .unwrap();
+        state
+            .index_timeout(&pending_key, past_due.timestamp_millis())
+            .await
+            .unwrap();
+
+        let (rec_tx, mut rec_rx) = mpsc::channel(10);
+        let (mut processor, shutdown_tx) = BackgroundProcessorBuilder::new()
+            .metrics(Arc::new(GatewayMetrics::default()))
+            .config(BackgroundConfig {
+                enable_group_flush: false,
+                enable_timeout_processing: false,
+                enable_approval_retry: false,
+                enable_chain_advancement: false,
+                enable_scheduled_actions: false,
+                enable_recurring_actions: true,
+                recurring_check_interval: Duration::from_millis(50),
+                ..BackgroundConfig::default()
+            })
+            .group_manager(group_manager)
+            .state(Arc::clone(&state))
+            .recurring_action_channel(rec_tx)
+            .build()
+            .unwrap();
+        let handle = tokio::spawn(async move {
+            processor.run().await;
+        });
+
+        let event = tokio::time::timeout(Duration::from_secs(2), rec_rx.recv())
+            .await
+            .expect("should receive a recurring event")
+            .expect("event present");
+        assert_eq!(event.recurring_id, recurring_id);
+
+        // The final occurrence must have removed the pending key (not re-armed),
+        // so no post-final occurrence can be polled even if the consumer crashes.
+        let pending_val = state.get(&pending_key).await.unwrap();
+        assert!(
+            pending_val.is_none(),
+            "final occurrence must drop the pending index, got {pending_val:?}"
+        );
+
+        let _ = shutdown_tx.send(()).await;
+        let _ = tokio::time::timeout(Duration::from_secs(1), handle).await;
+    }
+
+    #[tokio::test]
     async fn skips_disabled_recurring_action() {
         let group_manager = Arc::new(GroupManager::new());
         let state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
