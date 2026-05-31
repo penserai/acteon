@@ -3713,6 +3713,36 @@ async fn quota_huge_custom_window_returns_400_not_panic() {
 }
 
 #[tokio::test]
+async fn tenant_authz_rule_playground_denies_cross_tenant() {
+    // Caller is granted tenant-1 only; evaluating rules against tenant-2 must
+    // be refused even though the role (admin) holds RulesTest.
+    let app = build_app(build_test_state_with_auth(vec![default_test_grant()]));
+    let body = serde_json::json!({
+        "namespace": "notifications",
+        "tenant": "tenant-2",
+        "provider": "email",
+        "action_type": "send_email",
+        "payload": {},
+    });
+    let status = auth_post_status(app, "/v1/rules/evaluate", body).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn tenant_authz_rule_playground_allows_in_scope() {
+    let app = build_app(build_test_state_with_auth(vec![default_test_grant()]));
+    let body = serde_json::json!({
+        "namespace": "notifications",
+        "tenant": "tenant-1",
+        "provider": "email",
+        "action_type": "send_email",
+        "payload": {},
+    });
+    let status = auth_post_status(app, "/v1/rules/evaluate", body).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
 async fn tenant_authz_chains_list_denies_cross_tenant() {
     let app = build_app(build_test_state_with_auth(vec![default_test_grant()]));
     let status = auth_get_status(app, "/v1/chains?namespace=notifications&tenant=tenant-2").await;
