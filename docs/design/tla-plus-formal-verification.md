@@ -17,7 +17,7 @@ This document identifies **the highest-value areas** in Acteon where TLA+ modeli
 harden correctness, proposes concrete specifications, and provides an implementation
 roadmap.
 
-> **Implementation status (May 2026).** Five specs are implemented and pass the TLC
+> **Implementation status (May 2026).** Eight specs are implemented and pass the TLC
 > model checker on every run of `specs/tla/ci/run-tlc.sh` (wired into CI as the
 > `TLA+ Specs` job):
 >
@@ -28,14 +28,22 @@ roadmap.
 > | Compliance hash-chain | `HashChain.tla` | Contiguous audit chain — no duplicate sequence number, no fork (the PR #227 max-tip fix) |
 > | Recurring dispatch | `RecurringDispatch.tla` | ≤ 1 dispatch per occurrence under claim-TTL expiry (the PR #235 index re-arm) |
 > | Message bus | `MessageBus.tla` | Grouped notification emitted ≤ once per window across concurrent flushers (`flush_group` mutex) |
+> | Chain ordering (§4.4) | `ChainOrdering.tla` | Each chain step executed ≤ once and recorded in contiguous order, under concurrent `advance_chain` workers (isolates the fresh re-read CAS at gateway.rs:2986) |
+> | Approval lifecycle (§4.5) | `ApprovalLifecycle.tla` | Approval decided once; side-effect runs ≤ once and only if approved, only after the durable intent (the PR #225 intent-before-flip; gateway 3-state path) |
+> | Quota counter (§7.7) | `QuotaCounter.tla` | No counter drift (no lost increment) and no over-admission past the limit, under concurrent dispatchers (atomic check-and-increment + Block refund) |
 >
 > The realized layout deviates from the proposal below in one deliberate way: each spec
 > **inlines** its own lock / state-store state machine instead of sharing `common/`
 > modules, so each can be model-checked in isolation and the proof obligations stay local.
 > Each spec is adversarially validated — reverting the specific fix it models makes TLC
 > report the corresponding violation, so the spec catches the real bug rather than a
-> tautology. Specs for chain ordering, approval lifecycle, and quota counters remain
-> future work (Sections 4.4–4.5, 7.7).
+> tautology. The last three were each scoped to the layer they isolate: `ChainOrdering`
+> models the fresh re-read CAS (not the full lock + per-attempt dedup stack);
+> `ApprovalLifecycle` models the gateway 3-state path that PR #225 fixed (the separate
+> 5-state Kafka-bus approval machine in `core/bus_approval.rs` would warrant its own
+> spec); `QuotaCounter` assumes the Block-path refund always succeeds (the fail-open
+> rollback path is out of scope). The natural next targets are the Kafka-bus approval
+> machine and the multi-policy quota rollback.
 
 ---
 
@@ -523,13 +531,20 @@ specs/
     RecurringDispatch.cfg
     MessageBus.tla                   # grouped-notification notify-once delivery
     MessageBus.cfg
+    ChainOrdering.tla                # chain step at-most-once + in-order (§4.4)
+    ChainOrdering.cfg
+    ApprovalLifecycle.tla            # approval decided-once + intent-before-exec (§4.5, #225)
+    ApprovalLifecycle.cfg
+    QuotaCounter.tla                 # quota no-drift + no-over-admit (§7.7)
+    QuotaCounter.cfg
     Makefile                         # Automation: `make check-all`
     ci/
       run-tlc.sh                     # auto-discovers every *.cfg; used by CI
 ```
 
-Future specs (chain ordering, approval lifecycle, quota counters — Sections 4.4,
-4.5, 7.7) will follow the same inlined, self-contained convention.
+All eight specs follow the same inlined, self-contained convention. The next
+candidates are the Kafka-bus 5-state approval machine (`core/bus_approval.rs`,
+distinct from the gateway path modeled here) and the multi-policy quota rollback.
 
 ### 5.3 CI Integration
 
