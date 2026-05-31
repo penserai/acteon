@@ -106,9 +106,9 @@ pub use key::ActionKey;
 pub use outcome::{ActionError, ActionOutcome, ProviderResponse, ResponseStatus};
 pub use provider_health::{ListProviderHealthResponse, ProviderHealthStatus};
 pub use quota::{
-    MAX_POLICIES_PER_BUCKET, MAX_QUOTA_IDENTIFIER_LEN, OverageBehavior, QuotaIdentifierError,
-    QuotaPolicy, QuotaUsage, QuotaWindow, compute_window_boundaries, quota_counter_key,
-    validate_quota_scope_identifier,
+    MAX_POLICIES_PER_BUCKET, MAX_QUOTA_IDENTIFIER_LEN, MAX_WINDOW_SECONDS, OverageBehavior,
+    QuotaIdentifierError, QuotaPolicy, QuotaUsage, QuotaWindow, compute_window_boundaries,
+    quota_counter_key, validate_quota_scope_identifier,
 };
 pub use recurring::{
     CronValidationError, DEFAULT_MIN_INTERVAL_SECONDS, RecurringAction, RecurringActionTemplate,

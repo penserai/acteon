@@ -331,29 +331,43 @@ pub struct QuotaUsage {
     pub overage_behavior: OverageBehavior,
 }
 
+/// Upper bound on a quota window length, in seconds (~100 years).
+///
+/// Bounds the window so the boundary arithmetic in
+/// [`compute_window_boundaries`] cannot overflow the [`DateTime`] range and
+/// panic. The API layer rejects larger custom windows up front; the clamp in
+/// `compute_window_boundaries` is a defensive backstop for any value that
+/// reaches the core directly (e.g. a policy persisted before this bound).
+pub const MAX_WINDOW_SECONDS: u64 = 100 * 366 * 86_400;
+
 /// Compute the start of the current quota window and when it resets.
 ///
-/// Returns `(window_start, window_end)` based on the window type and current time.
-///
-/// # Panics
-///
-/// Panics if the window duration is zero (which should be prevented by
-/// validation at the API layer).
+/// Returns `(window_start, window_end)` based on the window type and current
+/// time. The window length is clamped to `[1, MAX_WINDOW_SECONDS]` so this
+/// never panics — a zero window (division by zero) or an astronomically large
+/// one (overflowing the `DateTime` range) is clamped rather than aborting the
+/// caller. The quota-usage endpoint must not be a panic/DoS surface.
 #[must_use]
 pub fn compute_window_boundaries(
     window: &QuotaWindow,
     now: &DateTime<Utc>,
 ) -> (DateTime<Utc>, DateTime<Utc>) {
-    let secs = window.duration_seconds();
-    assert!(secs > 0, "quota window duration must be greater than 0");
-    let duration = chrono::Duration::seconds(secs.cast_signed());
+    let window_secs = window
+        .duration_seconds()
+        .clamp(1, MAX_WINDOW_SECONDS)
+        .cast_signed();
+    let duration = chrono::Duration::seconds(window_secs);
     // Use epoch-aligned windows so all instances agree on boundaries.
     let epoch = DateTime::UNIX_EPOCH;
     let elapsed = now.signed_duration_since(epoch);
-    let window_secs = secs.cast_signed();
     let window_index = elapsed.num_seconds() / window_secs;
-    let window_start = epoch + chrono::Duration::seconds(window_index * window_secs);
-    let window_end = window_start + duration;
+    let start_offset = window_index.saturating_mul(window_secs);
+    let window_start = epoch
+        .checked_add_signed(chrono::Duration::seconds(start_offset))
+        .unwrap_or(epoch);
+    let window_end = window_start
+        .checked_add_signed(duration)
+        .unwrap_or(window_start);
     (window_start, window_end)
 }
 
@@ -437,6 +451,44 @@ mod tests {
             QuotaWindow::Custom { seconds: 7200 }.duration_seconds(),
             7200
         );
+    }
+
+    #[test]
+    fn compute_window_boundaries_never_panics_on_extreme_windows() {
+        let now = Utc::now();
+
+        // Astronomically large custom window: must clamp, not overflow/panic.
+        let (start, end) =
+            compute_window_boundaries(&QuotaWindow::Custom { seconds: u64::MAX }, &now);
+        assert!(end >= start, "window end must not precede start");
+        assert!(
+            start <= now,
+            "epoch-aligned start must not be in the future"
+        );
+
+        // Just over the cap clamps to the cap; just under is honoured exactly.
+        let (_, end_capped) = compute_window_boundaries(
+            &QuotaWindow::Custom {
+                seconds: MAX_WINDOW_SECONDS + 1,
+            },
+            &now,
+        );
+        let (_, end_at_cap) = compute_window_boundaries(
+            &QuotaWindow::Custom {
+                seconds: MAX_WINDOW_SECONDS,
+            },
+            &now,
+        );
+        assert_eq!(end_capped, end_at_cap);
+
+        // Zero window (e.g. a stale stored policy) clamps to 1s instead of a
+        // divide-by-zero panic.
+        let (z_start, z_end) = compute_window_boundaries(&QuotaWindow::Custom { seconds: 0 }, &now);
+        assert!(z_end > z_start);
+
+        // A normal window is unaffected by the clamp.
+        let (h_start, h_end) = compute_window_boundaries(&QuotaWindow::Hourly, &now);
+        assert_eq!((h_end - h_start).num_seconds(), 3_600);
     }
 
     #[test]
@@ -972,9 +1024,12 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "quota window duration must be greater than 0")]
-    fn compute_window_boundaries_panics_on_zero() {
+    fn compute_window_boundaries_clamps_zero_window() {
+        // A zero window used to panic (divide-by-zero); it now clamps to a 1s
+        // window so the usage endpoint stays available. Covered in detail by
+        // `compute_window_boundaries_never_panics_on_extreme_windows`.
         let now = Utc::now();
-        let _ = compute_window_boundaries(&QuotaWindow::Custom { seconds: 0 }, &now);
+        let (start, end) = compute_window_boundaries(&QuotaWindow::Custom { seconds: 0 }, &now);
+        assert!(end > start);
     }
 }
