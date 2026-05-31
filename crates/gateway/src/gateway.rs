@@ -5673,39 +5673,87 @@ impl Gateway {
         }
         let verdict = self.engine.evaluate(&eval_ctx).await?;
 
-        match &verdict {
+        // Suppress/Deny refuse execution; every other verdict runs the provider.
+        let will_execute = !matches!(&verdict, RuleVerdict::Suppress(_) | RuleVerdict::Deny(_));
+
+        let dispatched_at = Utc::now();
+        let exec_start = std::time::Instant::now();
+
+        // Compliance fail-closed: durably record the INTENT to run this approved
+        // action *before* the provider side effect, mirroring single dispatch
+        // (step 3f) and chain steps. If it cannot be persisted we abort — nothing
+        // executes, so there is no unaudited side effect. The claim was already
+        // taken; `execute_approval` releases it when this returns Err.
+        if will_execute
+            && self.sync_audit_writes()
+            && let Some(ref audit) = self.audit
+        {
+            let intent = build_intent_audit_record(
+                format!("{}-intent", uuid::Uuid::now_v7()),
+                action,
+                &verdict,
+                dispatched_at,
+                self.effective_audit_ttl(&action.namespace, &action.tenant),
+                self.audit_store_payload,
+                None,
+            );
+            if let Err(e) = audit.record(intent).await {
+                warn!(error = %e, "approval intent audit write failed — failing closed before execution");
+                return Err(GatewayError::AuditWriteFailed(e.to_string()));
+            }
+        }
+
+        let outcome = match &verdict {
             // Rules now suppress/deny => refuse execution
             RuleVerdict::Suppress(rule) | RuleVerdict::Deny(rule) => {
                 info!(
                     rule = %rule,
                     "rules changed since approval, action suppressed on re-evaluation"
                 );
-                Ok(ActionOutcome::Suppressed { rule: rule.clone() })
+                ActionOutcome::Suppressed { rule: rule.clone() }
             }
             // Other verdicts (reroute, throttle, modify) => apply them
             RuleVerdict::Reroute {
                 rule: _,
                 target_provider,
-            } => self.handle_reroute(action, target_provider).await,
+            } => self.handle_reroute(action, target_provider).await?,
             RuleVerdict::Throttle {
                 rule,
                 max_count,
                 window_seconds,
             } => {
                 self.handle_throttle(action, rule, *max_count, *window_seconds)
-                    .await
+                    .await?
             }
             RuleVerdict::Modify { rule: _, changes } => {
                 let mut modified = action.clone();
                 json_patch::merge(&mut modified.payload, changes);
-                Ok(self.execute_action(&modified).await)
+                self.execute_action(&modified).await
             }
             // Allow, RequestApproval (human already approved), dedup, state machine, group => execute
-            _ => {
-                let outcome = self.execute_action(action).await;
-                Ok(outcome)
-            }
+            _ => self.execute_action(action).await,
+        };
+
+        // Durably record the execution OUTCOME. Previously this path emitted no
+        // audit record at all, so an approved — and therefore side-effecting —
+        // action left no trail. Routed through `emit_audit_record` so it is
+        // awaited (durable) in compliance mode and best-effort otherwise.
+        if let Some(ref audit) = self.audit {
+            let record = build_audit_record(
+                uuid::Uuid::now_v7().to_string(),
+                action,
+                &verdict,
+                &outcome,
+                dispatched_at,
+                exec_start.elapsed(),
+                self.effective_audit_ttl(&action.namespace, &action.tenant),
+                self.audit_store_payload,
+                None,
+            );
+            self.emit_audit_record(audit, record).await;
         }
+
+        Ok(outcome)
     }
 
     /// Reject a pending approval by namespace, tenant, ID, and HMAC signature.
@@ -7161,6 +7209,80 @@ mod tests {
             .find(|a| a.token == approval_id)
             .expect("approval record should exist");
         assert_eq!(record.status, "approved");
+    }
+
+    #[tokio::test]
+    async fn approval_execution_is_audited_with_intent_in_compliance_mode() {
+        // The post-approval execution path historically emitted NO audit record
+        // at all — an approved, side-effecting action left no durable trail. It
+        // now writes a pre-execution intent (compliance, fail-closed) AND an
+        // outcome record. Both must appear *from the approval*, distinct from
+        // whatever the initial dispatch recorded.
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let gw = GatewayBuilder::new()
+            .state(Arc::new(MemoryStateStore::new()))
+            .lock(Arc::new(MemoryDistributedLock::new()))
+            .rules(vec![approval_rule(3600)])
+            .provider(Arc::new(MockProvider::new("payments")))
+            .provider(Arc::new(MockProvider::new("slack")))
+            .approval_secret(b"test-secret-key-for-approvals!!")
+            .external_url("https://test.example.com")
+            .audit(Arc::new(TestAudit {
+                fail: false,
+                records: Arc::clone(&records),
+            }))
+            .compliance_config(acteon_core::ComplianceConfig::new(
+                acteon_core::ComplianceMode::Soc2,
+            ))
+            .build()
+            .expect("gateway should build");
+
+        let outcome = gw.dispatch(refund_action(), None).await.unwrap();
+        let (approval_id, approve_url) = match outcome {
+            ActionOutcome::PendingApproval {
+                approval_id,
+                approve_url,
+                ..
+            } => (approval_id, approve_url),
+            other => panic!("expected PendingApproval, got {other:?}"),
+        };
+        let sig = parse_query_param(&approve_url, "sig").expect("sig param");
+        let expires_at: i64 = parse_query_param(&approve_url, "expires_at")
+            .expect("expires_at param")
+            .parse()
+            .expect("expires_at integer");
+        let kid = parse_query_param(&approve_url, "kid");
+
+        // Baseline: everything the initial dispatch recorded. In compliance
+        // (sync) mode these writes are awaited, so the count is settled here.
+        let after_dispatch = records.lock().unwrap().len();
+
+        let result = gw
+            .execute_approval(
+                "payments",
+                "tenant-1",
+                &approval_id,
+                &sig,
+                expires_at,
+                kid.as_deref(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(result, ActionOutcome::Executed(_)),
+            "approved action executes, got {result:?}"
+        );
+
+        let recs = records.lock().unwrap();
+        let from_approval = &recs[after_dispatch..];
+        assert!(
+            from_approval.iter().any(|r| r.outcome == "pending"),
+            "approval path wrote a pre-execution intent record (compliance fail-closed)",
+        );
+        assert!(
+            from_approval.iter().any(|r| r.outcome == "executed"),
+            "approval path wrote a durable execution outcome record (previously emitted none)",
+        );
     }
 
     #[tokio::test]
