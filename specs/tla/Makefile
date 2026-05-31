@@ -12,6 +12,8 @@
 #   make check-quota        # Run QuotaCounter only
 #   make check-busapproval  # Run BusApproval only
 #   make check-multiquota   # Run MultiQuotaRollback only
+#   make check-task         # Run A2aTaskTransition only
+#   make check-cancel       # Run ChainCancelCascade only
 #   make setup              # Download tla2tools.jar
 #   make clean              # Remove downloaded tools
 
@@ -19,7 +21,7 @@ SHELL := /bin/bash
 SPECS_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 CI_SCRIPT := $(SPECS_DIR)ci/run-tlc.sh
 
-.PHONY: check-all check-circuit check-dedup check-hashchain check-recurring check-bus check-chain check-approval check-quota check-busapproval check-multiquota setup clean help
+.PHONY: check-all check-circuit check-dedup check-hashchain check-recurring check-bus check-chain check-approval check-quota check-busapproval check-multiquota check-task check-cancel setup clean help
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -57,6 +59,12 @@ check-busapproval: ## Run TLC on BusApproval spec
 
 check-multiquota: ## Run TLC on MultiQuotaRollback spec
 	@$(CI_SCRIPT) MultiQuotaRollback
+
+check-task: ## Run TLC on A2aTaskTransition spec
+	@$(CI_SCRIPT) A2aTaskTransition
+
+check-cancel: ## Run TLC on ChainCancelCascade spec
+	@$(CI_SCRIPT) ChainCancelCascade
 
 setup: ## Download tla2tools.jar (requires curl or wget)
 	@$(CI_SCRIPT) __nonexistent__ 2>/dev/null || true
