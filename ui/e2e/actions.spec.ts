@@ -44,8 +44,10 @@ test.describe('Actions / Audit Trail', () => {
 
   test('filter by outcome works', async ({ page }) => {
     const outcomeSelect = page.locator('select').first()
-    await outcomeSelect.selectOption('Executed')
-    await expect(page).toHaveURL(/outcome=Executed/)
+    // The option value is the snake_case string the server actually stores
+    // (e.g. `executed`); a PascalCase value would silently match nothing.
+    await outcomeSelect.selectOption('executed')
+    await expect(page).toHaveURL(/outcome=executed/)
   })
 
   test('namespace filter updates URL', async ({ page }) => {

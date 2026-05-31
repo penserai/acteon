@@ -20,7 +20,27 @@ import styles from './Actions.module.css'
 
 const col = createColumnHelper<AuditRecord>()
 
-const outcomeOptions = ['Executed', 'Failed', 'Suppressed', 'Deduplicated', 'Rerouted', 'Throttled', 'PendingApproval', 'ChainStarted', 'CircuitOpen', 'Scheduled', 'DryRun'].map((v) => ({ value: v, label: v }))
+// Values MUST be the snake_case strings the server stores (gateway
+// `outcome_tag`); the server filters by exact match, so PascalCase values
+// silently returned zero results. Labels are humanized for the dropdown.
+const outcomeOptions: { value: string; label: string }[] = [
+  { value: 'executed', label: 'Executed' },
+  { value: 'failed', label: 'Failed' },
+  { value: 'suppressed', label: 'Suppressed' },
+  { value: 'deduplicated', label: 'Deduplicated' },
+  { value: 'rerouted', label: 'Rerouted' },
+  { value: 'throttled', label: 'Throttled' },
+  { value: 'pending_approval', label: 'Pending Approval' },
+  { value: 'chain_started', label: 'Chain Started' },
+  { value: 'circuit_open', label: 'Circuit Open' },
+  { value: 'scheduled', label: 'Scheduled' },
+  { value: 'dry_run', label: 'Dry Run' },
+  { value: 'state_changed', label: 'State Changed' },
+  { value: 'quota_exceeded', label: 'Quota Exceeded' },
+  { value: 'silenced', label: 'Silenced' },
+  { value: 'muted', label: 'Muted' },
+  { value: 'grouped', label: 'Grouped' },
+]
 
 // The server stamps `pending` on a compliance pre-execution intent record
 // (two-phase fail-closed). Show it as "Audit Intent" so operators don't read
