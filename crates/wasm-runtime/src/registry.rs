@@ -431,11 +431,15 @@ impl WasmPluginRegistry {
                         && let Ok(mut result) =
                             serde_json::from_str::<WasmInvocationResult>(result_str)
                     {
-                        // Truncate unreasonably long messages.
+                        // Truncate unreasonably long messages at a UTF-8 char
+                        // boundary so slicing a multi-byte character in half
+                        // can't panic (the plugin controls this string, so it
+                        // may be arbitrary UTF-8).
                         if let Some(ref msg) = result.message
                             && msg.len() > MAX_OUTPUT_JSON_BYTES
                         {
-                            result.message = Some(format!("{}... (truncated)", &msg[..1024]));
+                            let head = truncate_at_char_boundary(msg, 1024);
+                            result.message = Some(format!("{head}... (truncated)"));
                         }
                         return Ok(result);
                     }
@@ -544,9 +548,39 @@ impl WasmPluginRuntime for SharedWasmRegistry {
     }
 }
 
+/// Truncate `msg` to at most `max_bytes`, backing off to the nearest UTF-8
+/// character boundary at or below the cut so the returned slice never falls in
+/// the middle of a multi-byte character (which would panic).
+fn truncate_at_char_boundary(msg: &str, max_bytes: usize) -> &str {
+    let mut cut = max_bytes.min(msg.len());
+    while cut > 0 && !msg.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    &msg[..cut]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn truncate_at_char_boundary_never_splits_a_multibyte_char() {
+        // '€' is 3 bytes (U+20AC); 1024 is not a multiple of 3, so the raw
+        // `&msg[..1024]` would have panicked mid-character.
+        assert_ne!(1024 % 3, 0);
+        let msg = "€".repeat(500); // 1500 bytes
+        let head = truncate_at_char_boundary(&msg, 1024);
+        assert!(head.len() <= 1024);
+        assert!(msg.is_char_boundary(head.len()), "cut on a char boundary");
+        assert_eq!(head.len() % 3, 0, "only whole '€' characters retained");
+
+        // Short string is returned whole; ASCII cuts exactly.
+        assert_eq!(truncate_at_char_boundary("hi", 1024), "hi");
+        assert_eq!(
+            truncate_at_char_boundary(&"a".repeat(2000), 1024).len(),
+            1024
+        );
+    }
 
     fn test_config() -> WasmRuntimeConfig {
         WasmRuntimeConfig::default()
