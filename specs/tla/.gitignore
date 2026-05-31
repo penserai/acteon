@@ -1,0 +1,9 @@
+# Downloaded TLA+ tooling
+.tools/
+
+# TLC model checker output
+states/
+*.dot
+*.dump
+*_TTrace_*.tla
+*_TTrace_*.bin
