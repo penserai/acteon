@@ -16,32 +16,42 @@ const sizes = {
   md: styles.md,
 }
 
+// IMPORTANT: keys must match the EXACT strings the server emits. Action
+// outcomes and most status enums serialize as snake_case (e.g. the gateway's
+// `outcome_tag`, `GroupState`'s `rename_all = "snake_case"`), so the keys here
+// are snake_case too. Previously the action-outcome keys were PascalCase, so
+// every outcome badge fell through to `neutral` (grey) and the outcome filter
+// matched nothing.
 const outcomeVariant: Record<string, keyof typeof variants> = {
-  Executed: 'success',
-  Deduplicated: 'neutral',
-  Suppressed: 'error',
-  Silenced: 'info',
-  Muted: 'neutral',
-  Rerouted: 'info',
-  Throttled: 'warning',
-  Failed: 'error',
-  Grouped: 'pending',
-  PendingApproval: 'warning',
-  ChainStarted: 'info',
-  DryRun: 'neutral',
-  CircuitOpen: 'error',
-  Scheduled: 'pending',
-  StateChanged: 'info',
-  // Compliance two-phase: a pre-execution intent record, surfaced distinctly
-  // so it isn't mistaken for a stuck/in-flight job.
+  // Action outcomes (gateway `outcome_tag`, snake_case)
+  executed: 'success',
+  deduplicated: 'neutral',
+  suppressed: 'error',
+  silenced: 'info',
+  muted: 'neutral',
+  rerouted: 'info',
+  throttled: 'warning',
+  failed: 'error',
+  grouped: 'pending',
+  pending_approval: 'warning',
+  chain_started: 'info',
+  dry_run: 'neutral',
+  circuit_open: 'error',
+  scheduled: 'pending',
+  state_changed: 'info',
+  recurring_created: 'info',
+  quota_exceeded: 'warning',
+  // Compliance two-phase: a pre-execution intent record (outcome `pending`,
+  // relabelled `Audit Intent` for display) — surfaced distinctly so it isn't
+  // mistaken for a stuck/in-flight job.
   'Audit Intent': 'info',
   // Chain statuses
   running: 'info',
   completed: 'success',
-  failed: 'error',
   cancelled: 'warning',
   timed_out: 'warning',
   waiting_sub_chain: 'info',
+  waiting_parallel: 'info',
   pending: 'neutral',
   skipped: 'neutral',
   // Circuit states
@@ -55,25 +65,23 @@ const outcomeVariant: Record<string, keyof typeof variants> = {
   approved: 'success',
   rejected: 'error',
   expired: 'warning',
-  // Group states
-  Pending: 'warning',
-  Notified: 'info',
-  Resolved: 'success',
-  // Recurring action states
+  // Event-group states (`GroupState`, snake_case: pending/notified/resolved —
+  // `pending` shares the neutral entry above)
+  notified: 'info',
+  resolved: 'success',
+  // Recurring-action states. The status string is UI-derived (PascalCase); the
+  // snake_case aliases are kept too in case it is ever surfaced server-side.
   Active: 'success',
   Paused: 'warning',
   Completed: 'neutral',
-  // Swarm run statuses (lowercase, as the server emits them).
-  // `running`, `completed`, `failed`, `cancelled`, `timed_out` also appear
-  // in the chain-status block above and resolve to the same variants —
-  // listing them again documents the intent for future readers.
+  active: 'success',
+  paused: 'warning',
+  // Swarm run statuses (snake_case, as the server emits them). `running`,
+  // `completed`, `failed`, `cancelled`, `timed_out` reuse the chain entries.
   accepted: 'pending',
   adversarial: 'info',
   cancelling: 'warning',
 }
-
-// All chain-status keys reused by swarm runs (running, completed, failed,
-// cancelled, timed_out) resolve via the shared entries declared earlier.
 
 interface BadgeProps {
   variant?: keyof typeof variants

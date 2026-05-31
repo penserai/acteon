@@ -61,11 +61,12 @@ test.describe('Dashboard', () => {
     // Wait for stats to load
     await page.waitForTimeout(1000)
 
-    // Click the "Failed" stat card to go to audit with outcome=Failed
+    // Click the "Failed" stat card → audit filtered by the snake_case outcome
+    // the server actually stores (a PascalCase value would match nothing).
     const failedCard = page.getByText('Failed', { exact: true }).first()
     if (await failedCard.isVisible()) {
       await failedCard.click()
-      await expect(page).toHaveURL(/audit/)
+      await expect(page).toHaveURL(/audit\?outcome=failed/)
     }
   })
 })

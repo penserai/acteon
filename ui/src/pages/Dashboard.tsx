@@ -125,10 +125,12 @@ interface StatCard {
 function buildStatCards(m: MetricsResponse): StatCard[] {
   const cards: StatCard[] = [
     { label: 'Dispatched', value: m.dispatched, link: '/audit' },
-    { label: 'Executed', value: m.executed, link: '/audit?outcome=Executed' },
-    { label: 'Failed', value: m.failed, link: '/audit?outcome=Failed' },
-    { label: 'Deduplicated', value: m.deduplicated, link: '/audit?outcome=Deduplicated' },
-    { label: 'Suppressed', value: m.suppressed, link: '/audit?outcome=Suppressed' },
+    // outcome filter uses the snake_case value the server stores, else the
+    // audit query matches nothing (the displayed label stays human-readable).
+    { label: 'Executed', value: m.executed, link: '/audit?outcome=executed' },
+    { label: 'Failed', value: m.failed, link: '/audit?outcome=failed' },
+    { label: 'Deduplicated', value: m.deduplicated, link: '/audit?outcome=deduplicated' },
+    { label: 'Suppressed', value: m.suppressed, link: '/audit?outcome=suppressed' },
     { label: 'Silenced', value: m.silenced ?? 0, link: '/silences' },
     { label: 'Muted', value: m.muted ?? 0, link: '/time-intervals' },
     { label: 'Pending Approval', value: m.pending_approval ?? 0, link: '/approvals' },
