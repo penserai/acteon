@@ -2545,7 +2545,8 @@ impl Gateway {
             self.cleanup_pending_chain(namespace, tenant, chain_id)
                 .await?;
             self.metrics.increment_chains_failed();
-            self.emit_chain_terminal_audit(&chain_state, "chain_timed_out");
+            self.emit_chain_terminal_audit(&chain_state, "chain_timed_out")
+                .await;
             self.emit_stream_event(StreamEvent {
                 id: uuid::Uuid::now_v7().to_string(),
                 timestamp: Utc::now(),
@@ -2611,7 +2612,8 @@ impl Gateway {
             self.cleanup_pending_chain(namespace, tenant, chain_id)
                 .await?;
             self.metrics.increment_chains_failed();
-            self.emit_chain_terminal_audit(&chain_state, "chain_definition_changed");
+            self.emit_chain_terminal_audit(&chain_state, "chain_definition_changed")
+                .await;
             self.emit_stream_event(StreamEvent {
                 id: uuid::Uuid::now_v7().to_string(),
                 timestamp: Utc::now(),
@@ -2720,7 +2722,8 @@ impl Gateway {
                                 self.cleanup_pending_chain(namespace, tenant, chain_id)
                                     .await?;
                                 self.metrics.increment_chains_completed();
-                                self.emit_chain_terminal_audit(&chain_state, "chain_completed");
+                                self.emit_chain_terminal_audit(&chain_state, "chain_completed")
+                                    .await;
                                 info!(chain_id = %chain_id, "chain completed successfully");
                             }
 
@@ -2764,7 +2767,8 @@ impl Gateway {
                                     self.cleanup_pending_chain(namespace, tenant, chain_id)
                                         .await?;
                                     self.metrics.increment_chains_failed();
-                                    self.emit_chain_terminal_audit(&chain_state, "chain_failed");
+                                    self.emit_chain_terminal_audit(&chain_state, "chain_failed")
+                                        .await;
                                     warn!(
                                         chain_id = %chain_id,
                                         sub_chain = %sub_chain_name,
@@ -2810,7 +2814,8 @@ impl Gateway {
                                         self.emit_chain_terminal_audit(
                                             &chain_state,
                                             "chain_completed",
-                                        );
+                                        )
+                                        .await;
                                     }
                                 }
                                 acteon_core::chain::StepFailurePolicy::Dlq => {
@@ -2825,7 +2830,8 @@ impl Gateway {
                                     self.cleanup_pending_chain(namespace, tenant, chain_id)
                                         .await?;
                                     self.metrics.increment_chains_failed();
-                                    self.emit_chain_terminal_audit(&chain_state, "chain_failed");
+                                    self.emit_chain_terminal_audit(&chain_state, "chain_failed")
+                                        .await;
                                 }
                             }
 
@@ -2980,9 +2986,11 @@ impl Gateway {
                     sr,
                     Duration::ZERO,
                     None,
-                );
+                )
+                .await;
             }
-            self.emit_chain_terminal_audit(&chain_state, "chain_failed");
+            self.emit_chain_terminal_audit(&chain_state, "chain_failed")
+                .await;
             let _ = self.state.delete(&step_dedup_key).await;
             guard
                 .release()
@@ -3085,9 +3093,11 @@ impl Gateway {
                         sr,
                         Duration::ZERO,
                         None,
-                    );
+                    )
+                    .await;
                 }
-                self.emit_chain_terminal_audit(&chain_state, "chain_failed");
+                self.emit_chain_terminal_audit(&chain_state, "chain_failed")
+                    .await;
                 let _ = self.state.delete(&step_dedup_key).await;
                 guard
                     .release()
@@ -3194,7 +3204,8 @@ impl Gateway {
                         &step_result,
                         step_duration,
                         Some(&step_payload),
-                    );
+                    )
+                    .await;
                     self.emit_stream_event(StreamEvent {
                         id: uuid::Uuid::now_v7().to_string(),
                         timestamp: Utc::now(),
@@ -3228,8 +3239,10 @@ impl Gateway {
                         &step_result,
                         step_duration,
                         Some(&step_payload),
-                    );
-                    self.emit_chain_terminal_audit(&chain_state, "chain_completed");
+                    )
+                    .await;
+                    self.emit_chain_terminal_audit(&chain_state, "chain_completed")
+                        .await;
                     self.emit_stream_event(StreamEvent {
                         id: uuid::Uuid::now_v7().to_string(),
                         timestamp: Utc::now(),
@@ -3336,7 +3349,8 @@ impl Gateway {
                         &retry_result,
                         step_duration,
                         Some(&step_payload),
-                    );
+                    )
+                    .await;
 
                     return Ok(());
                 }
@@ -3379,9 +3393,11 @@ impl Gateway {
                                 sr,
                                 step_duration,
                                 Some(&step_payload),
-                            );
+                            )
+                            .await;
                         }
-                        self.emit_chain_terminal_audit(&chain_state, "chain_failed");
+                        self.emit_chain_terminal_audit(&chain_state, "chain_failed")
+                            .await;
                         self.emit_stream_event(StreamEvent {
                             id: uuid::Uuid::now_v7().to_string(),
                             timestamp: Utc::now(),
@@ -3450,7 +3466,8 @@ impl Gateway {
                                 skip_result,
                                 step_duration,
                                 Some(&step_payload),
-                            );
+                            )
+                            .await;
                             self.emit_stream_event(StreamEvent {
                                 id: uuid::Uuid::now_v7().to_string(),
                                 timestamp: Utc::now(),
@@ -3487,8 +3504,10 @@ impl Gateway {
                                 skip_result,
                                 step_duration,
                                 Some(&step_payload),
-                            );
-                            self.emit_chain_terminal_audit(&chain_state, "chain_completed");
+                            )
+                            .await;
+                            self.emit_chain_terminal_audit(&chain_state, "chain_completed")
+                                .await;
                             self.emit_stream_event(StreamEvent {
                                 id: uuid::Uuid::now_v7().to_string(),
                                 timestamp: Utc::now(),
@@ -3545,9 +3564,11 @@ impl Gateway {
                                 sr,
                                 step_duration,
                                 Some(&step_payload),
-                            );
+                            )
+                            .await;
                         }
-                        self.emit_chain_terminal_audit(&chain_state, "chain_failed");
+                        self.emit_chain_terminal_audit(&chain_state, "chain_failed")
+                            .await;
                         if let Some(ref sr) = chain_state.step_results[step_idx] {
                             self.emit_stream_event(StreamEvent {
                                 id: uuid::Uuid::now_v7().to_string(),
@@ -3609,9 +3630,11 @@ impl Gateway {
                         sr,
                         step_duration,
                         Some(&step_payload),
-                    );
+                    )
+                    .await;
                 }
-                self.emit_chain_terminal_audit(&chain_state, "chain_failed");
+                self.emit_chain_terminal_audit(&chain_state, "chain_failed")
+                    .await;
                 self.emit_stream_event(StreamEvent {
                     id: uuid::Uuid::now_v7().to_string(),
                     timestamp: Utc::now(),
@@ -3984,8 +4007,10 @@ impl Gateway {
                 group_timeout,
                 None,
                 None,
-            );
-            self.emit_chain_terminal_audit(chain_state, "chain_failed");
+            )
+            .await;
+            self.emit_chain_terminal_audit(chain_state, "chain_failed")
+                .await;
             self.emit_stream_event(StreamEvent {
                 id: uuid::Uuid::now_v7().to_string(),
                 timestamp: now,
@@ -4083,7 +4108,8 @@ impl Gateway {
                     *elapsed,
                     audit_payload,
                     Some(&step_config.name),
-                );
+                )
+                .await;
             }
 
             if success {
@@ -4174,7 +4200,8 @@ impl Gateway {
                     parent_duration,
                     parent_audit_payload.as_ref(),
                     None,
-                );
+                )
+                .await;
                 self.emit_stream_event(StreamEvent {
                     id: uuid::Uuid::now_v7().to_string(),
                     timestamp: now,
@@ -4208,8 +4235,10 @@ impl Gateway {
                     parent_duration,
                     parent_audit_payload.as_ref(),
                     None,
-                );
-                self.emit_chain_terminal_audit(chain_state, "chain_completed");
+                )
+                .await;
+                self.emit_chain_terminal_audit(chain_state, "chain_completed")
+                    .await;
                 self.emit_stream_event(StreamEvent {
                     id: uuid::Uuid::now_v7().to_string(),
                     timestamp: now,
@@ -4265,8 +4294,10 @@ impl Gateway {
                         parent_duration,
                         parent_audit_payload.as_ref(),
                         None,
-                    );
-                    self.emit_chain_terminal_audit(chain_state, "chain_failed");
+                    )
+                    .await;
+                    self.emit_chain_terminal_audit(chain_state, "chain_failed")
+                        .await;
                     self.emit_stream_event(StreamEvent {
                         id: uuid::Uuid::now_v7().to_string(),
                         timestamp: now,
@@ -4330,7 +4361,8 @@ impl Gateway {
                             parent_duration,
                             parent_audit_payload.as_ref(),
                             None,
-                        );
+                        )
+                        .await;
                         self.emit_stream_event(StreamEvent {
                             id: uuid::Uuid::now_v7().to_string(),
                             timestamp: now,
@@ -4363,8 +4395,10 @@ impl Gateway {
                             parent_duration,
                             parent_audit_payload.as_ref(),
                             None,
-                        );
-                        self.emit_chain_terminal_audit(chain_state, "chain_completed");
+                        )
+                        .await;
+                        self.emit_chain_terminal_audit(chain_state, "chain_completed")
+                            .await;
                         self.emit_stream_event(StreamEvent {
                             id: uuid::Uuid::now_v7().to_string(),
                             timestamp: now,
@@ -4431,8 +4465,10 @@ impl Gateway {
                         parent_duration,
                         parent_audit_payload.as_ref(),
                         None,
-                    );
-                    self.emit_chain_terminal_audit(chain_state, "chain_failed");
+                    )
+                    .await;
+                    self.emit_chain_terminal_audit(chain_state, "chain_failed")
+                        .await;
                     self.emit_stream_event(StreamEvent {
                         id: uuid::Uuid::now_v7().to_string(),
                         timestamp: now,
@@ -4990,7 +5026,7 @@ impl Gateway {
     /// parallel-specific metadata (join policy, parent step name, sub-step
     /// results).
     #[allow(clippy::too_many_arguments)]
-    fn emit_chain_step_audit(
+    async fn emit_chain_step_audit(
         &self,
         chain_state: &ChainState,
         step_config: &ChainStepConfig,
@@ -5009,7 +5045,8 @@ impl Gateway {
             step_duration,
             step_payload,
             None,
-        );
+        )
+        .await;
     }
 
     /// Emit a step-level audit record for a parallel sub-step or parent
@@ -5020,7 +5057,7 @@ impl Gateway {
     /// is identified as a parallel parent step with join policy and sub-step
     /// result summary.
     #[allow(clippy::too_many_arguments)]
-    fn emit_parallel_step_audit(
+    async fn emit_parallel_step_audit(
         &self,
         chain_state: &ChainState,
         step_config: &ChainStepConfig,
@@ -5040,13 +5077,14 @@ impl Gateway {
             step_duration,
             step_payload,
             parent_step_name,
-        );
+        )
+        .await;
     }
 
     /// Inner implementation shared by [`emit_chain_step_audit`] and
     /// [`emit_parallel_step_audit`].
     #[allow(clippy::too_many_arguments)]
-    fn emit_chain_step_audit_inner(
+    async fn emit_chain_step_audit_inner(
         &self,
         chain_state: &ChainState,
         step_config: &ChainStepConfig,
@@ -5163,18 +5201,15 @@ impl Gateway {
                 canonical_hash: None,
             };
 
-            let audit = Arc::clone(audit);
-            self.audit_tracker.spawn(async move {
-                if let Err(e) = audit.record(record).await {
-                    warn!(error = %e, "chain step audit recording failed");
-                }
-            });
+            // Route through `emit_audit_record` so compliance mode
+            // (`sync_audit_writes`) makes this durable instead of best-effort.
+            self.emit_audit_record(audit, record).await;
         }
     }
 
     /// Emit a terminal summary audit record for a chain lifecycle event.
     #[allow(clippy::too_many_lines)]
-    fn emit_chain_terminal_audit(&self, chain_state: &ChainState, outcome: &str) {
+    async fn emit_chain_terminal_audit(&self, chain_state: &ChainState, outcome: &str) {
         if let Some(ref audit) = self.audit {
             let now = Utc::now();
 
@@ -5290,12 +5325,9 @@ impl Gateway {
                 canonical_hash: None,
             };
 
-            let audit = Arc::clone(audit);
-            self.audit_tracker.spawn(async move {
-                if let Err(e) = audit.record(record).await {
-                    warn!(error = %e, "chain terminal audit recording failed");
-                }
-            });
+            // Route through `emit_audit_record` so compliance mode
+            // (`sync_audit_writes`) makes this durable instead of best-effort.
+            self.emit_audit_record(audit, record).await;
         }
     }
 
@@ -5404,7 +5436,8 @@ impl Gateway {
         self.cleanup_pending_chain(namespace, tenant, chain_id)
             .await?;
         self.metrics.increment_chains_cancelled();
-        self.emit_chain_terminal_audit(&chain_state, "chain_cancelled");
+        self.emit_chain_terminal_audit(&chain_state, "chain_cancelled")
+            .await;
         self.emit_stream_event(StreamEvent {
             id: uuid::Uuid::now_v7().to_string(),
             timestamp: Utc::now(),
@@ -11098,6 +11131,43 @@ mod tests {
                 .iter()
                 .any(|r| r.outcome == "pending"),
             "a pending intent record must be written before the step executes",
+        );
+    }
+
+    #[tokio::test]
+    async fn compliance_chain_audit_records_are_durable() {
+        // In compliance mode the chain step + terminal audit writes are routed
+        // through the sync-aware `emit_audit_record`, so they are AWAITED
+        // (durable) rather than best-effort spawned — present synchronously
+        // after `advance_chain` returns.
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let (gw, captured) = build_compliance_gateway(
+            Arc::new(TestAudit {
+                fail: false,
+                records: Arc::clone(&records),
+            }),
+            Some(acteon_core::ComplianceConfig::new(
+                acteon_core::ComplianceMode::Soc2,
+            )),
+        );
+        seed_single_step_chain(&gw, "cc3").await;
+
+        gw.advance_chain("notifications", "tenant-1", "cc3")
+            .await
+            .expect("advance_chain succeeds with a healthy audit store");
+
+        assert_eq!(captured.lock().unwrap().len(), 1, "provider ran once");
+        let recs = records.lock().unwrap();
+        assert!(
+            recs.iter().any(|r| r.outcome == "pending"),
+            "pre-execution intent record present",
+        );
+        // The step outcome record and the terminal summary record both carry
+        // verdict "chain" and are non-pending — both must be present durably.
+        let chain_records = recs.iter().filter(|r| r.verdict == "chain").count();
+        assert!(
+            chain_records >= 2,
+            "step + terminal chain audit records must be durable; got {chain_records}",
         );
     }
 
