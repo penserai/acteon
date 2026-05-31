@@ -175,6 +175,15 @@ impl StateStore for RedisStateStore {
                 .pexpire(&redis_key, ms)
                 .await
                 .map_err(|e| StateError::Backend(e.to_string()))?;
+        } else {
+            // Clear any pre-existing expiry: `HSET` preserves the old TTL, so
+            // without this a no-TTL overwrite of a key first written with a TTL
+            // would silently expire — diverging from the memory and Postgres
+            // backends, which make the overwrite permanent.
+            let () = conn
+                .persist(&redis_key)
+                .await
+                .map_err(|e| StateError::Backend(e.to_string()))?;
         }
 
         // Also remove any plain-string key so `get` reads consistently.
@@ -305,19 +314,22 @@ impl StateStore for RedisStateStore {
                 .map_err(|e| StateError::Backend(e.to_string()))?;
 
             for key in keys {
-                // Try to get value from hash first, then plain string
-                let val: Option<String> = conn
-                    .hget(&key, "v")
-                    .await
-                    .map_err(|e| StateError::Backend(e.to_string()))?;
-
-                let value = if let Some(v) = val {
-                    v
-                } else {
-                    // Try plain string key (without :h suffix)
-                    let plain_key = key.strip_suffix(":h").unwrap_or(&key);
+                // Dispatch on the key shape: `set` writes hashes (suffix
+                // `:h`), `check_and_set` writes plain strings. Issuing HGET
+                // against a string key fails the WHOLE scan with WRONGTYPE, so
+                // pick the matching read per key.
+                let value = if key.ends_with(":h") {
                     let v: Option<String> = conn
-                        .get(plain_key)
+                        .hget(&key, "v")
+                        .await
+                        .map_err(|e| StateError::Backend(e.to_string()))?;
+                    match v {
+                        Some(s) => s,
+                        None => continue,
+                    }
+                } else {
+                    let v: Option<String> = conn
+                        .get(&key)
                         .await
                         .map_err(|e| StateError::Backend(e.to_string()))?;
                     match v {
@@ -367,19 +379,22 @@ impl StateStore for RedisStateStore {
                 .map_err(|e| StateError::Backend(e.to_string()))?;
 
             for key in keys {
-                // Try to get value from hash first, then plain string
-                let val: Option<String> = conn
-                    .hget(&key, "v")
-                    .await
-                    .map_err(|e| StateError::Backend(e.to_string()))?;
-
-                let value = if let Some(v) = val {
-                    v
-                } else {
-                    // Try plain string key (without :h suffix)
-                    let plain_key = key.strip_suffix(":h").unwrap_or(&key);
+                // Dispatch on the key shape: `set` writes hashes (suffix
+                // `:h`), `check_and_set` writes plain strings. Issuing HGET
+                // against a string key fails the WHOLE scan with WRONGTYPE, so
+                // pick the matching read per key.
+                let value = if key.ends_with(":h") {
                     let v: Option<String> = conn
-                        .get(plain_key)
+                        .hget(&key, "v")
+                        .await
+                        .map_err(|e| StateError::Backend(e.to_string()))?;
+                    match v {
+                        Some(s) => s,
+                        None => continue,
+                    }
+                } else {
+                    let v: Option<String> = conn
+                        .get(&key)
                         .await
                         .map_err(|e| StateError::Backend(e.to_string()))?;
                     match v {
