@@ -165,12 +165,16 @@ fn sign_action(mut action: Action, key: &acteon_crypto::signing::ActionSigningKe
 /// `"test-raw-key"`. Callers authenticate by sending
 /// `Authorization: Bearer test-raw-key` on requests.
 fn build_test_state_with_auth(grants: Vec<Grant>) -> AppState {
+    build_test_state_with_auth_role("admin", grants)
+}
+
+fn build_test_state_with_auth_role(role: &str, grants: Vec<Grant>) -> AppState {
     let mut state = build_test_state(vec![]);
 
     let api_key_config = ApiKeyConfig {
         name: "test-key".to_string(),
         key_hash: SecretString::new(hash_api_key("test-raw-key")),
-        role: "admin".to_string(),
+        role: role.to_string(),
         grants,
     };
     let auth_config = AuthFileConfig {
@@ -3588,6 +3592,80 @@ async fn auth_post_status(app: axum::Router, uri: &str, body: serde_json::Value)
     .await
     .unwrap()
     .status()
+}
+
+fn templates_scope_grant() -> Grant {
+    Grant {
+        tenants: vec!["tenant-1".to_string()],
+        namespaces: vec!["notifications".to_string()],
+        providers: vec!["*".to_string()],
+        actions: vec!["*".to_string()],
+        agent_id: None,
+    }
+}
+
+fn create_template_body(namespace: &str, tenant: &str) -> serde_json::Value {
+    serde_json::json!({
+        "name": "tpl-test",
+        "namespace": namespace,
+        "tenant": tenant,
+        "content": "hello",
+    })
+}
+
+#[tokio::test]
+async fn tenant_authz_templates_create_in_scope_succeeds() {
+    let app = build_app(build_test_state_with_auth(vec![templates_scope_grant()]));
+    let status = auth_post_status(
+        app,
+        "/v1/templates",
+        create_template_body("notifications", "tenant-1"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn tenant_authz_templates_create_cross_tenant_forbidden() {
+    // Admin role, but grants only cover tenant-1 — writing a template for
+    // tenant-2 must be refused (the bug let any caller write any tenant's).
+    let app = build_app(build_test_state_with_auth(vec![templates_scope_grant()]));
+    let status = auth_post_status(
+        app,
+        "/v1/templates",
+        create_template_body("notifications", "tenant-2"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn tenant_authz_templates_create_viewer_role_forbidden() {
+    // Viewer lacks TemplatesManage even within its own grant scope.
+    let app = build_app(build_test_state_with_auth_role(
+        "viewer",
+        vec![templates_scope_grant()],
+    ));
+    let status = auth_post_status(
+        app,
+        "/v1/templates",
+        create_template_body("notifications", "tenant-1"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn tenant_authz_templates_render_cross_tenant_forbidden() {
+    let app = build_app(build_test_state_with_auth(vec![templates_scope_grant()]));
+    let body = serde_json::json!({
+        "namespace": "notifications",
+        "tenant": "tenant-2",
+        "profile": "p",
+        "payload": {},
+    });
+    let status = auth_post_status(app, "/v1/templates/render", body).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
