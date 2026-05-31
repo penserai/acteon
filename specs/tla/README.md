@@ -28,6 +28,8 @@ for the full research document.
 | **Quota Counter** | `QuotaCounter.tla` | `gateway/quota_enforcement.rs` atomic check-and-increment + Block refund | **No counter drift** (no lost increment) and **no over-admission** past the limit, under concurrent dispatchers |
 | **Bus Approval** | `BusApproval.tla` | `core/bus_approval.rs` + `api/bus.rs` Kafka pre-publish two-phase (Phase-10) | The parked envelope is published **at most once** and **only if approved** — `Approving` is committed before the produce; idempotent producer + reconciler |
 | **Multi-Quota Rollback** | `MultiQuotaRollback.tla` | `gateway/quota_enforcement.rs` `enforce_quota_policies` block rollback | On a block, **every** counter touched is rolled back (all-or-nothing) — no partial leak on a non-blocking policy; no over-admit on any policy |
+| **A2A Task Transition** | `A2aTaskTransition.tla` | `core/bus_task.rs` `can_transition_to` + `task_engine.rs` `cas_mutate` | Every committed task transition is **legal** and **terminal stays terminal**, under concurrent optimistic version-CAS (re-validates against the fresh row) |
+| **Chain Cancel-Cascade** | `ChainCancelCascade.tla` | `gateway.rs` `cancel_chain` recursion + `advance_chain` guard | A cancel **cascades to every running descendant** (no orphan) and a **cancelled chain never resurrects** — relies on the recursion *and* the WaitingSubChain completion coupling |
 
 Each spec is self-contained: it inlines its own lock / state-store state machine
 rather than sharing a module, so each can be model-checked independently.
@@ -35,7 +37,8 @@ rather than sharing a module, so each can be model-checked independently.
 Each spec is also adversarially validated: reverting the specific fix it models
 (the max-tip read, the pre-dispatch re-arm, the flush mutex, the step re-read CAS,
 the intent-before-flip ordering, the increment atomicity, the two-phase produce
-ordering, the all-or-nothing rollback) makes TLC report the corresponding safety
+ordering, the all-or-nothing rollback, the version-CAS re-validation, the cancel
+recursion / completion coupling) makes TLC report the corresponding safety
 violation. The specs catch the real bug, not just a tautology.
 
 ## Quick Start
@@ -79,7 +82,7 @@ tla-specs:
 ```
 
 The CI configuration uses small model parameters (2 of each principal) for fast
-feedback (all ten specs finish in a few seconds total). For nightly runs,
+feedback (all twelve specs finish in a few seconds total). For nightly runs,
 increase the constants in the `.cfg` files for deeper coverage.
 
 ## Project Structure
@@ -106,6 +109,10 @@ specs/tla/
   BusApproval.cfg
   MultiQuotaRollback.tla   # Spec: multi-policy quota all-or-nothing rollback on block
   MultiQuotaRollback.cfg
+  A2aTaskTransition.tla    # Spec: A2A task version-CAS legal transitions
+  A2aTaskTransition.cfg
+  ChainCancelCascade.tla   # Spec: chain cancel-cascade, no orphan, no resurrection
+  ChainCancelCascade.cfg
   ci/
     run-tlc.sh             # CI runner (auto-discovers every *.cfg)
   Makefile                 # Convenience targets

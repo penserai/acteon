@@ -17,7 +17,7 @@ This document identifies **the highest-value areas** in Acteon where TLA+ modeli
 harden correctness, proposes concrete specifications, and provides an implementation
 roadmap.
 
-> **Implementation status (May 2026).** Ten specs are implemented and pass the TLC
+> **Implementation status (May 2026).** Twelve specs are implemented and pass the TLC
 > model checker on every run of `specs/tla/ci/run-tlc.sh` (wired into CI as the
 > `TLA+ Specs` job):
 >
@@ -33,6 +33,8 @@ roadmap.
 > | Quota counter (§7.7) | `QuotaCounter.tla` | No counter drift (no lost increment) and no over-admission past the limit, under concurrent dispatchers (atomic check-and-increment + Block refund) |
 > | Bus approval | `BusApproval.tla` | Kafka pre-publish envelope produced ≤ once and only if approved — `Approving` committed before the produce, idempotent producer + reconciler (the Phase-10 two-phase fix; `core/bus_approval.rs` + `api/bus.rs`) |
 > | Multi-policy quota rollback | `MultiQuotaRollback.tla` | On a block, every counter incremented in the call is rolled back (all-or-nothing) — no partial leak on a non-blocking policy, no over-admit on any policy (`enforce_quota_policies`) |
+> | A2A task transition | `A2aTaskTransition.tla` | Every committed A2A task transition is legal (`can_transition_to`) and terminal stays terminal, under concurrent optimistic version-CAS that re-validates against the fresh row (`core/bus_task.rs` + `task_engine.rs cas_mutate`) |
+> | Chain cancel-cascade | `ChainCancelCascade.tla` | A cancel cascades to every running descendant (no orphan) and a cancelled chain never resurrects — load-bearing on both the recursion and the WaitingSubChain completion coupling (`cancel_chain` + `advance_chain`) |
 >
 > The realized layout deviates from the proposal below in one deliberate way: each spec
 > **inlines** its own lock / state-store state machine instead of sharing `common/`
@@ -544,14 +546,18 @@ specs/
     BusApproval.cfg
     MultiQuotaRollback.tla           # multi-policy quota all-or-nothing rollback on block
     MultiQuotaRollback.cfg
+    A2aTaskTransition.tla            # A2A task version-CAS legal transitions
+    A2aTaskTransition.cfg
+    ChainCancelCascade.tla           # chain cancel-cascade, no orphan, no resurrection
+    ChainCancelCascade.cfg
     Makefile                         # Automation: `make check-all`
     ci/
       run-tlc.sh                     # auto-discovers every *.cfg; used by CI
 ```
 
-All ten specs follow the same inlined, self-contained convention. Remaining
-candidates for future work: the A2A Task pause/resume state machine
-(`core/bus_task.rs`), and the chain DAG cancel-cascade across sub-chains.
+All twelve specs follow the same inlined, self-contained convention. Remaining
+candidates for future work: the message-bus subscription fan-out / replay
+cursor, the DLQ redelivery dedup, and the retention reaper vs. live-write race.
 
 ### 5.3 CI Integration
 
