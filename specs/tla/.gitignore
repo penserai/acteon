@@ -5,3 +5,5 @@
 states/
 *.dot
 *.dump
+*_TTrace_*.tla
+*_TTrace_*.bin

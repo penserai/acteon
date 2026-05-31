@@ -17,6 +17,26 @@ This document identifies **the highest-value areas** in Acteon where TLA+ modeli
 harden correctness, proposes concrete specifications, and provides an implementation
 roadmap.
 
+> **Implementation status (May 2026).** Five specs are implemented and pass the TLC
+> model checker on every run of `specs/tla/ci/run-tlc.sh` (wired into CI as the
+> `TLA+ Specs` job):
+>
+> | Spec | File | Safety property verified |
+> |------|------|--------------------------|
+> | Dispatch dedup | `DispatchDedup.tla` | ≤ 1 execution per dedup key within a dedup-TTL window, under lock-TTL expiry |
+> | Circuit breaker | `CircuitBreaker.tla` | ≤ 1 non-stale half-open probe; no lock-loss wedge |
+> | Compliance hash-chain | `HashChain.tla` | Contiguous audit chain — no duplicate sequence number, no fork (the PR #227 max-tip fix) |
+> | Recurring dispatch | `RecurringDispatch.tla` | ≤ 1 dispatch per occurrence under claim-TTL expiry (the PR #235 index re-arm) |
+> | Message bus | `MessageBus.tla` | Grouped notification emitted ≤ once per window across concurrent flushers (`flush_group` mutex) |
+>
+> The realized layout deviates from the proposal below in one deliberate way: each spec
+> **inlines** its own lock / state-store state machine instead of sharing `common/`
+> modules, so each can be model-checked in isolation and the proof obligations stay local.
+> Each spec is adversarially validated — reverting the specific fix it models makes TLC
+> report the corresponding violation, so the spec catches the real bug rather than a
+> tautology. Specs for chain ordering, approval lifecycle, and quota counters remain
+> future work (Sections 4.4–4.5, 7.7).
+
 ---
 
 ## 2. Why TLA+ for Acteon
@@ -482,47 +502,50 @@ FlushIdempotency ==
 | **Apalache** | Symbolic model checker | Handles larger state spaces via SMT solving; finds bugs TLC can't reach |
 | **TLAPS** | Proof system | For inductive proofs when state space is too large for model checking |
 
-### 5.2 Proposed Project Structure
+### 5.2 Project Structure (as realized)
+
+Each spec inlines its own lock / state-store / clock state machine rather than
+importing shared `common/` modules. Inlining keeps every spec self-contained and
+independently model-checkable, and avoids a shared-module abstraction that the
+six protocols did not actually converge on.
 
 ```
 specs/
   tla/
     README.md                        # Overview and how to run
-    Dispatch.tla                     # Spec 1: Dispatch pipeline dedup
-    Dispatch.cfg                     # TLC config (constants, invariants)
-    StateMachineTransition.tla       # Spec 2: State machine transitions
-    StateMachineTransition.cfg
-    CircuitBreaker.tla               # Spec 3: Circuit breaker
+    DispatchDedup.tla                # dispatch pipeline dedup (lock-TTL vs window)
+    DispatchDedup.cfg                # TLC config (constants, invariants)
+    CircuitBreaker.tla               # half-open probe; lock-loss wedge
     CircuitBreaker.cfg
-    ChainExecution.tla               # Spec 4: Chain ordering
-    ChainExecution.cfg
-    ApprovalLifecycle.tla            # Spec 5: Approval workflow
-    ApprovalLifecycle.cfg
-    GroupFlush.tla                   # Spec 6: Group flush consistency
-    GroupFlush.cfg
-    common/
-      StateStore.tla                 # Shared state store model
-      DistributedLock.tla            # Shared lock model
-      Clock.tla                      # Discrete clock model
+    HashChain.tla                    # compliance audit hash-chain sequencing (#227)
+    HashChain.cfg
+    RecurringDispatch.tla            # recurring at-most-once dispatch (#235)
+    RecurringDispatch.cfg
+    MessageBus.tla                   # grouped-notification notify-once delivery
+    MessageBus.cfg
     Makefile                         # Automation: `make check-all`
     ci/
-      run-tlc.sh                     # CI script for running model checker
+      run-tlc.sh                     # auto-discovers every *.cfg; used by CI
 ```
+
+Future specs (chain ordering, approval lifecycle, quota counters — Sections 4.4,
+4.5, 7.7) will follow the same inlined, self-contained convention.
 
 ### 5.3 CI Integration
 
 TLC can be run headless from the command line, making it suitable for CI pipelines:
 
 ```bash
-# Example CI step
-java -jar tla2tools.jar -config Dispatch.cfg -workers auto Dispatch.tla
+# Actual CI step (.github/workflows/ci.yml → job "TLA+ Specs")
+./specs/tla/ci/run-tlc.sh          # auto-discovers and checks every *.cfg
 ```
 
-Recommended CI approach:
-1. Run TLC on all specs in `specs/tla/` on every PR that modifies gateway or state code
-2. Use small model parameters (2 gateways, 2 actions) for fast CI feedback (~30s)
-3. Run larger parameter sweeps nightly (3 gateways, 4 actions) for deeper coverage
-4. Track model checking time as a metric to detect specification bloat
+The runner downloads `tla2tools.jar` on first use, model-checks each spec with
+`-deadlock`, and exits non-zero on any violation. Current CI approach:
+1. Runs TLC on all specs in `specs/tla/` on every PR (the `TLA+ Specs` job)
+2. Small model parameters (2 gateways/writers/flushers) keep the whole suite at a few seconds
+3. Larger parameter sweeps can be run nightly by raising the `.cfg` constants
+4. Each spec is adversarially validated so a green run means the fix it models still holds
 
 ---
 

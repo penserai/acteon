@@ -3,59 +3,61 @@
  * TLA+ specification of Acteon's distributed circuit breaker.
  *
  * Models the three-state machine (Closed -> Open -> HalfOpen -> Closed/Open)
- * as implemented in crates/gateway/src/circuit_breaker.rs.
+ * from crates/gateway/src/circuit_breaker.rs, where shared breaker state is
+ * mutated under a distributed lock and a single probe is admitted per
+ * half-open window.
  *
- * Key properties verified:
- *   Safety:
- *     - SingleProbe:  at most one probe request in HalfOpen state
- *     - ValidOpen:    circuit opens only after failure_threshold failures
- *     - ValidClose:   circuit closes only after success_threshold in HalfOpen
- *   Liveness:
- *     - EventualRecovery: if probes succeed, circuit eventually closes
+ * Verified safety property:
+ *   - SingleProbe: at most one LIVE (non-stale) probe executes at a time in
+ *     HalfOpen. A probe that outlives ProbeTimeoutTicks is considered stale
+ *     and a fresh probe may then be admitted — that overlap is expected and
+ *     is NOT a violation, so the property counts only non-stale probes.
+ *
+ * Not asserted here (deliberately):
+ *   - "opens only after FailureThreshold failures": false in general — the
+ *     HalfOpen->Open reopen path sets Open after a single failed probe,
+ *     regardless of the (reset-on-close) failure counter. This faithfully
+ *     mirrors the Rust code, so it is not an invariant.
+ *   - liveness (RequestCompletion): defined below but requires fairness that
+ *     the cfg does not configure, so it is not model-checked.
  *
  * Run with:
  *   java -jar tla2tools.jar -config CircuitBreaker.cfg CircuitBreaker.tla
  *)
-EXTENDS Integers, FiniteSets, Sequences, TLC
+EXTENDS Integers, FiniteSets, TLC
 
 \* -----------------------------------------------------------------------
-\* Constants — set in CircuitBreaker.cfg for model-checking
+\* Constants — set in CircuitBreaker.cfg
 \* -----------------------------------------------------------------------
 CONSTANTS
-    Gateways,           \* e.g. {"g1", "g2", "g3"}
-    FailureThreshold,   \* e.g. 3
-    SuccessThreshold,   \* e.g. 2
-    RecoveryTicks,      \* e.g. 2 (ticks before Open -> HalfOpen)
-    MutationLockTTL,    \* e.g. 2 (ticks before mutation lock expires)
-    ProbeTimeoutTicks,  \* e.g. 4 (ticks before stale probe is cleared)
-    MaxTime,            \* e.g. 15 (limits state space)
-    NOBODY              \* sentinel for "no holder"
+    Gateways,           \* e.g. {g1, g2}
+    FailureThreshold,   \* failures (closed) before opening
+    SuccessThreshold,   \* successes (half-open) before closing
+    RecoveryTicks,      \* ticks Open -> HalfOpen eligible
+    MutationLockTTL,    \* ticks before the mutation lock expires
+    ProbeTimeoutTicks,  \* ticks before an in-flight probe is considered stale
+    MaxTime,            \* state-space bound
+    NOBODY              \* sentinel for "no lock holder"
 
 \* -----------------------------------------------------------------------
 \* Variables
 \* -----------------------------------------------------------------------
 VARIABLES
-    \* Shared circuit breaker state (persisted in StateStore)
-    cb_state,               \* \in {"closed", "open", "half_open"}
-    consecutive_failures,   \* Nat
-    consecutive_successes,  \* Nat
-    last_failure_tick,      \* Nat or 0
-    probe_started_tick,     \* Nat or 0 (0 = no probe)
+    cb_state,               \* {"closed","open","half_open"}
+    consecutive_failures,
+    consecutive_successes,
+    last_failure_tick,
+    probe_started_tick,     \* tick the current half-open probe slot opened (0 = none)
 
-    \* Distributed mutation lock
     mutation_lock_holder,   \* Gateways \cup {NOBODY}
     mutation_lock_ttl,      \* 0..MutationLockTTL
 
-    \* Per-gateway state
-    gw_phase,               \* [Gateways -> phase enum]
-    gw_request_result,      \* [Gateways -> {"pending", "success", "failure"}]
+    gw_phase,               \* [Gateways -> phase]
+    gw_request_result,      \* [Gateways -> {"pending","success","failure"}]
+    gw_probe_start,         \* [Gateways -> 0..MaxTime] tick this gw was admitted as a probe (0 = not a probe)
 
-    \* Global clock (discrete ticks)
     clock
 
-\* -----------------------------------------------------------------------
-\* Phase enum for gateway processes
-\* -----------------------------------------------------------------------
 Phases == {"idle", "acquiring_lock", "locked_read", "executing",
            "recording_result", "releasing", "done"}
 
@@ -74,11 +76,9 @@ TypeOK ==
     /\ mutation_lock_ttl \in 0..MutationLockTTL
     /\ gw_phase \in [Gateways -> Phases]
     /\ gw_request_result \in [Gateways -> ResultStates]
+    /\ gw_probe_start \in [Gateways -> 0..MaxTime]
     /\ clock \in 0..MaxTime
 
-\* -----------------------------------------------------------------------
-\* Initial state
-\* -----------------------------------------------------------------------
 Init ==
     /\ cb_state = "closed"
     /\ consecutive_failures = 0
@@ -89,11 +89,10 @@ Init ==
     /\ mutation_lock_ttl = 0
     /\ gw_phase = [g \in Gateways |-> "idle"]
     /\ gw_request_result = [g \in Gateways |-> "pending"]
+    /\ gw_probe_start = [g \in Gateways |-> 0]
     /\ clock = 0
 
-\* -----------------------------------------------------------------------
-\* Helper: is a probe currently active (not stale)?
-\* -----------------------------------------------------------------------
+\* A half-open probe slot is active (occupied, not yet stale).
 IsProbeActive ==
     /\ probe_started_tick > 0
     /\ (clock - probe_started_tick) < ProbeTimeoutTicks
@@ -102,62 +101,67 @@ IsProbeActive ==
 \* Actions
 \* -----------------------------------------------------------------------
 
-(* A gateway starts a new request cycle *)
 StartRequest(g) ==
     /\ gw_phase[g] = "idle"
     /\ gw_phase' = [gw_phase EXCEPT ![g] = "acquiring_lock"]
     /\ gw_request_result' = [gw_request_result EXCEPT ![g] = "pending"]
     /\ UNCHANGED <<cb_state, consecutive_failures, consecutive_successes,
                     last_failure_tick, probe_started_tick,
-                    mutation_lock_holder, mutation_lock_ttl, clock>>
+                    mutation_lock_holder, mutation_lock_ttl,
+                    gw_probe_start, clock>>
 
-(* Gateway tries to acquire the mutation lock (try_acquire_permit) *)
 TryAcquireLock(g) ==
     /\ gw_phase[g] = "acquiring_lock"
     /\ IF mutation_lock_holder = NOBODY
        THEN /\ mutation_lock_holder' = g
             /\ mutation_lock_ttl' = MutationLockTTL
             /\ gw_phase' = [gw_phase EXCEPT ![g] = "locked_read"]
-       ELSE \* Lock contention — gateway backs off to idle (rejected)
+       ELSE \* Lock contention — gateway is rejected (conservative vs the real
+            \* lock-free fallback read; rejecting is safe for the invariant).
             /\ gw_phase' = [gw_phase EXCEPT ![g] = "done"]
             /\ UNCHANGED <<mutation_lock_holder, mutation_lock_ttl>>
     /\ UNCHANGED <<cb_state, consecutive_failures, consecutive_successes,
                     last_failure_tick, probe_started_tick,
-                    gw_request_result, clock>>
+                    gw_request_result, gw_probe_start, clock>>
 
-(* Gateway reads circuit state and decides whether to allow the request *)
+\* Read circuit state and decide whether to admit the request. The three arms
+\* that proceed to "executing" set gw_probe_start (clock if admitted AS a probe,
+\* 0 if a normal closed-state request); the two reject arms leave it.
 ReadAndDecide(g) ==
     /\ gw_phase[g] = "locked_read"
     /\ mutation_lock_holder = g
     /\ CASE cb_state = "closed" ->
-            \* Always allow in closed state
+            \* Normal request — not a probe.
             /\ gw_phase' = [gw_phase EXCEPT ![g] = "executing"]
+            /\ gw_probe_start' = [gw_probe_start EXCEPT ![g] = 0]
             /\ UNCHANGED <<cb_state, consecutive_failures, consecutive_successes,
                            last_failure_tick, probe_started_tick>>
 
          [] cb_state = "open" /\ (clock - last_failure_tick) >= RecoveryTicks ->
-            \* Recovery timeout elapsed: transition to half_open, start probe
+            \* Recovery elapsed: open the first probe of a half-open window.
             /\ cb_state' = "half_open"
             /\ consecutive_successes' = 0
             /\ probe_started_tick' = clock
+            /\ gw_probe_start' = [gw_probe_start EXCEPT ![g] = clock]
             /\ gw_phase' = [gw_phase EXCEPT ![g] = "executing"]
             /\ UNCHANGED <<consecutive_failures, last_failure_tick>>
 
          [] cb_state = "open" /\ (clock - last_failure_tick) < RecoveryTicks ->
-            \* Still in recovery window: reject
+            \* Still recovering: reject.
             /\ gw_phase' = [gw_phase EXCEPT ![g] = "releasing"]
             /\ UNCHANGED <<cb_state, consecutive_failures, consecutive_successes,
-                           last_failure_tick, probe_started_tick>>
+                           last_failure_tick, probe_started_tick, gw_probe_start>>
 
          [] cb_state = "half_open" /\ IsProbeActive ->
-            \* Another probe in flight: reject (thundering herd prevention)
+            \* A live probe is already in flight: reject (thundering-herd guard).
             /\ gw_phase' = [gw_phase EXCEPT ![g] = "releasing"]
             /\ UNCHANGED <<cb_state, consecutive_failures, consecutive_successes,
-                           last_failure_tick, probe_started_tick>>
+                           last_failure_tick, probe_started_tick, gw_probe_start>>
 
          [] cb_state = "half_open" /\ ~IsProbeActive ->
-            \* No active probe (stale or completed): allow new probe
+            \* No live probe (slot free / previous probe stale): admit a probe.
             /\ probe_started_tick' = clock
+            /\ gw_probe_start' = [gw_probe_start EXCEPT ![g] = clock]
             /\ gw_phase' = [gw_phase EXCEPT ![g] = "executing"]
             /\ UNCHANGED <<cb_state, consecutive_failures, consecutive_successes,
                            last_failure_tick>>
@@ -165,67 +169,76 @@ ReadAndDecide(g) ==
     /\ UNCHANGED <<mutation_lock_holder, mutation_lock_ttl,
                     gw_request_result, clock>>
 
-(* Gateway releases lock after read-and-decide, before execution *)
+\* Release the lock before the (in-flight) request executes.
 ReleaseLockAfterDecide(g) ==
     /\ gw_phase[g] = "executing"
     /\ mutation_lock_holder = g
     /\ mutation_lock_holder' = NOBODY
     /\ mutation_lock_ttl' = 0
-    \* Stay in "executing" — lock is released, request is in flight
     /\ UNCHANGED <<cb_state, consecutive_failures, consecutive_successes,
                     last_failure_tick, probe_started_tick,
-                    gw_phase, gw_request_result, clock>>
+                    gw_phase, gw_request_result, gw_probe_start, clock>>
 
-(* Non-deterministic: the provider call succeeds or fails *)
 ProviderSucceeds(g) ==
     /\ gw_phase[g] = "executing"
-    /\ mutation_lock_holder # g  \* lock was released
+    /\ mutation_lock_holder # g
     /\ gw_request_result' = [gw_request_result EXCEPT ![g] = "success"]
     /\ gw_phase' = [gw_phase EXCEPT ![g] = "recording_result"]
     /\ UNCHANGED <<cb_state, consecutive_failures, consecutive_successes,
                     last_failure_tick, probe_started_tick,
-                    mutation_lock_holder, mutation_lock_ttl, clock>>
+                    mutation_lock_holder, mutation_lock_ttl,
+                    gw_probe_start, clock>>
 
 ProviderFails(g) ==
     /\ gw_phase[g] = "executing"
-    /\ mutation_lock_holder # g  \* lock was released
+    /\ mutation_lock_holder # g
     /\ gw_request_result' = [gw_request_result EXCEPT ![g] = "failure"]
     /\ gw_phase' = [gw_phase EXCEPT ![g] = "recording_result"]
     /\ UNCHANGED <<cb_state, consecutive_failures, consecutive_successes,
                     last_failure_tick, probe_started_tick,
-                    mutation_lock_holder, mutation_lock_ttl, clock>>
+                    mutation_lock_holder, mutation_lock_ttl,
+                    gw_probe_start, clock>>
 
-(* Gateway acquires mutation lock to record result *)
+\* Re-acquire the lock and record the result. Clears this gateway's probe mark.
 RecordResult(g) ==
     /\ gw_phase[g] = "recording_result"
-    /\ mutation_lock_holder = NOBODY  \* must acquire lock
+    /\ mutation_lock_holder = NOBODY
     /\ mutation_lock_holder' = g
     /\ mutation_lock_ttl' = MutationLockTTL
+    /\ gw_probe_start' = [gw_probe_start EXCEPT ![g] = 0]
     /\ CASE
-        \* --- Record SUCCESS ---
-        gw_request_result[g] = "success" /\ cb_state = "half_open" ->
+        \* HalfOpen, g still OWNS the probe slot, success: advance / close.
+        cb_state = "half_open" /\ gw_probe_start[g] = probe_started_tick
+            /\ gw_request_result[g] = "success" ->
             /\ consecutive_successes' = consecutive_successes + 1
             /\ IF consecutive_successes + 1 >= SuccessThreshold
-               THEN \* Close the circuit
-                    /\ cb_state' = "closed"
+               THEN /\ cb_state' = "closed"
                     /\ consecutive_failures' = 0
-               ELSE
-                    /\ UNCHANGED <<cb_state, consecutive_failures>>
-            /\ probe_started_tick' = 0  \* clear probe slot
+               ELSE UNCHANGED <<cb_state, consecutive_failures>>
+            /\ probe_started_tick' = 0   \* release the slot (owner)
             /\ UNCHANGED last_failure_tick
 
+        \* HalfOpen, g still OWNS the probe slot, failure: reopen.
+      [] cb_state = "half_open" /\ gw_probe_start[g] = probe_started_tick
+            /\ gw_request_result[g] = "failure" ->
+            /\ cb_state' = "open"
+            /\ last_failure_tick' = clock
+            /\ consecutive_successes' = 0
+            /\ probe_started_tick' = 0
+            /\ UNCHANGED consecutive_failures
+
+        \* HalfOpen, but a NEWER probe has since reserved the slot: g is a
+        \* stale/orphaned probe. Its late result must not disturb the current
+        \* probe's slot or the breaker state — the slot owner is authoritative.
+      [] cb_state = "half_open" /\ gw_probe_start[g] # probe_started_tick ->
+            /\ UNCHANGED <<cb_state, consecutive_failures, consecutive_successes,
+                           last_failure_tick, probe_started_tick>>
+
       [] gw_request_result[g] = "success" /\ cb_state = "closed" ->
-            \* Reset failure counter on success in closed state
             /\ consecutive_failures' = 0
             /\ UNCHANGED <<cb_state, consecutive_successes,
                            last_failure_tick, probe_started_tick>>
 
-      [] gw_request_result[g] = "success" /\ cb_state = "open" ->
-            \* Success in open state — no effect (shouldn't happen but safe)
-            /\ UNCHANGED <<cb_state, consecutive_failures, consecutive_successes,
-                           last_failure_tick, probe_started_tick>>
-
-        \* --- Record FAILURE ---
       [] gw_request_result[g] = "failure" /\ cb_state = "closed" ->
             /\ consecutive_failures' = consecutive_failures + 1
             /\ last_failure_tick' = clock
@@ -234,34 +247,30 @@ RecordResult(g) ==
                ELSE UNCHANGED cb_state
             /\ UNCHANGED <<consecutive_successes, probe_started_tick>>
 
-      [] gw_request_result[g] = "failure" /\ cb_state = "half_open" ->
-            \* Probe failed — reopen circuit
-            /\ cb_state' = "open"
-            /\ last_failure_tick' = clock
-            /\ consecutive_successes' = 0
-            /\ probe_started_tick' = 0
-            /\ UNCHANGED consecutive_failures
-
-      [] gw_request_result[g] = "failure" /\ cb_state = "open" ->
-            /\ last_failure_tick' = clock
+      [] cb_state = "open" ->
+            \* Result recorded after the window changed to Open (e.g. a stale
+            \* probe). Refresh the failure clock on a failure; otherwise inert.
+            /\ IF gw_request_result[g] = "failure"
+               THEN last_failure_tick' = clock
+               ELSE UNCHANGED last_failure_tick
             /\ UNCHANGED <<cb_state, consecutive_failures,
                            consecutive_successes, probe_started_tick>>
 
     /\ gw_phase' = [gw_phase EXCEPT ![g] = "releasing"]
     /\ UNCHANGED <<gw_request_result, clock>>
 
-(* Cannot acquire lock for recording — retry later (back to done) *)
+\* Could not re-acquire the lock for recording — give up this cycle.
 RecordResultFailed(g) ==
     /\ gw_phase[g] = "recording_result"
     /\ mutation_lock_holder # NOBODY
     /\ mutation_lock_holder # g
     /\ gw_phase' = [gw_phase EXCEPT ![g] = "done"]
+    /\ gw_probe_start' = [gw_probe_start EXCEPT ![g] = 0]
     /\ UNCHANGED <<cb_state, consecutive_failures, consecutive_successes,
                     last_failure_tick, probe_started_tick,
                     mutation_lock_holder, mutation_lock_ttl,
                     gw_request_result, clock>>
 
-(* Gateway releases the mutation lock *)
 ReleaseLock(g) ==
     /\ gw_phase[g] = "releasing"
     /\ mutation_lock_holder = g
@@ -270,18 +279,30 @@ ReleaseLock(g) ==
     /\ gw_phase' = [gw_phase EXCEPT ![g] = "done"]
     /\ UNCHANGED <<cb_state, consecutive_failures, consecutive_successes,
                     last_failure_tick, probe_started_tick,
-                    gw_request_result, clock>>
+                    gw_request_result, gw_probe_start, clock>>
 
-(* Gateway returns to idle after completing a request cycle *)
 ReturnToIdle(g) ==
     /\ gw_phase[g] = "done"
     /\ gw_phase' = [gw_phase EXCEPT ![g] = "idle"]
+    /\ gw_probe_start' = [gw_probe_start EXCEPT ![g] = 0]
     /\ UNCHANGED <<cb_state, consecutive_failures, consecutive_successes,
                     last_failure_tick, probe_started_tick,
                     mutation_lock_holder, mutation_lock_ttl,
                     gw_request_result, clock>>
 
-(* Clock tick: time advances, lock TTLs expire *)
+\* A gateway holding the lock loses it to TTL expiry mid-critical-section
+\* (in locked_read or releasing). It abandons this cycle gracefully rather
+\* than wedging — mirrors the real code surfacing a LockExpired error.
+AbandonOnLockLoss(g) ==
+    /\ gw_phase[g] \in {"locked_read", "releasing"}
+    /\ mutation_lock_holder # g
+    /\ gw_phase' = [gw_phase EXCEPT ![g] = "done"]
+    /\ gw_probe_start' = [gw_probe_start EXCEPT ![g] = 0]
+    /\ UNCHANGED <<cb_state, consecutive_failures, consecutive_successes,
+                    last_failure_tick, probe_started_tick,
+                    mutation_lock_holder, mutation_lock_ttl,
+                    gw_request_result, clock>>
+
 ClockTick ==
     /\ clock < MaxTime
     /\ clock' = clock + 1
@@ -293,11 +314,8 @@ ClockTick ==
        ELSE UNCHANGED <<mutation_lock_holder, mutation_lock_ttl>>
     /\ UNCHANGED <<cb_state, consecutive_failures, consecutive_successes,
                     last_failure_tick, probe_started_tick,
-                    gw_phase, gw_request_result>>
+                    gw_phase, gw_request_result, gw_probe_start>>
 
-\* -----------------------------------------------------------------------
-\* Next-state relation
-\* -----------------------------------------------------------------------
 Next ==
     \/ \E g \in Gateways :
         \/ StartRequest(g)
@@ -310,38 +328,34 @@ Next ==
         \/ RecordResultFailed(g)
         \/ ReleaseLock(g)
         \/ ReturnToIdle(g)
+        \/ AbandonOnLockLoss(g)
     \/ ClockTick
 
-Spec == Init /\ [][Next]_<<cb_state, consecutive_failures, consecutive_successes,
-                            last_failure_tick, probe_started_tick,
-                            mutation_lock_holder, mutation_lock_ttl,
-                            gw_phase, gw_request_result, clock>>
+vars == <<cb_state, consecutive_failures, consecutive_successes,
+          last_failure_tick, probe_started_tick,
+          mutation_lock_holder, mutation_lock_ttl,
+          gw_phase, gw_request_result, gw_probe_start, clock>>
+
+Spec == Init /\ [][Next]_vars
 
 \* -----------------------------------------------------------------------
-\* Safety properties
+\* Safety
 \* -----------------------------------------------------------------------
 
-\* At most one probe request executing at any time in HalfOpen.
-\* A gateway is "probing" if it is in executing phase while cb_state = half_open.
+\* A gateway is a LIVE probe iff it was admitted as a probe (gw_probe_start>0)
+\* and that probe has not yet timed out. At most one such probe may exist —
+\* this is the half-open thundering-herd guarantee.
+IsLiveProbe(g) ==
+    /\ gw_probe_start[g] > 0
+    /\ (clock - gw_probe_start[g]) < ProbeTimeoutTicks
+    /\ gw_phase[g] \in {"executing", "recording_result"}
+
 SingleProbe ==
-    cb_state = "half_open" =>
-        Cardinality({g \in Gateways :
-            /\ gw_phase[g] = "executing"}) <= 1
-
-\* The circuit only opens after enough consecutive failures.
-ValidOpen ==
-    cb_state = "open" => consecutive_failures >= FailureThreshold
-
-\* Mutual exclusion on the mutation lock.
-LockMutex ==
-    Cardinality({g \in Gateways : mutation_lock_holder = g}) <= 1
+    Cardinality({g \in Gateways : IsLiveProbe(g)}) <= 1
 
 \* -----------------------------------------------------------------------
-\* Liveness properties (checked with fairness)
+\* Liveness (NOT model-checked here — requires fairness the cfg omits)
 \* -----------------------------------------------------------------------
-
-\* If a gateway starts a request, it eventually completes.
-\* (Requires weak fairness on all gateway actions.)
 RequestCompletion ==
     \A g \in Gateways :
         gw_phase[g] # "idle" ~> gw_phase[g] = "idle"

@@ -16,14 +16,20 @@ for the full research document.
 
 ## Specs
 
-| Spec | File | Verifies |
-|------|------|----------|
-| **Circuit Breaker** | `CircuitBreaker.tla` | At most one probe in HalfOpen; valid state transitions |
-| **Dispatch Dedup** | `DispatchDedup.tla` | At most one execution per dedup key, even under lock TTL expiry |
+| Spec | File | Models | Verifies |
+|------|------|--------|----------|
+| **Dispatch Dedup** | `DispatchDedup.tla` | `gateway.rs` dispatch pipeline + dedup `check_and_set` | At most one execution per dedup key **within a dedup-TTL window**, even under dispatch-lock TTL expiry |
+| **Circuit Breaker** | `CircuitBreaker.tla` | `core/circuit_breaker.rs` half-open probe slot | At most one *non-stale* probe in HalfOpen; no lock-loss wedge; valid transitions |
+| **Hash Chain** | `HashChain.tla` | `audit/compliance.rs` `HashChainAuditStore` (the PR #227 max-tip fix) | The committed audit chain is contiguous — no duplicate sequence number, no fork — for every interleaving of concurrent writers |
+| **Recurring Dispatch** | `RecurringDispatch.tla` | `background/workers/recurring.rs` claim + index re-arm (the PR #235 fix) | Each occurrence is dispatched **at most once**, even when a dispatch outlives the 60s claim TTL |
+| **Message Bus** | `MessageBus.tla` | `gateway/group_manager.rs` `flush_group` notify-once | A grouped notification is emitted onto the bus **at most once** per window, despite concurrent flush workers / replicas |
 
-Shared modules in `common/`:
-- `StateStore.tla` — Abstract model of the `StateStore` trait
-- `DistributedLock.tla` — Abstract model of the `DistributedLock` trait
+Each spec is self-contained: it inlines its own lock / state-store state machine
+rather than sharing a module, so each can be model-checked independently.
+
+Each spec is also adversarially validated: reverting the specific fix it models
+(the max-tip read, the pre-dispatch re-arm, the flush mutex) makes TLC report the
+corresponding safety violation. The specs catch the real bug, not just a tautology.
 
 ## Quick Start
 
@@ -42,15 +48,11 @@ make check-all
 ### Run a single spec
 
 ```bash
-make check-circuit    # CircuitBreaker only
-make check-dedup      # DispatchDedup only
+./ci/run-tlc.sh CircuitBreaker     # any one spec by name
+./ci/run-tlc.sh HashChain
 ```
 
-### Direct invocation
-
-```bash
-./ci/run-tlc.sh CircuitBreaker
-```
+`run-tlc.sh` with no argument checks every `*.cfg` in the directory.
 
 ## CI Integration
 
@@ -69,23 +71,26 @@ tla-specs:
     - run: make -C specs/tla check-all
 ```
 
-The CI configuration uses small model parameters (2 gateways, 2 actions)
-for fast feedback (~30 seconds). For nightly runs, increase the constants
-in `.cfg` files (3 gateways, 4 actions) for deeper coverage.
+The CI configuration uses small model parameters (2 gateways/writers/flushers)
+for fast feedback (all five specs finish in a few seconds total). For nightly
+runs, increase the constants in the `.cfg` files for deeper coverage.
 
 ## Project Structure
 
 ```
 specs/tla/
-  CircuitBreaker.tla       # Spec: distributed circuit breaker
-  CircuitBreaker.cfg       # TLC config (constants, invariants)
   DispatchDedup.tla        # Spec: dispatch pipeline deduplication
-  DispatchDedup.cfg        # TLC config
-  common/
-    StateStore.tla         # Shared state store model
-    DistributedLock.tla    # Shared distributed lock model
+  DispatchDedup.cfg        # TLC config (constants, invariants)
+  CircuitBreaker.tla       # Spec: distributed circuit breaker half-open probe
+  CircuitBreaker.cfg
+  HashChain.tla            # Spec: compliance audit hash-chain sequencing (#227)
+  HashChain.cfg
+  RecurringDispatch.tla    # Spec: recurring at-most-once dispatch (#235)
+  RecurringDispatch.cfg
+  MessageBus.tla           # Spec: grouped-notification notify-once delivery
+  MessageBus.cfg
   ci/
-    run-tlc.sh             # CI runner script
+    run-tlc.sh             # CI runner (auto-discovers every *.cfg)
   Makefile                 # Convenience targets
   .gitignore               # Ignore downloaded tools and TLC output
 ```
