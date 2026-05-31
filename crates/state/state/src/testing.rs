@@ -25,8 +25,51 @@ pub async fn run_store_conformance_tests(store: &dyn StateStore) -> Result<(), S
     test_increment(store).await?;
     test_compare_and_swap(store).await?;
     test_ttl_set(store).await?;
+    test_scan_by_kind_includes_check_and_set(store).await?;
+    test_set_clears_ttl_on_overwrite(store).await?;
     test_timeout_index_reindex_replaces(store).await?;
     test_chain_ready_index_reindex_replaces(store).await?;
+    Ok(())
+}
+
+/// A key written via `check_and_set` must be visible to `scan_keys_by_kind`.
+/// On Redis, `check_and_set` stores a plain string while `set` stores a hash;
+/// the scan historically issued `HGET` against every matched key and failed
+/// the entire scan with `WRONGTYPE` as soon as one `check_and_set` key existed
+/// (breaking bus/A2A listing). Memory and Postgres always handled this.
+async fn test_scan_by_kind_includes_check_and_set(
+    store: &dyn StateStore,
+) -> Result<(), StateError> {
+    let key = test_key(KeyKind::State, "scan-cas-marker");
+    let created = store.check_and_set(&key, "scan-cas-value", None).await?;
+    assert!(created, "check_and_set on a fresh key should create it");
+
+    let results = store.scan_keys_by_kind(KeyKind::State).await?;
+    assert!(
+        results.iter().any(|(_, v)| v == "scan-cas-value"),
+        "scan_keys_by_kind must surface a check_and_set-created key, got {results:?}"
+    );
+    Ok(())
+}
+
+/// Overwriting a key that had a TTL with a no-TTL `set` must make it permanent.
+/// On Redis, `HSET` preserves the prior expiry, so the value would silently
+/// vanish when the original TTL elapsed — diverging from memory/Postgres.
+async fn test_set_clears_ttl_on_overwrite(store: &dyn StateStore) -> Result<(), StateError> {
+    let key = test_key(KeyKind::State, "ttl-clear-on-overwrite");
+    store
+        .set(&key, "ephemeral", Some(Duration::from_secs(1)))
+        .await?;
+    // Overwrite without a TTL — this must clear the expiry set above.
+    store.set(&key, "permanent", None).await?;
+    // Wait past the original TTL; if it wasn't cleared the key is now gone.
+    tokio::time::sleep(Duration::from_millis(1300)).await;
+    let val = store.get(&key).await?;
+    assert_eq!(
+        val.as_deref(),
+        Some("permanent"),
+        "a no-TTL overwrite must clear the prior TTL (key expired)"
+    );
     Ok(())
 }
 
