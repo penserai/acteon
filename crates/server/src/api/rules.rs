@@ -374,6 +374,21 @@ pub async fn evaluate_rules(
         );
     }
 
+    // Tenant scoping: a caller may only evaluate rules against a
+    // (namespace, tenant) its grants cover — the trace would otherwise
+    // leak how another tenant's rules apply to a crafted action.
+    if !identity.can_manage_scope(&req.tenant, &req.namespace) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!(ErrorResponse {
+                error: format!(
+                    "forbidden: no grant covers tenant={} namespace={}",
+                    req.tenant, req.namespace
+                ),
+            })),
+        );
+    }
+
     let action = Action::new(
         req.namespace,
         req.tenant,
