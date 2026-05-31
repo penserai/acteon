@@ -17,11 +17,64 @@ use nom::{
 use acteon_rules::RuleError;
 use acteon_rules::ir::expr::{BinaryOp, Expr, UnaryOp};
 
+/// Maximum nesting depth for a CEL expression. Every nesting level
+/// (parentheses, list/map elements, ternary branches, function arguments,
+/// index expressions, unary chains) re-enters the recursive descent through
+/// `parse_ternary`/`parse_unary`, so without a bound a pathologically nested
+/// input — `((((…))))`, `!!!!…x` — overflows the stack and crashes the
+/// process. Legitimate rules nest only a handful of levels; this is far above
+/// any real expression yet well below the stack-overflow point. Each nesting
+/// level enters `parse_ternary` *and* (via the precedence cascade)
+/// `parse_unary`, so this counter ≈ 2× the bracket-nesting depth — i.e. ~32
+/// levels of `(`/`[`/`{` nesting, which is far more than any legitimate rule.
+const MAX_PARSE_DEPTH: usize = 64;
+
+thread_local! {
+    static PARSE_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// RAII guard that increments the recursion-depth counter on entry to a
+/// recursive parse step and decrements on exit — including error/backtrack
+/// unwind, since `Drop` runs whichever way the function returns. Construction
+/// fails (a nom `Failure`, which aborts rather than backtracks) once the depth
+/// limit is exceeded, so the parser returns a clean error instead of
+/// overflowing the stack.
+struct DepthGuard;
+
+impl DepthGuard {
+    fn enter(input: &str) -> IResult<&str, Self> {
+        let depth = PARSE_DEPTH.with(|d| {
+            let n = d.get() + 1;
+            d.set(n);
+            n
+        });
+        if depth > MAX_PARSE_DEPTH {
+            // We never construct the guard on this path, so undo the increment
+            // here; ancestor guards unwind their own on the propagating error.
+            PARSE_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+            return Err(nom::Err::Failure(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::TooLarge,
+            )));
+        }
+        Ok((input, DepthGuard))
+    }
+}
+
+impl Drop for DepthGuard {
+    fn drop(&mut self) {
+        PARSE_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+    }
+}
+
 /// Parse a complete CEL expression string into an [`Expr`].
 ///
 /// Returns a [`RuleError::Parse`] if the input cannot be parsed or has
 /// trailing tokens.
 pub fn parse_cel_expr(input: &str) -> Result<Expr, RuleError> {
+    // Reset the per-thread depth counter defensively (RAII keeps it balanced,
+    // but this guarantees a clean start even after an earlier unwind).
+    PARSE_DEPTH.with(|d| d.set(0));
     let input = input.trim();
     if input.is_empty() {
         return Err(RuleError::Parse("empty expression".to_owned()));
@@ -470,6 +523,9 @@ fn compile_method_call(receiver: Expr, method: &str, args: Vec<Expr>) -> Expr {
 
 /// Parse unary operators `!` and `-`.
 fn parse_unary(input: &str) -> IResult<&str, Expr> {
+    // Unary self-recurses (`!!!…`, `---…`) without passing through
+    // `parse_ternary`, so it needs its own depth guard.
+    let (input, _depth_guard) = DepthGuard::enter(input)?;
     let (input, _) = multispace0(input)?;
 
     if let Ok((rest, _)) = char::<&str, nom::error::Error<&str>>('!')(input) {
@@ -695,6 +751,9 @@ fn parse_or(input: &str) -> IResult<&str, Expr> {
 
 /// Top-level expression: ternary `condition ? then : else`
 fn parse_ternary(input: &str) -> IResult<&str, Expr> {
+    // Every nested sub-expression (parens, list/map elements, ternary
+    // branches, function args, index) re-enters here — bound the depth.
+    let (input, _depth_guard) = DepthGuard::enter(input)?;
     let (input, cond) = parse_or(input)?;
     let (input, _) = multispace0(input)?;
 
@@ -1622,5 +1681,61 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(expr, Expr::Binary(BinaryOp::And, _, _)));
+    }
+
+    // -- Recursion-depth guard (stack-overflow DoS) -------------------------
+
+    #[test]
+    fn deeply_nested_parens_error_not_overflow() {
+        // Far past the limit — must return a clean error, not overflow.
+        let depth = MAX_PARSE_DEPTH + 50;
+        let expr = format!("{}1{}", "(".repeat(depth), ")".repeat(depth));
+        assert!(
+            parse_cel_expr(&expr).is_err(),
+            "deeply nested parens must error, not stack-overflow"
+        );
+    }
+
+    #[test]
+    fn deeply_nested_unary_error_not_overflow() {
+        let expr = format!("{}x", "!".repeat(MAX_PARSE_DEPTH + 50));
+        assert!(parse_cel_expr(&expr).is_err());
+        let expr = format!("{}x", "-".repeat(MAX_PARSE_DEPTH + 50));
+        assert!(parse_cel_expr(&expr).is_err());
+    }
+
+    #[test]
+    fn deeply_nested_list_error_not_overflow() {
+        let depth = MAX_PARSE_DEPTH + 50;
+        let expr = format!("{}1{}", "[".repeat(depth), "]".repeat(depth));
+        assert!(parse_cel_expr(&expr).is_err());
+    }
+
+    #[test]
+    fn moderately_nested_expression_still_parses() {
+        // Well within the limit — legitimate deep-ish nesting must succeed.
+        let depth = 20;
+        let expr = format!("{}1 + 2{}", "(".repeat(depth), ")".repeat(depth));
+        assert!(
+            parse_cel_expr(&expr).is_ok(),
+            "a 20-level nested expression should parse fine"
+        );
+    }
+
+    #[test]
+    fn depth_counter_resets_between_parses() {
+        // A failed deep parse must not leave the counter elevated and break
+        // the next (shallow) parse.
+        let deep = format!(
+            "{}1{}",
+            "(".repeat(MAX_PARSE_DEPTH + 50),
+            ")".repeat(MAX_PARSE_DEPTH + 50)
+        );
+        let _ = parse_cel_expr(&deep);
+        assert!(
+            parse_cel_expr("1 + 2").is_ok(),
+            "counter must reset after a deep-parse failure"
+        );
+        assert_eq!(PARSE_DEPTH.with(std::cell::Cell::get), 0);
     }
 }
