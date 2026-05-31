@@ -17,7 +17,7 @@ This document identifies **the highest-value areas** in Acteon where TLA+ modeli
 harden correctness, proposes concrete specifications, and provides an implementation
 roadmap.
 
-> **Implementation status (May 2026).** Eight specs are implemented and pass the TLC
+> **Implementation status (May 2026).** Ten specs are implemented and pass the TLC
 > model checker on every run of `specs/tla/ci/run-tlc.sh` (wired into CI as the
 > `TLA+ Specs` job):
 >
@@ -31,19 +31,22 @@ roadmap.
 > | Chain ordering (§4.4) | `ChainOrdering.tla` | Each chain step executed ≤ once and recorded in contiguous order, under concurrent `advance_chain` workers (isolates the fresh re-read CAS at gateway.rs:2986) |
 > | Approval lifecycle (§4.5) | `ApprovalLifecycle.tla` | Approval decided once; side-effect runs ≤ once and only if approved, only after the durable intent (the PR #225 intent-before-flip; gateway 3-state path) |
 > | Quota counter (§7.7) | `QuotaCounter.tla` | No counter drift (no lost increment) and no over-admission past the limit, under concurrent dispatchers (atomic check-and-increment + Block refund) |
+> | Bus approval | `BusApproval.tla` | Kafka pre-publish envelope produced ≤ once and only if approved — `Approving` committed before the produce, idempotent producer + reconciler (the Phase-10 two-phase fix; `core/bus_approval.rs` + `api/bus.rs`) |
+> | Multi-policy quota rollback | `MultiQuotaRollback.tla` | On a block, every counter incremented in the call is rolled back (all-or-nothing) — no partial leak on a non-blocking policy, no over-admit on any policy (`enforce_quota_policies`) |
 >
 > The realized layout deviates from the proposal below in one deliberate way: each spec
 > **inlines** its own lock / state-store state machine instead of sharing `common/`
 > modules, so each can be model-checked in isolation and the proof obligations stay local.
 > Each spec is adversarially validated — reverting the specific fix it models makes TLC
 > report the corresponding violation, so the spec catches the real bug rather than a
-> tautology. The last three were each scoped to the layer they isolate: `ChainOrdering`
-> models the fresh re-read CAS (not the full lock + per-attempt dedup stack);
-> `ApprovalLifecycle` models the gateway 3-state path that PR #225 fixed (the separate
-> 5-state Kafka-bus approval machine in `core/bus_approval.rs` would warrant its own
-> spec); `QuotaCounter` assumes the Block-path refund always succeeds (the fail-open
-> rollback path is out of scope). The natural next targets are the Kafka-bus approval
-> machine and the multi-policy quota rollback.
+> tautology. Each spec is scoped to the layer it isolates: `ChainOrdering` models the
+> fresh re-read CAS (not the full lock + per-attempt dedup stack); `ApprovalLifecycle`
+> models the gateway 3-state path that PR #225 fixed, while `BusApproval` covers the
+> separate 5-state Kafka-bus machine in `core/bus_approval.rs` (the Phase-10 two-phase
+> produce ordering); `QuotaCounter` verifies one counter's atomic check-and-increment,
+> while `MultiQuotaRollback` verifies the cross-policy all-or-nothing rollback on block.
+> `QuotaCounter`/`MultiQuotaRollback` both assume the Block-path refund succeeds (the
+> fail-open rollback that can leave ghost consumption is out of scope).
 
 ---
 
@@ -537,14 +540,18 @@ specs/
     ApprovalLifecycle.cfg
     QuotaCounter.tla                 # quota no-drift + no-over-admit (§7.7)
     QuotaCounter.cfg
+    BusApproval.tla                  # Kafka pre-publish approval, publish-once two-phase
+    BusApproval.cfg
+    MultiQuotaRollback.tla           # multi-policy quota all-or-nothing rollback on block
+    MultiQuotaRollback.cfg
     Makefile                         # Automation: `make check-all`
     ci/
       run-tlc.sh                     # auto-discovers every *.cfg; used by CI
 ```
 
-All eight specs follow the same inlined, self-contained convention. The next
-candidates are the Kafka-bus 5-state approval machine (`core/bus_approval.rs`,
-distinct from the gateway path modeled here) and the multi-policy quota rollback.
+All ten specs follow the same inlined, self-contained convention. Remaining
+candidates for future work: the A2A Task pause/resume state machine
+(`core/bus_task.rs`), and the chain DAG cancel-cascade across sub-chains.
 
 ### 5.3 CI Integration
 
