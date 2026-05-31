@@ -9,7 +9,7 @@ use thiserror::Error;
 pub enum OpsGenieError {
     /// An HTTP-level transport error occurred.
     #[error("HTTP error: {0}")]
-    Http(#[from] reqwest::Error),
+    Http(reqwest::Error),
 
     /// The `OpsGenie` API returned a **permanent** non-success response
     /// (a 4xx that is not a rate-limit or auth failure). These are
@@ -40,6 +40,15 @@ pub enum OpsGenieError {
     /// revoked API key.
     #[error("authentication failed: {0}")]
     Unauthorized(String),
+}
+
+impl From<reqwest::Error> for OpsGenieError {
+    fn from(err: reqwest::Error) -> Self {
+        // Redact the request URL: for several providers it carries the bot
+        // token, webhook secret, or access token, which must never reach
+        // error messages, audit records, or the DLQ.
+        Self::Http(err.without_url())
+    }
 }
 
 impl From<OpsGenieError> for ProviderError {

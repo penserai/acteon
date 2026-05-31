@@ -11,7 +11,7 @@ use thiserror::Error;
 pub enum PushoverError {
     /// An HTTP-level transport error occurred.
     #[error("HTTP error: {0}")]
-    Http(#[from] reqwest::Error),
+    Http(reqwest::Error),
 
     /// The Pushover API returned a **permanent** non-success response
     /// (a 4xx that is not a rate-limit or auth failure).
@@ -47,6 +47,15 @@ pub enum PushoverError {
     /// (no default recipient, and the recipient map is not a single-entry map).
     #[error("no user_key in payload and no default recipient configured")]
     NoDefaultRecipient,
+}
+
+impl From<reqwest::Error> for PushoverError {
+    fn from(err: reqwest::Error) -> Self {
+        // Redact the request URL: for several providers it carries the bot
+        // token, webhook secret, or access token, which must never reach
+        // error messages, audit records, or the DLQ.
+        Self::Http(err.without_url())
+    }
 }
 
 impl From<PushoverError> for ProviderError {

@@ -14,7 +14,7 @@ use thiserror::Error;
 pub enum WeChatError {
     /// An HTTP-level transport error occurred.
     #[error("HTTP error: {0}")]
-    Http(#[from] reqwest::Error),
+    Http(reqwest::Error),
 
     /// The `WeChat` API returned a **permanent** failure
     /// (`errcode != 0` that is neither rate-limit, auth, nor
@@ -66,6 +66,15 @@ pub enum WeChatError {
     /// `ProviderError` would be a provider bug.
     #[error("WeChat access token expired or invalid (internal retry signal)")]
     TokenExpired,
+}
+
+impl From<reqwest::Error> for WeChatError {
+    fn from(err: reqwest::Error) -> Self {
+        // Redact the request URL: for several providers it carries the bot
+        // token, webhook secret, or access token, which must never reach
+        // error messages, audit records, or the DLQ.
+        Self::Http(err.without_url())
+    }
 }
 
 impl From<WeChatError> for ProviderError {

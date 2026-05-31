@@ -11,7 +11,7 @@ use thiserror::Error;
 pub enum TelegramError {
     /// An HTTP-level transport error occurred.
     #[error("HTTP error: {0}")]
-    Http(#[from] reqwest::Error),
+    Http(reqwest::Error),
 
     /// The Telegram API returned a **permanent** non-success
     /// response (a 4xx that is not a rate-limit or auth failure).
@@ -53,6 +53,15 @@ pub enum TelegramError {
     /// single-entry map).
     #[error("no chat in payload and no default chat configured")]
     NoDefaultChat,
+}
+
+impl From<reqwest::Error> for TelegramError {
+    fn from(err: reqwest::Error) -> Self {
+        // Redact the request URL: for several providers it carries the bot
+        // token, webhook secret, or access token, which must never reach
+        // error messages, audit records, or the DLQ.
+        Self::Http(err.without_url())
+    }
 }
 
 impl From<TelegramError> for ProviderError {
@@ -137,6 +146,41 @@ mod tests {
         assert_eq!(
             TelegramError::UnknownChat("ops".into()).to_string(),
             "unknown Telegram chat: ops"
+        );
+    }
+
+    #[tokio::test]
+    async fn http_error_redacts_url() {
+        // A transport failure must not leak the request URL (which for Telegram
+        // carries the bot token in the path) into the converted ProviderError.
+        let marker = "REDACTME-9f8a7b6c";
+        let url = format!("http://127.0.0.1:1/bot{marker}/sendMessage");
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let raw = client
+            .get(&url)
+            .send()
+            .await
+            .expect_err("connecting to 127.0.0.1:1 must fail");
+
+        // Precondition: the raw reqwest error DOES embed the URL/marker.
+        assert!(
+            raw.to_string().contains(marker),
+            "precondition: raw reqwest error should carry the URL"
+        );
+
+        // Routing it through `From` (which calls `without_url`) strips it.
+        let provider_err: ProviderError = TelegramError::from(raw).into();
+        let msg = provider_err.to_string();
+        assert!(
+            !msg.contains(marker),
+            "converted error leaked the URL secret: {msg}"
+        );
+        assert!(
+            !msg.contains("127.0.0.1"),
+            "converted error leaked the host: {msg}"
         );
     }
 }
