@@ -39,6 +39,9 @@ for the full research document.
 | **Conversation Lifecycle** | `ConversationLifecycle.tla` | `bus_conversation.rs` `apply_transition` + `accepts_messages` | Linear no-skip lifecycle (never Active→Archived without Resolved) and **no message accepted after Archive**, under concurrent version-CAS transitions + posts |
 | **Silence Window** | `SilenceWindow.tla` | `core/silence.rs` `is_active_at` half-open window | An action is suppressed **iff a matching silence is active at dispatch time** — the half-open `[starts_at, ends_at)` boundary + expiry, checked against an independent window oracle |
 | **Embedding Single-Flight** | `EmbeddingSingleFlight.tla` | `embedding/cache.rs` moka `try_get_with` coalescing | Concurrent misses for the same key **coalesce into one provider call** (thundering-herd protection) and all callers return the same value |
+| **Distributed Lock** | `DistributedLock.tla` | `state/lock.rs` + `redis/lock.rs` `SET NX PX` + owner-checked release | **Mutual exclusion** + **owner-fenced release** (a stale holder never frees the new holder's lock) + TTL lease — the primitive every other spec assumes |
+| **Stale-Task Reaper** | `StaleTaskReaper.tla` | `task_engine.rs` `fail_if_stale` scan→load→commit | The reaper **never fails a task that heartbeated** after its scan — the fresh `is_stale_at` re-check on the CAS-loaded row |
+| **Group Ingest-Flush** | `GroupIngestFlush.tla` | `group_manager.rs` `add_to_group` Notified→Pending re-arm | A late event for a Notified group **re-arms it to Pending** so **no ingested event is stranded** unnotified |
 
 Each spec is self-contained: it inlines its own lock / state-store state machine
 rather than sharing a module, so each can be model-checked independently.
@@ -51,7 +54,8 @@ recursion / completion coupling, the subscribe-before-replay / cursor dedup, the
 reaper hold-skip / expiry-check, the drain take+clear atomicity, the dedup
 check_and_set gate, the never-retire-a-live-key contract, the cycle / depth /
 width / visited-filter checks, the no-skip-archive / fresh-accepts re-check, the
-half-open window bound, the single-flight claim) makes TLC report the
+half-open window bound, the single-flight claim, the owner-fenced release, the
+fresh staleness re-check, the Notified→Pending re-arm) makes TLC report the
 corresponding safety violation. The specs catch the real bug, not a tautology.
 
 ## Quick Start
@@ -95,7 +99,7 @@ tla-specs:
 ```
 
 The CI configuration uses small model parameters (2 of each principal) for fast
-feedback (all twenty-one specs finish in a few seconds total). For nightly runs,
+feedback (all twenty-four specs finish in a few seconds total). For nightly runs,
 increase the constants in the `.cfg` files for deeper coverage.
 
 ## Project Structure
@@ -144,6 +148,12 @@ specs/tla/
   SilenceWindow.cfg
   EmbeddingSingleFlight.tla # Spec: embedding cache single-flight (thundering herd)
   EmbeddingSingleFlight.cfg
+  DistributedLock.tla      # Spec: lock mutual exclusion + owner-fenced release + TTL
+  DistributedLock.cfg
+  StaleTaskReaper.tla      # Spec: reaper fresh-staleness re-check (no reap-after-heartbeat)
+  StaleTaskReaper.cfg
+  GroupIngestFlush.tla     # Spec: group ingest re-arm, no stranded event
+  GroupIngestFlush.cfg
   ci/
     run-tlc.sh             # CI runner (auto-discovers every *.cfg)
   Makefile                 # Convenience targets

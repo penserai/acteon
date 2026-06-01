@@ -17,7 +17,7 @@ This document identifies **the highest-value areas** in Acteon where TLA+ modeli
 harden correctness, proposes concrete specifications, and provides an implementation
 roadmap.
 
-> **Implementation status (May 2026).** Twenty-one specs are implemented and pass the TLC
+> **Implementation status (May 2026).** Twenty-four specs are implemented and pass the TLC
 > model checker on every run of `specs/tla/ci/run-tlc.sh` (wired into CI as the
 > `TLA+ Specs` job):
 >
@@ -44,6 +44,9 @@ roadmap.
 > | Conversation lifecycle | `ConversationLifecycle.tla` | Linear no-skip lifecycle (never Active→Archived without Resolved) and no message accepted after Archive, under concurrent version-CAS transitions + posts (`bus_conversation.rs` + `api/bus.rs`) |
 > | Silence window | `SilenceWindow.tla` | An action is suppressed iff a matching silence is active at dispatch time — the half-open `[starts_at, ends_at)` boundary + expiry, checked against an independent window oracle (`core/silence.rs is_active_at`) |
 > | Embedding single-flight | `EmbeddingSingleFlight.tla` | Concurrent misses for the same key coalesce into one provider call (thundering-herd protection) and all callers return the same value (`embedding/cache.rs` moka `try_get_with`) |
+> | Distributed lock | `DistributedLock.tla` | Mutual exclusion + owner-fenced release (a stale holder never frees the new holder's lock) + TTL lease — the `SET NX PX` + owner-checked-delete primitive every other spec assumes (`state/lock.rs` + `redis/lock.rs`) |
+> | Stale-task reaper | `StaleTaskReaper.tla` | The reaper never fails a task that heartbeated after its scan — the fresh `is_stale_at` re-check on the CAS-loaded row (`task_engine.rs fail_if_stale`, modeled scan→load→commit so the fresh re-check is load-bearing) |
+> | Group ingest-flush | `GroupIngestFlush.tla` | A late event for a Notified group re-arms it to Pending so no ingested event is stranded unnotified (`group_manager.rs add_to_group`; distinct from the `MessageBus` notify-once) |
 >
 > The realized layout deviates from the proposal below in one deliberate way: each spec
 > **inlines** its own lock / state-store state machine instead of sharing `common/`
@@ -577,14 +580,22 @@ specs/
     SilenceWindow.cfg
     EmbeddingSingleFlight.tla        # embedding cache single-flight (thundering herd)
     EmbeddingSingleFlight.cfg
+    DistributedLock.tla              # lock mutual exclusion + owner-fenced release + TTL
+    DistributedLock.cfg
+    StaleTaskReaper.tla              # reaper fresh-staleness re-check (no reap-after-heartbeat)
+    StaleTaskReaper.cfg
+    GroupIngestFlush.tla             # group ingest re-arm, no stranded event
+    GroupIngestFlush.cfg
     Makefile                         # Automation: `make check-all`
     ci/
       run-tlc.sh                     # auto-discovers every *.cfg; used by CI
 ```
 
-All twenty-one specs follow the same inlined, self-contained convention. Remaining
-candidates for future work: the group-flush dedup vs. concurrent ingest, the
-provider circuit-breaker probe under load, and the snapshot/restore consistency.
+All twenty-four specs follow the same inlined, self-contained convention. This
+covers the genuinely concurrency-critical surface of the system; the earlier
+"circuit-breaker probe under load" candidate is already covered by
+`CircuitBreaker.tla` (which models the full failure-threshold state machine), and
+"snapshot/restore" is config-DTO serialization rather than a concurrency protocol.
 
 ### 5.3 CI Integration
 
