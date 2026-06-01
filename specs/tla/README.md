@@ -30,6 +30,9 @@ for the full research document.
 | **Multi-Quota Rollback** | `MultiQuotaRollback.tla` | `gateway/quota_enforcement.rs` `enforce_quota_policies` block rollback | On a block, **every** counter touched is rolled back (all-or-nothing) — no partial leak on a non-blocking policy; no over-admit on any policy |
 | **A2A Task Transition** | `A2aTaskTransition.tla` | `core/bus_task.rs` `can_transition_to` + `task_engine.rs` `cas_mutate` | Every committed task transition is **legal** and **terminal stays terminal**, under concurrent optimistic version-CAS (re-validates against the fresh row) |
 | **Chain Cancel-Cascade** | `ChainCancelCascade.tla` | `gateway.rs` `cancel_chain` recursion + `advance_chain` guard | A cancel **cascades to every running descendant** (no orphan) and a **cancelled chain never resurrects** — relies on the recursion *and* the WaitingSubChain completion coupling |
+| **Stream Replay** | `StreamReplay.tla` | `api/stream.rs` SSE reconnect (`Last-Event-ID` replay + live tail) | Across a reconnect, every event is delivered with **no gap and no duplicate** — relies on subscribe-before-replay *and* the `last_replayed_id` cursor dedup |
+| **Retention Reaper** | `RetentionReaper.tla` | `workers/retention.rs` `run_retention_reaper` scan→delete | A record **held or not-expired at scan time is never deleted** — the `compliance_hold` skip and the expiry-check, each independently load-bearing (honest about the by-key-delete TOCTOU) |
+| **DLQ Redelivery** | `DlqRedelivery.tla` | `executor/dlq.rs` `DeadLetterQueue` push/drain | Every DLQ entry is drained **exactly once and never lost** under concurrent push/drain — the `std::mem::take` take+clear atomicity |
 
 Each spec is self-contained: it inlines its own lock / state-store state machine
 rather than sharing a module, so each can be model-checked independently.
@@ -38,8 +41,9 @@ Each spec is also adversarially validated: reverting the specific fix it models
 (the max-tip read, the pre-dispatch re-arm, the flush mutex, the step re-read CAS,
 the intent-before-flip ordering, the increment atomicity, the two-phase produce
 ordering, the all-or-nothing rollback, the version-CAS re-validation, the cancel
-recursion / completion coupling) makes TLC report the corresponding safety
-violation. The specs catch the real bug, not just a tautology.
+recursion / completion coupling, the subscribe-before-replay / cursor dedup, the
+reaper hold-skip / expiry-check, the drain take+clear atomicity) makes TLC report
+the corresponding safety violation. The specs catch the real bug, not a tautology.
 
 ## Quick Start
 
@@ -82,7 +86,7 @@ tla-specs:
 ```
 
 The CI configuration uses small model parameters (2 of each principal) for fast
-feedback (all twelve specs finish in a few seconds total). For nightly runs,
+feedback (all fifteen specs finish in a few seconds total). For nightly runs,
 increase the constants in the `.cfg` files for deeper coverage.
 
 ## Project Structure
@@ -113,6 +117,12 @@ specs/tla/
   A2aTaskTransition.cfg
   ChainCancelCascade.tla   # Spec: chain cancel-cascade, no orphan, no resurrection
   ChainCancelCascade.cfg
+  StreamReplay.tla         # Spec: SSE reconnect replay, no gap, no duplicate
+  StreamReplay.cfg
+  RetentionReaper.tla      # Spec: reaper never deletes a held/live record
+  RetentionReaper.cfg
+  DlqRedelivery.tla        # Spec: DLQ drain exactly-once, no lost entry
+  DlqRedelivery.cfg
   ci/
     run-tlc.sh             # CI runner (auto-discovers every *.cfg)
   Makefile                 # Convenience targets

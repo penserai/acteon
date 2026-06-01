@@ -14,6 +14,9 @@
 #   make check-multiquota   # Run MultiQuotaRollback only
 #   make check-task         # Run A2aTaskTransition only
 #   make check-cancel       # Run ChainCancelCascade only
+#   make check-replay       # Run StreamReplay only
+#   make check-reaper       # Run RetentionReaper only
+#   make check-dlq          # Run DlqRedelivery only
 #   make setup              # Download tla2tools.jar
 #   make clean              # Remove downloaded tools
 
@@ -21,7 +24,7 @@ SHELL := /bin/bash
 SPECS_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 CI_SCRIPT := $(SPECS_DIR)ci/run-tlc.sh
 
-.PHONY: check-all check-circuit check-dedup check-hashchain check-recurring check-bus check-chain check-approval check-quota check-busapproval check-multiquota check-task check-cancel setup clean help
+.PHONY: check-all check-circuit check-dedup check-hashchain check-recurring check-bus check-chain check-approval check-quota check-busapproval check-multiquota check-task check-cancel check-replay check-reaper check-dlq setup clean help
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -65,6 +68,15 @@ check-task: ## Run TLC on A2aTaskTransition spec
 
 check-cancel: ## Run TLC on ChainCancelCascade spec
 	@$(CI_SCRIPT) ChainCancelCascade
+
+check-replay: ## Run TLC on StreamReplay spec
+	@$(CI_SCRIPT) StreamReplay
+
+check-reaper: ## Run TLC on RetentionReaper spec
+	@$(CI_SCRIPT) RetentionReaper
+
+check-dlq: ## Run TLC on DlqRedelivery spec
+	@$(CI_SCRIPT) DlqRedelivery
 
 setup: ## Download tla2tools.jar (requires curl or wget)
 	@$(CI_SCRIPT) __nonexistent__ 2>/dev/null || true
