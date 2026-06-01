@@ -17,7 +17,7 @@ This document identifies **the highest-value areas** in Acteon where TLA+ modeli
 harden correctness, proposes concrete specifications, and provides an implementation
 roadmap.
 
-> **Implementation status (May 2026).** Fifteen specs are implemented and pass the TLC
+> **Implementation status (May 2026).** Eighteen specs are implemented and pass the TLC
 > model checker on every run of `specs/tla/ci/run-tlc.sh` (wired into CI as the
 > `TLA+ Specs` job):
 >
@@ -38,6 +38,9 @@ roadmap.
 > | Stream replay | `StreamReplay.tla` | SSE reconnect (`Last-Event-ID`) delivers every event with no gap and no duplicate — subscribe-before-replay + the `last_replayed_id` cursor dedup, each independently load-bearing (`api/stream.rs`) |
 > | Retention reaper | `RetentionReaper.tla` | A record held or not-expired at scan time is never deleted — the `compliance_hold` skip and the expiry-check (honest about the real by-key-delete TOCTOU; invariants anchored on scan-time state) (`workers/retention.rs`) |
 > | DLQ redelivery | `DlqRedelivery.tla` | Every dead-letter entry is drained exactly once and never lost under concurrent push/drain — the `std::mem::take` take+clear atomicity (`executor/dlq.rs`) |
+> | Message dedup | `MessageDedup.tla` | An A2A message is applied at most once per dedup-TTL window — the `check_and_set` is the gate, the read-only probe advisory (`task_engine.rs`) |
+> | Key rotation | `KeyRotation.tla` | No stored value becomes undecryptable — a key is never retired while a value is still stamped with it (the contract `decrypt`-by-kid relies on; `crypto/lib.rs`) |
+> | Reference-graph defense | `RefGraphDefense.tla` | The write-time reference-graph walk terminates and rejects every graph-bomb (cycle, over-depth, over-width), cross-checked against an independent reachability oracle (`task_engine.rs check_reference_graph`) |
 >
 > The realized layout deviates from the proposal below in one deliberate way: each spec
 > **inlines** its own lock / state-store state machine instead of sharing `common/`
@@ -559,14 +562,20 @@ specs/
     RetentionReaper.cfg
     DlqRedelivery.tla                # DLQ drain exactly-once, no lost entry
     DlqRedelivery.cfg
+    MessageDedup.tla                 # A2A message at-most-once per dedup-TTL window
+    MessageDedup.cfg
+    KeyRotation.tla                  # key rotation, no undecryptable value
+    KeyRotation.cfg
+    RefGraphDefense.tla              # reference-graph bounded walk, graph-bomb defense
+    RefGraphDefense.cfg
     Makefile                         # Automation: `make check-all`
     ci/
       run-tlc.sh                     # auto-discovers every *.cfg; used by CI
 ```
 
-All fifteen specs follow the same inlined, self-contained convention. Remaining
-candidates for future work: the message dedup TTL window vs. replay, the
-encrypted-state key rotation, and the A2A reference-graph cycle defense.
+All eighteen specs follow the same inlined, self-contained convention. Remaining
+candidates for future work: the conversation-state lifecycle, the silence/alert
+suppression window, and the embedding-cache invalidation under concurrent writes.
 
 ### 5.3 CI Integration
 

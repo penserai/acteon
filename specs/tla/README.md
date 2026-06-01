@@ -33,6 +33,9 @@ for the full research document.
 | **Stream Replay** | `StreamReplay.tla` | `api/stream.rs` SSE reconnect (`Last-Event-ID` replay + live tail) | Across a reconnect, every event is delivered with **no gap and no duplicate** — relies on subscribe-before-replay *and* the `last_replayed_id` cursor dedup |
 | **Retention Reaper** | `RetentionReaper.tla` | `workers/retention.rs` `run_retention_reaper` scan→delete | A record **held or not-expired at scan time is never deleted** — the `compliance_hold` skip and the expiry-check, each independently load-bearing (honest about the by-key-delete TOCTOU) |
 | **DLQ Redelivery** | `DlqRedelivery.tla` | `executor/dlq.rs` `DeadLetterQueue` push/drain | Every DLQ entry is drained **exactly once and never lost** under concurrent push/drain — the `std::mem::take` take+clear atomicity |
+| **Message Dedup** | `MessageDedup.tla` | `task_engine.rs` A2A message `check_and_set` + advisory probe | An A2A message is applied **at most once per dedup-TTL window** — the `check_and_set` is the gate; the read-only probe is advisory |
+| **Key Rotation** | `KeyRotation.tla` | `crypto/lib.rs` `PayloadEncryptor` encrypt-active / decrypt-by-kid | **No value becomes undecryptable** — a key is never retired while a stored value is still stamped with it (the rotation contract decrypt-by-kid relies on) |
+| **Ref-Graph Defense** | `RefGraphDefense.tla` | `task_engine.rs` `check_reference_graph` bounded walk | The reference-graph walk **terminates and rejects every graph-bomb** (cycle, over-depth, over-width) — cross-checked against an independent reachability oracle |
 
 Each spec is self-contained: it inlines its own lock / state-store state machine
 rather than sharing a module, so each can be model-checked independently.
@@ -42,8 +45,10 @@ Each spec is also adversarially validated: reverting the specific fix it models
 the intent-before-flip ordering, the increment atomicity, the two-phase produce
 ordering, the all-or-nothing rollback, the version-CAS re-validation, the cancel
 recursion / completion coupling, the subscribe-before-replay / cursor dedup, the
-reaper hold-skip / expiry-check, the drain take+clear atomicity) makes TLC report
-the corresponding safety violation. The specs catch the real bug, not a tautology.
+reaper hold-skip / expiry-check, the drain take+clear atomicity, the dedup
+check_and_set gate, the never-retire-a-live-key contract, the cycle / depth /
+width / visited-filter checks) makes TLC report the corresponding safety
+violation. The specs catch the real bug, not a tautology.
 
 ## Quick Start
 
@@ -86,7 +91,7 @@ tla-specs:
 ```
 
 The CI configuration uses small model parameters (2 of each principal) for fast
-feedback (all fifteen specs finish in a few seconds total). For nightly runs,
+feedback (all eighteen specs finish in a few seconds total). For nightly runs,
 increase the constants in the `.cfg` files for deeper coverage.
 
 ## Project Structure
@@ -123,6 +128,12 @@ specs/tla/
   RetentionReaper.cfg
   DlqRedelivery.tla        # Spec: DLQ drain exactly-once, no lost entry
   DlqRedelivery.cfg
+  MessageDedup.tla         # Spec: A2A message at-most-once per dedup-TTL window
+  MessageDedup.cfg
+  KeyRotation.tla          # Spec: key rotation, no undecryptable value
+  KeyRotation.cfg
+  RefGraphDefense.tla      # Spec: reference-graph bounded walk, graph-bomb defense
+  RefGraphDefense.cfg
   ci/
     run-tlc.sh             # CI runner (auto-discovers every *.cfg)
   Makefile                 # Convenience targets
