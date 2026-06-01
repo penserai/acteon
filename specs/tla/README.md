@@ -36,6 +36,9 @@ for the full research document.
 | **Message Dedup** | `MessageDedup.tla` | `task_engine.rs` A2A message `check_and_set` + advisory probe | An A2A message is applied **at most once per dedup-TTL window** — the `check_and_set` is the gate; the read-only probe is advisory |
 | **Key Rotation** | `KeyRotation.tla` | `crypto/lib.rs` `PayloadEncryptor` encrypt-active / decrypt-by-kid | **No value becomes undecryptable** — a key is never retired while a stored value is still stamped with it (the rotation contract decrypt-by-kid relies on) |
 | **Ref-Graph Defense** | `RefGraphDefense.tla` | `task_engine.rs` `check_reference_graph` bounded walk | The reference-graph walk **terminates and rejects every graph-bomb** (cycle, over-depth, over-width) — cross-checked against an independent reachability oracle |
+| **Conversation Lifecycle** | `ConversationLifecycle.tla` | `bus_conversation.rs` `apply_transition` + `accepts_messages` | Linear no-skip lifecycle (never Active→Archived without Resolved) and **no message accepted after Archive**, under concurrent version-CAS transitions + posts |
+| **Silence Window** | `SilenceWindow.tla` | `core/silence.rs` `is_active_at` half-open window | An action is suppressed **iff a matching silence is active at dispatch time** — the half-open `[starts_at, ends_at)` boundary + expiry, checked against an independent window oracle |
+| **Embedding Single-Flight** | `EmbeddingSingleFlight.tla` | `embedding/cache.rs` moka `try_get_with` coalescing | Concurrent misses for the same key **coalesce into one provider call** (thundering-herd protection) and all callers return the same value |
 
 Each spec is self-contained: it inlines its own lock / state-store state machine
 rather than sharing a module, so each can be model-checked independently.
@@ -47,8 +50,9 @@ ordering, the all-or-nothing rollback, the version-CAS re-validation, the cancel
 recursion / completion coupling, the subscribe-before-replay / cursor dedup, the
 reaper hold-skip / expiry-check, the drain take+clear atomicity, the dedup
 check_and_set gate, the never-retire-a-live-key contract, the cycle / depth /
-width / visited-filter checks) makes TLC report the corresponding safety
-violation. The specs catch the real bug, not a tautology.
+width / visited-filter checks, the no-skip-archive / fresh-accepts re-check, the
+half-open window bound, the single-flight claim) makes TLC report the
+corresponding safety violation. The specs catch the real bug, not a tautology.
 
 ## Quick Start
 
@@ -91,7 +95,7 @@ tla-specs:
 ```
 
 The CI configuration uses small model parameters (2 of each principal) for fast
-feedback (all eighteen specs finish in a few seconds total). For nightly runs,
+feedback (all twenty-one specs finish in a few seconds total). For nightly runs,
 increase the constants in the `.cfg` files for deeper coverage.
 
 ## Project Structure
@@ -134,6 +138,12 @@ specs/tla/
   KeyRotation.cfg
   RefGraphDefense.tla      # Spec: reference-graph bounded walk, graph-bomb defense
   RefGraphDefense.cfg
+  ConversationLifecycle.tla # Spec: conversation no-skip lifecycle + no-post-after-archive
+  ConversationLifecycle.cfg
+  SilenceWindow.tla        # Spec: silence half-open suppression window + expiry
+  SilenceWindow.cfg
+  EmbeddingSingleFlight.tla # Spec: embedding cache single-flight (thundering herd)
+  EmbeddingSingleFlight.cfg
   ci/
     run-tlc.sh             # CI runner (auto-discovers every *.cfg)
   Makefile                 # Convenience targets
