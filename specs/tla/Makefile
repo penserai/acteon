@@ -23,6 +23,9 @@
 #   make check-conv         # Run ConversationLifecycle only
 #   make check-silence      # Run SilenceWindow only
 #   make check-singleflight # Run EmbeddingSingleFlight only
+#   make check-lock         # Run DistributedLock only
+#   make check-staletask    # Run StaleTaskReaper only
+#   make check-groupflush   # Run GroupIngestFlush only
 #   make setup              # Download tla2tools.jar
 #   make clean              # Remove downloaded tools
 
@@ -30,7 +33,7 @@ SHELL := /bin/bash
 SPECS_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 CI_SCRIPT := $(SPECS_DIR)ci/run-tlc.sh
 
-.PHONY: check-all check-circuit check-dedup check-hashchain check-recurring check-bus check-chain check-approval check-quota check-busapproval check-multiquota check-task check-cancel check-replay check-reaper check-dlq check-msgdedup check-keyrotation check-refgraph check-conv check-silence check-singleflight setup clean help
+.PHONY: check-all check-circuit check-dedup check-hashchain check-recurring check-bus check-chain check-approval check-quota check-busapproval check-multiquota check-task check-cancel check-replay check-reaper check-dlq check-msgdedup check-keyrotation check-refgraph check-conv check-silence check-singleflight check-lock check-staletask check-groupflush setup clean help
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -101,6 +104,15 @@ check-silence: ## Run TLC on SilenceWindow spec
 
 check-singleflight: ## Run TLC on EmbeddingSingleFlight spec
 	@$(CI_SCRIPT) EmbeddingSingleFlight
+
+check-lock: ## Run TLC on DistributedLock spec
+	@$(CI_SCRIPT) DistributedLock
+
+check-staletask: ## Run TLC on StaleTaskReaper spec
+	@$(CI_SCRIPT) StaleTaskReaper
+
+check-groupflush: ## Run TLC on GroupIngestFlush spec
+	@$(CI_SCRIPT) GroupIngestFlush
 
 setup: ## Download tla2tools.jar (requires curl or wget)
 	@$(CI_SCRIPT) __nonexistent__ 2>/dev/null || true
