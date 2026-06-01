@@ -20,6 +20,9 @@
 #   make check-msgdedup     # Run MessageDedup only
 #   make check-keyrotation  # Run KeyRotation only
 #   make check-refgraph     # Run RefGraphDefense only
+#   make check-conv         # Run ConversationLifecycle only
+#   make check-silence      # Run SilenceWindow only
+#   make check-singleflight # Run EmbeddingSingleFlight only
 #   make setup              # Download tla2tools.jar
 #   make clean              # Remove downloaded tools
 
@@ -27,7 +30,7 @@ SHELL := /bin/bash
 SPECS_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 CI_SCRIPT := $(SPECS_DIR)ci/run-tlc.sh
 
-.PHONY: check-all check-circuit check-dedup check-hashchain check-recurring check-bus check-chain check-approval check-quota check-busapproval check-multiquota check-task check-cancel check-replay check-reaper check-dlq check-msgdedup check-keyrotation check-refgraph setup clean help
+.PHONY: check-all check-circuit check-dedup check-hashchain check-recurring check-bus check-chain check-approval check-quota check-busapproval check-multiquota check-task check-cancel check-replay check-reaper check-dlq check-msgdedup check-keyrotation check-refgraph check-conv check-silence check-singleflight setup clean help
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -89,6 +92,15 @@ check-keyrotation: ## Run TLC on KeyRotation spec
 
 check-refgraph: ## Run TLC on RefGraphDefense spec
 	@$(CI_SCRIPT) RefGraphDefense
+
+check-conv: ## Run TLC on ConversationLifecycle spec
+	@$(CI_SCRIPT) ConversationLifecycle
+
+check-silence: ## Run TLC on SilenceWindow spec
+	@$(CI_SCRIPT) SilenceWindow
+
+check-singleflight: ## Run TLC on EmbeddingSingleFlight spec
+	@$(CI_SCRIPT) EmbeddingSingleFlight
 
 setup: ## Download tla2tools.jar (requires curl or wget)
 	@$(CI_SCRIPT) __nonexistent__ 2>/dev/null || true

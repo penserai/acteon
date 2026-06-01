@@ -17,7 +17,7 @@ This document identifies **the highest-value areas** in Acteon where TLA+ modeli
 harden correctness, proposes concrete specifications, and provides an implementation
 roadmap.
 
-> **Implementation status (May 2026).** Eighteen specs are implemented and pass the TLC
+> **Implementation status (May 2026).** Twenty-one specs are implemented and pass the TLC
 > model checker on every run of `specs/tla/ci/run-tlc.sh` (wired into CI as the
 > `TLA+ Specs` job):
 >
@@ -41,6 +41,9 @@ roadmap.
 > | Message dedup | `MessageDedup.tla` | An A2A message is applied at most once per dedup-TTL window — the `check_and_set` is the gate, the read-only probe advisory (`task_engine.rs`) |
 > | Key rotation | `KeyRotation.tla` | No stored value becomes undecryptable — a key is never retired while a value is still stamped with it (the contract `decrypt`-by-kid relies on; `crypto/lib.rs`) |
 > | Reference-graph defense | `RefGraphDefense.tla` | The write-time reference-graph walk terminates and rejects every graph-bomb (cycle, over-depth, over-width), cross-checked against an independent reachability oracle (`task_engine.rs check_reference_graph`) |
+> | Conversation lifecycle | `ConversationLifecycle.tla` | Linear no-skip lifecycle (never Active→Archived without Resolved) and no message accepted after Archive, under concurrent version-CAS transitions + posts (`bus_conversation.rs` + `api/bus.rs`) |
+> | Silence window | `SilenceWindow.tla` | An action is suppressed iff a matching silence is active at dispatch time — the half-open `[starts_at, ends_at)` boundary + expiry, checked against an independent window oracle (`core/silence.rs is_active_at`) |
+> | Embedding single-flight | `EmbeddingSingleFlight.tla` | Concurrent misses for the same key coalesce into one provider call (thundering-herd protection) and all callers return the same value (`embedding/cache.rs` moka `try_get_with`) |
 >
 > The realized layout deviates from the proposal below in one deliberate way: each spec
 > **inlines** its own lock / state-store state machine instead of sharing `common/`
@@ -568,14 +571,20 @@ specs/
     KeyRotation.cfg
     RefGraphDefense.tla              # reference-graph bounded walk, graph-bomb defense
     RefGraphDefense.cfg
+    ConversationLifecycle.tla        # conversation no-skip lifecycle + no-post-after-archive
+    ConversationLifecycle.cfg
+    SilenceWindow.tla                # silence half-open suppression window + expiry
+    SilenceWindow.cfg
+    EmbeddingSingleFlight.tla        # embedding cache single-flight (thundering herd)
+    EmbeddingSingleFlight.cfg
     Makefile                         # Automation: `make check-all`
     ci/
       run-tlc.sh                     # auto-discovers every *.cfg; used by CI
 ```
 
-All eighteen specs follow the same inlined, self-contained convention. Remaining
-candidates for future work: the conversation-state lifecycle, the silence/alert
-suppression window, and the embedding-cache invalidation under concurrent writes.
+All twenty-one specs follow the same inlined, self-contained convention. Remaining
+candidates for future work: the group-flush dedup vs. concurrent ingest, the
+provider circuit-breaker probe under load, and the snapshot/restore consistency.
 
 ### 5.3 CI Integration
 
