@@ -417,6 +417,7 @@ async fn execute_task_isolated(ctx: SharedContext, task: SwarmTask, role: AgentR
             &system_prompt,
             allowed_tools,
             &ctx.hooks_binary,
+            &ctx.run_id,
         )
         .await
         {

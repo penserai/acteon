@@ -411,6 +411,7 @@ async fn spawn_single_recovery_agent(
         &system_prompt,
         &allowed_tools,
         ctx.hooks_binary,
+        &run.id,
     )
     .await
     {

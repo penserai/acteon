@@ -145,7 +145,7 @@ async fn main() -> Result<()> {
             cmd_status(&config, &args.run).await?;
         }
         Commands::Cancel(args) => {
-            cmd_cancel(&config, &args.run);
+            cmd_cancel(&config, &args.run).await?;
         }
     }
 
@@ -391,7 +391,16 @@ async fn cmd_status(config: &SwarmConfig, run_id: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_cancel(_config: &SwarmConfig, run_id: &str) {
-    // TODO: Implement cancel via Acteon API + kill agent processes.
-    warn!(run_id = %run_id, "cancel not yet implemented");
+async fn cmd_cancel(config: &SwarmConfig, run_id: &str) -> Result<()> {
+    info!(run_id = %run_id, "cancelling swarm run");
+    acteon_swarm::acteon::quota_manager::block_run(config, run_id).await?;
+    info!(
+        run_id = %run_id,
+        "cancellation requested — Acteon will deny this run's gated actions \
+         (command execution, file writes, web access, sub-agent spawns) within the \
+         gateway quota-cache TTL (~60s). In-flight agents wind down as their tool \
+         calls are blocked; read-only work and the orchestrator process are not \
+         force-killed."
+    );
+    Ok(())
 }

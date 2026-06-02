@@ -55,6 +55,7 @@ pub async fn spawn_agent(
     system_prompt: &str,
     allowed_tools: &[String],
     hooks_binary: &Path,
+    run_id: &str,
 ) -> Result<Child, SwarmError> {
     let workspace = &session.workspace;
     let engine = config.defaults.engine;
@@ -64,10 +65,18 @@ pub async fn spawn_agent(
         setup_workspace_hooks(workspace, hooks_binary, config, &session.id).await?;
     }
 
+    // Per-run tenant isolation: the PreToolUse gate reads ACTEON_NAMESPACE /
+    // ACTEON_TENANT from the inherited environment, so every gated action for
+    // this run is dispatched (and audited) under `swarm-{run_id}`. This is what
+    // makes `cmd_status` and `cmd_cancel` able to target a single run — without
+    // it the gate falls back to the shared `swarm-default` tenant.
+    let tenant = format!("swarm-{run_id}");
     let swarm_env = [
         ("ACTEON_URL", config.acteon.endpoint.as_str()),
+        ("ACTEON_NAMESPACE", config.acteon.namespace.as_str()),
+        ("ACTEON_TENANT", tenant.as_str()),
         ("ACTEON_AGENT_ROLE", session.role.as_str()),
-        ("SWARM_RUN_ID", session.task_id.as_str()),
+        ("SWARM_RUN_ID", run_id),
         ("SWARM_TASK_ID", session.task_id.as_str()),
         ("SWARM_SUBTASK_ID", session.subtask_id.as_str()),
         ("SWARM_AGENT_ID", session.id.as_str()),
