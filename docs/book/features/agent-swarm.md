@@ -309,6 +309,23 @@ acteon-swarm status --run <run-id>
 acteon-swarm cancel --run <run-id>
 ```
 
+#### How cancel works
+
+Each run's agents dispatch their gated actions under a per-run tenant
+(`swarm-{run-id}`), set via `ACTEON_NAMESPACE`/`ACTEON_TENANT` in the agent
+environment. `cancel` installs a **zero-budget, fail-closed quota** on that
+tenant through the Acteon API. Once the gateway's quota cache refreshes
+(bounded by its TTL, ~60s), the `PreToolUse` gate denies every gated action —
+command execution, file writes, web access, and sub-agent spawns — for the
+run. In-flight agents wind down as their tool calls are blocked.
+
+This is a **graceful, cross-process cancel** through the existing safety gate,
+not a `SIGKILL`: read-only tool use still completes, and the orchestrator
+process is not force-killed (it finishes its current plan with all gated work
+denied). `cancel` exits non-zero if it cannot reach Acteon, so a failed
+cancellation is never reported as success. Hard process termination (a per-run
+PID registry) and orchestrator-side early-stop are possible future additions.
+
 ### Environment Variables
 
 | Variable | Description | Default |

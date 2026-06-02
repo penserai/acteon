@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use crate::error::SwarmError;
 
 /// Top-level swarm configuration, typically loaded from `swarm.toml`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SwarmConfig {
     /// Acteon gateway connection settings.
     #[serde(default)]
