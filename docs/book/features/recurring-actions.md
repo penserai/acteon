@@ -599,7 +599,7 @@ via `GET /metrics/prometheus` (and as JSON at `GET /metrics`):
 | `acteon_recurring_dispatched_total` | counter | Every successful recurring occurrence dispatched through the gateway |
 | `acteon_recurring_errors_total` | counter | Dispatch failures — cron parse error, state store unavailable, claim refused for a genuine reason, etc. |
 | `acteon_recurring_skipped_total` | counter | Occurrences skipped because another replica claimed them first (normal behavior under the CAS claim pattern — **not** an error signal) |
-| `acteon_recurring_active` | gauge | Recurring actions currently scheduled and eligible for dispatch. Refreshed once per `recurring_check_interval` tick by counting the pending-recurring index. |
+| `acteon_recurring_active` | gauge | Recurring actions currently scheduled and eligible for dispatch. Maintained as a durable counter that is incremented/decremented as pending-recurring index entries are added and removed, so each tick refreshes the gauge with an O(1) read instead of scanning the index. A full reconciliation scan runs about once an hour to self-heal any drift. |
 
 **Grafana.** The bundled `acteon-overview` dashboard has a
 "Recurring Actions" row with stat panels for active count and
@@ -614,7 +614,7 @@ rate(acteon_recurring_errors_total[5m]) > 0.1
 
 A drop in dispatch rate when recurring actions are configured
 often means the background processor is wedged — the claim TTL
-(120s) expired without progress. Compare the dispatched rate
+(60s) expired without progress. Compare the dispatched rate
 against `acteon_recurring_active` to spot a stuck worker without
 hitting `GET /v1/recurring`:
 

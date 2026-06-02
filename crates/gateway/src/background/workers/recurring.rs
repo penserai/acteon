@@ -1,27 +1,77 @@
+use std::sync::atomic::Ordering;
+
 use chrono::Utc;
 use tracing::{debug, info, warn};
 
-use acteon_state::{KeyKind, StateKey};
+use acteon_state::{KeyKind, StateKey, recurring_active_counter_key};
 
 use super::super::{BackgroundProcessor, RecurringActionDueEvent};
 
+/// Number of recurring ticks between full reconciliation scans of the
+/// pending-recurring index. On every other tick the `recurring_active` gauge is
+/// refreshed from an O(1) read of the durable counter
+/// (`recurring_active_counter_key`), which is maintained incrementally on each
+/// index mutation. This removes the per-tick `scan_keys_by_kind` that, on
+/// `DynamoDB`, was an unbounded full-table `Scan` whose RCU cost scaled with the
+/// entire keyspace rather than the recurring workload (issue #118).
+///
+/// Tick 0 always reconciles, so the counter is seeded from ground truth at
+/// startup; the periodic re-scan thereafter self-heals any drift left by a
+/// crash between an index write and its counter bump. At the default 60s tick
+/// this reconciles roughly hourly — ~1.6% of the previous scan volume.
+const RECURRING_RECONCILE_EVERY_N_TICKS: u64 = 60;
+
 impl BackgroundProcessor {
-    /// Refresh the `recurring_active` gauge by counting entries in the
-    /// pending-recurring index. Called once per recurring tick before
-    /// dispatching due actions, so the gauge reflects the steady-state
-    /// number of scheduled recurring actions even when no dispatches
-    /// are happening.
+    /// Refresh the `recurring_active` gauge. Called once per recurring tick
+    /// before dispatching due actions, so the gauge reflects the steady-state
+    /// number of scheduled recurring actions even when nothing is due.
+    ///
+    /// Most ticks read the maintained durable counter (O(1) on every backend).
+    /// Every [`RECURRING_RECONCILE_EVERY_N_TICKS`] ticks (and at startup) it
+    /// falls back to an authoritative full scan, which also resets the counter
+    /// to ground truth.
     pub(crate) async fn refresh_recurring_active_gauge(&self) {
-        match self
-            .state
-            .scan_keys_by_kind(KeyKind::PendingRecurring)
-            .await
-        {
-            Ok(entries) => {
-                self.metrics.set_recurring_active(entries.len() as u64);
+        let tick = self.recurring_tick_count.fetch_add(1, Ordering::Relaxed);
+        // `is_multiple_of` is true for tick 0, so the very first tick reconciles
+        // (seeds the counter from a full scan) and then every Nth tick after.
+        let reconcile = tick.is_multiple_of(RECURRING_RECONCILE_EVERY_N_TICKS);
+
+        if reconcile {
+            match self
+                .state
+                .scan_keys_by_kind(KeyKind::PendingRecurring)
+                .await
+            {
+                Ok(entries) => {
+                    let count = entries.len();
+                    // Reset the durable counter to the scanned truth so future
+                    // O(1) reads stay accurate.
+                    let _ = self
+                        .state
+                        .set(&recurring_active_counter_key(), &count.to_string(), None)
+                        .await;
+                    self.metrics
+                        .set_recurring_active(u64::try_from(count).unwrap_or(u64::MAX));
+                }
+                Err(e) => {
+                    debug!(error = %e, "failed to reconcile recurring_active gauge");
+                }
             }
+            return;
+        }
+
+        match self.state.get(&recurring_active_counter_key()).await {
+            Ok(Some(v)) => {
+                if let Ok(n) = v.parse::<i64>() {
+                    self.metrics
+                        .set_recurring_active(u64::try_from(n.max(0)).unwrap_or(0));
+                }
+            }
+            // Counter not yet materialized (no recurring action ever created).
+            // Leave the gauge at its prior value; the next reconcile seeds it.
+            Ok(None) => {}
             Err(e) => {
-                debug!(error = %e, "failed to refresh recurring_active gauge");
+                debug!(error = %e, "failed to read recurring_active counter");
             }
         }
     }
@@ -118,8 +168,7 @@ impl BackgroundProcessor {
                 // Already deleted, clean up pending key.
                 let pending_key =
                     StateKey::new(namespace, tenant, KeyKind::PendingRecurring, recurring_id);
-                self.state.delete(&pending_key).await?;
-                self.state.remove_timeout_index(&pending_key).await?;
+                acteon_state::remove_pending_recurring(self.state.as_ref(), &pending_key).await?;
                 continue;
             };
 
@@ -162,8 +211,7 @@ impl BackgroundProcessor {
                 // Remove from pending index so it won't be re-polled.
                 let pending_key =
                     StateKey::new(namespace, tenant, KeyKind::PendingRecurring, recurring_id);
-                self.state.delete(&pending_key).await?;
-                self.state.remove_timeout_index(&pending_key).await?;
+                acteon_state::remove_pending_recurring(self.state.as_ref(), &pending_key).await?;
                 self.metrics.increment_recurring_skipped();
                 skipped += 1;
                 continue;
@@ -221,16 +269,19 @@ impl BackgroundProcessor {
                             .is_none_or(|max| recurring.execution_count + 1 < max)
                 });
             if let Some(next) = rearm_to {
-                let next_ms = next.timestamp_millis();
-                self.state
-                    .set(&pending_key, &next_ms.to_string(), None)
-                    .await?;
-                self.state.index_timeout(&pending_key, next_ms).await?;
+                // Re-arming an entry that is already in the index leaves the
+                // active count unchanged (the helper only counts true
+                // insertions).
+                acteon_state::set_pending_recurring(
+                    self.state.as_ref(),
+                    &pending_key,
+                    next.timestamp_millis(),
+                )
+                .await?;
             } else {
                 // No further occurrence (exhausted, past ends_at, at max, or
                 // unparsable) — drop it from the index.
-                self.state.delete(&pending_key).await?;
-                self.state.remove_timeout_index(&pending_key).await?;
+                acteon_state::remove_pending_recurring(self.state.as_ref(), &pending_key).await?;
             }
 
             info!(
