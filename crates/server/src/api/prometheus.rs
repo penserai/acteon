@@ -265,6 +265,12 @@ fn render_snapshot(snap: &MetricsSnapshot) -> String {
     );
     write_counter(
         &mut buf,
+        "acteon_recurring_events_emitted_total",
+        "Recurring occurrences the worker handed off to the dispatch consumer.",
+        snap.recurring_events_emitted,
+    );
+    write_counter(
+        &mut buf,
         "acteon_recurring_errors_total",
         "Recurring action dispatch errors.",
         snap.recurring_errors,
@@ -612,6 +618,7 @@ mod tests {
             circuit_fallbacks: 0,
             scheduled: 0,
             recurring_dispatched: 0,
+            recurring_events_emitted: 0,
             recurring_errors: 0,
             recurring_skipped: 0,
             recurring_active: 0,
@@ -660,6 +667,7 @@ mod tests {
             circuit_fallbacks: 1,
             scheduled: 7,
             recurring_dispatched: 4,
+            recurring_events_emitted: 6,
             recurring_errors: 1,
             recurring_skipped: 2,
             recurring_active: 9,
@@ -873,6 +881,7 @@ mod tests {
         "acteon_circuit_transitions_total",
         "acteon_circuit_fallbacks_total",
         "acteon_recurring_dispatched_total",
+        "acteon_recurring_events_emitted_total",
         "acteon_recurring_errors_total",
         "acteon_recurring_skipped_total",
         "acteon_quota_exceeded_total",
@@ -965,6 +974,7 @@ mod tests {
         assert!(output.contains("acteon_circuit_transitions_total 3"));
         assert!(output.contains("acteon_circuit_fallbacks_total 1"));
         assert!(output.contains("acteon_recurring_dispatched_total 4"));
+        assert!(output.contains("acteon_recurring_events_emitted_total 6"));
         assert!(output.contains("acteon_recurring_errors_total 1"));
         assert!(output.contains("acteon_recurring_skipped_total 2"));
         assert!(output.contains("acteon_recurring_active 9"));
@@ -1222,12 +1232,12 @@ mod tests {
             assert!(output.contains(name), "Missing provider metric: {name}");
         }
 
-        // 42 counters + 1 gauge from the snapshot + 8 provider families = 51.
+        // 43 counters + 1 gauge from the snapshot + 8 provider families = 52.
         let type_lines: Vec<&str> = output
             .lines()
             .filter(|l| l.starts_with("# TYPE "))
             .collect();
-        assert_eq!(type_lines.len(), 51, "Expected 51 TYPE declarations");
+        assert_eq!(type_lines.len(), 52, "Expected 52 TYPE declarations");
     }
 
     #[test]
@@ -1243,8 +1253,8 @@ mod tests {
             .collect();
         assert_eq!(
             type_lines.len(),
-            43,
-            "Expected 43 TYPE declarations without providers (42 counters + 1 gauge)"
+            44,
+            "Expected 44 TYPE declarations without providers (43 counters + 1 gauge)"
         );
     }
 

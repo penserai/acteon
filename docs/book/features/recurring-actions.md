@@ -596,7 +596,8 @@ via `GET /metrics/prometheus` (and as JSON at `GET /metrics`):
 
 | Metric | Type | Counted on |
 |---|---|---|
-| `acteon_recurring_dispatched_total` | counter | Every successful recurring occurrence dispatched through the gateway |
+| `acteon_recurring_dispatched_total` | counter | Every successful recurring occurrence dispatched through the gateway (incremented by the consumer once the action fires) |
+| `acteon_recurring_events_emitted_total` | counter | Every recurring occurrence the **worker** hands off to the dispatch consumer. `emitted - dispatched` is the in-flight/stuck depth; a flat `emitted` while actions are scheduled signals a wedged worker |
 | `acteon_recurring_errors_total` | counter | Dispatch failures — cron parse error, state store unavailable, claim refused for a genuine reason, etc. |
 | `acteon_recurring_skipped_total` | counter | Occurrences skipped because another replica claimed them first (normal behavior under the CAS claim pattern — **not** an error signal) |
 | `acteon_recurring_active` | gauge | Recurring actions currently scheduled and eligible for dispatch. Maintained as a durable counter that is incremented/decremented as pending-recurring index entries are added and removed, so each tick refreshes the gauge with an O(1) read instead of scanning the index. A full reconciliation scan runs about once an hour to self-heal any drift. |
@@ -620,6 +621,15 @@ hitting `GET /v1/recurring`:
 
 ```promql
 acteon_recurring_active > 0 and rate(acteon_recurring_dispatched_total[5m]) == 0
+```
+
+A growing gap between what the worker emits and what the consumer
+dispatches points specifically at a backed-up worker→consumer
+channel or a slow/stuck consumer (as opposed to a wedged worker,
+which stops emitting). Alert when the in-flight depth stays high:
+
+```promql
+acteon_recurring_events_emitted_total - acteon_recurring_dispatched_total > 50
 ```
 
 **Do not alert on `acteon_recurring_skipped_total`**: it fires

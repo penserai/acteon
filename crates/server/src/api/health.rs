@@ -45,6 +45,7 @@ fn build_metrics_response(
         circuit_fallbacks: snap.circuit_fallbacks,
         scheduled: snap.scheduled,
         recurring_dispatched: snap.recurring_dispatched,
+        recurring_events_emitted: snap.recurring_events_emitted,
         recurring_errors: snap.recurring_errors,
         recurring_skipped: snap.recurring_skipped,
         recurring_active: snap.recurring_active,

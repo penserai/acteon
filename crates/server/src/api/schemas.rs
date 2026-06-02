@@ -83,6 +83,12 @@ pub struct MetricsResponse {
     /// Recurring actions dispatched successfully.
     #[schema(example = 0)]
     pub recurring_dispatched: u64,
+    /// Recurring occurrences the worker handed off to the dispatch consumer.
+    /// `recurring_events_emitted - recurring_dispatched` is the in-flight /
+    /// stuck depth between worker and consumer.
+    #[schema(example = 0)]
+    #[serde(default)]
+    pub recurring_events_emitted: u64,
     /// Recurring action dispatch errors.
     #[schema(example = 0)]
     pub recurring_errors: u64,

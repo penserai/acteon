@@ -303,6 +303,11 @@ impl BackgroundProcessor {
                 warn!("recurring action event channel closed");
                 return Ok(());
             }
+            // The worker has successfully handed this occurrence to the
+            // consumer; the consumer increments `recurring_dispatched` once the
+            // action actually fires. The gap between the two is the in-flight /
+            // stuck depth (issue #122).
+            self.metrics.increment_recurring_events_emitted();
             dispatched += 1;
         }
 
