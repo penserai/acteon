@@ -22,6 +22,7 @@ export interface MetricsResponse {
   llm_guardrail_denied?: number
   llm_guardrail_errors?: number
   recurring_dispatched?: number
+  recurring_events_emitted?: number
   recurring_errors?: number
   recurring_skipped?: number
   recurring_active?: number

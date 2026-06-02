@@ -57,6 +57,13 @@ pub struct GatewayMetrics {
     pub scheduled: AtomicU64,
     /// Recurring actions dispatched successfully.
     pub recurring_dispatched: AtomicU64,
+    /// Recurring occurrences the worker successfully handed off to the
+    /// dispatch consumer, incremented right after the channel send.
+    /// `recurring_events_emitted - recurring_dispatched` is the number of
+    /// occurrences in flight or stuck between the worker and the consumer,
+    /// and a flat `recurring_events_emitted` while actions are scheduled
+    /// signals a wedged worker. See issue #122.
+    pub recurring_events_emitted: AtomicU64,
     /// Recurring action dispatch errors.
     pub recurring_errors: AtomicU64,
     /// Recurring actions skipped (disabled, expired, etc.).
@@ -227,6 +234,14 @@ impl GatewayMetrics {
         self.recurring_dispatched.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Increment the counter of recurring occurrences the worker has handed
+    /// off to the dispatch consumer (called right after the channel send
+    /// succeeds). See issue #122.
+    pub fn increment_recurring_events_emitted(&self) {
+        self.recurring_events_emitted
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Increment the recurring errors counter.
     pub fn increment_recurring_errors(&self) {
         self.recurring_errors.fetch_add(1, Ordering::Relaxed);
@@ -379,6 +394,7 @@ impl GatewayMetrics {
             circuit_fallbacks: self.circuit_fallbacks.load(Ordering::Relaxed),
             scheduled: self.scheduled.load(Ordering::Relaxed),
             recurring_dispatched: self.recurring_dispatched.load(Ordering::Relaxed),
+            recurring_events_emitted: self.recurring_events_emitted.load(Ordering::Relaxed),
             recurring_errors: self.recurring_errors.load(Ordering::Relaxed),
             recurring_skipped: self.recurring_skipped.load(Ordering::Relaxed),
             recurring_active: self.recurring_active.load(Ordering::Relaxed),
@@ -451,6 +467,8 @@ pub struct MetricsSnapshot {
     pub scheduled: u64,
     /// Recurring actions dispatched successfully.
     pub recurring_dispatched: u64,
+    /// Recurring occurrences the worker handed off to the dispatch consumer.
+    pub recurring_events_emitted: u64,
     /// Recurring action dispatch errors.
     pub recurring_errors: u64,
     /// Recurring actions skipped (disabled, expired, etc.).
@@ -841,6 +859,7 @@ mod tests {
         assert_eq!(snap.circuit_fallbacks, 0);
         assert_eq!(snap.scheduled, 0);
         assert_eq!(snap.recurring_dispatched, 0);
+        assert_eq!(snap.recurring_events_emitted, 0);
         assert_eq!(snap.recurring_errors, 0);
         assert_eq!(snap.recurring_skipped, 0);
         assert_eq!(snap.recurring_active, 0);
@@ -888,6 +907,7 @@ mod tests {
         m.increment_circuit_fallbacks();
         m.increment_scheduled();
         m.increment_recurring_dispatched();
+        m.increment_recurring_events_emitted();
         m.increment_recurring_errors();
         m.increment_recurring_skipped();
         m.set_recurring_active(7);
@@ -931,6 +951,7 @@ mod tests {
         assert_eq!(snap.circuit_fallbacks, 1);
         assert_eq!(snap.scheduled, 1);
         assert_eq!(snap.recurring_dispatched, 1);
+        assert_eq!(snap.recurring_events_emitted, 1);
         assert_eq!(snap.recurring_errors, 1);
         assert_eq!(snap.recurring_skipped, 1);
         assert_eq!(snap.recurring_active, 7);

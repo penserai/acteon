@@ -316,9 +316,10 @@
       "id": 19,
       "options": { "colorMode": "background", "graphMode": "area", "textMode": "value_and_name", "reduceOptions": { "calcs": ["lastNotNull"] } },
       "title": "Recurring Actions Active",
-      "description": "Recurring actions currently scheduled and eligible for dispatch. Refreshed once per recurring_check_interval tick.",
+      "description": "Active = recurring actions currently scheduled and eligible for dispatch. In-flight = occurrences the worker handed off but the consumer has not dispatched yet (emitted − dispatched); a persistently rising In-flight means a backed-up worker→consumer channel or a slow/stuck consumer.",
       "targets": [
-        { "expr": "acteon_recurring_active", "legendFormat": "Active", "refId": "A" }
+        { "expr": "acteon_recurring_active", "legendFormat": "Active", "refId": "A" },
+        { "expr": "acteon_recurring_events_emitted_total - acteon_recurring_dispatched_total", "legendFormat": "In-flight", "refId": "B" }
       ],
       "type": "stat"
     },
@@ -335,6 +336,7 @@
       "title": "Recurring Action Totals",
       "targets": [
         { "expr": "acteon_recurring_dispatched_total", "legendFormat": "Dispatched", "refId": "A" },
+        { "expr": "acteon_recurring_events_emitted_total", "legendFormat": "Emitted", "refId": "D" },
         { "expr": "acteon_recurring_errors_total", "legendFormat": "Errors", "refId": "B" },
         { "expr": "acteon_recurring_skipped_total", "legendFormat": "Skipped", "refId": "C" }
       ],
