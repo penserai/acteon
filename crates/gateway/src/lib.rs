@@ -11,6 +11,7 @@ pub mod group_manager;
 pub mod metrics;
 mod quota_enforcement;
 mod silence_enforcement;
+pub(crate) mod sync_state;
 pub mod task_chain_bridge;
 pub mod task_engine;
 pub mod template_engine;

@@ -268,7 +268,23 @@ impl Gateway {
     ///
     /// Returns an error only if the underlying state store scan fails.
     pub async fn sync_silences_from_store(&self) -> Result<usize, GatewayError> {
-        self.load_silences_from_state_store().await
+        let version = acteon_state::read_sync_version(
+            self.state.as_ref(),
+            acteon_state::SyncDomain::Silences,
+        )
+        .await
+        .unwrap_or(0);
+        if !self
+            .sync_versions
+            .should_sync(acteon_state::SyncDomain::Silences, version)
+        {
+            // Unchanged since the last sync — skip the full keyspace scan.
+            return Ok(self.silence_cache_size());
+        }
+        let loaded = self.load_silences_from_state_store().await?;
+        self.sync_versions
+            .record(acteon_state::SyncDomain::Silences, version);
+        Ok(loaded)
     }
 
     /// Persist a silence to the state store.
@@ -287,7 +303,15 @@ impl Gateway {
         self.state
             .set(&key, &value, None)
             .await
-            .map_err(GatewayError::from)
+            .map_err(GatewayError::from)?;
+        // Data committed; bump the sync version so peer nodes refresh their
+        // silence caches (issue: poll→reactive sync). Best-effort.
+        let _ = acteon_state::bump_sync_version(
+            self.state.as_ref(),
+            acteon_state::SyncDomain::Silences,
+        )
+        .await;
+        Ok(())
     }
 
     /// Delete a silence from the state store by ID.
@@ -298,6 +322,11 @@ impl Gateway {
     pub async fn delete_silence(&self, silence_id: &str) -> Result<(), GatewayError> {
         let key = silence_state_key(silence_id);
         self.state.delete(&key).await.map_err(GatewayError::from)?;
+        let _ = acteon_state::bump_sync_version(
+            self.state.as_ref(),
+            acteon_state::SyncDomain::Silences,
+        )
+        .await;
         Ok(())
     }
 
@@ -585,5 +614,49 @@ mod tests {
         let loaded = gw.load_silences_from_state_store().await.unwrap();
         assert_eq!(loaded, 0);
         assert_eq!(gw.silence_cache_size(), 0);
+    }
+
+    #[tokio::test]
+    async fn sync_skips_scan_until_version_changes() {
+        let (gw, store) = build_test_gateway().await;
+
+        // First sync seeds the gate against an empty store (version 0).
+        assert_eq!(gw.sync_silences_from_store().await.unwrap(), 0);
+
+        // A silence written directly to the store WITHOUT bumping the version
+        // (e.g. an out-of-band write) is invisible to the gated sync: the
+        // version is unchanged, so the scan is skipped and the cache stays at 0.
+        store
+            .set(
+                &StateKey::new("_system", "_silences", KeyKind::Silence, "raw-one"),
+                &silence_json("raw-one", "warning"),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            gw.sync_silences_from_store().await.unwrap(),
+            0,
+            "gate must skip the scan while the version is unchanged"
+        );
+        assert_eq!(gw.silence_cache_size(), 0);
+
+        // Persisting through the gateway bumps the version, so the next sync
+        // re-scans and now loads BOTH the persisted silence and the earlier
+        // out-of-band one.
+        let mut s = silence_for(
+            vec![SilenceMatcher::new("severity", "warning", MatchOp::Equal).unwrap()],
+            1,
+            1,
+        );
+        s.id = "persisted-one".to_owned();
+        gw.persist_silence(&s).await.unwrap();
+
+        assert_eq!(
+            gw.sync_silences_from_store().await.unwrap(),
+            2,
+            "a version bump must force a full re-scan that picks up every silence"
+        );
+        assert_eq!(gw.silence_cache_size(), 2);
     }
 }

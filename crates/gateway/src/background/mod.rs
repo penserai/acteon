@@ -461,9 +461,12 @@ impl BackgroundProcessor {
                         error!(error = %e, "error running stale-task reaper");
                     }
                 }
-                // TODO(template-sync): Replace with reactive invalidation
-                // (Redis pub/sub, PostgreSQL CDC, DynamoDB Streams).
-                // See `Gateway::sync_templates_from_store` for details.
+                // Template/silence/time-interval sync ticks are gated by a
+                // per-domain sync-version counter (see `acteon_state::sync_version`),
+                // so a tick with no changes is an O(1) counter read rather than a
+                // full-keyspace scan. A true push mechanism (Redis pub/sub,
+                // Postgres LISTEN/NOTIFY, DynamoDB Streams) remains possible future
+                // work to drop propagation latency below the poll interval.
                 _ = template_sync_interval.tick(), if self.config.enable_template_sync => {
                     if let Some(ref gw) = self.gateway {
                         let gw = gw.read().await;
@@ -500,7 +503,7 @@ impl BackgroundProcessor {
                 _ = time_interval_sync_interval.tick(), if self.config.enable_time_interval_sync => {
                     if let Some(ref gw) = self.gateway {
                         let gw = gw.read().await;
-                        match gw.load_time_intervals_from_state_store().await {
+                        match gw.sync_time_intervals_from_store().await {
                             Ok(count) => {
                                 debug!(count, "time interval sync completed");
                             }

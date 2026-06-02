@@ -268,6 +268,10 @@ pub struct Gateway {
     pub(crate) max_inline_bytes: u64,
     /// Maximum number of attachments per action.
     pub(crate) max_attachments_per_action: usize,
+    /// Tracks the last cache-sync version observed per domain so the periodic
+    /// template/silence/time-interval sync workers can skip the expensive
+    /// full-keyspace scan when nothing has changed.
+    pub(crate) sync_versions: crate::sync_state::SyncVersionTracker,
 }
 
 impl std::fmt::Debug for Gateway {
