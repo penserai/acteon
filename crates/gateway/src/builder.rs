@@ -875,6 +875,7 @@ impl GatewayBuilder {
             )?),
             max_inline_bytes: self.max_inline_bytes,
             max_attachments_per_action: self.max_attachments_per_action,
+            sync_versions: crate::sync_state::SyncVersionTracker::default(),
         })
     }
 }

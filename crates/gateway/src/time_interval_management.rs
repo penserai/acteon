@@ -233,7 +233,15 @@ impl Gateway {
         self.state
             .set(&key, &value, None)
             .await
-            .map_err(GatewayError::from)
+            .map_err(GatewayError::from)?;
+        // Data committed; bump the sync version so peer nodes refresh their
+        // time-interval caches (issue: poll→reactive sync). Best-effort.
+        let _ = acteon_state::bump_sync_version(
+            self.state.as_ref(),
+            acteon_state::SyncDomain::TimeIntervals,
+        )
+        .await;
+        Ok(())
     }
 
     /// Delete a time interval from the state store.
@@ -250,6 +258,11 @@ impl Gateway {
         let id = time_interval_cache_id(namespace, tenant, name);
         let key = time_interval_state_key(&id);
         self.state.delete(&key).await.map_err(GatewayError::from)?;
+        let _ = acteon_state::bump_sync_version(
+            self.state.as_ref(),
+            acteon_state::SyncDomain::TimeIntervals,
+        )
+        .await;
         Ok(())
     }
 
@@ -332,6 +345,36 @@ impl Gateway {
             loaded += 1;
         }
         *self.time_intervals.write() = new_cache;
+        Ok(loaded)
+    }
+
+    /// Periodic sync entry point for the background processor: refresh the
+    /// time-interval cache from the state store, but only when the
+    /// `TimeIntervals` sync version has changed since the last sync (or a
+    /// periodic reconcile is due). This avoids the per-tick full-keyspace scan
+    /// that [`load_time_intervals_from_state_store`](Self::load_time_intervals_from_state_store)
+    /// performs on every node (issue: poll→reactive sync). The `load_` method
+    /// stays ungated for one-shot/startup use.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if the underlying scan fails.
+    pub async fn sync_time_intervals_from_store(&self) -> Result<usize, GatewayError> {
+        let version = acteon_state::read_sync_version(
+            self.state.as_ref(),
+            acteon_state::SyncDomain::TimeIntervals,
+        )
+        .await
+        .unwrap_or(0);
+        if !self
+            .sync_versions
+            .should_sync(acteon_state::SyncDomain::TimeIntervals, version)
+        {
+            return Ok(self.time_interval_cache_size());
+        }
+        let loaded = self.load_time_intervals_from_state_store().await?;
+        self.sync_versions
+            .record(acteon_state::SyncDomain::TimeIntervals, version);
         Ok(loaded)
     }
 }

@@ -236,6 +236,13 @@ operator creates a silence via one instance, the change is visible on
 that instance immediately and propagates to peer instances via a
 background sync task that rebuilds the cache from the state store.
 
+Each silence write bumps a durable sync-version counter, and the
+background task only rebuilds the cache when that counter has changed
+since its last sync (with a periodic full reconcile as a safety net).
+So a quiet system pays an O(1) version check per tick instead of a
+full state-store scan — the expensive rebuild happens only when a
+silence actually changed.
+
 | Setting | Default | Description |
 |---|---|---|
 | `background.enable_silence_sync` | `true` | Enable periodic silence cache refresh from the state store |

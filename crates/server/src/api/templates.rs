@@ -456,6 +456,11 @@ pub async fn create_template(
     if let Err(e) = state_store.set(&idx_key, &id, None).await {
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string());
     }
+    // Data committed; bump the sync version so peer nodes refresh (issue:
+    // poll→reactive sync). Best-effort — a lost bump self-heals on reconcile.
+    let _ =
+        acteon_state::bump_sync_version(state_store.as_ref(), acteon_state::SyncDomain::Templates)
+            .await;
     drop(gw);
 
     let gw = state.gateway.read().await;
@@ -648,6 +653,9 @@ pub async fn update_template(
     if let Err(e) = state_store.set(&key, &data, None).await {
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string());
     }
+    let _ =
+        acteon_state::bump_sync_version(state_store.as_ref(), acteon_state::SyncDomain::Templates)
+            .await;
     drop(gw);
 
     let gw = state.gateway.read().await;
@@ -725,6 +733,9 @@ pub async fn delete_template(
     }
     let idx_key = template_index_key(&tpl.namespace, &tpl.tenant, &tpl.name);
     let _ = state_store.delete(&idx_key).await;
+    let _ =
+        acteon_state::bump_sync_version(state_store.as_ref(), acteon_state::SyncDomain::Templates)
+            .await;
     drop(gw);
 
     let gw = state.gateway.read().await;
@@ -829,6 +840,9 @@ pub async fn create_profile(
     if let Err(e) = state_store.set(&idx_key, &id, None).await {
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string());
     }
+    let _ =
+        acteon_state::bump_sync_version(state_store.as_ref(), acteon_state::SyncDomain::Templates)
+            .await;
     drop(gw);
 
     let gw = state.gateway.read().await;
@@ -1024,6 +1038,9 @@ pub async fn update_profile(
     if let Err(e) = state_store.set(&key, &data, None).await {
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string());
     }
+    let _ =
+        acteon_state::bump_sync_version(state_store.as_ref(), acteon_state::SyncDomain::Templates)
+            .await;
     drop(gw);
 
     let gw = state.gateway.read().await;
@@ -1077,6 +1094,9 @@ pub async fn delete_profile(
     }
     let idx_key = profile_index_key(&prof.namespace, &prof.tenant, &prof.name);
     let _ = state_store.delete(&idx_key).await;
+    let _ =
+        acteon_state::bump_sync_version(state_store.as_ref(), acteon_state::SyncDomain::Templates)
+            .await;
     drop(gw);
 
     let gw = state.gateway.read().await;

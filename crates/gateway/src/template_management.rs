@@ -153,27 +153,41 @@ impl Gateway {
     /// Used by the background sync task to keep multi-node deployments
     /// consistent. Returns the total number of items synced.
     ///
-    // TODO(template-sync): Replace this poll-based sync with a reactive,
-    // backend-specific invalidation mechanism for near-zero-latency
-    // propagation across nodes:
-    //
-    //   - **Redis**: Subscribe to a pub/sub channel; the API layer publishes
-    //     an invalidation message on template create/update/delete. Each node
-    //     listens and calls `sync_templates_from_store()` (or applies a
-    //     targeted delta) on receipt.
-    //
-    //   - **PostgreSQL**: Use Change Data Capture (CDC) via logical replication
-    //     or LISTEN/NOTIFY on the template tables. A background listener
-    //     converts WAL events into in-memory map updates.
-    //
-    //   - **DynamoDB**: Enable DynamoDB Streams on the template items table.
-    //     A background consumer reads stream shards and applies inserts,
-    //     modifications, and deletions to the in-memory maps.
-    //
-    // Until then, the current approach polls at `template_sync_interval`
-    // (default 30 s), giving eventual consistency with a bounded staleness
-    // window equal to the poll interval.
+    // The poll still happens at `template_sync_interval` (default 30 s), but a
+    // sync-version gate (see `acteon_state::sync_version`) makes the common
+    // "nothing changed" tick an O(1) counter read instead of a full-keyspace
+    // scan: template CRUD bumps the `Templates` version, and this sync only
+    // rescans when the version moved (or on a periodic reconcile). A true
+    // push mechanism (Redis pub/sub, Postgres LISTEN/NOTIFY, DynamoDB Streams)
+    // would further cut propagation latency below the poll interval, but the
+    // gate already removes the per-tick full-keyspace scan that dominated cost.
     pub async fn sync_templates_from_store(&self) -> Result<usize, GatewayError> {
+        let version = acteon_state::read_sync_version(
+            self.state.as_ref(),
+            acteon_state::SyncDomain::Templates,
+        )
+        .await
+        .unwrap_or(0);
+        if !self
+            .sync_versions
+            .should_sync(acteon_state::SyncDomain::Templates, version)
+        {
+            // Unchanged since the last sync — skip the scan, report cache size.
+            let cached = self
+                .templates
+                .read()
+                .values()
+                .map(HashMap::len)
+                .sum::<usize>()
+                + self
+                    .template_profiles
+                    .read()
+                    .values()
+                    .map(HashMap::len)
+                    .sum::<usize>();
+            return Ok(cached);
+        }
+
         let mut new_templates: HashMap<(String, String), HashMap<String, acteon_core::Template>> =
             HashMap::new();
         let mut new_profiles: HashMap<
@@ -219,6 +233,8 @@ impl Gateway {
         *self.templates.write() = new_templates;
         *self.template_profiles.write() = new_profiles;
 
+        self.sync_versions
+            .record(acteon_state::SyncDomain::Templates, version);
         Ok(count)
     }
 }
