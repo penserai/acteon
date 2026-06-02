@@ -62,8 +62,10 @@ pub struct GatewayMetrics {
     /// Recurring actions skipped (disabled, expired, etc.).
     pub recurring_skipped: AtomicU64,
     /// Recurring actions currently scheduled and eligible for dispatch.
-    /// Refreshed once per `recurring_check_interval` tick by counting
-    /// the pending-recurring index.
+    /// Backed by a durable counter maintained on every pending-recurring
+    /// index mutation, so each tick refreshes this gauge with an O(1) read
+    /// instead of scanning the index (a periodic reconciliation scan
+    /// self-heals drift). See issue #118.
     pub recurring_active: AtomicU64,
     /// Actions blocked by tenant quota.
     pub quota_exceeded: AtomicU64,

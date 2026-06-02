@@ -241,6 +241,10 @@ pub struct BackgroundProcessor {
     pub(crate) payload_encryptor: Option<Arc<PayloadEncryptor>>,
     /// Gateway metrics for tracking background tasks.
     pub(crate) metrics: Arc<GatewayMetrics>,
+    /// Monotonic counter of recurring ticks, used to decide when to
+    /// reconcile the `recurring_active` gauge against a full scan rather
+    /// than reading the maintained durable counter (issue #118).
+    pub(crate) recurring_tick_count: std::sync::atomic::AtomicU64,
     /// In-memory copy of retention policies for the reaper.
     pub(crate) retention_policies: HashMap<String, acteon_core::RetentionPolicy>,
     /// Optional gateway reference for template sync.
@@ -271,6 +275,7 @@ impl BackgroundProcessor {
             group_manager,
             state,
             metrics,
+            recurring_tick_count: std::sync::atomic::AtomicU64::new(0),
             state_machines,
             shutdown_rx,
             group_flush_tx: None,
@@ -1295,6 +1300,112 @@ mod tests {
 
         let _ = shutdown_tx.send(()).await;
         let _ = tokio::time::timeout(Duration::from_secs(1), handle).await;
+    }
+
+    async fn read_recurring_counter(state: &dyn StateStore) -> i64 {
+        state
+            .get(&acteon_state::recurring_active_counter_key())
+            .await
+            .unwrap()
+            .map_or(0, |v| v.parse().unwrap())
+    }
+
+    #[tokio::test]
+    async fn recurring_active_counter_tracks_membership_churn() {
+        let state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let future = (Utc::now() + chrono::Duration::hours(1)).timestamp_millis();
+        let pk = |id: &str| StateKey::new("ns", "t", KeyKind::PendingRecurring, id);
+
+        // Insert five distinct entries (as CRUD create would).
+        for id in ["a", "b", "c", "d", "e"] {
+            acteon_state::set_pending_recurring(state.as_ref(), &pk(id), future)
+                .await
+                .unwrap();
+        }
+        assert_eq!(read_recurring_counter(state.as_ref()).await, 5);
+
+        // Re-arming existing entries (worker/consumer post-dispatch) must NOT
+        // change the count.
+        for id in ["a", "b", "c", "d", "e"] {
+            acteon_state::set_pending_recurring(state.as_ref(), &pk(id), future + 1)
+                .await
+                .unwrap();
+        }
+        assert_eq!(read_recurring_counter(state.as_ref()).await, 5);
+
+        // Remove two (delete/pause); removing an absent key is a no-op.
+        acteon_state::remove_pending_recurring(state.as_ref(), &pk("a"))
+            .await
+            .unwrap();
+        acteon_state::remove_pending_recurring(state.as_ref(), &pk("b"))
+            .await
+            .unwrap();
+        acteon_state::remove_pending_recurring(state.as_ref(), &pk("a"))
+            .await
+            .unwrap();
+        acteon_state::remove_pending_recurring(state.as_ref(), &pk("missing"))
+            .await
+            .unwrap();
+        assert_eq!(read_recurring_counter(state.as_ref()).await, 3);
+
+        // Counter equals ground truth.
+        let scanned = state
+            .scan_keys_by_kind(KeyKind::PendingRecurring)
+            .await
+            .unwrap()
+            .len();
+        assert_eq!(scanned, 3);
+    }
+
+    #[tokio::test]
+    async fn recurring_active_gauge_reads_counter_without_scanning() {
+        let group_manager = Arc::new(GroupManager::new());
+        let state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let metrics = Arc::new(GatewayMetrics::default());
+        let future = (Utc::now() + chrono::Duration::hours(1)).timestamp_millis();
+        let pk = |id: &str| StateKey::new("ns", "t", KeyKind::PendingRecurring, id);
+
+        // Seed three via the maintained helpers.
+        for id in ["a", "b", "c"] {
+            acteon_state::set_pending_recurring(state.as_ref(), &pk(id), future)
+                .await
+                .unwrap();
+        }
+
+        let (rec_tx, _rec_rx) = mpsc::channel(10);
+        let (processor, _shutdown_tx) = BackgroundProcessorBuilder::new()
+            .metrics(Arc::clone(&metrics))
+            .config(BackgroundConfig {
+                enable_recurring_actions: true,
+                recurring_check_interval: Duration::from_millis(50),
+                ..BackgroundConfig::default()
+            })
+            .group_manager(group_manager)
+            .state(Arc::clone(&state))
+            .recurring_action_channel(rec_tx)
+            .build()
+            .unwrap();
+
+        // Tick 0 → reconcile path: full scan, seeds counter + gauge to truth.
+        processor.refresh_recurring_active_gauge().await;
+        assert_eq!(metrics.snapshot().recurring_active, 3);
+        assert_eq!(read_recurring_counter(state.as_ref()).await, 3);
+
+        // Churn WITHOUT a scan: add two, remove one → durable counter = 4.
+        acteon_state::set_pending_recurring(state.as_ref(), &pk("d"), future)
+            .await
+            .unwrap();
+        acteon_state::set_pending_recurring(state.as_ref(), &pk("e"), future)
+            .await
+            .unwrap();
+        acteon_state::remove_pending_recurring(state.as_ref(), &pk("a"))
+            .await
+            .unwrap();
+        assert_eq!(read_recurring_counter(state.as_ref()).await, 4);
+
+        // Tick 1 → steady-state path: reads the counter (no scan) → gauge = 4.
+        processor.refresh_recurring_active_gauge().await;
+        assert_eq!(metrics.snapshot().recurring_active, 4);
     }
 
     #[tokio::test]

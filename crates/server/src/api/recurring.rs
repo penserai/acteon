@@ -392,13 +392,9 @@ async fn index_pending(
             KeyKind::PendingRecurring,
             &rec.id,
         );
-        // Store the next execution timestamp as the value.
-        state_store
-            .set(&pending_key, &next.timestamp_millis().to_string(), None)
-            .await
-            .map_err(|e| e.to_string())?;
-        state_store
-            .index_timeout(&pending_key, next.timestamp_millis())
+        // Delegates to the shared helper so the durable `recurring_active`
+        // counter stays in sync (issue #118).
+        acteon_state::set_pending_recurring(state_store, &pending_key, next.timestamp_millis())
             .await
             .map_err(|e| e.to_string())?;
     }
@@ -413,9 +409,9 @@ async fn remove_pending(
     id: &str,
 ) -> Result<(), String> {
     let pending_key = StateKey::new(namespace, tenant, KeyKind::PendingRecurring, id);
-    // Best-effort removal; ignore errors if key doesn't exist.
-    let _ = state_store.remove_timeout_index(&pending_key).await;
-    let _ = state_store.delete(&pending_key).await;
+    // Best-effort removal; ignore errors if the key doesn't exist. Keeps the
+    // durable `recurring_active` counter in sync (issue #118).
+    let _ = acteon_state::remove_pending_recurring(state_store, &pending_key).await;
     Ok(())
 }
 

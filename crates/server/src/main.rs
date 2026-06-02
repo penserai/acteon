@@ -2246,15 +2246,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 &event.recurring_id,
                             );
 
+                            // Route through the shared helpers so the durable
+                            // `recurring_active` counter stays in sync with the
+                            // index (issue #118). Best-effort: a failed counter
+                            // bump self-heals on the next reconciliation scan.
                             if let Some(next_at) = rec.next_execution_at {
-                                let next_ms = next_at.timestamp_millis();
-                                let _ = recurring_store
-                                    .set(&pending_key, &next_ms.to_string(), None)
-                                    .await;
-                                let _ = recurring_store.index_timeout(&pending_key, next_ms).await;
+                                let _ = acteon_state::set_pending_recurring(
+                                    recurring_store.as_ref(),
+                                    &pending_key,
+                                    next_at.timestamp_millis(),
+                                )
+                                .await;
                             } else {
-                                let _ = recurring_store.delete(&pending_key).await;
-                                let _ = recurring_store.remove_timeout_index(&pending_key).await;
+                                let _ = acteon_state::remove_pending_recurring(
+                                    recurring_store.as_ref(),
+                                    &pending_key,
+                                )
+                                .await;
                             }
                         }
                     }
