@@ -1369,9 +1369,9 @@ pub async fn backfill_recurring(
     let state_store = gw.state_store();
     let enc = gw.payload_encryptor();
 
-    let rec =
+    let recurring =
         match load_recurring(state_store.as_ref(), &req.namespace, &req.tenant, &id, enc).await {
-            Ok(Some(rec)) => rec,
+            Ok(Some(recurring)) => recurring,
             Ok(None) => {
                 return error_response(
                     StatusCode::NOT_FOUND,
@@ -1381,11 +1381,11 @@ pub async fn backfill_recurring(
             Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
         };
 
-    let cron = match validate_cron_expr(&rec.cron_expr) {
+    let cron = match validate_cron_expr(&recurring.cron_expr) {
         Ok(cron) => cron,
         Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     };
-    let tz = match validate_timezone(&rec.timezone) {
+    let tz = match validate_timezone(&recurring.timezone) {
         Ok(tz) => tz,
         Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     };
@@ -1395,7 +1395,7 @@ pub async fn backfill_recurring(
     let mut dispatched = 0usize;
 
     for occurrence in &occurrences {
-        let mut payload = rec.action_template.payload.clone();
+        let mut payload = recurring.action_template.payload.clone();
         if let Some(obj) = payload.as_object_mut() {
             // Mark like a normal recurring re-dispatch (quota exemption) and
             // stamp the occurrence so providers can distinguish backfills.
@@ -1411,15 +1411,15 @@ pub async fn backfill_recurring(
         let mut action = acteon_core::Action::new(
             req.namespace.as_str(),
             req.tenant.as_str(),
-            rec.action_template.provider.as_str(),
-            rec.action_template.action_type.as_str(),
+            recurring.action_template.provider.as_str(),
+            recurring.action_template.action_type.as_str(),
             payload,
         );
         // The dedup-key template makes the backfill idempotent per occurrence.
-        if let Some(ref template) = rec.action_template.dedup_key {
+        if let Some(ref template) = recurring.action_template.dedup_key {
             action.dedup_key = Some(
                 template
-                    .replace("{{recurring_id}}", &rec.id)
+                    .replace("{{recurring_id}}", &recurring.id)
                     .replace("{{execution_time}}", &occurrence.to_rfc3339()),
             );
         }
@@ -1445,10 +1445,10 @@ pub async fn backfill_recurring(
 
     // Count backfilled occurrences as executions.
     if dispatched > 0 {
-        let mut rec = rec;
-        rec.execution_count += dispatched as u64;
-        rec.updated_at = Utc::now();
-        if let Err(e) = save_recurring(state_store.as_ref(), &rec, enc).await {
+        let mut recurring = recurring;
+        recurring.execution_count += dispatched as u64;
+        recurring.updated_at = Utc::now();
+        if let Err(e) = save_recurring(state_store.as_ref(), &recurring, enc).await {
             tracing::warn!(error = %e, "failed to persist backfill execution count");
         }
     }
