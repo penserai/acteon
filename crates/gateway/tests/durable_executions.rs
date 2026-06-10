@@ -791,3 +791,172 @@ async fn reset_rejects_unreached_and_unknown_steps() {
         .unwrap_err();
     assert!(err.to_string().contains("not found in chain"));
 }
+
+// -- Adversarial-review regression tests ---------------------------------------
+
+/// Blocker 2: a chain-level timeout must wake a chain parked on an
+/// untimed signal wait — the park must index the chain at `expires_at`.
+#[tokio::test]
+async fn chain_timeout_enforced_while_parked_on_untimed_signal() {
+    let store: Arc<dyn acteon_state::StateStore> = Arc::new(MemoryStateStore::new());
+    let chain = ChainConfig::new("test-chain")
+        .with_step(ChainStepConfig::new_wait_for_signal(
+            "wait",
+            SignalStepConfig {
+                signal_name: "never".into(),
+                timeout_seconds: None,
+                on_timeout: None,
+            },
+        ))
+        .with_timeout(1);
+    let gateway = acteon_gateway::GatewayBuilder::new()
+        .state(store.clone())
+        .lock(Arc::new(MemoryDistributedLock::new()))
+        .rules(vec![chain_rule("test-chain")])
+        .provider(Arc::new(MockProvider {
+            provider_name: "email".into(),
+        }))
+        .chain(chain)
+        .build()
+        .unwrap();
+    let chain_id = start_chain(&gateway).await;
+
+    gateway
+        .advance_chain("notifications", "tenant-1", &chain_id)
+        .await
+        .unwrap();
+    let state = gateway
+        .get_chain_status("notifications", "tenant-1", &chain_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(state.status, ChainStatus::WaitingSignal);
+
+    // The park must have armed the ready index at the chain deadline, so
+    // the background advancer wakes it even though the wait is untimed.
+    let horizon = (Utc::now() + chrono::Duration::seconds(2)).timestamp_millis();
+    let ready = store.get_ready_chains(horizon).await.unwrap();
+    assert!(
+        ready.iter().any(|k| k.contains(&chain_id)),
+        "parked chain must be indexed at its expires_at; got {ready:?}"
+    );
+
+    // Once the deadline passes, advancement times the chain out.
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    gateway
+        .advance_chain("notifications", "tenant-1", &chain_id)
+        .await
+        .unwrap();
+    let state = gateway
+        .get_chain_status("notifications", "tenant-1", &chain_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(state.status, ChainStatus::TimedOut);
+}
+
+/// Blocker 5: resetting to a step the execution never visited (branch
+/// skipped it) must be rejected, not silently mishandled.
+#[tokio::test]
+async fn reset_rejects_branch_skipped_step() {
+    use acteon_core::chain::{BranchCondition, BranchOperator};
+    let chain = ChainConfig::new("test-chain")
+        .with_step(email_step("check").with_branch(BranchCondition::new(
+            "success",
+            BranchOperator::Eq,
+            Some(serde_json::json!(true)),
+            "finish",
+        )))
+        .with_step(email_step("skipped"))
+        .with_step(email_step("finish"));
+    let gateway = build_gateway(vec![chain]);
+    let chain_id = start_chain(&gateway).await;
+
+    gateway
+        .advance_chain("notifications", "tenant-1", &chain_id)
+        .await
+        .unwrap();
+    gateway
+        .advance_chain("notifications", "tenant-1", &chain_id)
+        .await
+        .unwrap();
+    let state = gateway
+        .get_chain_status("notifications", "tenant-1", &chain_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(state.status, ChainStatus::Completed);
+    assert_eq!(state.execution_path, vec!["check", "finish"]);
+
+    // "skipped" sits at an index <= current_step but was never executed.
+    let err = gateway
+        .reset_execution("notifications", "tenant-1", &chain_id, "skipped", None)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("never reached"));
+}
+
+/// Blocker 6: two signals delivered before consumption are both retained
+/// (FIFO), not overwritten.
+#[tokio::test]
+async fn buffered_signals_are_fifo_not_overwritten() {
+    let chain = ChainConfig::new("test-chain")
+        .with_step(ChainStepConfig::new_wait_for_signal(
+            "first",
+            SignalStepConfig {
+                signal_name: "go".into(),
+                timeout_seconds: None,
+                on_timeout: None,
+            },
+        ))
+        .with_step(ChainStepConfig::new_wait_for_signal(
+            "second",
+            SignalStepConfig {
+                signal_name: "go".into(),
+                timeout_seconds: None,
+                on_timeout: None,
+            },
+        ));
+    let gateway = build_gateway(vec![chain]);
+    let chain_id = start_chain(&gateway).await;
+
+    // Both signals arrive before the chain reaches the first wait step.
+    for n in 1..=2 {
+        gateway
+            .signal_chain(
+                "notifications",
+                "tenant-1",
+                &chain_id,
+                "go",
+                serde_json::json!({ "n": n }),
+            )
+            .await
+            .unwrap();
+    }
+
+    gateway
+        .advance_chain("notifications", "tenant-1", &chain_id)
+        .await
+        .unwrap();
+    gateway
+        .advance_chain("notifications", "tenant-1", &chain_id)
+        .await
+        .unwrap();
+
+    let state = gateway
+        .get_chain_status("notifications", "tenant-1", &chain_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(state.status, ChainStatus::Completed);
+    assert_eq!(
+        state.step_results[0].as_ref().unwrap().response_body,
+        Some(serde_json::json!({"n": 1})),
+        "first wait must consume the FIRST delivered signal"
+    );
+    assert_eq!(
+        state.step_results[1].as_ref().unwrap().response_body,
+        Some(serde_json::json!({"n": 2})),
+        "second wait must consume the SECOND delivered signal"
+    );
+}

@@ -361,10 +361,12 @@ export class WorkflowContext {
     if (this.checkpoints.has(key)) {
       return;
     }
+    // The server's directive schema requires integer seconds; a float
+    // would fail deserialization and fail the execution.
     throw new WorkflowSuspend({
       directive: "sleep",
       checkpoint: key,
-      seconds,
+      seconds: Math.max(1, Math.floor(seconds)),
     });
   }
 
@@ -389,7 +391,8 @@ export class WorkflowContext {
       name,
     };
     if (timeoutSeconds !== undefined) {
-      directive.timeout_seconds = timeoutSeconds;
+      // Integer seconds required by the server's directive schema.
+      directive.timeout_seconds = Math.max(1, Math.floor(timeoutSeconds));
     }
     throw new WorkflowSuspend(directive);
   }

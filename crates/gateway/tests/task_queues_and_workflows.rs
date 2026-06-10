@@ -806,3 +806,106 @@ async fn workflow_cancellation() {
         .unwrap_err();
     assert!(err.to_string().contains("not active"));
 }
+
+// -- Adversarial-review regression tests ---------------------------------------
+
+/// Blocker 3: a present-but-malformed directive (e.g. float seconds) must
+/// fail the execution loudly, never silently complete it.
+#[tokio::test]
+async fn malformed_directive_fails_execution_instead_of_completing() {
+    let gateway = build_gateway(vec![]);
+    let exec = gateway
+        .start_workflow(NS, TENANT, "wf", "q", serde_json::json!({}), HashMap::new())
+        .await
+        .unwrap();
+    let id = exec.execution_id.clone();
+
+    let task = poll_workflow_task(&gateway, "q").await;
+    gateway
+        .complete_worker_task(
+            NS,
+            TENANT,
+            &task.task_id,
+            task.lease_token.as_deref().unwrap(),
+            serde_json::json!({"directive": "sleep", "checkpoint": "sleep#0", "seconds": 1.5}),
+        )
+        .await
+        .unwrap();
+
+    let exec = gateway
+        .get_workflow_execution(NS, TENANT, &id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(exec.status, WorkflowStatus::Failed);
+    assert!(
+        exec.error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("malformed"),
+        "error should name the malformed directive, got {:?}",
+        exec.error
+    );
+}
+
+/// Blocker 4: cancelling a chain parked on a worker step must cancel the
+/// outstanding task so the work cannot execute afterwards.
+#[tokio::test]
+async fn cancel_chain_cancels_outstanding_worker_task() {
+    let gateway = build_gateway(vec![worker_chain()]);
+    let chain_id = start_chain(&gateway).await;
+    gateway.advance_chain(NS, TENANT, &chain_id).await.unwrap();
+
+    let state = gateway
+        .get_chain_status(NS, TENANT, &chain_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(state.status, ChainStatus::WaitingWorker);
+    let acteon_core::chain::WaitState::Worker { task_id, .. } = state.wait_state.clone().unwrap()
+    else {
+        panic!("expected worker wait state");
+    };
+
+    gateway
+        .cancel_chain(NS, TENANT, &chain_id, Some("stop".into()), None)
+        .await
+        .unwrap();
+
+    let task = gateway
+        .get_worker_task(NS, TENANT, &task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(task.status, WorkerTaskStatus::Cancelled);
+    // No worker can lease it anymore.
+    let leased = gateway
+        .poll_worker_tasks(NS, TENANT, "builds", 10, Some(60), None)
+        .await
+        .unwrap();
+    assert!(leased.is_empty());
+}
+
+/// Finding 9a: queue names containing the key delimiter are rejected so
+/// per-queue prefix scans cannot cross-contaminate.
+#[tokio::test]
+async fn queue_names_with_delimiter_are_rejected() {
+    let gateway = build_gateway(vec![]);
+    let err = gateway
+        .enqueue_worker_task(WorkerTask::new(
+            NS,
+            TENANT,
+            "etl:high",
+            "a",
+            serde_json::json!({}),
+        ))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("invalid queue name"));
+
+    let err = gateway
+        .poll_worker_tasks(NS, TENANT, "etl:high", 1, None, None)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("invalid queue name"));
+}

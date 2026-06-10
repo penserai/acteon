@@ -1381,6 +1381,18 @@ pub async fn backfill_recurring(
             Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
         };
 
+    // Backfill dispatches occurrences concurrently with whatever is already
+    // running, which is exactly what a non-default overlap policy exists to
+    // prevent — and backfill-spawned executions are invisible to the next
+    // scheduled occurrence's overlap check. Refuse the combination.
+    if recurring.overlap_policy != acteon_core::OverlapPolicy::AllowAll {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "backfill is not supported for recurring actions with an overlap policy \
+             other than allow_all",
+        );
+    }
+
     let cron = match validate_cron_expr(&recurring.cron_expr) {
         Ok(cron) => cron,
         Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
@@ -1415,14 +1427,12 @@ pub async fn backfill_recurring(
             recurring.action_template.action_type.as_str(),
             payload,
         );
-        // The dedup-key template makes the backfill idempotent per occurrence.
-        if let Some(ref template) = recurring.action_template.dedup_key {
-            action.dedup_key = Some(
-                template
-                    .replace("{{recurring_id}}", &recurring.id)
-                    .replace("{{execution_time}}", &occurrence.to_rfc3339()),
-            );
-        }
+        // The shared dedup-key resolver makes the backfill idempotent per
+        // occurrence — including against occurrences the live scheduler
+        // already fired with the same key.
+        action.dedup_key = recurring
+            .action_template
+            .resolve_dedup_key(&recurring.id, occurrence);
 
         match gw.dispatch(action, None).await {
             Ok(outcome) => {

@@ -73,14 +73,30 @@ fn retry_backoff(attempt: u32) -> chrono::Duration {
     chrono::Duration::seconds(2_i64.saturating_pow(attempt.min(6)).min(60))
 }
 
+/// Validate a queue name. `:` is the canonical-key delimiter, so it must be
+/// excluded or queues `etl` and `etl:high` would cross-contaminate the
+/// per-queue prefix scans; restrict to a safe charset outright.
+pub(crate) fn validate_queue_name(queue: &str) -> Result<(), GatewayError> {
+    if queue.is_empty() {
+        return Err(GatewayError::TaskQueue(
+            "queue name must not be empty".into(),
+        ));
+    }
+    if !queue
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
+        return Err(GatewayError::TaskQueue(format!(
+            "invalid queue name `{queue}`: only [A-Za-z0-9._-] is allowed"
+        )));
+    }
+    Ok(())
+}
+
 impl Gateway {
     /// Enqueue a task on a named worker queue.
     pub async fn enqueue_worker_task(&self, task: WorkerTask) -> Result<WorkerTask, GatewayError> {
-        if task.queue.is_empty() {
-            return Err(GatewayError::TaskQueue(
-                "queue name must not be empty".into(),
-            ));
-        }
+        validate_queue_name(&task.queue)?;
         let key = task_key(&task.namespace, &task.tenant, &task.task_id);
         let json = serde_json::to_string(&task)
             .map_err(|e| GatewayError::TaskQueue(format!("failed to serialize task: {e}")))?;
@@ -168,6 +184,7 @@ impl Gateway {
         lease_seconds: Option<u64>,
         worker_id: Option<&str>,
     ) -> Result<Vec<WorkerTask>, GatewayError> {
+        validate_queue_name(queue)?;
         let lease_seconds = lease_seconds
             .unwrap_or(DEFAULT_TASK_LEASE_SECONDS)
             .clamp(1, MAX_TASK_LEASE_SECONDS);
@@ -209,6 +226,14 @@ impl Gateway {
                 continue;
             };
             if !task.leasable(now) {
+                // A settled/leased task with a leftover pending entry is a
+                // crash artifact — clean it up so polls stop revisiting it.
+                if task.status != WorkerTaskStatus::Pending {
+                    let _ = self
+                        .state
+                        .delete(&pending_key(namespace, tenant, queue, &task_id))
+                        .await;
+                }
                 continue;
             }
 
@@ -222,6 +247,19 @@ impl Gateway {
             task.not_before = None;
             task.updated_at = now;
 
+            // Crash-safe ordering: write the leased-index entry BEFORE the
+            // CAS. A crash before the CAS leaves a stale leased entry that
+            // reclaim cleans up (the task is still Pending); the reverse
+            // order would leave a Leased task invisible to both reclaim
+            // (scans the leased index) and poll (`leasable` excludes
+            // Leased) — stranded forever.
+            self.state
+                .set(
+                    &leased_key(namespace, tenant, queue, &task_id),
+                    &expires.timestamp_millis().to_string(),
+                    None,
+                )
+                .await?;
             let json = serde_json::to_string(&task)
                 .map_err(|e| GatewayError::TaskQueue(format!("failed to serialize task: {e}")))?;
             match self
@@ -234,16 +272,12 @@ impl Gateway {
                         .state
                         .delete(&pending_key(namespace, tenant, queue, &task_id))
                         .await;
-                    self.state
-                        .set(
-                            &leased_key(namespace, tenant, queue, &task_id),
-                            &expires.timestamp_millis().to_string(),
-                            None,
-                        )
-                        .await?;
                     leased.push(task);
                 }
-                // Another worker won the race; move on.
+                // Another worker won the race; undo our index entry only if
+                // the winner hasn't already overwritten it with its own
+                // expiry (the winner's set happens before its CAS, so ours
+                // can only be stale if we lost to a non-poll transition).
                 CasResult::Conflict { .. } => {}
             }
         }
@@ -551,8 +585,16 @@ impl Gateway {
                 continue;
             };
             if !task.lease_expired(now) {
-                // Heartbeat raced the index; refresh the index entry.
-                if let Some(at) = task.lease_expires_at {
+                if task.status != WorkerTaskStatus::Leased {
+                    // Crash artifact: a leased-index entry for a task that
+                    // never completed the lease CAS (still Pending) or has
+                    // already settled — drop the stale entry.
+                    let _ = self
+                        .state
+                        .delete(&leased_key(namespace, tenant, queue, &task_id))
+                        .await;
+                } else if let Some(at) = task.lease_expires_at {
+                    // Heartbeat raced the index; refresh the index entry.
                     let _ = self
                         .state
                         .set(

@@ -16,21 +16,11 @@ use acteon_gateway::ExecutionFilter;
 
 use super::AppState;
 use super::chains::{parse_status_filter, status_to_string};
-use super::schemas::ErrorResponse;
+use super::schemas::{ErrorResponse, tenant_forbidden};
 use crate::auth::identity::CallerIdentity;
 
 /// Build a `403 Forbidden` response for a caller whose grants don't cover
 /// the requested `(namespace, tenant)`.
-fn tenant_forbidden(namespace: &str, tenant: &str) -> axum::response::Response {
-    (
-        StatusCode::FORBIDDEN,
-        Json(ErrorResponse {
-            error: format!("forbidden: no grant covers tenant={tenant} namespace={namespace}"),
-        }),
-    )
-        .into_response()
-}
-
 /// Query parameters for listing executions.
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct ExecutionsQueryParams {

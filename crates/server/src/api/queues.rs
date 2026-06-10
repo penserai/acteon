@@ -15,18 +15,8 @@ use utoipa::{IntoParams, ToSchema};
 use acteon_core::{WorkerTask, WorkerTaskStatus};
 
 use super::AppState;
-use super::schemas::ErrorResponse;
+use super::schemas::{ErrorResponse, tenant_forbidden};
 use crate::auth::identity::CallerIdentity;
-
-fn tenant_forbidden(namespace: &str, tenant: &str) -> axum::response::Response {
-    (
-        StatusCode::FORBIDDEN,
-        Json(ErrorResponse {
-            error: format!("forbidden: no grant covers tenant={tenant} namespace={namespace}"),
-        }),
-    )
-        .into_response()
-}
 
 fn queue_error_response(e: &acteon_gateway::GatewayError) -> axum::response::Response {
     let msg = e.to_string();

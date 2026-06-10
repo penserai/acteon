@@ -42,6 +42,25 @@ pub struct RecurringActionTemplate {
     pub dedup_key: Option<String>,
 }
 
+impl RecurringActionTemplate {
+    /// Resolve the dedup-key template for one occurrence. Both the live
+    /// scheduler and backfill must use this so the same occurrence always
+    /// produces the same key (that equality is what makes backfill
+    /// idempotent against already-fired occurrences).
+    #[must_use]
+    pub fn resolve_dedup_key(
+        &self,
+        recurring_id: &str,
+        execution_time: &DateTime<Utc>,
+    ) -> Option<String> {
+        self.dedup_key.as_ref().map(|template| {
+            template
+                .replace("{{recurring_id}}", recurring_id)
+                .replace("{{execution_time}}", &execution_time.to_rfc3339())
+        })
+    }
+}
+
 /// A recurring action definition.
 ///
 /// Stores a cron-scheduled action that fires periodically. Each occurrence

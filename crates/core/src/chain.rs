@@ -965,6 +965,17 @@ impl ChainConfig {
                         "worker step `{}` must set a non-empty `queue`",
                         step.name
                     ));
+                } else if !worker
+                    .queue
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+                {
+                    // ':' is the state-store key delimiter; allowing it
+                    // would cross-contaminate per-queue prefix scans.
+                    errors.push(format!(
+                        "worker step `{}`: queue name `{}` may only contain [A-Za-z0-9._-]",
+                        step.name, worker.queue
+                    ));
                 }
                 if worker.max_attempts == Some(0) {
                     errors.push(format!(

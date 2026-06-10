@@ -776,8 +776,10 @@ class WorkflowContext:
         key = self._next_key("sleep")
         if key in self._checkpoints:
             return
+        # The server's directive schema requires integer seconds; a float
+        # would fail deserialization and fail the execution.
         raise _Suspend(
-            {"directive": "sleep", "checkpoint": key, "seconds": seconds}
+            {"directive": "sleep", "checkpoint": key, "seconds": max(1, int(seconds))}
         )
 
     def wait_for_signal(
@@ -809,7 +811,8 @@ class WorkflowContext:
             "name": name,
         }
         if timeout_seconds is not None:
-            directive["timeout_seconds"] = timeout_seconds
+            # Integer seconds required by the server's directive schema.
+            directive["timeout_seconds"] = max(1, int(timeout_seconds))
         raise _Suspend(directive)
 
     def start_child(

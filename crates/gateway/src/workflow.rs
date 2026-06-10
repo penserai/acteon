@@ -111,9 +111,14 @@ impl Gateway {
         )
         .await;
 
-        let task_id = self.enqueue_workflow_continuation(&exec).await?;
-        exec.current_task_id = Some(task_id);
+        // Persist the execution BEFORE the task becomes pollable: a fast
+        // worker settling the first continuation must find the record. (The
+        // reverse order silently wedges the execution; a crash between
+        // persist and enqueue is surfaced as a start error instead.)
+        let task = Self::build_continuation_task(&exec);
+        exec.current_task_id = Some(task.task_id.clone());
         self.persist_workflow(&exec, None).await?;
+        self.enqueue_worker_task(task).await?;
         debug!(
             execution_id = %exec.execution_id,
             workflow = %workflow,
@@ -204,9 +209,12 @@ impl Gateway {
                 None,
             )
             .await;
-            let task_id = self.enqueue_workflow_continuation(&child).await?;
-            child.current_task_id = Some(task_id);
+            // Persist before enqueue, mirroring start_workflow: the parent
+            // lock does not cover the child's settle path.
+            let task = Self::build_continuation_task(&child);
+            child.current_task_id = Some(task.task_id.clone());
             self.persist_workflow(&child, None).await?;
+            self.enqueue_worker_task(task).await?;
             Ok((child_id, true))
         }
         .await;
@@ -384,7 +392,7 @@ impl Gateway {
                 exec.status = WorkflowStatus::Running;
                 let _ = self
                     .state
-                    .delete(&timer_key(namespace, tenant, execution_id))
+                    .remove_timeout_index(&timer_key(namespace, tenant, execution_id))
                     .await;
                 let task_id = self.enqueue_workflow_continuation(&exec).await?;
                 exec.current_task_id = Some(task_id);
@@ -443,7 +451,7 @@ impl Gateway {
             exec.updated_at = Utc::now();
             let _ = self
                 .state
-                .delete(&timer_key(namespace, tenant, execution_id))
+                .remove_timeout_index(&timer_key(namespace, tenant, execution_id))
                 .await;
             self.persist_workflow(&exec, Some(COMPLETED_WORKFLOW_TTL))
                 .await?;
@@ -485,11 +493,18 @@ impl Gateway {
         let directive = match task.status {
             WorkerTaskStatus::Completed => {
                 let result = task.result.clone().unwrap_or_default();
-                WorkflowDirective::from_task_result(&result).unwrap_or(
+                match WorkflowDirective::from_task_result(&result) {
+                    Some(directive) => directive,
+                    // A `directive` key that failed to parse must not be
+                    // mistaken for a workflow result — fail loudly instead
+                    // of silently completing (e.g. a float `seconds`).
+                    None if result.get("directive").is_some() => WorkflowDirective::Fail {
+                        error: format!("malformed workflow directive: {result}"),
+                    },
                     // A plain (non-directive) result means the workflow
                     // function returned it directly.
-                    WorkflowDirective::Complete { result },
-                )
+                    None => WorkflowDirective::Complete { result },
+                }
             }
             WorkerTaskStatus::Failed | WorkerTaskStatus::Cancelled => WorkflowDirective::Fail {
                 error: task
@@ -615,10 +630,9 @@ impl Gateway {
                     exec.updated_at = Utc::now();
                     self.persist_workflow(&exec, None).await?;
                     self.state
-                        .set(
+                        .index_timeout(
                             &timer_key(namespace, tenant, execution_id),
-                            &fire_at.timestamp_millis().to_string(),
-                            None,
+                            fire_at.timestamp_millis(),
                         )
                         .await?;
                     self.append_execution_history(
@@ -679,10 +693,9 @@ impl Gateway {
                     self.persist_workflow(&exec, None).await?;
                     if let Some(t) = timeout_at {
                         self.state
-                            .set(
+                            .index_timeout(
                                 &timer_key(namespace, tenant, execution_id),
-                                &t.timestamp_millis().to_string(),
-                                None,
+                                t.timestamp_millis(),
                             )
                             .await?;
                     }
@@ -719,17 +732,16 @@ impl Gateway {
     /// Driven by the background processor on the chain-advance tick.
     pub async fn process_due_workflow_timers(&self) -> Result<usize, GatewayError> {
         let now = Utc::now();
-        let entries = self
+        // The shared timeout index returns only due entries (O(log N + M));
+        // other consumers of the feed filter by their own key kind, as here.
+        let expired = self
             .state
-            .scan_keys_by_kind(KeyKind::Custom(WORKFLOW_TIMER_KIND.into()))
+            .get_expired_timeouts(now.timestamp_millis())
             .await?;
 
         let mut fired = 0;
-        for (key, value) in entries {
-            let due = value
-                .parse::<i64>()
-                .is_ok_and(|ms| ms <= now.timestamp_millis());
-            if !due {
+        for key in expired {
+            if !key.contains(":workflow_timer:") {
                 continue;
             }
             // Canonical key: {namespace}:{tenant}:workflow_timer:{execution_id}
@@ -763,7 +775,7 @@ impl Gateway {
         let result: Result<bool, GatewayError> = async {
             let timer = timer_key(namespace, tenant, execution_id);
             let Some(mut exec) = self.load_workflow(namespace, tenant, execution_id).await? else {
-                let _ = self.state.delete(&timer).await;
+                let _ = self.state.remove_timeout_index(&timer).await;
                 return Ok(false);
             };
 
@@ -779,7 +791,7 @@ impl Gateway {
                     );
                     exec.awaiting = None;
                     exec.status = WorkflowStatus::Running;
-                    let _ = self.state.delete(&timer).await;
+                    let _ = self.state.remove_timeout_index(&timer).await;
                     let next = self.enqueue_workflow_continuation(&exec).await?;
                     exec.current_task_id = Some(next);
                     self.persist_workflow(&exec, None).await?;
@@ -803,7 +815,7 @@ impl Gateway {
                     exec.record_checkpoint(&checkpoint, serde_json::json!({ "timed_out": true }));
                     exec.awaiting = None;
                     exec.status = WorkflowStatus::Running;
-                    let _ = self.state.delete(&timer).await;
+                    let _ = self.state.remove_timeout_index(&timer).await;
                     let next = self.enqueue_workflow_continuation(&exec).await?;
                     exec.current_task_id = Some(next);
                     self.persist_workflow(&exec, None).await?;
@@ -822,7 +834,7 @@ impl Gateway {
                 }
                 _ => {
                     // Stale timer entry (the await already resolved).
-                    let _ = self.state.delete(&timer).await;
+                    let _ = self.state.remove_timeout_index(&timer).await;
                     Ok(false)
                 }
             }
@@ -892,19 +904,16 @@ impl Gateway {
         }
     }
 
-    /// Enqueue a continuation task carrying a snapshot of the execution
+    /// Build a continuation task carrying a snapshot of the execution
     /// (input + checkpoints) so the worker can replay without extra reads.
-    async fn enqueue_workflow_continuation(
-        &self,
-        exec: &WorkflowExecution,
-    ) -> Result<String, GatewayError> {
+    fn build_continuation_task(exec: &WorkflowExecution) -> WorkerTask {
         let payload = serde_json::json!({
             "execution_id": exec.execution_id,
             "workflow": exec.workflow,
             "input": exec.input,
             "checkpoints": exec.checkpoints,
         });
-        let task = WorkerTask::new(
+        WorkerTask::new(
             exec.namespace.as_str(),
             exec.tenant.as_str(),
             exec.queue.as_str(),
@@ -912,7 +921,17 @@ impl Gateway {
             payload,
         )
         .with_max_attempts(WORKFLOW_TASK_MAX_ATTEMPTS)
-        .for_workflow(exec.execution_id.clone());
+        .for_workflow(exec.execution_id.clone())
+    }
+
+    /// Enqueue a continuation task for an execution mutation made under the
+    /// workflow lock (settle paths take the same lock, so enqueue-then-
+    /// persist is race-free there).
+    async fn enqueue_workflow_continuation(
+        &self,
+        exec: &WorkflowExecution,
+    ) -> Result<String, GatewayError> {
+        let task = Self::build_continuation_task(exec);
         let task_id = task.task_id.clone();
         self.enqueue_worker_task(task).await?;
         Ok(task_id)

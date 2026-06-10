@@ -1211,10 +1211,25 @@ impl Gateway {
         Ok(())
     }
 
-    /// Remove a chain definition by name. Returns the removed config, or `None`.
-    pub fn remove_chain_config(&self, name: &str) -> Option<ChainConfig> {
+    /// Remove a chain definition by name. Returns the removed config, or
+    /// `Ok(None)` when no such definition exists. Fails when another
+    /// definition still references it as a sub-chain, so deletions cannot
+    /// leave dangling references for in-flight or future executions.
+    pub fn remove_chain_config(&self, name: &str) -> Result<Option<ChainConfig>, Vec<String>> {
+        let removed = {
+            let mut chains = self.chains.write();
+            let Some(removed) = chains.remove(name) else {
+                return Ok(None);
+            };
+            let graph_errors = acteon_core::validate_chain_graph(&chains);
+            if !graph_errors.is_empty() {
+                chains.insert(name.to_owned(), removed);
+                return Err(graph_errors);
+            }
+            removed
+        };
         self.chain_step_indices.write().remove(name);
-        self.chains.write().remove(name)
+        Ok(Some(removed))
     }
 
     /// Enable a rule by name. Returns `true` if the rule was found.
@@ -2621,7 +2636,14 @@ impl Gateway {
         if let Some(expires_at) = chain_state.expires_at
             && Utc::now() >= expires_at
         {
+            // Stop the work, not just the chain: a parked worker task must
+            // not execute after the chain has timed out.
+            if let Some(WaitState::Worker { task_id, .. }) = &chain_state.wait_state {
+                let task_id = task_id.clone();
+                let _ = self.cancel_worker_task(namespace, tenant, &task_id).await;
+            }
             chain_state.status = ChainStatus::TimedOut;
+            chain_state.wait_state = None;
             chain_state.updated_at = Utc::now();
             self.persist_chain_state(&chain_key, &chain_state, self.completed_chain_ttl)
                 .await?;
@@ -2771,10 +2793,13 @@ impl Gateway {
                         )
                         .await?;
                     } else {
-                        // Spurious wake — re-arm at the fire time.
-                        self.state
-                            .index_chain_ready(&pending_key, fire_at.timestamp_millis())
-                            .await?;
+                        // Spurious wake — re-arm at the fire time (or the
+                        // chain deadline, whichever is first).
+                        if let Some(wake) =
+                            Self::park_wake_at_ms(Some(fire_at), chain_state.expires_at)
+                        {
+                            self.state.index_chain_ready(&pending_key, wake).await?;
+                        }
                     }
                 }
                 _ => {
@@ -2803,9 +2828,10 @@ impl Gateway {
                         None,
                     )
                     .await;
-                    self.state
-                        .index_chain_ready(&pending_key, fire_at.timestamp_millis())
-                        .await?;
+                    if let Some(wake) = Self::park_wake_at_ms(Some(fire_at), chain_state.expires_at)
+                    {
+                        self.state.index_chain_ready(&pending_key, wake).await?;
+                    }
                     debug!(
                         chain_id = %chain_id,
                         step = %step_config.name,
@@ -2828,7 +2854,7 @@ impl Gateway {
             // Consume a buffered signal if one has already been delivered
             // (whether the chain was waiting or the signal arrived early).
             if let Some(payload) = self
-                .take_buffered_signal(namespace, tenant, chain_id, &signal_cfg.signal_name)
+                .peek_buffered_signal(namespace, tenant, chain_id, &signal_cfg.signal_name)
                 .await?
             {
                 chain_state.wait_state = None;
@@ -2850,6 +2876,11 @@ impl Gateway {
                     "chain_step_completed",
                 )
                 .await?;
+                // Pop only after the consuming chain state is persisted; a
+                // crash in between re-delivers the signal (at-least-once)
+                // instead of losing it.
+                self.pop_buffered_signal(namespace, tenant, chain_id, &signal_cfg.signal_name)
+                    .await;
                 guard
                     .release()
                     .await
@@ -2930,11 +2961,11 @@ impl Gateway {
                             )
                             .await?;
                         }
-                    } else if let Some(t) = timeout_at {
-                        // Spurious wake — re-arm at the timeout.
-                        self.state
-                            .index_chain_ready(&pending_key, t.timestamp_millis())
-                            .await?;
+                    } else if let Some(wake) =
+                        Self::park_wake_at_ms(timeout_at, chain_state.expires_at)
+                    {
+                        // Spurious wake — re-arm at the timeout / deadline.
+                        self.state.index_chain_ready(&pending_key, wake).await?;
                     }
                 }
                 _ => {
@@ -2964,10 +2995,8 @@ impl Gateway {
                         None,
                     )
                     .await;
-                    if let Some(t) = timeout_at {
-                        self.state
-                            .index_chain_ready(&pending_key, t.timestamp_millis())
-                            .await?;
+                    if let Some(wake) = Self::park_wake_at_ms(timeout_at, chain_state.expires_at) {
+                        self.state.index_chain_ready(&pending_key, wake).await?;
                     }
                     debug!(
                         chain_id = %chain_id,
@@ -3000,6 +3029,20 @@ impl Gateway {
                     let task = self.get_worker_task(namespace, tenant, &task_id).await?;
                     match task {
                         Some(task) if task.status == acteon_core::WorkerTaskStatus::Completed => {
+                            // Mirror the resume hook's history event so the
+                            // timeline is identical whichever path resumed.
+                            self.append_execution_history(
+                                namespace,
+                                tenant,
+                                chain_id,
+                                ExecutionEventType::TaskCompleted {
+                                    step_name: step_config.name.clone(),
+                                    task_id: task.task_id.clone(),
+                                    attempt: task.attempt,
+                                },
+                                None,
+                            )
+                            .await;
                             chain_state.wait_state = None;
                             chain_state.status = ChainStatus::Running;
                             let step_result = StepResult::new(
@@ -3029,6 +3072,19 @@ impl Gateway {
                             if task.status == acteon_core::WorkerTaskStatus::Failed
                                 || task.status == acteon_core::WorkerTaskStatus::Cancelled =>
                         {
+                            self.append_execution_history(
+                                namespace,
+                                tenant,
+                                chain_id,
+                                ExecutionEventType::TaskFailed {
+                                    step_name: step_config.name.clone(),
+                                    task_id: task.task_id.clone(),
+                                    attempt: task.attempt,
+                                    error: task.error.clone().unwrap_or_default(),
+                                },
+                                None,
+                            )
+                            .await;
                             chain_state.wait_state = None;
                             chain_state.status = ChainStatus::Running;
                             let step_result =
@@ -3098,12 +3154,13 @@ impl Gateway {
                             .await?;
                         }
                         _ => {
-                            // Still pending/leased — re-arm the timeout
-                            // check, if any; completion wakes the chain.
-                            if let Some(t) = timeout_at {
-                                self.state
-                                    .index_chain_ready(&pending_key, t.timestamp_millis())
-                                    .await?;
+                            // Still pending/leased — re-arm the timeout /
+                            // chain deadline, if any; completion wakes the
+                            // chain.
+                            if let Some(wake) =
+                                Self::park_wake_at_ms(timeout_at, chain_state.expires_at)
+                            {
+                                self.state.index_chain_ready(&pending_key, wake).await?;
                             }
                         }
                     }
@@ -3165,10 +3222,8 @@ impl Gateway {
                         None,
                     )
                     .await;
-                    if let Some(t) = timeout_at {
-                        self.state
-                            .index_chain_ready(&pending_key, t.timestamp_millis())
-                            .await?;
+                    if let Some(wake) = Self::park_wake_at_ms(timeout_at, chain_state.expires_at) {
+                        self.state.index_chain_ready(&pending_key, wake).await?;
                     }
                     debug!(
                         chain_id = %chain_id,
@@ -4236,6 +4291,22 @@ impl Gateway {
         }
 
         Ok(())
+    }
+
+    /// Earliest wake deadline for a parked chain: the step's own deadline
+    /// (timer fire, signal/worker timeout) or the chain-level `expires_at`,
+    /// whichever comes first. Chains parked on an untimed wait still wake
+    /// at `expires_at` so the chain-level timeout is enforced.
+    fn park_wake_at_ms(
+        step_deadline: Option<chrono::DateTime<Utc>>,
+        expires_at: Option<chrono::DateTime<Utc>>,
+    ) -> Option<i64> {
+        match (step_deadline, expires_at) {
+            (Some(a), Some(b)) => Some(a.min(b).timestamp_millis()),
+            (Some(a), None) => Some(a.timestamp_millis()),
+            (None, Some(b)) => Some(b.timestamp_millis()),
+            (None, None) => None,
+        }
     }
 
     /// Determine the next step index after a step completes, considering branch
@@ -6324,7 +6395,14 @@ impl Gateway {
         }
 
         let cancelled_at = Utc::now();
+        // Stop the work, not just the chain: cancel the outstanding worker
+        // task so it cannot execute after the cancellation.
+        if let Some(WaitState::Worker { task_id, .. }) = &chain_state.wait_state {
+            let task_id = task_id.clone();
+            let _ = self.cancel_worker_task(namespace, tenant, &task_id).await;
+        }
         chain_state.status = ChainStatus::Cancelled;
+        chain_state.wait_state = None;
         chain_state.updated_at = cancelled_at;
         chain_state.cancel_reason.clone_from(&reason);
         chain_state.cancelled_by.clone_from(&cancelled_by);
@@ -6389,7 +6467,14 @@ impl Gateway {
         info!(chain_id = %chain_id, "chain cancelled");
 
         // Dispatch a cancel notification through the gateway pipeline.
-        let chain_config = self.chains.read().get(&chain_state.chain_name).cloned();
+        // Resolve the notification target from the execution's pinned
+        // definition snapshot — the live registry may have been edited or
+        // deleted since this execution started.
+        let chain_config = chain_state
+            .config_snapshot
+            .as_deref()
+            .cloned()
+            .or_else(|| self.chains.read().get(&chain_state.chain_name).cloned());
         let (notify_provider, notify_action_type) = chain_config
             .as_ref()
             .and_then(|c| c.on_cancel.as_ref())
