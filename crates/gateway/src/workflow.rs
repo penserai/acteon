@@ -269,7 +269,7 @@ impl Gateway {
             }
             executions.push(exec);
         }
-        executions.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        executions.sort_by_key(|e| std::cmp::Reverse(e.created_at));
         executions.truncate(filter.limit.unwrap_or(200));
         Ok(executions)
     }
