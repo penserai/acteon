@@ -309,6 +309,20 @@ export interface ChainHistoryResponse {
   steps: StepHistoryEntry[]
 }
 
+// ---- Execution event history ----
+export interface ExecutionHistoryEvent {
+  event_id: number
+  timestamp: string
+  event_type: string
+  // Event-specific fields (step_name, signal_name, fire_at, error, ...).
+  [key: string]: unknown
+}
+
+export interface ExecutionHistoryResponse {
+  execution_id: string
+  events: ExecutionHistoryEvent[]
+}
+
 // ---- Chain Definitions ----
 export interface ChainDefinitionSummary {
   name: string

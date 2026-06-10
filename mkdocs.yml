@@ -126,6 +126,9 @@ nav:
     - Operator Lifecycle (Active/Suspended/Banned): features/operator-lifecycle.md
     - Task Chains: features/chains.md
     - Sub-Chains: features/sub-chains.md
+    - Durable Executions: features/durable-executions.md
+    - Task Queues & Workers: features/task-queues.md
+    - Workflows as Code: features/workflows.md
     - LLM Guardrails: features/llm-guardrails.md
     - Semantic Routing: features/semantic-routing.md
     - Audit Trail: features/audit-trail.md
