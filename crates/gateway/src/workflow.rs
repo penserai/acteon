@@ -438,7 +438,7 @@ impl Gateway {
                 )));
             }
             exec.status = WorkflowStatus::Cancelled;
-            exec.error = reason.clone();
+            exec.error.clone_from(&reason);
             exec.awaiting = None;
             exec.updated_at = Utc::now();
             let _ = self
