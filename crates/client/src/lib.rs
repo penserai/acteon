@@ -77,9 +77,11 @@ mod coverage;
 mod dispatch;
 mod dlq;
 mod events;
+mod executions;
 mod groups;
 mod plugins;
 mod providers;
+mod queues;
 mod quotas;
 mod recurring;
 mod retention;
@@ -90,6 +92,7 @@ mod streaming;
 mod swarm;
 mod templates;
 mod time_intervals;
+mod workflows;
 
 pub use error::Error;
 pub use stream::{EventStream, StreamFilter, StreamItem};
@@ -108,8 +111,10 @@ pub use coverage::*;
 pub use dispatch::*;
 pub use dlq::*;
 pub use events::*;
+pub use executions::*;
 pub use groups::*;
 pub use plugins::*;
+pub use queues::*;
 pub use quotas::*;
 pub use recurring::*;
 pub use retention::*;
@@ -119,6 +124,7 @@ pub use silences::*;
 pub use swarm::*;
 pub use templates::*;
 pub use time_intervals::*;
+pub use workflows::*;
 
 use std::time::Duration;
 

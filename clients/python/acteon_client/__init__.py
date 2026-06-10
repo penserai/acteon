@@ -1,7 +1,22 @@
 """Acteon Python Client - HTTP client for the Acteon action gateway."""
 
 from .client import ActeonClient, AsyncActeonClient
-from .errors import ActeonError, ConnectionError, ApiError, HttpError
+from .errors import (
+    ActeonError,
+    ConnectionError,
+    ApiError,
+    HttpError,
+    RetryableError,
+    NonRetryableError,
+)
+from .queues import WorkerTask
+from .worker import WORKFLOW_ACTION_TYPE, Worker
+from .workflows import (
+    ExecutionHistory,
+    WorkflowCheckpoint,
+    WorkflowContext,
+    WorkflowExecution,
+)
 from .bus_models import (
     AppendBusConversationMessage,
     BusAgent,
@@ -146,6 +161,17 @@ __all__ = [
     "ConnectionError",
     "ApiError",
     "HttpError",
+    "RetryableError",
+    "NonRetryableError",
+    # Task queues + worker
+    "WorkerTask",
+    "Worker",
+    "WORKFLOW_ACTION_TYPE",
+    # Workflows
+    "WorkflowContext",
+    "WorkflowExecution",
+    "WorkflowCheckpoint",
+    "ExecutionHistory",
     "Action",
     "Attachment",
     "ActionOutcome",

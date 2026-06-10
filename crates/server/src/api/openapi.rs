@@ -20,13 +20,22 @@ use super::embeddings::{SimilarityRequest, SimilarityResponse};
 use super::events::{
     EventStateResponse, ListEventsResponse, TransitionRequest, TransitionResponse,
 };
+use super::executions::{
+    ExecutionHistoryResponse, ExecutionSummary, ListExecutionsResponse, ResetExecutionRequest,
+    SignalRequest, SignalResponse, UpsertAttributesRequest,
+};
 use super::groups::{FlushGroupResponse, GroupDetailResponse, GroupSummary, ListGroupsResponse};
+use super::queues::{
+    CompleteTaskRequest, EnqueueTaskRequest, FailTaskRequest, HeartbeatRequest, PollQueueRequest,
+    PollQueueResponse, WorkerTaskDto,
+};
 use super::quotas::{
     CreateQuotaRequest, ListQuotasResponse, QuotaResponse, QuotaUsageResponse, UpdateQuotaRequest,
 };
 use super::recurring::{
-    CreateRecurringRequest, CreateRecurringResponse, ListRecurringResponse,
-    RecurringDetailResponse, RecurringLifecycleRequest, RecurringSummary, UpdateRecurringRequest,
+    BackfillOccurrenceResult, BackfillRequest, BackfillResponse, CreateRecurringRequest,
+    CreateRecurringResponse, ListRecurringResponse, RecurringDetailResponse,
+    RecurringLifecycleRequest, RecurringSummary, UpdateRecurringRequest,
 };
 use super::replay::{ReplayResult, ReplaySummary};
 use super::retention::{
@@ -36,6 +45,11 @@ use super::rules::{EvaluateRulesRequest, EvaluateRulesResponse, RuleTraceEntryRe
 use super::schemas::{
     EmbeddingMetricsResponse, ErrorResponse, HealthResponse, MetricsResponse, ReloadRequest,
     ReloadResponse, RuleSummary, SetEnabledRequest, SetEnabledResponse,
+};
+use super::workflows::{
+    ListWorkflowsResponse, RecordCheckpointRequest, RecordCheckpointResponse, StartChildRequest,
+    StartChildResponse, StartWorkflowRequest, WorkflowCancelRequest, WorkflowExecutionDto,
+    WorkflowSignalRequest,
 };
 use acteon_core::{
     CircuitBreakerActionResponse, CircuitBreakerStatus, ListCircuitBreakersResponse,
@@ -60,6 +74,9 @@ use acteon_core::{
         (name = "Groups", description = "Event group management for batched notifications"),
         (name = "Approvals", description = "Human-in-the-loop approval workflow"),
         (name = "Chains", description = "Task chain orchestration"),
+        (name = "Executions", description = "Cross-chain execution visibility, event history, and signals"),
+        (name = "Task Queues", description = "Worker task queues: poll/lease, heartbeat, complete, fail"),
+        (name = "Workflows", description = "Checkpoint-based durable workflow executions"),
         (name = "Embeddings", description = "Embedding similarity testing"),
         (name = "Circuit Breakers", description = "Circuit breaker admin operations"),
         (name = "Recurring Actions", description = "Cron-scheduled recurring action management"),
@@ -101,6 +118,26 @@ use acteon_core::{
         super::chains::get_chain,
         super::chains::cancel_chain,
         super::chains::get_chain_history,
+        super::executions::list_executions,
+        super::executions::get_execution,
+        super::executions::get_execution_history,
+        super::executions::signal_execution,
+        super::executions::upsert_execution_attributes,
+        super::executions::reset_execution,
+        super::queues::enqueue_task,
+        super::queues::poll_queue,
+        super::queues::heartbeat_task,
+        super::queues::complete_task,
+        super::queues::fail_task,
+        super::queues::get_task,
+        super::queues::list_tasks,
+        super::workflows::start_workflow,
+        super::workflows::list_workflows,
+        super::workflows::get_workflow,
+        super::workflows::signal_workflow,
+        super::workflows::cancel_workflow,
+        super::workflows::record_checkpoint,
+        super::workflows::start_child_workflow,
         super::chains::list_definitions,
         super::chains::get_definition,
         super::chains::put_definition,
@@ -116,6 +153,7 @@ use acteon_core::{
         super::recurring::delete_recurring,
         super::recurring::pause_recurring,
         super::recurring::resume_recurring,
+        super::recurring::backfill_recurring,
         super::quotas::create_quota,
         super::quotas::list_quotas,
         super::quotas::get_quota,
@@ -217,6 +255,14 @@ use acteon_core::{
         ChainSummary, ListChainsResponse, ChainDetailResponse, ChainStepStatus, ChainCancelRequest,
         ChainDefinitionSummary, ListChainDefinitionsResponse, ChainValidationErrorResponse,
         ChainHistoryResponse, StepHistoryEntry, StepAttemptResponse,
+        ExecutionSummary, ListExecutionsResponse, ExecutionHistoryResponse,
+        SignalRequest, SignalResponse, UpsertAttributesRequest, ResetExecutionRequest,
+        BackfillRequest, BackfillResponse, BackfillOccurrenceResult,
+        WorkerTaskDto, EnqueueTaskRequest, PollQueueRequest, PollQueueResponse,
+        HeartbeatRequest, CompleteTaskRequest, FailTaskRequest,
+        WorkflowExecutionDto, StartWorkflowRequest, ListWorkflowsResponse,
+        WorkflowSignalRequest, WorkflowCancelRequest, RecordCheckpointRequest,
+        RecordCheckpointResponse, StartChildRequest, StartChildResponse,
         SimilarityRequest, SimilarityResponse,
         EmbeddingMetricsResponse,
         CircuitBreakerStatus, ListCircuitBreakersResponse, CircuitBreakerActionResponse,

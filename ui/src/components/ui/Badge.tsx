@@ -52,6 +52,9 @@ const outcomeVariant: Record<string, keyof typeof variants> = {
   timed_out: 'warning',
   waiting_sub_chain: 'info',
   waiting_parallel: 'info',
+  waiting_timer: 'info',
+  waiting_signal: 'info',
+  waiting_worker: 'info',
   pending: 'neutral',
   skipped: 'neutral',
   // Circuit states

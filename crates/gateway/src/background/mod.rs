@@ -440,6 +440,14 @@ impl BackgroundProcessor {
                     if let Err(e) = self.advance_pending_chains().await {
                         error!(error = %e, "error advancing chains");
                     }
+                    // Workflow timers (durable sleeps and signal-wait
+                    // timeouts) share the chain tick cadence.
+                    if let Some(ref gw) = self.gateway {
+                        let gw = gw.read().await;
+                        if let Err(e) = gw.process_due_workflow_timers().await {
+                            error!(error = %e, "error firing workflow timers");
+                        }
+                    }
                 }
                 _ = scheduled_interval.tick(), if self.config.enable_scheduled_actions => {
                     if let Err(e) = self.process_scheduled_actions().await {
@@ -1230,6 +1238,8 @@ mod tests {
             execution_count: 0,
             description: None,
             labels: std::collections::HashMap::new(),
+            overlap_policy: acteon_core::OverlapPolicy::default(),
+            last_execution_id: None,
         }
     }
 

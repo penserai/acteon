@@ -6,6 +6,7 @@ pub mod circuit_breaker;
 pub mod encrypting_dlq;
 pub mod enrichment;
 pub mod error;
+pub mod execution;
 pub mod gateway;
 pub mod group_manager;
 pub mod metrics;
@@ -14,10 +15,12 @@ mod silence_enforcement;
 pub(crate) mod sync_state;
 pub mod task_chain_bridge;
 pub mod task_engine;
+pub mod task_queue;
 pub mod template_engine;
 mod template_management;
 mod time_interval_management;
 pub mod watcher;
+pub mod workflow;
 
 pub use acteon_executor::{DeadLetterEntry, DeadLetterQueue, DeadLetterSink};
 pub use background::{
@@ -28,6 +31,7 @@ pub use builder::GatewayBuilder;
 pub use circuit_breaker::{CircuitBreakerConfig, CircuitBreakerRegistry, CircuitState};
 pub use encrypting_dlq::EncryptingDeadLetterSink;
 pub use error::GatewayError;
+pub use execution::ExecutionFilter;
 pub use gateway::{ApprovalKey, ApprovalKeySet, ApprovalRecord, ApprovalStatus, Gateway};
 pub use group_manager::GroupManager;
 pub use metrics::{GatewayMetrics, MetricsSnapshot, ProviderMetrics, ProviderStatsSnapshot};
@@ -43,3 +47,4 @@ pub use task_engine::{
 };
 pub use time_interval_management::{TimeIntervalDecision, time_interval_cache_id};
 pub use watcher::RuleWatcher;
+pub use workflow::WorkflowFilter;

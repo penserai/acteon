@@ -3,6 +3,25 @@ use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+/// What to do when a new occurrence fires while the execution spawned by the
+/// previous occurrence is still running.
+///
+/// Overlap is only trackable when the dispatched action starts a chain
+/// execution (the chain ID is recorded on the recurring action); plain
+/// provider dispatches complete synchronously and never overlap.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub enum OverlapPolicy {
+    /// Dispatch every occurrence regardless of running executions (default).
+    #[default]
+    AllowAll,
+    /// Skip the new occurrence when the previous execution is still running.
+    Skip,
+    /// Cancel the still-running previous execution, then dispatch.
+    CancelOther,
+}
+
 /// Template for the action dispatched on each cron tick.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -21,6 +40,25 @@ pub struct RecurringActionTemplate {
     /// `{{execution_time}}` placeholders.
     #[serde(default)]
     pub dedup_key: Option<String>,
+}
+
+impl RecurringActionTemplate {
+    /// Resolve the dedup-key template for one occurrence. Both the live
+    /// scheduler and backfill must use this so the same occurrence always
+    /// produces the same key (that equality is what makes backfill
+    /// idempotent against already-fired occurrences).
+    #[must_use]
+    pub fn resolve_dedup_key(
+        &self,
+        recurring_id: &str,
+        execution_time: &DateTime<Utc>,
+    ) -> Option<String> {
+        self.dedup_key.as_ref().map(|template| {
+            template
+                .replace("{{recurring_id}}", recurring_id)
+                .replace("{{execution_time}}", &execution_time.to_rfc3339())
+        })
+    }
 }
 
 /// A recurring action definition.
@@ -74,6 +112,14 @@ pub struct RecurringAction {
     /// Arbitrary key-value labels for filtering and organization.
     #[serde(default)]
     pub labels: HashMap<String, String>,
+    /// Overlap policy applied when a new occurrence fires while the chain
+    /// execution spawned by the previous occurrence is still running.
+    #[serde(default)]
+    pub overlap_policy: OverlapPolicy,
+    /// Chain execution ID spawned by the most recent occurrence, when the
+    /// dispatched action started a chain. Used to enforce `overlap_policy`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_execution_id: Option<String>,
 }
 
 fn default_timezone() -> String {
@@ -149,6 +195,32 @@ pub fn validate_min_interval(
     Ok(())
 }
 
+/// Compute every occurrence of a cron expression within `[start, end]`,
+/// capped at `limit` occurrences. Used for backfill.
+#[must_use]
+pub fn occurrences_between(
+    cron: &croner::Cron,
+    tz: chrono_tz::Tz,
+    start: &DateTime<Utc>,
+    end: &DateTime<Utc>,
+    limit: usize,
+) -> Vec<DateTime<Utc>> {
+    let mut occurrences = Vec::new();
+    // `next_occurrence` is strictly-after, so step back one second to make
+    // the window inclusive of `start` itself.
+    let mut cursor = *start - chrono::Duration::seconds(1);
+    while occurrences.len() < limit {
+        match next_occurrence(cron, tz, &cursor) {
+            Some(next) if next <= *end => {
+                occurrences.push(next);
+                cursor = next;
+            }
+            _ => break,
+        }
+    }
+    occurrences
+}
+
 /// Errors from cron expression validation.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum CronValidationError {
@@ -179,6 +251,70 @@ mod tests {
     fn validate_valid_cron_expr() {
         let result = validate_cron_expr("0 9 * * MON-FRI");
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn occurrences_between_inclusive_window() {
+        let cron = validate_cron_expr("0 * * * *").unwrap(); // hourly
+        let tz = validate_timezone("UTC").unwrap();
+        let start = "2026-06-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let end = "2026-06-01T03:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let occurrences = occurrences_between(&cron, tz, &start, &end, 100);
+        // 00:00, 01:00, 02:00, 03:00 — both window edges are inclusive.
+        assert_eq!(occurrences.len(), 4);
+        assert_eq!(occurrences[0], start);
+        assert_eq!(occurrences[3], end);
+    }
+
+    #[test]
+    fn occurrences_between_respects_limit() {
+        let cron = validate_cron_expr("* * * * *").unwrap(); // every minute
+        let tz = validate_timezone("UTC").unwrap();
+        let start = "2026-06-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let end = "2026-06-01T12:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let occurrences = occurrences_between(&cron, tz, &start, &end, 5);
+        assert_eq!(occurrences.len(), 5);
+    }
+
+    #[test]
+    fn occurrences_between_empty_window() {
+        let cron = validate_cron_expr("0 9 * * *").unwrap(); // daily 09:00
+        let tz = validate_timezone("UTC").unwrap();
+        let start = "2026-06-01T10:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let end = "2026-06-01T11:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        assert!(occurrences_between(&cron, tz, &start, &end, 100).is_empty());
+    }
+
+    #[test]
+    fn overlap_policy_serde_and_default() {
+        assert_eq!(OverlapPolicy::default(), OverlapPolicy::AllowAll);
+        assert_eq!(
+            serde_json::to_string(&OverlapPolicy::CancelOther).unwrap(),
+            "\"cancel_other\""
+        );
+        let back: OverlapPolicy = serde_json::from_str("\"skip\"").unwrap();
+        assert_eq!(back, OverlapPolicy::Skip);
+    }
+
+    #[test]
+    fn recurring_action_backward_compat_without_overlap_fields() {
+        // Old persisted JSON without overlap_policy / last_execution_id.
+        let json = serde_json::json!({
+            "id": "r1",
+            "namespace": "ns",
+            "tenant": "t",
+            "cron_expr": "0 9 * * *",
+            "action_template": {
+                "provider": "email",
+                "action_type": "send",
+                "payload": {}
+            },
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z"
+        });
+        let rec: RecurringAction = serde_json::from_value(json).unwrap();
+        assert_eq!(rec.overlap_policy, OverlapPolicy::AllowAll);
+        assert!(rec.last_execution_id.is_none());
     }
 
     #[test]
@@ -279,6 +415,8 @@ mod tests {
             execution_count: 0,
             description: Some("Test recurring action".into()),
             labels: HashMap::new(),
+            overlap_policy: OverlapPolicy::default(),
+            last_execution_id: None,
         };
 
         let json = serde_json::to_string(&action).unwrap();
@@ -530,6 +668,8 @@ mod tests {
             execution_count: 42,
             description: Some("Weekday morning digest for engineering".into()),
             labels,
+            overlap_policy: OverlapPolicy::default(),
+            last_execution_id: None,
         };
 
         let json = serde_json::to_string_pretty(&action).unwrap();
@@ -618,6 +758,8 @@ mod tests {
             execution_count: 0,
             description: None,
             labels: HashMap::new(),
+            overlap_policy: OverlapPolicy::default(),
+            last_execution_id: None,
         };
 
         let json = serde_json::to_string(&action).unwrap();
@@ -651,6 +793,8 @@ mod tests {
             execution_count: u64::MAX,
             description: None,
             labels: HashMap::new(),
+            overlap_policy: OverlapPolicy::default(),
+            last_execution_id: None,
         };
 
         let json = serde_json::to_string(&action).unwrap();
@@ -712,6 +856,8 @@ mod tests {
             execution_count: 0,
             description: None,
             labels: labels.clone(),
+            overlap_policy: OverlapPolicy::default(),
+            last_execution_id: None,
         };
 
         let json = serde_json::to_string(&action).unwrap();

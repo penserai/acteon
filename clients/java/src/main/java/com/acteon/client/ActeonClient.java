@@ -3936,4 +3936,180 @@ public class ActeonClient implements AutoCloseable {
         }
         return (Map<String, Object>) result;
     }
+
+    // =========================================================================
+    // Worker task queues (`/v1/queues`) — mirrors the Go/Python/Node SDKs.
+    // =========================================================================
+
+    /**
+     * Percent-encode a single path segment. Mirrors {@code busSeg} /
+     * {@code A2A.segment} — queue names and task ids are opaque
+     * strings on the queue REST surface.
+     */
+    private static String queueSeg(String s) {
+        return URLEncoder.encode(s, StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Send a queue request, parse the response into {@code clazz}, or
+     * throw a typed {@link ApiException} when the server returns a
+     * structured Acteon-shaped error body. Mirrors {@code busSend},
+     * but marks transient HTTP statuses (408 / 429 / 5xx) retryable —
+     * workers lean on {@code isRetryable} to keep polling through
+     * blips.
+     */
+    private <T> T queueSend(String method, String path, Object body, Class<T> clazz) throws ActeonException {
+        HttpResponse<String> response = queueExecute(method, path, body);
+        if (response.statusCode() < 200 || response.statusCode() >= 300) {
+            throw queueError(response);
+        }
+        try {
+            return objectMapper.readValue(response.body(), clazz);
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        }
+    }
+
+    private HttpResponse<String> queueExecute(String method, String path, Object body) throws ActeonException {
+        try {
+            String requestBody = body == null ? null : objectMapper.writeValueAsString(body);
+            HttpRequest.Builder builder = requestBuilder(path);
+            HttpRequest request = switch (method) {
+                case "POST" -> builder.POST(requestBody == null
+                    ? HttpRequest.BodyPublishers.noBody()
+                    : HttpRequest.BodyPublishers.ofString(requestBody)).build();
+                case "GET" -> builder.GET().build();
+                default -> throw new IllegalArgumentException("unsupported method: " + method);
+            };
+            return httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Map an Acteon-shaped error body to a typed exception. The queue
+     * handlers emit either {@code {"code":..., "message":...}} (the
+     * generic shape) or {@code {"error":"..."}}; accept both.
+     */
+    private ActeonException queueError(HttpResponse<String> response) {
+        try {
+            Map<String, Object> errorBody = objectMapper.readValue(response.body(),
+                new TypeReference<Map<String, Object>>() {});
+            String message = (String) errorBody.getOrDefault("error",
+                errorBody.getOrDefault("message",
+                    "queue error (status " + response.statusCode() + ")"));
+            String code = (String) errorBody.getOrDefault("code", "QUEUE");
+            boolean retryable = response.statusCode() == 408
+                || response.statusCode() == 429
+                || response.statusCode() >= 500;
+            return new ApiException(code, message, retryable);
+        } catch (IOException e) {
+            return new HttpException(response.statusCode(), response.body());
+        }
+    }
+
+    /**
+     * Enqueues a task onto a worker queue
+     * ({@code POST /v1/queues/{queue}/tasks}). Returns the created
+     * task (status {@code pending}).
+     */
+    public Queues.WorkerTask enqueueTask(String queue, Queues.EnqueueTaskRequest req) throws ActeonException {
+        return queueSend("POST", "/v1/queues/" + queueSeg(queue) + "/tasks",
+            req, Queues.WorkerTask.class);
+    }
+
+    /**
+     * Leases up to {@code req.maxTasks()} tasks from a queue
+     * ({@code POST /v1/queues/{queue}/poll}). Returns the leased
+     * tasks — empty (not an error) when the queue has no leasable
+     * tasks. Each returned task carries the {@code leaseToken}
+     * required for heartbeat / complete / fail.
+     */
+    public List<Queues.WorkerTask> pollTasks(String queue, Queues.PollTasksRequest req) throws ActeonException {
+        Queues.TaskListResponse resp = queueSend("POST",
+            "/v1/queues/" + queueSeg(queue) + "/poll",
+            req, Queues.TaskListResponse.class);
+        return resp.tasks() == null ? List.of() : resp.tasks();
+    }
+
+    /**
+     * Extends a leased task's lease
+     * ({@code POST /v1/queues/tasks/{taskId}/heartbeat}). Returns the
+     * updated task with the new {@code leaseExpiresAt}.
+     */
+    public Queues.WorkerTask heartbeatTask(String taskId, Queues.HeartbeatTaskRequest req) throws ActeonException {
+        return queueSend("POST", "/v1/queues/tasks/" + queueSeg(taskId) + "/heartbeat",
+            req, Queues.WorkerTask.class);
+    }
+
+    /**
+     * Reports a leased task as successfully completed with a result
+     * ({@code POST /v1/queues/tasks/{taskId}/complete}).
+     */
+    public Queues.WorkerTask completeTask(String taskId, Queues.CompleteTaskRequest req) throws ActeonException {
+        return queueSend("POST", "/v1/queues/tasks/" + queueSeg(taskId) + "/complete",
+            req, Queues.WorkerTask.class);
+    }
+
+    /**
+     * Reports a leased task as failed
+     * ({@code POST /v1/queues/tasks/{taskId}/fail}). Retryable
+     * failures within the attempt budget re-queue the task with
+     * backoff; non-retryable failures are terminal.
+     */
+    public Queues.WorkerTask failTask(String taskId, Queues.FailTaskRequest req) throws ActeonException {
+        return queueSend("POST", "/v1/queues/tasks/" + queueSeg(taskId) + "/fail",
+            req, Queues.WorkerTask.class);
+    }
+
+    /**
+     * Fetches a single task ({@code GET /v1/queues/tasks/{taskId}}).
+     * Returns an empty Optional if the task does not exist (404),
+     * matching the {@code getRecurring} convention.
+     */
+    public Optional<Queues.WorkerTask> getTask(String taskId, String namespace, String tenant) throws ActeonException {
+        java.util.LinkedHashMap<String, String> params = new java.util.LinkedHashMap<>();
+        params.put("namespace", namespace);
+        params.put("tenant", tenant);
+        String path = appendQuery("/v1/queues/tasks/" + queueSeg(taskId), params);
+
+        HttpResponse<String> response = queueExecute("GET", path, null);
+        if (response.statusCode() == 404) {
+            return Optional.empty();
+        }
+        if (response.statusCode() < 200 || response.statusCode() >= 300) {
+            throw queueError(response);
+        }
+        try {
+            return Optional.of(objectMapper.readValue(response.body(), Queues.WorkerTask.class));
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Lists a queue's tasks ({@code GET /v1/queues/{queue}/tasks}).
+     *
+     * @param queue queue name
+     * @param namespace namespace scoping the read
+     * @param tenant tenant scoping the read
+     * @param status optional lifecycle status filter (see the
+     *     {@code Queues.TASK_STATUS_*} constants); pass {@code null}
+     *     for all statuses
+     */
+    public List<Queues.WorkerTask> listTasks(String queue, String namespace, String tenant, String status) throws ActeonException {
+        java.util.LinkedHashMap<String, String> params = new java.util.LinkedHashMap<>();
+        params.put("namespace", namespace);
+        params.put("tenant", tenant);
+        if (status != null && !status.isEmpty()) {
+            params.put("status", status);
+        }
+        String path = appendQuery("/v1/queues/" + queueSeg(queue) + "/tasks", params);
+        Queues.TaskListResponse resp = queueSend("GET", path, null, Queues.TaskListResponse.class);
+        return resp.tasks() == null ? List.of() : resp.tasks();
+    }
 }

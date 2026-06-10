@@ -73,6 +73,8 @@ fn make_recurring(
         execution_count: 0,
         description: None,
         labels: HashMap::new(),
+        overlap_policy: acteon_core::OverlapPolicy::default(),
+        last_execution_id: None,
     }
 }
 

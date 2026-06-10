@@ -52,6 +52,8 @@ const TimeIntervals = lazyPage(() => import('./pages/TimeIntervals'), 'TimeInter
 const Alerting = lazyPage(() => import('./pages/Alerting'), 'Alerting')
 const Chains = lazyPage(() => import('./pages/Chains'), 'Chains')
 const ChainDetail = lazyPage(() => import('./pages/ChainDetail'), 'ChainDetail')
+const Executions = lazyPage(() => import('./pages/Executions'), 'Executions')
+const Workflows = lazyPage(() => import('./pages/Workflows'), 'Workflows')
 const Approvals = lazyPage(() => import('./pages/Approvals'), 'Approvals')
 const Providers = lazyPage(() => import('./pages/Providers'), 'Providers')
 const ProviderHealth = lazyPage(() => import('./pages/ProviderHealth'), 'ProviderHealth')
@@ -106,6 +108,8 @@ function App() {
           <Route path="chains" element={<Chains />} />
           <Route path="chains/:chainId" element={<ChainDetail />} />
           <Route path="chain-definitions" element={<ChainDefinitions />} />
+          <Route path="executions" element={<Executions />} />
+          <Route path="workflows" element={<Workflows />} />
           <Route path="approvals" element={<Approvals />} />
           <Route path="circuit-breakers" element={<Providers />} />
           <Route path="provider-health" element={<ProviderHealth />} />

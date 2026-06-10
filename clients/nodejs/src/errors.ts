@@ -51,6 +51,21 @@ export class HttpError extends ActeonError {
 }
 
 /**
+ * Thrown by worker task handlers to fail the task permanently.
+ *
+ * By default a handler throw fails the task with `retryable: true`
+ * (the server redelivers while attempts remain); throw this instead
+ * when retrying can never succeed (validation errors, permanent
+ * external rejections).
+ */
+export class NonRetryableError extends ActeonError {
+  constructor(message: string) {
+    super(message);
+    this.name = "NonRetryableError";
+  }
+}
+
+/**
  * Raised for API-level errors returned by the server.
  */
 export class ApiError extends ActeonError {

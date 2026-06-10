@@ -50,9 +50,12 @@ use crate::task_engine::{MAX_CAS_RETRY_ATTEMPTS, TaskEngine, TaskEngineError, Ta
 #[must_use]
 pub fn project_chain_status_to_task_state(status: &ChainStatus) -> TaskState {
     match status {
-        ChainStatus::Running | ChainStatus::WaitingSubChain | ChainStatus::WaitingParallel => {
-            TaskState::Working
-        }
+        ChainStatus::Running
+        | ChainStatus::WaitingSubChain
+        | ChainStatus::WaitingParallel
+        | ChainStatus::WaitingTimer
+        | ChainStatus::WaitingSignal
+        | ChainStatus::WaitingWorker => TaskState::Working,
         ChainStatus::Completed => TaskState::Completed,
         ChainStatus::Failed | ChainStatus::TimedOut => TaskState::Failed,
         ChainStatus::Cancelled => TaskState::Canceled,
@@ -362,9 +365,12 @@ fn chain_status_word(status: &ChainStatus) -> &'static str {
         ChainStatus::Failed => "failed",
         ChainStatus::TimedOut => "timed out",
         ChainStatus::Cancelled => "canceled",
-        ChainStatus::Running | ChainStatus::WaitingSubChain | ChainStatus::WaitingParallel => {
-            "settled"
-        }
+        ChainStatus::Running
+        | ChainStatus::WaitingSubChain
+        | ChainStatus::WaitingParallel
+        | ChainStatus::WaitingTimer
+        | ChainStatus::WaitingSignal
+        | ChainStatus::WaitingWorker => "settled",
     }
 }
 
@@ -527,6 +533,10 @@ mod tests {
             step_attempts: vec![0],
             step_history: vec![Vec::new()],
             caller: None,
+            chain_version: 1,
+            config_snapshot: None,
+            search_attributes: Default::default(),
+            wait_state: None,
         }
     }
 

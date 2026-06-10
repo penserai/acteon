@@ -487,3 +487,71 @@ impl ActeonClient {
         }
     }
 }
+
+/// Outcome of one backfilled occurrence.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct BackfillOccurrenceResult {
+    /// The cron occurrence that was backfilled.
+    pub occurrence: String,
+    /// Dispatch outcome category (e.g. `"executed"`, `"deduplicated"`).
+    pub outcome: String,
+    /// Error message when the dispatch failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Response from a recurring-action backfill run.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct BackfillResponse {
+    /// Recurring action ID.
+    pub id: String,
+    /// Occurrences found in the window (after the cap).
+    pub occurrences: usize,
+    /// Occurrences successfully dispatched.
+    pub dispatched: usize,
+    /// Per-occurrence results, in chronological order.
+    pub results: Vec<BackfillOccurrenceResult>,
+}
+
+impl ActeonClient {
+    /// Backfill missed occurrences of a recurring action: dispatch one
+    /// action per cron occurrence inside `[start, end]` (RFC 3339
+    /// timestamps), capped at `limit` (default 100, max 500). Idempotent
+    /// when the template defines a `dedup_key` with `{{execution_time}}`.
+    pub async fn backfill_recurring(
+        &self,
+        id: &str,
+        namespace: &str,
+        tenant: &str,
+        start: &str,
+        end: &str,
+        limit: Option<usize>,
+    ) -> Result<BackfillResponse, Error> {
+        let url = format!("{}/v1/recurring/{}/backfill", self.base_url, id);
+
+        let response = self
+            .add_auth(self.client.post(&url))
+            .json(&serde_json::json!({
+                "namespace": namespace,
+                "tenant": tenant,
+                "start": start,
+                "end": end,
+                "limit": limit,
+            }))
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+
+        if response.status().is_success() {
+            response
+                .json::<BackfillResponse>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))
+        } else {
+            Err(Error::Http {
+                status: response.status().as_u16(),
+                message: format!("Failed to backfill recurring action: {}", response.status()),
+            })
+        }
+    }
+}

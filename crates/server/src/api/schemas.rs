@@ -276,3 +276,17 @@ pub struct ErrorResponse {
     #[schema(example = "rule not found: unknown-rule")]
     pub error: String,
 }
+
+/// Build a `403 Forbidden` response for a caller whose grants don't cover
+/// the requested `(namespace, tenant)`. Shared by the per-domain API
+/// modules so the denial envelope stays uniform.
+pub(crate) fn tenant_forbidden(namespace: &str, tenant: &str) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    (
+        axum::http::StatusCode::FORBIDDEN,
+        axum::Json(ErrorResponse {
+            error: format!("forbidden: no grant covers tenant={tenant} namespace={namespace}"),
+        }),
+    )
+        .into_response()
+}

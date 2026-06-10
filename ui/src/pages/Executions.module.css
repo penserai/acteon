@@ -1,0 +1,21 @@
+@reference "../index.css";
+
+.filterBar {
+  @apply flex flex-wrap gap-3 mb-4;
+}
+
+.idCell {
+  @apply font-mono text-xs;
+}
+
+.stepsCell {
+  @apply text-xs tabular-nums text-gray-500;
+}
+
+.timestampCell {
+  @apply text-xs text-gray-500;
+}
+
+.versionCell {
+  @apply text-xs tabular-nums text-gray-500;
+}

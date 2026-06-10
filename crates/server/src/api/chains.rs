@@ -162,7 +162,7 @@ pub struct ChainDetailResponse {
     pub child_chain_ids: Vec<String>,
 }
 
-fn parse_status_filter(s: &str) -> Option<ChainStatus> {
+pub(crate) fn parse_status_filter(s: &str) -> Option<ChainStatus> {
     match s {
         "running" => Some(ChainStatus::Running),
         "completed" => Some(ChainStatus::Completed),
@@ -170,11 +170,15 @@ fn parse_status_filter(s: &str) -> Option<ChainStatus> {
         "cancelled" => Some(ChainStatus::Cancelled),
         "timed_out" => Some(ChainStatus::TimedOut),
         "waiting_sub_chain" => Some(ChainStatus::WaitingSubChain),
+        "waiting_parallel" => Some(ChainStatus::WaitingParallel),
+        "waiting_timer" => Some(ChainStatus::WaitingTimer),
+        "waiting_signal" => Some(ChainStatus::WaitingSignal),
+        "waiting_worker" => Some(ChainStatus::WaitingWorker),
         _ => None,
     }
 }
 
-fn status_to_string(s: &ChainStatus) -> String {
+pub(crate) fn status_to_string(s: &ChainStatus) -> String {
     match s {
         ChainStatus::Running => "running".into(),
         ChainStatus::Completed => "completed".into(),
@@ -183,6 +187,9 @@ fn status_to_string(s: &ChainStatus) -> String {
         ChainStatus::TimedOut => "timed_out".into(),
         ChainStatus::WaitingSubChain => "waiting_sub_chain".into(),
         ChainStatus::WaitingParallel => "waiting_parallel".into(),
+        ChainStatus::WaitingTimer => "waiting_timer".into(),
+        ChainStatus::WaitingSignal => "waiting_signal".into(),
+        ChainStatus::WaitingWorker => "waiting_worker".into(),
     }
 }
 
@@ -277,7 +284,11 @@ pub async fn get_chain(
     {
         Ok(Some(chain_state)) => {
             // Try to load the chain config for retry metadata.
-            let chain_config = gw.chain_config(&chain_state.chain_name);
+            let chain_config = chain_state
+                .config_snapshot
+                .as_deref()
+                .cloned()
+                .or_else(|| gw.chain_config(&chain_state.chain_name));
 
             // Build per-step status from the chain config and results.
             let steps: Vec<ChainStepStatus> = (0..chain_state.total_steps)
@@ -826,7 +837,17 @@ pub async fn delete_definition(
     let gw = state.gateway.read().await;
 
     match gw.remove_chain_config(&name) {
-        Some(_) => {
+        Err(graph_errors) => (
+            StatusCode::CONFLICT,
+            Json(ErrorResponse {
+                error: format!(
+                    "chain definition is still referenced: {}",
+                    graph_errors.join("; ")
+                ),
+            }),
+        )
+            .into_response(),
+        Ok(Some(_)) => {
             // Delete from state store.
             let state_store = gw.state_store();
             let key = chain_def_state_key(&name);
@@ -841,7 +862,7 @@ pub async fn delete_definition(
             }
             StatusCode::NO_CONTENT.into_response()
         }
-        None => (
+        Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
                 error: format!("chain definition not found: {name}"),
@@ -934,7 +955,11 @@ pub async fn get_chain_history(
         .await
     {
         Ok(Some(chain_state)) => {
-            let chain_config = gw.chain_config(&chain_state.chain_name);
+            let chain_config = chain_state
+                .config_snapshot
+                .as_deref()
+                .cloned()
+                .or_else(|| gw.chain_config(&chain_state.chain_name));
 
             let steps: Vec<StepHistoryEntry> = (0..chain_state.total_steps)
                 .map(|i| {

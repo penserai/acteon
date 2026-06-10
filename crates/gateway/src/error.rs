@@ -39,6 +39,11 @@ pub enum GatewayError {
     #[error("chain error: {0}")]
     ChainError(String),
 
+    /// An error occurred in the worker task queue (unknown task, lease
+    /// token mismatch, invalid state transition).
+    #[error("task queue error: {0}")]
+    TaskQueue(String),
+
     /// A pre-dispatch enrichment step failed with `FailClosed` policy.
     #[error("enrichment failed: {0}")]
     Enrichment(String),
@@ -74,6 +79,9 @@ impl GatewayError {
             }
             Self::ApprovalNotFound => "approval not found".to_string(),
             Self::ApprovalAlreadyDecided(_) => "approval already decided".to_string(),
+            // Task-queue errors are caller-actionable (unknown task, stale
+            // lease) and contain no internal details.
+            Self::TaskQueue(msg) => format!("task queue error: {msg}"),
             // All other variants may contain internal details (state store errors,
             // lock contention info, rule engine internals). Redact them.
             _ => "internal gateway error".to_string(),

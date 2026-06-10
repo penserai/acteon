@@ -1,6 +1,12 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiGet, apiPost } from '../client'
-import type { ChainSummary, ChainDetailResponse, ChainHistoryResponse, DagResponse } from '../../types'
+import type {
+  ChainSummary,
+  ChainDetailResponse,
+  ChainHistoryResponse,
+  DagResponse,
+  ExecutionHistoryResponse,
+} from '../../types'
 
 export function useChains(params: { namespace?: string; tenant?: string; status?: string }) {
   return useQuery({
@@ -60,6 +66,32 @@ export function useChainHistory(
     queryKey: ['chain-history', chainId, params.namespace, params.tenant],
     queryFn: () => apiGet<ChainHistoryResponse>(`/v1/chains/${chainId}/history`, params),
     enabled: !!chainId,
+  })
+}
+
+export function useExecutionHistory(
+  executionId: string | undefined,
+  params: { namespace: string; tenant: string },
+) {
+  return useQuery({
+    queryKey: ['execution-history', executionId, params.namespace, params.tenant],
+    queryFn: () =>
+      apiGet<ExecutionHistoryResponse>(`/v1/executions/${executionId}/history`, params),
+    enabled: !!executionId && !!params.namespace && !!params.tenant,
+    refetchInterval: 5000,
+  })
+}
+
+export function useSignalExecution() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ executionId, signalName, namespace, tenant, payload }: {
+      executionId: string; signalName: string; namespace: string; tenant: string; payload?: unknown
+    }) => apiPost(`/v1/executions/${executionId}/signal/${signalName}`, { namespace, tenant, payload }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['chain'] })
+      void qc.invalidateQueries({ queryKey: ['execution-history'] })
+    },
   })
 }
 

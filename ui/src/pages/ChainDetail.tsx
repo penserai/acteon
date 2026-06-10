@@ -1,8 +1,14 @@
 import { useCallback, useState } from 'react'
 import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
-import { XCircle, ArrowUpRight, GitBranch, Layers } from 'lucide-react'
-import { useChainDetail, useCancelChain, useChainDag } from '../api/hooks/useChains'
+import { XCircle, ArrowUpRight, GitBranch, Layers, Radio, History } from 'lucide-react'
+import {
+  useChainDetail,
+  useCancelChain,
+  useChainDag,
+  useExecutionHistory,
+  useSignalExecution,
+} from '../api/hooks/useChains'
 import { useEntityStream } from '../api/hooks/useEntityStream'
 import { PageHeader } from '../components/layout/PageHeader'
 import { Badge } from '../components/ui/Badge'
@@ -28,8 +34,13 @@ export function ChainDetail() {
   const qc = useQueryClient()
   const [cancelOpen, setCancelOpen] = useState(false)
   const [selectedStep, setSelectedStep] = useState<string | null>(null)
+  const [signalOpen, setSignalOpen] = useState(false)
+  const [signalName, setSignalName] = useState('')
+  const [signalPayload, setSignalPayload] = useState('')
 
   const { data: dag } = useChainDag(chainId, { namespace: ns, tenant })
+  const { data: history } = useExecutionHistory(chainId, { namespace: ns, tenant })
+  const signal = useSignalExecution()
 
   const handleStreamEvent = useCallback(() => {
     void qc.invalidateQueries({ queryKey: ['chain', chainId] })
@@ -65,6 +76,27 @@ export function ChainDetail() {
     )
   }
 
+  const handleSignal = () => {
+    let payload: unknown
+    if (signalPayload.trim()) {
+      try {
+        payload = JSON.parse(signalPayload)
+      } catch {
+        toast('error', 'Invalid JSON payload')
+        return
+      }
+    }
+    signal.mutate(
+      { executionId: chain.chain_id, signalName: signalName.trim(), namespace: ns, tenant, payload },
+      {
+        onSuccess: () => { toast('success', `Signal "${signalName.trim()}" delivered`); setSignalOpen(false) },
+        onError: (e) => toast('error', 'Signal failed', (e as Error).message),
+      },
+    )
+  }
+
+  const isActive = ['running', 'waiting_sub_chain', 'waiting_parallel', 'waiting_timer', 'waiting_signal', 'waiting_worker'].includes(chain.status)
+
   return (
     <div>
       <PageHeader
@@ -73,7 +105,17 @@ export function ChainDetail() {
         actions={
           <div className={styles.headerActions}>
             <Badge size="md">{chain.status}</Badge>
-            {(chain.status === 'running' || chain.status === 'waiting_sub_chain' || chain.status === 'waiting_parallel') && (
+            {isActive && (
+              <Button
+                variant="secondary"
+                size="sm"
+                icon={<Radio className="h-3.5 w-3.5" />}
+                onClick={() => setSignalOpen(true)}
+              >
+                Send Signal
+              </Button>
+            )}
+            {isActive && (
               <Button
                 variant="danger"
                 size="sm"
@@ -194,6 +236,75 @@ export function ChainDetail() {
           )}
         </div>
       )}
+
+      {history && history.events.length > 0 && (
+        <div className={styles.stepDetailCard}>
+          <div className={styles.stepHeader}>
+            <h3 className={styles.stepTitle}>
+              <History className="inline h-4 w-4 mr-1 text-primary-400" />
+              Event History
+            </h3>
+            <span className="text-xs text-gray-500">{history.events.length} events</span>
+          </div>
+          <ul className="space-y-1">
+            {history.events.map((event) => {
+              const detail = [
+                typeof event.step_name === 'string' && event.step_name,
+                typeof event.signal_name === 'string' && `signal: ${event.signal_name}`,
+                typeof event.queue === 'string' && `queue: ${event.queue}`,
+                typeof event.fire_at === 'string' && `fires ${absoluteTime(event.fire_at)}`,
+                typeof event.error === 'string' && event.error && `error: ${event.error}`,
+              ]
+                .filter(Boolean)
+                .join(' -- ')
+              return (
+                <li key={event.event_id} className="flex items-baseline gap-2 text-sm">
+                  <span className="text-xs text-gray-600 w-8 text-right shrink-0">#{event.event_id}</span>
+                  <span className="text-xs text-gray-500 w-40 shrink-0">{absoluteTime(event.timestamp)}</span>
+                  <Badge variant={event.event_type.includes('failed') || event.event_type.includes('timed_out') ? 'error' : 'info'} size="sm">
+                    {event.event_type}
+                  </Badge>
+                  {detail && <span className="text-gray-400 truncate">{detail}</span>}
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+      )}
+
+      <Modal
+        open={signalOpen}
+        onClose={() => setSignalOpen(false)}
+        title="Send Signal"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setSignalOpen(false)}>Cancel</Button>
+            <Button variant="primary" loading={signal.isPending} disabled={!signalName.trim()} onClick={handleSignal}>
+              Deliver
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <p className="text-sm text-gray-400">
+            Deliver an external signal to this execution. If it is paused on a matching
+            wait step it resumes immediately; otherwise the signal is buffered.
+          </p>
+          <input
+            className="w-full rounded border border-gray-700 bg-transparent px-2 py-1.5 text-sm"
+            placeholder="Signal name (e.g. approved)"
+            value={signalName}
+            onChange={(e) => setSignalName(e.target.value)}
+          />
+          <textarea
+            className="w-full rounded border border-gray-700 bg-transparent px-2 py-1.5 text-sm font-mono"
+            rows={4}
+            placeholder='Optional JSON payload, e.g. {"approver": "renzo"}'
+            value={signalPayload}
+            onChange={(e) => setSignalPayload(e.target.value)}
+          />
+        </div>
+      </Modal>
 
       <Modal
         open={cancelOpen}

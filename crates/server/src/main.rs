@@ -2176,7 +2176,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         serde_json::Value::Bool(true),
                     );
                 }
-                let action = acteon_core::Action::new(
+                let mut action = acteon_core::Action::new(
                     event.namespace.as_str(),
                     event.tenant.as_str(),
                     recurring.action_template.provider.as_str(),
@@ -2187,6 +2187,95 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Dispatch through the gateway.
                 let gw = recurring_gateway.read().await;
                 let now = chrono::Utc::now();
+
+                // Resolve the dedup-key template for this occurrence with
+                // the shared helper, so a later backfill of the same window
+                // deduplicates against this dispatch.
+                action.dedup_key = recurring
+                    .action_template
+                    .resolve_dedup_key(&event.recurring_id, &now);
+
+                // Enforce the overlap policy when the previous occurrence
+                // spawned a chain execution that is still running. The
+                // pre-dispatch re-arm in the background worker has already
+                // indexed the next occurrence, so skipping here keeps the
+                // schedule alive.
+                if recurring.overlap_policy != acteon_core::OverlapPolicy::AllowAll
+                    && let Some(prev_id) = recurring.last_execution_id.as_deref()
+                    && let Ok(Some(prev)) = gw
+                        .get_chain_status(event.namespace.as_str(), event.tenant.as_str(), prev_id)
+                        .await
+                    && prev.status.is_active()
+                {
+                    match recurring.overlap_policy {
+                        acteon_core::OverlapPolicy::Skip => {
+                            info!(
+                                recurring_id = %event.recurring_id,
+                                previous_execution = %prev_id,
+                                "previous execution still running; occurrence skipped (overlap policy)"
+                            );
+                            gw.metrics().increment_recurring_skipped();
+                            // Keep visibility live on skips: refresh
+                            // updated_at and next_execution_at (the worker
+                            // already re-armed the index), without touching
+                            // execution_count / last_executed_at.
+                            let rec_key = acteon_state::StateKey::new(
+                                event.namespace.as_str(),
+                                event.tenant.as_str(),
+                                acteon_state::KeyKind::RecurringAction,
+                                &event.recurring_id,
+                            );
+                            if let Ok(Some(raw_str)) = recurring_store.get(&rec_key).await
+                                && let Ok(data_str) = gw.decrypt_state_value(&raw_str)
+                                && let Ok(mut rec) =
+                                    serde_json::from_str::<acteon_core::RecurringAction>(&data_str)
+                            {
+                                rec.updated_at = now;
+                                rec.next_execution_at =
+                                    acteon_core::validate_cron_expr(&rec.cron_expr)
+                                        .ok()
+                                        .and_then(|cron| {
+                                            acteon_core::validate_timezone(&rec.timezone)
+                                                .ok()
+                                                .and_then(|tz| {
+                                                    acteon_core::next_occurrence(&cron, tz, &now)
+                                                })
+                                        });
+                                if let Ok(json) = serde_json::to_string(&rec) {
+                                    let encrypted = gw.encrypt_state_value(&json).unwrap_or(json);
+                                    let _ = recurring_store.set(&rec_key, &encrypted, None).await;
+                                }
+                            }
+                            continue;
+                        }
+                        acteon_core::OverlapPolicy::CancelOther => {
+                            info!(
+                                recurring_id = %event.recurring_id,
+                                previous_execution = %prev_id,
+                                "cancelling still-running previous execution (overlap policy)"
+                            );
+                            if let Err(e) = gw
+                                .cancel_chain(
+                                    event.namespace.as_str(),
+                                    event.tenant.as_str(),
+                                    prev_id,
+                                    Some("superseded by next recurring occurrence".to_owned()),
+                                    Some(format!("recurring:{}", event.recurring_id)),
+                                )
+                                .await
+                            {
+                                // The execution may have settled between the
+                                // status read and the cancel — proceed.
+                                tracing::debug!(
+                                    previous_execution = %prev_id,
+                                    error = %e,
+                                    "overlap cancel failed (execution may have settled)"
+                                );
+                            }
+                        }
+                        acteon_core::OverlapPolicy::AllowAll => unreachable!(),
+                    }
+                }
 
                 match gw.dispatch(action, None).await {
                     Ok(outcome) => {
@@ -2213,6 +2302,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             rec.last_executed_at = Some(now);
                             rec.execution_count += 1;
                             rec.updated_at = now;
+                            // Track the spawned chain execution so the
+                            // overlap policy can see whether it is still
+                            // running at the next occurrence.
+                            if let acteon_core::ActionOutcome::ChainStarted {
+                                ref chain_id, ..
+                            } = outcome
+                            {
+                                rec.last_execution_id = Some(chain_id.clone());
+                            }
 
                             // Compute next occurrence (no backfill).
                             let next = acteon_core::validate_cron_expr(&rec.cron_expr)

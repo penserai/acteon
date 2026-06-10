@@ -28,6 +28,16 @@ Acteon is the force that manages this transformation. It serves as an Action Gat
 - **Rerouting** — Dynamically redirect actions to different providers based on priority, load, or content
 - **Payload Modification** — Transform action payloads before execution (redaction, enrichment, normalization)
 
+### Durable Execution
+
+- **Event History** — Append-only, per-execution event log (steps, timers, signals, terminal outcome) via `GET /v1/executions/{id}/history`
+- **Durable Timers** — `timer` chain steps sleep for seconds or months with no resources consumed, surviving restarts
+- **Signals** — `wait_for_signal` steps pause executions until an external signal arrives (buffered if early, with optional timeouts and timeout routing)
+- **Definition Versioning** — In-flight executions pin the chain definition they started with; updates never change running executions
+- **Visibility** — List and filter executions (including terminal) by status, time window, and custom search attributes
+- **Task Queues & Workers** — CAS-guarded queues with lease/heartbeat/complete semantics; `worker` chain steps run on your own workers with automatic retry, backoff, and DLQ
+- **Workflows as Code** — Checkpoint-based durable workflows in Python/TypeScript: `ctx.step()`, `ctx.sleep()`, `ctx.wait_for_signal()`, child workflows with parent-close policies — executed on customer workers, orchestrated and policy-gated by Acteon
+
 ### Event Grouping & State Machines
 
 - **Event Grouping** — Batch related events together for consolidated notifications with configurable wait times and group sizes

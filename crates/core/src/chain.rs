@@ -187,6 +187,104 @@ pub enum ParallelSubStepStatus {
     Cancelled,
 }
 
+/// Configuration for a durable timer step.
+///
+/// A timer step pauses the chain — consuming no resources while waiting —
+/// until the timer fires, then advances to the next step. Exactly one of
+/// `duration_seconds` or `until` must be set.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TimerStepConfig {
+    /// Sleep for this many seconds from when the step is reached.
+    #[serde(default)]
+    pub duration_seconds: Option<u64>,
+    /// Sleep until this absolute timestamp.
+    #[serde(default)]
+    pub until: Option<DateTime<Utc>>,
+}
+
+/// Configuration for a wait-for-signal step.
+///
+/// The chain pauses at this step until an external signal with the given
+/// name is delivered via `POST /v1/executions/{id}/signal/{name}`. Signals
+/// delivered before the chain reaches the step are buffered and consumed
+/// immediately. The signal payload becomes the step's response body.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SignalStepConfig {
+    /// Name of the signal to wait for.
+    pub signal_name: String,
+    /// Optional timeout in seconds. When it elapses without a signal the
+    /// step times out (subject to `on_timeout` / the step's failure policy).
+    #[serde(default)]
+    pub timeout_seconds: Option<u64>,
+    /// Optional step name to jump to when the wait times out. When unset,
+    /// a timeout is treated as a step failure and the step's `on_failure`
+    /// policy applies.
+    #[serde(default)]
+    pub on_timeout: Option<String>,
+}
+
+/// Configuration for a worker-queue step.
+///
+/// Instead of executing an in-process provider, the step enqueues a task on
+/// a named queue. External workers poll the queue (`POST
+/// /v1/queues/{queue}/poll`), execute the task, and report the result back;
+/// the chain resumes with the worker's result as the step's response body.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkerStepConfig {
+    /// Name of the worker queue to enqueue on.
+    pub queue: String,
+    /// Action type delivered to the worker (defaults to the step name).
+    #[serde(default)]
+    pub action_type: Option<String>,
+    /// Optional timeout in seconds for the worker to complete the task.
+    #[serde(default)]
+    pub timeout_seconds: Option<u64>,
+    /// Maximum delivery attempts before the task fails terminally
+    /// (default: 3). Lease expiry and retryable failures re-queue the task
+    /// until this budget is exhausted.
+    #[serde(default)]
+    pub max_attempts: Option<u32>,
+}
+
+/// What a paused chain execution is waiting on.
+///
+/// Set while the chain is in one of the waiting statuses
+/// ([`ChainStatus::WaitingTimer`], [`ChainStatus::WaitingSignal`],
+/// [`ChainStatus::WaitingWorker`]) and cleared when the wait resolves.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WaitState {
+    /// Waiting for a durable timer to fire.
+    Timer {
+        /// Index of the timer step.
+        step_index: usize,
+        /// When the timer fires.
+        fire_at: DateTime<Utc>,
+    },
+    /// Waiting for an external signal.
+    Signal {
+        /// Index of the wait-for-signal step.
+        step_index: usize,
+        /// Name of the awaited signal.
+        signal_name: String,
+        /// When the wait times out, if a timeout is configured.
+        timeout_at: Option<DateTime<Utc>>,
+        /// Step to jump to on timeout, if configured.
+        on_timeout: Option<String>,
+    },
+    /// Waiting for an external worker to complete a queued task.
+    Worker {
+        /// Index of the worker step.
+        step_index: usize,
+        /// ID of the enqueued worker task.
+        task_id: String,
+        /// Queue the task was enqueued on.
+        queue: String,
+        /// When the wait times out, if a timeout is configured.
+        timeout_at: Option<DateTime<Utc>>,
+    },
+}
+
 /// Comparison operator for branch conditions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -395,6 +493,21 @@ pub struct ChainStepConfig {
     /// or parallel parent steps.
     #[serde(default)]
     pub retry: Option<RetryPolicy>,
+    /// Optional durable timer. The chain pauses at this step until the
+    /// timer fires. Mutually exclusive with `provider`, `sub_chain`,
+    /// `parallel`, `wait_for_signal`, and `worker`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timer: Option<TimerStepConfig>,
+    /// Optional wait-for-signal configuration. The chain pauses at this
+    /// step until the named signal is delivered. Mutually exclusive with
+    /// the other step kinds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_for_signal: Option<SignalStepConfig>,
+    /// Optional worker-queue configuration. The step is executed by an
+    /// external worker polling the named queue instead of an in-process
+    /// provider. Mutually exclusive with the other step kinds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker: Option<WorkerStepConfig>,
 }
 
 impl ChainStepConfig {
@@ -418,6 +531,9 @@ impl ChainStepConfig {
             sub_chain: None,
             parallel: None,
             retry: None,
+            timer: None,
+            wait_for_signal: None,
+            worker: None,
         }
     }
 
@@ -436,6 +552,9 @@ impl ChainStepConfig {
             sub_chain: Some(sub_chain_name.into()),
             parallel: None,
             retry: None,
+            timer: None,
+            wait_for_signal: None,
+            worker: None,
         }
     }
 
@@ -454,7 +573,49 @@ impl ChainStepConfig {
             sub_chain: None,
             parallel: Some(Box::new(group)),
             retry: None,
+            timer: None,
+            wait_for_signal: None,
+            worker: None,
         }
+    }
+
+    /// Create a new durable timer step.
+    #[must_use]
+    pub fn new_timer(name: impl Into<String>, timer: TimerStepConfig) -> Self {
+        let mut step = Self::new(
+            name,
+            "",
+            "",
+            serde_json::Value::Object(serde_json::Map::new()),
+        );
+        step.timer = Some(timer);
+        step
+    }
+
+    /// Create a new wait-for-signal step.
+    #[must_use]
+    pub fn new_wait_for_signal(name: impl Into<String>, signal: SignalStepConfig) -> Self {
+        let mut step = Self::new(
+            name,
+            "",
+            "",
+            serde_json::Value::Object(serde_json::Map::new()),
+        );
+        step.wait_for_signal = Some(signal);
+        step
+    }
+
+    /// Create a new worker-queue step. The `payload_template` is resolved and
+    /// delivered to the worker as the task payload.
+    #[must_use]
+    pub fn new_worker(
+        name: impl Into<String>,
+        worker: WorkerStepConfig,
+        payload_template: serde_json::Value,
+    ) -> Self {
+        let mut step = Self::new(name, "", "", payload_template);
+        step.worker = Some(worker);
+        step
     }
 
     /// Returns `true` if this step invokes a sub-chain.
@@ -467,6 +628,24 @@ impl ChainStepConfig {
     #[must_use]
     pub fn is_parallel(&self) -> bool {
         self.parallel.is_some()
+    }
+
+    /// Returns `true` if this step is a durable timer.
+    #[must_use]
+    pub fn is_timer(&self) -> bool {
+        self.timer.is_some()
+    }
+
+    /// Returns `true` if this step waits for an external signal.
+    #[must_use]
+    pub fn is_wait_for_signal(&self) -> bool {
+        self.wait_for_signal.is_some()
+    }
+
+    /// Returns `true` if this step is executed by an external worker queue.
+    #[must_use]
+    pub fn is_worker(&self) -> bool {
+        self.worker.is_some()
     }
 
     /// Set the parallel step group.
@@ -532,6 +711,13 @@ pub struct ChainNotificationTarget {
 pub struct ChainConfig {
     /// Unique name for this chain (referenced from rules).
     pub name: String,
+    /// Definition version, starting at 1 and bumped on every update.
+    ///
+    /// In-flight executions pin the definition (and version) they started
+    /// with, so updating a chain never changes the behavior of executions
+    /// that are already running.
+    #[serde(default = "default_chain_version")]
+    pub version: u64,
     /// Ordered list of steps to execute.
     pub steps: Vec<ChainStepConfig>,
     /// Chain-level failure policy.
@@ -544,12 +730,17 @@ pub struct ChainConfig {
     pub on_cancel: Option<ChainNotificationTarget>,
 }
 
+fn default_chain_version() -> u64 {
+    1
+}
+
 impl ChainConfig {
     /// Create a new chain configuration with the given name.
     #[must_use]
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
+            version: default_chain_version(),
             steps: Vec::new(),
             on_failure: ChainFailurePolicy::default(),
             timeout_seconds: None,
@@ -704,6 +895,104 @@ impl ChainConfig {
             }
         }
 
+        // Validate timer / signal / worker steps: mutual exclusivity with
+        // every other step kind, and internal consistency.
+        for step in &self.steps {
+            let kinds = [
+                (!step.provider.is_empty(), "provider"),
+                (step.is_sub_chain(), "sub_chain"),
+                (step.is_parallel(), "parallel"),
+                (step.is_timer(), "timer"),
+                (step.is_wait_for_signal(), "wait_for_signal"),
+                (step.is_worker(), "worker"),
+            ];
+            let set: Vec<&str> = kinds
+                .iter()
+                .filter_map(|(on, name)| on.then_some(*name))
+                .collect();
+            // Pairs among provider/sub_chain/parallel are reported by the
+            // dedicated checks above; only flag combinations involving the
+            // wait/worker step kinds here.
+            if set.len() > 1
+                && set
+                    .iter()
+                    .any(|k| matches!(*k, "timer" | "wait_for_signal" | "worker"))
+            {
+                errors.push(format!(
+                    "step `{}` sets multiple step kinds ({}); they are mutually exclusive",
+                    step.name,
+                    set.join(", ")
+                ));
+            }
+            if let Some(ref timer) = step.timer {
+                match (timer.duration_seconds, timer.until) {
+                    (Some(_), Some(_)) | (None, None) => errors.push(format!(
+                        "timer step `{}` must set exactly one of `duration_seconds` or `until`",
+                        step.name
+                    )),
+                    (Some(0), None) => errors.push(format!(
+                        "timer step `{}`: `duration_seconds` must be >= 1",
+                        step.name
+                    )),
+                    _ => {}
+                }
+            }
+            if let Some(ref signal) = step.wait_for_signal {
+                if signal.signal_name.is_empty() {
+                    errors.push(format!(
+                        "wait_for_signal step `{}` must set a non-empty `signal_name`",
+                        step.name
+                    ));
+                }
+                if signal.on_timeout.is_some() && signal.timeout_seconds.is_none() {
+                    errors.push(format!(
+                        "wait_for_signal step `{}` sets `on_timeout` without `timeout_seconds`",
+                        step.name
+                    ));
+                }
+                if let Some(ref target) = signal.on_timeout
+                    && !step_names.contains(target.as_str())
+                {
+                    errors.push(format!(
+                        "wait_for_signal step `{}` has on_timeout targeting non-existent step `{target}`",
+                        step.name
+                    ));
+                }
+            }
+            if let Some(ref worker) = step.worker {
+                if worker.queue.is_empty() {
+                    errors.push(format!(
+                        "worker step `{}` must set a non-empty `queue`",
+                        step.name
+                    ));
+                } else if !worker
+                    .queue
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+                {
+                    // ':' is the state-store key delimiter; allowing it
+                    // would cross-contaminate per-queue prefix scans.
+                    errors.push(format!(
+                        "worker step `{}`: queue name `{}` may only contain [A-Za-z0-9._-]",
+                        step.name, worker.queue
+                    ));
+                }
+                if worker.max_attempts == Some(0) {
+                    errors.push(format!(
+                        "worker step `{}`: `max_attempts` must be >= 1",
+                        step.name
+                    ));
+                }
+            }
+            // Retry on wait steps is meaningless (nothing to retry).
+            if step.retry.is_some() && (step.is_timer() || step.is_wait_for_signal()) {
+                errors.push(format!(
+                    "step `{}` has a retry policy on a timer/wait_for_signal step; retry is only supported on provider and worker steps",
+                    step.name
+                ));
+            }
+        }
+
         // Reject retry policies on sub-chain and parallel parent steps.
         for step in &self.steps {
             if step.retry.is_some() && step.is_sub_chain() {
@@ -812,6 +1101,29 @@ pub enum ChainStatus {
     WaitingSubChain,
     /// Chain is executing a parallel step group.
     WaitingParallel,
+    /// Chain is paused on a durable timer.
+    WaitingTimer,
+    /// Chain is paused waiting for an external signal.
+    WaitingSignal,
+    /// Chain is paused waiting for an external worker to complete a task.
+    WaitingWorker,
+}
+
+impl ChainStatus {
+    /// Returns `true` for statuses where the chain is still in progress
+    /// (running or paused on a wait), i.e. not in a terminal state.
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        matches!(
+            self,
+            Self::Running
+                | Self::WaitingSubChain
+                | Self::WaitingParallel
+                | Self::WaitingTimer
+                | Self::WaitingSignal
+                | Self::WaitingWorker
+        )
+    }
 }
 
 /// Result of a single chain step execution.
@@ -946,6 +1258,26 @@ pub struct ChainState {
     /// inherited from the parent.
     #[serde(default)]
     pub caller: Option<Caller>,
+    /// Version of the chain definition this execution pinned at start.
+    #[serde(default = "default_chain_version")]
+    pub chain_version: u64,
+    /// Full snapshot of the chain definition taken when the execution
+    /// started. The execution advances against this snapshot, so editing the
+    /// definition never changes in-flight executions. `None` for executions
+    /// created before versioning support (they fall back to the live
+    /// definition).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_snapshot: Option<Box<ChainConfig>>,
+    /// User-defined, queryable key-value attributes for visibility
+    /// (`GET /v1/executions?attr=key=value`). Seeded from the origin
+    /// action's metadata labels and updatable via
+    /// `PUT /v1/executions/{id}/attributes`.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub search_attributes: HashMap<String, serde_json::Value>,
+    /// What the execution is currently waiting on, when paused in a
+    /// waiting status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_state: Option<WaitState>,
 }
 
 /// DFS coloring for cycle detection.
