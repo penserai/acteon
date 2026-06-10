@@ -1125,3 +1125,60 @@ export interface AnalyticsResponse {
   top_entries: AnalyticsTopEntry[];
   total_count: number;
 }
+
+// ---- Executions visibility ----
+
+export interface ExecutionWaitState {
+  kind: 'timer' | 'signal' | 'worker'
+  // Kind-specific fields (step_index, fire_at, signal_name, task_id, queue,
+  // timeout_at, ...).
+  [key: string]: unknown
+}
+
+export interface ExecutionSummary {
+  execution_id: string
+  chain_name: string
+  version: number
+  status: string
+  current_step: number
+  total_steps: number
+  started_at: string
+  updated_at: string
+  search_attributes: Record<string, unknown>
+  wait_state?: ExecutionWaitState
+  parent_execution_id?: string
+}
+
+export interface ListExecutionsResponse {
+  executions: ExecutionSummary[]
+}
+
+// ---- Workflows ----
+
+export interface WorkflowCheckpoint {
+  seq: number
+  name: string
+  data: unknown
+  recorded_at: string
+}
+
+export interface WorkflowExecutionSummary {
+  execution_id: string
+  workflow: string
+  queue: string
+  status: string
+  input: unknown
+  result?: unknown
+  error?: string
+  checkpoints: WorkflowCheckpoint[]
+  awaiting?: Record<string, unknown>
+  parent_id?: string
+  children?: string[]
+  search_attributes: Record<string, unknown>
+  created_at: string
+  updated_at: string
+}
+
+export interface ListWorkflowExecutionsResponse {
+  executions: WorkflowExecutionSummary[]
+}

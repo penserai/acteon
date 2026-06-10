@@ -1,0 +1,80 @@
+@reference "../index.css";
+
+.filterBar {
+  @apply flex flex-wrap gap-3 mb-4;
+}
+
+.idCell {
+  @apply font-mono text-xs;
+}
+
+.countCell {
+  @apply text-xs tabular-nums text-gray-500;
+}
+
+.timestampCell {
+  @apply text-xs text-gray-500;
+}
+
+.detailContent {
+  @apply flex flex-col gap-4 p-4;
+}
+
+.detailActions {
+  @apply flex gap-2;
+}
+
+.jsonSection {
+  @apply mt-1;
+}
+
+.errorBox {
+  @apply rounded-md px-3 py-2 text-sm whitespace-pre-wrap;
+  background: var(--color-danger-bg, #fee);
+  color: var(--color-danger, #900);
+}
+
+.checkpointList {
+  @apply space-y-2;
+}
+
+.checkpointItem {
+  @apply rounded-md border px-3 py-2;
+  border-color: var(--border-default);
+}
+
+.checkpointHeader {
+  @apply flex items-center gap-2 text-sm;
+}
+
+.checkpointSeq {
+  @apply text-xs tabular-nums text-gray-500;
+}
+
+.checkpointName {
+  @apply font-medium;
+}
+
+.checkpointTime {
+  @apply ml-auto text-xs text-gray-500;
+}
+
+.historyList {
+  @apply space-y-1;
+}
+
+.historyItem {
+  @apply flex items-baseline gap-2 text-sm;
+}
+
+.historyEventId {
+  @apply text-xs text-gray-600 w-8 text-right shrink-0;
+}
+
+.historyTimestamp {
+  @apply text-xs text-gray-500 w-40 shrink-0;
+}
+
+.historyDetail {
+  @apply text-gray-400 truncate;
+}

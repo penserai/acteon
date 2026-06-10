@@ -3,6 +3,7 @@ import {
   Zap, AlertTriangle, Rss, Brain, Gauge, Users, Server, Cpu, Eye, Settings,
   RefreshCw, PieChart, Database, HeartPulse, Puzzle, ShieldAlert, FileText, BarChart3,
   ExternalLink, GitBranch, BellRing, BellOff, Clock, Bot, Network, Users2,
+  Activity, Workflow,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
@@ -28,6 +29,8 @@ export const MAIN_NAV_ITEMS: NavItem[] = [
   { to: '/time-intervals', icon: Clock, label: 'Time Intervals' },
   { to: '/chains', icon: Link2, label: 'Chains', shortcut: '3' },
   { to: '/chain-definitions', icon: GitBranch, label: 'Chain Definitions' },
+  { to: '/executions', icon: Activity, label: 'Executions' },
+  { to: '/workflows', icon: Workflow, label: 'Workflows' },
   { to: '/approvals', icon: ShieldCheck, label: 'Approvals', shortcut: '5' },
   { to: '/circuit-breakers', icon: Zap, label: 'Circuit Breakers' },
   { to: '/provider-health', icon: HeartPulse, label: 'Provider Health' },
