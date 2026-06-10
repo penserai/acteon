@@ -1,7 +1,19 @@
 # Gap Analysis: Acteon vs. Temporal.io (Basic Offering)
 
 **Date:** 2026-06-10
-**Status:** Draft for discussion
+**Status:** Implemented — all three roadmap phases shipped on this branch.
+Delivered: execution event history, durable timer / wait-for-signal steps,
+signal delivery with buffering, definition versioning (snapshot pinning),
+visibility API with search attributes, execution reset (replay-from-step),
+worker task queues with lease/heartbeat/retry/DLQ semantics, `worker` chain
+steps, the checkpoint-based workflow engine with child workflows and
+parent-close policies, recurring-action overlap policies (`skip` /
+`cancel_other`) and windowed backfill, worker SDKs in Python / TypeScript /
+Go / Java, workflow authoring SDKs in Python / TypeScript, Rust client
+coverage, Executions + Workflows admin-UI pages with a history viewer and
+signal delivery, docs, and a simulation example. The remaining intentional
+trade-off is deterministic replay testing (the checkpoint model, §6, by
+design); `continue-as-new` remains unnecessary while histories are capped.
 **Scope:** What Acteon would need to credibly compete with Temporal.io's *basic* offering — the open-source, self-hosted durable-execution platform (Temporal Server + SDKs + Web UI), not Temporal Cloud's premium features (Nexus, multi-region replication, serverless workers).
 
 ---
