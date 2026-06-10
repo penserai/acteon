@@ -258,13 +258,13 @@ impl ActeonClient {
             "input": input,
             "parent_close_policy": parent_close_policy,
         });
-        let response: Value = self.workflow_post(&url, &body, "start child workflow").await?;
+        let response: Value = self
+            .workflow_post(&url, &body, "start child workflow")
+            .await?;
         response["child_execution_id"]
             .as_str()
             .map(ToOwned::to_owned)
-            .ok_or_else(|| {
-                Error::Deserialization("missing child_execution_id in response".into())
-            })
+            .ok_or_else(|| Error::Deserialization("missing child_execution_id in response".into()))
     }
 
     /// Shared POST-and-decode helper for workflow endpoints.

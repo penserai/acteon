@@ -86,13 +86,13 @@ mod quotas;
 mod recurring;
 mod retention;
 mod rules;
-mod workflows;
 mod signing_keys;
 mod silences;
 mod streaming;
 mod swarm;
 mod templates;
 mod time_intervals;
+mod workflows;
 
 pub use error::Error;
 pub use stream::{EventStream, StreamFilter, StreamItem};
