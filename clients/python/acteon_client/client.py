@@ -104,9 +104,13 @@ from .models import (
 
 from .a2a import _A2AClientMixin, _AsyncA2AClientMixin
 from .bus import _AsyncBusClientMixin, _BusClientMixin
+from .queues import _AsyncQueuesClientMixin, _QueuesClientMixin
+from .workflows import _AsyncWorkflowsClientMixin, _WorkflowsClientMixin
 
 
-class ActeonClient(_A2AClientMixin, _BusClientMixin):
+class ActeonClient(
+    _A2AClientMixin, _BusClientMixin, _QueuesClientMixin, _WorkflowsClientMixin
+):
     """HTTP client for the Acteon action gateway.
 
     Example:
@@ -2613,7 +2617,12 @@ class ActeonClient(_A2AClientMixin, _BusClientMixin):
         raise HttpError(response.status_code, "Failed to cancel swarm run")
 
 
-class AsyncActeonClient(_AsyncA2AClientMixin, _AsyncBusClientMixin):
+class AsyncActeonClient(
+    _AsyncA2AClientMixin,
+    _AsyncBusClientMixin,
+    _AsyncQueuesClientMixin,
+    _AsyncWorkflowsClientMixin,
+):
     """Async HTTP client for the Acteon action gateway.
 
     Example:

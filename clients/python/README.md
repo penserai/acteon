@@ -174,6 +174,78 @@ tenant, namespace, provider, and action type on the server side — see the
 [API Key Scoping](https://penserai.github.io/acteon/features/api-key-scoping/)
 documentation for the grant model and hierarchical tenant matching.
 
+## Task-Queue Worker
+
+`Worker` polls a durable task queue and dispatches each task to a handler
+registered for its `action_type`. Returning completes the task; raising
+fails it as **retryable by default** (bounded by the task's `max_attempts`).
+Raise `NonRetryableError` to fail permanently. Long-running handlers are
+heartbeat-extended automatically at half the lease interval, and `async def`
+handlers are supported.
+
+```python
+from acteon_client import ActeonClient, NonRetryableError, Worker
+
+client = ActeonClient("http://localhost:8080", api_key="your-key")
+worker = Worker(client, "jobs", "tenant-1", queue="emails", max_concurrent=4)
+
+def send_email(payload):
+    if "@" not in payload["to"]:
+        raise NonRetryableError("malformed address")  # never retried
+    return {"message_id": deliver(payload)}           # completes the task
+
+worker.register("send_email", send_email)
+worker.run()  # blocks; call worker.stop() from a signal handler to drain
+
+# Producers enqueue work with:
+client.enqueue_task("emails", "jobs", "tenant-1", "send_email",
+                    {"to": "user@example.com"}, max_attempts=5)
+```
+
+`worker.run_once()` polls and processes a single batch — useful in tests
+and cron-style invocations.
+
+## Workflows
+
+Workflows are checkpoint-based: the registered function re-runs from the
+top on every continuation, and `ctx` replays recorded checkpoints by name —
+completed `ctx.step(...)` calls return their stored result instantly, and
+suspension points (`ctx.sleep`, `ctx.wait_for_signal`) only suspend the
+first time through. Code paths up to a suspension point must therefore be
+deterministic; side effects belong inside `ctx.step`.
+
+```python
+from acteon_client import ActeonClient, Worker
+
+client = ActeonClient("http://localhost:8080", api_key="your-key")
+worker = Worker(client, "jobs", "tenant-1", queue="wf-queue")
+
+def onboarding(ctx, input):
+    account = ctx.step("provision", lambda: provision(input["user"]))
+    ctx.sleep(24 * 3600)                                   # durable timer
+    approval = ctx.wait_for_signal("approved", timeout_seconds=86_400)
+    if approval is None:                                   # timed out
+        return {"status": "expired"}
+    child_id = ctx.start_child("welcome_email", {"account": account})
+    outcome = ctx.wait_for_child(child_id)
+    return {"status": "done", "email": outcome}
+
+worker.register_workflow("onboarding", onboarding)
+worker.run()
+```
+
+Drive executions from any client:
+
+```python
+execution = client.start_workflow(
+    "jobs", "tenant-1", "onboarding", "wf-queue", {"user": "u-1"}
+)
+client.signal_workflow(execution.execution_id, "approved",
+                       "jobs", "tenant-1", payload={"by": "ops"})
+execution = client.get_workflow_execution(execution.execution_id, "jobs", "tenant-1")
+print(execution.status, execution.result)
+```
+
 ## Error Handling
 
 ```python
