@@ -169,6 +169,32 @@ import {
   unwrapJsonRpc,
   type JsonRpcReply,
 } from "./a2a.js";
+import {
+  type EnqueueTaskOptions,
+  type PollTasksOptions,
+  type WorkerTask,
+  type WorkerTaskStatus,
+  completeTaskBody,
+  enqueueTaskBody,
+  failTaskBody,
+  heartbeatTaskBody,
+  parseTaskListResponse,
+  parseWorkerTask,
+  pollTasksBody,
+} from "./queues.js";
+import {
+  type ExecutionHistory,
+  type RecordCheckpointResponse,
+  type StartChildOptions,
+  type StartWorkflowOptions,
+  type WorkflowExecution,
+  type WorkflowStatus,
+  parseExecutionHistory,
+  parseRecordCheckpointResponse,
+  parseWorkflowExecution,
+  parseWorkflowExecutionListResponse,
+  startWorkflowBody,
+} from "./workflows.js";
 import { readFileSync } from "node:fs";
 import { Agent as HttpsAgent } from "node:https";
 import {
@@ -3093,6 +3119,434 @@ export class ActeonClient {
     );
     if (!response.ok) await this.busThrowFromResponse(response);
     return parseBusApprovalDecisionResponse((await response.json()) as Record<string, unknown>);
+  }
+
+  // ===========================================================================
+  // Worker Task Queues
+  //
+  // Lease protocol driven by external workers: poll a named queue for
+  // tasks, execute them, and settle each one via complete/fail using the
+  // lease token from the poll response. The `Worker` class in `worker.ts`
+  // wraps these methods in a poll loop.
+  // ===========================================================================
+
+  /** Translate a queue/workflow error response into an `HttpError`.
+   *  Both API surfaces use the `{ "error": "..." }` envelope. */
+  private async taskThrowFromResponse(
+    response: Response,
+    context: string,
+  ): Promise<never> {
+    let payload: Record<string, unknown> = {};
+    try {
+      payload = (await response.json()) as Record<string, unknown>;
+    } catch {
+      /* fall through with empty payload */
+    }
+    const message =
+      (payload.error as string | undefined) ??
+      (payload.message as string | undefined) ??
+      context;
+    throw new HttpError(response.status, message);
+  }
+
+  /**
+   * Poll a queue for tasks, leasing up to `maxTasks` of them.
+   * Returned tasks carry the `leaseToken` required by heartbeat /
+   * complete / fail.
+   */
+  async pollTasks(
+    queue: string,
+    namespace: string,
+    tenant: string,
+    options?: PollTasksOptions,
+  ): Promise<WorkerTask[]> {
+    const response = await this.request(
+      "POST",
+      `/v1/queues/${encodeURIComponent(queue)}/poll`,
+      { body: pollTasksBody(namespace, tenant, options) },
+    );
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseTaskListResponse(data);
+    }
+    return this.taskThrowFromResponse(response, "Failed to poll tasks");
+  }
+
+  /**
+   * Enqueue a task on a queue.
+   */
+  async enqueueTask(
+    queue: string,
+    namespace: string,
+    tenant: string,
+    actionType: string,
+    payload: unknown,
+    options?: EnqueueTaskOptions,
+  ): Promise<WorkerTask> {
+    const response = await this.request(
+      "POST",
+      `/v1/queues/${encodeURIComponent(queue)}/tasks`,
+      { body: enqueueTaskBody(namespace, tenant, actionType, payload, options) },
+    );
+
+    if (response.status === 201) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseWorkerTask(data);
+    }
+    return this.taskThrowFromResponse(response, "Failed to enqueue task");
+  }
+
+  /**
+   * Extend the lease on a task while a handler is still working on it.
+   */
+  async heartbeatTask(
+    taskId: string,
+    namespace: string,
+    tenant: string,
+    leaseToken: string,
+    extendSeconds?: number,
+  ): Promise<WorkerTask> {
+    const response = await this.request(
+      "POST",
+      `/v1/queues/tasks/${encodeURIComponent(taskId)}/heartbeat`,
+      { body: heartbeatTaskBody(namespace, tenant, leaseToken, extendSeconds) },
+    );
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseWorkerTask(data);
+    }
+    return this.taskThrowFromResponse(response, "Failed to heartbeat task");
+  }
+
+  /**
+   * Settle a leased task as completed, recording `result`.
+   */
+  async completeTask(
+    taskId: string,
+    namespace: string,
+    tenant: string,
+    leaseToken: string,
+    result: unknown,
+  ): Promise<WorkerTask> {
+    const response = await this.request(
+      "POST",
+      `/v1/queues/tasks/${encodeURIComponent(taskId)}/complete`,
+      { body: completeTaskBody(namespace, tenant, leaseToken, result) },
+    );
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseWorkerTask(data);
+    }
+    return this.taskThrowFromResponse(response, "Failed to complete task");
+  }
+
+  /**
+   * Settle a leased task as failed. With `retryable: true` (the
+   * default worker behaviour) the server redelivers while attempts
+   * remain; with `retryable: false` the task fails terminally.
+   */
+  async failTask(
+    taskId: string,
+    namespace: string,
+    tenant: string,
+    leaseToken: string,
+    error: string,
+    retryable: boolean = true,
+  ): Promise<WorkerTask> {
+    const response = await this.request(
+      "POST",
+      `/v1/queues/tasks/${encodeURIComponent(taskId)}/fail`,
+      { body: failTaskBody(namespace, tenant, leaseToken, error, retryable) },
+    );
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseWorkerTask(data);
+    }
+    return this.taskThrowFromResponse(response, "Failed to fail task");
+  }
+
+  /**
+   * Get a single task by ID. Returns `null` if not found.
+   */
+  async getTask(
+    taskId: string,
+    namespace: string,
+    tenant: string,
+  ): Promise<WorkerTask | null> {
+    const params = new URLSearchParams();
+    params.set("namespace", namespace);
+    params.set("tenant", tenant);
+    const response = await this.request(
+      "GET",
+      `/v1/queues/tasks/${encodeURIComponent(taskId)}`,
+      { params },
+    );
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseWorkerTask(data);
+    } else if (response.status === 404) {
+      return null;
+    }
+    return this.taskThrowFromResponse(response, "Failed to get task");
+  }
+
+  /**
+   * List tasks on a queue, optionally filtered by status.
+   */
+  async listTasks(
+    queue: string,
+    namespace: string,
+    tenant: string,
+    status?: WorkerTaskStatus,
+  ): Promise<WorkerTask[]> {
+    const params = new URLSearchParams();
+    params.set("namespace", namespace);
+    params.set("tenant", tenant);
+    if (status !== undefined) params.set("status", status);
+    const response = await this.request(
+      "GET",
+      `/v1/queues/${encodeURIComponent(queue)}/tasks`,
+      { params },
+    );
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseTaskListResponse(data);
+    }
+    return this.taskThrowFromResponse(response, "Failed to list tasks");
+  }
+
+  // ===========================================================================
+  // Workflow Executions
+  //
+  // Checkpoint-based durable workflows-as-code: the server persists
+  // checkpoints and schedules continuation tasks on worker queues; workflow
+  // logic runs on workers (see `WorkflowContext` in `workflows.ts`).
+  // ===========================================================================
+
+  /**
+   * Start a workflow execution. Continuation tasks are routed through
+   * `queue`; a `Worker` polling that queue with the workflow
+   * registered drives the execution.
+   */
+  async startWorkflow(
+    namespace: string,
+    tenant: string,
+    workflow: string,
+    queue: string,
+    input: unknown,
+    options?: StartWorkflowOptions,
+  ): Promise<WorkflowExecution> {
+    const response = await this.request("POST", "/v1/workflows/start", {
+      body: startWorkflowBody(namespace, tenant, workflow, queue, input, options),
+    });
+
+    if (response.status === 201) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseWorkflowExecution(data);
+    }
+    return this.taskThrowFromResponse(response, "Failed to start workflow");
+  }
+
+  /**
+   * List workflow executions, optionally filtered by workflow name
+   * and status.
+   */
+  async listWorkflowExecutions(
+    namespace: string,
+    tenant: string,
+    options?: { workflow?: string; status?: WorkflowStatus; limit?: number },
+  ): Promise<WorkflowExecution[]> {
+    const params = new URLSearchParams();
+    params.set("namespace", namespace);
+    params.set("tenant", tenant);
+    if (options?.workflow !== undefined) params.set("workflow", options.workflow);
+    if (options?.status !== undefined) params.set("status", options.status);
+    if (options?.limit !== undefined) params.set("limit", options.limit.toString());
+    const response = await this.request("GET", "/v1/workflows/executions", {
+      params,
+    });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseWorkflowExecutionListResponse(data);
+    }
+    return this.taskThrowFromResponse(
+      response,
+      "Failed to list workflow executions",
+    );
+  }
+
+  /**
+   * Get a workflow execution by ID. Returns `null` if not found.
+   */
+  async getWorkflowExecution(
+    executionId: string,
+    namespace: string,
+    tenant: string,
+  ): Promise<WorkflowExecution | null> {
+    const params = new URLSearchParams();
+    params.set("namespace", namespace);
+    params.set("tenant", tenant);
+    const response = await this.request(
+      "GET",
+      `/v1/workflows/executions/${encodeURIComponent(executionId)}`,
+      { params },
+    );
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseWorkflowExecution(data);
+    } else if (response.status === 404) {
+      return null;
+    }
+    return this.taskThrowFromResponse(
+      response,
+      "Failed to get workflow execution",
+    );
+  }
+
+  /**
+   * Deliver an external signal to a workflow execution. The payload
+   * is returned by the awaiting `ctx.waitForSignal(name)` call (or
+   * buffered until the workflow awaits it).
+   */
+  async signalWorkflow(
+    executionId: string,
+    signalName: string,
+    namespace: string,
+    tenant: string,
+    payload?: unknown,
+  ): Promise<void> {
+    const body: Record<string, unknown> = { namespace, tenant };
+    if (payload !== undefined) body.payload = payload;
+    const response = await this.request(
+      "POST",
+      `/v1/workflows/executions/${encodeURIComponent(executionId)}/signal/${encodeURIComponent(signalName)}`,
+      { body },
+    );
+
+    if (!response.ok) {
+      await this.taskThrowFromResponse(response, "Failed to signal workflow");
+    }
+  }
+
+  /**
+   * Cancel a workflow execution.
+   */
+  async cancelWorkflow(
+    executionId: string,
+    namespace: string,
+    tenant: string,
+    reason?: string,
+  ): Promise<void> {
+    const body: Record<string, unknown> = { namespace, tenant };
+    if (reason !== undefined) body.reason = reason;
+    const response = await this.request(
+      "POST",
+      `/v1/workflows/executions/${encodeURIComponent(executionId)}/cancel`,
+      { body },
+    );
+
+    if (!response.ok) {
+      await this.taskThrowFromResponse(response, "Failed to cancel workflow");
+    }
+  }
+
+  /**
+   * Record a named checkpoint on a workflow execution. Idempotent by
+   * name: replays return the originally-recorded data. Normally
+   * called through `ctx.step(...)` rather than directly.
+   */
+  async recordWorkflowCheckpoint(
+    executionId: string,
+    namespace: string,
+    tenant: string,
+    name: string,
+    data: unknown,
+  ): Promise<RecordCheckpointResponse> {
+    const response = await this.request(
+      "POST",
+      `/v1/workflows/executions/${encodeURIComponent(executionId)}/checkpoints`,
+      { body: { namespace, tenant, name, data } },
+    );
+
+    if (response.ok) {
+      const body = (await response.json()) as Record<string, unknown>;
+      return parseRecordCheckpointResponse(body);
+    }
+    return this.taskThrowFromResponse(response, "Failed to record checkpoint");
+  }
+
+  /**
+   * Start a child workflow from a parent execution, idempotently
+   * keyed by `checkpoint`. Returns the child execution ID (the
+   * recorded one on replay). Normally called through
+   * `ctx.startChild(...)` rather than directly.
+   */
+  async startChildWorkflow(
+    executionId: string,
+    namespace: string,
+    tenant: string,
+    checkpoint: string,
+    workflow: string,
+    input: unknown,
+    options?: StartChildOptions,
+  ): Promise<string> {
+    const body: Record<string, unknown> = {
+      namespace,
+      tenant,
+      checkpoint,
+      workflow,
+      input,
+    };
+    if (options?.queue !== undefined) body.queue = options.queue;
+    if (options?.parentClosePolicy !== undefined) {
+      body.parent_close_policy = options.parentClosePolicy;
+    }
+    const response = await this.request(
+      "POST",
+      `/v1/workflows/executions/${encodeURIComponent(executionId)}/children`,
+      { body },
+    );
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return data.child_execution_id as string;
+    }
+    return this.taskThrowFromResponse(response, "Failed to start child workflow");
+  }
+
+  /**
+   * Get the ordered event history of an execution.
+   */
+  async getExecutionHistory(
+    executionId: string,
+    namespace: string,
+    tenant: string,
+  ): Promise<ExecutionHistory> {
+    const params = new URLSearchParams();
+    params.set("namespace", namespace);
+    params.set("tenant", tenant);
+    const response = await this.request(
+      "GET",
+      `/v1/executions/${encodeURIComponent(executionId)}/history`,
+      { params },
+    );
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseExecutionHistory(data);
+    }
+    return this.taskThrowFromResponse(
+      response,
+      "Failed to get execution history",
+    );
   }
 
   // ===========================================================================

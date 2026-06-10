@@ -23,7 +23,51 @@
  */
 
 export { ActeonClient, type ActeonClientOptions } from "./client.js";
-export { ActeonError, ConnectionError, HttpError, ApiError } from "./errors.js";
+export {
+  ActeonError,
+  ConnectionError,
+  HttpError,
+  ApiError,
+  NonRetryableError,
+} from "./errors.js";
+export {
+  type WorkerTask,
+  type WorkerTaskStatus,
+  type PollTasksOptions,
+  type EnqueueTaskOptions,
+  parseWorkerTask,
+  parseTaskListResponse,
+  pollTasksBody,
+  enqueueTaskBody,
+  heartbeatTaskBody,
+  completeTaskBody,
+  failTaskBody,
+} from "./queues.js";
+export {
+  WORKFLOW_TASK_ACTION_TYPE,
+  CHILD_RESULT_SIGNAL_PREFIX,
+  type WorkflowStatus,
+  type WorkflowCheckpoint,
+  type WorkflowExecution,
+  type RecordCheckpointResponse,
+  type ExecutionHistory,
+  type StartWorkflowOptions,
+  type ParentClosePolicy,
+  type StartChildOptions,
+  type WorkflowDirective,
+  type WorkflowFn,
+  type WorkflowTaskPayload,
+  WorkflowContext,
+  WorkflowSuspend,
+  runWorkflowTask,
+  parseWorkflowCheckpoint,
+  parseWorkflowExecution,
+  parseWorkflowExecutionListResponse,
+  parseRecordCheckpointResponse,
+  parseExecutionHistory,
+  startWorkflowBody,
+} from "./workflows.js";
+export { Worker, type WorkerOptions, type TaskHandler } from "./worker.js";
 export {
   type Action,
   type Attachment,
