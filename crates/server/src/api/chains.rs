@@ -284,11 +284,7 @@ pub async fn get_chain(
     {
         Ok(Some(chain_state)) => {
             // Try to load the chain config for retry metadata.
-            let chain_config = chain_state
-                .config_snapshot
-                .as_deref()
-                .cloned()
-                .or_else(|| gw.chain_config(&chain_state.chain_name));
+            let chain_config = gw.execution_config(&chain_state).await.ok().flatten();
 
             // Build per-step status from the chain config and results.
             let steps: Vec<ChainStepStatus> = (0..chain_state.total_steps)
@@ -955,11 +951,7 @@ pub async fn get_chain_history(
         .await
     {
         Ok(Some(chain_state)) => {
-            let chain_config = chain_state
-                .config_snapshot
-                .as_deref()
-                .cloned()
-                .or_else(|| gw.chain_config(&chain_state.chain_name));
+            let chain_config = gw.execution_config(&chain_state).await.ok().flatten();
 
             let steps: Vec<StepHistoryEntry> = (0..chain_state.total_steps)
                 .map(|i| {

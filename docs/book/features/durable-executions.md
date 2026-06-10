@@ -86,10 +86,15 @@ Semantics:
 ## Definition versioning
 
 Chain definitions carry a `version` that bumps on every update
-(`PUT /v1/chains/definitions/{name}`). Every execution pins a full snapshot
-of the definition it started with and advances against that snapshot — so
-deploying a new chain version never changes the behavior of in-flight
-executions. New executions pick up the latest version.
+(`PUT /v1/chains/definitions/{name}`). Every execution pins the definition
+version it started with: the definition is stored once per
+`{name}@{version}` in the state store (immutable, written on first use) and
+every consumer — advancement, worker resume, reset, cancel notifications,
+and the detail/history/DAG endpoints — resolves it from there. Deploying a
+new chain version therefore never changes the behavior of in-flight
+executions; new executions pick up the latest version. Deleting a
+definition that other definitions still reference as a sub-chain is
+rejected.
 
 ## Visibility & search attributes
 

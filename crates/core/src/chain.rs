@@ -1261,11 +1261,12 @@ pub struct ChainState {
     /// Version of the chain definition this execution pinned at start.
     #[serde(default = "default_chain_version")]
     pub chain_version: u64,
-    /// Full snapshot of the chain definition taken when the execution
-    /// started. The execution advances against this snapshot, so editing the
-    /// definition never changes in-flight executions. `None` for executions
-    /// created before versioning support (they fall back to the live
-    /// definition).
+    /// Legacy: a full snapshot of the chain definition embedded in the
+    /// execution. New executions leave this `None` and resolve their pinned
+    /// definition from the shared `chain_def_pinned` store by
+    /// `(chain_name, chain_version)` instead — embedding the definition
+    /// multiplied every chain-state persist by its size. Still honored on
+    /// read for executions persisted by older builds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_snapshot: Option<Box<ChainConfig>>,
     /// User-defined, queryable key-value attributes for visibility

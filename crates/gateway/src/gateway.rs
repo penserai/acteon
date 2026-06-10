@@ -178,6 +178,10 @@ impl Drop for DispatchLockGuard {
     }
 }
 
+/// Cache map for pinned chain definitions, keyed by
+/// namespace + tenant + chain name + version.
+pub(crate) type PinnedConfigCache = HashMap<(String, String, String, u64), Arc<ChainConfig>>;
+
 /// The central gateway that orchestrates the action dispatch pipeline.
 ///
 /// The dispatch pipeline for each action:
@@ -212,6 +216,10 @@ pub struct Gateway {
     /// gateway construction time (and updated via runtime CRUD) to avoid
     /// repeated `HashMap` allocations during chain advancement.
     pub(crate) chain_step_indices: parking_lot::RwLock<HashMap<String, HashMap<String, usize>>>,
+    /// Process-local cache of pinned (immutable) chain definitions, keyed
+    /// `(namespace, tenant, name, version)`. Entries never invalidate —
+    /// a pinned definition cannot change — but the cache is size-capped.
+    pub(crate) pinned_config_cache: parking_lot::RwLock<PinnedConfigCache>,
     pub(crate) completed_chain_ttl: Option<Duration>,
     pub(crate) embedding: Option<Arc<dyn acteon_rules::EmbeddingEvalSupport>>,
     pub(crate) default_timezone: Option<chrono_tz::Tz>,
@@ -2515,7 +2523,10 @@ impl Gateway {
             step_history: vec![Vec::new(); total_steps],
             caller: caller.cloned(),
             chain_version: chain_config.version,
-            config_snapshot: Some(Box::new(chain_config.clone())),
+            // Pinned definitions live in the shared store (written once
+            // per version below) — embedding them per execution multiplied
+            // every chain-state persist by the definition size.
+            config_snapshot: None,
             search_attributes: action
                 .metadata
                 .labels
@@ -2524,6 +2535,15 @@ impl Gateway {
                 .collect(),
             wait_state: None,
         };
+
+        // Pin the definition before any state is persisted: an execution
+        // must never exist without its version being resolvable.
+        self.pin_chain_definition(
+            action.namespace.as_str(),
+            action.tenant.as_str(),
+            &chain_config,
+        )
+        .await?;
 
         self.append_execution_history(
             action.namespace.as_str(),
@@ -2673,20 +2693,15 @@ impl Gateway {
             return Ok(());
         }
 
-        // Use the definition snapshot pinned at execution start so that
-        // editing a chain never changes in-flight executions. Executions
-        // created before versioning support fall back to the live registry.
-        let chain_config = chain_state
-            .config_snapshot
-            .as_deref()
-            .cloned()
-            .or_else(|| self.chains.read().get(&chain_state.chain_name).cloned())
-            .ok_or_else(|| {
-                GatewayError::ChainError(format!(
-                    "chain configuration not found: {}",
-                    chain_state.chain_name
-                ))
-            })?;
+        // Resolve the definition pinned at execution start (pinned store /
+        // legacy embedded snapshot / pre-pinning registry fallback) so that
+        // editing a chain never changes in-flight executions.
+        let chain_config = self.execution_config(&chain_state).await?.ok_or_else(|| {
+            GatewayError::ChainError(format!(
+                "chain configuration not found: {}",
+                chain_state.chain_name
+            ))
+        })?;
 
         // Compute the step index map from the effective (pinned) config —
         // the registry cache may reflect a newer definition version.
@@ -5481,10 +5496,13 @@ impl Gateway {
             // Sub-chains inherit the originating caller for audit attribution.
             caller: parent.caller.clone(),
             chain_version: sub_config.version,
-            config_snapshot: Some(Box::new(sub_config.clone())),
+            config_snapshot: None,
             search_attributes: parent.search_attributes.clone(),
             wait_state: None,
         };
+
+        self.pin_chain_definition(&parent.namespace, &parent.tenant, &sub_config)
+            .await?;
 
         self.append_execution_history(
             &parent.namespace,
@@ -5624,11 +5642,20 @@ impl Gateway {
                 )));
             }
 
-            let chain_config = self.chains.read().get(chain_name).cloned().ok_or_else(|| {
-                GatewayError::ChainError(format!(
-                    "chain configuration not found for DAG: {chain_name}"
-                ))
-            })?;
+            // Instance DAGs render the definition the execution actually
+            // runs against; definition DAGs use the live registry.
+            let pinned = match chain_state {
+                Some(state) => self.execution_config(state).await?,
+                None => None,
+            };
+            let chain_config = match pinned {
+                Some(config) => config,
+                None => self.chains.read().get(chain_name).cloned().ok_or_else(|| {
+                    GatewayError::ChainError(format!(
+                        "chain configuration not found for DAG: {chain_name}"
+                    ))
+                })?,
+            };
 
             let mut nodes = Vec::new();
             let mut edges = Vec::new();
@@ -6468,13 +6495,9 @@ impl Gateway {
 
         // Dispatch a cancel notification through the gateway pipeline.
         // Resolve the notification target from the execution's pinned
-        // definition snapshot — the live registry may have been edited or
-        // deleted since this execution started.
-        let chain_config = chain_state
-            .config_snapshot
-            .as_deref()
-            .cloned()
-            .or_else(|| self.chains.read().get(&chain_state.chain_name).cloned());
+        // definition — the live registry may have been edited or deleted
+        // since this execution started.
+        let chain_config = self.execution_config(&chain_state).await.ok().flatten();
         let (notify_provider, notify_action_type) = chain_config
             .as_ref()
             .and_then(|c| c.on_cancel.as_ref())

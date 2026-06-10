@@ -447,6 +447,11 @@ async fn inflight_execution_pins_definition_version() {
     assert_eq!(state.chain_version, 1);
     assert_eq!(state.total_steps, 2);
     assert_eq!(state.execution_path, vec!["one", "two"]);
+    // The definition lives in the pinned store, not embedded per execution.
+    assert!(
+        state.config_snapshot.is_none(),
+        "new executions must not embed the definition snapshot"
+    );
 
     // A new execution uses the replaced (v2) definition.
     let new_chain_id = start_chain(&gateway).await;
