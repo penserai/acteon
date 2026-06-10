@@ -266,3 +266,43 @@ impl ActeonClient {
         }
     }
 }
+
+impl ActeonClient {
+    /// Reset a chain execution to re-run from an earlier step. Works on
+    /// terminal executions; step results from the reset point onward are
+    /// discarded.
+    pub async fn reset_execution(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        execution_id: &str,
+        step: &str,
+        reason: Option<&str>,
+    ) -> Result<ExecutionSummary, Error> {
+        let url = format!("{}/v1/executions/{execution_id}/reset", self.base_url);
+        let body = serde_json::json!({
+            "namespace": namespace,
+            "tenant": tenant,
+            "step": step,
+            "reason": reason,
+        });
+        let response = self
+            .add_auth(self.client.post(&url))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+
+        if response.status().is_success() {
+            response
+                .json::<ExecutionSummary>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))
+        } else {
+            Err(Error::Http {
+                status: response.status().as_u16(),
+                message: format!("Failed to reset execution: {}", response.status()),
+            })
+        }
+    }
+}

@@ -21,8 +21,8 @@ use super::events::{
     EventStateResponse, ListEventsResponse, TransitionRequest, TransitionResponse,
 };
 use super::executions::{
-    ExecutionHistoryResponse, ExecutionSummary, ListExecutionsResponse, SignalRequest,
-    SignalResponse, UpsertAttributesRequest,
+    ExecutionHistoryResponse, ExecutionSummary, ListExecutionsResponse, ResetExecutionRequest,
+    SignalRequest, SignalResponse, UpsertAttributesRequest,
 };
 use super::groups::{FlushGroupResponse, GroupDetailResponse, GroupSummary, ListGroupsResponse};
 use super::queues::{
@@ -33,8 +33,9 @@ use super::quotas::{
     CreateQuotaRequest, ListQuotasResponse, QuotaResponse, QuotaUsageResponse, UpdateQuotaRequest,
 };
 use super::recurring::{
-    CreateRecurringRequest, CreateRecurringResponse, ListRecurringResponse,
-    RecurringDetailResponse, RecurringLifecycleRequest, RecurringSummary, UpdateRecurringRequest,
+    BackfillOccurrenceResult, BackfillRequest, BackfillResponse, CreateRecurringRequest,
+    CreateRecurringResponse, ListRecurringResponse, RecurringDetailResponse,
+    RecurringLifecycleRequest, RecurringSummary, UpdateRecurringRequest,
 };
 use super::replay::{ReplayResult, ReplaySummary};
 use super::retention::{
@@ -122,6 +123,7 @@ use acteon_core::{
         super::executions::get_execution_history,
         super::executions::signal_execution,
         super::executions::upsert_execution_attributes,
+        super::executions::reset_execution,
         super::queues::enqueue_task,
         super::queues::poll_queue,
         super::queues::heartbeat_task,
@@ -151,6 +153,7 @@ use acteon_core::{
         super::recurring::delete_recurring,
         super::recurring::pause_recurring,
         super::recurring::resume_recurring,
+        super::recurring::backfill_recurring,
         super::quotas::create_quota,
         super::quotas::list_quotas,
         super::quotas::get_quota,
@@ -253,7 +256,8 @@ use acteon_core::{
         ChainDefinitionSummary, ListChainDefinitionsResponse, ChainValidationErrorResponse,
         ChainHistoryResponse, StepHistoryEntry, StepAttemptResponse,
         ExecutionSummary, ListExecutionsResponse, ExecutionHistoryResponse,
-        SignalRequest, SignalResponse, UpsertAttributesRequest,
+        SignalRequest, SignalResponse, UpsertAttributesRequest, ResetExecutionRequest,
+        BackfillRequest, BackfillResponse, BackfillOccurrenceResult,
         WorkerTaskDto, EnqueueTaskRequest, PollQueueRequest, PollQueueResponse,
         HeartbeatRequest, CompleteTaskRequest, FailTaskRequest,
         WorkflowExecutionDto, StartWorkflowRequest, ListWorkflowsResponse,

@@ -330,6 +330,175 @@ impl Gateway {
         result
     }
 
+    /// Reset a chain execution to re-run from an earlier step.
+    ///
+    /// Works on terminal executions (completed, failed, cancelled, timed
+    /// out) and on paused ones — any in-flight wait is abandoned (a pending
+    /// worker task is cancelled best-effort). Step results from the reset
+    /// point onward are discarded; results of steps executed *before* the
+    /// target step on the recorded execution path are preserved, so
+    /// `{{steps.NAME.*}}` templates keep resolving.
+    ///
+    /// The target step must exist in the execution's pinned definition and
+    /// must have been reached by the original run.
+    #[allow(clippy::too_many_lines)]
+    pub async fn reset_execution(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        chain_id: &str,
+        target_step: &str,
+        reason: Option<String>,
+    ) -> Result<ChainState, GatewayError> {
+        let lock_name = format!("chain:{chain_id}");
+        let guard = self
+            .lock
+            .acquire(&lock_name, Duration::from_secs(30), Duration::from_secs(5))
+            .await
+            .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+
+        let result: Result<ChainState, GatewayError> = async {
+            let mut chain_state = self
+                .get_chain_status(namespace, tenant, chain_id)
+                .await?
+                .ok_or_else(|| GatewayError::ChainError(format!("chain not found: {chain_id}")))?;
+
+            let chain_config = chain_state
+                .config_snapshot
+                .as_deref()
+                .cloned()
+                .or_else(|| self.chains.read().get(&chain_state.chain_name).cloned())
+                .ok_or_else(|| {
+                    GatewayError::ChainError(format!(
+                        "chain configuration not found: {}",
+                        chain_state.chain_name
+                    ))
+                })?;
+
+            let target_idx = chain_config
+                .steps
+                .iter()
+                .position(|s| s.name == target_step)
+                .ok_or_else(|| {
+                    GatewayError::ChainError(format!(
+                        "step `{target_step}` not found in chain `{}`",
+                        chain_state.chain_name
+                    ))
+                })?;
+
+            let reached = chain_state.execution_path.iter().any(|n| n == target_step)
+                || target_idx <= chain_state.current_step;
+            if !reached {
+                return Err(GatewayError::ChainError(format!(
+                    "cannot reset to step `{target_step}`: the execution never reached it"
+                )));
+            }
+
+            // Abandon any in-flight wait. A pending worker task is cancelled
+            // so a late completion can't race the reset (the resume hook
+            // also checks the wait state, so this is belt-and-braces).
+            if let Some(WaitState::Worker { task_id, .. }) = &chain_state.wait_state {
+                let task_id = task_id.clone();
+                let _ = self.cancel_worker_task(namespace, tenant, &task_id).await;
+            }
+            chain_state.wait_state = None;
+
+            // Keep only the part of the execution path strictly before the
+            // first occurrence of the target step; results of those steps
+            // are preserved, everything else is cleared for re-execution.
+            let cut = chain_state
+                .execution_path
+                .iter()
+                .position(|n| n == target_step)
+                .unwrap_or(chain_state.execution_path.len());
+            chain_state.execution_path.truncate(cut);
+            let kept: std::collections::HashSet<&str> = chain_state
+                .execution_path
+                .iter()
+                .map(String::as_str)
+                .collect();
+            for (i, step) in chain_config.steps.iter().enumerate() {
+                if kept.contains(step.name.as_str()) {
+                    continue;
+                }
+                if let Some(slot) = chain_state.step_results.get_mut(i) {
+                    *slot = None;
+                }
+                if let Some(attempts) = chain_state.step_attempts.get_mut(i) {
+                    *attempts = 0;
+                }
+                if let Some(history) = chain_state.step_history.get_mut(i) {
+                    history.clear();
+                }
+            }
+
+            let now = Utc::now();
+            chain_state.execution_path.push(target_step.to_owned());
+            chain_state.current_step = target_idx;
+            chain_state.status = ChainStatus::Running;
+            chain_state.cancel_reason = None;
+            chain_state.cancelled_by = None;
+            chain_state.updated_at = now;
+            // An already-expired deadline would immediately time the
+            // execution out again; restart the timeout window instead.
+            #[allow(clippy::cast_possible_wrap)]
+            if let (Some(expires_at), Some(timeout)) =
+                (chain_state.expires_at, chain_config.timeout_seconds)
+                && expires_at <= now
+            {
+                chain_state.expires_at = Some(now + chrono::Duration::seconds(timeout as i64));
+            }
+
+            let chain_key = StateKey::new(namespace, tenant, KeyKind::Chain, chain_id);
+            let json = serde_json::to_string(&chain_state).map_err(|e| {
+                GatewayError::ChainError(format!("failed to serialize chain state: {e}"))
+            })?;
+            let stored = self.encrypt_state_value(&json)?;
+            self.state.set(&chain_key, &stored, None).await?;
+
+            // Terminal executions were removed from the pending index;
+            // re-register so the background advancer drives the re-run.
+            let pending_key = StateKey::new(namespace, tenant, KeyKind::PendingChains, chain_id);
+            let pending_val = serde_json::json!({
+                "chain_id": chain_id,
+                "chain_name": chain_state.chain_name,
+                "started_at": chain_state.started_at.to_rfc3339(),
+            });
+            self.state
+                .set(&pending_key, &pending_val.to_string(), None)
+                .await?;
+            self.state
+                .index_chain_ready(&pending_key, now.timestamp_millis())
+                .await?;
+
+            self.append_execution_history(
+                namespace,
+                tenant,
+                chain_id,
+                ExecutionEventType::ExecutionReset {
+                    step_name: target_step.to_owned(),
+                    step_index: target_idx,
+                    reason,
+                },
+                None,
+            )
+            .await;
+
+            debug!(
+                chain_id,
+                target_step, target_idx, "execution reset; re-running from step"
+            );
+            Ok(chain_state)
+        }
+        .await;
+
+        guard
+            .release()
+            .await
+            .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+        result
+    }
+
     /// List chain executions for visibility queries, including terminal
     /// executions (unlike [`Gateway::list_chains`], which only scans the
     /// pending index).

@@ -111,6 +111,24 @@ curl -X PUT "$ACTEON/v1/executions/$EXECUTION_ID/attributes" \
   -d '{"namespace": "ns", "tenant": "t1", "attributes": {"priority": "high"}}'
 ```
 
+## Resetting executions
+
+Any execution that reached a step — including terminal ones — can be reset
+to re-run from that step:
+
+```bash
+curl -X POST "$ACTEON/v1/executions/$EXECUTION_ID/reset" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"namespace": "ns", "tenant": "t1", "step": "send-email", "reason": "SMTP outage resolved"}'
+```
+
+Step results from the reset point onward are discarded; results of steps
+executed *before* the target on the recorded execution path are preserved,
+so `{{steps.NAME.*}}` templates keep resolving. Any in-flight wait is
+abandoned (a pending worker task is cancelled), an already-expired timeout
+window is restarted, and the reset itself is recorded in the event history
+(`execution_reset`).
+
 ## Statuses
 
 In addition to the existing chain statuses, durable executions introduce:

@@ -118,8 +118,9 @@ pub use quota::{
     quota_counter_key, validate_quota_scope_identifier,
 };
 pub use recurring::{
-    CronValidationError, DEFAULT_MIN_INTERVAL_SECONDS, RecurringAction, RecurringActionTemplate,
-    next_occurrence, validate_cron_expr, validate_min_interval, validate_timezone,
+    CronValidationError, DEFAULT_MIN_INTERVAL_SECONDS, OverlapPolicy, RecurringAction,
+    RecurringActionTemplate, next_occurrence, occurrences_between, validate_cron_expr,
+    validate_min_interval, validate_timezone,
 };
 pub use retention::RetentionPolicy;
 pub use silence::{MatchOp, Silence, SilenceMatcher};

@@ -476,3 +476,71 @@ pub async fn upsert_execution_attributes(
         }
     }
 }
+
+/// Request body for resetting an execution.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ResetExecutionRequest {
+    /// Namespace of the execution.
+    pub namespace: String,
+    /// Tenant of the execution.
+    pub tenant: String,
+    /// Name of the step to re-run from. Must exist in the execution's
+    /// pinned definition and have been reached by the original run.
+    pub step: String,
+    /// Optional reason recorded in the execution history.
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// `POST /v1/executions/{execution_id}/reset` -- re-run from an earlier step.
+#[utoipa::path(
+    post,
+    path = "/v1/executions/{execution_id}/reset",
+    tag = "Executions",
+    summary = "Reset an execution",
+    description = "Resets a (possibly terminal) chain execution to re-run from the \
+                   given step. Step results from the reset point onward are \
+                   discarded; earlier results are preserved so templates keep \
+                   resolving. The reset is recorded in the execution history.",
+    params(("execution_id" = String, Path, description = "Execution ID")),
+    request_body = ResetExecutionRequest,
+    responses(
+        (status = 200, description = "Reset execution", body = ExecutionSummary),
+        (status = 400, description = "Step never reached / unknown step", body = ErrorResponse),
+        (status = 404, description = "Execution not found", body = ErrorResponse),
+    )
+)]
+pub async fn reset_execution(
+    State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path(execution_id): Path<String>,
+    Json(req): Json<ResetExecutionRequest>,
+) -> impl IntoResponse {
+    if !identity.can_manage_scope(&req.tenant, &req.namespace) {
+        return tenant_forbidden(&req.namespace, &req.tenant);
+    }
+    let gw = state.gateway.read().await;
+    match gw
+        .reset_execution(
+            &req.namespace,
+            &req.tenant,
+            &execution_id,
+            &req.step,
+            req.reason,
+        )
+        .await
+    {
+        Ok(chain_state) => (StatusCode::OK, Json(summarize(&chain_state))).into_response(),
+        Err(e) => {
+            let msg = e.to_string();
+            let code = if msg.contains("chain not found") {
+                StatusCode::NOT_FOUND
+            } else if msg.contains("never reached") || msg.contains("not found in chain") {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            (code, Json(ErrorResponse { error: msg })).into_response()
+        }
+    }
+}

@@ -655,6 +655,61 @@ All recurring action operations emit structured log events via `tracing`:
 | `recurring.no_next` | warn | Cron has no future occurrences |
 | `recurring.dispatch_error` | error | Dispatch failed |
 
+## Overlap Policies
+
+When a recurring action's template starts a [task chain](chains.md), a new
+occurrence can fire while the chain from the previous occurrence is still
+running. The `overlap_policy` field controls what happens:
+
+| Policy | Behavior |
+|---|---|
+| `allow_all` (default) | Dispatch every occurrence regardless of running executions |
+| `skip` | Skip the new occurrence while the previous execution is still active |
+| `cancel_other` | Cancel the still-running previous execution, then dispatch |
+
+```json
+{
+  "namespace": "reports",
+  "tenant": "tenant-1",
+  "provider": "webhook",
+  "action_type": "nightly_report",
+  "payload": {},
+  "cron_expression": "0 2 * * *",
+  "overlap_policy": "skip"
+}
+```
+
+The gateway tracks the chain execution spawned by each occurrence
+(`last_execution_id`) and consults its status at the next fire. Skipped
+occurrences increment the `recurring_skipped` metric and do not advance
+`execution_count`; the schedule itself continues normally. Plain provider
+dispatches complete synchronously and are unaffected.
+
+## Backfill
+
+`POST /v1/recurring/{id}/backfill` dispatches one action per cron
+occurrence inside a past window — for example after an outage:
+
+```bash
+curl -X POST "$ACTEON/v1/recurring/$ID/backfill" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{
+    "namespace": "reports",
+    "tenant": "tenant-1",
+    "start": "2026-06-01T00:00:00Z",
+    "end": "2026-06-03T00:00:00Z",
+    "limit": 100
+  }'
+```
+
+The response lists each occurrence with its dispatch outcome. Occurrences
+are capped at `limit` (default 100, max 500) and dispatched through the
+normal gateway pipeline, so rules, quotas, and audit all apply. Each
+payload carries a `_backfill_occurrence` timestamp, and the template's
+`dedup_key` (with its `{{execution_time}}` placeholder) makes backfills
+idempotent — re-running the same window deduplicates already-dispatched
+occurrences. Backfilled occurrences count toward `execution_count`.
+
 ## Best Practices
 
 - **Use descriptive names**: Always set a `description` so recurring actions are easy to identify in the UI and logs.
@@ -670,7 +725,7 @@ All recurring action operations emit structured log events via `tracing`:
 
 - **Minimum interval**: 60 seconds. Cron expressions that fire more frequently are rejected at creation time.
 - **No sub-minute scheduling**: The minimum granularity for standard cron expressions is one minute.
-- **No backfill**: If the server is down and misses occurrences, they are not replayed. Only the next future occurrence is scheduled.
+- **No automatic backfill**: If the server is down and misses occurrences, they are not replayed automatically — only the next future occurrence is scheduled. Use `POST /v1/recurring/{id}/backfill` to replay a missed window explicitly.
 - **No cancellation of in-flight dispatches**: Once a dispatch is triggered, it cannot be cancelled. You can pause the recurring action to prevent future occurrences.
 - **Polling latency**: The background processor polls at the configured interval (`recurring_check_interval_seconds`), so dispatches may occur up to N seconds after the scheduled time.
 - **Eventual consistency**: In multi-instance deployments, there is a brief window where different instances may see slightly different state. The CAS claim pattern ensures correctness despite this.

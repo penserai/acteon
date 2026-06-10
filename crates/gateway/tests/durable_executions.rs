@@ -634,3 +634,160 @@ fn validation_rejects_signal_on_timeout_to_unknown_step() {
     let errors = config.validate();
     assert!(errors.iter().any(|e| e.contains("ghost")));
 }
+
+// -- Execution reset (replay from step) -----------------------------------------
+
+#[tokio::test]
+async fn reset_reruns_terminal_execution_from_step() {
+    let chain = ChainConfig::new("test-chain")
+        .with_step(email_step("one"))
+        .with_step(email_step("two"));
+    let gateway = build_gateway(vec![chain]);
+    let chain_id = start_chain(&gateway).await;
+
+    gateway
+        .advance_chain("notifications", "tenant-1", &chain_id)
+        .await
+        .unwrap();
+    gateway
+        .advance_chain("notifications", "tenant-1", &chain_id)
+        .await
+        .unwrap();
+    let state = gateway
+        .get_chain_status("notifications", "tenant-1", &chain_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(state.status, ChainStatus::Completed);
+
+    // Reset to the second step: the first step's result must be preserved,
+    // the second cleared and re-run.
+    let reset = gateway
+        .reset_execution(
+            "notifications",
+            "tenant-1",
+            &chain_id,
+            "two",
+            Some("operator re-run".into()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(reset.status, ChainStatus::Running);
+    assert_eq!(reset.current_step, 1);
+    assert!(reset.step_results[0].is_some(), "step one result preserved");
+    assert!(reset.step_results[1].is_none(), "step two cleared");
+    assert_eq!(reset.execution_path, vec!["one", "two"]);
+
+    gateway
+        .advance_chain("notifications", "tenant-1", &chain_id)
+        .await
+        .unwrap();
+    let state = gateway
+        .get_chain_status("notifications", "tenant-1", &chain_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(state.status, ChainStatus::Completed);
+    assert!(state.step_results[1].is_some());
+
+    // The reset is on the record.
+    let history = gateway
+        .get_execution_history("notifications", "tenant-1", &chain_id)
+        .await
+        .unwrap();
+    assert!(history.events.iter().any(|e| matches!(
+        &e.event,
+        ExecutionEventType::ExecutionReset { step_name, reason: Some(r), .. }
+            if step_name == "two" && r == "operator re-run"
+    )));
+}
+
+#[tokio::test]
+async fn reset_abandons_signal_wait() {
+    let gateway = build_gateway(vec![signal_chain_config(None, None)]);
+    let chain_id = start_chain(&gateway).await;
+
+    gateway
+        .advance_chain("notifications", "tenant-1", &chain_id)
+        .await
+        .unwrap();
+    let state = gateway
+        .get_chain_status("notifications", "tenant-1", &chain_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(state.status, ChainStatus::WaitingSignal);
+
+    // Reset to the same wait step: the wait is re-armed fresh.
+    let reset = gateway
+        .reset_execution(
+            "notifications",
+            "tenant-1",
+            &chain_id,
+            "wait-approval",
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(reset.status, ChainStatus::Running);
+    assert!(reset.wait_state.is_none());
+
+    // The execution still works end-to-end after the reset.
+    gateway
+        .signal_chain(
+            "notifications",
+            "tenant-1",
+            &chain_id,
+            "approved",
+            serde_json::json!({"ok": true}),
+        )
+        .await
+        .unwrap();
+    gateway
+        .advance_chain("notifications", "tenant-1", &chain_id)
+        .await
+        .unwrap();
+    gateway
+        .advance_chain("notifications", "tenant-1", &chain_id)
+        .await
+        .unwrap();
+    let state = gateway
+        .get_chain_status("notifications", "tenant-1", &chain_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(state.status, ChainStatus::Completed);
+}
+
+#[tokio::test]
+async fn reset_rejects_unreached_and_unknown_steps() {
+    let chain = ChainConfig::new("test-chain")
+        .with_step(ChainStepConfig::new_wait_for_signal(
+            "wait",
+            SignalStepConfig {
+                signal_name: "go".into(),
+                timeout_seconds: None,
+                on_timeout: None,
+            },
+        ))
+        .with_step(email_step("after"));
+    let gateway = build_gateway(vec![chain]);
+    let chain_id = start_chain(&gateway).await;
+    gateway
+        .advance_chain("notifications", "tenant-1", &chain_id)
+        .await
+        .unwrap();
+
+    // "after" was never reached (the chain is parked on the wait step).
+    let err = gateway
+        .reset_execution("notifications", "tenant-1", &chain_id, "after", None)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("never reached"));
+
+    let err = gateway
+        .reset_execution("notifications", "tenant-1", &chain_id, "ghost", None)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("not found in chain"));
+}

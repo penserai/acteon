@@ -16,7 +16,8 @@ use uuid::Uuid;
 use acteon_audit::AuditRecord;
 use acteon_core::{
     DEFAULT_MIN_INTERVAL_SECONDS, RecurringAction, RecurringActionTemplate, next_occurrence,
-    validate_cron_expr, validate_min_interval, validate_timezone,
+    occurrences_between, outcome_category, validate_cron_expr, validate_min_interval,
+    validate_timezone,
 };
 use acteon_state::{KeyKind, StateKey};
 
@@ -83,6 +84,11 @@ pub struct CreateRecurringRequest {
     /// Arbitrary key-value labels.
     #[serde(default)]
     pub labels: HashMap<String, String>,
+    /// Overlap policy: what to do when a new occurrence fires while the
+    /// chain execution from the previous occurrence is still running
+    /// (`allow_all` (default) | `skip` | `cancel_other`).
+    #[serde(default)]
+    pub overlap_policy: Option<acteon_core::OverlapPolicy>,
 }
 
 /// Request body for updating a recurring action.
@@ -606,6 +612,8 @@ pub async fn create_recurring(
         execution_count: 0,
         description: req.description.or(req.name.clone()),
         labels: req.labels,
+        overlap_policy: req.overlap_policy.unwrap_or_default(),
+        last_execution_id: None,
     };
 
     // Save and index.
@@ -1276,6 +1284,183 @@ pub async fn resume_recurring(
     (
         StatusCode::OK,
         Json(serde_json::json!(recurring_to_detail(&rec))),
+    )
+        .into_response()
+}
+
+/// Request body for backfilling missed occurrences of a recurring action.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct BackfillRequest {
+    /// Namespace.
+    pub namespace: String,
+    /// Tenant.
+    pub tenant: String,
+    /// Start of the backfill window (inclusive).
+    pub start: DateTime<Utc>,
+    /// End of the backfill window (inclusive).
+    pub end: DateTime<Utc>,
+    /// Maximum occurrences to dispatch (default 100, max 500).
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+/// Outcome of one backfilled occurrence.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BackfillOccurrenceResult {
+    /// The cron occurrence that was backfilled.
+    pub occurrence: DateTime<Utc>,
+    /// Dispatch outcome category (e.g. `"executed"`, `"deduplicated"`,
+    /// `"chain"`).
+    pub outcome: String,
+    /// Error message when the dispatch failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Response for a backfill run.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BackfillResponse {
+    /// Recurring action ID.
+    pub id: String,
+    /// Occurrences found in the window (after the cap).
+    pub occurrences: usize,
+    /// Occurrences successfully dispatched.
+    pub dispatched: usize,
+    /// Per-occurrence results, in chronological order.
+    pub results: Vec<BackfillOccurrenceResult>,
+}
+
+/// `POST /v1/recurring/{id}/backfill` -- dispatch missed occurrences.
+///
+/// Computes every cron occurrence of the recurring action inside
+/// `[start, end]` (capped) and dispatches one action per occurrence through
+/// the normal gateway pipeline. The template's `dedup_key` (with its
+/// `{{execution_time}}` placeholder) makes backfills idempotent: re-running
+/// the same window deduplicates already-dispatched occurrences.
+#[utoipa::path(
+    post,
+    path = "/v1/recurring/{id}/backfill",
+    tag = "Recurring Actions",
+    summary = "Backfill missed occurrences",
+    params(("id" = String, Path, description = "Recurring action ID")),
+    request_body = BackfillRequest,
+    responses(
+        (status = 200, description = "Backfill results", body = BackfillResponse),
+        (status = 400, description = "Invalid window", body = ErrorResponse),
+        (status = 404, description = "Recurring action not found", body = ErrorResponse),
+    )
+)]
+#[allow(clippy::too_many_lines)]
+pub async fn backfill_recurring(
+    State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path(id): Path<String>,
+    Json(req): Json<BackfillRequest>,
+) -> impl IntoResponse {
+    if !identity.can_manage_scope(&req.tenant, &req.namespace) {
+        return tenant_forbidden(&req.namespace, &req.tenant);
+    }
+    if req.start > req.end {
+        return error_response(StatusCode::BAD_REQUEST, "start must be <= end");
+    }
+    let limit = req.limit.unwrap_or(100).clamp(1, 500);
+
+    let gw = state.gateway.read().await;
+    let state_store = gw.state_store();
+    let enc = gw.payload_encryptor();
+
+    let rec =
+        match load_recurring(state_store.as_ref(), &req.namespace, &req.tenant, &id, enc).await {
+            Ok(Some(rec)) => rec,
+            Ok(None) => {
+                return error_response(
+                    StatusCode::NOT_FOUND,
+                    &format!("recurring action not found: {id}"),
+                );
+            }
+            Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
+        };
+
+    let cron = match validate_cron_expr(&rec.cron_expr) {
+        Ok(cron) => cron,
+        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    };
+    let tz = match validate_timezone(&rec.timezone) {
+        Ok(tz) => tz,
+        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    };
+
+    let occurrences = occurrences_between(&cron, tz, &req.start, &req.end, limit);
+    let mut results = Vec::with_capacity(occurrences.len());
+    let mut dispatched = 0usize;
+
+    for occurrence in &occurrences {
+        let mut payload = rec.action_template.payload.clone();
+        if let Some(obj) = payload.as_object_mut() {
+            // Mark like a normal recurring re-dispatch (quota exemption) and
+            // stamp the occurrence so providers can distinguish backfills.
+            obj.insert(
+                "_recurring_dispatch".to_owned(),
+                serde_json::Value::Bool(true),
+            );
+            obj.insert(
+                "_backfill_occurrence".to_owned(),
+                serde_json::Value::String(occurrence.to_rfc3339()),
+            );
+        }
+        let mut action = acteon_core::Action::new(
+            req.namespace.as_str(),
+            req.tenant.as_str(),
+            rec.action_template.provider.as_str(),
+            rec.action_template.action_type.as_str(),
+            payload,
+        );
+        // The dedup-key template makes the backfill idempotent per occurrence.
+        if let Some(ref template) = rec.action_template.dedup_key {
+            action.dedup_key = Some(
+                template
+                    .replace("{{recurring_id}}", &rec.id)
+                    .replace("{{execution_time}}", &occurrence.to_rfc3339()),
+            );
+        }
+
+        match gw.dispatch(action, None).await {
+            Ok(outcome) => {
+                dispatched += 1;
+                results.push(BackfillOccurrenceResult {
+                    occurrence: *occurrence,
+                    outcome: outcome_category(&outcome).to_owned(),
+                    error: None,
+                });
+            }
+            Err(e) => {
+                results.push(BackfillOccurrenceResult {
+                    occurrence: *occurrence,
+                    outcome: "failed".to_owned(),
+                    error: Some(e.public_message()),
+                });
+            }
+        }
+    }
+
+    // Count backfilled occurrences as executions.
+    if dispatched > 0 {
+        let mut rec = rec;
+        rec.execution_count += dispatched as u64;
+        rec.updated_at = Utc::now();
+        if let Err(e) = save_recurring(state_store.as_ref(), &rec, enc).await {
+            tracing::warn!(error = %e, "failed to persist backfill execution count");
+        }
+    }
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!(BackfillResponse {
+            id,
+            occurrences: occurrences.len(),
+            dispatched,
+            results,
+        })),
     )
         .into_response()
 }

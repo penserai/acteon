@@ -1238,6 +1238,8 @@ mod tests {
             execution_count: 0,
             description: None,
             labels: std::collections::HashMap::new(),
+            overlap_policy: acteon_core::OverlapPolicy::default(),
+            last_execution_id: None,
         }
     }
 

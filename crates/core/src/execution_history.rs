@@ -124,6 +124,13 @@ pub enum ExecutionEventType {
     SearchAttributesUpserted {
         attributes: HashMap<String, serde_json::Value>,
     },
+    /// The execution was reset to re-run from an earlier step. Step results
+    /// from the reset point onward were discarded.
+    ExecutionReset {
+        step_name: String,
+        step_index: usize,
+        reason: Option<String>,
+    },
     /// The execution completed successfully.
     ExecutionCompleted,
     /// The execution failed.

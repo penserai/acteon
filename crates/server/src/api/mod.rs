@@ -306,6 +306,10 @@ pub fn router(state: AppState) -> Router {
             "/v1/executions/{execution_id}/attributes",
             put(executions::upsert_execution_attributes),
         )
+        .route(
+            "/v1/executions/{execution_id}/reset",
+            post(executions::reset_execution),
+        )
         .route("/v1/chains", get(chains::list_chains))
         .route("/v1/chains/{chain_id}", get(chains::get_chain))
         .route("/v1/chains/{chain_id}/cancel", post(chains::cancel_chain))
@@ -341,6 +345,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/v1/recurring/{id}/resume",
             post(recurring::resume_recurring),
+        )
+        .route(
+            "/v1/recurring/{id}/backfill",
+            post(recurring::backfill_recurring),
         )
         // Quotas
         .route(
