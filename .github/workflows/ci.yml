@@ -65,6 +65,15 @@ jobs:
         rust: [stable, "1.88"]
     steps:
       - uses: actions/checkout@v4
+      # This job builds the full workspace with debug info plus the cloud
+      # provider feature matrices; the runner's default free space is no
+      # longer enough and the linker dies with SIGBUS at 0 MB free.
+      # Reclaim ~25 GB by dropping preinstalled toolchains we never use.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h /
       - name: Install librdkafka build deps
         run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
       - uses: dtolnay/rust-toolchain@master
