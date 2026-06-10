@@ -17,12 +17,14 @@ pub mod dispatch;
 pub mod dlq;
 pub mod embeddings;
 pub mod events;
+pub mod executions;
 pub mod groups;
 pub mod health;
 pub mod openapi;
 pub mod plugins;
 pub mod prometheus;
 pub mod provider_health;
+pub mod queues;
 pub mod quotas;
 pub mod recurring;
 pub mod replay;
@@ -38,6 +40,7 @@ pub mod templates;
 pub mod time_intervals;
 pub mod trace_context;
 pub mod verify;
+pub mod workflows;
 
 use std::sync::Arc;
 
@@ -251,6 +254,58 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/groups/{group_key}", get(groups::get_group))
         .route("/v1/groups/{group_key}", delete(groups::flush_group))
         // Chains (task chain orchestration)
+        .route("/v1/queues/{queue}/tasks", post(queues::enqueue_task))
+        .route("/v1/queues/{queue}/tasks", get(queues::list_tasks))
+        .route("/v1/queues/{queue}/poll", post(queues::poll_queue))
+        .route("/v1/queues/tasks/{task_id}", get(queues::get_task))
+        .route(
+            "/v1/queues/tasks/{task_id}/heartbeat",
+            post(queues::heartbeat_task),
+        )
+        .route(
+            "/v1/queues/tasks/{task_id}/complete",
+            post(queues::complete_task),
+        )
+        .route("/v1/queues/tasks/{task_id}/fail", post(queues::fail_task))
+        .route("/v1/workflows/start", post(workflows::start_workflow))
+        .route("/v1/workflows/executions", get(workflows::list_workflows))
+        .route(
+            "/v1/workflows/executions/{execution_id}",
+            get(workflows::get_workflow),
+        )
+        .route(
+            "/v1/workflows/executions/{execution_id}/signal/{signal_name}",
+            post(workflows::signal_workflow),
+        )
+        .route(
+            "/v1/workflows/executions/{execution_id}/cancel",
+            post(workflows::cancel_workflow),
+        )
+        .route(
+            "/v1/workflows/executions/{execution_id}/checkpoints",
+            post(workflows::record_checkpoint),
+        )
+        .route(
+            "/v1/workflows/executions/{execution_id}/children",
+            post(workflows::start_child_workflow),
+        )
+        .route("/v1/executions", get(executions::list_executions))
+        .route(
+            "/v1/executions/{execution_id}",
+            get(executions::get_execution),
+        )
+        .route(
+            "/v1/executions/{execution_id}/history",
+            get(executions::get_execution_history),
+        )
+        .route(
+            "/v1/executions/{execution_id}/signal/{signal_name}",
+            post(executions::signal_execution),
+        )
+        .route(
+            "/v1/executions/{execution_id}/attributes",
+            put(executions::upsert_execution_attributes),
+        )
         .route("/v1/chains", get(chains::list_chains))
         .route("/v1/chains/{chain_id}", get(chains::get_chain))
         .route("/v1/chains/{chain_id}/cancel", post(chains::cancel_chain))

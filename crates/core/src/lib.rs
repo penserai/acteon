@@ -20,6 +20,7 @@ pub mod context;
 pub mod coverage;
 pub mod enrichment;
 pub mod error;
+pub mod execution_history;
 pub mod fingerprint;
 pub mod group;
 pub mod key;
@@ -36,6 +37,8 @@ pub mod template;
 pub mod tenant_scope;
 pub mod time_interval;
 pub mod types;
+pub mod worker_task;
+pub mod workflow;
 
 pub use action::{Action, ActionMetadata};
 pub use analytics::{
@@ -86,7 +89,8 @@ pub use caller::Caller;
 pub use chain::{
     BranchCondition, BranchOperator, ChainConfig, ChainFailurePolicy, ChainNotificationTarget,
     ChainState, ChainStatus, ChainStepConfig, ParallelExecutionState, ParallelFailurePolicy,
-    ParallelJoinPolicy, ParallelStepGroup, ParallelSubStepStatus, StepFailurePolicy, StepResult,
+    ParallelJoinPolicy, ParallelStepGroup, ParallelSubStepStatus, SignalStepConfig,
+    StepFailurePolicy, StepResult, TimerStepConfig, WaitState, WorkerStepConfig,
     validate_chain_graph,
 };
 pub use chain_dag::{DagEdge, DagNode, DagResponse};
@@ -100,6 +104,9 @@ pub use coverage::{
 };
 pub use enrichment::{EnrichmentConfig, EnrichmentFailurePolicy, EnrichmentOutcome};
 pub use error::ActeonError;
+pub use execution_history::{
+    ExecutionEvent, ExecutionEventType, ExecutionHistory, MAX_HISTORY_EVENTS,
+};
 pub use fingerprint::compute_fingerprint;
 pub use group::{EventGroup, GroupState, GroupedEvent};
 pub use key::ActionKey;
@@ -136,3 +143,12 @@ pub use time_interval::{
     TimeRange, WeekdayRange, YearRange,
 };
 pub use types::{ActionId, Namespace, ProviderId, TenantId};
+pub use worker_task::{
+    DEFAULT_TASK_LEASE_SECONDS, DEFAULT_TASK_MAX_ATTEMPTS, MAX_TASK_LEASE_SECONDS, WorkerTask,
+    WorkerTaskStatus,
+};
+pub use workflow::{
+    BufferedSignal, CHILD_RESULT_SIGNAL_PREFIX, ParentClosePolicy, WORKFLOW_TASK_ACTION_TYPE,
+    WorkflowAwait, WorkflowCheckpoint, WorkflowChildRef, WorkflowDirective, WorkflowExecution,
+    WorkflowStatus,
+};

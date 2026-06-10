@@ -162,7 +162,7 @@ pub struct ChainDetailResponse {
     pub child_chain_ids: Vec<String>,
 }
 
-fn parse_status_filter(s: &str) -> Option<ChainStatus> {
+pub(crate) fn parse_status_filter(s: &str) -> Option<ChainStatus> {
     match s {
         "running" => Some(ChainStatus::Running),
         "completed" => Some(ChainStatus::Completed),
@@ -170,11 +170,15 @@ fn parse_status_filter(s: &str) -> Option<ChainStatus> {
         "cancelled" => Some(ChainStatus::Cancelled),
         "timed_out" => Some(ChainStatus::TimedOut),
         "waiting_sub_chain" => Some(ChainStatus::WaitingSubChain),
+        "waiting_parallel" => Some(ChainStatus::WaitingParallel),
+        "waiting_timer" => Some(ChainStatus::WaitingTimer),
+        "waiting_signal" => Some(ChainStatus::WaitingSignal),
+        "waiting_worker" => Some(ChainStatus::WaitingWorker),
         _ => None,
     }
 }
 
-fn status_to_string(s: &ChainStatus) -> String {
+pub(crate) fn status_to_string(s: &ChainStatus) -> String {
     match s {
         ChainStatus::Running => "running".into(),
         ChainStatus::Completed => "completed".into(),
@@ -183,6 +187,9 @@ fn status_to_string(s: &ChainStatus) -> String {
         ChainStatus::TimedOut => "timed_out".into(),
         ChainStatus::WaitingSubChain => "waiting_sub_chain".into(),
         ChainStatus::WaitingParallel => "waiting_parallel".into(),
+        ChainStatus::WaitingTimer => "waiting_timer".into(),
+        ChainStatus::WaitingSignal => "waiting_signal".into(),
+        ChainStatus::WaitingWorker => "waiting_worker".into(),
     }
 }
 
