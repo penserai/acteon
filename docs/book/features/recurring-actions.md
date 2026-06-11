@@ -685,6 +685,14 @@ occurrences increment the `recurring_skipped` metric and do not advance
 `execution_count`; the schedule itself continues normally. Plain provider
 dispatches complete synchronously and are unaffected.
 
+Enforcement lives in the gateway (`Gateway::enforce_overlap_policy`), so
+embedders driving the gateway directly get the same semantics as the
+bundled server: call it before dispatching an occurrence and drop the
+dispatch when it returns a `Skip` decision. Enforcement is best-effort by
+design — a failed status read proceeds rather than stalling the schedule,
+and a failed `cancel_other` cancel proceeds because the previous execution
+may have settled in between.
+
 ## Backfill
 
 `POST /v1/recurring/{id}/backfill` dispatches one action per cron

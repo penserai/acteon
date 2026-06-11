@@ -11,6 +11,7 @@ pub mod gateway;
 pub mod group_manager;
 pub mod metrics;
 mod quota_enforcement;
+pub mod recurring_overlap;
 mod silence_enforcement;
 pub(crate) mod sync_state;
 pub mod task_chain_bridge;
@@ -35,6 +36,7 @@ pub use execution::ExecutionFilter;
 pub use gateway::{ApprovalKey, ApprovalKeySet, ApprovalRecord, ApprovalStatus, Gateway};
 pub use group_manager::GroupManager;
 pub use metrics::{GatewayMetrics, MetricsSnapshot, ProviderMetrics, ProviderStatsSnapshot};
+pub use recurring_overlap::OverlapDecision;
 pub use silence_enforcement::CachedSilence;
 pub use task_chain_bridge::{
     BridgeError as TaskChainBridgeError, link_task_to_chain, project_chain_status_to_task_state,
