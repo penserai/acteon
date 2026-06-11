@@ -1,0 +1,107 @@
+{
+  "description": "Cross-SDK contract fixtures for the checkpoint-based workflow engine. Every workflow-capable SDK (Python, Node.js) and the Rust server must agree on these wire shapes and checkpoint-key derivations, so a single execution can migrate between workers written in different languages and every SDK-emitted directive parses server-side. Consumed by crates/core/tests/workflow_contract.rs, clients/python/tests/test_contract.py, and clients/nodejs/src/contract.test.ts.",
+  "constants": {
+    "workflow_task_action_type": "__workflow__",
+    "child_result_signal_prefix": "__child:",
+    "timed_out_marker": { "timed_out": true }
+  },
+  "directives": [
+    {
+      "name": "complete",
+      "json": { "directive": "complete", "result": { "ok": true, "count": 3 } }
+    },
+    {
+      "name": "fail",
+      "json": { "directive": "fail", "error": "provisioning broke" }
+    },
+    {
+      "name": "sleep",
+      "json": { "directive": "sleep", "checkpoint": "sleep#0", "seconds": 30 }
+    },
+    {
+      "name": "await_signal",
+      "json": {
+        "directive": "await_signal",
+        "checkpoint": "signal:approved#0",
+        "name": "approved",
+        "timeout_seconds": 300
+      }
+    },
+    {
+      "name": "await_signal_no_timeout",
+      "json": { "directive": "await_signal", "checkpoint": "signal:go#0", "name": "go" }
+    }
+  ],
+  "invalid_directives": [
+    {
+      "reason": "float seconds must be rejected by the server, never emitted by an SDK",
+      "json": { "directive": "sleep", "checkpoint": "sleep#0", "seconds": 0.5 }
+    },
+    {
+      "reason": "unknown directive tag",
+      "json": { "directive": "hibernate", "checkpoint": "sleep#0" }
+    },
+    {
+      "reason": "await_signal without a signal name",
+      "json": { "directive": "await_signal", "checkpoint": "signal:x#0" }
+    }
+  ],
+  "checkpoint_key_scenarios": [
+    {
+      "name": "straight_line",
+      "ops": [
+        { "op": "step", "name": "charge" },
+        { "op": "sleep", "seconds": 5 },
+        { "op": "wait_for_signal", "name": "approved" },
+        { "op": "step", "name": "fulfill" }
+      ],
+      "expected_keys": ["step:charge#0", "sleep#0", "signal:approved#0", "step:fulfill#0"]
+    },
+    {
+      "name": "repeated_names_use_occurrence_counters",
+      "ops": [
+        { "op": "step", "name": "poll" },
+        { "op": "step", "name": "poll" },
+        { "op": "sleep", "seconds": 1 },
+        { "op": "sleep", "seconds": 1 },
+        { "op": "wait_for_signal", "name": "tick" },
+        { "op": "wait_for_signal", "name": "tick" },
+        { "op": "step", "name": "poll" }
+      ],
+      "expected_keys": [
+        "step:poll#0",
+        "step:poll#1",
+        "sleep#0",
+        "sleep#1",
+        "signal:tick#0",
+        "signal:tick#1",
+        "step:poll#2"
+      ]
+    },
+    {
+      "name": "children_and_child_waits",
+      "ops": [
+        { "op": "start_child", "workflow": "fulfillment" },
+        { "op": "wait_for_child", "child_id": "child-1" },
+        { "op": "start_child", "workflow": "fulfillment" }
+      ],
+      "expected_keys": [
+        "child:fulfillment#0",
+        "signal:__child:child-1#0",
+        "child:fulfillment#1"
+      ]
+    }
+  ],
+  "sleep_coercions": [
+    { "input_seconds": 30, "expected_seconds": 30 },
+    { "input_seconds": 0.5, "expected_seconds": 1 },
+    { "input_seconds": 30.7, "expected_seconds": 30 },
+    { "input_seconds": 0, "expected_seconds": 1 },
+    { "input_seconds": -5, "expected_seconds": 1 }
+  ],
+  "signal_timeout_coercions": [
+    { "input_seconds": 300, "expected_seconds": 300 },
+    { "input_seconds": 0.5, "expected_seconds": 1 },
+    { "input_seconds": 86399.9, "expected_seconds": 86399 }
+  ]
+}
