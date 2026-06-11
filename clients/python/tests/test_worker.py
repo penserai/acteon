@@ -9,8 +9,10 @@ every settle call — the same boundary the ``_StubClient`` pattern in
 - plain handler success completes with the handler result;
 - handler exceptions fail retryable by default, ``NonRetryableError``
   opts out;
-- ``__workflow__`` tasks route by ``payload["workflow"]`` and settle
-  with a directive (complete / fail / sleep / await_signal);
+- ``__workflow__`` tasks route by ``payload["workflow"]``, resolve
+  the execution's input/checkpoints from the server (slim payload),
+  and settle with a directive (complete / fail / sleep /
+  await_signal); legacy fat payloads skip the fetch;
 - replayed checkpoints are not re-executed;
 - ``run()`` processes tasks until ``stop()``;
 - long-running handlers are heartbeat-extended.
@@ -47,19 +49,30 @@ def _task(action_type: str = "send_email", payload: Any = None, **overrides: Any
     return WorkerTask(**fields)
 
 
-def _workflow_task(
-    workflow: str = "onboarding",
-    input: Any = None,
-    checkpoints: Optional[list] = None,
-) -> WorkerTask:
+def _workflow_task(workflow: str = "onboarding") -> WorkerTask:
+    """A slim continuation task: state lives on the server."""
     return _task(
         action_type=WORKFLOW_ACTION_TYPE,
-        payload={
+        payload={"execution_id": "ex-1", "workflow": workflow},
+    )
+
+
+def _execution(
+    input: Any = None, checkpoints: Optional[list] = None
+) -> "WorkflowExecution":
+    from acteon_client.workflows import WorkflowExecution
+
+    return WorkflowExecution.from_dict(
+        {
             "execution_id": "ex-1",
-            "workflow": workflow,
+            "workflow": "onboarding",
+            "queue": "emails",
+            "status": "running",
             "input": input if input is not None else {"user": "u-1"},
             "checkpoints": checkpoints or [],
-        },
+            "created_at": "2026-06-10T00:00:00Z",
+            "updated_at": "2026-06-10T00:00:00Z",
+        }
     )
 
 
@@ -77,6 +90,10 @@ class _FakeClient:
         self.completes: list[tuple[str, Any]] = []
         self.fails: list[tuple[str, str, bool]] = []
         self.checkpoint_calls: list[tuple[str, Any]] = []
+        # Executions served to slim continuation fetches, keyed by ID.
+        self.executions: dict[str, Any] = {}
+        self.get_execution_calls: list[str] = []
+        self.get_execution_error: Optional[Exception] = None
         self._lock = threading.Lock()
 
     def poll_tasks(self, queue, namespace, tenant, *, max_tasks=None,
@@ -118,6 +135,13 @@ class _FakeClient:
         with self._lock:
             self.checkpoint_calls.append((name, data))
         return WorkflowCheckpoint(seq=len(self.checkpoint_calls), name=name, data=data)
+
+    def get_workflow_execution(self, execution_id, namespace, tenant):
+        with self._lock:
+            self.get_execution_calls.append(execution_id)
+        if self.get_execution_error is not None:
+            raise self.get_execution_error
+        return self.executions.get(execution_id)
 
     def start_child_workflow(self, *args, **kwargs):
         raise AssertionError("not used in these tests")
@@ -227,6 +251,7 @@ class TestPlainHandlers(unittest.TestCase):
 class TestWorkflowTasks(unittest.TestCase):
     def test_workflow_return_completes_with_directive(self):
         client = _FakeClient(batches=[[_workflow_task()]])
+        client.executions["ex-1"] = _execution()
         worker = _worker(client)
 
         def onboarding(ctx, input):
@@ -235,13 +260,68 @@ class TestWorkflowTasks(unittest.TestCase):
         worker.register_workflow("onboarding", onboarding)
         worker.run_once()
 
+        # The slim payload triggers exactly one execution fetch.
+        self.assertEqual(client.get_execution_calls, ["ex-1"])
         self.assertEqual(
             client.completes,
             [("t-1", {"directive": "complete", "result": {"welcomed": "u-1"}})],
         )
 
+    def test_legacy_fat_payload_skips_the_fetch(self):
+        # Pre-slim servers embed input + checkpoints in the payload;
+        # the worker must honor them without a server round trip.
+        task = _task(
+            action_type=WORKFLOW_ACTION_TYPE,
+            payload={
+                "execution_id": "ex-1",
+                "workflow": "onboarding",
+                "input": {"user": "legacy"},
+                "checkpoints": [],
+            },
+        )
+        client = _FakeClient(batches=[[task]])
+        worker = _worker(client)
+
+        def onboarding(ctx, input):
+            return {"welcomed": input["user"]}
+
+        worker.register_workflow("onboarding", onboarding)
+        worker.run_once()
+
+        self.assertEqual(client.get_execution_calls, [])
+        self.assertEqual(
+            client.completes,
+            [("t-1", {"directive": "complete", "result": {"welcomed": "legacy"}})],
+        )
+
+    def test_missing_execution_fails_permanently(self):
+        client = _FakeClient(batches=[[_workflow_task()]])  # no execution served
+        worker = _worker(client)
+        worker.register_workflow("onboarding", lambda ctx, input: "unreached")
+        worker.run_once()
+
+        self.assertEqual(client.completes, [])
+        self.assertEqual(len(client.fails), 1)
+        task_id, error, retryable = client.fails[0]
+        self.assertIn("ex-1", error)
+        self.assertFalse(retryable)
+
+    def test_execution_fetch_error_fails_retryable(self):
+        client = _FakeClient(batches=[[_workflow_task()]])
+        client.get_execution_error = RuntimeError("server unreachable")
+        worker = _worker(client)
+        worker.register_workflow("onboarding", lambda ctx, input: "unreached")
+        worker.run_once()
+
+        self.assertEqual(client.completes, [])
+        self.assertEqual(len(client.fails), 1)
+        task_id, error, retryable = client.fails[0]
+        self.assertIn("server unreachable", error)
+        self.assertTrue(retryable)
+
     def test_workflow_exception_completes_with_fail_directive(self):
         client = _FakeClient(batches=[[_workflow_task()]])
+        client.executions["ex-1"] = _execution()
         worker = _worker(client)
 
         def onboarding(ctx, input):
@@ -261,6 +341,7 @@ class TestWorkflowTasks(unittest.TestCase):
 
     def test_workflow_sleep_completes_with_sleep_directive(self):
         client = _FakeClient(batches=[[_workflow_task()]])
+        client.executions["ex-1"] = _execution()
         worker = _worker(client)
 
         def onboarding(ctx, input):
@@ -277,6 +358,7 @@ class TestWorkflowTasks(unittest.TestCase):
 
     def test_workflow_await_signal_completes_with_directive(self):
         client = _FakeClient(batches=[[_workflow_task()]])
+        client.executions["ex-1"] = _execution()
         worker = _worker(client)
 
         def onboarding(ctx, input):
@@ -305,7 +387,8 @@ class TestWorkflowTasks(unittest.TestCase):
             {"seq": 1, "name": "step:provision#0", "data": {"account": "acct-9"}},
             {"seq": 2, "name": "sleep#0", "data": {}},
         ]
-        client = _FakeClient(batches=[[_workflow_task(checkpoints=checkpoints)]])
+        client = _FakeClient(batches=[[_workflow_task()]])
+        client.executions["ex-1"] = _execution(checkpoints=checkpoints)
         worker = _worker(client)
         executed = []
 
@@ -326,6 +409,7 @@ class TestWorkflowTasks(unittest.TestCase):
 
     def test_workflow_first_run_records_step_then_suspends(self):
         client = _FakeClient(batches=[[_workflow_task()]])
+        client.executions["ex-1"] = _execution()
         worker = _worker(client)
 
         def onboarding(ctx, input):
@@ -353,6 +437,8 @@ class TestWorkflowTasks(unittest.TestCase):
         task_id, error, retryable = client.fails[0]
         self.assertIn("unknown_flow", error)
         self.assertTrue(retryable)
+        # The routing miss is decided before any execution fetch.
+        self.assertEqual(client.get_execution_calls, [])
 
 
 class TestRunLoop(unittest.TestCase):

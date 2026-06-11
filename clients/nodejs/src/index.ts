@@ -58,6 +58,7 @@ export {
   type WorkflowFn,
   type WorkflowTaskPayload,
   WorkflowContext,
+  WorkflowExecutionNotFoundError,
   WorkflowSuspend,
   runWorkflowTask,
   parseWorkflowCheckpoint,

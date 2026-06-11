@@ -27,6 +27,8 @@ import { ActeonError, NonRetryableError } from "./errors.js";
 import { WorkerTask } from "./queues.js";
 import {
   WORKFLOW_TASK_ACTION_TYPE,
+  WorkflowDirective,
+  WorkflowExecutionNotFoundError,
   WorkflowFn,
   WorkflowTaskPayload,
   runWorkflowTask,
@@ -323,13 +325,30 @@ export class Worker {
       );
       return;
     }
-    const directive = await runWorkflowTask(
-      this.client,
-      this.namespace,
-      this.tenant,
-      fn,
-      payload,
-    );
+    let directive: WorkflowDirective;
+    try {
+      directive = await runWorkflowTask(
+        this.client,
+        this.namespace,
+        this.tenant,
+        fn,
+        payload,
+      );
+    } catch (error) {
+      // The runner only throws when the execution state could not be
+      // resolved (the workflow function itself never ran): permanently
+      // for a missing execution, retryably for transport failures.
+      const message = error instanceof Error ? error.message : String(error);
+      await this.client.failTask(
+        task.taskId,
+        this.namespace,
+        this.tenant,
+        leaseToken(),
+        message,
+        !(error instanceof WorkflowExecutionNotFoundError),
+      );
+      return;
+    }
     await this.client.completeTask(
       task.taskId,
       this.namespace,

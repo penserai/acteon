@@ -298,6 +298,96 @@ describe("Worker workflow routing", () => {
     }
   });
 
+  it("a slim continuation resolves execution state from the server", async () => {
+    const workflowTask = wireTask({
+      action_type: "__workflow__",
+      payload: { execution_id: "exec-1", workflow: "onboarding" },
+    });
+    const wireExecution = {
+      execution_id: "exec-1",
+      workflow: "onboarding",
+      queue: "billing",
+      status: "running",
+      input: { u: 1 },
+      checkpoints: [
+        {
+          seq: 1,
+          name: "step:create-user#0",
+          data: { id: 7 },
+          recorded_at: "2026-06-10T00:00:00Z",
+        },
+      ],
+      created_at: "2026-06-10T00:00:00Z",
+      updated_at: "2026-06-10T00:00:00Z",
+    };
+    const { calls, restore } = routeFetch((call) => {
+      if (call.url.endsWith("/poll")) {
+        return { body: { tasks: [workflowTask] } };
+      }
+      if (
+        call.method === "GET" &&
+        call.url.includes("/v1/workflows/executions/exec-1")
+      ) {
+        return { body: wireExecution };
+      }
+      return { body: wireTask() };
+    });
+    try {
+      const worker = makeWorker();
+      const ran: string[] = [];
+      worker.registerWorkflow("onboarding", async (ctx, input) => {
+        const user = await ctx.step("create-user", () => {
+          ran.push("create-user");
+          return { id: 999 };
+        });
+        return { user, input };
+      });
+      await worker.runOnce();
+
+      // The fetched record replays the checkpoint and supplies the input.
+      expect(ran).toEqual([]);
+      const complete = calls.find((call) => call.url.endsWith("/complete"));
+      expect(complete?.body.result).toEqual({
+        directive: "complete",
+        result: { user: { id: 7 }, input: { u: 1 } },
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  it("a slim continuation for a missing execution fails permanently", async () => {
+    const workflowTask = wireTask({
+      action_type: "__workflow__",
+      payload: { execution_id: "exec-gone", workflow: "onboarding" },
+    });
+    const { calls, restore } = routeFetch((call) => {
+      if (call.url.endsWith("/poll")) {
+        return { body: { tasks: [workflowTask] } };
+      }
+      if (
+        call.method === "GET" &&
+        call.url.includes("/v1/workflows/executions/")
+      ) {
+        return { status: 404, body: { error: "not found" } };
+      }
+      return { body: wireTask() };
+    });
+    try {
+      const worker = makeWorker();
+      worker.registerWorkflow("onboarding", async () => "unreached");
+      await worker.runOnce();
+
+      const fail = calls.find((call) => call.url.endsWith("/fail"));
+      expect(fail?.body.error).toEqual(
+        "workflow execution not found: exec-gone",
+      );
+      expect(fail?.body.retryable).toEqual(false);
+    } finally {
+      restore();
+    }
+  });
+
   it("an unregistered workflow fails the task as retryable", async () => {
     const workflowTask = wireTask({
       action_type: "__workflow__",

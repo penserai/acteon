@@ -9,10 +9,13 @@
 - Workflow functions are registered via
   :meth:`Worker.register_workflow`. Continuation tasks arrive with
   the reserved action type ``__workflow__`` and are routed by
-  ``payload["workflow"]``; the worker builds a
-  :class:`~acteon_client.workflows.WorkflowContext` from the
-  payload's recorded checkpoints and settles the task with a
-  *directive* (see ``workflows.py`` for the execution model).
+  ``payload["workflow"]``. The payload is *slim* — it carries only
+  the execution reference — so the worker fetches the execution's
+  input and recorded checkpoints from the server, builds a
+  :class:`~acteon_client.workflows.WorkflowContext`, and settles the
+  task with a *directive* (see ``workflows.py`` for the execution
+  model). Legacy fat payloads (pre-slim servers embed ``input`` and
+  ``checkpoints`` in the task) are still honored without a fetch.
 
 Failure convention
 ------------------
@@ -327,15 +330,44 @@ class Worker:
             # release the continuation for re-delivery.
             self._fail(task, f"no workflow registered for {name!r}", True)
             return
+        execution_id = payload.get("execution_id", "")
+        if "checkpoints" in payload:
+            # Legacy fat payload (pre-slim server): state is embedded.
+            input = payload.get("input")
+            checkpoints = {
+                c["name"]: c.get("data") for c in payload.get("checkpoints") or []
+            }
+        else:
+            # Slim payload: resolve the execution's input and recorded
+            # checkpoints from the server.
+            try:
+                execution = self._client.get_workflow_execution(
+                    execution_id, self._namespace, self._tenant
+                )
+            except Exception as e:
+                # Transient fetch failure: release for re-delivery.
+                self._fail(
+                    task,
+                    f"failed to load workflow execution {execution_id}: {e}",
+                    True,
+                )
+                return
+            if execution is None:
+                # The execution record is gone (deleted or expired);
+                # re-delivery cannot help.
+                self._fail(
+                    task, f"workflow execution not found: {execution_id}", False
+                )
+                return
+            input = execution.input
+            checkpoints = {c.name: c.data for c in execution.checkpoints}
         ctx = WorkflowContext(
             self._client,
             self._namespace,
             self._tenant,
-            execution_id=payload.get("execution_id", ""),
-            input=payload.get("input"),
-            checkpoints={
-                c["name"]: c.get("data") for c in payload.get("checkpoints", [])
-            },
+            execution_id=execution_id,
+            input=input,
+            checkpoints=checkpoints,
         )
         try:
             result = _run_maybe_async(fn(ctx, ctx.input))

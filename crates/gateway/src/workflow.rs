@@ -904,14 +904,14 @@ impl Gateway {
         }
     }
 
-    /// Build a continuation task carrying a snapshot of the execution
-    /// (input + checkpoints) so the worker can replay without extra reads.
+    /// Build a slim continuation task referencing the execution. The worker
+    /// resolves input + recorded checkpoints from the execution record (one
+    /// GET per continuation), so the queued payload stays O(1) instead of
+    /// re-serializing an ever-growing checkpoint snapshot on every resume.
     fn build_continuation_task(exec: &WorkflowExecution) -> WorkerTask {
         let payload = serde_json::json!({
             "execution_id": exec.execution_id,
             "workflow": exec.workflow,
-            "input": exec.input,
-            "checkpoints": exec.checkpoints,
         });
         WorkerTask::new(
             exec.namespace.as_str(),
