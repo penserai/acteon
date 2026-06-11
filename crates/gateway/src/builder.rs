@@ -853,6 +853,7 @@ impl GatewayBuilder {
             llm_fail_open: self.llm_fail_open,
             chains: parking_lot::RwLock::new(self.chains),
             chain_step_indices: parking_lot::RwLock::new(chain_step_indices),
+            pinned_config_cache: parking_lot::RwLock::new(std::collections::HashMap::new()),
             completed_chain_ttl: self.completed_chain_ttl,
             embedding: self.embedding,
             default_timezone,

@@ -757,17 +757,12 @@ impl Gateway {
                 return Ok(());
             }
 
-            let chain_config = chain_state
-                .config_snapshot
-                .as_deref()
-                .cloned()
-                .or_else(|| self.chains.read().get(&chain_state.chain_name).cloned())
-                .ok_or_else(|| {
-                    GatewayError::ChainError(format!(
-                        "chain configuration not found: {}",
-                        chain_state.chain_name
-                    ))
-                })?;
+            let chain_config = self.execution_config(&chain_state).await?.ok_or_else(|| {
+                GatewayError::ChainError(format!(
+                    "chain configuration not found: {}",
+                    chain_state.chain_name
+                ))
+            })?;
             if step_idx >= chain_config.steps.len() {
                 return Ok(());
             }

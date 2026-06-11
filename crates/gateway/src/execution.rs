@@ -25,6 +25,16 @@ pub(crate) const EXEC_HISTORY_KIND: &str = "exec_history";
 pub(crate) const EXEC_HISTORY_SEQ_KIND: &str = "exec_history_seq";
 /// State-store kind for buffered chain signals.
 pub(crate) const CHAIN_SIGNAL_KIND: &str = "chain_signal";
+/// State-store kind for pinned (immutable) chain definitions, keyed
+/// `{name}@{version}` within a namespace/tenant. Written once when the
+/// first execution pins a version; every execution of that version
+/// resolves it from here instead of embedding a snapshot per execution.
+pub(crate) const PINNED_CHAIN_DEF_KIND: &str = "chain_def_pinned";
+
+/// Size cap for the process-local pinned-definition cache; reaching it
+/// clears the cache (entries are immutable and re-loadable, so eviction
+/// correctness is trivial).
+const PINNED_CONFIG_CACHE_CAP: usize = 256;
 
 /// How long a buffered (not-yet-consumed) signal is retained.
 const SIGNAL_BUFFER_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
@@ -189,6 +199,82 @@ impl Gateway {
         }
         events.sort_by_key(|e| e.event_id);
         Ok(ExecutionHistory { events })
+    }
+
+    /// Persist the definition an execution pins at start. Write-once per
+    /// `{name}@{version}`: definitions are immutable per version, so a
+    /// concurrent start of the same version is a no-op.
+    ///
+    /// Pinned definitions are never expired: an execution may sleep for
+    /// months and must still resolve the version it started with.
+    pub(crate) async fn pin_chain_definition(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        config: &acteon_core::ChainConfig,
+    ) -> Result<(), GatewayError> {
+        let key = StateKey::new(
+            namespace,
+            tenant,
+            KeyKind::Custom(PINNED_CHAIN_DEF_KIND.into()),
+            format!("{}@{}", config.name, config.version),
+        );
+        let json = serde_json::to_string(config).map_err(|e| {
+            GatewayError::ChainError(format!("failed to serialize chain definition: {e}"))
+        })?;
+        let stored = self.encrypt_state_value(&json)?;
+        self.state.check_and_set(&key, &stored, None).await?;
+        Ok(())
+    }
+
+    /// Resolve the definition an execution runs against, in order:
+    /// process-local cache → pinned-definition store → the legacy snapshot
+    /// embedded in pre-store executions → the live registry (pre-pinning
+    /// executions only).
+    pub async fn execution_config(
+        &self,
+        chain_state: &ChainState,
+    ) -> Result<Option<acteon_core::ChainConfig>, GatewayError> {
+        // Legacy executions (created before the pinned store) carry the
+        // snapshot inline; honor it verbatim.
+        if let Some(snapshot) = chain_state.config_snapshot.as_deref() {
+            return Ok(Some(snapshot.clone()));
+        }
+
+        let cache_key = (
+            chain_state.namespace.clone(),
+            chain_state.tenant.clone(),
+            chain_state.chain_name.clone(),
+            chain_state.chain_version,
+        );
+        if let Some(config) = self.pinned_config_cache.read().get(&cache_key) {
+            return Ok(Some((**config).clone()));
+        }
+
+        let key = StateKey::new(
+            chain_state.namespace.as_str(),
+            chain_state.tenant.as_str(),
+            KeyKind::Custom(PINNED_CHAIN_DEF_KIND.into()),
+            format!("{}@{}", chain_state.chain_name, chain_state.chain_version),
+        );
+        if let Some(raw) = self.state.get(&key).await? {
+            let json = self.decrypt_state_value(&raw)?;
+            let config: acteon_core::ChainConfig = serde_json::from_str(&json).map_err(|e| {
+                GatewayError::ChainError(format!(
+                    "failed to deserialize pinned chain definition: {e}"
+                ))
+            })?;
+            let mut cache = self.pinned_config_cache.write();
+            if cache.len() >= PINNED_CONFIG_CACHE_CAP {
+                cache.clear();
+            }
+            cache.insert(cache_key, std::sync::Arc::new(config.clone()));
+            return Ok(Some(config));
+        }
+
+        // Pre-pinning executions (no snapshot, no store entry): fall back
+        // to the live registry, matching their original behavior.
+        Ok(self.chains.read().get(&chain_state.chain_name).cloned())
     }
 
     /// Deliver an external signal to a chain execution.
@@ -458,17 +544,12 @@ impl Gateway {
                 .await?
                 .ok_or_else(|| GatewayError::ChainError(format!("chain not found: {chain_id}")))?;
 
-            let chain_config = chain_state
-                .config_snapshot
-                .as_deref()
-                .cloned()
-                .or_else(|| self.chains.read().get(&chain_state.chain_name).cloned())
-                .ok_or_else(|| {
-                    GatewayError::ChainError(format!(
-                        "chain configuration not found: {}",
-                        chain_state.chain_name
-                    ))
-                })?;
+            let chain_config = self.execution_config(&chain_state).await?.ok_or_else(|| {
+                GatewayError::ChainError(format!(
+                    "chain configuration not found: {}",
+                    chain_state.chain_name
+                ))
+            })?;
 
             let target_idx = chain_config
                 .steps
