@@ -463,6 +463,19 @@ impl BackgroundProcessor {
                     if let Err(e) = self.run_retention_reaper().await {
                         error!(error = %e, "error running retention reaper");
                     }
+                    // Pinned-definition GC shares the retention cadence:
+                    // drop chain-definition versions that no execution can
+                    // resolve anymore (runs regardless of retention
+                    // policies — unreferenced pins are garbage by
+                    // definition).
+                    if let Some(ref gw) = self.gateway {
+                        let gw = gw.read().await;
+                        match gw.gc_pinned_definitions().await {
+                            Ok(0) => {}
+                            Ok(deleted) => debug!(deleted, "pinned-definition GC completed"),
+                            Err(e) => error!(error = %e, "error running pinned-definition GC"),
+                        }
+                    }
                 }
                 _ = stale_task_interval.tick(), if self.config.enable_stale_task_reaper => {
                     if let Err(e) = self.run_stale_task_reaper().await {

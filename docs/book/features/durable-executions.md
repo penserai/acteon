@@ -96,6 +96,13 @@ executions; new executions pick up the latest version. Deleting a
 definition that other definitions still reference as a sub-chain is
 rejected.
 
+Old pinned versions are garbage-collected on the retention cadence
+(hourly by default): a `{name}@{version}` entry is deleted only when no
+execution — active, or terminal but not yet expired — still references it
+*and* it is older than the registry's previous version for that name.
+Executions sleeping for months keep their pinned definition for as long
+as their state exists.
+
 ## Visibility & search attributes
 
 `GET /v1/executions` lists executions across all chains — including
