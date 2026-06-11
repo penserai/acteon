@@ -227,6 +227,138 @@ impl Gateway {
         Ok(())
     }
 
+    /// Garbage-collect pinned chain definitions that nothing can resolve
+    /// anymore. Returns the number of entries deleted.
+    ///
+    /// A pinned `{name}@{version}` entry is deleted only when **both** hold:
+    ///
+    /// - no chain state (active, or terminal but not yet expired) in that
+    ///   namespace/tenant still references `(name, version)` — terminal
+    ///   states keep resolving their definition for detail/history
+    ///   endpoints until their TTL reaps them, so they count as references;
+    /// - the version is older than `current - 1` for the registry's
+    ///   definition of that name. New executions always pin the *current*
+    ///   registry version, so keeping the latest version closes the
+    ///   pin-then-persist window (a pin written mid-GC is never a delete
+    ///   candidate); keeping `current - 1` additionally covers an execution
+    ///   that read the definition just before an update and persists its
+    ///   first state just after the reference scan.
+    ///
+    /// Conservative on read failures: if any chain state cannot be
+    /// decrypted or parsed, the cycle aborts without deleting anything —
+    /// that record might be the only reference to a candidate.
+    pub async fn gc_pinned_definitions(&self) -> Result<usize, GatewayError> {
+        let pinned = self
+            .state
+            .scan_keys_by_kind(KeyKind::Custom(PINNED_CHAIN_DEF_KIND.into()))
+            .await?;
+        if pinned.is_empty() {
+            return Ok(0);
+        }
+
+        // Read the registry versions BEFORE the reference scan: a version
+        // that becomes non-current during the scan stays protected for
+        // this cycle and is reconsidered on the next one.
+        let current_versions: HashMap<String, u64> = self
+            .chains
+            .read()
+            .iter()
+            .map(|(name, config)| (name.clone(), config.version))
+            .collect();
+
+        // Reference set: every (namespace, tenant, name, version) some
+        // chain state still resolves.
+        let mut referenced: std::collections::HashSet<(String, String, String, u64)> =
+            std::collections::HashSet::new();
+        for (key, raw) in self.state.scan_keys_by_kind(KeyKind::Chain).await? {
+            // Canonical key: {namespace}:{tenant}:chain:{chain_id}
+            let parts: Vec<&str> = key.splitn(4, ':').collect();
+            if parts.len() < 4 {
+                continue;
+            }
+            let json = self.decrypt_state_value(&raw).map_err(|e| {
+                GatewayError::ChainError(format!(
+                    "pinned-definition GC aborted: failed to decrypt chain state {key}: {e}"
+                ))
+            })?;
+            let value: serde_json::Value = serde_json::from_str(&json).map_err(|e| {
+                GatewayError::ChainError(format!(
+                    "pinned-definition GC aborted: failed to parse chain state {key}: {e}"
+                ))
+            })?;
+            let Some(name) = value.get("chain_name").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            // Pre-versioning states deserialize with the version default.
+            let version = value
+                .get("chain_version")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(1);
+            referenced.insert((
+                parts[0].to_owned(),
+                parts[1].to_owned(),
+                name.to_owned(),
+                version,
+            ));
+        }
+
+        let mut deleted = 0usize;
+        for (key, _) in pinned {
+            // Canonical key: {namespace}:{tenant}:chain_def_pinned:{name}@{version}
+            let parts: Vec<&str> = key.splitn(4, ':').collect();
+            if parts.len() < 4 {
+                continue;
+            }
+            let (namespace, tenant, id) = (parts[0], parts[1], parts[3]);
+            // The version is numeric and names may contain `@`, so split on
+            // the LAST `@`. Unparseable ids are kept (never delete what we
+            // don't understand).
+            let Some((name, version)) = id.rsplit_once('@') else {
+                continue;
+            };
+            let Ok(version) = version.parse::<u64>() else {
+                continue;
+            };
+            if let Some(&current) = current_versions.get(name)
+                && version.saturating_add(1) >= current
+            {
+                continue; // current or current-1 (or ahead of the registry)
+            }
+            if referenced.contains(&(
+                namespace.to_owned(),
+                tenant.to_owned(),
+                name.to_owned(),
+                version,
+            )) {
+                continue;
+            }
+            let state_key = StateKey::new(
+                namespace,
+                tenant,
+                KeyKind::Custom(PINNED_CHAIN_DEF_KIND.into()),
+                id,
+            );
+            match self.state.delete(&state_key).await {
+                Ok(_) => {
+                    deleted += 1;
+                    self.pinned_config_cache.write().remove(&(
+                        namespace.to_owned(),
+                        tenant.to_owned(),
+                        name.to_owned(),
+                        version,
+                    ));
+                }
+                Err(e) => {
+                    warn!(key = %key, error = %e, "failed to delete unreferenced pinned definition");
+                }
+            }
+        }
+        if deleted > 0 {
+            debug!(deleted, "pinned-definition GC removed unreferenced entries");
+        }
+        Ok(deleted)
+    }
+
     /// Resolve the definition an execution runs against, in order:
     /// process-local cache → pinned-definition store → the legacy snapshot
     /// embedded in pre-store executions → the live registry (pre-pinning
