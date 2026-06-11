@@ -373,10 +373,20 @@ async fn workflow_checkpoints_sleep_and_complete() {
         .unwrap();
     let id = exec.execution_id.clone();
 
-    // First continuation: worker records a step checkpoint, then sleeps.
+    // First continuation: the payload is slim — workers resolve input and
+    // checkpoints from the execution record instead of the task itself.
     let task = poll_workflow_task(&gateway, "wf-queue").await;
-    assert_eq!(task.payload["input"], serde_json::json!({"order": 7}));
-    assert_eq!(task.payload["checkpoints"], serde_json::json!([]));
+    assert_eq!(task.payload["execution_id"], serde_json::json!(id));
+    assert_eq!(task.payload["workflow"], serde_json::json!("order-flow"));
+    assert!(task.payload.get("input").is_none());
+    assert!(task.payload.get("checkpoints").is_none());
+    let snapshot = gateway
+        .get_workflow_execution(NS, TENANT, &id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(snapshot.input, serde_json::json!({"order": 7}));
+    assert!(snapshot.checkpoints.is_empty());
     gateway
         .record_workflow_checkpoint(
             NS,
@@ -409,13 +419,18 @@ async fn workflow_checkpoints_sleep_and_complete() {
     let fired = gateway.process_due_workflow_timers().await.unwrap();
     assert_eq!(fired, 1);
 
-    // Second continuation: checkpoints are replayed in the snapshot.
+    // Second continuation: the worker fetches the replayed checkpoints
+    // from the execution record.
     let task = poll_workflow_task(&gateway, "wf-queue").await;
-    let checkpoint_names: Vec<&str> = task.payload["checkpoints"]
-        .as_array()
+    let snapshot = gateway
+        .get_workflow_execution(NS, TENANT, &id)
+        .await
         .unwrap()
+        .unwrap();
+    let checkpoint_names: Vec<&str> = snapshot
+        .checkpoints
         .iter()
-        .map(|c| c["name"].as_str().unwrap())
+        .map(|c| c.name.as_str())
         .collect();
     assert_eq!(checkpoint_names, vec!["step:charge#1", "sleep:1"]);
 
@@ -503,9 +518,16 @@ async fn workflow_await_signal_resumes_with_payload() {
 
     // Resumed: the signal payload is the recorded checkpoint.
     let task = poll_workflow_task(&gateway, "wf-q").await;
-    let checkpoints = task.payload["checkpoints"].as_array().unwrap();
-    assert_eq!(checkpoints[0]["name"], "signal:approved#1");
-    assert_eq!(checkpoints[0]["data"], serde_json::json!({"by": "renzo"}));
+    let snapshot = gateway
+        .get_workflow_execution(NS, TENANT, &id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(snapshot.checkpoints[0].name, "signal:approved#1");
+    assert_eq!(
+        snapshot.checkpoints[0].data,
+        serde_json::json!({"by": "renzo"})
+    );
 
     settle(
         &gateway,
@@ -552,8 +574,12 @@ async fn workflow_buffered_signal_satisfies_later_await() {
     .await;
 
     let task = poll_workflow_task(&gateway, "q").await;
-    let checkpoints = task.payload["checkpoints"].as_array().unwrap();
-    assert_eq!(checkpoints[0]["data"], serde_json::json!("early"));
+    let snapshot = gateway
+        .get_workflow_execution(NS, TENANT, &id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(snapshot.checkpoints[0].data, serde_json::json!("early"));
     settle(
         &gateway,
         &task,
@@ -567,10 +593,11 @@ async fn workflow_buffered_signal_satisfies_later_await() {
 #[tokio::test]
 async fn workflow_signal_timeout_records_timed_out_checkpoint() {
     let gateway = build_gateway(vec![]);
-    gateway
+    let exec = gateway
         .start_workflow(NS, TENANT, "wf", "q", serde_json::json!({}), HashMap::new())
         .await
         .unwrap();
+    let id = exec.execution_id.clone();
 
     let task = poll_workflow_task(&gateway, "q").await;
     settle(
@@ -589,9 +616,13 @@ async fn workflow_signal_timeout_records_timed_out_checkpoint() {
     assert_eq!(fired, 1);
 
     let task = poll_workflow_task(&gateway, "q").await;
-    let checkpoints = task.payload["checkpoints"].as_array().unwrap();
+    let snapshot = gateway
+        .get_workflow_execution(NS, TENANT, &id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
-        checkpoints[0]["data"],
+        snapshot.checkpoints[0].data,
         serde_json::json!({"timed_out": true})
     );
     settle(
@@ -675,14 +706,19 @@ async fn child_workflow_result_signals_parent() {
 
     // Parent resumed with the child result in the checkpoint.
     let parent_task = poll_workflow_task(&gateway, "q").await;
-    let checkpoints = parent_task.payload["checkpoints"].as_array().unwrap();
-    let child_checkpoint = checkpoints
-        .iter()
-        .find(|c| c["name"].as_str().unwrap().starts_with("signal:__child:"))
+    let parent_snapshot = gateway
+        .get_workflow_execution(NS, TENANT, &parent_id)
+        .await
+        .unwrap()
         .unwrap();
-    assert_eq!(child_checkpoint["data"]["status"], "completed");
+    let child_checkpoint = parent_snapshot
+        .checkpoints
+        .iter()
+        .find(|c| c.name.starts_with("signal:__child:"))
+        .unwrap();
+    assert_eq!(child_checkpoint.data["status"], "completed");
     assert_eq!(
-        child_checkpoint["data"]["result"],
+        child_checkpoint.data["result"],
         serde_json::json!({"part_done": 1})
     );
 

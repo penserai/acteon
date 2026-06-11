@@ -57,9 +57,12 @@ bodies idempotent where it matters.
 1. `POST /v1/workflows/start` creates the execution and enqueues the first
    continuation task (action type `__workflow__`) on a
    [worker queue](task-queues.md).
-2. A worker with `register_workflow("order-flow", fn)` polls the queue,
-   builds a context from the task's checkpoint snapshot, and runs the
-   function.
+2. A worker with `register_workflow("order-flow", fn)` polls the queue.
+   The task payload is slim — just the execution reference — so the
+   worker fetches the execution's input and recorded checkpoints
+   (`GET /v1/workflows/executions/{id}`), builds the context, and runs
+   the function. Queued continuations stay O(1) in size no matter how
+   many checkpoints the execution has accumulated.
 3. The function returns → execution `completed`; raises → `failed`;
    suspends → `waiting_timer` / `waiting_signal` until the server resumes
    it with a fresh continuation task.

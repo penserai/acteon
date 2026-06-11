@@ -15,6 +15,7 @@ import {
   CHILD_RESULT_SIGNAL_PREFIX,
   WORKFLOW_TASK_ACTION_TYPE,
   WorkflowContext,
+  WorkflowExecutionNotFoundError,
   WorkflowSuspend,
   parseExecutionHistory,
   parseRecordCheckpointResponse,
@@ -234,6 +235,76 @@ function taskPayload(
     })),
   };
 }
+
+// ---------------------------------------------------------------------
+// Slim continuation payloads
+// ---------------------------------------------------------------------
+
+describe("slim continuation payloads", () => {
+  it("resolves input and checkpoints from the execution record", async () => {
+    const { calls, restore } = routeFetch((call) => {
+      if (
+        call.method === "GET" &&
+        call.url.includes("/v1/workflows/executions/exec-1")
+      ) {
+        return { body: wireExecution() };
+      }
+      return workflowRoute(call);
+    });
+    try {
+      const c = new ActeonClient("http://x");
+      const ran: string[] = [];
+      const directive = await runWorkflowTask(
+        c,
+        "ns",
+        "t1",
+        async (ctx, input) => {
+          const a = await ctx.step("a", () => {
+            ran.push("a");
+            return { v: 999 };
+          });
+          return { a, input };
+        },
+        { execution_id: "exec-1", workflow: "onboarding" },
+      );
+
+      // step:a#0 replays from the fetched execution record, and the
+      // input comes from the record too — neither is in the payload.
+      expect(ran).toEqual([]);
+      expect(directive).toEqual({
+        directive: "complete",
+        result: { a: { v: 1 }, input: { u: 1 } },
+      });
+      expect(calls[0].method).toEqual("GET");
+      expect(calls[0].url).toContain("/v1/workflows/executions/exec-1");
+    } finally {
+      restore();
+    }
+  });
+
+  it("throws WorkflowExecutionNotFoundError when the execution is gone", async () => {
+    const { restore } = routeFetch((call) => {
+      if (
+        call.method === "GET" &&
+        call.url.includes("/v1/workflows/executions/")
+      ) {
+        return { status: 404, body: { error: "not found" } };
+      }
+      return undefined;
+    });
+    try {
+      const c = new ActeonClient("http://x");
+      await expect(
+        runWorkflowTask(c, "ns", "t1", async () => "unreached", {
+          execution_id: "exec-9",
+          workflow: "onboarding",
+        }),
+      ).rejects.toBeInstanceOf(WorkflowExecutionNotFoundError);
+    } finally {
+      restore();
+    }
+  });
+});
 
 // ---------------------------------------------------------------------
 // WorkflowContext + runWorkflowTask

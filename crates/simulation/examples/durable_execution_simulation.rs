@@ -282,16 +282,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::time::sleep(Duration::from_millis(1200)).await;
     gateway.process_due_workflow_timers().await?;
 
-    // Continuation 2: replayed checkpoints are in the snapshot; await a signal.
+    // Continuation 2: the worker fetches replayed checkpoints from the
+    // execution record (continuation payloads are slim); await a signal.
     let task = &gateway
         .poll_worker_tasks(NS, TENANT, "wf-queue", 1, Some(60), None)
         .await?[0];
+    let snapshot = gateway
+        .get_workflow_execution(NS, TENANT, &exec_id)
+        .await?
+        .unwrap();
     info!(
         "continuation snapshot checkpoints: {}",
-        task.payload["checkpoints"]
-            .as_array()
-            .map(|a| a.len())
-            .unwrap_or(0)
+        snapshot.checkpoints.len()
     );
     gateway
         .complete_worker_task(

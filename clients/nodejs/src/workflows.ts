@@ -461,16 +461,38 @@ export type WorkflowFn = (
 export interface WorkflowTaskPayload {
   execution_id: string;
   workflow: string;
-  input: unknown;
-  checkpoints: Record<string, unknown>[];
+  /** Embedded input — present only in legacy fat payloads; slim
+   *  payloads resolve it from the execution record. */
+  input?: unknown;
+  /** Embedded checkpoints — present only in legacy fat payloads. */
+  checkpoints?: Record<string, unknown>[];
 }
 
 /**
- * Run one workflow continuation: build a {@link WorkflowContext} from
- * the task payload, invoke `fn`, and translate the outcome into the
- * directive to settle the task with — `complete` when the function
- * returns, the suspension's own directive on {@link WorkflowSuspend},
- * and `fail` on any other throw.
+ * Thrown by {@link runWorkflowTask} when a slim continuation payload
+ * references an execution the server no longer has (deleted or
+ * expired). The {@link Worker} fails the task permanently on this —
+ * re-delivery cannot help.
+ */
+export class WorkflowExecutionNotFoundError extends Error {
+  constructor(executionId: string) {
+    super(`workflow execution not found: ${executionId}`);
+    this.name = "WorkflowExecutionNotFoundError";
+  }
+}
+
+/**
+ * Run one workflow continuation: resolve the execution's input and
+ * recorded checkpoints (fetched from the server for slim payloads,
+ * read inline from legacy fat payloads), build a
+ * {@link WorkflowContext}, invoke `fn`, and translate the outcome
+ * into the directive to settle the task with — `complete` when the
+ * function returns, the suspension's own directive on
+ * {@link WorkflowSuspend}, and `fail` on any other throw.
+ *
+ * Throws {@link WorkflowExecutionNotFoundError} when the referenced
+ * execution does not exist, and propagates transport errors from the
+ * execution fetch — both mean the task was not run.
  */
 export async function runWorkflowTask(
   client: ActeonClient,
@@ -479,17 +501,33 @@ export async function runWorkflowTask(
   fn: WorkflowFn,
   payload: WorkflowTaskPayload,
 ): Promise<WorkflowDirective> {
-  const checkpoints = (payload.checkpoints ?? []).map(parseWorkflowCheckpoint);
+  let input = payload.input;
+  let checkpoints: WorkflowCheckpoint[];
+  if (payload.checkpoints === undefined) {
+    // Slim payload: the task carries only the execution reference.
+    const execution = await client.getWorkflowExecution(
+      payload.execution_id,
+      namespace,
+      tenant,
+    );
+    if (!execution) {
+      throw new WorkflowExecutionNotFoundError(payload.execution_id);
+    }
+    input = execution.input;
+    checkpoints = execution.checkpoints;
+  } else {
+    checkpoints = payload.checkpoints.map(parseWorkflowCheckpoint);
+  }
   const ctx = new WorkflowContext(
     client,
     namespace,
     tenant,
     payload.execution_id,
-    payload.input,
+    input,
     checkpoints,
   );
   try {
-    const result = await fn(ctx, payload.input);
+    const result = await fn(ctx, input);
     return { directive: "complete", result: result ?? null };
   } catch (error) {
     if (error instanceof WorkflowSuspend) {
