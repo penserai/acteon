@@ -90,7 +90,7 @@ pub use chain::{
     BranchCondition, BranchOperator, ChainConfig, ChainFailurePolicy, ChainNotificationTarget,
     ChainState, ChainStatus, ChainStepConfig, ParallelExecutionState, ParallelFailurePolicy,
     ParallelJoinPolicy, ParallelStepGroup, ParallelSubStepStatus, SignalStepConfig,
-    StepFailurePolicy, StepResult, TimerStepConfig, WaitState, WorkerStepConfig,
+    StepFailurePolicy, StepKind, StepResult, TimerStepConfig, WaitState, WorkerStepConfig,
     validate_chain_graph,
 };
 pub use chain_dag::{DagEdge, DagNode, DagResponse};

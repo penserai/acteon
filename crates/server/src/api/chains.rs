@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
-use acteon_core::{ChainConfig, ChainStatus, DagResponse};
+use acteon_core::{ChainConfig, ChainStatus, DagResponse, StepKind};
 use acteon_state::{KeyKind, StateKey};
 
 use super::AppState;
@@ -685,8 +685,14 @@ pub async fn list_definitions(State(state): State<AppState>) -> impl IntoRespons
             name: config.name.clone(),
             steps_count: config.steps.len(),
             has_branches: config.steps.iter().any(|s| !s.branches.is_empty()),
-            has_parallel: false,
-            has_sub_chains: config.steps.iter().any(|s| s.sub_chain.is_some()),
+            has_parallel: config
+                .steps
+                .iter()
+                .any(|s| matches!(s.kind(), StepKind::Parallel(_))),
+            has_sub_chains: config
+                .steps
+                .iter()
+                .any(|s| matches!(s.kind(), StepKind::SubChain(_))),
             on_failure: format_failure_policy(&config.on_failure),
             timeout_seconds: config.timeout_seconds,
         })

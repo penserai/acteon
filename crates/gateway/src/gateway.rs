@@ -13,7 +13,7 @@ use acteon_audit::store::AuditStore;
 use acteon_core::chain::WaitState;
 use acteon_core::{
     Action, ActionOutcome, Caller, ChainConfig, ChainState, ChainStatus, ChainStepConfig,
-    ExecutionEventType, StateMachineConfig, StepResult, StreamEvent, StreamEventType,
+    ExecutionEventType, StateMachineConfig, StepKind, StepResult, StreamEvent, StreamEventType,
     compute_fingerprint, sanitize_outcome,
 };
 use acteon_executor::{ActionExecutor, DeadLetterEntry, DeadLetterSink};
@@ -2763,307 +2763,36 @@ impl Gateway {
 
         let step_config = &chain_config.steps[step_idx];
 
-        // --- Durable timer step handling ---
-        if let Some(timer_cfg) = step_config.timer.as_ref() {
-            let now = Utc::now();
-            let wait = chain_state.wait_state.clone();
-            match wait {
-                Some(WaitState::Timer {
-                    step_index,
-                    fire_at,
-                }) if step_index == step_idx => {
-                    if now >= fire_at {
-                        chain_state.wait_state = None;
-                        chain_state.status = ChainStatus::Running;
-                        self.append_execution_history(
-                            namespace,
-                            tenant,
-                            chain_id,
-                            ExecutionEventType::TimerFired {
-                                step_name: step_config.name.clone(),
-                            },
-                            None,
-                        )
-                        .await;
-                        let step_result = StepResult::new(
-                            step_config.name.clone(),
-                            true,
-                            Some(serde_json::json!({ "fired_at": now.to_rfc3339() })),
-                            None,
-                            now,
-                        );
-                        self.complete_wait_step(
-                            namespace,
-                            tenant,
-                            chain_id,
-                            &chain_key,
-                            &pending_key,
-                            &chain_config,
-                            &mut chain_state,
-                            step_idx,
-                            step_config,
-                            step_result,
-                            &step_index_map,
-                            "chain_step_completed",
-                        )
-                        .await?;
-                    } else {
-                        // Spurious wake — re-arm at the fire time (or the
-                        // chain deadline, whichever is first).
-                        if let Some(wake) =
-                            Self::park_wake_at_ms(Some(fire_at), chain_state.expires_at)
-                        {
-                            self.state.index_chain_ready(&pending_key, wake).await?;
-                        }
-                    }
-                }
-                _ => {
-                    #[allow(clippy::cast_possible_wrap)]
-                    let fire_at = timer_cfg.until.unwrap_or_else(|| {
-                        now + chrono::Duration::seconds(
-                            timer_cfg.duration_seconds.unwrap_or(0) as i64
-                        )
-                    });
-                    chain_state.wait_state = Some(WaitState::Timer {
-                        step_index: step_idx,
+        // Exhaustive step-kind dispatch. The wait-style kinds park or resume
+        // the chain and return; only `Provider` falls through to the
+        // synthetic-action dispatch below the match.
+        match step_config.kind() {
+            // --- Durable timer step handling ---
+            StepKind::Timer(timer_cfg) => {
+                let now = Utc::now();
+                let wait = chain_state.wait_state.clone();
+                match wait {
+                    Some(WaitState::Timer {
+                        step_index,
                         fire_at,
-                    });
-                    chain_state.status = ChainStatus::WaitingTimer;
-                    chain_state.updated_at = now;
-                    self.persist_chain_state(&chain_key, &chain_state, None)
-                        .await?;
-                    self.append_execution_history(
-                        namespace,
-                        tenant,
-                        chain_id,
-                        ExecutionEventType::TimerStarted {
-                            step_name: step_config.name.clone(),
-                            fire_at,
-                        },
-                        None,
-                    )
-                    .await;
-                    if let Some(wake) = Self::park_wake_at_ms(Some(fire_at), chain_state.expires_at)
-                    {
-                        self.state.index_chain_ready(&pending_key, wake).await?;
-                    }
-                    debug!(
-                        chain_id = %chain_id,
-                        step = %step_config.name,
-                        %fire_at,
-                        "durable timer started"
-                    );
-                }
-            }
-            guard
-                .release()
-                .await
-                .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
-            return Ok(());
-        }
-
-        // --- Wait-for-signal step handling ---
-        if let Some(signal_cfg) = step_config.wait_for_signal.as_ref() {
-            let now = Utc::now();
-
-            // Consume a buffered signal if one has already been delivered
-            // (whether the chain was waiting or the signal arrived early).
-            if let Some(payload) = self
-                .peek_buffered_signal(namespace, tenant, chain_id, &signal_cfg.signal_name)
-                .await?
-            {
-                chain_state.wait_state = None;
-                chain_state.status = ChainStatus::Running;
-                let step_result =
-                    StepResult::new(step_config.name.clone(), true, Some(payload), None, now);
-                self.complete_wait_step(
-                    namespace,
-                    tenant,
-                    chain_id,
-                    &chain_key,
-                    &pending_key,
-                    &chain_config,
-                    &mut chain_state,
-                    step_idx,
-                    step_config,
-                    step_result,
-                    &step_index_map,
-                    "chain_step_completed",
-                )
-                .await?;
-                // Pop only after the consuming chain state is persisted; a
-                // crash in between re-delivers the signal (at-least-once)
-                // instead of losing it.
-                self.pop_buffered_signal(namespace, tenant, chain_id, &signal_cfg.signal_name)
-                    .await;
-                guard
-                    .release()
-                    .await
-                    .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
-                return Ok(());
-            }
-
-            let wait = chain_state.wait_state.clone();
-            match wait {
-                Some(WaitState::Signal {
-                    step_index,
-                    signal_name,
-                    timeout_at,
-                    on_timeout,
-                }) if step_index == step_idx => {
-                    if timeout_at.is_some_and(|t| now >= t) {
-                        chain_state.wait_state = None;
-                        self.append_execution_history(
-                            namespace,
-                            tenant,
-                            chain_id,
-                            ExecutionEventType::SignalTimedOut {
-                                step_name: step_config.name.clone(),
-                                signal_name: signal_name.clone(),
-                            },
-                            None,
-                        )
-                        .await;
-                        let step_result = StepResult::new(
-                            step_config.name.clone(),
-                            false,
-                            None,
-                            Some(format!("signal wait timed out: {signal_name}")),
-                            now,
-                        );
-                        let timeout_target = on_timeout
-                            .as_deref()
-                            .and_then(|t| step_index_map.get(t).copied());
-                        if let Some(target) = timeout_target {
-                            // Jump to the configured timeout step.
-                            chain_state.step_results[step_idx] = Some(step_result.clone());
+                    }) if step_index == step_idx => {
+                        if now >= fire_at {
+                            chain_state.wait_state = None;
                             chain_state.status = ChainStatus::Running;
-                            chain_state.current_step = target;
-                            chain_state.updated_at = now;
-                            chain_state
-                                .execution_path
-                                .push(chain_config.steps[target].name.clone());
-                            self.persist_chain_state(&chain_key, &chain_state, None)
-                                .await?;
-                            let ready_at = chain_config.steps[target]
-                                .delay_seconds
-                                .map_or(0, |d| now.timestamp_millis() + (d.cast_signed() * 1000));
-                            self.state.index_chain_ready(&pending_key, ready_at).await?;
-                            self.emit_chain_step_audit(
-                                &chain_state,
-                                step_config,
-                                step_idx,
-                                "chain_step_timed_out",
-                                &step_result,
-                                Duration::ZERO,
-                                None,
-                            )
-                            .await;
-                        } else {
-                            chain_state.status = ChainStatus::Running;
-                            self.fail_wait_step(
-                                namespace,
-                                tenant,
-                                chain_id,
-                                &chain_key,
-                                &pending_key,
-                                &chain_config,
-                                &mut chain_state,
-                                step_idx,
-                                step_config,
-                                step_result,
-                                &step_index_map,
-                            )
-                            .await?;
-                        }
-                    } else if let Some(wake) =
-                        Self::park_wake_at_ms(timeout_at, chain_state.expires_at)
-                    {
-                        // Spurious wake — re-arm at the timeout / deadline.
-                        self.state.index_chain_ready(&pending_key, wake).await?;
-                    }
-                }
-                _ => {
-                    #[allow(clippy::cast_possible_wrap)]
-                    let timeout_at = signal_cfg
-                        .timeout_seconds
-                        .map(|s| now + chrono::Duration::seconds(s as i64));
-                    chain_state.wait_state = Some(WaitState::Signal {
-                        step_index: step_idx,
-                        signal_name: signal_cfg.signal_name.clone(),
-                        timeout_at,
-                        on_timeout: signal_cfg.on_timeout.clone(),
-                    });
-                    chain_state.status = ChainStatus::WaitingSignal;
-                    chain_state.updated_at = now;
-                    self.persist_chain_state(&chain_key, &chain_state, None)
-                        .await?;
-                    self.append_execution_history(
-                        namespace,
-                        tenant,
-                        chain_id,
-                        ExecutionEventType::SignalAwaited {
-                            step_name: step_config.name.clone(),
-                            signal_name: signal_cfg.signal_name.clone(),
-                            timeout_at,
-                        },
-                        None,
-                    )
-                    .await;
-                    if let Some(wake) = Self::park_wake_at_ms(timeout_at, chain_state.expires_at) {
-                        self.state.index_chain_ready(&pending_key, wake).await?;
-                    }
-                    debug!(
-                        chain_id = %chain_id,
-                        step = %step_config.name,
-                        signal = %signal_cfg.signal_name,
-                        "chain waiting for signal"
-                    );
-                }
-            }
-            guard
-                .release()
-                .await
-                .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
-            return Ok(());
-        }
-
-        // --- Worker-queue step handling ---
-        if let Some(worker_cfg) = step_config.worker.as_ref() {
-            let now = Utc::now();
-            let wait = chain_state.wait_state.clone();
-            match wait {
-                Some(WaitState::Worker {
-                    step_index,
-                    task_id,
-                    timeout_at,
-                    ..
-                }) if step_index == step_idx => {
-                    // If the task already settled but the resume hook was
-                    // lost (crash between settle and resume), self-heal here.
-                    let task = self.get_worker_task(namespace, tenant, &task_id).await?;
-                    match task {
-                        Some(task) if task.status == acteon_core::WorkerTaskStatus::Completed => {
-                            // Mirror the resume hook's history event so the
-                            // timeline is identical whichever path resumed.
                             self.append_execution_history(
                                 namespace,
                                 tenant,
                                 chain_id,
-                                ExecutionEventType::TaskCompleted {
+                                ExecutionEventType::TimerFired {
                                     step_name: step_config.name.clone(),
-                                    task_id: task.task_id.clone(),
-                                    attempt: task.attempt,
                                 },
                                 None,
                             )
                             .await;
-                            chain_state.wait_state = None;
-                            chain_state.status = ChainStatus::Running;
                             let step_result = StepResult::new(
                                 step_config.name.clone(),
                                 true,
-                                Some(task.result.clone().unwrap_or_default()),
+                                Some(serde_json::json!({ "fired_at": now.to_rfc3339() })),
                                 None,
                                 now,
                             );
@@ -3082,66 +2811,120 @@ impl Gateway {
                                 "chain_step_completed",
                             )
                             .await?;
+                        } else {
+                            // Spurious wake — re-arm at the fire time (or the
+                            // chain deadline, whichever is first).
+                            if let Some(wake) =
+                                Self::park_wake_at_ms(Some(fire_at), chain_state.expires_at)
+                            {
+                                self.state.index_chain_ready(&pending_key, wake).await?;
+                            }
                         }
-                        Some(task)
-                            if task.status == acteon_core::WorkerTaskStatus::Failed
-                                || task.status == acteon_core::WorkerTaskStatus::Cancelled =>
-                        {
-                            self.append_execution_history(
-                                namespace,
-                                tenant,
-                                chain_id,
-                                ExecutionEventType::TaskFailed {
-                                    step_name: step_config.name.clone(),
-                                    task_id: task.task_id.clone(),
-                                    attempt: task.attempt,
-                                    error: task.error.clone().unwrap_or_default(),
-                                },
-                                None,
+                    }
+                    _ => {
+                        #[allow(clippy::cast_possible_wrap)]
+                        let fire_at = timer_cfg.until.unwrap_or_else(|| {
+                            now + chrono::Duration::seconds(
+                                timer_cfg.duration_seconds.unwrap_or(0) as i64
                             )
-                            .await;
-                            chain_state.wait_state = None;
-                            chain_state.status = ChainStatus::Running;
-                            let step_result =
-                                StepResult::new(
-                                    step_config.name.clone(),
-                                    false,
-                                    None,
-                                    Some(task.error.clone().unwrap_or_else(|| {
-                                        format!("worker task {:?}", task.status)
-                                    })),
-                                    now,
-                                );
-                            self.fail_wait_step(
-                                namespace,
-                                tenant,
-                                chain_id,
-                                &chain_key,
-                                &pending_key,
-                                &chain_config,
-                                &mut chain_state,
-                                step_idx,
-                                step_config,
-                                step_result,
-                                &step_index_map,
-                            )
+                        });
+                        chain_state.wait_state = Some(WaitState::Timer {
+                            step_index: step_idx,
+                            fire_at,
+                        });
+                        chain_state.status = ChainStatus::WaitingTimer;
+                        chain_state.updated_at = now;
+                        self.persist_chain_state(&chain_key, &chain_state, None)
                             .await?;
+                        self.append_execution_history(
+                            namespace,
+                            tenant,
+                            chain_id,
+                            ExecutionEventType::TimerStarted {
+                                step_name: step_config.name.clone(),
+                                fire_at,
+                            },
+                            None,
+                        )
+                        .await;
+                        if let Some(wake) =
+                            Self::park_wake_at_ms(Some(fire_at), chain_state.expires_at)
+                        {
+                            self.state.index_chain_ready(&pending_key, wake).await?;
                         }
-                        _ if timeout_at.is_some_and(|t| now >= t) => {
-                            // Worker-step timeout: cancel the task and fail
-                            // the step per its failure policy.
-                            let _ = self.cancel_worker_task(namespace, tenant, &task_id).await;
+                        debug!(
+                            chain_id = %chain_id,
+                            step = %step_config.name,
+                            %fire_at,
+                            "durable timer started"
+                        );
+                    }
+                }
+                guard
+                    .release()
+                    .await
+                    .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+                return Ok(());
+            }
+
+            // --- Wait-for-signal step handling ---
+            StepKind::Signal(signal_cfg) => {
+                let now = Utc::now();
+
+                // Consume a buffered signal if one has already been delivered
+                // (whether the chain was waiting or the signal arrived early).
+                if let Some(payload) = self
+                    .peek_buffered_signal(namespace, tenant, chain_id, &signal_cfg.signal_name)
+                    .await?
+                {
+                    chain_state.wait_state = None;
+                    chain_state.status = ChainStatus::Running;
+                    let step_result =
+                        StepResult::new(step_config.name.clone(), true, Some(payload), None, now);
+                    self.complete_wait_step(
+                        namespace,
+                        tenant,
+                        chain_id,
+                        &chain_key,
+                        &pending_key,
+                        &chain_config,
+                        &mut chain_state,
+                        step_idx,
+                        step_config,
+                        step_result,
+                        &step_index_map,
+                        "chain_step_completed",
+                    )
+                    .await?;
+                    // Pop only after the consuming chain state is persisted; a
+                    // crash in between re-delivers the signal (at-least-once)
+                    // instead of losing it.
+                    self.pop_buffered_signal(namespace, tenant, chain_id, &signal_cfg.signal_name)
+                        .await;
+                    guard
+                        .release()
+                        .await
+                        .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+                    return Ok(());
+                }
+
+                let wait = chain_state.wait_state.clone();
+                match wait {
+                    Some(WaitState::Signal {
+                        step_index,
+                        signal_name,
+                        timeout_at,
+                        on_timeout,
+                    }) if step_index == step_idx => {
+                        if timeout_at.is_some_and(|t| now >= t) {
                             chain_state.wait_state = None;
-                            chain_state.status = ChainStatus::Running;
                             self.append_execution_history(
                                 namespace,
                                 tenant,
                                 chain_id,
-                                ExecutionEventType::TaskFailed {
+                                ExecutionEventType::SignalTimedOut {
                                     step_name: step_config.name.clone(),
-                                    task_id: task_id.clone(),
-                                    attempt: 0,
-                                    error: "worker step timed out".into(),
+                                    signal_name: signal_name.clone(),
                                 },
                                 None,
                             )
@@ -3150,225 +2933,410 @@ impl Gateway {
                                 step_config.name.clone(),
                                 false,
                                 None,
-                                Some("worker step timed out".into()),
+                                Some(format!("signal wait timed out: {signal_name}")),
                                 now,
                             );
-                            self.fail_wait_step(
-                                namespace,
-                                tenant,
-                                chain_id,
-                                &chain_key,
-                                &pending_key,
-                                &chain_config,
-                                &mut chain_state,
-                                step_idx,
-                                step_config,
-                                step_result,
-                                &step_index_map,
-                            )
-                            .await?;
-                        }
-                        _ => {
-                            // Still pending/leased — re-arm the timeout /
-                            // chain deadline, if any; completion wakes the
-                            // chain.
-                            if let Some(wake) =
-                                Self::park_wake_at_ms(timeout_at, chain_state.expires_at)
-                            {
-                                self.state.index_chain_ready(&pending_key, wake).await?;
-                            }
-                        }
-                    }
-                }
-                _ => {
-                    // First arrival: enqueue the task and pause the chain.
-                    let payload = crate::chain::resolve_template(
-                        &step_config.payload_template,
-                        &chain_state.origin_action,
-                        &chain_state.step_results,
-                        &chain_config.steps,
-                        chain_id,
-                        step_idx,
-                        &chain_state.execution_path,
-                        &chain_state.parallel_sub_results,
-                    );
-                    let task = acteon_core::WorkerTask::new(
-                        namespace,
-                        tenant,
-                        &worker_cfg.queue,
-                        worker_cfg
-                            .action_type
-                            .clone()
-                            .unwrap_or_else(|| step_config.name.clone()),
-                        payload,
-                    )
-                    .with_max_attempts(
-                        worker_cfg
-                            .max_attempts
-                            .unwrap_or(acteon_core::DEFAULT_TASK_MAX_ATTEMPTS),
-                    )
-                    .for_chain_step(chain_id, step_idx, &step_config.name);
-                    let task_id = task.task_id.clone();
-                    self.enqueue_worker_task(task).await?;
-
-                    #[allow(clippy::cast_possible_wrap)]
-                    let timeout_at = worker_cfg
-                        .timeout_seconds
-                        .map(|s| now + chrono::Duration::seconds(s as i64));
-                    chain_state.wait_state = Some(WaitState::Worker {
-                        step_index: step_idx,
-                        task_id: task_id.clone(),
-                        queue: worker_cfg.queue.clone(),
-                        timeout_at,
-                    });
-                    chain_state.status = ChainStatus::WaitingWorker;
-                    chain_state.updated_at = now;
-                    self.persist_chain_state(&chain_key, &chain_state, None)
-                        .await?;
-                    self.append_execution_history(
-                        namespace,
-                        tenant,
-                        chain_id,
-                        ExecutionEventType::TaskEnqueued {
-                            step_name: step_config.name.clone(),
-                            task_id,
-                            queue: worker_cfg.queue.clone(),
-                        },
-                        None,
-                    )
-                    .await;
-                    if let Some(wake) = Self::park_wake_at_ms(timeout_at, chain_state.expires_at) {
-                        self.state.index_chain_ready(&pending_key, wake).await?;
-                    }
-                    debug!(
-                        chain_id = %chain_id,
-                        step = %step_config.name,
-                        queue = %worker_cfg.queue,
-                        "worker task enqueued; chain waiting"
-                    );
-                }
-            }
-            guard
-                .release()
-                .await
-                .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
-            return Ok(());
-        }
-
-        // --- Sub-chain step handling ---
-        if step_config.is_sub_chain() {
-            let sub_chain_name = step_config.sub_chain.as_deref().unwrap();
-
-            // Look for an existing child chain for this step.
-            let existing_child = self
-                .find_child_chain_for_step(&chain_state, sub_chain_name, step_idx)
-                .await?;
-
-            match existing_child {
-                None => {
-                    // No child chain yet — start one.
-                    let child_id = self
-                        .start_sub_chain(&mut chain_state, step_idx, sub_chain_name)
-                        .await?;
-
-                    chain_state.status = ChainStatus::WaitingSubChain;
-                    chain_state.updated_at = Utc::now();
-                    self.persist_chain_state(&chain_key, &chain_state, None)
-                        .await?;
-
-                    // Re-index to poll again in 5 seconds.
-                    let ready_at = Utc::now().timestamp_millis() + 5000;
-                    self.state.index_chain_ready(&pending_key, ready_at).await?;
-
-                    debug!(
-                        chain_id = %chain_id,
-                        child_chain_id = %child_id,
-                        sub_chain = %sub_chain_name,
-                        "sub-chain started, parent waiting"
-                    );
-
-                    guard
-                        .release()
-                        .await
-                        .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
-                    return Ok(());
-                }
-                Some(child_state) => {
-                    match child_state.status {
-                        ChainStatus::Completed => {
-                            // Sub-chain completed — extract result and continue.
-                            let step_result =
-                                Self::extract_sub_chain_result(sub_chain_name, &child_state);
-                            chain_state.step_results[step_idx] = Some(step_result.clone());
-                            chain_state.status = ChainStatus::Running;
-                            chain_state.updated_at = Utc::now();
-
-                            let next_step_idx = Self::resolve_next_step(
-                                &chain_config,
-                                step_idx,
-                                &step_result,
-                                &step_index_map,
-                            );
-
-                            if let Some(next_idx) = next_step_idx {
-                                chain_state.current_step = next_idx;
+                            let timeout_target = on_timeout
+                                .as_deref()
+                                .and_then(|t| step_index_map.get(t).copied());
+                            if let Some(target) = timeout_target {
+                                // Jump to the configured timeout step.
+                                chain_state.step_results[step_idx] = Some(step_result.clone());
+                                chain_state.status = ChainStatus::Running;
+                                chain_state.current_step = target;
+                                chain_state.updated_at = now;
                                 chain_state
                                     .execution_path
-                                    .push(chain_config.steps[next_idx].name.clone());
+                                    .push(chain_config.steps[target].name.clone());
                                 self.persist_chain_state(&chain_key, &chain_state, None)
                                     .await?;
                                 let ready_at =
-                                    chain_config.steps[next_idx].delay_seconds.map_or(0, |d| {
-                                        Utc::now().timestamp_millis() + (d.cast_signed() * 1000)
+                                    chain_config.steps[target].delay_seconds.map_or(0, |d| {
+                                        now.timestamp_millis() + (d.cast_signed() * 1000)
                                     });
                                 self.state.index_chain_ready(&pending_key, ready_at).await?;
-                            } else {
-                                chain_state.status = ChainStatus::Completed;
-                                self.persist_chain_state(
-                                    &chain_key,
+                                self.emit_chain_step_audit(
                                     &chain_state,
-                                    self.completed_chain_ttl,
+                                    step_config,
+                                    step_idx,
+                                    "chain_step_timed_out",
+                                    &step_result,
+                                    Duration::ZERO,
+                                    None,
+                                )
+                                .await;
+                            } else {
+                                chain_state.status = ChainStatus::Running;
+                                self.fail_wait_step(
+                                    namespace,
+                                    tenant,
+                                    chain_id,
+                                    &chain_key,
+                                    &pending_key,
+                                    &chain_config,
+                                    &mut chain_state,
+                                    step_idx,
+                                    step_config,
+                                    step_result,
+                                    &step_index_map,
                                 )
                                 .await?;
-                                self.cleanup_pending_chain(namespace, tenant, chain_id)
-                                    .await?;
-                                self.metrics.increment_chains_completed();
-                                self.emit_chain_terminal_audit(&chain_state, "chain_completed")
-                                    .await;
-                                info!(chain_id = %chain_id, "chain completed successfully");
                             }
-
-                            guard
-                                .release()
-                                .await
-                                .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
-                            return Ok(());
+                        } else if let Some(wake) =
+                            Self::park_wake_at_ms(timeout_at, chain_state.expires_at)
+                        {
+                            // Spurious wake — re-arm at the timeout / deadline.
+                            self.state.index_chain_ready(&pending_key, wake).await?;
                         }
-                        ChainStatus::Failed | ChainStatus::TimedOut | ChainStatus::Cancelled => {
-                            // Sub-chain failed — apply step on_failure policy.
-                            let error_msg =
-                                format!("sub-chain `{sub_chain_name}` {:?}", child_state.status);
-                            let step_result = StepResult {
-                                step_name: format!("sub_chain:{sub_chain_name}"),
-                                success: false,
-                                response_body: None,
-                                error: Some(error_msg.clone()),
-                                completed_at: Utc::now(),
-                                attempt: None,
-                                started_at: None,
-                            };
-                            chain_state.step_results[step_idx] = Some(step_result.clone());
-                            chain_state.status = ChainStatus::Running;
+                    }
+                    _ => {
+                        #[allow(clippy::cast_possible_wrap)]
+                        let timeout_at = signal_cfg
+                            .timeout_seconds
+                            .map(|s| now + chrono::Duration::seconds(s as i64));
+                        chain_state.wait_state = Some(WaitState::Signal {
+                            step_index: step_idx,
+                            signal_name: signal_cfg.signal_name.clone(),
+                            timeout_at,
+                            on_timeout: signal_cfg.on_timeout.clone(),
+                        });
+                        chain_state.status = ChainStatus::WaitingSignal;
+                        chain_state.updated_at = now;
+                        self.persist_chain_state(&chain_key, &chain_state, None)
+                            .await?;
+                        self.append_execution_history(
+                            namespace,
+                            tenant,
+                            chain_id,
+                            ExecutionEventType::SignalAwaited {
+                                step_name: step_config.name.clone(),
+                                signal_name: signal_cfg.signal_name.clone(),
+                                timeout_at,
+                            },
+                            None,
+                        )
+                        .await;
+                        if let Some(wake) =
+                            Self::park_wake_at_ms(timeout_at, chain_state.expires_at)
+                        {
+                            self.state.index_chain_ready(&pending_key, wake).await?;
+                        }
+                        debug!(
+                            chain_id = %chain_id,
+                            step = %step_config.name,
+                            signal = %signal_cfg.signal_name,
+                            "chain waiting for signal"
+                        );
+                    }
+                }
+                guard
+                    .release()
+                    .await
+                    .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+                return Ok(());
+            }
 
-                            let step_policy = step_config
-                                .on_failure
-                                .as_ref()
-                                .unwrap_or(&acteon_core::chain::StepFailurePolicy::Abort);
+            // --- Worker-queue step handling ---
+            StepKind::Worker(worker_cfg) => {
+                let now = Utc::now();
+                let wait = chain_state.wait_state.clone();
+                match wait {
+                    Some(WaitState::Worker {
+                        step_index,
+                        task_id,
+                        timeout_at,
+                        ..
+                    }) if step_index == step_idx => {
+                        // If the task already settled but the resume hook was
+                        // lost (crash between settle and resume), self-heal here.
+                        let task = self.get_worker_task(namespace, tenant, &task_id).await?;
+                        match task {
+                            Some(task)
+                                if task.status == acteon_core::WorkerTaskStatus::Completed =>
+                            {
+                                // Mirror the resume hook's history event so the
+                                // timeline is identical whichever path resumed.
+                                self.append_execution_history(
+                                    namespace,
+                                    tenant,
+                                    chain_id,
+                                    ExecutionEventType::TaskCompleted {
+                                        step_name: step_config.name.clone(),
+                                        task_id: task.task_id.clone(),
+                                        attempt: task.attempt,
+                                    },
+                                    None,
+                                )
+                                .await;
+                                chain_state.wait_state = None;
+                                chain_state.status = ChainStatus::Running;
+                                let step_result = StepResult::new(
+                                    step_config.name.clone(),
+                                    true,
+                                    Some(task.result.clone().unwrap_or_default()),
+                                    None,
+                                    now,
+                                );
+                                self.complete_wait_step(
+                                    namespace,
+                                    tenant,
+                                    chain_id,
+                                    &chain_key,
+                                    &pending_key,
+                                    &chain_config,
+                                    &mut chain_state,
+                                    step_idx,
+                                    step_config,
+                                    step_result,
+                                    &step_index_map,
+                                    "chain_step_completed",
+                                )
+                                .await?;
+                            }
+                            Some(task)
+                                if task.status == acteon_core::WorkerTaskStatus::Failed
+                                    || task.status == acteon_core::WorkerTaskStatus::Cancelled =>
+                            {
+                                self.append_execution_history(
+                                    namespace,
+                                    tenant,
+                                    chain_id,
+                                    ExecutionEventType::TaskFailed {
+                                        step_name: step_config.name.clone(),
+                                        task_id: task.task_id.clone(),
+                                        attempt: task.attempt,
+                                        error: task.error.clone().unwrap_or_default(),
+                                    },
+                                    None,
+                                )
+                                .await;
+                                chain_state.wait_state = None;
+                                chain_state.status = ChainStatus::Running;
+                                let step_result = StepResult::new(
+                                    step_config.name.clone(),
+                                    false,
+                                    None,
+                                    Some(task.error.clone().unwrap_or_else(|| {
+                                        format!("worker task {:?}", task.status)
+                                    })),
+                                    now,
+                                );
+                                self.fail_wait_step(
+                                    namespace,
+                                    tenant,
+                                    chain_id,
+                                    &chain_key,
+                                    &pending_key,
+                                    &chain_config,
+                                    &mut chain_state,
+                                    step_idx,
+                                    step_config,
+                                    step_result,
+                                    &step_index_map,
+                                )
+                                .await?;
+                            }
+                            _ if timeout_at.is_some_and(|t| now >= t) => {
+                                // Worker-step timeout: cancel the task and fail
+                                // the step per its failure policy.
+                                let _ = self.cancel_worker_task(namespace, tenant, &task_id).await;
+                                chain_state.wait_state = None;
+                                chain_state.status = ChainStatus::Running;
+                                self.append_execution_history(
+                                    namespace,
+                                    tenant,
+                                    chain_id,
+                                    ExecutionEventType::TaskFailed {
+                                        step_name: step_config.name.clone(),
+                                        task_id: task_id.clone(),
+                                        attempt: 0,
+                                        error: "worker step timed out".into(),
+                                    },
+                                    None,
+                                )
+                                .await;
+                                let step_result = StepResult::new(
+                                    step_config.name.clone(),
+                                    false,
+                                    None,
+                                    Some("worker step timed out".into()),
+                                    now,
+                                );
+                                self.fail_wait_step(
+                                    namespace,
+                                    tenant,
+                                    chain_id,
+                                    &chain_key,
+                                    &pending_key,
+                                    &chain_config,
+                                    &mut chain_state,
+                                    step_idx,
+                                    step_config,
+                                    step_result,
+                                    &step_index_map,
+                                )
+                                .await?;
+                            }
+                            _ => {
+                                // Still pending/leased — re-arm the timeout /
+                                // chain deadline, if any; completion wakes the
+                                // chain.
+                                if let Some(wake) =
+                                    Self::park_wake_at_ms(timeout_at, chain_state.expires_at)
+                                {
+                                    self.state.index_chain_ready(&pending_key, wake).await?;
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        // First arrival: enqueue the task and pause the chain.
+                        let payload = crate::chain::resolve_template(
+                            &step_config.payload_template,
+                            &chain_state.origin_action,
+                            &chain_state.step_results,
+                            &chain_config.steps,
+                            chain_id,
+                            step_idx,
+                            &chain_state.execution_path,
+                            &chain_state.parallel_sub_results,
+                        );
+                        let task = acteon_core::WorkerTask::new(
+                            namespace,
+                            tenant,
+                            &worker_cfg.queue,
+                            worker_cfg
+                                .action_type
+                                .clone()
+                                .unwrap_or_else(|| step_config.name.clone()),
+                            payload,
+                        )
+                        .with_max_attempts(
+                            worker_cfg
+                                .max_attempts
+                                .unwrap_or(acteon_core::DEFAULT_TASK_MAX_ATTEMPTS),
+                        )
+                        .for_chain_step(
+                            chain_id,
+                            step_idx,
+                            &step_config.name,
+                        );
+                        let task_id = task.task_id.clone();
+                        self.enqueue_worker_task(task).await?;
 
-                            match step_policy {
-                                acteon_core::chain::StepFailurePolicy::Abort => {
-                                    chain_state.status = ChainStatus::Failed;
-                                    chain_state.updated_at = Utc::now();
+                        #[allow(clippy::cast_possible_wrap)]
+                        let timeout_at = worker_cfg
+                            .timeout_seconds
+                            .map(|s| now + chrono::Duration::seconds(s as i64));
+                        chain_state.wait_state = Some(WaitState::Worker {
+                            step_index: step_idx,
+                            task_id: task_id.clone(),
+                            queue: worker_cfg.queue.clone(),
+                            timeout_at,
+                        });
+                        chain_state.status = ChainStatus::WaitingWorker;
+                        chain_state.updated_at = now;
+                        self.persist_chain_state(&chain_key, &chain_state, None)
+                            .await?;
+                        self.append_execution_history(
+                            namespace,
+                            tenant,
+                            chain_id,
+                            ExecutionEventType::TaskEnqueued {
+                                step_name: step_config.name.clone(),
+                                task_id,
+                                queue: worker_cfg.queue.clone(),
+                            },
+                            None,
+                        )
+                        .await;
+                        if let Some(wake) =
+                            Self::park_wake_at_ms(timeout_at, chain_state.expires_at)
+                        {
+                            self.state.index_chain_ready(&pending_key, wake).await?;
+                        }
+                        debug!(
+                            chain_id = %chain_id,
+                            step = %step_config.name,
+                            queue = %worker_cfg.queue,
+                            "worker task enqueued; chain waiting"
+                        );
+                    }
+                }
+                guard
+                    .release()
+                    .await
+                    .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+                return Ok(());
+            }
+
+            // --- Sub-chain step handling ---
+            StepKind::SubChain(sub_chain_name) => {
+                // Look for an existing child chain for this step.
+                let existing_child = self
+                    .find_child_chain_for_step(&chain_state, sub_chain_name, step_idx)
+                    .await?;
+
+                match existing_child {
+                    None => {
+                        // No child chain yet — start one.
+                        let child_id = self
+                            .start_sub_chain(&mut chain_state, step_idx, sub_chain_name)
+                            .await?;
+
+                        chain_state.status = ChainStatus::WaitingSubChain;
+                        chain_state.updated_at = Utc::now();
+                        self.persist_chain_state(&chain_key, &chain_state, None)
+                            .await?;
+
+                        // Re-index to poll again in 5 seconds.
+                        let ready_at = Utc::now().timestamp_millis() + 5000;
+                        self.state.index_chain_ready(&pending_key, ready_at).await?;
+
+                        debug!(
+                            chain_id = %chain_id,
+                            child_chain_id = %child_id,
+                            sub_chain = %sub_chain_name,
+                            "sub-chain started, parent waiting"
+                        );
+
+                        guard
+                            .release()
+                            .await
+                            .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+                        return Ok(());
+                    }
+                    Some(child_state) => {
+                        match child_state.status {
+                            ChainStatus::Completed => {
+                                // Sub-chain completed — extract result and continue.
+                                let step_result =
+                                    Self::extract_sub_chain_result(sub_chain_name, &child_state);
+                                chain_state.step_results[step_idx] = Some(step_result.clone());
+                                chain_state.status = ChainStatus::Running;
+                                chain_state.updated_at = Utc::now();
+
+                                let next_step_idx = Self::resolve_next_step(
+                                    &chain_config,
+                                    step_idx,
+                                    &step_result,
+                                    &step_index_map,
+                                );
+
+                                if let Some(next_idx) = next_step_idx {
+                                    chain_state.current_step = next_idx;
+                                    chain_state
+                                        .execution_path
+                                        .push(chain_config.steps[next_idx].name.clone());
+                                    self.persist_chain_state(&chain_key, &chain_state, None)
+                                        .await?;
+                                    let ready_at =
+                                        chain_config.steps[next_idx].delay_seconds.map_or(0, |d| {
+                                            Utc::now().timestamp_millis() + (d.cast_signed() * 1000)
+                                        });
+                                    self.state.index_chain_ready(&pending_key, ready_at).await?;
+                                } else {
+                                    chain_state.status = ChainStatus::Completed;
                                     self.persist_chain_state(
                                         &chain_key,
                                         &chain_state,
@@ -3377,41 +3345,46 @@ impl Gateway {
                                     .await?;
                                     self.cleanup_pending_chain(namespace, tenant, chain_id)
                                         .await?;
-                                    self.metrics.increment_chains_failed();
-                                    self.emit_chain_terminal_audit(&chain_state, "chain_failed")
+                                    self.metrics.increment_chains_completed();
+                                    self.emit_chain_terminal_audit(&chain_state, "chain_completed")
                                         .await;
-                                    warn!(
-                                        chain_id = %chain_id,
-                                        sub_chain = %sub_chain_name,
-                                        "sub-chain failed, aborting parent chain"
-                                    );
+                                    info!(chain_id = %chain_id, "chain completed successfully");
                                 }
-                                acteon_core::chain::StepFailurePolicy::Skip => {
-                                    let next_step_idx = Self::resolve_next_step(
-                                        &chain_config,
-                                        step_idx,
-                                        &step_result,
-                                        &step_index_map,
-                                    );
-                                    if let Some(next_idx) = next_step_idx {
-                                        chain_state.current_step = next_idx;
-                                        chain_state.updated_at = Utc::now();
-                                        chain_state
-                                            .execution_path
-                                            .push(chain_config.steps[next_idx].name.clone());
-                                        self.persist_chain_state(&chain_key, &chain_state, None)
-                                            .await?;
-                                        let ready_at = chain_config.steps[next_idx]
-                                            .delay_seconds
-                                            .map_or(0, |d| {
-                                                Utc::now().timestamp_millis()
-                                                    + (d.cast_signed() * 1000)
-                                            });
-                                        self.state
-                                            .index_chain_ready(&pending_key, ready_at)
-                                            .await?;
-                                    } else {
-                                        chain_state.status = ChainStatus::Completed;
+
+                                guard
+                                    .release()
+                                    .await
+                                    .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+                                return Ok(());
+                            }
+                            ChainStatus::Failed
+                            | ChainStatus::TimedOut
+                            | ChainStatus::Cancelled => {
+                                // Sub-chain failed — apply step on_failure policy.
+                                let error_msg = format!(
+                                    "sub-chain `{sub_chain_name}` {:?}",
+                                    child_state.status
+                                );
+                                let step_result = StepResult {
+                                    step_name: format!("sub_chain:{sub_chain_name}"),
+                                    success: false,
+                                    response_body: None,
+                                    error: Some(error_msg.clone()),
+                                    completed_at: Utc::now(),
+                                    attempt: None,
+                                    started_at: None,
+                                };
+                                chain_state.step_results[step_idx] = Some(step_result.clone());
+                                chain_state.status = ChainStatus::Running;
+
+                                let step_policy = step_config
+                                    .on_failure
+                                    .as_ref()
+                                    .unwrap_or(&acteon_core::chain::StepFailurePolicy::Abort);
+
+                                match step_policy {
+                                    acteon_core::chain::StepFailurePolicy::Abort => {
+                                        chain_state.status = ChainStatus::Failed;
                                         chain_state.updated_at = Utc::now();
                                         self.persist_chain_state(
                                             &chain_key,
@@ -3421,79 +3394,137 @@ impl Gateway {
                                         .await?;
                                         self.cleanup_pending_chain(namespace, tenant, chain_id)
                                             .await?;
-                                        self.metrics.increment_chains_completed();
+                                        self.metrics.increment_chains_failed();
                                         self.emit_chain_terminal_audit(
                                             &chain_state,
-                                            "chain_completed",
+                                            "chain_failed",
+                                        )
+                                        .await;
+                                        warn!(
+                                            chain_id = %chain_id,
+                                            sub_chain = %sub_chain_name,
+                                            "sub-chain failed, aborting parent chain"
+                                        );
+                                    }
+                                    acteon_core::chain::StepFailurePolicy::Skip => {
+                                        let next_step_idx = Self::resolve_next_step(
+                                            &chain_config,
+                                            step_idx,
+                                            &step_result,
+                                            &step_index_map,
+                                        );
+                                        if let Some(next_idx) = next_step_idx {
+                                            chain_state.current_step = next_idx;
+                                            chain_state.updated_at = Utc::now();
+                                            chain_state
+                                                .execution_path
+                                                .push(chain_config.steps[next_idx].name.clone());
+                                            self.persist_chain_state(
+                                                &chain_key,
+                                                &chain_state,
+                                                None,
+                                            )
+                                            .await?;
+                                            let ready_at = chain_config.steps[next_idx]
+                                                .delay_seconds
+                                                .map_or(0, |d| {
+                                                    Utc::now().timestamp_millis()
+                                                        + (d.cast_signed() * 1000)
+                                                });
+                                            self.state
+                                                .index_chain_ready(&pending_key, ready_at)
+                                                .await?;
+                                        } else {
+                                            chain_state.status = ChainStatus::Completed;
+                                            chain_state.updated_at = Utc::now();
+                                            self.persist_chain_state(
+                                                &chain_key,
+                                                &chain_state,
+                                                self.completed_chain_ttl,
+                                            )
+                                            .await?;
+                                            self.cleanup_pending_chain(namespace, tenant, chain_id)
+                                                .await?;
+                                            self.metrics.increment_chains_completed();
+                                            self.emit_chain_terminal_audit(
+                                                &chain_state,
+                                                "chain_completed",
+                                            )
+                                            .await;
+                                        }
+                                    }
+                                    acteon_core::chain::StepFailurePolicy::Dlq => {
+                                        chain_state.status = ChainStatus::Failed;
+                                        chain_state.updated_at = Utc::now();
+                                        self.persist_chain_state(
+                                            &chain_key,
+                                            &chain_state,
+                                            self.completed_chain_ttl,
+                                        )
+                                        .await?;
+                                        self.cleanup_pending_chain(namespace, tenant, chain_id)
+                                            .await?;
+                                        self.metrics.increment_chains_failed();
+                                        self.emit_chain_terminal_audit(
+                                            &chain_state,
+                                            "chain_failed",
                                         )
                                         .await;
                                     }
                                 }
-                                acteon_core::chain::StepFailurePolicy::Dlq => {
-                                    chain_state.status = ChainStatus::Failed;
-                                    chain_state.updated_at = Utc::now();
-                                    self.persist_chain_state(
-                                        &chain_key,
-                                        &chain_state,
-                                        self.completed_chain_ttl,
-                                    )
-                                    .await?;
-                                    self.cleanup_pending_chain(namespace, tenant, chain_id)
-                                        .await?;
-                                    self.metrics.increment_chains_failed();
-                                    self.emit_chain_terminal_audit(&chain_state, "chain_failed")
-                                        .await;
-                                }
+
+                                guard
+                                    .release()
+                                    .await
+                                    .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+                                return Ok(());
                             }
+                            ChainStatus::Running
+                            | ChainStatus::WaitingSubChain
+                            | ChainStatus::WaitingParallel
+                            | ChainStatus::WaitingTimer
+                            | ChainStatus::WaitingSignal
+                            | ChainStatus::WaitingWorker => {
+                                // Still running — re-schedule poll in 5 seconds.
+                                chain_state.status = ChainStatus::WaitingSubChain;
+                                chain_state.updated_at = Utc::now();
+                                self.persist_chain_state(&chain_key, &chain_state, None)
+                                    .await?;
+                                let ready_at = Utc::now().timestamp_millis() + 5000;
+                                self.state.index_chain_ready(&pending_key, ready_at).await?;
 
-                            guard
-                                .release()
-                                .await
-                                .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
-                            return Ok(());
-                        }
-                        ChainStatus::Running
-                        | ChainStatus::WaitingSubChain
-                        | ChainStatus::WaitingParallel
-                        | ChainStatus::WaitingTimer
-                        | ChainStatus::WaitingSignal
-                        | ChainStatus::WaitingWorker => {
-                            // Still running — re-schedule poll in 5 seconds.
-                            chain_state.status = ChainStatus::WaitingSubChain;
-                            chain_state.updated_at = Utc::now();
-                            self.persist_chain_state(&chain_key, &chain_state, None)
-                                .await?;
-                            let ready_at = Utc::now().timestamp_millis() + 5000;
-                            self.state.index_chain_ready(&pending_key, ready_at).await?;
-
-                            guard
-                                .release()
-                                .await
-                                .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
-                            return Ok(());
+                                guard
+                                    .release()
+                                    .await
+                                    .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+                                return Ok(());
+                            }
                         }
                     }
                 }
             }
-        }
 
-        // --- Parallel step handling ---
-        if step_config.is_parallel() {
-            return self
-                .advance_chain_parallel(
-                    namespace,
-                    tenant,
-                    chain_id,
-                    &chain_key,
-                    &pending_key,
-                    step_idx,
-                    step_config,
-                    &chain_config,
-                    &mut chain_state,
-                    &step_index_map,
-                    guard,
-                )
-                .await;
+            // --- Parallel step handling ---
+            StepKind::Parallel(_) => {
+                return self
+                    .advance_chain_parallel(
+                        namespace,
+                        tenant,
+                        chain_id,
+                        &chain_key,
+                        &pending_key,
+                        step_idx,
+                        step_config,
+                        &chain_config,
+                        &mut chain_state,
+                        &step_index_map,
+                        guard,
+                    )
+                    .await;
+            }
+
+            // Provider steps fall through to the dispatch below.
+            StepKind::Provider => {}
         }
 
         // Resolve the payload template.
@@ -4640,7 +4671,9 @@ impl Gateway {
         step_index_map: &HashMap<String, usize>,
         guard: Box<dyn acteon_state::LockGuard>,
     ) -> Result<(), GatewayError> {
-        let group = step_config.parallel.as_ref().unwrap();
+        let StepKind::Parallel(group) = step_config.kind() else {
+            unreachable!("advance_chain_parallel called on a non-parallel step")
+        };
 
         // Detect whether we are resuming after a crash. If `parallel_state` is
         // already set for this step, sub-steps that already have results in
@@ -5682,9 +5715,13 @@ impl Gateway {
                             || s.status == ChainStatus::WaitingSubChain
                             || s.status == ChainStatus::WaitingParallel)
                     {
-                        if step.is_sub_chain() && s.status == ChainStatus::WaitingSubChain {
+                        if matches!(step.kind(), StepKind::SubChain(_))
+                            && s.status == ChainStatus::WaitingSubChain
+                        {
                             "waiting_sub_chain".to_string()
-                        } else if step.is_parallel() && s.status == ChainStatus::WaitingParallel {
+                        } else if matches!(step.kind(), StepKind::Parallel(_))
+                            && s.status == ChainStatus::WaitingParallel
+                        {
                             "waiting_parallel".to_string()
                         } else {
                             "running".to_string()
@@ -5694,12 +5731,15 @@ impl Gateway {
                     }
                 });
 
-                let (node_type, sub_chain_name) = if step.is_sub_chain() {
-                    ("sub_chain".to_string(), step.sub_chain.clone())
-                } else if step.is_parallel() {
-                    ("parallel".to_string(), None)
-                } else {
-                    ("step".to_string(), None)
+                // Provider steps keep the legacy `"step"` node type; the
+                // other kinds use their definition-field label, giving the
+                // DAG distinct timer / wait_for_signal / worker nodes.
+                let (node_type, sub_chain_name) = match step.kind() {
+                    StepKind::Provider => ("step".to_string(), None),
+                    StepKind::SubChain(name) => {
+                        (step.kind().label().to_string(), Some(name.to_string()))
+                    }
+                    kind => (kind.label().to_string(), None),
                 };
 
                 // For sub-chain steps, recurse into the sub-chain definition.
@@ -5707,8 +5747,7 @@ impl Gateway {
                 // the definition-only structure so the hierarchy is always visible.
                 let mut child_chain_id = None;
                 let mut children = None;
-                if step.is_sub_chain() {
-                    let sub_name = step.sub_chain.as_deref().unwrap();
+                if let StepKind::SubChain(sub_name) = step.kind() {
                     if let Some(state) = chain_state {
                         if let Ok(Some(child_state)) =
                             self.find_child_chain_for_step(state, sub_name, i).await
@@ -5734,53 +5773,53 @@ impl Gateway {
                 }
 
                 // Build parallel child DagNodes if this is a parallel step.
-                let (parallel_children, parallel_join) = if step.is_parallel() {
-                    let group = step.parallel.as_ref().unwrap();
-                    let p_children: Vec<acteon_core::DagNode> = group
-                        .steps
-                        .iter()
-                        .map(|sub_step| {
-                            let sub_status = chain_state.and_then(|s| {
-                                s.parallel_sub_results.get(&sub_step.name).map(|r| {
-                                    if r.success {
-                                        "completed".to_string()
+                let (parallel_children, parallel_join) =
+                    if let StepKind::Parallel(group) = step.kind() {
+                        let p_children: Vec<acteon_core::DagNode> = group
+                            .steps
+                            .iter()
+                            .map(|sub_step| {
+                                let sub_status = chain_state.and_then(|s| {
+                                    s.parallel_sub_results.get(&sub_step.name).map(|r| {
+                                        if r.success {
+                                            "completed".to_string()
+                                        } else {
+                                            "failed".to_string()
+                                        }
+                                    })
+                                });
+                                acteon_core::DagNode {
+                                    name: sub_step.name.clone(),
+                                    node_type: "step".to_string(),
+                                    provider: if sub_step.provider.is_empty() {
+                                        None
                                     } else {
-                                        "failed".to_string()
-                                    }
-                                })
-                            });
-                            acteon_core::DagNode {
-                                name: sub_step.name.clone(),
-                                node_type: "step".to_string(),
-                                provider: if sub_step.provider.is_empty() {
-                                    None
-                                } else {
-                                    Some(sub_step.provider.clone())
-                                },
-                                action_type: if sub_step.action_type.is_empty() {
-                                    None
-                                } else {
-                                    Some(sub_step.action_type.clone())
-                                },
-                                sub_chain_name: None,
-                                status: sub_status,
-                                child_chain_id: None,
-                                children: None,
-                                parallel_children: None,
-                                parallel_join: None,
-                                attempt: None,
-                                max_retries: None,
-                            }
-                        })
-                        .collect();
-                    let join_str = match group.join {
-                        acteon_core::chain::ParallelJoinPolicy::All => "all",
-                        acteon_core::chain::ParallelJoinPolicy::Any => "any",
+                                        Some(sub_step.provider.clone())
+                                    },
+                                    action_type: if sub_step.action_type.is_empty() {
+                                        None
+                                    } else {
+                                        Some(sub_step.action_type.clone())
+                                    },
+                                    sub_chain_name: None,
+                                    status: sub_status,
+                                    child_chain_id: None,
+                                    children: None,
+                                    parallel_children: None,
+                                    parallel_join: None,
+                                    attempt: None,
+                                    max_retries: None,
+                                }
+                            })
+                            .collect();
+                        let join_str = match group.join {
+                            acteon_core::chain::ParallelJoinPolicy::All => "all",
+                            acteon_core::chain::ParallelJoinPolicy::Any => "any",
+                        };
+                        (Some(p_children), Some(join_str.to_string()))
+                    } else {
+                        (None, None)
                     };
-                    (Some(p_children), Some(join_str.to_string()))
-                } else {
-                    (None, None)
-                };
 
                 // Retry metadata from config + runtime state.
                 let attempt = chain_state
@@ -6062,34 +6101,32 @@ impl Gateway {
             // --- Gap 2, 4, 5: Parallel parent step identification ---
             // Use "parallel" as provider and step name as action_type, include
             // the join policy, and embed per-sub-step result summary.
-            let (provider, action_type) = if step_config.is_parallel() {
+            let (provider, action_type) = if let StepKind::Parallel(group) = step_config.kind() {
                 outcome_details["is_parallel_step"] = serde_json::Value::Bool(true);
-                if let Some(ref group) = step_config.parallel {
-                    let policy_str = match group.join {
-                        acteon_core::chain::ParallelJoinPolicy::All => "all",
-                        acteon_core::chain::ParallelJoinPolicy::Any => "any",
-                    };
-                    outcome_details["parallel_join_policy"] =
-                        serde_json::Value::String(policy_str.to_owned());
+                let policy_str = match group.join {
+                    acteon_core::chain::ParallelJoinPolicy::All => "all",
+                    acteon_core::chain::ParallelJoinPolicy::Any => "any",
+                };
+                outcome_details["parallel_join_policy"] =
+                    serde_json::Value::String(policy_str.to_owned());
 
-                    // Embed sub-step result summary for self-contained auditing.
-                    let sub_results: serde_json::Value = chain_state
-                        .parallel_sub_results
-                        .iter()
-                        .map(|(name, sr)| {
-                            let mut v = serde_json::json!({
-                                "step_name": name,
-                                "success": sr.success,
-                                "completed_at": sr.completed_at.to_rfc3339(),
-                            });
-                            if let Some(ref err) = sr.error {
-                                v["error"] = serde_json::Value::String(err.clone());
-                            }
-                            v
-                        })
-                        .collect();
-                    outcome_details["parallel_sub_step_results"] = sub_results;
-                }
+                // Embed sub-step result summary for self-contained auditing.
+                let sub_results: serde_json::Value = chain_state
+                    .parallel_sub_results
+                    .iter()
+                    .map(|(name, sr)| {
+                        let mut v = serde_json::json!({
+                            "step_name": name,
+                            "success": sr.success,
+                            "completed_at": sr.completed_at.to_rfc3339(),
+                        });
+                        if let Some(ref err) = sr.error {
+                            v["error"] = serde_json::Value::String(err.clone());
+                        }
+                        v
+                    })
+                    .collect();
+                outcome_details["parallel_sub_step_results"] = sub_results;
                 ("parallel".to_owned(), step_config.name.clone())
             } else {
                 (

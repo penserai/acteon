@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 pub struct DagNode {
     /// Step name.
     pub name: String,
-    /// Node type: `"step"` or `"sub_chain"`.
+    /// Node type: `"step"` (provider), `"sub_chain"`, `"parallel"`,
+    /// `"timer"`, `"wait_for_signal"`, or `"worker"`.
     pub node_type: String,
     /// Provider for regular steps.
     #[serde(skip_serializing_if = "Option::is_none")]
