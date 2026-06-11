@@ -349,7 +349,7 @@ export interface ChainDefinition {
 // ---- Chain DAG ----
 export interface DagNode {
   name: string
-  node_type: 'step' | 'sub_chain' | 'parallel'
+  node_type: 'step' | 'sub_chain' | 'parallel' | 'timer' | 'wait_for_signal' | 'worker'
   provider?: string
   action_type?: string
   sub_chain_name?: string

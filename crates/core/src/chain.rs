@@ -246,6 +246,48 @@ pub struct WorkerStepConfig {
     pub max_attempts: Option<u32>,
 }
 
+/// The kind of work a chain step performs — a borrowed, tagged view over
+/// the mutually-exclusive step-kind fields of [`ChainStepConfig`].
+///
+/// The step configuration keeps its flat, optional-field wire shape (so
+/// TOML/YAML/JSON definitions and persisted snapshots are unchanged), but
+/// engine code should dispatch through [`ChainStepConfig::kind`] instead of
+/// probing the individual `Option` fields: the precedence between kinds is
+/// then defined in exactly one place, and a future step kind extends this
+/// enum — turning every dispatch site into a compile error instead of a
+/// silent fall-through to provider dispatch.
+#[derive(Debug, Clone, Copy)]
+pub enum StepKind<'a> {
+    /// Dispatch a synthetic action to an in-process provider.
+    Provider,
+    /// Invoke another chain by name and wait for it to complete.
+    SubChain(&'a str),
+    /// Fan out to concurrent sub-steps.
+    Parallel(&'a ParallelStepGroup),
+    /// Pause on a durable timer.
+    Timer(&'a TimerStepConfig),
+    /// Pause until an external signal is delivered.
+    Signal(&'a SignalStepConfig),
+    /// Execute on an external worker queue.
+    Worker(&'a WorkerStepConfig),
+}
+
+impl StepKind<'_> {
+    /// Stable lowercase label for this kind, matching the field names used
+    /// in chain definitions (and in validation error messages).
+    #[must_use]
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Provider => "provider",
+            Self::SubChain(_) => "sub_chain",
+            Self::Parallel(_) => "parallel",
+            Self::Timer(_) => "timer",
+            Self::Signal(_) => "wait_for_signal",
+            Self::Worker(_) => "worker",
+        }
+    }
+}
+
 /// What a paused chain execution is waiting on.
 ///
 /// Set while the chain is in one of the waiting statuses
@@ -618,7 +660,35 @@ impl ChainStepConfig {
         step
     }
 
+    /// The canonical kind of this step, for engine dispatch.
+    ///
+    /// A valid step sets at most one kind ([`ChainConfig::validate`] rejects
+    /// combinations). For defense in depth against an invalid config that
+    /// slipped past validation, the precedence here mirrors the engine's
+    /// historical dispatch order: timer, wait-for-signal, worker, sub-chain,
+    /// parallel, then provider.
+    #[must_use]
+    pub fn kind(&self) -> StepKind<'_> {
+        if let Some(ref timer) = self.timer {
+            StepKind::Timer(timer)
+        } else if let Some(ref signal) = self.wait_for_signal {
+            StepKind::Signal(signal)
+        } else if let Some(ref worker) = self.worker {
+            StepKind::Worker(worker)
+        } else if let Some(ref sub_chain) = self.sub_chain {
+            StepKind::SubChain(sub_chain)
+        } else if let Some(ref parallel) = self.parallel {
+            StepKind::Parallel(parallel)
+        } else {
+            StepKind::Provider
+        }
+    }
+
     /// Returns `true` if this step invokes a sub-chain.
+    ///
+    /// Note: the `is_*` helpers probe the individual fields (so
+    /// [`ChainConfig::validate`] can detect steps that illegally set several
+    /// kinds); dispatch code should match on [`Self::kind`] instead.
     #[must_use]
     pub fn is_sub_chain(&self) -> bool {
         self.sub_chain.is_some()
@@ -984,28 +1054,28 @@ impl ChainConfig {
                     ));
                 }
             }
-            // Retry on wait steps is meaningless (nothing to retry).
-            if step.retry.is_some() && (step.is_timer() || step.is_wait_for_signal()) {
-                errors.push(format!(
-                    "step `{}` has a retry policy on a timer/wait_for_signal step; retry is only supported on provider and worker steps",
-                    step.name
-                ));
-            }
         }
 
-        // Reject retry policies on sub-chain and parallel parent steps.
+        // Retry is only meaningful where the engine re-executes the work
+        // itself: provider and worker steps.
         for step in &self.steps {
-            if step.retry.is_some() && step.is_sub_chain() {
-                errors.push(format!(
+            if step.retry.is_none() {
+                continue;
+            }
+            match step.kind() {
+                StepKind::Timer(_) | StepKind::Signal(_) => errors.push(format!(
+                    "step `{}` has a retry policy on a timer/wait_for_signal step; retry is only supported on provider and worker steps",
+                    step.name
+                )),
+                StepKind::SubChain(_) => errors.push(format!(
                     "step `{}` has a retry policy on a sub-chain step; retry is only supported on provider steps",
                     step.name
-                ));
-            }
-            if step.retry.is_some() && step.is_parallel() {
-                errors.push(format!(
+                )),
+                StepKind::Parallel(_) => errors.push(format!(
                     "step `{}` has a retry policy on a parallel step; retry is only supported on provider steps",
                     step.name
-                ));
+                )),
+                StepKind::Provider | StepKind::Worker(_) => {}
             }
         }
 
@@ -2368,6 +2438,124 @@ mod tests {
         let step =
             ChainStepConfig::new("test", "p", "t", serde_json::json!({})).with_parallel(group);
         assert!(step.is_parallel());
+    }
+
+    #[test]
+    fn step_kind_matches_each_constructor() {
+        let provider = ChainStepConfig::new("a", "email", "send", serde_json::json!({}));
+        assert!(matches!(provider.kind(), StepKind::Provider));
+
+        let sub = ChainStepConfig::new_sub_chain("b", "child");
+        assert!(matches!(sub.kind(), StepKind::SubChain("child")));
+
+        let group = ParallelStepGroup {
+            steps: vec![ChainStepConfig::new("x", "p", "t", serde_json::json!({}))],
+            join: ParallelJoinPolicy::All,
+            on_failure: ParallelFailurePolicy::FailFast,
+            timeout_seconds: None,
+            max_concurrency: None,
+        };
+        let parallel = ChainStepConfig::new_parallel("c", group);
+        assert!(matches!(parallel.kind(), StepKind::Parallel(g) if g.steps.len() == 1));
+
+        let timer = ChainStepConfig::new_timer(
+            "d",
+            TimerStepConfig {
+                duration_seconds: Some(60),
+                until: None,
+            },
+        );
+        assert!(matches!(
+            timer.kind(),
+            StepKind::Timer(t) if t.duration_seconds == Some(60)
+        ));
+
+        let signal = ChainStepConfig::new_wait_for_signal(
+            "e",
+            SignalStepConfig {
+                signal_name: "approved".into(),
+                timeout_seconds: None,
+                on_timeout: None,
+            },
+        );
+        assert!(matches!(
+            signal.kind(),
+            StepKind::Signal(s) if s.signal_name == "approved"
+        ));
+
+        let worker = ChainStepConfig::new_worker(
+            "f",
+            WorkerStepConfig {
+                queue: "builds".into(),
+                action_type: None,
+                timeout_seconds: None,
+                max_attempts: None,
+            },
+            serde_json::json!({}),
+        );
+        assert!(matches!(
+            worker.kind(),
+            StepKind::Worker(w) if w.queue == "builds"
+        ));
+    }
+
+    #[test]
+    fn step_kind_precedence_on_invalid_multi_kind_step() {
+        // An (invalid) step setting several kinds resolves by the documented
+        // precedence — timer wins over worker, worker over sub_chain.
+        let mut step = ChainStepConfig::new_sub_chain("multi", "child");
+        step.worker = Some(WorkerStepConfig {
+            queue: "q".into(),
+            action_type: None,
+            timeout_seconds: None,
+            max_attempts: None,
+        });
+        assert!(matches!(step.kind(), StepKind::Worker(_)));
+        step.timer = Some(TimerStepConfig {
+            duration_seconds: Some(1),
+            until: None,
+        });
+        assert!(matches!(step.kind(), StepKind::Timer(_)));
+        // validate() still sees every field set on the invalid step.
+        let config = ChainConfig::new("c").with_step(step);
+        assert!(
+            config
+                .validate()
+                .iter()
+                .any(|e| e.contains("multiple step kinds"))
+        );
+    }
+
+    #[test]
+    fn step_kind_labels_match_definition_field_names() {
+        let group = ParallelStepGroup {
+            steps: vec![],
+            join: ParallelJoinPolicy::All,
+            on_failure: ParallelFailurePolicy::FailFast,
+            timeout_seconds: None,
+            max_concurrency: None,
+        };
+        let timer = TimerStepConfig {
+            duration_seconds: Some(1),
+            until: None,
+        };
+        let signal = SignalStepConfig {
+            signal_name: "s".into(),
+            timeout_seconds: None,
+            on_timeout: None,
+        };
+        let worker = WorkerStepConfig {
+            queue: "q".into(),
+            action_type: None,
+            timeout_seconds: None,
+            max_attempts: None,
+        };
+        assert_eq!(StepKind::Provider.label(), "provider");
+        assert_eq!(StepKind::SubChain("c").label(), "sub_chain");
+        assert_eq!(StepKind::Parallel(&group).label(), "parallel");
+        assert_eq!(StepKind::Timer(&timer).label(), "timer");
+        assert_eq!(StepKind::Signal(&signal).label(), "wait_for_signal");
+        assert_eq!(StepKind::Worker(&worker).label(), "worker");
     }
 
     #[test]
