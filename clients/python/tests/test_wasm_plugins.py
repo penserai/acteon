@@ -1,13 +1,14 @@
 """Tests for WASM plugin models in acteon_client.models."""
 
 import unittest
+
 from acteon_client.models import (
-    WasmPluginConfig,
-    WasmPlugin,
-    RegisterPluginRequest,
     ListPluginsResponse,
     PluginInvocationRequest,
     PluginInvocationResponse,
+    RegisterPluginRequest,
+    WasmPlugin,
+    WasmPluginConfig,
 )
 
 

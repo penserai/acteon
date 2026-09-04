@@ -1,5 +1,3 @@
-use std::process::Stdio;
-
 use crate::config::SwarmConfig;
 use crate::error::SwarmError;
 use crate::roles::RoleRegistry;
@@ -104,34 +102,24 @@ Respond with ONLY the action line. No explanation.",
         crate::config::AgentEngine::Gemini => "gemini",
     };
 
-    let result = tokio::time::timeout(
-        std::time::Duration::from_secs(60),
-        tokio::process::Command::new(cmd_name)
-            .arg("-p")
-            .arg(&prompt)
-            .arg("--model")
-            .arg(if matches!(engine, crate::config::AgentEngine::Claude) {
-                "haiku"
-            } else {
-                "flash"
-            })
-            .arg("--output-format")
-            .arg("text")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output(),
-    )
-    .await;
+    let mut command = tokio::process::Command::new(cmd_name);
+    command
+        .arg("-p")
+        .arg(&prompt)
+        .arg("--model")
+        .arg(if matches!(engine, crate::config::AgentEngine::Claude) {
+            "haiku"
+        } else {
+            "flash"
+        })
+        .args(["--output-format", "text"]);
+    let result = super::process::run(&mut command, std::time::Duration::from_secs(60)).await;
 
     let output = match result {
-        Ok(Ok(o)) if o.status.success() => o,
-        Ok(Ok(_)) => return Ok(RefinementAction::Continue),
-        Ok(Err(e)) => {
+        Ok(o) if o.status.success() => o,
+        Ok(_) => return Ok(RefinementAction::Continue),
+        Err(e) => {
             tracing::debug!("refiner spawn failed: {e}");
-            return Ok(RefinementAction::Continue);
-        }
-        Err(_) => {
-            tracing::debug!("refiner timed out");
             return Ok(RefinementAction::Continue);
         }
     };

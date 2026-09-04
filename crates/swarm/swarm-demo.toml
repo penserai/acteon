@@ -15,3 +15,14 @@ type = "log"
 [[providers]]
 name = "security-review-queue"
 type = "log"
+
+[rules]
+directory = "rules/swarm"
+
+[[providers]]
+name = "gemini-cli"
+type = "log"
+
+[[providers]]
+name = "approval-notifications"
+type = "log"

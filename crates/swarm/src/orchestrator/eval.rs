@@ -1,239 +1,215 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::process::Stdio;
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
 
 use crate::config::EvalHarnessConfig;
 use crate::error::SwarmError;
 use crate::types::eval::EvalResult;
 
-/// Run the eval harness command and parse the output for score signals.
-///
-/// The command runs as a shell subprocess in the given working directory.
-/// Output is scanned for `SCORE:`, `PASS:`, and `WARNINGS:` lines.
-/// Falls back to exit-code-based scoring when no signals are found.
+/// Versioned result emitted by an operator-controlled, independent evaluator.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EvalReport {
+    pub schema_version: u32,
+    pub checks: Vec<EvalCheck>,
+}
+
+/// One evidence-producing check. Safety checks are hard gates by default.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EvalCheck {
+    pub id: String,
+    pub passed: bool,
+    #[serde(default = "default_hard_gate")]
+    pub hard_gate: bool,
+    #[serde(default)]
+    pub challenge_id: Option<String>,
+}
+
+const fn default_hard_gate() -> bool {
+    true
+}
+
+fn invalid(message: impl Into<String>) -> SwarmError {
+    SwarmError::EvalHarness(message.into())
+}
+
+/// Run a trusted evaluator. Unparseable output, process failure, and missing checks fail closed.
 pub async fn run_eval_harness(
     config: &EvalHarnessConfig,
     working_dir: &Path,
 ) -> Result<EvalResult, SwarmError> {
-    if config.command.is_empty() {
-        return Err(SwarmError::EvalHarness("eval command is empty".into()));
-    }
-
-    let start = std::time::Instant::now();
-
-    let result = tokio::time::timeout(
-        std::time::Duration::from_secs(config.timeout_seconds),
-        tokio::process::Command::new("/bin/sh")
-            .arg("-c")
-            .arg(&config.command)
-            .current_dir(working_dir)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output(),
-    )
-    .await;
-
-    let duration_seconds = start.elapsed().as_secs_f64();
-
-    match result {
-        Ok(Ok(output)) => {
-            let exit_code = output.status.code().unwrap_or(-1);
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let combined: String = format!("{stdout}\n{stderr}").chars().take(10000).collect();
-
-            let (score, metrics) = parse_eval_output(&combined, exit_code);
-            let passed = score >= config.pass_threshold;
-
-            tracing::info!(
-                score,
-                passed,
-                exit_code,
-                duration = format!("{duration_seconds:.1}s"),
-                "eval harness complete"
-            );
-
-            Ok(EvalResult {
-                score,
-                passed,
-                metrics,
-                output: combined,
-                duration_seconds,
-                exit_code,
-            })
-        }
-        Ok(Err(e)) => Err(SwarmError::EvalHarness(format!(
-            "failed to execute eval command: {e}"
-        ))),
-        Err(_) => Err(SwarmError::EvalHarness(format!(
-            "eval command timed out after {}s",
-            config.timeout_seconds
-        ))),
-    }
+    run_eval_with_challenges(config, working_dir, &[]).await
 }
 
-/// Parse eval output for score signals.
-///
-/// Supported signals (case-insensitive, last one wins):
-/// - `SCORE: <f64>` — direct score assignment
-/// - `PASS: <n>/<total>` — computes n/total as score
-/// - `WARNINGS: <n>` — each warning reduces score by 0.01
-///
-/// Fallback: exit code 0 → 1.0, non-zero → 0.0.
-fn parse_eval_output(output: &str, exit_code: i32) -> (f64, HashMap<String, f64>) {
-    let mut metrics = HashMap::new();
-    let mut score: Option<f64> = None;
-    let mut warning_count: Option<f64> = None;
-
-    for line in output.lines() {
-        let line = line.trim();
-        let upper = line.to_uppercase();
-
-        if let Some(rest) = upper.strip_prefix("SCORE:") {
-            if let Ok(s) = rest.trim().parse::<f64>() {
-                score = Some(s.clamp(0.0, 1.0));
-            }
-        } else if let Some(rest) = upper.strip_prefix("PASS:") {
-            let rest = rest.trim();
-            if let Some((n_str, total_str)) = rest.split_once('/')
-                && let (Ok(n), Ok(total)) =
-                    (n_str.trim().parse::<f64>(), total_str.trim().parse::<f64>())
-                && total > 0.0
-            {
-                metrics.insert("pass_count".into(), n);
-                metrics.insert("test_count".into(), total);
-                score = Some((n / total).clamp(0.0, 1.0));
-            }
-        } else if let Some(rest) = upper.strip_prefix("WARNINGS:")
-            && let Ok(w) = rest.trim().parse::<f64>()
-        {
-            warning_count = Some(w);
-            metrics.insert("warnings".into(), w);
-        }
+pub(crate) async fn run_eval_with_challenges(
+    config: &EvalHarnessConfig,
+    working_dir: &Path,
+    challenges: &[crate::types::adversarial::AdversarialChallenge],
+) -> Result<EvalResult, SwarmError> {
+    if !config.pass_threshold.is_finite() || !(0.0..=1.0).contains(&config.pass_threshold) {
+        return Err(invalid("pass_threshold must be finite and between 0 and 1"));
     }
-
-    let mut final_score = score.unwrap_or(if exit_code == 0 { 1.0 } else { 0.0 });
-
-    // Apply warning penalty (0.01 per warning, clamped to 0.0).
-    if let Some(w) = warning_count {
-        final_score = (final_score - w * 0.01).max(0.0);
-    }
-
-    metrics.insert("exit_code".into(), f64::from(exit_code));
-
-    (final_score, metrics)
-}
-
-// ── Git snapshot/revert ────────────────────────────────────────────────────────
-
-const NO_SNAPSHOT: &str = "__no_snapshot__";
-
-/// Create a git stash snapshot of the working directory.
-///
-/// Returns a stash identifier, or `NO_SNAPSHOT` if there were no changes
-/// or the directory is not a git repo.
-pub async fn git_snapshot(working_dir: &Path) -> String {
-    let label = format!(
-        "acteon-swarm-eval-{}",
-        chrono::Utc::now().timestamp_millis()
-    );
-
-    let result = tokio::process::Command::new("git")
-        .args(["stash", "push", "-m", &label, "--include-untracked"])
-        .current_dir(working_dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .await;
-
-    match result {
-        Ok(output) if output.status.success() => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            if stdout.contains("No local changes") || stdout.contains("No stash entries") {
-                tracing::debug!("git snapshot: no local changes to stash");
-                NO_SNAPSHOT.into()
-            } else {
-                tracing::info!(label = %label, "git snapshot created");
-                label
-            }
+    let mut command = match &config.program {
+        Some(program) if !program.trim().is_empty() && config.command.trim().is_empty() => {
+            let mut command = tokio::process::Command::new(program);
+            command.args(&config.args);
+            command
         }
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            tracing::warn!("git stash failed: {stderr}");
-            NO_SNAPSHOT.into()
-        }
-        Err(e) => {
-            tracing::warn!("git not available: {e}");
-            NO_SNAPSHOT.into()
-        }
-    }
-}
-
-/// Revert to a previously created git snapshot (score regressed).
-pub async fn git_revert_to_snapshot(working_dir: &Path, stash_ref: &str) {
-    if stash_ref == NO_SNAPSHOT {
-        return;
-    }
-
-    // Discard current changes and restore stash.
-    let _ = tokio::process::Command::new("git")
-        .args(["checkout", "."])
-        .current_dir(working_dir)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .await;
-
-    let _ = tokio::process::Command::new("git")
-        .args(["clean", "-fd"])
-        .current_dir(working_dir)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .await;
-
-    let result = tokio::process::Command::new("git")
-        .args(["stash", "pop"])
-        .current_dir(working_dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .await;
-
-    match result {
-        Ok(output) if output.status.success() => {
-            tracing::info!(stash = %stash_ref, "reverted to pre-recovery snapshot");
-        }
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            tracing::warn!("git stash pop failed: {stderr}");
-        }
-        Err(e) => tracing::warn!("git revert failed: {e}"),
-    }
-}
-
-/// Discard a snapshot after a successful recovery (score improved).
-pub async fn git_discard_snapshot(working_dir: &Path, stash_ref: &str) {
-    if stash_ref == NO_SNAPSHOT {
-        return;
-    }
-
-    let result = tokio::process::Command::new("git")
-        .args(["stash", "drop"])
-        .current_dir(working_dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .await;
-
-    match result {
-        Ok(output) if output.status.success() => {
-            tracing::debug!(stash = %stash_ref, "discarded snapshot (keeping recovery changes)");
+        None if !config.command.trim().is_empty() && config.args.is_empty() => {
+            let mut command = tokio::process::Command::new("/bin/sh");
+            command.args(["-c", &config.command]);
+            command
         }
         _ => {
-            tracing::debug!("git stash drop failed (may have already been consumed)");
+            return Err(invalid(
+                "configure exactly one evaluator program/args or legacy command",
+            ));
+        }
+    };
+    command
+        .current_dir(working_dir)
+        .env("ACTEON_EVAL_CHALLENGES", serde_json::to_string(challenges)?);
+    let start = std::time::Instant::now();
+    let output = super::process::run(&mut command, Duration::from_secs(config.timeout_seconds))
+        .await
+        .map_err(|e| invalid(format!("evaluator process failed: {e}")))?;
+    let exit_code = output.status.code().unwrap_or(-1);
+    if !output.status.success() {
+        return Err(invalid(format!("evaluator exited with status {exit_code}")));
+    }
+    let stdout = std::str::from_utf8(&output.stdout)
+        .map_err(|_| invalid("evaluator stdout is not UTF-8"))?;
+    let (score, mut metrics, gates_passed, verified_challenges) =
+        if stdout.trim_start().starts_with('{') {
+            parse_report(stdout)?
+        } else {
+            let (score, metrics) = parse_eval_output(stdout)?;
+            (score, metrics, true, Vec::new())
+        };
+    metrics.insert("exit_code".into(), f64::from(exit_code));
+    let passed = gates_passed && score >= config.pass_threshold;
+    Ok(EvalResult {
+        score,
+        passed,
+        metrics,
+        // Presentation truncation happens only after validation of complete stdout.
+        output: format!("{stdout}\n{}", String::from_utf8_lossy(&output.stderr))
+            .chars()
+            .take(10000)
+            .collect(),
+        duration_seconds: start.elapsed().as_secs_f64(),
+        exit_code,
+        verified_challenges: if passed {
+            verified_challenges
+        } else {
+            Vec::new()
+        },
+    })
+}
+
+type ParsedReport = (f64, HashMap<String, f64>, bool, Vec<String>);
+
+fn parse_report(output: &str) -> Result<ParsedReport, SwarmError> {
+    let report: EvalReport = serde_json::from_str(output)
+        .map_err(|e| invalid(format!("invalid evaluator report: {e}")))?;
+    if report.schema_version != 1 || report.checks.is_empty() {
+        return Err(invalid(
+            "evaluator report requires schema_version=1 and at least one check",
+        ));
+    }
+    let mut ids = HashSet::new();
+    let mut challenges: HashMap<String, bool> = HashMap::new();
+    let mut passed_count = 0u32;
+    let mut gates_passed = true;
+    for check in &report.checks {
+        if check.id.trim().is_empty() || !ids.insert(&check.id) {
+            return Err(invalid("check IDs must be nonempty and unique"));
+        }
+        passed_count += u32::from(check.passed);
+        gates_passed &= !check.hard_gate || check.passed;
+        if let Some(id) = &check.challenge_id {
+            if id.trim().is_empty() {
+                return Err(invalid("empty challenge ID"));
+            }
+            *challenges.entry(id.clone()).or_insert(true) &= check.passed;
         }
     }
+    let count = u32::try_from(report.checks.len()).map_err(|_| invalid("too many checks"))?;
+    let score = f64::from(passed_count) / f64::from(count);
+    let mut verified: Vec<_> = challenges
+        .into_iter()
+        .filter_map(|(id, passed)| passed.then_some(id))
+        .collect();
+    verified.sort();
+    Ok((
+        score,
+        HashMap::from([
+            ("test_count".into(), f64::from(count)),
+            ("pass_count".into(), f64::from(passed_count)),
+        ]),
+        gates_passed,
+        verified,
+    ))
+}
+
+/// Strict compatibility parser for legacy, operator-authored evaluators.
+/// Exactly one score signal is required; stderr and model prose are never graders.
+fn parse_eval_output(output: &str) -> Result<(f64, HashMap<String, f64>), SwarmError> {
+    let mut metrics = HashMap::new();
+    let mut score = None;
+    let mut warnings = None;
+    for line in output.lines() {
+        let upper = line.trim().to_uppercase();
+        let parsed = if let Some(rest) = upper.strip_prefix("SCORE:") {
+            let value: f64 = rest.trim().parse().map_err(|_| invalid("invalid SCORE"))?;
+            if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+                return Err(invalid("SCORE must be finite and between 0 and 1"));
+            }
+            Some(value)
+        } else if let Some(rest) = upper.strip_prefix("PASS:") {
+            let (n, total) = rest
+                .trim()
+                .split_once('/')
+                .ok_or_else(|| invalid("invalid PASS"))?;
+            let n: u32 = n
+                .trim()
+                .parse()
+                .map_err(|_| invalid("invalid pass count"))?;
+            let total: u32 = total
+                .trim()
+                .parse()
+                .map_err(|_| invalid("invalid test count"))?;
+            if total == 0 || n > total {
+                return Err(invalid("invalid pass/test counts"));
+            }
+            metrics.insert("pass_count".into(), f64::from(n));
+            metrics.insert("test_count".into(), f64::from(total));
+            Some(f64::from(n) / f64::from(total))
+        } else {
+            if let Some(rest) = upper.strip_prefix("WARNINGS:") {
+                let count: u32 = rest
+                    .trim()
+                    .parse()
+                    .map_err(|_| invalid("invalid warning count"))?;
+                if warnings.replace(count).is_some() {
+                    return Err(invalid("duplicate warning count"));
+                }
+            }
+            None
+        };
+        if let Some(parsed) = parsed
+            && score.replace(parsed).is_some()
+        {
+            return Err(invalid("multiple score signals are ambiguous"));
+        }
+    }
+    let score = score.ok_or_else(|| invalid("evaluator emitted no score"))?;
+    let warnings = f64::from(warnings.unwrap_or(0));
+    metrics.insert("warnings".into(), warnings);
+    Ok(((score - warnings * 0.01).max(0.0), metrics))
 }
 
 #[cfg(test)]
@@ -241,69 +217,72 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_score_signal() {
-        let (score, _) = parse_eval_output("some output\nSCORE: 0.85\nmore output", 0);
-        assert!((score - 0.85).abs() < f64::EPSILON);
+    fn invalid_and_ambiguous_scores_fail_closed() {
+        for output in [
+            "",
+            "no score",
+            "SCORE: nope",
+            "SCORE: NaN",
+            "SCORE: inf",
+            "SCORE: 1.5",
+            "SCORE: -0.1",
+            "PASS: 0/0",
+            "PASS: 2/1",
+            "PASS: -1/2",
+            "SCORE: 1\nWARNINGS: -100",
+            "SCORE: 0\nSCORE: 1",
+            "PASS: 1/1\nSCORE: 1",
+        ] {
+            assert!(parse_eval_output(output).is_err(), "accepted {output}");
+        }
     }
 
     #[test]
-    fn test_parse_pass_signal() {
-        let (score, metrics) = parse_eval_output("running tests...\nPASS: 42/50\ndone", 0);
-        assert!((score - 0.84).abs() < f64::EPSILON);
-        assert!((metrics["pass_count"] - 42.0).abs() < f64::EPSILON);
-        assert!((metrics["test_count"] - 50.0).abs() < f64::EPSILON);
+    fn valid_legacy_scores_remain_supported() {
+        assert!(
+            (parse_eval_output("score: 0.9\nWARNINGS: 5").unwrap().0 - 0.85).abs() < f64::EPSILON
+        );
+        assert!((parse_eval_output("PASS: 42/50").unwrap().0 - 0.84).abs() < f64::EPSILON);
     }
 
     #[test]
-    fn test_parse_warnings_penalty() {
-        let (score, metrics) = parse_eval_output("SCORE: 0.90\nWARNINGS: 5", 0);
-        assert!((score - 0.85).abs() < f64::EPSILON); // 0.90 - 5*0.01
-        assert!((metrics["warnings"] - 5.0).abs() < f64::EPSILON);
+    fn reports_require_unique_checks_and_honor_hard_gates() {
+        for output in [
+            r#"{"schema_version":1,"checks":[]}"#,
+            r#"{"schema_version":2,"checks":[]}"#,
+            r#"{"schema_version":1,"checks":[{"id":"a","passed":true},{"id":"a","passed":true}]}"#,
+        ] {
+            assert!(parse_report(output).is_err());
+        }
+        let (_, _, gates, verified) = parse_report(r#"{"schema_version":1,"checks":[{"id":"safety","passed":false,"challenge_id":"c1"},{"id":"quality","passed":true,"challenge_id":"c1"}]}"#).unwrap();
+        assert!(!gates);
+        assert!(verified.is_empty());
     }
 
-    #[test]
-    fn test_parse_warnings_clamp_to_zero() {
-        let (score, _) = parse_eval_output("SCORE: 0.10\nWARNINGS: 50", 0);
-        assert!((score).abs() < f64::EPSILON); // clamped to 0.0
+    #[tokio::test]
+    async fn failed_process_cannot_forge_a_passing_score() {
+        let config = EvalHarnessConfig {
+            command: "echo SCORE: 1; exit 1".into(),
+            ..Default::default()
+        };
+        assert!(run_eval_harness(&config, Path::new(".")).await.is_err());
     }
 
-    #[test]
-    fn test_fallback_exit_code_zero() {
-        let (score, _) = parse_eval_output("no score signals here", 0);
-        assert!((score - 1.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn test_fallback_exit_code_nonzero() {
-        let (score, _) = parse_eval_output("error: build failed", 1);
-        assert!(score.abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn test_last_score_wins() {
-        let (score, _) = parse_eval_output("SCORE: 0.5\nSCORE: 0.9", 0);
-        assert!((score - 0.9).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn test_case_insensitive() {
-        let (score, _) = parse_eval_output("score: 0.75", 0);
-        assert!((score - 0.75).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn test_score_clamped_to_range() {
-        let (score, _) = parse_eval_output("SCORE: 1.5", 0);
-        assert!((score - 1.0).abs() < f64::EPSILON);
-
-        let (score, _) = parse_eval_output("SCORE: -0.5", 0);
-        assert!(score.abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn test_pass_zero_total_ignored() {
-        let (score, _) = parse_eval_output("PASS: 0/0", 0);
-        // Zero total is ignored, falls back to exit code.
-        assert!((score - 1.0).abs() < f64::EPSILON);
+    #[tokio::test]
+    async fn score_is_parsed_before_display_truncation() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("result"),
+            format!("{}\nPASS: 0/1\n", "x".repeat(10001)),
+        )
+        .unwrap();
+        let config = EvalHarnessConfig {
+            program: Some("cat".into()),
+            args: vec!["result".into()],
+            ..Default::default()
+        };
+        let result = run_eval_harness(&config, dir.path()).await.unwrap();
+        assert!(!result.passed);
+        assert!(result.score.abs() < f64::EPSILON);
     }
 }

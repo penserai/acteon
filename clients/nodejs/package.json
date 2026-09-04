@@ -6,12 +6,14 @@
   "types": "dist/index.d.ts",
   "type": "module",
   "scripts": {
-    "build": "tsc",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
     "clean": "rm -rf dist",
     "lint": "eslint src --ext .ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "typecheck": "tsc --noEmit",
+    "package:check": "node scripts/check-package.mjs"
   },
   "keywords": [
     "acteon",
@@ -36,10 +38,10 @@
   ],
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "typescript": "^5.4.0",
-    "vitest": "^1.6.0",
+    "@typescript-eslint/eslint-plugin": "^8.69.0",
+    "@typescript-eslint/parser": "^8.69.0",
     "eslint": "^9.0.0",
-    "@typescript-eslint/eslint-plugin": "^7.0.0",
-    "@typescript-eslint/parser": "^7.0.0"
+    "typescript": "^5.4.0",
+    "vitest": "^3.2.7"
   }
 }

@@ -8,6 +8,9 @@ rust-version.workspace = true
 description = "Simulation and testing framework for Acteon"
 
 [dependencies]
+acteon-http.workspace = true
+clap.workspace = true
+sha2.workspace = true
 acteon-core.workspace = true
 acteon-crypto = { workspace = true, features = ["tls"] }
 acteon-gateway.workspace = true
@@ -252,3 +255,8 @@ required-features = ["bus"]
 
 [lints]
 workspace = true
+
+[[bin]]
+name = "acteon-scenario"
+path = "src/bin/scenario.rs"
+required-features = ["swarm"]

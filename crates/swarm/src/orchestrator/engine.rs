@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::io::Write as _;
 use std::path::PathBuf;
 use std::pin::Pin;
 
@@ -57,6 +58,7 @@ pub async fn execute_swarm(
     hooks_binary: &std::path::Path,
 ) -> Result<SwarmRun, SwarmError> {
     let run_id = Uuid::new_v4().to_string();
+    crate::acteon::rules::install_safety_rules(config, &format!("swarm-{run_id}")).await?;
     let tesserai = TesseraiClient::new(&config.tesserai)?;
 
     tracing::info!(run_id = %run_id, objective = %plan.objective, "starting swarm run");
@@ -129,6 +131,11 @@ pub async fn execute_swarm_with_adversarial(
         .clone()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
 
+    if config.adversarial.enabled && !config.eval_harness.enabled {
+        return Err(SwarmError::EvalHarness(
+            "adversarial recovery requires an independent evaluator".into(),
+        ));
+    }
     // Generate program.md before primary swarm (no baseline score yet).
     let program_md_content = program::generate_program_md(plan, config, None);
     if let Err(e) = program::write_program_md(&working_dir, &program_md_content).await {
@@ -137,10 +144,13 @@ pub async fn execute_swarm_with_adversarial(
 
     let mut run = execute_swarm(plan, config, roles, hooks_binary).await?;
 
+    let primary_completed = run.status == SwarmRunStatus::Completed;
+    let mut baseline_passed = !config.eval_harness.enabled;
     // Run baseline eval after primary swarm (if configured).
     let (eval_cfg, baseline_score) = if config.eval_harness.enabled {
         match eval::run_eval_harness(&config.eval_harness, &working_dir).await {
             Ok(result) => {
+                baseline_passed = result.passed;
                 let score = result.score;
                 run.metrics.eval_baseline_score = Some(score);
                 tracing::info!(score, passed = result.passed, "eval harness baseline");
@@ -162,6 +172,11 @@ pub async fn execute_swarm_with_adversarial(
     }
 
     if !config.adversarial.enabled {
+        if !baseline_passed {
+            run.status = SwarmRunStatus::Failed;
+        }
+        run.finished_at = Some(Utc::now());
+        persist_verified_run(&run, config).await?;
         return Ok((run, None));
     }
 
@@ -178,10 +193,25 @@ pub async fn execute_swarm_with_adversarial(
         baseline_score,
     };
 
-    let adversarial_result = run_adversarial_loop(&adv_ctx, &mut run, &primary_summary).await?;
+    let adversarial_result = match run_adversarial_loop(&adv_ctx, &mut run, &primary_summary).await
+    {
+        Ok(result) => result,
+        Err(error) => {
+            run.status = SwarmRunStatus::Failed;
+            run.finished_at = Some(Utc::now());
+            persist_verified_run(&run, config).await?;
+            return Err(error);
+        }
+    };
+    run.status = if primary_completed && adversarial_result.accepted {
+        SwarmRunStatus::Completed
+    } else {
+        SwarmRunStatus::Failed
+    };
+    run.finished_at = Some(Utc::now());
 
     // Update final status based on adversarial outcome.
-    if !adversarial_result.accepted && run.status == SwarmRunStatus::Completed {
+    if !adversarial_result.accepted {
         tracing::warn!(
             unresolved = adversarial_result.unresolved.len(),
             "adversarial review has unresolved challenges"
@@ -191,7 +221,35 @@ pub async fn execute_swarm_with_adversarial(
     // Persist adversarial report to the working directory.
     save_adversarial_report(config, &run.id, &adversarial_result);
 
+    persist_verified_run(&run, config).await?;
     Ok((run, Some(adversarial_result)))
+}
+
+/// Persist the post-evaluation status; the primary task status is not acceptance.
+async fn persist_verified_run(run: &SwarmRun, config: &SwarmConfig) -> Result<(), SwarmError> {
+    let directory = config
+        .defaults
+        .working_directory
+        .as_deref()
+        .unwrap_or(std::path::Path::new("."));
+    let mut report = tempfile::NamedTempFile::new_in(directory)?;
+    report.write_all(&serde_json::to_vec_pretty(run)?)?;
+    report
+        .persist(directory.join(format!("swarm-run-{}.json", run.id)))
+        .map_err(|error| SwarmError::Io(error.error))?;
+    if let Ok(client) = TesseraiClient::new(&config.tesserai) {
+        let status = match run.status {
+            SwarmRunStatus::Completed => "completed",
+            SwarmRunStatus::Cancelled => "cancelled",
+            SwarmRunStatus::TimedOut => "timed_out",
+            _ => "failed",
+        };
+        if let Err(error) = crate::memory::twins::update_run_status(&client, &run.id, status).await
+        {
+            tracing::warn!(%error, "verified run status is saved locally but remote update failed");
+        }
+    }
+    Ok(())
 }
 
 /// Build a summary of the primary swarm's output for the adversarial phase.

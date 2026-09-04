@@ -216,6 +216,7 @@ impl StateStore for DynamoStateStore {
         let result = self
             .client
             .get_item()
+            .consistent_read(true)
             .table_name(&self.table_name)
             .key("pk", AttributeValue::S(pk))
             .key("sk", AttributeValue::S(sk))
@@ -233,7 +234,7 @@ impl StateStore for DynamoStateStore {
         }
 
         match item.get("value") {
-            Some(AttributeValue::S(v)) => Ok(Some(v.clone())),
+            Some(AttributeValue::S(v) | AttributeValue::N(v)) => Ok(Some(v.clone())),
             _ => Ok(None),
         }
     }
@@ -244,6 +245,7 @@ impl StateStore for DynamoStateStore {
         let result = self
             .client
             .get_item()
+            .consistent_read(true)
             .table_name(&self.table_name)
             .key("pk", AttributeValue::S(pk))
             .key("sk", AttributeValue::S(sk))
@@ -257,7 +259,7 @@ impl StateStore for DynamoStateStore {
             return Ok(None);
         }
         let value = match item.get("value") {
-            Some(AttributeValue::S(v)) => v.clone(),
+            Some(AttributeValue::S(v) | AttributeValue::N(v)) => v.clone(),
             _ => return Ok(None),
         };
         // `version` is stored as a numeric attribute. Items written by
@@ -352,56 +354,86 @@ impl StateStore for DynamoStateStore {
         let pk = build_pk(&self.prefix, key);
         let sk = build_sk(key);
 
-        // Check if there is an existing expired item and delete it first.
-        let get_result = self
-            .client
-            .get_item()
-            .table_name(&self.table_name)
-            .key("pk", AttributeValue::S(pk.clone()))
-            .key("sk", AttributeValue::S(sk.clone()))
-            .send()
-            .await
-            .map_err(|e| StateError::Backend(e.to_string()))?;
-
-        if let Some(item) = get_result.item()
-            && Self::is_expired(item)
-        {
-            self.delete_item(&pk, &sk).await?;
+        // Conditional replacement supports both string values from set/CAS and
+        // numeric counters, and checks i64 overflow before any persistent mutation.
+        for _ in 0..64 {
+            let snapshot = self
+                .client
+                .get_item()
+                .table_name(&self.table_name)
+                .key("pk", AttributeValue::S(pk.clone()))
+                .key("sk", AttributeValue::S(sk.clone()))
+                .consistent_read(true)
+                .send()
+                .await
+                .map_err(|e| StateError::Backend(e.to_string()))?;
+            let item = snapshot.item();
+            let expired = item.is_some_and(Self::is_expired);
+            let current = match item {
+                Some(item) if !expired => parse_counter_value(Some(item))?,
+                _ => 0,
+            };
+            let next = current
+                .checked_add(delta)
+                .ok_or_else(|| StateError::Backend("counter overflow".into()))?;
+            let version = match item.and_then(|item| item.get("version")) {
+                Some(AttributeValue::N(value)) => value
+                    .parse::<u64>()
+                    .map_err(|e| StateError::Serialization(e.to_string()))?,
+                None if item.is_none() => 0,
+                _ => return Err(StateError::Serialization("invalid counter version".into())),
+            };
+            let next_version = version
+                .checked_add(1)
+                .ok_or_else(|| StateError::Backend("counter version overflow".into()))?;
+            let mut update = self
+                .client
+                .update_item()
+                .table_name(&self.table_name)
+                .key("pk", AttributeValue::S(pk.clone()))
+                .key("sk", AttributeValue::S(sk.clone()))
+                .expression_attribute_names("#val", "value")
+                .expression_attribute_values(":next", AttributeValue::N(next.to_string()))
+                .expression_attribute_values(
+                    ":version",
+                    AttributeValue::N(next_version.to_string()),
+                );
+            if let Some(item) = item {
+                let previous = item
+                    .get("value")
+                    .cloned()
+                    .ok_or_else(|| StateError::Serialization("missing counter value".into()))?;
+                update = update
+                    .condition_expression("version = :expected AND #val = :previous")
+                    .expression_attribute_values(
+                        ":expected",
+                        AttributeValue::N(version.to_string()),
+                    )
+                    .expression_attribute_values(":previous", previous);
+            } else {
+                update = update.condition_expression("attribute_not_exists(pk)");
+            }
+            let mut expression = "SET #val = :next, version = :version".to_owned();
+            if let Some(expiry) = Self::expires_at(ttl) {
+                expression.push_str(", expires_at = :expiry");
+                update = update
+                    .expression_attribute_values(":expiry", AttributeValue::N(expiry.to_string()));
+            } else if expired {
+                expression.push_str(" REMOVE expires_at");
+            }
+            match update.update_expression(expression).send().await {
+                Ok(_) => return Ok(next),
+                Err(error) => {
+                    let error = error.into_service_error();
+                    if !error.is_conditional_check_failed_exception() {
+                        return Err(StateError::Backend(error.to_string()));
+                    }
+                }
+            }
         }
-
-        // Use ADD to atomically increment (or create from 0).
-        // The value attribute stores the counter as a number.
-        let mut update = self
-            .client
-            .update_item()
-            .table_name(&self.table_name)
-            .key("pk", AttributeValue::S(pk))
-            .key("sk", AttributeValue::S(sk))
-            .expression_attribute_names("#val", "value")
-            .expression_attribute_values(":delta", AttributeValue::N(delta.to_string()))
-            .expression_attribute_values(":zero", AttributeValue::N("0".to_owned()))
-            .expression_attribute_values(":one", AttributeValue::N("1".to_owned()))
-            .return_values(aws_sdk_dynamodb::types::ReturnValue::AllNew);
-
-        if let Some(exp) = Self::expires_at(ttl) {
-            update = update
-                .update_expression(
-                    "SET version = if_not_exists(version, :zero) + :one, \
-                     expires_at = :exp ADD #val :delta",
-                )
-                .expression_attribute_values(":exp", AttributeValue::N(exp.to_string()));
-        } else {
-            update = update.update_expression(
-                "SET version = if_not_exists(version, :zero) + :one ADD #val :delta",
-            );
-        }
-
-        let result = update
-            .send()
-            .await
-            .map_err(|e| StateError::Backend(e.to_string()))?;
-
-        parse_counter_value(result.attributes())
+        Err(StateError::Backend(
+            "counter update contention limit exceeded".into(),
+        ))
     }
 
     async fn compare_and_swap(
@@ -463,7 +495,9 @@ impl StateStore for DynamoStateStore {
                     let (current_value, current_version) = match get_result.item() {
                         Some(item) => {
                             let val = match item.get("value") {
-                                Some(AttributeValue::S(v)) => Some(v.clone()),
+                                Some(AttributeValue::S(v) | AttributeValue::N(v)) => {
+                                    Some(v.clone())
+                                }
                                 _ => None,
                             };
                             let ver = match item.get("version") {
@@ -532,7 +566,7 @@ impl StateStore for DynamoStateStore {
                     _ => continue,
                 };
                 let value = match item.get("value") {
-                    Some(AttributeValue::S(v)) => v.clone(),
+                    Some(AttributeValue::S(v) | AttributeValue::N(v)) => v.clone(),
                     _ => continue,
                 };
                 results.push((key, value));
@@ -595,7 +629,7 @@ impl StateStore for DynamoStateStore {
                     _ => continue,
                 };
                 let value = match item.get("value") {
-                    Some(AttributeValue::S(v)) => v.clone(),
+                    Some(AttributeValue::S(v) | AttributeValue::N(v)) => v.clone(),
                     _ => continue,
                 };
 
@@ -795,7 +829,7 @@ fn parse_counter_value(
         .ok_or_else(|| StateError::Backend("UpdateItem did not return attributes".to_owned()))?;
 
     match attrs.get("value") {
-        Some(AttributeValue::N(n)) => n
+        Some(AttributeValue::N(n) | AttributeValue::S(n)) => n
             .parse::<i64>()
             .map_err(|e| StateError::Serialization(e.to_string())),
         _ => Err(StateError::Backend(

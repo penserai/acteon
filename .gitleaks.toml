@@ -1,0 +1,32 @@
+title = "Acteon source secret scanning"
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Documented non-credential deduplication and grouping identifiers"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = [
+    '''crates/simulation/examples/dynamodb_simulation\.rs$''',
+    '''docs/book/admin-ui/operations\.md$''',
+    '''docs/book/features/swarm-provider\.md$''',
+]
+regexTarget = "match"
+regexes = ['''(dedup_key|group_key|idempotency_key)''']
+
+[[allowlists]]
+description = "Exact incomplete tokens and dummy credentials in named documentation examples"
+targetRules = ["generic-api-key", "curl-auth-header"]
+condition = "AND"
+paths = [
+    '''docs/book/api/authentication\.md$''',
+    '''docs/book/features/payload-encryption\.md$''',
+    '''docs/book/guides/agent-swarm-coordination\.md$''',
+    '''examples/alertmanager-sample\.yml$''',
+]
+regexTarget = "match"
+regexes = [
+    '''your-api-key''', '''agent-researcher-key''',
+    '''eyJhbGciOiJIUzI1NiIs\.\.\.''', '''a1b2c3d4e5f6\.\.\.''',
+    '''abc123def456''',
+]

@@ -68,13 +68,11 @@ async fn read_health(ops: &OpsClient, uri: &str) -> Result<ReadResourceResult, M
         .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
     let body = json!({ "healthy": healthy });
-    Ok(ReadResourceResult {
-        contents: vec![ResourceContents::text(
-            serde_json::to_string_pretty(&body)
-                .map_err(|e| McpError::internal_error(e.to_string(), None))?,
-            uri,
-        )],
-    })
+    Ok(ReadResourceResult::new(vec![ResourceContents::text(
+        serde_json::to_string_pretty(&body)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+        uri,
+    )]))
 }
 
 async fn read_rules(ops: &OpsClient, uri: &str) -> Result<ReadResourceResult, McpError> {
@@ -84,13 +82,11 @@ async fn read_rules(ops: &OpsClient, uri: &str) -> Result<ReadResourceResult, Mc
         .await
         .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-    Ok(ReadResourceResult {
-        contents: vec![ResourceContents::text(
-            serde_json::to_string_pretty(&rules)
-                .map_err(|e| McpError::internal_error(e.to_string(), None))?,
-            uri,
-        )],
-    })
+    Ok(ReadResourceResult::new(vec![ResourceContents::text(
+        serde_json::to_string_pretty(&rules)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+        uri,
+    )]))
 }
 
 async fn read_audit(
@@ -110,13 +106,11 @@ async fn read_audit(
         .await
         .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-    Ok(ReadResourceResult {
-        contents: vec![ResourceContents::text(
-            serde_json::to_string_pretty(&page)
-                .map_err(|e| McpError::internal_error(e.to_string(), None))?,
-            uri,
-        )],
-    })
+    Ok(ReadResourceResult::new(vec![ResourceContents::text(
+        serde_json::to_string_pretty(&page)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+        uri,
+    )]))
 }
 
 async fn read_events(
@@ -137,11 +131,9 @@ async fn read_events(
         .await
         .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-    Ok(ReadResourceResult {
-        contents: vec![ResourceContents::text(
-            serde_json::to_string_pretty(&events)
-                .map_err(|e| McpError::internal_error(e.to_string(), None))?,
-            uri,
-        )],
-    })
+    Ok(ReadResourceResult::new(vec![ResourceContents::text(
+        serde_json::to_string_pretty(&events)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+        uri,
+    )]))
 }

@@ -178,7 +178,10 @@ impl BlobProvider {
             .clone()
             .unwrap_or_else(|| format!("https://{account_name}.blob.core.windows.net"));
 
-        let service_client = BlobServiceClient::new(&endpoint, Some(credential), None)
+        let endpoint = endpoint
+            .parse()
+            .map_err(|e| ProviderError::Configuration(format!("invalid blob endpoint: {e}")))?;
+        let service_client = BlobServiceClient::new(endpoint, Some(credential), None)
             .map_err(|e| ProviderError::Configuration(format!("blob client error: {e}")))?;
 
         Ok(Self {
@@ -281,7 +284,7 @@ impl BlobProvider {
         };
 
         blob_client
-            .upload(data.into(), true, content_length, upload_options)
+            .upload(data.into(), upload_options)
             .await
             .map_err(|e| {
                 let err_str = e.to_string();
@@ -325,7 +328,7 @@ impl BlobProvider {
             azure_err
         })?;
 
-        let body_bytes: azure_core::Bytes = response.into_body().collect().await.map_err(|e| {
+        let body_bytes: azure_core::Bytes = response.body.collect().await.map_err(|e| {
             ProviderError::ExecutionFailed(format!("failed to read blob body: {e}"))
         })?;
 

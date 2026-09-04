@@ -314,7 +314,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // deployment — the delivery URL is attacker-controlled.
     let worker = acteon_server::api::a2a_push_worker::PushDeliveryWorker::new(
         Arc::clone(&store),
-        reqwest::Client::new(),
+        acteon_http::GuardedClient::new(
+            acteon_http::OutboundPolicy {
+                internal_hosts: vec!["127.0.0.1".into()],
+            },
+            std::time::Duration::from_secs(10),
+        )?,
         tx.subscribe(),
     )
     .with_ssrf_enforcement(false);

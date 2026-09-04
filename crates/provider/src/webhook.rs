@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use acteon_core::{Action, ProviderResponse};
-use reqwest::Client;
+use acteon_http::{GuardedClient, OutboundPolicy};
 
 use crate::error::ProviderError;
 use crate::provider::Provider;
@@ -24,7 +24,7 @@ pub struct WebhookProvider {
     /// The target URL to POST actions to.
     url: String,
     /// HTTP client used for outgoing requests.
-    client: Client,
+    client: GuardedClient,
     /// Additional headers to include in every request.
     headers: HashMap<String, String>,
 }
@@ -35,10 +35,8 @@ impl WebhookProvider {
     /// Uses a default `reqwest::Client` with a 30-second timeout and no
     /// extra headers.
     pub fn new(name: impl Into<String>, url: impl Into<String>) -> Self {
-        let client = Client::builder()
-            .timeout(DEFAULT_TIMEOUT)
-            .build()
-            .unwrap_or_else(|_| Client::new());
+        let client = GuardedClient::new(OutboundPolicy::default(), DEFAULT_TIMEOUT)
+            .expect("failed to build guarded webhook client");
         Self {
             name: name.into(),
             url: url.into(),
@@ -50,7 +48,7 @@ impl WebhookProvider {
     /// Set a custom `reqwest::Client` (e.g. with timeouts or TLS
     /// configuration).
     #[must_use]
-    pub fn with_client(mut self, client: Client) -> Self {
+    pub fn with_client(mut self, client: GuardedClient) -> Self {
         self.client = client;
         self
     }
@@ -72,7 +70,11 @@ impl Provider for WebhookProvider {
         let body = serde_json::to_value(action)
             .map_err(|e| ProviderError::Serialization(e.to_string()))?;
 
-        let mut request = self.client.post(&self.url).json(&body);
+        let mut request = self
+            .client
+            .post(&self.url)
+            .map_err(|e| ProviderError::Configuration(e.to_string()))?
+            .json(&body);
 
         for (key, value) in &self.headers {
             request = request.header(key, value);
@@ -89,9 +91,21 @@ impl Provider for WebhookProvider {
         })?;
 
         let status = response.status();
-        let response_body: serde_json::Value = response
-            .json()
+        let mut response = response;
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
             .await
+            .map_err(|e| ProviderError::ExecutionFailed(e.to_string()))?
+        {
+            if bytes.len().saturating_add(chunk.len()) > 1_048_576 {
+                return Err(ProviderError::ExecutionFailed(
+                    "webhook response exceeds 1 MiB".into(),
+                ));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        let response_body: serde_json::Value = serde_json::from_slice(&bytes)
             .unwrap_or_else(|_| serde_json::json!({"status_code": status.as_u16()}));
 
         if status.is_success() {
@@ -105,6 +119,7 @@ impl Provider for WebhookProvider {
         // Attempt a HEAD request to verify the endpoint is reachable.
         self.client
             .head(&self.url)
+            .map_err(|e| ProviderError::Configuration(e.to_string()))?
             .send()
             .await
             .map_err(|e| ProviderError::Connection(e.to_string()))?;
@@ -139,10 +154,8 @@ mod tests {
 
     #[test]
     fn webhook_provider_with_custom_client() {
-        let client = Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
-            .build()
-            .unwrap();
+        let client =
+            GuardedClient::new(OutboundPolicy::default(), Duration::from_secs(10)).unwrap();
 
         let provider =
             WebhookProvider::new("custom", "https://example.com/webhook").with_client(client);

@@ -1,89 +1,114 @@
-//! Encrypting wrapper for dead-letter queue sinks.
-//!
-//! [`EncryptingDeadLetterSink`] intercepts `push` and `drain` calls to
-//! encrypt action payloads before storage and decrypt them on retrieval.
-//! This closes the DLQ plaintext island — even for the in-memory backend,
-//! payloads are held only in ciphertext, providing defense-in-depth.
-
-use std::sync::Arc;
+//! Payload encryption at the dead-letter storage boundary.
+//! Encryption failures never reach the underlying sink. Unreadable ciphertext
+//! is retained in the underlying queue and excluded from redelivery.
 
 use acteon_core::Action;
-use acteon_crypto::PayloadEncryptor;
-use acteon_executor::{DeadLetterEntry, DeadLetterSink};
+use acteon_crypto::{CryptoError, PayloadEncryptor};
+use acteon_executor::{DeadLetterEntry, DeadLetterError, DeadLetterSink};
 use async_trait::async_trait;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 
-/// A [`DeadLetterSink`] wrapper that encrypts action payloads before
-/// delegating to the inner sink, and decrypts on drain.
-///
-/// `len()` and `is_empty()` are delegated directly without transformation.
+/// Injectable cryptographic boundary, including key-service failure handling.
+pub trait DeadLetterCipher: Send + Sync {
+    fn encrypt(&self, payload: &serde_json::Value) -> Result<String, CryptoError>;
+    fn decrypt(&self, payload: &str) -> Result<serde_json::Value, CryptoError>;
+}
+
+impl DeadLetterCipher for PayloadEncryptor {
+    fn encrypt(&self, payload: &serde_json::Value) -> Result<String, CryptoError> {
+        self.encrypt_json(payload)
+    }
+    fn decrypt(&self, payload: &str) -> Result<serde_json::Value, CryptoError> {
+        self.decrypt_json(payload)
+    }
+}
+
+/// Encrypts payloads before persistence; failures are counted without logging payloads.
 pub struct EncryptingDeadLetterSink {
     inner: Arc<dyn DeadLetterSink>,
-    encryptor: Arc<PayloadEncryptor>,
+    encryptor: Arc<dyn DeadLetterCipher>,
+    failures: AtomicU64,
 }
 
 impl EncryptingDeadLetterSink {
-    /// Create a new encrypting wrapper around an existing DLQ sink.
     pub fn new(inner: Arc<dyn DeadLetterSink>, encryptor: Arc<PayloadEncryptor>) -> Self {
-        Self { inner, encryptor }
+        Self::with_cipher(inner, encryptor)
     }
 
-    /// Encrypt an action's payload in place.
-    ///
-    /// Serializes the payload JSON, encrypts it, and replaces the payload
-    /// with `Value::String(encrypted_envelope)`.
-    fn encrypt_payload(&self, action: &mut Action) {
-        match self.encryptor.encrypt_json(&action.payload) {
-            Ok(encrypted) => {
-                action.payload = serde_json::Value::String(encrypted);
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to encrypt DLQ payload, storing as-is");
-            }
+    pub fn with_cipher(
+        inner: Arc<dyn DeadLetterSink>,
+        encryptor: Arc<dyn DeadLetterCipher>,
+    ) -> Self {
+        Self {
+            inner,
+            encryptor,
+            failures: AtomicU64::new(0),
         }
     }
 
-    /// Decrypt an action's payload in place.
-    ///
-    /// If the payload is a `Value::String` matching the `ENC[...]` envelope,
-    /// it is decrypted and parsed back to the original JSON value. Non-encrypted
-    /// payloads pass through unchanged.
-    fn decrypt_payload(&self, action: &mut Action) {
-        if let serde_json::Value::String(ref s) = action.payload
-            && acteon_crypto::is_encrypted(s)
-        {
-            match self.encryptor.decrypt_json(s) {
-                Ok(decrypted) => {
-                    action.payload = decrypted;
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "failed to decrypt DLQ payload, returning as-is");
-                }
-            }
-        }
+    fn failure(&self, operation: &str) -> DeadLetterError {
+        self.failures.fetch_add(1, Ordering::Relaxed);
+        // Cipher errors may contain sensitive material. Record only the operation.
+        tracing::error!(operation, "dead-letter encryption boundary failed");
+        DeadLetterError(format!("{operation} failed"))
     }
 }
 
 #[async_trait]
 impl DeadLetterSink for EncryptingDeadLetterSink {
-    async fn push(&self, mut action: Action, error: String, attempts: u32) {
-        self.encrypt_payload(&mut action);
-        self.inner.push(action, error, attempts).await;
+    async fn push(
+        &self,
+        mut action: Action,
+        error: String,
+        attempts: u32,
+    ) -> Result<(), DeadLetterError> {
+        let encrypted = self
+            .encryptor
+            .encrypt(&action.payload)
+            .map_err(|_| self.failure("encryption"))?;
+        action.payload = serde_json::Value::String(encrypted);
+        self.inner
+            .push(action, error, attempts)
+            .await
+            .map_err(|_| self.failure("storage"))
+    }
+
+    fn failure_count(&self) -> u64 {
+        self.failures.load(Ordering::Relaxed) + self.inner.failure_count()
     }
 
     async fn drain(&self) -> Vec<DeadLetterEntry> {
-        let mut entries = self.inner.drain().await;
-        for entry in &mut entries {
-            self.decrypt_payload(&mut entry.action);
+        let mut readable = Vec::new();
+        for mut entry in self.inner.drain().await {
+            if let serde_json::Value::String(ref encrypted) = entry.action.payload
+                && acteon_crypto::is_encrypted(encrypted)
+            {
+                if let Ok(payload) = self.encryptor.decrypt(encrypted) {
+                    entry.action.payload = payload;
+                } else {
+                    self.failure("decryption");
+                    // Bypass this wrapper: the entry is already encrypted.
+                    if self
+                        .inner
+                        .push(entry.action, entry.error, entry.attempts)
+                        .await
+                        .is_err()
+                    {
+                        self.failure("ciphertext retention");
+                    }
+                    continue;
+                }
+            }
+            readable.push(entry);
         }
-        entries
+        readable
     }
 
     async fn len(&self) -> usize {
         self.inner.len().await
-    }
-
-    async fn is_empty(&self) -> bool {
-        self.inner.is_empty().await
     }
 }
 
@@ -110,7 +135,7 @@ mod tests {
             EncryptingDeadLetterSink::new(Arc::clone(&inner) as Arc<dyn DeadLetterSink>, enc);
 
         let action = test_action(serde_json::json!({"secret": "hunter2"}));
-        sink.push(action, "test error".into(), 3).await;
+        sink.push(action, "test error".into(), 3).await.unwrap();
 
         // Read directly from inner — payload should be encrypted.
         let entries = inner.drain();
@@ -134,7 +159,7 @@ mod tests {
 
         let original = serde_json::json!({"api_key": "sk-12345", "nested": [1, 2]});
         let action = test_action(original.clone());
-        sink.push(action, "err".into(), 1).await;
+        sink.push(action, "err".into(), 1).await.unwrap();
 
         // Drain through encrypting wrapper — should get back plaintext.
         let entries = sink.drain().await;
@@ -154,7 +179,8 @@ mod tests {
         assert_eq!(sink.len().await, 0);
 
         sink.push(test_action(serde_json::json!({})), "e".into(), 1)
-            .await;
+            .await
+            .unwrap();
 
         assert!(!sink.is_empty().await);
         assert_eq!(sink.len().await, 1);
@@ -175,7 +201,9 @@ mod tests {
         let action = test_action(payload.clone());
         let action_id = action.id.clone();
 
-        sink.push(action, "permanent failure".into(), 5).await;
+        sink.push(action, "permanent failure".into(), 5)
+            .await
+            .unwrap();
 
         let entries = sink.drain().await;
         assert_eq!(entries.len(), 1);
@@ -199,12 +227,56 @@ mod tests {
         let payload = serde_json::json!({"plain": true});
         inner
             .push(test_action(payload.clone()), "e".into(), 1)
-            .await;
+            .await
+            .unwrap();
 
         // Drain through encrypting wrapper.
         let sink = EncryptingDeadLetterSink::new(Arc::clone(&inner), enc);
         let entries = sink.drain().await;
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].action.payload, payload);
+    }
+    struct FailingCipher;
+    impl DeadLetterCipher for FailingCipher {
+        fn encrypt(&self, _: &serde_json::Value) -> Result<String, CryptoError> {
+            Err(CryptoError::EncryptionFailed("injected outage".into()))
+        }
+        fn decrypt(&self, _: &str) -> Result<serde_json::Value, CryptoError> {
+            Err(CryptoError::DecryptionFailed)
+        }
+    }
+
+    #[tokio::test]
+    async fn encryption_failure_never_persists_plaintext() {
+        let inner = Arc::new(DeadLetterQueue::new());
+        let sink = EncryptingDeadLetterSink::with_cipher(inner.clone(), Arc::new(FailingCipher));
+        assert!(
+            sink.push(
+                test_action(serde_json::json!({"secret":"never-store"})),
+                "err".into(),
+                1
+            )
+            .await
+            .is_err()
+        );
+        assert!(inner.is_empty());
+        assert_eq!(sink.failure_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn decryption_failure_retains_ciphertext_without_redelivery() {
+        let inner = Arc::new(DeadLetterQueue::new());
+        let encrypted = test_encryptor()
+            .encrypt_json(&serde_json::json!({"secret":"x"}))
+            .unwrap();
+        inner.push(
+            test_action(serde_json::Value::String(encrypted.clone())),
+            "err".into(),
+            1,
+        );
+        let sink = EncryptingDeadLetterSink::with_cipher(inner.clone(), Arc::new(FailingCipher));
+        assert!(sink.drain().await.is_empty());
+        assert_eq!(sink.failure_count(), 1);
+        assert_eq!(inner.drain()[0].action.payload, encrypted);
     }
 }

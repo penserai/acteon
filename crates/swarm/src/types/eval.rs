@@ -18,6 +18,9 @@ pub struct EvalResult {
     pub duration_seconds: f64,
     /// Process exit code.
     pub exit_code: i32,
+    /// Challenge IDs certified by all corresponding checks in a trusted JSON report.
+    #[serde(default)]
+    pub verified_challenges: Vec<String>,
 }
 
 #[cfg(test)]
@@ -35,6 +38,7 @@ mod tests {
             output: "All tests passed".into(),
             duration_seconds: 12.5,
             exit_code: 0,
+            verified_challenges: Vec::new(),
         };
         let json = serde_json::to_string(&result).unwrap();
         let parsed: EvalResult = serde_json::from_str(&json).unwrap();

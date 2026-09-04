@@ -10,7 +10,7 @@ mixin's parsing code runs end-to-end.
 """
 
 import unittest
-from typing import Any, Optional
+from typing import Any
 
 from acteon_client import WorkerTask
 from acteon_client.errors import ApiError
@@ -43,8 +43,8 @@ class _Captured:
         self,
         method: str,
         path: str,
-        json: Optional[dict],
-        params: Optional[dict],
+        json: dict | None,
+        params: dict | None,
     ):
         self.method = method
         self.path = path
@@ -81,8 +81,8 @@ class _StubClient(_QueuesClientMixin):
         method: str,
         path: str,
         *,
-        json: Optional[dict] = None,
-        params: Optional[dict] = None,
+        json: dict | None = None,
+        params: dict | None = None,
     ):
         self.calls.append(_Captured(method, path, json, params))
         return _FakeResponse(status_code=self._status_code, body=self._body)
@@ -129,9 +129,7 @@ class TestWorkerTaskModel(unittest.TestCase):
 class TestQueueEndpoints(unittest.TestCase):
     def test_enqueue_task(self):
         c = _StubClient(body=_task_body(status="pending"))
-        task = c.enqueue_task(
-            "emails", "ns", "te", "send_email", {"to": "a@b.c"}, max_attempts=5
-        )
+        task = c.enqueue_task("emails", "ns", "te", "send_email", {"to": "a@b.c"}, max_attempts=5)
         call = c.calls[0]
         self.assertEqual(call.method, "POST")
         self.assertEqual(call.path, "/v1/queues/emails/tasks")
@@ -155,8 +153,12 @@ class TestQueueEndpoints(unittest.TestCase):
     def test_poll_tasks(self):
         c = _StubClient(body={"tasks": [_task_body()]})
         tasks = c.poll_tasks(
-            "emails", "ns", "te",
-            max_tasks=2, lease_seconds=30, worker_id="w-1",
+            "emails",
+            "ns",
+            "te",
+            max_tasks=2,
+            lease_seconds=30,
+            worker_id="w-1",
         )
         call = c.calls[0]
         self.assertEqual(call.method, "POST")
@@ -250,9 +252,7 @@ class TestQueueEndpoints(unittest.TestCase):
         call = c.calls[0]
         self.assertEqual(call.method, "GET")
         self.assertEqual(call.path, "/v1/queues/emails/tasks")
-        self.assertEqual(
-            call.params, {"namespace": "ns", "tenant": "te", "status": "leased"}
-        )
+        self.assertEqual(call.params, {"namespace": "ns", "tenant": "te", "status": "leased"})
         self.assertEqual(len(tasks), 1)
 
     def test_path_segments_are_escaped(self):

@@ -73,7 +73,25 @@ async fn main() -> Result<()> {
 
     // Read hook input from stdin.
     let mut input_str = String::new();
-    std::io::stdin().read_to_string(&mut input_str)?;
+    if let Err(error) = std::io::stdin()
+        .take(1_048_577)
+        .read_to_string(&mut input_str)
+    {
+        eprintln!("hook input could not be read: {error}");
+        std::process::exit(if matches!(cli.command, HookCommand::Gate { .. }) {
+            2
+        } else {
+            0
+        });
+    }
+    if input_str.len() > 1_048_576 {
+        eprintln!("hook input exceeds limit");
+        std::process::exit(if matches!(cli.command, HookCommand::Gate { .. }) {
+            2
+        } else {
+            0
+        });
+    }
 
     match cli.command {
         HookCommand::Gate {
@@ -84,7 +102,14 @@ async fn main() -> Result<()> {
             namespace,
             tenant,
         } => {
-            let input: acteon_swarm::hooks::gate::HookInput = serde_json::from_str(&input_str)?;
+            let input: acteon_swarm::hooks::gate::HookInput = match serde_json::from_str(&input_str)
+            {
+                Ok(input) => input,
+                Err(error) => {
+                    eprintln!("invalid gate input: {error}");
+                    std::process::exit(2);
+                }
+            };
 
             let ns = namespace.as_deref().unwrap_or("swarm");
             let tn = tenant.as_deref().unwrap_or("swarm-default");
@@ -99,7 +124,11 @@ async fn main() -> Result<()> {
                 &agent_id,
                 &input,
             )
-            .await?;
+            .await
+            .unwrap_or_else(|error| {
+                eprintln!("gate authorization failed: {error}");
+                false
+            });
 
             std::process::exit(if allowed { 0 } else { 2 });
         }

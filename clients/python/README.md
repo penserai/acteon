@@ -56,6 +56,7 @@ with ActeonClient("http://localhost:8080") as client:
 import asyncio
 from acteon_client import AsyncActeonClient, Action
 
+
 async def main():
     async with AsyncActeonClient("http://localhost:8080") as client:
         action = Action(
@@ -67,6 +68,7 @@ async def main():
         )
         outcome = await client.dispatch(action)
         print(f"Outcome: {outcome.outcome_type}")
+
 
 asyncio.run(main())
 ```
@@ -134,7 +136,7 @@ Use dry-run to test what a time-based rule would do right now:
 
 ```python
 outcome = client.dispatch(action, dry_run=True)
-print(f"Verdict: {outcome.verdict}")        # e.g. "suppress"
+print(f"Verdict: {outcome.verdict}")  # e.g. "suppress"
 print(f"Matched rule: {outcome.matched_rule}")  # e.g. "suppress-outside-hours"
 ```
 
@@ -163,7 +165,7 @@ if record:
 ```python
 client = ActeonClient(
     "http://localhost:8080",
-    timeout=60.0,        # Request timeout in seconds
+    timeout=60.0,  # Request timeout in seconds
     api_key="your-key",  # Optional API key
 )
 ```
@@ -189,17 +191,20 @@ from acteon_client import ActeonClient, NonRetryableError, Worker
 client = ActeonClient("http://localhost:8080", api_key="your-key")
 worker = Worker(client, "jobs", "tenant-1", queue="emails", max_concurrent=4)
 
+
 def send_email(payload):
     if "@" not in payload["to"]:
         raise NonRetryableError("malformed address")  # never retried
-    return {"message_id": deliver(payload)}           # completes the task
+    return {"message_id": deliver(payload)}  # completes the task
+
 
 worker.register("send_email", send_email)
 worker.run()  # blocks; call worker.stop() from a signal handler to drain
 
 # Producers enqueue work with:
-client.enqueue_task("emails", "jobs", "tenant-1", "send_email",
-                    {"to": "user@example.com"}, max_attempts=5)
+client.enqueue_task(
+    "emails", "jobs", "tenant-1", "send_email", {"to": "user@example.com"}, max_attempts=5
+)
 ```
 
 `worker.run_once()` polls and processes a single batch — useful in tests
@@ -220,15 +225,17 @@ from acteon_client import ActeonClient, Worker
 client = ActeonClient("http://localhost:8080", api_key="your-key")
 worker = Worker(client, "jobs", "tenant-1", queue="wf-queue")
 
+
 def onboarding(ctx, input):
     account = ctx.step("provision", lambda: provision(input["user"]))
-    ctx.sleep(24 * 3600)                                   # durable timer
+    ctx.sleep(24 * 3600)  # durable timer
     approval = ctx.wait_for_signal("approved", timeout_seconds=86_400)
-    if approval is None:                                   # timed out
+    if approval is None:  # timed out
         return {"status": "expired"}
     child_id = ctx.start_child("welcome_email", {"account": account})
     outcome = ctx.wait_for_child(child_id)
     return {"status": "done", "email": outcome}
+
 
 worker.register_workflow("onboarding", onboarding)
 worker.run()
@@ -237,11 +244,10 @@ worker.run()
 Drive executions from any client:
 
 ```python
-execution = client.start_workflow(
-    "jobs", "tenant-1", "onboarding", "wf-queue", {"user": "u-1"}
+execution = client.start_workflow("jobs", "tenant-1", "onboarding", "wf-queue", {"user": "u-1"})
+client.signal_workflow(
+    execution.execution_id, "approved", "jobs", "tenant-1", payload={"by": "ops"}
 )
-client.signal_workflow(execution.execution_id, "approved",
-                       "jobs", "tenant-1", payload={"by": "ops"})
 execution = client.get_workflow_execution(execution.execution_id, "jobs", "tenant-1")
 print(execution.status, execution.result)
 ```

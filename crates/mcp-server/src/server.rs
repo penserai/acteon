@@ -40,37 +40,16 @@ impl ActeonMcpServer {
     }
 }
 
-#[tool_handler]
-#[prompt_handler]
+#[tool_handler(router = self.tool_router)]
+#[prompt_handler(router = self.prompt_router)]
 impl ServerHandler for ActeonMcpServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            protocol_version: ProtocolVersion::V_2024_11_05,
-            capabilities: ServerCapabilities::builder()
-                .enable_tools()
-                .enable_resources()
-                .enable_prompts()
-                .build(),
-            server_info: Implementation {
-                name: "acteon-mcp-server".into(),
-                version: env!("CARGO_PKG_VERSION").into(),
-                title: Some("Acteon MCP Server".into()),
-                description: Some(
-                    "Interact with the Acteon action gateway for dispatching, \
-                     audit queries, rule management, and event operations."
-                        .into(),
-                ),
-                icons: None,
-                website_url: None,
-            },
-            instructions: Some(
-                "Acteon MCP Server — interact with the Acteon action gateway. \
-                 Use the provided tools to dispatch actions, query the audit trail, \
-                 manage events, list rules, and more. Use resources to read current \
-                 state. Use prompts for guided operational workflows."
-                    .to_string(),
-            ),
-        }
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().enable_resources().enable_prompts().build())
+            .with_protocol_version(ProtocolVersion::V_2024_11_05)
+            .with_server_info(Implementation::new("acteon-mcp-server", env!("CARGO_PKG_VERSION"))
+                .with_title("Acteon MCP Server")
+                .with_description("Interact with the Acteon action gateway for dispatching, audit queries, rule management, and event operations."))
+            .with_instructions("Acteon MCP Server — interact with the Acteon action gateway. Use the provided tools to dispatch actions, query the audit trail, manage events, list rules, and more. Use resources to read current state. Use prompts for guided operational workflows.")
     }
 
     async fn list_resources(

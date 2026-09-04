@@ -260,7 +260,9 @@ impl StateStore for MemoryStateStore {
                 StateError::Serialization(format!("counter value is not an integer: {e}"))
             })?;
 
-        let new_value = current + delta;
+        let new_value = current
+            .checked_add(delta)
+            .ok_or_else(|| StateError::Backend("counter overflow".into()))?;
         ref_mut.value = new_value.to_string();
         ref_mut.version += 1;
         if let Some(ea) = expires_at {

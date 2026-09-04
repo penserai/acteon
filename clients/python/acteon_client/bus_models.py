@@ -10,8 +10,7 @@ skip_serializing_if = "Option::is_none")]`` pattern.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Optional
-
+from typing import Any
 
 # ============================================================================
 # Phase 1: Topics
@@ -23,10 +22,10 @@ class CreateBusTopic:
     name: str
     namespace: str
     tenant: str
-    partitions: Optional[int] = None
-    replication_factor: Optional[int] = None
-    retention_ms: Optional[int] = None
-    description: Optional[str] = None
+    partitions: int | None = None
+    replication_factor: int | None = None
+    retention_ms: int | None = None
+    description: str | None = None
     labels: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -56,16 +55,16 @@ class BusTopic:
     kafka_name: str
     partitions: int
     replication_factor: int
-    retention_ms: Optional[int]
-    description: Optional[str]
+    retention_ms: int | None
+    description: str | None
     labels: dict[str, str]
-    schema_subject: Optional[str]
-    schema_version: Optional[int]
+    schema_subject: str | None
+    schema_version: int | None
     created_at: str
     updated_at: str
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "BusTopic":
+    def from_dict(cls, d: dict[str, Any]) -> BusTopic:
         return cls(
             name=d["name"],
             namespace=d["namespace"],
@@ -85,11 +84,11 @@ class BusTopic:
 
 @dataclass
 class PublishBusMessage:
-    topic: Optional[str] = None
-    namespace: Optional[str] = None
-    tenant: Optional[str] = None
-    name: Optional[str] = None
-    key: Optional[str] = None
+    topic: str | None = None
+    namespace: str | None = None
+    tenant: str | None = None
+    name: str | None = None
+    key: str | None = None
     payload: Any = None
     headers: dict[str, str] = field(default_factory=dict)
 
@@ -118,7 +117,7 @@ class PublishReceipt:
     produced_at: str
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "PublishReceipt":
+    def from_dict(cls, d: dict[str, Any]) -> PublishReceipt:
         return cls(
             topic=d["topic"],
             partition=d["partition"],
@@ -138,11 +137,11 @@ class CreateBusSubscription:
     topic: str
     namespace: str
     tenant: str
-    starting_offset: Optional[str] = None
-    ack_mode: Optional[str] = None
-    dead_letter_topic: Optional[str] = None
-    ack_timeout_ms: Optional[int] = None
-    description: Optional[str] = None
+    starting_offset: str | None = None
+    ack_mode: str | None = None
+    dead_letter_topic: str | None = None
+    ack_timeout_ms: int | None = None
+    description: str | None = None
     labels: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -175,15 +174,15 @@ class BusSubscription:
     tenant: str
     starting_offset: str
     ack_mode: str
-    dead_letter_topic: Optional[str]
+    dead_letter_topic: str | None
     ack_timeout_ms: int
-    description: Optional[str]
+    description: str | None
     labels: dict[str, str]
     created_at: str
     updated_at: str
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "BusSubscription":
+    def from_dict(cls, d: dict[str, Any]) -> BusSubscription:
         return cls(
             id=d["id"],
             topic=d["topic"],
@@ -208,7 +207,7 @@ class BusLagPartition:
     lag: int
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "BusLagPartition":
+    def from_dict(cls, d: dict[str, Any]) -> BusLagPartition:
         return cls(
             partition=d["partition"],
             committed=d["committed"],
@@ -225,7 +224,7 @@ class BusLag:
     total_lag: int
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "BusLag":
+    def from_dict(cls, d: dict[str, Any]) -> BusLag:
         return cls(
             subscription_id=d["subscription_id"],
             topic=d["topic"],
@@ -270,7 +269,7 @@ class BusSchema:
     created_at: str
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "BusSchema":
+    def from_dict(cls, d: dict[str, Any]) -> BusSchema:
         return cls(
             subject=d["subject"],
             version=d["version"],
@@ -293,9 +292,9 @@ class RegisterBusAgent:
     namespace: str
     tenant: str
     capabilities: list[str] = field(default_factory=list)
-    inbox_suffix: Optional[str] = None
-    heartbeat_ttl_ms: Optional[int] = None
-    description: Optional[str] = None
+    inbox_suffix: str | None = None
+    heartbeat_ttl_ms: int | None = None
+    description: str | None = None
     labels: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -325,9 +324,9 @@ class BusAgent:
     capabilities: list[str]
     inbox_topic: str
     status: str
-    last_heartbeat_at: Optional[str]
+    last_heartbeat_at: str | None
     heartbeat_ttl_ms: int
-    description: Optional[str]
+    description: str | None
     labels: dict[str, str]
     created_at: str
     updated_at: str
@@ -335,13 +334,13 @@ class BusAgent:
     # Defaults to "active" so a response from a pre-admin-state
     # server (or a row that pre-dates the field) round-trips cleanly.
     admin_state: str = "active"
-    admin_reason: Optional[str] = None
-    admin_set_by: Optional[str] = None
-    admin_set_at: Optional[str] = None
-    admin_expires_at: Optional[str] = None
+    admin_reason: str | None = None
+    admin_set_by: str | None = None
+    admin_set_at: str | None = None
+    admin_expires_at: str | None = None
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "BusAgent":
+    def from_dict(cls, d: dict[str, Any]) -> BusAgent:
         return cls(
             agent_id=d["agent_id"],
             namespace=d["namespace"],
@@ -372,8 +371,8 @@ class SetBusAgentAdminState:
     """
 
     admin_state: str  # "active" | "suspended" | "banned"
-    reason: Optional[str] = None
-    expires_at: Optional[str] = None  # RFC-3339
+    reason: str | None = None
+    expires_at: str | None = None  # RFC-3339
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {"admin_state": self.admin_state}
@@ -395,9 +394,9 @@ class CreateBusConversation:
     namespace: str
     tenant: str
     participants: list[str] = field(default_factory=list)
-    topic_subject: Optional[str] = None
-    events_topic: Optional[str] = None
-    description: Optional[str] = None
+    topic_subject: str | None = None
+    events_topic: str | None = None
+    description: str | None = None
     labels: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -426,15 +425,15 @@ class BusConversation:
     tenant: str
     participants: list[str]
     state: str
-    topic_subject: Optional[str]
-    events_topic: Optional[str]
-    description: Optional[str]
+    topic_subject: str | None
+    events_topic: str | None
+    description: str | None
     labels: dict[str, str]
     created_at: str
     updated_at: str
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "BusConversation":
+    def from_dict(cls, d: dict[str, Any]) -> BusConversation:
         return cls(
             conversation_id=d["conversation_id"],
             namespace=d["namespace"],
@@ -453,7 +452,7 @@ class BusConversation:
 @dataclass
 class AppendBusConversationMessage:
     payload: Any
-    sender: Optional[str] = None
+    sender: str | None = None
     headers: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -470,12 +469,12 @@ class BusReplayMessage:
     partition: int
     offset: int
     produced_at: str
-    sender: Optional[str]
+    sender: str | None
     payload: Any
     headers: dict[str, str]
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "BusReplayMessage":
+    def from_dict(cls, d: dict[str, Any]) -> BusReplayMessage:
         return cls(
             partition=d["partition"],
             offset=d["offset"],
@@ -491,11 +490,11 @@ class BusReplayResponse:
     conversation_id: str
     events_topic: str
     messages: list[BusReplayMessage]
-    next_cursor: Optional[str]
+    next_cursor: str | None
     exit_reason: str
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "BusReplayResponse":
+    def from_dict(cls, d: dict[str, Any]) -> BusReplayResponse:
         return cls(
             conversation_id=d["conversation_id"],
             events_topic=d["events_topic"],
@@ -515,14 +514,14 @@ class PostBusToolCall:
     call_id: str
     tool: str
     arguments: Any = None
-    correlation_id: Optional[str] = None
-    reply_to: Optional[str] = None
-    sender: Optional[str] = None
+    correlation_id: str | None = None
+    reply_to: str | None = None
+    sender: str | None = None
     metadata: dict[str, str] = field(default_factory=dict)
     # Phase 6c: opt into pre-publish HITL gating.
     require_approval: bool = False
-    approval_reason: Optional[str] = None
-    approval_ttl_ms: Optional[int] = None
+    approval_reason: str | None = None
+    approval_ttl_ms: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -552,9 +551,9 @@ class PostBusToolResult:
     call_id: str
     status: str  # "ok" | "error" | "canceled"
     output: Any = None
-    error_message: Optional[str] = None
-    correlation_id: Optional[str] = None
-    sender: Optional[str] = None
+    error_message: str | None = None
+    correlation_id: str | None = None
+    sender: str | None = None
     metadata: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -585,7 +584,7 @@ class BusToolEnvelopeReceipt:
     cursor: str
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "BusToolEnvelopeReceipt":
+    def from_dict(cls, d: dict[str, Any]) -> BusToolEnvelopeReceipt:
         return cls(
             events_topic=d["events_topic"],
             conversation_id=d["conversation_id"],
@@ -602,14 +601,14 @@ class BusToolResult:
     call_id: str
     status: str
     output: Any
-    error_message: Optional[str]
-    correlation_id: Optional[str]
-    sender: Optional[str]
+    error_message: str | None
+    correlation_id: str | None
+    sender: str | None
     metadata: dict[str, str]
     created_at: str
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "BusToolResult":
+    def from_dict(cls, d: dict[str, Any]) -> BusToolResult:
         return cls(
             call_id=d["call_id"],
             status=d["status"],
@@ -633,7 +632,7 @@ class BusToolResultLookup:
     result: BusToolResult
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "BusToolResultLookup":
+    def from_dict(cls, d: dict[str, Any]) -> BusToolResultLookup:
         return cls(
             call_id=d["call_id"],
             events_topic=d["events_topic"],
@@ -648,8 +647,8 @@ class BusToolResultLookup:
 @dataclass
 class BusToolResultLookupParams:
     conversation_id: str
-    cursor: Optional[str] = None
-    timeout_ms: Optional[int] = None
+    cursor: str | None = None
+    timeout_ms: int | None = None
 
     def to_query(self) -> dict[str, Any]:
         q: dict[str, Any] = {"conversation_id": self.conversation_id}
@@ -670,7 +669,7 @@ class PostBusStreamChunk:
     stream_id: str
     chunk_seq: int
     body: Any = None
-    sender: Optional[str] = None
+    sender: str | None = None
     metadata: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -691,8 +690,8 @@ class PostBusStreamEnd:
     stream_id: str
     chunk_seq: int
     status: str  # "complete" | "aborted" | "error"
-    error_message: Optional[str] = None
-    sender: Optional[str] = None
+    error_message: str | None = None
+    sender: str | None = None
     metadata: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -722,7 +721,7 @@ class BusStreamEnvelopeReceipt:
     cursor: str
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "BusStreamEnvelopeReceipt":
+    def from_dict(cls, d: dict[str, Any]) -> BusStreamEnvelopeReceipt:
         return cls(
             events_topic=d["events_topic"],
             conversation_id=d["conversation_id"],
@@ -752,7 +751,7 @@ class BusApprovalParkedReceipt:
     expires_at: str
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "BusApprovalParkedReceipt":
+    def from_dict(cls, d: dict[str, Any]) -> BusApprovalParkedReceipt:
         return cls(
             approval_id=d["approval_id"],
             namespace=d["namespace"],
@@ -771,24 +770,24 @@ class BusApprovalView:
     namespace: str
     tenant: str
     kind: str
-    conversation_id: Optional[str]
-    task_id: Optional[str]
+    conversation_id: str | None
+    task_id: str | None
     correlation_token: str
     envelope_kind: str
     status: str
-    reason: Optional[str]
+    reason: str | None
     created_at: str
     expires_at: str
-    decided_by: Optional[str]
-    decided_at: Optional[str]
-    decision_note: Optional[str]
-    produced_partition: Optional[int]
-    produced_offset: Optional[int]
-    produced_at: Optional[str]
+    decided_by: str | None
+    decided_at: str | None
+    decision_note: str | None
+    produced_partition: int | None
+    produced_offset: int | None
+    produced_at: str | None
     envelope: Any
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "BusApprovalView":
+    def from_dict(cls, d: dict[str, Any]) -> BusApprovalView:
         return cls(
             approval_id=d["approval_id"],
             namespace=d["namespace"],
@@ -815,7 +814,7 @@ class BusApprovalView:
 @dataclass
 class BusApprovalDecision:
     decided_by: str
-    decision_note: Optional[str] = None
+    decision_note: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {"decided_by": self.decided_by}
@@ -827,10 +826,10 @@ class BusApprovalDecision:
 @dataclass
 class BusApprovalDecisionResponse:
     approval: BusApprovalView
-    receipt: Optional[BusToolEnvelopeReceipt]
+    receipt: BusToolEnvelopeReceipt | None
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "BusApprovalDecisionResponse":
+    def from_dict(cls, d: dict[str, Any]) -> BusApprovalDecisionResponse:
         receipt = d.get("receipt")
         return cls(
             approval=BusApprovalView.from_dict(d["approval"]),
@@ -850,8 +849,8 @@ class PostBusToolCallOutcome:
     branch.
     """
 
-    produced: Optional[BusToolEnvelopeReceipt] = None
-    parked: Optional[BusApprovalParkedReceipt] = None
+    produced: BusToolEnvelopeReceipt | None = None
+    parked: BusApprovalParkedReceipt | None = None
 
     @property
     def was_parked(self) -> bool:
@@ -872,14 +871,14 @@ class BusConsumedMessage:
 
     topic: str
     payload: Any = None
-    key: Optional[str] = None
+    key: str | None = None
     headers: dict[str, str] = field(default_factory=dict)
-    partition: Optional[int] = None
-    offset: Optional[int] = None
-    timestamp: Optional[str] = None
+    partition: int | None = None
+    offset: int | None = None
+    timestamp: str | None = None
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "BusConsumedMessage":
+    def from_dict(cls, data: dict[str, Any]) -> BusConsumedMessage:
         return cls(
             topic=data["topic"],
             payload=data.get("payload"),
@@ -906,7 +905,7 @@ class ReconnectConfig:
 
     initial_backoff_ms: int = 500
     max_backoff_ms: int = 30_000
-    max_attempts: Optional[int] = None  # None = retry forever
+    max_attempts: int | None = None  # None = retry forever
 
 
 @dataclass
@@ -920,9 +919,9 @@ class BusConsumeItem:
     the pre-disconnect cursor.
     """
 
-    message: Optional[BusConsumedMessage] = None
-    error: Optional[str] = None
-    reconnected: Optional["ReconnectedInfo"] = None
+    message: BusConsumedMessage | None = None
+    error: str | None = None
+    reconnected: ReconnectedInfo | None = None
 
     @property
     def is_message(self) -> bool:
@@ -938,11 +937,7 @@ class BusConsumeItem:
 
     @property
     def is_keep_alive(self) -> bool:
-        return (
-            self.message is None
-            and self.error is None
-            and self.reconnected is None
-        )
+        return self.message is None and self.error is None and self.reconnected is None
 
 
 @dataclass
@@ -963,12 +958,12 @@ class StreamChunkEnvelope:
     stream_id: str
     chunk_seq: int
     body: Any = None
-    sender: Optional[str] = None
+    sender: str | None = None
     metadata: dict[str, str] = field(default_factory=dict)
-    created_at: Optional[str] = None
+    created_at: str | None = None
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "StreamChunkEnvelope":
+    def from_dict(cls, data: dict[str, Any]) -> StreamChunkEnvelope:
         return cls(
             stream_id=data["stream_id"],
             chunk_seq=data["chunk_seq"],
@@ -987,13 +982,13 @@ class StreamEndEnvelope:
     stream_id: str
     chunk_seq: int
     status: str
-    error_message: Optional[str] = None
-    sender: Optional[str] = None
+    error_message: str | None = None
+    sender: str | None = None
     metadata: dict[str, str] = field(default_factory=dict)
-    created_at: Optional[str] = None
+    created_at: str | None = None
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "StreamEndEnvelope":
+    def from_dict(cls, data: dict[str, Any]) -> StreamEndEnvelope:
         return cls(
             stream_id=data["stream_id"],
             chunk_seq=data["chunk_seq"],
@@ -1011,9 +1006,9 @@ class BusStreamItem:
     ``chunk`` / ``end`` / ``error`` is populated; all ``None`` is a
     keep-alive. The consumer closes once an ``end`` lands."""
 
-    chunk: Optional[StreamChunkEnvelope] = None
-    end: Optional[StreamEndEnvelope] = None
-    error: Optional[str] = None
+    chunk: StreamChunkEnvelope | None = None
+    end: StreamEndEnvelope | None = None
+    error: str | None = None
 
     @property
     def is_chunk(self) -> bool:

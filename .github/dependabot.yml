@@ -1,0 +1,23 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: {interval: weekly}
+  - package-ecosystem: cargo
+    directory: /
+    schedule: {interval: weekly}
+  - package-ecosystem: npm
+    directory: /ui
+    schedule: {interval: weekly}
+  - package-ecosystem: npm
+    directory: /clients/nodejs
+    schedule: {interval: weekly}
+  - package-ecosystem: pip
+    directory: /clients/python
+    schedule: {interval: weekly}
+  - package-ecosystem: gomod
+    directory: /clients/go
+    schedule: {interval: weekly}
+  - package-ecosystem: gradle
+    directory: /clients/java
+    schedule: {interval: weekly}

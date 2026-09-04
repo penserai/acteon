@@ -1,0 +1,14 @@
+# Local development only. Compose binds the published port to 127.0.0.1.
+[server]
+port = 8080
+
+[state]
+backend = "redis"
+url = "redis://redis:6379"
+
+[rules]
+directory = "/etc/acteon/rules"
+
+[[providers]]
+name = "log"
+type = "log"

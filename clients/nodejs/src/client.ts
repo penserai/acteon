@@ -17,7 +17,6 @@ import {
   EventState,
   EventListResponse,
   TransitionResponse,
-  GroupSummary,
   GroupListResponse,
   GroupDetail,
   FlushGroupResponse,
@@ -30,7 +29,6 @@ import {
   CreateRecurringAction,
   CreateRecurringResponse,
   RecurringFilter,
-  RecurringSummary,
   ListRecurringResponse,
   RecurringDetail,
   UpdateRecurringAction,
@@ -51,7 +49,6 @@ import {
   parseEventState,
   parseEventListResponse,
   parseTransitionResponse,
-  parseGroupSummary,
   parseGroupListResponse,
   parseGroupDetail,
   parseFlushGroupResponse,
@@ -91,7 +88,6 @@ import {
   parseListQuotasResponse,
   QuotaUsage,
   parseQuotaUsage,
-  SilenceMatcher,
   CreateSilenceRequest,
   createSilenceRequestToApi,
   UpdateSilenceRequest,
@@ -116,7 +112,6 @@ import {
   parseRetentionPolicy,
   ListRetentionResponse,
   parseListRetentionResponse,
-  ProviderHealthStatus,
   ListProviderHealthResponse,
   parseListProviderHealthResponse,
   WasmPlugin,
@@ -162,7 +157,7 @@ import {
   SigningKeysResponse,
   parseSigningKeysResponse,
 } from "./models.js";
-import { ActeonError, ApiError, ConnectionError, HttpError } from "./errors.js";
+import { ApiError, ConnectionError, HttpError } from "./errors.js";
 import {
   A2A_HEADERS,
   a2aSegment,
@@ -349,7 +344,6 @@ export class ActeonClient {
   private readonly baseUrl: string;
   private readonly timeout: number;
   private readonly apiKey?: string;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private readonly dispatcher?: any;
 
   constructor(baseUrl: string, options: ActeonClientOptions = {}) {

@@ -96,9 +96,8 @@ impl WasmPluginRegistry {
         // Enable fuel-based instruction metering for CPU bounding.
         wasmtime_config.consume_fuel(true);
 
-        // Explicitly disable wasm-threads to prevent plugins from
-        // spawning shared-memory threads that could escape metering.
-        wasmtime_config.wasm_threads(false);
+        // The Wasmtime threads feature is disabled at compile time so plugins
+        // cannot spawn shared-memory threads that escape metering.
 
         let engine = Engine::new(&wasmtime_config)
             .map_err(|e| WasmError::Compilation(format!("failed to create WASM engine: {e}")))?;

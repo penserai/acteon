@@ -89,13 +89,10 @@ impl ActeonMcpServer {
             ),
         )];
 
-        Ok(GetPromptResult {
-            description: Some(format!(
-                "Investigate incident for service '{}'",
-                args.service
-            )),
-            messages,
-        })
+        Ok(GetPromptResult::new(messages).with_description(format!(
+            "Investigate incident for service '{}'",
+            args.service
+        )))
     }
 
     /// Analyze notification volume for a provider and suggest grouping
@@ -124,10 +121,8 @@ impl ActeonMcpServer {
             ),
         )];
 
-        Ok(GetPromptResult {
-            description: Some(format!("Optimize alerts for '{}' provider", args.provider)),
-            messages,
-        })
+        Ok(GetPromptResult::new(messages)
+            .with_description(format!("Optimize alerts for '{}' provider", args.provider)))
     }
 
     /// Draft a natural language guardrail policy for Acteon's LLM evaluator.
@@ -158,9 +153,7 @@ impl ActeonMcpServer {
             ),
         )];
 
-        Ok(GetPromptResult {
-            description: Some(format!("Draft guardrail policy for '{}'", args.team)),
-            messages,
-        })
+        Ok(GetPromptResult::new(messages)
+            .with_description(format!("Draft guardrail policy for '{}'", args.team)))
     }
 }

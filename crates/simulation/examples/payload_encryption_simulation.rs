@@ -423,7 +423,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     encrypting_dlq
         .push(dlq_action, "provider timeout".into(), 3)
-        .await;
+        .await?;
     info!("  [push]     Pushed action with sensitive payload to DLQ");
 
     // Verify the raw inner DLQ holds encrypted data.
@@ -451,7 +451,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     encrypting_dlq
         .push(dlq_action2, "provider timeout".into(), 3)
-        .await;
+        .await?;
 
     let decrypted_entries = encrypting_dlq.drain().await;
     assert_eq!(decrypted_entries.len(), 1);

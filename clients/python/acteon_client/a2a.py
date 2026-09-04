@@ -22,9 +22,10 @@ API-key header — the A2A spec requires it to be unauthenticated.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
+from ._json import json_object, json_objects
 from .errors import ApiError, HttpError
 
 if TYPE_CHECKING:
@@ -52,7 +53,7 @@ def _seg(s: str) -> str:
     return quote(s, safe="")
 
 
-def _raise_for_status(resp: "httpx.Response") -> None:
+def _raise_for_status(resp: httpx.Response) -> None:
     """Translate a non-2xx response into either ``ApiError`` (with the
     server's structured error envelope) or ``HttpError`` (raw body).
 
@@ -65,9 +66,7 @@ def _raise_for_status(resp: "httpx.Response") -> None:
     try:
         data = resp.json()
         message = (
-            data.get("error")
-            or data.get("message")
-            or f"a2a error (status {resp.status_code})"
+            data.get("error") or data.get("message") or f"a2a error (status {resp.status_code})"
         )
         raise ApiError(
             code=data.get("code", "A2A"),
@@ -116,8 +115,8 @@ def make_message(
     role: str,
     parts: list[dict[str, Any]],
     *,
-    task_id: Optional[str] = None,
-    context_id: Optional[str] = None,
+    task_id: str | None = None,
+    context_id: str | None = None,
 ) -> dict[str, Any]:
     """Build a ``TaskMessage`` payload.
 
@@ -141,9 +140,9 @@ def make_message(
 def make_push_config(
     url: str,
     *,
-    id: Optional[str] = None,  # noqa: A002 - mirrors the spec field
-    token: Optional[str] = None,
-    authentication: Optional[dict[str, Any]] = None,
+    id: str | None = None,  # noqa: A002 - mirrors the spec field
+    token: str | None = None,
+    authentication: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a ``PushNotificationConfig`` body.
 
@@ -173,16 +172,17 @@ class _A2AClientMixin:
     # The mixin doesn't define ``__init__``; these attributes are set
     # by the concrete client class. Stubbed for type-checkers.
     if TYPE_CHECKING:
+
         def _request(  # noqa: D401
             self,
             method: str,
             path: str,
             *,
-            json: Optional[dict] = None,
-            params: Optional[dict] = None,
-            extra_headers: Optional[dict[str, str]] = None,
+            json: dict[str, Any] | list[dict[str, Any]] | None = None,
+            params: dict[str, Any] | None = None,
+            extra_headers: dict[str, str] | None = None,
             skip_auth: bool = False,
-        ) -> "httpx.Response": ...
+        ) -> httpx.Response: ...
 
     # ---- Task lifecycle ----
 
@@ -205,7 +205,7 @@ class _A2AClientMixin:
             extra_headers=_A2A_HEADERS,
         )
         _raise_for_status(resp)
-        return resp.json()
+        return json_object(resp.json())
 
     def a2a_get_task(
         self,
@@ -223,7 +223,7 @@ class _A2AClientMixin:
             extra_headers=_A2A_HEADERS,
         )
         _raise_for_status(resp)
-        return resp.json()
+        return json_object(resp.json())
 
     def a2a_cancel_task(
         self,
@@ -243,7 +243,7 @@ class _A2AClientMixin:
             extra_headers=_A2A_HEADERS,
         )
         _raise_for_status(resp)
-        return resp.json()
+        return json_object(resp.json())
 
     # ---- Push-notification configs ----
 
@@ -267,7 +267,7 @@ class _A2AClientMixin:
             extra_headers=_A2A_HEADERS,
         )
         _raise_for_status(resp)
-        return resp.json()
+        return json_object(resp.json())
 
     def a2a_list_push_configs(
         self,
@@ -285,7 +285,7 @@ class _A2AClientMixin:
             extra_headers=_A2A_HEADERS,
         )
         _raise_for_status(resp)
-        return resp.json()
+        return json_objects(resp.json())
 
     def a2a_get_push_config(
         self,
@@ -304,7 +304,7 @@ class _A2AClientMixin:
             extra_headers=_A2A_HEADERS,
         )
         _raise_for_status(resp)
-        return resp.json()
+        return json_object(resp.json())
 
     def a2a_delete_push_config(
         self,
@@ -346,7 +346,7 @@ class _A2AClientMixin:
             skip_auth=True,
         )
         _raise_for_status(resp)
-        return resp.json()
+        return json_object(resp.json())
 
     def a2a_get_authenticated_extended_card(
         self,
@@ -385,16 +385,17 @@ class _AsyncA2AClientMixin:
     """Mixin providing the A2A protocol surface (async)."""
 
     if TYPE_CHECKING:
+
         async def _request(  # noqa: D401
             self,
             method: str,
             path: str,
             *,
-            json: Optional[dict] = None,
-            params: Optional[dict] = None,
-            extra_headers: Optional[dict[str, str]] = None,
+            json: dict[str, Any] | list[dict[str, Any]] | None = None,
+            params: dict[str, Any] | None = None,
+            extra_headers: dict[str, str] | None = None,
             skip_auth: bool = False,
-        ) -> "httpx.Response": ...
+        ) -> httpx.Response: ...
 
     async def a2a_send_message(
         self,
@@ -410,7 +411,7 @@ class _AsyncA2AClientMixin:
             extra_headers=_A2A_HEADERS,
         )
         _raise_for_status(resp)
-        return resp.json()
+        return json_object(resp.json())
 
     async def a2a_get_task(
         self,
@@ -425,7 +426,7 @@ class _AsyncA2AClientMixin:
             extra_headers=_A2A_HEADERS,
         )
         _raise_for_status(resp)
-        return resp.json()
+        return json_object(resp.json())
 
     async def a2a_cancel_task(
         self,
@@ -440,7 +441,7 @@ class _AsyncA2AClientMixin:
             extra_headers=_A2A_HEADERS,
         )
         _raise_for_status(resp)
-        return resp.json()
+        return json_object(resp.json())
 
     async def a2a_set_push_config(
         self,
@@ -458,7 +459,7 @@ class _AsyncA2AClientMixin:
             extra_headers=_A2A_HEADERS,
         )
         _raise_for_status(resp)
-        return resp.json()
+        return json_object(resp.json())
 
     async def a2a_list_push_configs(
         self,
@@ -474,7 +475,7 @@ class _AsyncA2AClientMixin:
             extra_headers=_A2A_HEADERS,
         )
         _raise_for_status(resp)
-        return resp.json()
+        return json_objects(resp.json())
 
     async def a2a_get_push_config(
         self,
@@ -491,7 +492,7 @@ class _AsyncA2AClientMixin:
             extra_headers=_A2A_HEADERS,
         )
         _raise_for_status(resp)
-        return resp.json()
+        return json_object(resp.json())
 
     async def a2a_delete_push_config(
         self,
@@ -521,7 +522,7 @@ class _AsyncA2AClientMixin:
             skip_auth=True,
         )
         _raise_for_status(resp)
-        return resp.json()
+        return json_object(resp.json())
 
     async def a2a_get_authenticated_extended_card(
         self,
@@ -569,4 +570,4 @@ def _unwrap_jsonrpc(body: dict[str, Any]) -> dict[str, Any]:
             message="JSON-RPC reply had neither result nor error",
             retryable=False,
         )
-    return result
+    return json_object(result)

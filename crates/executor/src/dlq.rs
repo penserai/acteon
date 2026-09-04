@@ -17,13 +17,28 @@ pub struct DeadLetterEntry {
     pub timestamp: SystemTime,
 }
 
+/// A failed dead-letter write. Callers must not assume the action was retained.
+#[derive(Debug, thiserror::Error)]
+#[error("dead-letter persistence failed: {0}")]
+pub struct DeadLetterError(pub String);
+
 /// Trait for dead-letter queue backends.
 ///
 /// Implementations must be `Send + Sync` for use across async tasks.
 #[async_trait]
 pub trait DeadLetterSink: Send + Sync {
     /// Append a failed action to the dead-letter queue.
-    async fn push(&self, action: Action, error: String, attempts: u32);
+    async fn push(
+        &self,
+        action: Action,
+        error: String,
+        attempts: u32,
+    ) -> Result<(), DeadLetterError>;
+
+    /// Cumulative storage or encryption failures since this sink was started.
+    fn failure_count(&self) -> u64 {
+        0
+    }
 
     /// Drain all entries from the queue, returning them.
     async fn drain(&self) -> Vec<DeadLetterEntry>;
@@ -111,8 +126,14 @@ impl Default for DeadLetterQueue {
 
 #[async_trait]
 impl DeadLetterSink for DeadLetterQueue {
-    async fn push(&self, action: Action, error: String, attempts: u32) {
+    async fn push(
+        &self,
+        action: Action,
+        error: String,
+        attempts: u32,
+    ) -> Result<(), DeadLetterError> {
         DeadLetterQueue::push(self, action, error, attempts);
+        Ok(())
     }
 
     async fn drain(&self) -> Vec<DeadLetterEntry> {

@@ -44,8 +44,12 @@ impl ServerNode {
         audit: Option<Arc<dyn AuditStore>>,
         environment: std::collections::HashMap<String, String>,
         state_machines: Vec<StateMachineConfig>,
+        approval_secret: Option<Vec<u8>>,
     ) -> Result<Self, SimulationError> {
         let mut builder = GatewayBuilder::new().state(state).lock(lock).rules(rules);
+        if let Some(secret) = approval_secret {
+            builder = builder.approval_secret(secret);
+        }
 
         for provider in providers {
             builder = builder.provider(provider);
@@ -244,6 +248,7 @@ impl ServerNodeBuilder {
             self.audit,
             self.environment,
             self.state_machines,
+            None,
         )
     }
 }

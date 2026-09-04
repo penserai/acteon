@@ -1,4 +1,4 @@
-import { describe, it, expect, assert } from "vitest";
+import { describe, it, assert } from "vitest";
 import {
   createWebhookAction,
   parseProviderHealthStatus,

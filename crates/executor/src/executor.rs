@@ -74,7 +74,13 @@ impl ActionExecutor {
                 attempts,
                 "pushing failed action to dead-letter queue"
             );
-            dlq.push(action.clone(), error.to_owned(), attempts).await;
+            if dlq
+                .push(action.clone(), error.to_owned(), attempts)
+                .await
+                .is_err()
+            {
+                tracing::error!(action_id = %action.id, "failed action was not retained in dead-letter storage");
+            }
         }
     }
 

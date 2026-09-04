@@ -35,10 +35,35 @@ enum Commands {
     },
     /// Execute an approved plan.
     Run(RunArgs),
+    /// Generate or run an operator-reviewed regression plan.
+    Eval {
+        #[command(subcommand)]
+        action: EvalAction,
+    },
     /// Show the status of a running or completed swarm.
     Status(StatusArgs),
     /// Cancel a running swarm.
     Cancel(CancelArgs),
+}
+
+#[derive(Subcommand)]
+enum EvalAction {
+    /// Generate literal regression commands from known project manifests.
+    Generate {
+        #[arg(long, default_value = ".")]
+        working_directory: PathBuf,
+        #[arg(short, long, default_value = "eval-plan.json")]
+        output: PathBuf,
+    },
+    /// Execute an explicitly trusted plan and emit a versioned JSON report.
+    Run {
+        #[arg(long)]
+        plan: PathBuf,
+        #[arg(long, default_value = ".")]
+        working_directory: PathBuf,
+        #[arg(long, default_value_t = 300)]
+        timeout_seconds: u64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -86,7 +111,7 @@ struct RunArgs {
     /// Maximum adversarial challenge-recovery rounds (overrides config).
     #[arg(long)]
     adversarial_rounds: Option<usize>,
-    /// Eval harness command (e.g., "cargo test && cargo clippy").
+    /// Trusted legacy evaluator command; stdout must follow the evaluator protocol.
     #[arg(long)]
     eval_command: Option<String>,
     /// Eval harness timeout in seconds (overrides config).
@@ -117,6 +142,7 @@ struct CancelArgs {
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "acteon_swarm=info".into()),
@@ -138,6 +164,40 @@ async fn main() -> Result<()> {
                 cmd_plan_approve(&plan)?;
             }
         },
+        Commands::Eval { action } => {
+            use acteon_swarm::orchestrator::eval_gen::{
+                EvalPlan, generate_regression_plan, run_plan,
+            };
+            match action {
+                EvalAction::Generate {
+                    working_directory,
+                    output,
+                } => {
+                    let plan = generate_regression_plan(&working_directory);
+                    if plan.checks.is_empty() {
+                        anyhow::bail!("no supported manifests; provide a reviewed plan");
+                    }
+                    std::fs::write(output, serde_json::to_vec_pretty(&plan)?)?;
+                }
+                EvalAction::Run {
+                    plan,
+                    working_directory,
+                    timeout_seconds,
+                } => {
+                    let plan: EvalPlan = serde_json::from_slice(&std::fs::read(plan)?)?;
+                    let report = run_plan(
+                        &plan,
+                        &working_directory,
+                        std::time::Duration::from_secs(timeout_seconds),
+                    )
+                    .await?;
+                    println!("{}", serde_json::to_string(&report)?);
+                    if report.checks.iter().any(|check| !check.passed) {
+                        anyhow::bail!("regression checks failed");
+                    }
+                }
+            }
+        }
         Commands::Run(args) => {
             cmd_run(&config, args).await?;
         }
@@ -361,6 +421,9 @@ async fn cmd_run(config: &SwarmConfig, args: RunArgs) -> Result<()> {
         );
     }
 
+    if run.status != acteon_swarm::types::run::SwarmRunStatus::Completed {
+        anyhow::bail!("swarm did not pass: {:?}", run.status);
+    }
     Ok(())
 }
 

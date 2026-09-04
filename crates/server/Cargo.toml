@@ -57,6 +57,7 @@ swarm = ["dep:acteon-swarm", "dep:acteon-swarm-provider"]
 bus = ["dep:acteon-bus"]
 
 [dependencies]
+acteon-http.workspace = true
 acteon-audit = { workspace = true, features = ["openapi"] }
 acteon-audit-memory = { workspace = true }
 acteon-audit-postgres = { workspace = true, optional = true }

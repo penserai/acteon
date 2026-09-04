@@ -1,19 +1,20 @@
 """Tests for AWS EC2 and Auto Scaling payload helpers in acteon_client.models."""
 
 import unittest
+
 from acteon_client.models import (
-    ec2_start_instances_payload,
-    ec2_stop_instances_payload,
-    ec2_reboot_instances_payload,
-    ec2_terminate_instances_payload,
-    ec2_hibernate_instances_payload,
-    ec2_run_instances_payload,
-    ec2_attach_volume_payload,
-    ec2_detach_volume_payload,
-    ec2_describe_instances_payload,
     autoscaling_describe_groups_payload,
     autoscaling_set_desired_capacity_payload,
     autoscaling_update_group_payload,
+    ec2_attach_volume_payload,
+    ec2_describe_instances_payload,
+    ec2_detach_volume_payload,
+    ec2_hibernate_instances_payload,
+    ec2_reboot_instances_payload,
+    ec2_run_instances_payload,
+    ec2_start_instances_payload,
+    ec2_stop_instances_payload,
+    ec2_terminate_instances_payload,
 )
 
 
@@ -87,10 +88,13 @@ class TestEc2RunInstancesPayload(unittest.TestCase):
 
     def test_basic(self):
         result = ec2_run_instances_payload("ami-12345678", "t3.micro")
-        self.assertEqual(result, {
-            "image_id": "ami-12345678",
-            "instance_type": "t3.micro",
-        })
+        self.assertEqual(
+            result,
+            {
+                "image_id": "ami-12345678",
+                "instance_type": "t3.micro",
+            },
+        )
 
     def test_with_all_options(self):
         result = ec2_run_instances_payload(
@@ -136,11 +140,14 @@ class TestEc2AttachVolumePayload(unittest.TestCase):
 
     def test_basic(self):
         result = ec2_attach_volume_payload("vol-abc123", "i-def456", "/dev/sdf")
-        self.assertEqual(result, {
-            "volume_id": "vol-abc123",
-            "instance_id": "i-def456",
-            "device": "/dev/sdf",
-        })
+        self.assertEqual(
+            result,
+            {
+                "volume_id": "vol-abc123",
+                "instance_id": "i-def456",
+                "device": "/dev/sdf",
+            },
+        )
 
 
 class TestEc2DetachVolumePayload(unittest.TestCase):
@@ -186,9 +193,7 @@ class TestAutoscalingDescribeGroupsPayload(unittest.TestCase):
         self.assertEqual(result, {})
 
     def test_with_group_names(self):
-        result = autoscaling_describe_groups_payload(
-            group_names=["my-asg-1", "my-asg-2"]
-        )
+        result = autoscaling_describe_groups_payload(group_names=["my-asg-1", "my-asg-2"])
         self.assertEqual(
             result,
             {"auto_scaling_group_names": ["my-asg-1", "my-asg-2"]},
@@ -200,16 +205,17 @@ class TestAutoscalingSetDesiredCapacityPayload(unittest.TestCase):
 
     def test_basic(self):
         result = autoscaling_set_desired_capacity_payload("my-asg", 5)
-        self.assertEqual(result, {
-            "auto_scaling_group_name": "my-asg",
-            "desired_capacity": 5,
-        })
+        self.assertEqual(
+            result,
+            {
+                "auto_scaling_group_name": "my-asg",
+                "desired_capacity": 5,
+            },
+        )
         self.assertNotIn("honor_cooldown", result)
 
     def test_with_honor_cooldown(self):
-        result = autoscaling_set_desired_capacity_payload(
-            "my-asg", 10, honor_cooldown=True
-        )
+        result = autoscaling_set_desired_capacity_payload("my-asg", 10, honor_cooldown=True)
         self.assertEqual(result["auto_scaling_group_name"], "my-asg")
         self.assertEqual(result["desired_capacity"], 10)
         self.assertTrue(result["honor_cooldown"])

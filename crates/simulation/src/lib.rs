@@ -103,6 +103,8 @@ pub mod cluster;
 mod error;
 pub mod harness;
 pub mod provider;
+#[cfg(feature = "swarm")]
+pub mod scenario;
 
 pub use assertions::{ActionOutcomeExt, SideEffectAssertions};
 pub use backend_detector::AvailableBackends;

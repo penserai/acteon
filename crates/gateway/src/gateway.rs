@@ -1292,6 +1292,11 @@ impl Gateway {
         }
     }
 
+    /// Cumulative failed dead-letter storage/cryptographic operations.
+    pub fn dlq_failure_count(&self) -> u64 {
+        self.dlq.as_ref().map_or(0, |sink| sink.failure_count())
+    }
+
     /// Return `true` if the dead-letter queue is enabled.
     pub fn dlq_enabled(&self) -> bool {
         self.dlq.is_some()
@@ -1819,7 +1824,7 @@ impl Gateway {
     /// Uses the state store to maintain a sliding-window counter per rule name
     /// (scoped to namespace+tenant via [`StateKey`]). If the counter is within
     /// `max_count`, the action executes; otherwise it is throttled. On state
-    /// store errors the method **fails open** (warns and executes).
+    /// store errors the method fails closed before provider execution.
     #[instrument(name = "gateway.handle_throttle", skip(self, action), fields(%rule, %max_count, %window_seconds))]
     async fn handle_throttle(
         &self,
@@ -1836,17 +1841,10 @@ impl Gateway {
         );
         let ttl = Some(Duration::from_secs(window_seconds));
 
-        // Atomic increment; fail-open on state store errors.
-        let new_count = match self.state.increment(&key, 1, ttl).await {
-            Ok(c) => c,
-            Err(e) => {
-                warn!(error = %e, "throttle increment failed (fail-open)");
-                return Ok(self.execute_action(action).await);
-            }
-        };
-
-        #[allow(clippy::cast_sign_loss)]
-        let used = new_count as u64;
+        // A missing counter cannot authorize another effect.
+        let new_count = self.state.increment(&key, 1, ttl).await?;
+        let used = u64::try_from(new_count)
+            .map_err(|_| GatewayError::Configuration("negative throttle counter".into()))?;
 
         if used <= max_count {
             Ok(self.execute_action(action).await)
@@ -4187,9 +4185,15 @@ impl Gateway {
                         }
                     }
                     acteon_core::chain::StepFailurePolicy::Dlq => {
-                        if let Some(ref dlq) = self.dlq {
-                            dlq.push(step_action, err.message.clone(), err.attempts)
-                                .await;
+                        if let Some(ref dlq) = self.dlq
+                            && dlq
+                                .push(step_action, err.message.clone(), err.attempts)
+                                .await
+                                .is_err()
+                        {
+                            tracing::error!(
+                                "failed action was not retained in dead-letter storage"
+                            );
                         }
                         chain_state.status = ChainStatus::Failed;
                         chain_state.updated_at = now;
@@ -5328,12 +5332,19 @@ impl Gateway {
                                 .clone()
                                 .unwrap_or(serde_json::Value::Null),
                         );
-                        dlq.push(
-                            dlq_action,
-                            parent_result.error.clone().unwrap_or_default(),
-                            1,
-                        )
-                        .await;
+                        if dlq
+                            .push(
+                                dlq_action,
+                                parent_result.error.clone().unwrap_or_default(),
+                                1,
+                            )
+                            .await
+                            .is_err()
+                        {
+                            tracing::error!(
+                                "failed action was not retained in dead-letter storage"
+                            );
+                        }
                     }
                     chain_state.status = ChainStatus::Failed;
                     chain_state.updated_at = now;

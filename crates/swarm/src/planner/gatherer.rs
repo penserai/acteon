@@ -152,12 +152,9 @@ pub async fn gather_plan(config: &SwarmConfig, user_prompt: &str) -> Result<Swar
         cmd.arg("--json-schema").arg(&schema_str);
     }
 
-    let output = cmd
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::inherit())
-        .output()
+    let output = crate::orchestrator::process::run(&mut cmd, std::time::Duration::from_secs(300))
         .await
-        .map_err(|e| SwarmError::PlanGathering(format!("failed to spawn {cmd_name}: {e}")))?;
+        .map_err(|e| SwarmError::PlanGathering(format!("planner process failed: {e}")))?;
 
     if !output.status.success() {
         return Err(SwarmError::PlanGathering(format!(
