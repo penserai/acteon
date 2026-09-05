@@ -10,6 +10,10 @@ use super::super::{ApprovalRetryEvent, BackgroundProcessor};
 impl BackgroundProcessor {
     /// Run periodic cleanup tasks, including approval notification retry sweep.
     pub(crate) async fn run_cleanup(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if self.config.enable_scheduled_actions {
+            self.reconcile_scheduled_actions().await?;
+        }
+
         // Clean up resolved/notified groups that are no longer needed
         let groups = self.group_manager.list_pending_groups();
         debug!(pending_groups = groups.len(), "cleanup: checking groups");

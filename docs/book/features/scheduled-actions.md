@@ -25,16 +25,20 @@ sequenceDiagram
     Note over BG,S: 3600 seconds later...
     BG->>S: Poll for due actions
     S-->>BG: Action is due
-    BG->>P: Execute action
-    P-->>BG: Success
-    BG->>S: Mark completed
+    BG->>S: CAS delivery lease (keep discovery)
+    BG->>G: Consume leased receipt
+    G->>S: Validate and start receipt
+    G->>P: Execute under current policy
+    P-->>G: Success
+    G->>S: Persist outcome, then remove discovery
 ```
 
 1. The client dispatches an action through the normal `POST /v1/dispatch` endpoint
 2. The gateway evaluates rules -- if a `schedule` rule matches, the action is stored for later
 3. The gateway returns an `ActionOutcome::Scheduled` response with the action ID and scheduled time
 4. A background processor polls the state store for due actions at a configurable interval
-5. When an action's scheduled time arrives, the background processor dispatches it to the provider
+5. The processor claims a delivery lease and the gateway re-evaluates current policy, executing a matching Schedule verdict without scheduling it again
+6. The gateway renews the lease while dispatch is pending and saves its outcome before removing discovery
 
 ## Rule Configuration
 
@@ -198,19 +202,26 @@ if (outcome.isScheduled()) {
 
 Scheduled actions use **at-least-once delivery** semantics:
 
-- Actions are persisted to the state store before the client receives a response
-- The background processor marks actions as "in-flight" before dispatching
-- If the processor crashes mid-dispatch, the action will be retried on the next poll
-- Successfully dispatched actions are marked as completed and will not be re-dispatched
+- Active payload and discovery records persist until acknowledgement.
+- A CAS lease gives each receipt one owner for 60 seconds; dispatch renews it every 20 seconds.
+- A crash, cancellation, or failed outcome write permits redelivery after lease expiry. Cleanup rebuilds missing discovery entries from retained payloads.
+- The consumer rejects expired, duplicate, and replaced receipts. It reloads the authoritative action and preserves the original payload.
+- Terminal gateway outcomes are saved before discovery cleanup and retained for 24 hours. Provider failures returned as an outcome retain the existing executor retry/DLQ behavior.
 
-A **24-hour grace period** applies: actions that remain in the "in-flight" state for more than 24 hours are considered stale and will be retried. This handles cases where the processor crashes after picking up an action but before marking it complete.
+An external effect can succeed before outcome persistence fails. Use downstream
+idempotency to prevent duplicate effects in that window. Stop old scheduled
+consumers before deploying the new lease protocol; custom consumers must call
+`Gateway::dispatch_scheduled_action` with the leased receipt. See
+[durable scheduling](../../durable-scheduling.md) for upgrade and recovery details.
 
 ## Limitations
 
 - **Maximum delay**: 7 days (604800 seconds). Longer delays are rejected at rule evaluation time.
 - **No cancellation API**: Once an action is scheduled, it cannot be cancelled. A cancellation endpoint is planned for a future release.
 - **Polling latency**: The background processor polls at the configured interval (`scheduled_check_interval`), so actions may be dispatched up to N seconds after their scheduled time, where N is the check interval.
-- **Single processor**: The background processor runs as a single instance. High-availability deployments should use leader election or a distributed lock to prevent duplicate dispatches.
+- **Shared state required**: Multiple processors coordinate through CAS leases in a shared state backend. This does not prevent an already running external request from completing after ownership changes.
+- **Creation retries**: An ambiguous initial persistence error can leave a recoverable schedule. Retrying the request may create another schedule ID.
+- **Reconciliation cost**: Cleanup scans scheduled records, including retained terminal records; size and monitor the state store for this workload.
 
 ---
 

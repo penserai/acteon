@@ -1,147 +1,179 @@
 use tracing::{debug, info, warn};
 
-use acteon_state::{KeyKind, StateKey};
+use acteon_state::{CasResult, KeyKind, StateKey};
 
 use super::super::{BackgroundProcessor, ScheduledActionDueEvent};
+use crate::scheduled::{
+    DELIVERY_LEASE_SECONDS, DeliveryLease, ScheduledRecord, cleanup_pending, pending_key,
+    record_key,
+};
 
 impl BackgroundProcessor {
-    /// Process scheduled actions that are due for dispatch.
-    ///
-    /// Uses the timeout index for efficient O(log N + M) lookups of expired
-    /// `PendingScheduled` keys, loads the corresponding `ScheduledAction` data,
-    /// and emits dispatch events.
-    ///
-    /// Uses an atomic claim key (`check_and_set`) to prevent double-dispatch
-    /// when multiple server instances poll concurrently.
+    /// Deliver due records under a durable lease. Discovery remains until the
+    /// consumer commits an outcome; channel closure/cancellation cannot lose it.
     pub(crate) async fn process_scheduled_actions(
         &self,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let Some(ref tx) = self.scheduled_action_tx else {
+        let Some(tx) = &self.scheduled_action_tx else {
             return Ok(());
         };
-
-        let now_ms = self.clock.now().timestamp_millis();
-
-        // Use the timeout index for efficient O(log N + M) queries instead of
-        // scanning all PendingScheduled keys (which would be O(N)).
-        let expired_keys = self.state.get_expired_timeouts(now_ms).await?;
-
-        // Filter to only PendingScheduled keys (the timeout index is shared
-        // with EventTimeout keys).
-        let due_keys: Vec<String> = expired_keys
-            .into_iter()
-            .filter(|k| k.contains(":pending_scheduled:"))
-            .collect();
-
-        if due_keys.is_empty() {
-            return Ok(());
+        let due = self
+            .state
+            .get_expired_timeouts(self.clock.now().timestamp_millis())
+            .await?;
+        for key in due {
+            let parts: Vec<_> = key.splitn(4, ':').collect();
+            if parts.len() != 4 || parts[2] != "pending_scheduled" {
+                continue;
+            }
+            if let Some(event) = self
+                .claim_scheduled_action(parts[0], parts[1], parts[3])
+                .await?
+            {
+                info!(action_id = %event.action_id, "handing off scheduled delivery");
+                if tx.send(event).await.is_err() {
+                    warn!(
+                        "scheduled action channel closed; durable delivery will retry after its lease"
+                    );
+                    return Ok(());
+                }
+            }
         }
+        Ok(())
+    }
 
-        let mut dispatched = 0u32;
-
-        for key in due_keys {
-            // Parse namespace:tenant:pending_scheduled:action_id
-            let parts: Vec<&str> = key.splitn(4, ':').collect();
-            if parts.len() < 4 {
-                warn!(key = %key, "invalid pending scheduled key format");
-                continue;
-            }
-            let namespace = parts[0];
-            let tenant = parts[1];
-            let action_id = parts[3];
-
-            // Atomically claim this scheduled action to prevent double-dispatch.
-            // If another instance already claimed it, `check_and_set` returns false.
-            let claim_key = StateKey::new(
-                namespace,
-                tenant,
-                KeyKind::ScheduledAction,
-                format!("{action_id}:claim"),
-            );
-            let claimed = self
-                .state
-                .check_and_set(
-                    &claim_key,
-                    "claimed",
-                    Some(std::time::Duration::from_secs(60)),
-                )
-                .await?;
-            if !claimed {
-                debug!(action_id = %action_id, "scheduled action already claimed by another instance");
-                continue;
-            }
-
-            // Load the scheduled action data.
-            let sched_key = StateKey::new(namespace, tenant, KeyKind::ScheduledAction, action_id);
-            let Some(raw_str) = self.state.get(&sched_key).await? else {
-                // Already processed, clean up pending key.
-                let pending_key =
-                    StateKey::new(namespace, tenant, KeyKind::PendingScheduled, action_id);
-                self.state.delete(&pending_key).await?;
-                self.state.remove_timeout_index(&pending_key).await?;
-                continue;
+    async fn claim_scheduled_action(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        id: &str,
+    ) -> Result<Option<ScheduledActionDueEvent>, Box<dyn std::error::Error + Send + Sync>> {
+        // Honor outstanding claims written by the preceding worker version.
+        let legacy_claim = StateKey::new(
+            namespace,
+            tenant,
+            KeyKind::ScheduledAction,
+            format!("{id}:claim"),
+        );
+        if self.state.get(&legacy_claim).await?.is_some() {
+            return Ok(None);
+        }
+        let key = record_key(namespace, tenant, id);
+        for _ in 0..5 {
+            let Some((raw, version)) = self.state.get_versioned(&key).await? else {
+                cleanup_pending(self.state.as_ref(), namespace, tenant, id).await?;
+                return Ok(None);
             };
+            let clear = match self.decrypt_state_value(&raw) {
+                Ok(clear) => clear,
+                Err(error) => {
+                    warn!(%error, action_id = id, "unreadable scheduled record; retained for repair");
+                    return Ok(None);
+                }
+            };
+            let mut record: ScheduledRecord = match serde_json::from_str(&clear) {
+                Ok(record) => record,
+                Err(error) => {
+                    warn!(%error, action_id = id, "invalid scheduled record; retained for repair");
+                    return Ok(None);
+                }
+            };
+            if let Err(error) = record.validate_scope(namespace, tenant, id) {
+                warn!(%error, action_id = id, "invalid scheduled scope; retained for repair");
+                return Ok(None);
+            }
+            if record.completed_at.is_some() {
+                cleanup_pending(self.state.as_ref(), namespace, tenant, id).await?;
+                return Ok(None);
+            }
+            let now = self.clock.now();
+            if record.scheduled_for > now {
+                self.state
+                    .index_timeout(
+                        &pending_key(namespace, tenant, id),
+                        record.scheduled_for.timestamp_millis(),
+                    )
+                    .await?;
+                return Ok(None);
+            }
+            if record
+                .delivery
+                .as_ref()
+                .is_some_and(|lease| lease.expires_at > now)
+            {
+                return Ok(None);
+            }
+            let token = uuid::Uuid::new_v4().to_string();
+            record.delivery = Some(DeliveryLease {
+                token: token.clone(),
+                expires_at: now + chrono::Duration::seconds(i64::from(DELIVERY_LEASE_SECONDS)),
+                started: false,
+            });
+            let raw = serde_json::to_string(&record)?;
+            let encrypted = match &self.payload_encryptor {
+                Some(enc) => enc.encrypt_str(&raw)?,
+                None => raw,
+            };
+            if self
+                .state
+                .compare_and_swap(&key, version, &encrypted, None)
+                .await?
+                == CasResult::Ok
+            {
+                return Ok(Some(ScheduledActionDueEvent {
+                    namespace: namespace.to_owned(),
+                    tenant: tenant.to_owned(),
+                    action_id: id.to_owned(),
+                    delivery_token: token,
+                    action: record.action,
+                }));
+            }
+        }
+        debug!(
+            action_id = id,
+            "scheduled delivery claim contention; retry next tick"
+        );
+        Ok(None)
+    }
 
-            let data_str = match self.decrypt_state_value(&raw_str) {
-                Ok(v) => v,
-                Err(e) => {
-                    warn!(action_id = %action_id, error = %e, "failed to decrypt scheduled action data");
+    /// Rebuild missing discovery entries from authoritative records, including
+    /// interrupted initial writes and handoffs made by the previous worker.
+    /// Runs on the cleanup cadence rather than on every due poll.
+    pub(crate) async fn reconcile_scheduled_actions(
+        &self,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        for (key, raw) in self
+            .state
+            .scan_keys_by_kind(KeyKind::ScheduledAction)
+            .await?
+        {
+            let parts: Vec<_> = key.splitn(4, ':').collect();
+            if parts.len() != 4 || parts[3].ends_with(":claim") {
+                continue;
+            }
+            let clear = match self.decrypt_state_value(&raw) {
+                Ok(clear) => clear,
+                Err(error) => {
+                    warn!(%error, action_id = parts[3], "unreadable scheduled record; retained for repair");
                     continue;
                 }
             };
-
-            let Ok(data) = serde_json::from_str::<serde_json::Value>(&data_str) else {
-                warn!(action_id = %action_id, "failed to parse scheduled action data");
+            let Ok(record) = serde_json::from_str::<ScheduledRecord>(&clear) else {
                 continue;
             };
-
-            let Some(action_val) = data.get("action") else {
-                warn!(action_id = %action_id, "scheduled action missing action field");
+            if let Err(error) = record.validate_scope(parts[0], parts[1], parts[3]) {
+                warn!(%error, action_id = parts[3], "invalid scheduled scope; retained for repair");
                 continue;
-            };
-
-            let Ok(action) = serde_json::from_value::<acteon_core::Action>(action_val.clone())
-            else {
-                warn!(action_id = %action_id, "failed to deserialize scheduled action");
-                continue;
-            };
-
-            // Clean up the pending/index keys so the background processor
-            // won't re-poll this action. The action data key is intentionally
-            // kept alive until the consumer confirms successful dispatch
-            // (at-least-once semantics). If the server crashes between here
-            // and consumer cleanup, the claim key expires (60s TTL) and a
-            // subsequent poll will re-deliver the action.
-            let pending_key =
-                StateKey::new(namespace, tenant, KeyKind::PendingScheduled, action_id);
-            self.state.delete(&pending_key).await?;
-            self.state.remove_timeout_index(&pending_key).await?;
-
-            info!(
-                action_id = %action_id,
-                namespace = %namespace,
-                tenant = %tenant,
-                "dispatching scheduled action"
-            );
-
-            let event = ScheduledActionDueEvent {
-                namespace: namespace.to_string(),
-                tenant: tenant.to_string(),
-                action_id: action_id.to_string(),
-                action,
-            };
-
-            if tx.send(event).await.is_err() {
-                warn!("scheduled action event channel closed");
-                return Ok(());
             }
-            dispatched += 1;
+            if record.completed_at.is_some() {
+                cleanup_pending(self.state.as_ref(), parts[0], parts[1], parts[3]).await?;
+            } else {
+                let key = pending_key(parts[0], parts[1], parts[3]);
+                let due = record.scheduled_for.timestamp_millis();
+                self.state.set(&key, &due.to_string(), None).await?;
+                self.state.index_timeout(&key, due).await?;
+            }
         }
-
-        if dispatched > 0 {
-            debug!(count = dispatched, "dispatched due scheduled actions");
-        }
-
         Ok(())
     }
 }

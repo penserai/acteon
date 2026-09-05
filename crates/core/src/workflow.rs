@@ -187,7 +187,19 @@ impl WorkflowExecution {
         queue: impl Into<String>,
         input: serde_json::Value,
     ) -> Self {
-        let now = Utc::now();
+        Self::new_at(namespace, tenant, workflow, queue, input, Utc::now())
+    }
+
+    /// Construct with an explicit lifecycle timestamp.
+    #[must_use]
+    pub fn new_at(
+        namespace: impl Into<String>,
+        tenant: impl Into<String>,
+        workflow: impl Into<String>,
+        queue: impl Into<String>,
+        input: serde_json::Value,
+        now: DateTime<Utc>,
+    ) -> Self {
         Self {
             execution_id: uuid::Uuid::new_v4().to_string(),
             workflow: workflow.into(),
@@ -223,6 +235,16 @@ impl WorkflowExecution {
         name: impl Into<String>,
         data: serde_json::Value,
     ) -> WorkflowCheckpoint {
+        self.record_checkpoint_at(name, data, Utc::now())
+    }
+
+    /// Record a checkpoint at an explicit time, preserving replayed timestamps.
+    pub fn record_checkpoint_at(
+        &mut self,
+        name: impl Into<String>,
+        data: serde_json::Value,
+        now: DateTime<Utc>,
+    ) -> WorkflowCheckpoint {
         let name = name.into();
         if let Some(existing) = self.checkpoint(&name) {
             return existing.clone();
@@ -231,7 +253,7 @@ impl WorkflowExecution {
             seq: self.checkpoints.len() as u64 + 1,
             name,
             data,
-            recorded_at: Utc::now(),
+            recorded_at: now,
         };
         self.checkpoints.push(checkpoint.clone());
         self.updated_at = checkpoint.recorded_at;

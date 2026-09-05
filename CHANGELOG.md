@@ -2,6 +2,14 @@
 
 ## Unreleased — rehabilitation
 
+- Make one-shot scheduled delivery recoverable through durable CAS leases,
+  renewal, outcome persistence, and discovery reconciliation. Clear old memory/Redis
+  TTLs on CAS updates with no expiry, with shared backend conformance coverage. Execute due actions
+  without re-scheduling; retain active records and encrypt all delivery state.
+  Reject expired queue owners before reaping and replace caller-controlled quota
+  exemptions with trusted dispatch origins. Add explicit queue/workflow clocks
+  and replayable deployment/scheduling recovery with persistence-fault mutations.
+
 - Extend shared clocks to background polling, worker decisions, and task
   mutations. Add explicit worker ticks, skip missed polls, and publish stale-task
   transitions to subscribers. Wire gateway-dependent workers independently of

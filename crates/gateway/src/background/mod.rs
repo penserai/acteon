@@ -171,19 +171,19 @@ pub struct ChainAdvanceEvent {
 
 /// Event emitted when a scheduled action is due for dispatch.
 ///
-// TODO(scheduled-actions): The consumer of this event must be careful not to
-// re-dispatch the action through the full rule pipeline, as the same Schedule
-// rule could fire again creating an infinite loop. Either bypass rules entirely
-// or mark the action to prevent re-scheduling.
+/// Consume through [`crate::Gateway::dispatch_scheduled_action`] to validate
+/// ownership, renew the lease, and durably acknowledge the outcome.
 #[derive(Debug, Clone)]
 pub struct ScheduledActionDueEvent {
+    /// Opaque delivery ownership token; consume via `Gateway::dispatch_scheduled_action`.
+    pub delivery_token: String,
     /// Namespace of the scheduled action.
     pub namespace: String,
     /// Tenant of the scheduled action.
     pub tenant: String,
     /// The scheduled action ID.
     pub action_id: String,
-    /// The serialized action to dispatch.
+    /// Action snapshot for observers; the consumer reloads the authoritative record.
     pub action: acteon_core::Action,
 }
 
@@ -898,19 +898,18 @@ mod tests {
         assert_eq!(event.tenant, tenant);
         assert_eq!(event.action.action_type, "send_email");
 
-        // With at-least-once delivery, action data is preserved until the
-        // consumer deletes it after successful dispatch. The background
-        // processor only removes the pending index and timeout entry.
+        // Handoff alone cannot remove either the data or its discovery entry.
+        // The consumer must first persist an acknowledged outcome.
         let data = state.get(&sched_key).await.unwrap();
         assert!(
             data.is_some(),
             "scheduled action data should be retained for consumer cleanup (at-least-once)"
         );
-        // Pending index key should be cleaned up by the processor.
+        // Pending index survives the unacknowledged handoff.
         let pending_data = state.get(&pending_key).await.unwrap();
         assert!(
-            pending_data.is_none(),
-            "pending index should be cleaned up after dispatch"
+            pending_data.is_some(),
+            "pending index must remain until acknowledgement"
         );
 
         // Shutdown.

@@ -111,7 +111,7 @@ impl Gateway {
 
         let entry = acteon_core::ExecutionEvent {
             event_id,
-            timestamp: Utc::now(),
+            timestamp: self.clock.now(),
             event,
         };
         let json = match serde_json::to_string(&entry) {
@@ -505,7 +505,7 @@ impl Gateway {
         if waiting_for_this_signal {
             let pending_key = StateKey::new(namespace, tenant, KeyKind::PendingChains, chain_id);
             self.state
-                .index_chain_ready(&pending_key, Utc::now().timestamp_millis())
+                .index_chain_ready(&pending_key, self.clock.now().timestamp_millis())
                 .await?;
             debug!(chain_id, signal_name, "signal delivered; chain woken");
         } else {
@@ -609,7 +609,7 @@ impl Gateway {
             chain_state
                 .search_attributes
                 .extend(attributes.iter().map(|(k, v)| (k.clone(), v.clone())));
-            chain_state.updated_at = Utc::now();
+            chain_state.updated_at = self.clock.now();
 
             let ttl = if chain_state.status.is_active() {
                 None
@@ -743,7 +743,7 @@ impl Gateway {
                 }
             }
 
-            let now = Utc::now();
+            let now = self.clock.now();
             chain_state.execution_path.push(target_step.to_owned());
             chain_state.current_step = target_idx;
             chain_state.status = ChainStatus::Running;

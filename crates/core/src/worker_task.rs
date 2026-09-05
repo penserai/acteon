@@ -111,7 +111,19 @@ impl WorkerTask {
         action_type: impl Into<String>,
         payload: serde_json::Value,
     ) -> Self {
-        let now = Utc::now();
+        Self::new_at(namespace, tenant, queue, action_type, payload, Utc::now())
+    }
+
+    /// Construct with an explicit lifecycle timestamp.
+    #[must_use]
+    pub fn new_at(
+        namespace: impl Into<String>,
+        tenant: impl Into<String>,
+        queue: impl Into<String>,
+        action_type: impl Into<String>,
+        payload: serde_json::Value,
+        now: DateTime<Utc>,
+    ) -> Self {
         Self {
             task_id: uuid::Uuid::new_v4().to_string(),
             namespace: namespace.into(),

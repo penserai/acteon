@@ -105,17 +105,20 @@ Local validation completed on the implementation from `ea59463`:
 The phase from `1f28dbd` added a shared clock, deterministic timer/fault
 scheduler, and deadline safety suite. The follow-up from `a514c5b` extends it to
 [worker ticks and task lifecycle evidence](worker-lifecycle.md). See also
-[the clock contract and limits](virtual-time.md).
+[the clock contract and limits](virtual-time.md). The next phase from `c0754e6`
+adds [durable scheduling and deployment recovery](durable-scheduling.md).
 
 ## Remaining plan
 
 1. Extend virtual time into DLQ/audit-store retention and the remaining application
    lifecycle paths. Gateway/executor/memory clocks, background workers, and task
-   transitions are injected; explicit worker ticks and the deadline and worker
+   transitions, worker-queue leases/retries, and workflow construction are injected; explicit worker ticks and the deadline and worker
    lifecycle suites now have virtual timing. Existing product portfolio trials,
    remote database TTLs, generated UUIDs, and OS scheduling retain real time.
-2. Add durable deployment and tenant scheduling workflows, then crash, lease,
-   audit-outage, transport, and partition adapters across the relevant backends.
+2. Extend [durable deployment and tenant scheduling](durable-scheduling.md) beyond
+   the implemented gateway restart, checkpoint/timer, and scheduled-outcome fault
+   cases. Add queue index reconciliation and crash, audit-outage, transport, and
+   partition adapters across the relevant backends.
    No test here establishes exactly-once effects across a crash between external
    execution and durable completion persistence.
 3. Expand the injection portfolio to transport-level redirect/rebinding and

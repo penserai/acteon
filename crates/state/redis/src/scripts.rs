@@ -57,6 +57,8 @@ redis.call('HSET', KEYS[1], 'v', ARGV[2], 'ver', new_ver)
 local ttl = tonumber(ARGV[3])
 if ttl > 0 then
     redis.call('PEXPIRE', KEYS[1], ttl)
+else
+    redis.call('PERSIST', KEYS[1])
 end
 return {1, new_ver}
 ";

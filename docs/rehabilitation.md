@@ -124,8 +124,10 @@ remote database clocks, network schedules, and process scheduling remain real. T
 scenarios cover policy, approval, tenant deduplication, retries, evaluator integrity,
 and invalid-state recovery. The follow-up adds selected incident, refund, and
 prompt-injection workflows with diagnostic weighted scorecards. The full proposed
-portfolio, model capability trials, virtual-time fault scheduler, crash/partition
-exploration, and empirically calibrated scorecards remain separate work.
+portfolio, model capability trials, broader crash/partition exploration, and
+empirically calibrated scorecards remain separate work. Subsequent phases added
+shared clocks, a bounded deterministic scheduler, worker lifecycle timing, and
+[durable scheduling with deployment recovery](durable-scheduling.md).
 
 The scenarios exercise production gateways directly with recording providers.
 Browser smoke covers navigation/responsiveness; it does not validate every live

@@ -313,7 +313,7 @@ impl StateStore for MemoryStateStore {
 
         new_value.clone_into(&mut entry.value);
         entry.version += 1;
-        entry.expires_at = expiry_from_ttl(self.clock.as_ref(), ttl).or(entry.expires_at);
+        entry.expires_at = expiry_from_ttl(self.clock.as_ref(), ttl);
 
         Ok(CasResult::Ok)
     }

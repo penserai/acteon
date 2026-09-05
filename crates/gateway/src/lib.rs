@@ -12,6 +12,7 @@ pub mod group_manager;
 pub mod metrics;
 mod quota_enforcement;
 pub mod recurring_overlap;
+mod scheduled;
 mod silence_enforcement;
 pub(crate) mod sync_state;
 pub mod task_chain_bridge;

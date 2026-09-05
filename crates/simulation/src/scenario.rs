@@ -18,6 +18,8 @@ use crate::{
 mod deadlines;
 pub mod evaluation;
 mod portfolio;
+mod scheduling;
+mod scheduling_fault;
 mod workers;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -51,6 +53,7 @@ pub enum Scenario {
     PromptInjection,
     DeadlineSafety,
     WorkerLifecycle,
+    DurableScheduling,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -237,12 +240,12 @@ pub async fn run(manifest: ScenarioManifest) -> Result<ScenarioReport, Simulatio
         && manifest.scenarios.iter().any(|scenario| {
             matches!(
                 scenario,
-                Scenario::DeadlineSafety | Scenario::WorkerLifecycle
+                Scenario::DeadlineSafety | Scenario::WorkerLifecycle | Scenario::DurableScheduling
             )
         })
     {
         return Err(SimulationError::Configuration(
-            "virtual-time scenario requires the memory backend (deadline_safety, worker_lifecycle)"
+            "virtual-time scenario requires the memory backend (deadline_safety, worker_lifecycle, durable_scheduling)"
                 .into(),
         ));
     }
@@ -268,6 +271,7 @@ pub async fn run(manifest: ScenarioManifest) -> Result<ScenarioReport, Simulatio
             Scenario::PromptInjection => portfolio::injection(&mut report).await,
             Scenario::DeadlineSafety => deadlines::run(&mut report).await,
             Scenario::WorkerLifecycle => workers::run(&mut report).await,
+            Scenario::DurableScheduling => scheduling::run(&mut report).await,
         };
         if let Err(error) = result {
             report.check(scenario, "scenario completed", false, error.to_string());

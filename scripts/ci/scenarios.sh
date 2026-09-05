@@ -25,7 +25,7 @@ mv "$runner_candidate" "$runner"
 chmod +x "$runner"
 for backend in "${@:-memory}"; do
   suites=(rehabilitation portfolio)
-  if [[ "$backend" == "memory" ]]; then suites+=(deadlines workers); fi
+  if [[ "$backend" == "memory" ]]; then suites+=(deadlines workers scheduling); fi
   for suite in "${suites[@]}"; do
     directory="scenario-results/$backend/$suite"
     mkdir -p "$directory"

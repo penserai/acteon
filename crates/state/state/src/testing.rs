@@ -27,6 +27,7 @@ pub async fn run_store_conformance_tests(store: &dyn StateStore) -> Result<(), S
     test_ttl_set(store).await?;
     test_scan_by_kind_includes_check_and_set(store).await?;
     test_set_clears_ttl_on_overwrite(store).await?;
+    test_cas_replaces_ttl(store).await?;
     test_timeout_index_reindex_replaces(store).await?;
     test_chain_ready_index_reindex_replaces(store).await?;
     Ok(())
@@ -69,6 +70,45 @@ async fn test_set_clears_ttl_on_overwrite(store: &dyn StateStore) -> Result<(), 
         val.as_deref(),
         Some("permanent"),
         "a no-TTL overwrite must clear the prior TTL (key expired)"
+    );
+    Ok(())
+}
+
+/// Successful CAS replaces TTL, while a conflicting CAS leaves it unchanged.
+async fn test_cas_replaces_ttl(store: &dyn StateStore) -> Result<(), StateError> {
+    let permanent = test_key(KeyKind::State, "cas-clear-ttl");
+    let expires = test_key(KeyKind::State, "cas-retain-ttl-on-conflict");
+    for key in [&permanent, &expires] {
+        store
+            .set(key, "ephemeral", Some(Duration::from_secs(1)))
+            .await?;
+    }
+    let (_, version) = store
+        .get_versioned(&permanent)
+        .await?
+        .expect("created value");
+    assert_eq!(
+        store
+            .compare_and_swap(&permanent, version, "permanent", None)
+            .await?,
+        CasResult::Ok
+    );
+    let (_, version) = store.get_versioned(&expires).await?.expect("created value");
+    assert!(matches!(
+        store
+            .compare_and_swap(&expires, version + 1, "wrong", None)
+            .await?,
+        CasResult::Conflict { .. }
+    ));
+    tokio::time::sleep(Duration::from_millis(1300)).await;
+    assert_eq!(
+        store.get(&permanent).await?.as_deref(),
+        Some("permanent"),
+        "CAS without TTL must clear the prior expiry"
+    );
+    assert!(
+        store.get(&expires).await?.is_none(),
+        "conflicting CAS must preserve expiry"
     );
     Ok(())
 }

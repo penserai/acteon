@@ -117,6 +117,14 @@ pub struct ApprovalRecord {
     pub notification_sent: bool,
 }
 
+/// Trusted dispatch origin selected by server-side entry points, never payload fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DispatchOrigin {
+    External,
+    Precounted,
+    Scheduled,
+}
+
 /// Public-facing approval status (does not expose the original action payload).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApprovalStatus {
@@ -505,7 +513,8 @@ impl Gateway {
         action: Action,
         caller: Option<&Caller>,
     ) -> Result<ActionOutcome, GatewayError> {
-        self.dispatch_inner(action, caller, false).await
+        self.dispatch_inner(action, caller, false, DispatchOrigin::External)
+            .await
     }
 
     /// Dispatch in dry-run mode: evaluates rules and returns the verdict without
@@ -515,7 +524,18 @@ impl Gateway {
         action: Action,
         caller: Option<&Caller>,
     ) -> Result<ActionOutcome, GatewayError> {
-        self.dispatch_inner(action, caller, true).await
+        self.dispatch_inner(action, caller, true, DispatchOrigin::External)
+            .await
+    }
+
+    /// Dispatch an internally synthesized action whose quota was already counted.
+    /// Intended for trusted recurring/group consumers, never transport input.
+    pub async fn dispatch_precounted_action(
+        &self,
+        action: Action,
+    ) -> Result<ActionOutcome, GatewayError> {
+        self.dispatch_inner(action, None, false, DispatchOrigin::Precounted)
+            .await
     }
 
     /// Inner dispatch implementation shared by normal and dry-run modes.
@@ -532,11 +552,12 @@ impl Gateway {
             dry_run,
         )
     )]
-    async fn dispatch_inner(
+    pub(crate) async fn dispatch_inner(
         &self,
         action: Action,
         caller: Option<&Caller>,
         dry_run: bool,
+        origin: DispatchOrigin,
     ) -> Result<ActionOutcome, GatewayError> {
         self.metrics.increment_dispatched();
         let start = self.clock.monotonic();
@@ -578,7 +599,7 @@ impl Gateway {
         // how many fallbacks a single dispatch can traverse so
         // a misconfigured chain of degrade policies cannot loop.
         let mut action = action;
-        if !dry_run {
+        if !dry_run && origin == DispatchOrigin::External {
             const MAX_QUOTA_DEGRADE_HOPS: usize = 3;
             let mut hops = 0usize;
             let mut terminal: Option<ActionOutcome> = None;
@@ -975,6 +996,9 @@ impl Gateway {
             RuleVerdict::Chain { rule: _, chain } => {
                 self.handle_chain(&action, chain, caller).await?
             }
+            RuleVerdict::Schedule { .. } if origin == DispatchOrigin::Scheduled => {
+                self.execute_action(&action).await
+            }
             RuleVerdict::Schedule {
                 rule: _,
                 delay_seconds,
@@ -1077,7 +1101,7 @@ impl Gateway {
         const BATCH_CONCURRENCY: usize = 32;
 
         stream::iter(actions)
-            .map(|action| self.dispatch_inner(action, caller, dry_run))
+            .map(|action| self.dispatch_inner(action, caller, dry_run, DispatchOrigin::External))
             .buffered(BATCH_CONCURRENCY)
             .collect()
             .await
@@ -2373,21 +2397,12 @@ impl Gateway {
     /// likely a misconfiguration.
     const MAX_SCHEDULE_DELAY_SECONDS: u64 = 7 * 24 * 60 * 60;
 
-    /// Grace period added to the TTL of stored scheduled action data.
-    ///
-    /// The data TTL is `delay_seconds + GRACE_SECONDS` so that the background
-    /// processor has time to pick it up even if the processor is down for an
-    /// extended period. Set to 24 hours to survive longer outages. If the data
-    /// expires before dispatch, the action is silently dropped (preferable to
-    /// permanent orphaned state).
-    const SCHEDULE_GRACE_SECONDS: u64 = 86_400;
-
     /// Handle the schedule verdict: store the action for delayed execution.
     ///
     /// The action is persisted in the state store with a `ScheduledAction` key
     /// and indexed in the `PendingScheduled` index for efficient polling by the
-    /// background processor. A TTL is set on the stored data so that orphaned
-    /// entries are automatically cleaned up.
+    /// background processor. Active records persist until acknowledged; completed
+    /// records receive a retention TTL and orphan discovery indexes are repaired.
     #[instrument(
         name = "gateway.handle_schedule",
         skip(self, action),
@@ -2432,10 +2447,9 @@ impl Gateway {
         let scheduled_for = now + chrono::Duration::seconds(delay_seconds as i64);
         let action_id = uuid::Uuid::new_v4().to_string();
 
-        // TTL = delay + grace period so orphaned entries self-clean.
-        let ttl = Some(Duration::from_secs(
-            delay_seconds + Self::SCHEDULE_GRACE_SECONDS,
-        ));
+        // Active deliveries remain durable until an outcome is persisted. A
+        // lost discovery-index write is repaired by the cleanup worker.
+        let ttl = None;
 
         // Persist the scheduled action data.
         let sched_key = StateKey::new(
@@ -3231,7 +3245,7 @@ impl Gateway {
                             &chain_state.execution_path,
                             &chain_state.parallel_sub_results,
                         );
-                        let task = acteon_core::WorkerTask::new(
+                        let task = acteon_core::WorkerTask::new_at(
                             namespace,
                             tenant,
                             &worker_cfg.queue,
@@ -3240,6 +3254,7 @@ impl Gateway {
                                 .clone()
                                 .unwrap_or_else(|| step_config.name.clone()),
                             payload,
+                            self.clock.now(),
                         )
                         .with_max_attempts(
                             worker_cfg
@@ -10789,6 +10804,42 @@ mod tests {
             .quota_policies(policies)
             .build()
             .expect("gateway should build")
+    }
+
+    #[tokio::test]
+    async fn caller_payload_markers_cannot_bypass_quota() {
+        let policy = make_quota_policy(
+            "notifications",
+            "tenant-1",
+            1,
+            acteon_core::QuotaWindow::Hourly,
+            acteon_core::OverageBehavior::Block,
+            true,
+        );
+        let gw = build_gateway_with_quota(vec![policy]);
+        assert!(matches!(
+            gw.dispatch(test_action(), None).await.unwrap(),
+            ActionOutcome::Executed(_)
+        ));
+        for marker in [
+            "_scheduled_dispatch",
+            "_recurring_dispatch",
+            "_group_dispatch",
+        ] {
+            let mut action = test_action();
+            action.payload = serde_json::json!({marker: true});
+            assert!(
+                matches!(
+                    gw.dispatch(action, None).await.unwrap(),
+                    ActionOutcome::QuotaExceeded { .. }
+                ),
+                "accepted {marker}"
+            );
+        }
+        assert!(matches!(
+            gw.dispatch_precounted_action(test_action()).await.unwrap(),
+            ActionOutcome::Executed(_)
+        ));
     }
 
     #[tokio::test]
