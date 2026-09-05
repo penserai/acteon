@@ -14,7 +14,6 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use chrono::Utc;
 use tracing::{debug, warn};
 
 use acteon_core::{
@@ -405,9 +404,9 @@ impl Gateway {
                 exec.buffered_signals.push(acteon_core::BufferedSignal {
                     name: signal_name.to_owned(),
                     payload,
-                    received_at: Utc::now(),
+                    received_at: self.clock.now(),
                 });
-                exec.updated_at = Utc::now();
+                exec.updated_at = self.clock.now();
                 self.persist_workflow(&exec, None).await?;
                 debug!(execution_id, signal_name, "workflow signal buffered");
             }
@@ -448,7 +447,7 @@ impl Gateway {
             exec.status = WorkflowStatus::Cancelled;
             exec.error.clone_from(&reason);
             exec.awaiting = None;
-            exec.updated_at = Utc::now();
+            exec.updated_at = self.clock.now();
             let _ = self
                 .state
                 .remove_timeout_index(&timer_key(namespace, tenant, execution_id))
@@ -569,7 +568,7 @@ impl Gateway {
                     exec.status = WorkflowStatus::Completed;
                     exec.result = Some(result.clone());
                     exec.awaiting = None;
-                    exec.updated_at = Utc::now();
+                    exec.updated_at = self.clock.now();
                     self.persist_workflow(&exec, Some(COMPLETED_WORKFLOW_TTL))
                         .await?;
                     self.append_execution_history(
@@ -590,7 +589,7 @@ impl Gateway {
                     exec.status = WorkflowStatus::Failed;
                     exec.error = Some(error.clone());
                     exec.awaiting = None;
-                    exec.updated_at = Utc::now();
+                    exec.updated_at = self.clock.now();
                     self.persist_workflow(&exec, Some(COMPLETED_WORKFLOW_TTL))
                         .await?;
                     self.append_execution_history(
@@ -621,13 +620,14 @@ impl Gateway {
                         return Ok(Vec::new());
                     }
                     #[allow(clippy::cast_possible_wrap)]
-                    let fire_at = Utc::now() + chrono::Duration::seconds(seconds.max(1) as i64);
+                    let fire_at =
+                        self.clock.now() + chrono::Duration::seconds(seconds.max(1) as i64);
                     exec.awaiting = Some(WorkflowAwait::Timer {
                         checkpoint: checkpoint.clone(),
                         fire_at,
                     });
                     exec.status = WorkflowStatus::WaitingTimer;
-                    exec.updated_at = Utc::now();
+                    exec.updated_at = self.clock.now();
                     self.persist_workflow(&exec, None).await?;
                     self.state
                         .index_timeout(
@@ -682,14 +682,14 @@ impl Gateway {
                     }
                     #[allow(clippy::cast_possible_wrap)]
                     let timeout_at = timeout_seconds
-                        .map(|s| Utc::now() + chrono::Duration::seconds(s.max(1) as i64));
+                        .map(|s| self.clock.now() + chrono::Duration::seconds(s.max(1) as i64));
                     exec.awaiting = Some(WorkflowAwait::Signal {
                         checkpoint: checkpoint.clone(),
                         signal_name: name.clone(),
                         timeout_at,
                     });
                     exec.status = WorkflowStatus::WaitingSignal;
-                    exec.updated_at = Utc::now();
+                    exec.updated_at = self.clock.now();
                     self.persist_workflow(&exec, None).await?;
                     if let Some(t) = timeout_at {
                         self.state
@@ -731,7 +731,7 @@ impl Gateway {
     /// Fire due workflow timers (durable sleeps and signal-wait timeouts).
     /// Driven by the background processor on the chain-advance tick.
     pub async fn process_due_workflow_timers(&self) -> Result<usize, GatewayError> {
-        let now = Utc::now();
+        let now = self.clock.now();
         // The shared timeout index returns only due entries (O(log N + M));
         // other consumers of the feed filter by their own key kind, as here.
         let expired = self
@@ -779,7 +779,7 @@ impl Gateway {
                 return Ok(false);
             };
 
-            let now = Utc::now();
+            let now = self.clock.now();
             match exec.awaiting.clone() {
                 Some(WorkflowAwait::Timer {
                     checkpoint,

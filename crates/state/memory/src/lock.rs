@@ -1,9 +1,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use acteon_time::{Clock, SystemClock};
 use async_trait::async_trait;
 use dashmap::DashMap;
-use tokio::time::Instant;
 use uuid::Uuid;
 
 use acteon_state::error::StateError;
@@ -13,12 +13,12 @@ use acteon_state::lock::{DistributedLock, LockGuard};
 #[derive(Debug, Clone)]
 struct LockEntry {
     owner: String,
-    expires_at: Instant,
+    expires_at: Duration,
 }
 
 impl LockEntry {
-    fn is_expired(&self) -> bool {
-        Instant::now() >= self.expires_at
+    fn is_expired(&self, now: Duration) -> bool {
+        now >= self.expires_at
     }
 }
 
@@ -28,15 +28,30 @@ impl LockEntry {
 /// attempt for the same lock name. Call
 /// [`sweep_expired`](MemoryDistributedLock::sweep_expired) periodically to
 /// also reclaim locks whose name is never contended again.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct MemoryDistributedLock {
+    clock: Arc<dyn Clock>,
     locks: Arc<DashMap<String, LockEntry>>,
+}
+
+impl Default for MemoryDistributedLock {
+    fn default() -> Self {
+        Self::with_clock(Arc::new(SystemClock::default()))
+    }
 }
 
 impl MemoryDistributedLock {
     /// Create a new in-memory distributed lock manager.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Use the same clock as the gateway and its memory state store.
+    pub fn with_clock(clock: Arc<dyn Clock>) -> Self {
+        Self {
+            clock,
+            locks: Arc::new(DashMap::new()),
+        }
     }
 
     /// Proactively evict every lock whose TTL has elapsed. Returns the
@@ -51,7 +66,7 @@ impl MemoryDistributedLock {
     pub fn sweep_expired(&self) -> usize {
         let mut removed = 0usize;
         self.locks.retain(|_, entry| {
-            let keep = !entry.is_expired();
+            let keep = !entry.is_expired(self.clock.monotonic());
             if !keep {
                 removed += 1;
             }
@@ -71,7 +86,8 @@ impl DistributedLock for MemoryDistributedLock {
         let key = name.to_owned();
 
         // Remove expired entries lazily.
-        self.locks.remove_if(&key, |_, entry| entry.is_expired());
+        self.locks
+            .remove_if(&key, |_, entry| entry.is_expired(self.clock.monotonic()));
 
         // Try to insert only if vacant.
         let owner = Uuid::new_v4().to_string();
@@ -80,9 +96,10 @@ impl DistributedLock for MemoryDistributedLock {
             dashmap::mapref::entry::Entry::Vacant(vacant) => {
                 vacant.insert(LockEntry {
                     owner: owner.clone(),
-                    expires_at: Instant::now() + ttl,
+                    expires_at: self.clock.monotonic().saturating_add(ttl),
                 });
                 Ok(Some(Box::new(MemoryLockGuard {
+                    clock: Arc::clone(&self.clock),
                     locks: Arc::clone(&self.locks),
                     name: key,
                     owner,
@@ -97,18 +114,26 @@ impl DistributedLock for MemoryDistributedLock {
         ttl: Duration,
         timeout: Duration,
     ) -> Result<Box<dyn LockGuard>, StateError> {
-        let deadline = Instant::now() + timeout;
-
+        // A zero timeout still permits one immediate attempt. Subsequent
+        // attempts must begin strictly before the wait deadline.
+        let deadline = self.clock.monotonic().saturating_add(timeout);
+        if let Some(guard) = self.try_acquire(name, ttl).await? {
+            return Ok(guard);
+        }
         loop {
+            let now = self.clock.monotonic();
+            if now >= deadline {
+                return Err(StateError::Timeout(timeout));
+            }
+            self.clock
+                .sleep_until(now.saturating_add(Duration::from_millis(50)).min(deadline))
+                .await;
+            if self.clock.monotonic() >= deadline {
+                return Err(StateError::Timeout(timeout));
+            }
             if let Some(guard) = self.try_acquire(name, ttl).await? {
                 return Ok(guard);
             }
-
-            if Instant::now() >= deadline {
-                return Err(StateError::Timeout(timeout));
-            }
-
-            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
 }
@@ -119,6 +144,7 @@ impl DistributedLock for MemoryDistributedLock {
 /// or extended without going through the parent [`MemoryDistributedLock`].
 #[derive(Debug)]
 pub struct MemoryLockGuard {
+    clock: Arc<dyn Clock>,
     locks: Arc<DashMap<String, LockEntry>>,
     name: String,
     owner: String,
@@ -136,11 +162,11 @@ impl LockGuard for MemoryLockGuard {
             return Err(StateError::LockExpired(self.name.clone()));
         }
 
-        if entry.is_expired() {
+        if entry.is_expired(self.clock.monotonic()) {
             return Err(StateError::LockExpired(self.name.clone()));
         }
 
-        entry.expires_at = Instant::now() + duration;
+        entry.expires_at = self.clock.monotonic().saturating_add(duration);
         Ok(())
     }
 
@@ -153,7 +179,9 @@ impl LockGuard for MemoryLockGuard {
 
     async fn is_held(&self) -> Result<bool, StateError> {
         match self.locks.get(&self.name) {
-            Some(entry) => Ok(entry.owner == self.owner && !entry.is_expired()),
+            Some(entry) => {
+                Ok(entry.owner == self.owner && !entry.is_expired(self.clock.monotonic()))
+            }
             None => Ok(false),
         }
     }

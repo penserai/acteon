@@ -10,7 +10,8 @@ measured checks; it does not assign a projected safety score.
 
 The follow-up from merged revision `ea59463` adds repeated product-workflow
 evaluations. See [the evaluation record and remaining plan](scenario-evaluation.md)
-for its scope, grading contract, and the work that remains.
+for its scope, grading contract, and the work that remains. The next phase adds
+[clock injection and deadline safety evaluation](virtual-time.md).
 
 ## Implemented behavior
 
@@ -116,8 +117,9 @@ must run inside an appropriate filesystem/network execution boundary. Deliberate
 detached subprocesses also require OS containment; Windows process cleanup does
 not have the Unix process-group guarantee.
 
-Scenario replay compares logical evidence. Gateway/database wall clocks, TTLs,
-network schedules, and process scheduling are not virtualized. The initial six
+Kernel and product-portfolio replay compare logical evidence using real time.
+The separate deadline suite virtualizes selected gateway/executor/memory paths;
+remote database clocks, network schedules, and process scheduling remain real. The initial six
 scenarios cover policy, approval, tenant deduplication, retries, evaluator integrity,
 and invalid-state recovery. The follow-up adds selected incident, refund, and
 prompt-injection workflows with diagnostic weighted scorecards. The full proposed

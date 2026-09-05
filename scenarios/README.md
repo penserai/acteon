@@ -66,7 +66,12 @@ See [evaluation scope and remaining work](../docs/scenario-evaluation.md).
 | Evaluator integrity | Real evaluator subprocess and parser reject absent, nonfinite, ambiguous, and invalid scores |
 | State failure | Unreadable rate-limit counters fail before provider execution; repairing the counter restores dispatch |
 
-Sequence numbers and parent links represent logical causality. The trace records
+The separate `deadlines.json` suite uses a shared manual clock to test exact
+dedup, approval, lease, and execution deadlines plus scheduled outage recovery.
+It supports memory only and includes virtual elapsed time in its evidence.
+See [clock injection and deadline evaluation](../docs/virtual-time.md).
+
+For the kernel and product portfolio, sequence numbers and parent links represent logical causality. The trace records
 semantic outcomes and provider-call counts, excluding volatile UUIDs, durations,
 and timestamps. Gateway wall-clock TTLs, external database clocks, and OS task
 scheduling are not virtualized. These scenarios intentionally avoid timing races

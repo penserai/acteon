@@ -98,7 +98,7 @@ impl Gateway {
         }
 
         let bucket_key = format!("{}:{}", action.namespace, action.tenant);
-        let now = Utc::now();
+        let now = self.clock.now();
 
         // 1. Check in-memory cache with a 60-second TTL to ensure we eventually
         //    see updates made on other instances.

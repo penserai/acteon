@@ -336,3 +336,24 @@ cargo bench -p acteon-simulation --bench latency
 ```
 
 See [Performance Guide](../reference/performance.md) for benchmark results.
+
+
+### Virtual deadline evaluation
+
+`scenarios/deadlines.json` runs the `deadline_safety` scenario with a shared manual
+clock and the real gateway/executor/memory implementations. It covers exact dedup,
+approval, lease, and execution boundaries, plus seeded outage/recovery scheduling.
+It rejects remote backends because their TTL clocks are not virtualized.
+
+```bash
+cargo run --locked -p acteon-simulation --features swarm --bin acteon-scenario -- \
+  --manifest scenarios/deadlines.json --output scenario-results/deadlines/first
+target/debug/acteon-scenario --replay scenario-results/deadlines/first/report.json \
+  --output scenario-results/deadlines/replay
+```
+
+The embedding APIs are `GatewayBuilder::clock`, `MemoryStateStore::with_clock`,
+`MemoryDistributedLock::with_clock`, and
+`acteon_simulation::scheduler::DeterministicScheduler`. Share one `ManualClock`
+instance across them. Background worker loops and external I/O require further
+adapters; this suite does not virtualize an entire server process.

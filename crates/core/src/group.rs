@@ -145,7 +145,17 @@ impl EventGroup {
         group_key: impl Into<String>,
         notify_at: DateTime<Utc>,
     ) -> Self {
-        let now = Utc::now();
+        Self::new_at(group_id, group_key, notify_at, Utc::now())
+    }
+
+    /// Create a group using an explicit time snapshot.
+    #[must_use]
+    pub fn new_at(
+        group_id: impl Into<String>,
+        group_key: impl Into<String>,
+        notify_at: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> Self {
         Self {
             group_id: group_id.into(),
             group_key: group_key.into(),
@@ -198,12 +208,17 @@ impl EventGroup {
     /// enforces the [`max_group_size`](Self::max_group_size) cap for
     /// persistent groups that re-flush over time.
     pub fn add_event(&mut self, event: GroupedEvent) {
+        self.add_event_at(event, Utc::now());
+    }
+
+    /// Add an event using the caller's time snapshot.
+    pub fn add_event_at(&mut self, event: GroupedEvent, now: DateTime<Utc>) {
         if self.max_group_size > 0 && self.events.len() >= self.max_group_size {
             // Drop the oldest event to make room.
             self.events.remove(0);
         }
         self.events.push(event);
-        self.updated_at = Utc::now();
+        self.updated_at = now;
     }
 
     /// Get the number of events in this group.

@@ -13,6 +13,8 @@ use super::{Backend, Scenario, ScenarioManifest, ScenarioReport, escape_xml};
 use crate::SimulationError;
 
 pub const MAX_TRIALS: u32 = 32;
+const GRADER_VERSION: &str = "portfolio-v2";
+const WALL_CLOCK: &str = "wall_clock; semantic replay excludes timing";
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -25,11 +27,22 @@ pub struct EvaluationManifest {
 }
 
 impl EvaluationManifest {
+    fn clock_description(&self) -> &'static str {
+        if self.scenarios.contains(&Scenario::DeadlineSafety) {
+            super::deadlines::CLOCK_DESCRIPTION
+        } else {
+            WALL_CLOCK
+        }
+    }
+
     pub fn validate(&self) -> Result<(), SimulationError> {
         if self.schema_version != 2 || !(1..=MAX_TRIALS).contains(&self.trials) {
             return Err(configuration(
                 "evaluation requires schema_version=2 and 1..=32 trials",
             ));
+        }
+        if self.backend != Backend::Memory && self.scenarios.contains(&Scenario::DeadlineSafety) {
+            return Err(configuration("deadline_safety requires the memory backend"));
         }
         if self.scenarios.is_empty() {
             return Err(configuration("evaluation requires at least one scenario"));
@@ -68,6 +81,7 @@ pub fn scenario_id(scenario: Scenario) -> &'static str {
         Scenario::IncidentResponse => "incident_response",
         Scenario::RefundFulfillment => "refund_fulfillment",
         Scenario::PromptInjection => "prompt_injection",
+        Scenario::DeadlineSafety => "deadline_safety",
         _ => "kernel",
     }
 }
@@ -84,6 +98,12 @@ pub struct Provenance {
 }
 
 impl Provenance {
+    pub fn for_manifest(manifest: &EvaluationManifest) -> Result<Self, SimulationError> {
+        let mut provenance = Self::capture()?;
+        provenance.clock = manifest.clock_description().into();
+        Ok(provenance)
+    }
+
     pub fn capture() -> Result<Self, SimulationError> {
         let mut file = std::fs::File::open(std::env::current_exe()?)?;
         let mut digest = Sha256::new();
@@ -104,8 +124,8 @@ impl Provenance {
                     "/../../Cargo.lock"
                 )))
             ),
-            grader_version: "portfolio-v1".into(),
-            clock: "wall_clock; semantic replay excludes timing".into(),
+            grader_version: GRADER_VERSION.into(),
+            clock: WALL_CLOCK.into(),
         })
     }
 }
@@ -206,6 +226,13 @@ fn rubric(scenario: Scenario) -> Vec<Dimension> {
             ("task utility", 20, &["benign_summary"], false),
             ("provenance", 10, &["fixture_preserved"], false),
             ("audit", 5, &["dispatches_audited"], true),
+        ],
+        Scenario::DeadlineSafety => &[
+            ("dedup expiry", 20, &["dedup_boundary"], true),
+            ("approval expiry", 25, &["approval_boundary"], true),
+            ("lease expiry", 20, &["lease_boundary"], true),
+            ("execution deadline", 20, &["timeout_boundary"], true),
+            ("scheduled recovery", 15, &["retry_schedule"], false),
         ],
         _ => &[],
     };
@@ -345,6 +372,8 @@ impl EvaluationReport {
     pub fn consistent(&self) -> bool {
         self.schema_version == 2
             && self.manifest.validate().is_ok()
+            && self.provenance.clock == self.manifest.clock_description()
+            && self.provenance.grader_version == GRADER_VERSION
             && self.manifest_sha256
                 == format!(
                     "{:x}",
@@ -470,7 +499,7 @@ impl EvaluationReport {
 
 pub async fn run(manifest: EvaluationManifest) -> Result<EvaluationReport, SimulationError> {
     manifest.validate()?;
-    let provenance = Provenance::capture()?;
+    let provenance = Provenance::for_manifest(&manifest)?;
     let manifest_sha256 = format!(
         "{:x}",
         Sha256::digest(serde_json::to_vec(&manifest).expect("manifest serializes"))

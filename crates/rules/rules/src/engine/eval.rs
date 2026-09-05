@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use regex::Regex;
 
-use crate::engine::builtins::call_builtin;
+use crate::engine::builtins::call_builtin_at;
 use crate::engine::context::EvalContext;
 use crate::engine::ops_event::{eval_event_in_state, eval_get_event_state, eval_has_active_event};
 use crate::engine::ops_semantic::eval_semantic_match;
@@ -76,7 +76,7 @@ pub async fn eval(expr: &Expr, ctx: &EvalContext<'_>) -> Result<Value, RuleError
             for arg in args {
                 evaluated_args.push(Box::pin(eval(arg, ctx)).await?);
             }
-            call_builtin(name, &evaluated_args)
+            call_builtin_at(name, &evaluated_args, ctx.now)
         }
 
         Expr::All(exprs) => {
@@ -562,6 +562,28 @@ fn eval_in(left: &Value, right: &Value) -> Result<Value, RuleError> {
 #[cfg(test)]
 mod arithmetic_safety_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn now_call_and_identifier_use_the_same_context_snapshot() {
+        let store = acteon_state_memory::MemoryStateStore::new();
+        let action = acteon_core::Action::new("ns", "tenant", "p", "kind", serde_json::json!({}));
+        let env = HashMap::new();
+        let now = chrono::DateTime::from_timestamp(123_456, 0).unwrap();
+        let ctx = EvalContext::new(&action, &store, &env).with_now(now);
+        assert_eq!(
+            eval(&Expr::Ident("now".into()), &ctx).await.unwrap(),
+            Value::Int(123_456)
+        );
+        assert_eq!(
+            eval(&Expr::Call("now".into(), vec![]), &ctx).await.unwrap(),
+            Value::Int(123_456)
+        );
+        assert!(
+            eval(&Expr::Call("now".into(), vec![Expr::Int(1)]), &ctx)
+                .await
+                .is_err()
+        );
+    }
 
     #[test]
     fn division_of_i64_min_by_neg_one_errors_not_panics() {

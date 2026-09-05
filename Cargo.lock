@@ -284,6 +284,7 @@ version = "0.1.0"
 dependencies = [
  "acteon-core",
  "acteon-provider",
+ "acteon-time",
  "async-trait",
  "serde_json",
  "thiserror 2.0.18",
@@ -305,6 +306,7 @@ dependencies = [
  "acteon-rules-yaml",
  "acteon-state",
  "acteon-state-memory",
+ "acteon-time",
  "acteon-wasm-runtime",
  "async-trait",
  "base64 0.22.1",
@@ -637,6 +639,7 @@ dependencies = [
  "acteon-state-redis",
  "acteon-swarm",
  "acteon-swarm-provider",
+ "acteon-time",
  "acteon-wasm-runtime",
  "async-trait",
  "axum 0.8.8",
@@ -714,7 +717,9 @@ version = "0.1.0"
 dependencies = [
  "acteon-core",
  "acteon-state",
+ "acteon-time",
  "async-trait",
+ "chrono",
  "dashmap",
  "serde_json",
  "tokio",
@@ -829,6 +834,15 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "acteon-time"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

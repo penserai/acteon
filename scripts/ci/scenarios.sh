@@ -24,7 +24,9 @@ runner="scenario-results/runner/acteon-scenario-$runner_digest"
 mv "$runner_candidate" "$runner"
 chmod +x "$runner"
 for backend in "${@:-memory}"; do
-  for suite in rehabilitation portfolio; do
+  suites=(rehabilitation portfolio)
+  if [[ "$backend" == "memory" ]]; then suites+=(deadlines); fi
+  for suite in "${suites[@]}"; do
     directory="scenario-results/$backend/$suite"
     mkdir -p "$directory"
     python3 - "$backend" "$directory/manifest.json" "$suite" <<'PY'
