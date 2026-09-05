@@ -18,6 +18,29 @@ struct Cli {
 
 type Error = Box<dyn std::error::Error>;
 
+fn replay_would_overwrite(source: &Path, output: &Path) -> Result<bool, Error> {
+    let original = std::fs::canonicalize(source)?;
+    for name in ["report.json", "manifest.json", "trace.jsonl", "junit.xml"] {
+        let artifact = output.join(name);
+        if !artifact.exists() {
+            continue;
+        }
+        if original == std::fs::canonicalize(&artifact)? {
+            return Ok(true);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+            let source = std::fs::metadata(&original)?;
+            let target = std::fs::metadata(&artifact)?;
+            if source.dev() == target.dev() && source.ino() == target.ino() {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
 fn read_json(path: &Path) -> Result<serde_json::Value, Error> {
     const LIMIT: u64 = 16 * 1024 * 1024;
     let mut bytes = Vec::new();
@@ -149,10 +172,7 @@ async fn main() -> Result<(), Error> {
         .or(cli.manifest.as_ref())
         .expect("clap requires input");
     // A replay must never overwrite the evidence it is meant to compare.
-    if cli.replay.is_some()
-        && cli.output.join("report.json").exists()
-        && std::fs::canonicalize(source)? == std::fs::canonicalize(cli.output.join("report.json"))?
-    {
+    if cli.replay.is_some() && replay_would_overwrite(source, &cli.output)? {
         return Err("replay output must differ from the saved report directory".into());
     }
     let input = read_json(source)?;

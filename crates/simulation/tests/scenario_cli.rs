@@ -111,3 +111,39 @@ fn cli_rejects_unknown_versions_fields_and_unbounded_trials() {
         assert!(!workspace.0.join("invalid").exists());
     }
 }
+
+#[test]
+fn replay_preserves_reports_named_after_any_output_artifact() {
+    let workspace = Workspace::new();
+    // The overwrite guard must run before parsing or dispatch, so invalid JSON
+    // is enough to distinguish preservation from a later parse failure.
+    for name in ["report.json", "manifest.json", "trace.jsonl", "junit.xml"] {
+        std::fs::write(workspace.0.join(name), b"original evidence").unwrap();
+        let output = workspace.run(&["--replay", name, "--output", "."]);
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("output must differ"));
+        assert_eq!(
+            std::fs::read(workspace.0.join(name)).unwrap(),
+            b"original evidence"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn replay_preserves_hard_linked_input() {
+    let workspace = Workspace::new();
+    std::fs::write(workspace.0.join("saved.json"), b"original evidence").unwrap();
+    std::fs::hard_link(
+        workspace.0.join("saved.json"),
+        workspace.0.join("manifest.json"),
+    )
+    .unwrap();
+    let output = workspace.run(&["--replay", "saved.json", "--output", "."]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("output must differ"));
+    assert_eq!(
+        std::fs::read(workspace.0.join("saved.json")).unwrap(),
+        b"original evidence"
+    );
+}

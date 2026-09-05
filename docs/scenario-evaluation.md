@@ -89,9 +89,9 @@ Local validation completed on the implementation from `ea59463`:
 
 - 3,068 workspace tests passed across 62 executables; the separate AWS `full`
   suite passed all 90 tests.
-- Feature-enabled simulation passed 74 library tests and two CLI contract tests,
+- Feature-enabled simulation passed 74 library tests and four CLI contract tests,
   including the three safety mutations, reordered scenarios, report tampering,
-  incompatible runner rejection, and replay input preservation.
+  incompatible runner rejection, and renamed/hard-linked replay input preservation.
 - Rust 1.98.1 workspace Clippy and Rust 1.95 all-target compilation passed. The simulation
   library/binary/test Clippy gate passed with scenario, Redis, and PostgreSQL
   features on Rust 1.98.1 and Rust 1.88.
