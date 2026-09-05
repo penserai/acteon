@@ -15,6 +15,9 @@ use crate::{
     StateBackendConfig,
 };
 
+pub mod evaluation;
+mod portfolio;
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ScenarioManifest {
@@ -41,6 +44,9 @@ pub enum Scenario {
     RetryRecovery,
     EvaluatorIntegrity,
     StateFailure,
+    IncidentResponse,
+    RefundFulfillment,
+    PromptInjection,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -96,7 +102,10 @@ impl ScenarioReport {
         let sequence = self.trace.len();
         self.trace.push(TraceEvent {
             sequence,
-            caused_by: sequence.checked_sub(1),
+            caused_by: self
+                .trace
+                .iter()
+                .rposition(|event| event.scenario == scenario),
             scenario,
             operation: operation.into(),
             observation: observation.into(),
@@ -237,6 +246,9 @@ pub async fn run(manifest: ScenarioManifest) -> Result<ScenarioReport, Simulatio
             Scenario::RetryRecovery => retry(&mut report).await,
             Scenario::EvaluatorIntegrity => evaluator(&mut report).await,
             Scenario::StateFailure => state_failure(&mut report).await,
+            Scenario::IncidentResponse => portfolio::incident(&mut report).await,
+            Scenario::RefundFulfillment => portfolio::refund(&mut report).await,
+            Scenario::PromptInjection => portfolio::injection(&mut report).await,
         };
         if let Err(error) = result {
             report.check(scenario, "scenario completed", false, error.to_string());

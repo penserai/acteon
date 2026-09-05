@@ -2,6 +2,30 @@
 
 The `acteon-simulation` crate provides comprehensive end-to-end testing tools for the Acteon gateway.
 
+## Reproducible scenario evaluations
+
+Run the versioned kernel and product-workflow suites from the repository root:
+
+```bash
+scripts/ci/scenarios.sh memory
+```
+
+With disposable Redis and PostgreSQL URLs configured, run
+`scripts/ci/scenarios.sh memory redis postgres`. Each suite writes a JSON report,
+JUnit results, and a semantic trace, then verifies replay. The product portfolio
+covers incident approval, refund acknowledgement loss, and scripted
+prompt-injection attempts, with three seeded trials per workflow. Its fixed
+scorecards report mandatory safety gates separately from weighted diagnostic
+scores. Negative tests verify that removed protections fail those gates.
+
+Artifacts are saved under `scenario-results/<backend>/<suite>/{first,replay}`.
+Version 2 replay requires the original executable and compiled lockfile
+fingerprints. These scripted trials use real state/lock backends and controlled
+effect providers; they do not virtualize database clocks or certify behavior
+under process crashes. See the repository's
+[scenario guide](https://github.com/penserai/acteon/tree/main/scenarios) for the
+manifest and grading contracts.
+
 ## Overview
 
 ```mermaid

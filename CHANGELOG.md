@@ -2,6 +2,11 @@
 
 ## Unreleased — rehabilitation
 
+- Add version 2 scenario evaluations with repeated seeded trials, weighted
+  diagnostic scorecards, mandatory safety gates, exact runner fingerprints, and
+  replay validation. Exercise incident approval/deduplication, refund ACK loss,
+  and prompt-injection policy with scripted actors on memory/Redis/PostgreSQL.
+  Mutation tests reject removed approval, downstream idempotency, and tool policy.
 - Reject absent, malformed, ambiguous, nonfinite, and out-of-range evaluator
   evidence. Nonzero exit status and failing hard gates always fail acceptance.
   Challenge resolution requires independent, challenge-specific checks.

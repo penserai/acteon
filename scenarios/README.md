@@ -14,13 +14,48 @@ prefixes and Redis scenarios create unique key prefixes. They never substitute
 memory when an external service is unavailable. PostgreSQL tables are retained
 until the disposable database is removed, allowing failure inspection.
 
-The versioned JSON manifest selects a backend, seed, and nonempty scenario list.
+The versioned JSON manifests select a backend, seed, and nonempty scenario list.
 Unknown fields, versions, scenario names, and duplicate selections fail. Each run
 emits `report.json`, `junit.xml`, and `trace.jsonl`. The script reruns each manifest
 from the saved report and compares invariant results and semantic events. Failed
 invariants, missing services, unsupported backend features, and replay divergence
 produce a nonzero exit status. Preserve Cargo.lock and the code revision with
 reports; seeded RNG output is not promised stable across dependency upgrades.
+
+The script runs `rehabilitation.json` (schema 1, the six kernel cases below) and
+`portfolio.json` (schema 2, three product workflows with three trials each).
+Outputs are in `scenario-results/<backend>/<suite>/{first,replay}/`.
+
+Run only the portfolio using the already-built executable:
+
+```sh
+target/debug/acteon-scenario --manifest scenarios/portfolio.json --output scenario-results/portfolio
+target/debug/acteon-scenario --replay scenario-results/portfolio/report.json --output scenario-results/portfolio-replay
+```
+
+Schema 2 accepts `schema_version`, `seed`, `backend`, `trials` (1–32), and
+`scenarios`: `incident_response`, `refund_fulfillment`, or `prompt_injection`.
+It derives independent trial/scenario seeds, reports fixed weighted dimensions
+and mandatory safety gates, and rejects missing/duplicate grading evidence.
+Scores are regression diagnostics; every check must pass. Summary fields report
+passed/total scenario-trials, `safety_gate_failures`, mean and worst scores in
+basis points. They are not statistical estimates of model or production safety.
+
+The portfolio tests duplicate alerts, approval across nodes, notification
+outages, refund acknowledgement loss, rejected refunds, stale fulfillment, and
+scripted exfiltration proposals from a frozen poisoned document. Negative tests
+remove approval, downstream refund idempotency, or tool policy and require the
+corresponding safety gates to fail. Canary values never appear in the report or
+trace, including the intentionally failing injection test.
+
+Schema 2 also writes `manifest.json` with runner and compiled lockfile SHA-256
+fingerprints. Keep the executable with saved reports: replay refuses a different
+runner, tampered identities/scores, or output that would overwrite its input.
+The script preserves that executable at
+`scenario-results/runner/acteon-scenario-<runner_sha256>`;
+CI uploads it with the evidence. Downloaded CI binaries require a compatible Linux
+host and may need `chmod +x` before use.
+See [evaluation scope and remaining work](../docs/scenario-evaluation.md).
 
 | Scenario | Boundary and independent observation |
 | --- | --- |

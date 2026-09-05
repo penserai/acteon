@@ -211,6 +211,8 @@ jobs:
           AWS_SECRET_ACCESS_KEY: acteon-local-test
           AWS_EC2_METADATA_DISABLED: 'true'
       - run: cargo test --locked -p acteon-simulation --features swarm,redis,postgres --lib
+      - name: Scenario CLI contracts
+        run: cargo test --locked -p acteon-simulation --features swarm,redis,postgres --test scenario_cli
       - run: scripts/ci/scenarios.sh memory redis postgres
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()

@@ -93,7 +93,7 @@ impl SimulationHarness {
                 AuditBackendConfig::Disabled => None,
             };
 
-            let node = ServerNode::new(
+            let node = ServerNode::with_executor(
                 format!("node-{i}"),
                 addr,
                 state,
@@ -104,6 +104,7 @@ impl SimulationHarness {
                 config.environment.clone(),
                 config.state_machines.clone(),
                 Some(approval_secret.clone()),
+                config.executor_config.clone(),
             )?;
 
             nodes.push(node);
