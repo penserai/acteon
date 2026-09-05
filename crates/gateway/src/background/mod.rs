@@ -5,7 +5,10 @@
 //! - Processing state machine timeouts
 //! - Cleaning up expired state entries
 
+mod ticks;
 mod workers;
+
+pub use ticks::BackgroundJob;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -13,8 +16,7 @@ use std::time::Duration;
 
 use chrono::Utc;
 use tokio::sync::{broadcast, mpsc};
-use tokio::time::interval;
-use tracing::{debug, error, info};
+use tracing::{error, info};
 
 use acteon_audit::store::AuditStore;
 use acteon_core::{EventGroup, StateMachineConfig, StreamEvent};
@@ -219,6 +221,7 @@ pub struct ApprovalRetryEvent {
 /// Background processor for periodic gateway tasks.
 pub struct BackgroundProcessor {
     pub(crate) config: BackgroundConfig,
+    pub(crate) clock: Arc<dyn acteon_time::Clock>,
     pub(crate) group_manager: Arc<GroupManager>,
     #[allow(dead_code)] // Will be used for timeout processing
     pub(crate) state: Arc<dyn StateStore>,
@@ -272,6 +275,7 @@ impl BackgroundProcessor {
     ) -> Self {
         Self {
             config,
+            clock: Arc::new(acteon_time::SystemClock::default()),
             group_manager,
             state,
             metrics,
@@ -290,6 +294,13 @@ impl BackgroundProcessor {
             audit: None,
             stream_tx: None,
         }
+    }
+
+    /// Use the same clock as the gateway, group manager, and state store.
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn acteon_time::Clock>) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// Set the SSE broadcast channel so background tasks can emit
@@ -402,174 +413,69 @@ impl BackgroundProcessor {
         self
     }
 
-    /// Run the background processor until shutdown is signaled.
-    #[allow(clippy::too_many_lines)]
+    /// Run enabled workers until shutdown, using the injected clock.
+    ///
+    /// Each worker runs immediately once. Subsequent ticks wait one full
+    /// period after that worker completes, skipping missed polls instead of
+    /// replaying a burst. Simultaneous deadlines follow [`BackgroundJob::ALL`]
+    /// order. Shutdown wins over a ready timer; in-flight ticks finish first.
+    /// Invalid zero periods are logged and stop the processor.
     pub async fn run(&mut self) {
-        info!("background processor starting");
-
-        let mut group_interval = interval(self.config.group_flush_interval);
-        let mut timeout_interval = interval(self.config.timeout_check_interval);
-        let mut cleanup_interval = interval(self.config.cleanup_interval);
-        let mut chain_interval = interval(self.config.chain_check_interval);
-        let mut scheduled_interval = interval(self.config.scheduled_check_interval);
-        let mut recurring_interval = interval(self.config.recurring_check_interval);
-        let mut retention_interval = interval(self.config.retention_check_interval);
-        let mut stale_task_interval = interval(self.config.stale_task_check_interval);
-        let mut template_sync_interval = interval(self.config.template_sync_interval);
-        let mut silence_sync_interval = interval(self.config.silence_sync_interval);
-        let mut time_interval_sync_interval = interval(self.config.time_interval_sync_interval);
-        let mut group_sync_interval = interval(self.config.group_sync_interval);
-
-        loop {
-            tokio::select! {
-                _ = self.shutdown_rx.recv() => {
-                    info!("background processor received shutdown signal");
-                    break;
-                }
-                _ = group_interval.tick(), if self.config.enable_group_flush => {
-                    if let Err(e) = self.flush_ready_groups().await {
-                        error!(error = %e, "error flushing groups");
-                    }
-                }
-                _ = timeout_interval.tick(), if self.config.enable_timeout_processing => {
-                    if let Err(e) = self.process_timeouts().await {
-                        error!(error = %e, "error processing timeouts");
-                    }
-                }
-                _ = chain_interval.tick(), if self.config.enable_chain_advancement => {
-                    if let Err(e) = self.advance_pending_chains().await {
-                        error!(error = %e, "error advancing chains");
-                    }
-                    // Workflow timers (durable sleeps and signal-wait
-                    // timeouts) share the chain tick cadence.
-                    if let Some(ref gw) = self.gateway {
-                        let gw = gw.read().await;
-                        if let Err(e) = gw.process_due_workflow_timers().await {
-                            error!(error = %e, "error firing workflow timers");
-                        }
-                    }
-                }
-                _ = scheduled_interval.tick(), if self.config.enable_scheduled_actions => {
-                    if let Err(e) = self.process_scheduled_actions().await {
-                        error!(error = %e, "error processing scheduled actions");
-                    }
-                }
-                _ = recurring_interval.tick(), if self.config.enable_recurring_actions => {
-                    if let Err(e) = self.process_recurring_actions().await {
-                        error!(error = %e, "error processing recurring actions");
-                    }
-                }
-                _ = retention_interval.tick(), if self.config.enable_retention_reaper => {
-                    if let Err(e) = self.run_retention_reaper().await {
-                        error!(error = %e, "error running retention reaper");
-                    }
-                    // Pinned-definition GC shares the retention cadence:
-                    // drop chain-definition versions that no execution can
-                    // resolve anymore (runs regardless of retention
-                    // policies — unreferenced pins are garbage by
-                    // definition).
-                    if let Some(ref gw) = self.gateway {
-                        let gw = gw.read().await;
-                        match gw.gc_pinned_definitions().await {
-                            Ok(0) => {}
-                            Ok(deleted) => debug!(deleted, "pinned-definition GC completed"),
-                            Err(e) => error!(error = %e, "error running pinned-definition GC"),
-                        }
-                    }
-                }
-                _ = stale_task_interval.tick(), if self.config.enable_stale_task_reaper => {
-                    if let Err(e) = self.run_stale_task_reaper().await {
-                        error!(error = %e, "error running stale-task reaper");
-                    }
-                }
-                // Template/silence/time-interval sync ticks are gated by a
-                // per-domain sync-version counter (see `acteon_state::sync_version`),
-                // so a tick with no changes is an O(1) counter read rather than a
-                // full-keyspace scan. A true push mechanism (Redis pub/sub,
-                // Postgres LISTEN/NOTIFY, DynamoDB Streams) remains possible future
-                // work to drop propagation latency below the poll interval.
-                _ = template_sync_interval.tick(), if self.config.enable_template_sync => {
-                    if let Some(ref gw) = self.gateway {
-                        let gw = gw.read().await;
-                        match gw.sync_templates_from_store().await {
-                            Ok(count) => {
-                                debug!(count, "template sync completed");
-                            }
-                            Err(e) => {
-                                error!(error = %e, "error syncing templates from store");
-                            }
-                        }
-                    }
-                }
-                // Silence sync: rebuild the in-memory silence cache from
-                // the state store so that silences created on peer
-                // gateway instances become visible here. Required for
-                // HA deployments to avoid "zombie silence" behavior.
-                _ = silence_sync_interval.tick(), if self.config.enable_silence_sync => {
-                    if let Some(ref gw) = self.gateway {
-                        let gw = gw.read().await;
-                        match gw.sync_silences_from_store().await {
-                            Ok(count) => {
-                                debug!(count, "silence sync completed");
-                            }
-                            Err(e) => {
-                                error!(error = %e, "error syncing silences from store");
-                            }
-                        }
-                    }
-                }
-                // Time interval sync: rebuild the in-memory time interval
-                // registry from the state store so that intervals
-                // created on peer instances become visible here.
-                _ = time_interval_sync_interval.tick(), if self.config.enable_time_interval_sync => {
-                    if let Some(ref gw) = self.gateway {
-                        let gw = gw.read().await;
-                        match gw.sync_time_intervals_from_store().await {
-                            Ok(count) => {
-                                debug!(count, "time interval sync completed");
-                            }
-                            Err(e) => {
-                                error!(error = %e, "error syncing time intervals from store");
-                            }
-                        }
-                    }
-                }
-                // Group sync: rebuild the in-memory event-group cache
-                // from the state store so that groups flushed by peer
-                // instances are reflected locally. The per-flush CAS
-                // claim prevents double-fire even without sync, but
-                // sync keeps the local state eventually consistent.
-                _ = group_sync_interval.tick(), if self.config.enable_group_sync => {
-                    match self
-                        .group_manager
-                        .sync_groups_from_store(
-                            self.state.as_ref(),
-                            self.payload_encryptor.as_deref(),
-                        )
-                        .await
-                    {
-                        Ok(count) => {
-                            debug!(count, "group sync completed");
-                        }
-                        Err(e) => {
-                            error!(error = %e, "error syncing groups from store");
-                        }
-                    }
-                }
-                _ = cleanup_interval.tick() => {
-                    if let Err(e) = self.run_cleanup().await {
-                        error!(error = %e, "error running cleanup");
-                    }
-                }
-            }
+        if let Err(error) = self.validate_periods() {
+            error!(error, "invalid background schedule");
+            return;
         }
-
+        info!("background processor starting");
+        let now = self.clock.monotonic();
+        let mut schedule: Vec<_> = BackgroundJob::ALL
+            .into_iter()
+            .filter_map(|job| {
+                job.period(&self.config)
+                    .map(|period| (job, period, Some(now)))
+            })
+            .collect();
+        loop {
+            let next = schedule
+                .iter()
+                .enumerate()
+                .filter_map(|(index, (_, _, deadline))| deadline.map(|at| (index, at)))
+                .min_by_key(|&(index, at)| (at, index));
+            let Some((index, deadline)) = next else {
+                self.shutdown_rx.recv().await;
+                break;
+            };
+            tokio::select! {
+                biased;
+                _ = self.shutdown_rx.recv() => break,
+                () = self.clock.sleep_until(deadline) => {}
+            }
+            let (job, period, _) = schedule[index];
+            if let Err(error) = self.tick(job).await {
+                error!(?job, %error, "background tick failed");
+            }
+            schedule[index].2 = self.clock.monotonic().checked_add(period);
+        }
         info!("background processor stopped");
     }
+
+    fn validate_periods(&self) -> Result<(), &'static str> {
+        validate_periods(&self.config)
+    }
+}
+
+fn validate_periods(config: &BackgroundConfig) -> Result<(), &'static str> {
+    if BackgroundJob::ALL
+        .into_iter()
+        .any(|job| job.period(config).is_some_and(|p| p.is_zero()))
+    {
+        return Err("enabled background worker intervals must be nonzero");
+    }
+    Ok(())
 }
 
 /// Builder for creating a background processor.
 pub struct BackgroundProcessorBuilder {
+    clock: Arc<dyn acteon_time::Clock>,
     config: BackgroundConfig,
     group_manager: Option<Arc<GroupManager>>,
     state: Option<Arc<dyn StateStore>>,
@@ -592,6 +498,7 @@ impl BackgroundProcessorBuilder {
     #[must_use]
     pub fn new() -> Self {
         Self {
+            clock: Arc::new(acteon_time::SystemClock::default()),
             config: BackgroundConfig::default(),
             group_manager: None,
             state: None,
@@ -608,6 +515,13 @@ impl BackgroundProcessorBuilder {
             audit: None,
             stream_tx: None,
         }
+    }
+
+    /// Use the same clock as all components sharing this processor's state.
+    #[must_use]
+    pub fn clock(mut self, clock: Arc<dyn acteon_time::Clock>) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// Set the SSE broadcast sender so background workers can emit
@@ -723,6 +637,7 @@ impl BackgroundProcessorBuilder {
     ///
     /// Returns the processor and a shutdown sender.
     pub fn build(self) -> Result<(BackgroundProcessor, mpsc::Sender<()>), &'static str> {
+        validate_periods(&self.config)?;
         let group_manager = self.group_manager.ok_or("group_manager is required")?;
         let state = self.state.ok_or("state store is required")?;
         let metrics = self.metrics.ok_or("metrics is required")?;
@@ -736,7 +651,8 @@ impl BackgroundProcessorBuilder {
             metrics,
             self.state_machines,
             shutdown_rx,
-        );
+        )
+        .with_clock(self.clock);
 
         if let Some(tx) = self.group_flush_tx {
             processor = processor.with_group_flush_channel(tx);

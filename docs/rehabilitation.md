@@ -10,8 +10,9 @@ measured checks; it does not assign a projected safety score.
 
 The follow-up from merged revision `ea59463` adds repeated product-workflow
 evaluations. See [the evaluation record and remaining plan](scenario-evaluation.md)
-for its scope, grading contract, and the work that remains. The next phase adds
-[clock injection and deadline safety evaluation](virtual-time.md).
+for its scope, grading contract, and the work that remains. Follow-ups add
+[clock injection and deadline safety evaluation](virtual-time.md), then
+[worker ticks and task lifecycle evaluation](worker-lifecycle.md).
 
 ## Implemented behavior
 

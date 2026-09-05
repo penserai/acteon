@@ -2,6 +2,12 @@
 
 ## Unreleased — rehabilitation
 
+- Extend shared clocks to background polling, worker decisions, and task
+  mutations. Add explicit worker ticks, skip missed polls, and publish stale-task
+  transitions to subscribers. Wire gateway-dependent workers independently of
+  template sync. Add a replayable worker lifecycle evaluation with clock-failure
+  mutations and exact boundary tests.
+
 - Add shared gateway/executor/memory clocks, cancel-safe virtual timers, and a
   bounded deterministic scheduler with a replayable deadline safety suite.
   Reject approvals at exact expiry and memory lock acquisition after its wait

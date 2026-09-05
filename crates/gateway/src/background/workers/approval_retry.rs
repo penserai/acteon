@@ -1,4 +1,3 @@
-use chrono::Utc;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
@@ -35,7 +34,7 @@ impl BackgroundProcessor {
             }
         };
 
-        let now = Utc::now();
+        let now = self.clock.now();
         let mut retry_count = 0u32;
 
         for (key, raw_value) in entries {

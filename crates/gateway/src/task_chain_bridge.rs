@@ -27,7 +27,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::time::sleep;
 use tracing::{error, warn};
 
 use acteon_core::{
@@ -112,7 +111,10 @@ pub async fn link_task_to_chain(
                 Err(rb) => {
                     rollback_err = Some(rb);
                     if attempt < 2 {
-                        sleep(Duration::from_millis(50 * (attempt + 1))).await;
+                        engine
+                            .clock()
+                            .sleep(Duration::from_millis(50 * (attempt + 1)))
+                            .await;
                     }
                 }
             }

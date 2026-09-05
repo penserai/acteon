@@ -103,7 +103,7 @@ impl BackgroundProcessor {
     async fn reap_chains_optimized(
         &self,
     ) -> Result<(u64, u64, u64), Box<dyn std::error::Error + Send + Sync>> {
-        let now = Utc::now();
+        let now = self.clock.now();
         let entries = self.state.scan_keys_by_kind(KeyKind::Chain).await?;
         let mut deleted = 0u64;
         let mut errors = 0u64;
@@ -196,7 +196,7 @@ impl BackgroundProcessor {
     async fn reap_events_optimized(
         &self,
     ) -> Result<(u64, u64, u64), Box<dyn std::error::Error + Send + Sync>> {
-        let now = Utc::now();
+        let now = self.clock.now();
         let entries = self.state.scan_keys_by_kind(KeyKind::EventState).await?;
         let mut deleted = 0u64;
         let mut errors = 0u64;

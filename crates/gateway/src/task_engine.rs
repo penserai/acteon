@@ -162,6 +162,7 @@ impl TaskScope {
 #[derive(Clone)]
 pub struct TaskEngine {
     state: Arc<dyn StateStore>,
+    clock: Arc<dyn acteon_time::Clock>,
     /// Optional audit sink. When set, every successful mutation emits
     /// an A2A task-transition record. `None` disables audit emission
     /// entirely (the engine still functions; transitions just aren't
@@ -190,9 +191,23 @@ impl TaskEngine {
     pub fn new(state: Arc<dyn StateStore>) -> Self {
         Self {
             state,
+            clock: Arc::new(acteon_time::SystemClock::default()),
             audit: None,
             stream_tx: None,
         }
+    }
+
+    /// Use the same clock as the gateway and state store.
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn acteon_time::Clock>) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    /// Clock for task construction and bridge retry waits.
+    #[must_use]
+    pub fn clock(&self) -> Arc<dyn acteon_time::Clock> {
+        Arc::clone(&self.clock)
     }
 
     /// Attach an audit sink so every successful mutation emits an A2A
@@ -234,7 +249,7 @@ impl TaskEngine {
         if let Some(tx) = &self.stream_tx {
             let evt = acteon_core::StreamEvent {
                 id: uuid::Uuid::now_v7().to_string(),
-                timestamp: Utc::now(),
+                timestamp: self.clock.now(),
                 event_type,
                 namespace: namespace.to_string(),
                 tenant: tenant.to_string(),
@@ -252,7 +267,7 @@ impl TaskEngine {
         let Some(audit) = &self.audit else {
             return;
         };
-        let record = build_task_audit_record(task, operation, from_state, Utc::now(), None);
+        let record = build_task_audit_record(task, operation, from_state, self.clock.now(), None);
         if let Err(e) = audit.record(record).await {
             warn!(
                 error = %e,
@@ -342,8 +357,8 @@ impl TaskEngine {
             None
         };
         let task = self
-            .cas_mutate(&key, task_id, "transition", move |task: &mut Task| {
-                task.transition_to(next, message.clone())?;
+            .cas_mutate(&key, task_id, "transition", move |task: &mut Task, now| {
+                task.transition_to_at(next, message.clone(), now)?;
                 Ok(())
             })
             .await?;
@@ -404,7 +419,7 @@ impl TaskEngine {
                 return Ok(None);
             }
             let from_state = task.status.state;
-            task.transition_to(TaskState::Failed, Some(reason.clone()))?;
+            task.transition_to_at(TaskState::Failed, Some(reason.clone()), now)?;
             let payload = serde_json::to_string(&task)?;
             match self
                 .state
@@ -494,10 +509,15 @@ impl TaskEngine {
         // `message` itself is consumed by the closure.
         let message_id_for_emit = message.message_id.clone();
         let task = self
-            .cas_mutate(&key, task_id, "append_history", move |task: &mut Task| {
-                task.append_history(message.clone())?;
-                Ok(())
-            })
+            .cas_mutate(
+                &key,
+                task_id,
+                "append_history",
+                move |task: &mut Task, now| {
+                    task.append_history_at(message.clone(), now)?;
+                    Ok(())
+                },
+            )
             .await?;
         self.emit_stream(
             &scope.namespace,
@@ -538,10 +558,15 @@ impl TaskEngine {
         let artifact_id_for_emit = event.artifact.artifact_id.clone();
         let last_chunk_for_emit = event.last_chunk;
         let task = self
-            .cas_mutate(&key, &task_id, "artifact_update", move |task: &mut Task| {
-                task.apply_artifact_event(&event)?;
-                Ok(())
-            })
+            .cas_mutate(
+                &key,
+                &task_id,
+                "artifact_update",
+                move |task: &mut Task, now| {
+                    task.apply_artifact_event_at(&event, now)?;
+                    Ok(())
+                },
+            )
             .await?;
         self.emit_stream(
             &scope.namespace,
@@ -565,8 +590,8 @@ impl TaskEngine {
         task_id: &str,
     ) -> Result<Task, TaskEngineError> {
         let key = scope.task_key(task_id);
-        self.cas_mutate(&key, task_id, "progress", |task: &mut Task| {
-            task.record_progress();
+        self.cas_mutate(&key, task_id, "progress", |task: &mut Task, now| {
+            task.record_progress_at(now);
             Ok(())
         })
         .await
@@ -583,10 +608,15 @@ impl TaskEngine {
         approval_id: String,
     ) -> Result<Task, TaskEngineError> {
         let key = scope.task_key(task_id);
-        self.cas_mutate(&key, task_id, "pending_approval", move |task: &mut Task| {
-            task.set_pending_approval(approval_id.clone());
-            Ok(())
-        })
+        self.cas_mutate(
+            &key,
+            task_id,
+            "pending_approval",
+            move |task: &mut Task, _now| {
+                task.set_pending_approval(approval_id.clone());
+                Ok(())
+            },
+        )
         .await
     }
 
@@ -644,7 +674,7 @@ impl TaskEngine {
                 u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
             })
             .min(MAX_APPROVAL_TTL_MS);
-        let now = Utc::now();
+        let now = self.clock.now();
         let expires_at =
             now + chrono::Duration::milliseconds(i64::try_from(ttl_ms).unwrap_or(i64::MAX));
         let approval_id = uuid::Uuid::now_v7().to_string();
@@ -696,8 +726,8 @@ impl TaskEngine {
         let key = scope.task_key(task_id);
         let stamp_id = approval_id.clone();
         let mutated = self
-            .cas_mutate(&key, task_id, "pause", move |task: &mut Task| {
-                task.transition_to(target_state, None)?;
+            .cas_mutate(&key, task_id, "pause", move |task: &mut Task, now| {
+                task.transition_to_at(target_state, None, now)?;
                 task.set_pending_approval(stamp_id.clone());
                 Ok(())
             })
@@ -756,7 +786,7 @@ impl TaskEngine {
         chain_id: Option<String>,
     ) -> Result<Task, TaskEngineError> {
         let key = scope.task_key(task_id);
-        self.cas_mutate(&key, task_id, "link_chain", move |task: &mut Task| {
+        self.cas_mutate(&key, task_id, "link_chain", move |task: &mut Task, _now| {
             task.chain_id.clone_from(&chain_id);
             Ok(())
         })
@@ -781,10 +811,15 @@ impl TaskEngine {
         // is the only path that can flip it to `true`.
         let artifact_id_for_emit = artifact.artifact_id.clone();
         let task = self
-            .cas_mutate(&key, task_id, "artifact_upsert", move |task: &mut Task| {
-                task.upsert_artifact(artifact.clone(), append)?;
-                Ok(())
-            })
+            .cas_mutate(
+                &key,
+                task_id,
+                "artifact_upsert",
+                move |task: &mut Task, now| {
+                    task.upsert_artifact_at(artifact.clone(), append, now)?;
+                    Ok(())
+                },
+            )
             .await?;
         self.emit_stream(
             &scope.namespace,
@@ -813,7 +848,7 @@ impl TaskEngine {
         mut mutate: F,
     ) -> Result<Task, TaskEngineError>
     where
-        F: FnMut(&mut Task) -> Result<(), TaskValidationError>,
+        F: FnMut(&mut Task, DateTime<Utc>) -> Result<(), TaskValidationError>,
     {
         for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
             let Some((raw, version)) = self.state.get_versioned(key).await? else {
@@ -821,7 +856,9 @@ impl TaskEngine {
             };
             let mut task: Task = serde_json::from_str(&raw)?;
             let from_state = task.status.state;
-            mutate(&mut task)?;
+            let now = self.clock.now();
+            mutate(&mut task, now)?;
+            task.updated_at = now;
             let payload = serde_json::to_string(&task)?;
             match self
                 .state
@@ -868,7 +905,7 @@ impl TaskEngine {
         message_id: &str,
     ) -> Result<bool, TaskEngineError> {
         let key = scope.dedup_key(message_id);
-        let now = Utc::now().timestamp_millis().to_string();
+        let now = self.clock.now().timestamp_millis().to_string();
         let inserted = self
             .state
             .check_and_set(&key, &now, Some(MESSAGE_DEDUP_TTL))

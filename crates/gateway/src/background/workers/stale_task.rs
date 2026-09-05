@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use chrono::Utc;
 use tracing::{info, warn};
 
 use acteon_core::Task;
@@ -26,10 +25,13 @@ impl BackgroundProcessor {
     pub(crate) async fn run_stale_task_reaper(
         &self,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let now = Utc::now();
-        let mut engine = TaskEngine::new(self.state.clone());
+        let now = self.clock.now();
+        let mut engine = TaskEngine::new(self.state.clone()).with_clock(self.clock.clone());
         if let Some(audit) = &self.audit {
             engine = engine.with_audit(Arc::clone(audit));
+        }
+        if let Some(tx) = &self.stream_tx {
+            engine = engine.with_stream_tx(tx.clone());
         }
         let entries = self.state.scan_keys_by_kind(KeyKind::A2aTask).await?;
 

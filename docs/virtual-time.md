@@ -130,14 +130,17 @@ Local checks on 2026-09-05, from base `1f28dbd`:
 
 ## Next work
 
-Background polling workers, task-engine transitions, DLQ/audit-store retention,
-external providers, remote database TTLs, and process/network scheduling still
-have independent clocks or timers. Core convenience constructors and generated
-UUIDs also retain their default timestamps unless a caller supplies/overrides
-them. The deadline suite avoids those paths; it does not certify whole-system
+[The worker lifecycle follow-up](worker-lifecycle.md) now injects background
+polling, worker decisions (including state retention), task transitions, human
+pauses, and task bridge retry waits. It exposes explicit worker ticks and adds a
+replayable lifecycle suite.
+
+DLQ/audit-store retention, external providers, remote database TTLs, and
+process/network scheduling still have independent clocks or timers. Core
+convenience constructors and generated UUIDs retain default timestamps unless a
+caller uses an explicit-time API. These suites do not certify whole-system
 virtual-time replay or durable audit behavior.
 
-Next, inject worker/task lifecycle time and add explicit worker ticks. Then add
-durable deployment and tenant scheduling scenarios with crash, lease, audit
-outage, transport, and partition adapters. The wider remaining portfolio and
-release work stays in [the evaluation plan](scenario-evaluation.md#remaining-plan).
+Next add durable deployment and tenant scheduling scenarios with crash, lease,
+audit outage, transport, and partition adapters. The wider remaining portfolio
+and release work stays in [the evaluation plan](scenario-evaluation.md#remaining-plan).

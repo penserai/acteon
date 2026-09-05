@@ -1,6 +1,5 @@
 use std::sync::atomic::Ordering;
 
-use chrono::Utc;
 use tracing::{debug, info, warn};
 
 use acteon_state::{KeyKind, StateKey, recurring_active_counter_key};
@@ -102,7 +101,7 @@ impl BackgroundProcessor {
         // recurring actions are due in this tick.
         self.refresh_recurring_active_gauge().await;
 
-        let now = Utc::now();
+        let now = self.clock.now();
         let now_ms = now.timestamp_millis();
 
         let expired_keys = self.state.get_expired_timeouts(now_ms).await?;

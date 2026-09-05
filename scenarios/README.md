@@ -34,7 +34,8 @@ target/debug/acteon-scenario --replay scenario-results/portfolio/report.json --o
 ```
 
 Schema 2 accepts `schema_version`, `seed`, `backend`, `trials` (1–32), and
-`scenarios`: `incident_response`, `refund_fulfillment`, or `prompt_injection`.
+`scenarios`: `incident_response`, `refund_fulfillment`, `prompt_injection`,
+`deadline_safety`, or `worker_lifecycle`. The last two require memory.
 It derives independent trial/scenario seeds, reports fixed weighted dimensions
 and mandatory safety gates, and rejects missing/duplicate grading evidence.
 Scores are regression diagnostics; every check must pass. Summary fields report
@@ -70,6 +71,12 @@ The separate `deadlines.json` suite uses a shared manual clock to test exact
 dedup, approval, lease, and execution deadlines plus scheduled outage recovery.
 It supports memory only and includes virtual elapsed time in its evidence.
 See [clock injection and deadline evaluation](../docs/virtual-time.md).
+
+The memory-only `workers.json` suite adds task timestamps, heartbeat/staleness
+boundaries, audit/SSE emission, explicit group/timeout/scheduled ticks, and polling
+cadence. CI runs all four memory suites and replays them. Grader `portfolio-v3`
+adds the worker rubric; old reports still require their preserved runner.
+See [worker lifecycle evaluation](../docs/worker-lifecycle.md).
 
 For the kernel and product portfolio, sequence numbers and parent links represent logical causality. The trace records
 semantic outcomes and provider-call counts, excluding volatile UUIDs, durations,

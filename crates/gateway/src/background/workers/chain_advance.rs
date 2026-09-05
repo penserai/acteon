@@ -1,4 +1,3 @@
-use chrono::Utc;
 use tracing::{debug, warn};
 
 use super::super::{BackgroundProcessor, ChainAdvanceEvent};
@@ -15,7 +14,7 @@ impl BackgroundProcessor {
             return Ok(());
         };
 
-        let now_ms = Utc::now().timestamp_millis();
+        let now_ms = self.clock.now().timestamp_millis();
         let ready_keys = self.state.get_ready_chains(now_ms).await?;
 
         if ready_keys.is_empty() {

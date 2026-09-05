@@ -357,3 +357,12 @@ The embedding APIs are `GatewayBuilder::clock`, `MemoryStateStore::with_clock`,
 `acteon_simulation::scheduler::DeterministicScheduler`. Share one `ManualClock`
 instance across them. Background worker loops and external I/O require further
 adapters; this suite does not virtualize an entire server process.
+
+### Explicit worker ticks and task time
+
+`BackgroundProcessorBuilder::clock` and `TaskEngine::with_clock` share the gateway's
+clock. `BackgroundProcessor::tick(BackgroundJob)` executes one enabled worker
+cycle without advancing time. `scenarios/workers.json` exercises this API, task
+liveness, and polling with a manual clock; `scripts/ci/scenarios.sh memory` runs
+and replays it alongside the existing suites. Remote TTLs and process scheduling
+remain outside this clock domain. See [the worker lifecycle contract](https://github.com/penserai/acteon/blob/main/docs/worker-lifecycle.md).

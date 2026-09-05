@@ -18,6 +18,7 @@ use crate::{
 mod deadlines;
 pub mod evaluation;
 mod portfolio;
+mod workers;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -49,6 +50,7 @@ pub enum Scenario {
     RefundFulfillment,
     PromptInjection,
     DeadlineSafety,
+    WorkerLifecycle,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -231,10 +233,17 @@ pub async fn run(manifest: ScenarioManifest) -> Result<ScenarioReport, Simulatio
             return Err(SimulationError::Configuration("duplicate scenario".into()));
         }
     }
-    if manifest.backend != Backend::Memory && manifest.scenarios.contains(&Scenario::DeadlineSafety)
+    if manifest.backend != Backend::Memory
+        && manifest.scenarios.iter().any(|scenario| {
+            matches!(
+                scenario,
+                Scenario::DeadlineSafety | Scenario::WorkerLifecycle
+            )
+        })
     {
         return Err(SimulationError::Configuration(
-            "deadline_safety requires the memory backend".into(),
+            "virtual-time scenario requires the memory backend (deadline_safety, worker_lifecycle)"
+                .into(),
         ));
     }
     let digest = Sha256::digest(serde_json::to_vec(&manifest).expect("manifest serializes"));
@@ -258,6 +267,7 @@ pub async fn run(manifest: ScenarioManifest) -> Result<ScenarioReport, Simulatio
             Scenario::RefundFulfillment => portfolio::refund(&mut report).await,
             Scenario::PromptInjection => portfolio::injection(&mut report).await,
             Scenario::DeadlineSafety => deadlines::run(&mut report).await,
+            Scenario::WorkerLifecycle => workers::run(&mut report).await,
         };
         if let Err(error) = result {
             report.check(scenario, "scenario completed", false, error.to_string());

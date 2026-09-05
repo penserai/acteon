@@ -1761,6 +1761,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (recurring_action_tx, mut recurring_action_rx) = tokio::sync::mpsc::channel(100);
 
         let mut bg_builder = BackgroundProcessorBuilder::new()
+            .clock(gateway.read().await.clock())
+            .gateway(Arc::clone(&gateway))
             .config(bg_config)
             .metrics(gateway.read().await.metrics_arc())
             .group_manager(Arc::clone(&group_manager))
@@ -1794,10 +1796,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // as action records.
         if let Some(audit) = gateway.read().await.audit_store() {
             bg_builder = bg_builder.audit(audit);
-        }
-
-        if config.background.enable_template_sync {
-            bg_builder = bg_builder.gateway(Arc::clone(&gateway));
         }
 
         let (mut processor, shutdown_tx) = bg_builder
