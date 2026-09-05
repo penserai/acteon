@@ -23,6 +23,8 @@ pub struct SimulationConfig {
     pub environment: HashMap<String, String>,
     /// State machine configurations.
     pub state_machines: Vec<StateMachineConfig>,
+    /// Retry and timeout policy; deterministic suites disable retry jitter.
+    pub executor_config: acteon_executor::ExecutorConfig,
 }
 
 impl Default for SimulationConfig {
@@ -36,6 +38,7 @@ impl Default for SimulationConfig {
             providers: Vec::new(),
             environment: HashMap::new(),
             state_machines: Vec::new(),
+            executor_config: acteon_executor::ExecutorConfig::default(),
         }
     }
 }
@@ -58,6 +61,7 @@ pub struct SimulationConfigBuilder {
     providers: Vec<String>,
     environment: HashMap<String, String>,
     state_machines: Vec<StateMachineConfig>,
+    executor_config: acteon_executor::ExecutorConfig,
 }
 
 impl SimulationConfigBuilder {
@@ -134,6 +138,13 @@ impl SimulationConfigBuilder {
         self
     }
 
+    /// Set retries, timeouts, and concurrency for each gateway executor.
+    #[must_use]
+    pub fn executor_config(mut self, config: acteon_executor::ExecutorConfig) -> Self {
+        self.executor_config = config;
+        self
+    }
+
     /// Build the `SimulationConfig`.
     #[must_use]
     pub fn build(self) -> SimulationConfig {
@@ -146,6 +157,7 @@ impl SimulationConfigBuilder {
             providers: self.providers,
             environment: self.environment,
             state_machines: self.state_machines,
+            executor_config: self.executor_config,
         }
     }
 }

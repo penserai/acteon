@@ -8,6 +8,10 @@ The two supplied September assessments were checked against source and executabl
 reproductions before implementation. This record describes concrete changes and
 measured checks; it does not assign a projected safety score.
 
+The follow-up from merged revision `ea59463` adds repeated product-workflow
+evaluations. See [the evaluation record and remaining plan](scenario-evaluation.md)
+for its scope, grading contract, and the work that remains.
+
 ## Implemented behavior
 
 | Area | Result | Main implementation |
@@ -115,9 +119,10 @@ not have the Unix process-group guarantee.
 Scenario replay compares logical evidence. Gateway/database wall clocks, TTLs,
 network schedules, and process scheduling are not virtualized. The initial six
 scenarios cover policy, approval, tenant deduplication, retries, evaluator integrity,
-and invalid-state recovery. They do not implement the assessment's proposed full
-incident/refund/deployment/research portfolio, model capability trials, virtual-time
-fault scheduler, crash/partition exploration, or calibrated weighted scorecards.
+and invalid-state recovery. The follow-up adds selected incident, refund, and
+prompt-injection workflows with diagnostic weighted scorecards. The full proposed
+portfolio, model capability trials, virtual-time fault scheduler, crash/partition
+exploration, and empirically calibrated scorecards remain separate work.
 
 The scenarios exercise production gateways directly with recording providers.
 Browser smoke covers navigation/responsiveness; it does not validate every live

@@ -46,7 +46,40 @@ impl ServerNode {
         state_machines: Vec<StateMachineConfig>,
         approval_secret: Option<Vec<u8>>,
     ) -> Result<Self, SimulationError> {
-        let mut builder = GatewayBuilder::new().state(state).lock(lock).rules(rules);
+        Self::with_executor(
+            id,
+            addr,
+            state,
+            lock,
+            rules,
+            providers,
+            audit,
+            environment,
+            state_machines,
+            approval_secret,
+            acteon_executor::ExecutorConfig::default(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn with_executor(
+        id: impl Into<String>,
+        addr: SocketAddr,
+        state: Arc<dyn StateStore>,
+        lock: Arc<dyn DistributedLock>,
+        rules: Vec<Rule>,
+        providers: Vec<Arc<dyn DynProvider>>,
+        audit: Option<Arc<dyn AuditStore>>,
+        environment: std::collections::HashMap<String, String>,
+        state_machines: Vec<StateMachineConfig>,
+        approval_secret: Option<Vec<u8>>,
+        executor_config: acteon_executor::ExecutorConfig,
+    ) -> Result<Self, SimulationError> {
+        let mut builder = GatewayBuilder::new()
+            .state(state)
+            .lock(lock)
+            .rules(rules)
+            .executor_config(executor_config);
         if let Some(secret) = approval_secret {
             builder = builder.approval_secret(secret);
         }
