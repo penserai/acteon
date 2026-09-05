@@ -28,8 +28,7 @@ impl AvailableBackends {
     ///
     /// This is more expensive than `from_env` but verifies that the
     /// services are actually reachable.
-    #[allow(clippy::unused_async)] // Async for future real connection checks
-    pub async fn from_connections() -> Self {
+    pub fn from_connections() -> impl std::future::Future<Output = Self> + Send {
         let mut backends = Self::from_env();
 
         // Verify Redis connection if URL is set
@@ -46,7 +45,7 @@ impl AvailableBackends {
             backends.postgres = None;
         }
 
-        backends
+        std::future::ready(backends)
     }
 
     /// Check if Redis is available.

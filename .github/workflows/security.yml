@@ -18,7 +18,15 @@ jobs:
           toolchain: stable
       - uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8
         with:
-          tool: cargo-audit@0.22.1,cargo-deny@0.20.2,gitleaks@8.30.1
+          tool: cargo-audit@0.22.1,cargo-deny@0.20.2
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.25.5'
+          cache: false
+      - name: Install Gitleaks from its Go module
+        run: |
+          GOBIN="$RUNNER_TEMP/gitleaks-bin" go install github.com/zricethezav/gitleaks/v8@v8.30.1
+          echo "$RUNNER_TEMP/gitleaks-bin" >> "$GITHUB_PATH"
       - run: scripts/ci/security.sh
       - run: cargo deny --locked check licenses sources
       - run: scripts/ci/secrets.sh

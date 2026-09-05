@@ -39,7 +39,7 @@ counter behavior and overflow protection.
 | `cargo test --locked --workspace --lib --bins --tests` | 3,068 passed across 61 executables |
 | `cargo test --locked --workspace --doc` | 73 passed; 3 explicitly ignored examples |
 | Stable and Rust 1.88 workspace all-target compilation | Passed |
-| Workspace Clippy with warnings denied (stable and Rust 1.88) | Passed |
+| Workspace Clippy with warnings denied (Rust 1.98.1 and Rust 1.88) | Passed |
 | Swarm/simulation library, binary, and test Clippy with Redis/PostgreSQL/scenario features | Passed |
 | Swarm/simulation feature-enabled tests | 182 passed, including 82 swarm tests |
 | Memory/Redis/PostgreSQL state and lock suites | 25 passed, including shared conformance against live disposable services |
@@ -65,9 +65,11 @@ tests, one explicitly skipped mobile collapse-button case. UI lint retains one
 existing TanStack/React Compiler compatibility warning. Node and UI npm audits
 report zero vulnerabilities at this check date.
 
-Local tools include Rust 1.95 and 1.88, Python 3.11, Node 25, and Java 21. CI expands
-Python to 3.11–3.14 and Node to 20/22/24. Configuring that matrix is not a claim that
-those remote CI jobs have already run.
+Local tools include Rust 1.98.1, 1.95, and 1.88, Python 3.11, Node 25, and Java 21.
+The Python 3.11–3.14 and Node 20/22/24 matrices also passed in GitHub Actions.
+CI follows the current stable Rust release, so its Clippy version must be checked
+when reproducing lint failures locally. Gitleaks is installed from its pinned Go
+module; the Rust installer handles only cargo-audit and cargo-deny.
 
 ## Compatibility and operation
 

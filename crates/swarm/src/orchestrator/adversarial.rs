@@ -593,8 +593,7 @@ Output ONLY JSON lines, one per issue. If no issues are found, output a single l
     }
     if challenges.is_empty() {
         let no_findings = serde_json::from_str::<serde_json::Value>(raw_output.trim())
-            .ok()
-            .is_some_and(|value| value["id"] == "none" && value["category"] == "none");
+            .is_ok_and(|value| value["id"] == "none" && value["category"] == "none");
         if !no_findings {
             return Err(SwarmError::AdversarialChallenge(
                 "no valid challenge report or explicit no-findings sentinel".into(),

@@ -42,6 +42,11 @@ impl ActeonMcpServer {
 
 #[tool_handler(router = self.tool_router)]
 #[prompt_handler(router = self.prompt_router)]
+#[allow(unknown_lints)] // The async trait lint was introduced after our Rust 1.88 MSRV.
+#[allow(
+    clippy::unused_async_trait_impl,
+    reason = "rmcp handler macros generate async methods for synchronous listings"
+)]
 impl ServerHandler for ActeonMcpServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().enable_resources().enable_prompts().build())
@@ -52,12 +57,12 @@ impl ServerHandler for ActeonMcpServer {
             .with_instructions("Acteon MCP Server — interact with the Acteon action gateway. Use the provided tools to dispatch actions, query the audit trail, manage events, list rules, and more. Use resources to read current state. Use prompts for guided operational workflows.")
     }
 
-    async fn list_resources(
+    fn list_resources(
         &self,
         _request: Option<PaginatedRequestParams>,
         _ctx: RequestContext<RoleServer>,
-    ) -> Result<ListResourcesResult, McpError> {
-        Ok(resources::list_resources())
+    ) -> impl std::future::Future<Output = Result<ListResourcesResult, McpError>> + Send {
+        std::future::ready(Ok(resources::list_resources()))
     }
 
     async fn read_resource(
@@ -68,12 +73,13 @@ impl ServerHandler for ActeonMcpServer {
         resources::read_resource(&self.ops, request).await
     }
 
-    async fn list_resource_templates(
+    fn list_resource_templates(
         &self,
         _request: Option<PaginatedRequestParams>,
         _ctx: RequestContext<RoleServer>,
-    ) -> Result<ListResourceTemplatesResult, McpError> {
-        Ok(ListResourceTemplatesResult {
+    ) -> impl std::future::Future<Output = Result<ListResourceTemplatesResult, McpError>> + Send
+    {
+        std::future::ready(Ok(ListResourceTemplatesResult {
             resource_templates: vec![
                 RawResourceTemplate {
                     uri_template: "acteon://audit/{tenant}".into(),
@@ -105,6 +111,6 @@ impl ServerHandler for ActeonMcpServer {
             ],
             next_cursor: None,
             meta: None,
-        })
+        }))
     }
 }
