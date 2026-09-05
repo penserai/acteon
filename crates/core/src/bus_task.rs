@@ -705,7 +705,17 @@ impl Task {
         namespace: impl Into<String>,
         tenant: impl Into<String>,
     ) -> Self {
-        let now = Utc::now();
+        Self::new_at(id, namespace, tenant, Utc::now())
+    }
+
+    /// Construct a fresh task at an explicit time.
+    #[must_use]
+    pub fn new_at(
+        id: impl Into<String>,
+        namespace: impl Into<String>,
+        tenant: impl Into<String>,
+        now: DateTime<Utc>,
+    ) -> Self {
         Self {
             id: id.into(),
             context_id: None,
@@ -741,6 +751,16 @@ impl Task {
         next: TaskState,
         message: Option<Message>,
     ) -> Result<(), TaskValidationError> {
+        self.transition_to_at(next, message, Utc::now())
+    }
+
+    /// Like [`Self::transition_to`], using an explicit time.
+    pub fn transition_to_at(
+        &mut self,
+        next: TaskState,
+        message: Option<Message>,
+        now: DateTime<Utc>,
+    ) -> Result<(), TaskValidationError> {
         if !self.status.state.can_transition_to(next) {
             return Err(TaskValidationError::IllegalTransition {
                 from: self.status.state,
@@ -750,7 +770,6 @@ impl Task {
         if let Some(m) = &message {
             m.validate()?;
         }
-        let now = Utc::now();
         self.status = TaskStatus {
             state: next,
             message,
@@ -768,12 +787,20 @@ impl Task {
     /// Append a message to the history, enforcing the cap. Counts as
     /// forward progress.
     pub fn append_history(&mut self, message: Message) -> Result<(), TaskValidationError> {
+        self.append_history_at(message, Utc::now())
+    }
+
+    /// Like [`Self::append_history`], using an explicit time.
+    pub fn append_history_at(
+        &mut self,
+        message: Message,
+        now: DateTime<Utc>,
+    ) -> Result<(), TaskValidationError> {
         if self.history.len() >= MAX_HISTORY_LEN {
             return Err(TaskValidationError::HistoryFull);
         }
         message.validate()?;
         self.history.push(message);
-        let now = Utc::now();
         self.updated_at = now;
         self.last_progress_at = Some(now);
         Ok(())
@@ -795,6 +822,16 @@ impl Task {
         &mut self,
         artifact: Artifact,
         append: bool,
+    ) -> Result<(), TaskValidationError> {
+        self.upsert_artifact_at(artifact, append, Utc::now())
+    }
+
+    /// Like [`Self::upsert_artifact`], using an explicit time.
+    pub fn upsert_artifact_at(
+        &mut self,
+        artifact: Artifact,
+        append: bool,
+        now: DateTime<Utc>,
     ) -> Result<(), TaskValidationError> {
         artifact.validate()?;
         match self
@@ -818,7 +855,6 @@ impl Task {
                 self.artifacts.push(artifact);
             }
         }
-        let now = Utc::now();
         self.updated_at = now;
         self.last_progress_at = Some(now);
         Ok(())
@@ -853,6 +889,15 @@ impl Task {
         &mut self,
         event: &crate::bus_stream::TaskArtifactUpdateEvent,
     ) -> Result<(), TaskValidationError> {
+        self.apply_artifact_event_at(event, Utc::now())
+    }
+
+    /// Like [`Self::apply_artifact_event`], using an explicit time.
+    pub fn apply_artifact_event_at(
+        &mut self,
+        event: &crate::bus_stream::TaskArtifactUpdateEvent,
+        now: DateTime<Utc>,
+    ) -> Result<(), TaskValidationError> {
         let artifact_id = &event.artifact.artifact_id;
         let (closed, expected_index) = match self.artifact_streams.get(artifact_id) {
             Some(s) => (s.closed, s.last_chunk_index.map_or(0, |last| last + 1)),
@@ -885,7 +930,7 @@ impl Task {
         // Apply the artifact content first — `upsert_artifact` is the
         // only fallible step left, so stream state advances only once
         // the content has actually landed.
-        self.upsert_artifact(event.artifact.clone(), event.append)?;
+        self.upsert_artifact_at(event.artifact.clone(), event.append, now)?;
         let stream = self
             .artifact_streams
             .entry(event.artifact.artifact_id.clone())
@@ -905,7 +950,12 @@ impl Task {
     /// call this periodically so the staleness reaper doesn't reap
     /// them.
     pub fn record_progress(&mut self) {
-        self.last_progress_at = Some(Utc::now());
+        self.record_progress_at(Utc::now());
+    }
+
+    /// Record a heartbeat at an explicit time.
+    pub fn record_progress_at(&mut self, now: DateTime<Utc>) {
+        self.last_progress_at = Some(now);
     }
 
     /// Mark the task as paused awaiting a human (either `AuthRequired`

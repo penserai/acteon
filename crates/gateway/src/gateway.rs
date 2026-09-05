@@ -7219,8 +7219,10 @@ impl Gateway {
             return;
         }
         let engine = match &self.audit {
-            Some(audit) => TaskEngine::new(self.state.clone()).with_audit(audit.clone()),
-            None => TaskEngine::new(self.state.clone()),
+            Some(audit) => TaskEngine::new(self.state.clone())
+                .with_clock(self.clock.clone())
+                .with_audit(audit.clone()),
+            None => TaskEngine::new(self.state.clone()).with_clock(self.clock.clone()),
         };
         if let Err(e) = crate::task_chain_bridge::project_chain_to_linked_task(&engine, chain).await
         {

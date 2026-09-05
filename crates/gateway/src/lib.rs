@@ -25,8 +25,8 @@ pub mod workflow;
 
 pub use acteon_executor::{DeadLetterEntry, DeadLetterQueue, DeadLetterSink};
 pub use background::{
-    ApprovalRetryEvent, BackgroundConfig, BackgroundProcessor, BackgroundProcessorBuilder,
-    ChainAdvanceEvent, GroupFlushEvent, TimeoutEvent,
+    ApprovalRetryEvent, BackgroundConfig, BackgroundJob, BackgroundProcessor,
+    BackgroundProcessorBuilder, ChainAdvanceEvent, GroupFlushEvent, TimeoutEvent,
 };
 pub use builder::GatewayBuilder;
 pub use circuit_breaker::{CircuitBreakerConfig, CircuitBreakerRegistry, CircuitState};

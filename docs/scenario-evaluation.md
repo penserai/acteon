@@ -102,15 +102,18 @@ Local validation completed on the implementation from `ea59463`:
   and shell syntax checks passed. UI lint retains the existing TanStack compiler
   compatibility warning documented in the original rehabilitation record.
 
-The next phase from `1f28dbd` adds a shared clock, deterministic timer/fault
-scheduler, and deadline safety suite. See [the clock contract and limits](virtual-time.md).
+The phase from `1f28dbd` added a shared clock, deterministic timer/fault
+scheduler, and deadline safety suite. The follow-up from `a514c5b` extends it to
+[worker ticks and task lifecycle evidence](worker-lifecycle.md). See also
+[the clock contract and limits](virtual-time.md).
 
 ## Remaining plan
 
-1. Extend the implemented gateway/executor/memory clock and deterministic scheduler
-   into background workers, task transitions, and retention. Add explicit worker
-   ticks and timer-dependent lifecycle scenarios. The deadline suite has virtual
-   timing; existing portfolio trials and remote database TTLs still use real time.
+1. Extend virtual time into DLQ/audit-store retention and the remaining application
+   lifecycle paths. Gateway/executor/memory clocks, background workers, and task
+   transitions are injected; explicit worker ticks and the deadline and worker
+   lifecycle suites now have virtual timing. Existing product portfolio trials,
+   remote database TTLs, generated UUIDs, and OS scheduling retain real time.
 2. Add durable deployment and tenant scheduling workflows, then crash, lease,
    audit-outage, transport, and partition adapters across the relevant backends.
    No test here establishes exactly-once effects across a crash between external

@@ -151,26 +151,28 @@ fn replay_preserves_hard_linked_input() {
 #[test]
 fn cli_replays_virtual_time_and_rejects_remote_ttls_or_forged_clocks() {
     let workspace = Workspace::new();
-    for backend in ["redis", "postgres"] {
-        for version in [1, 2] {
-            let mut manifest = serde_json::json!({"schema_version":version,"seed":42,"backend":backend,"scenarios":["deadline_safety"]});
-            if version == 2 {
-                manifest["trials"] = 1.into();
+    for scenario in ["deadline_safety", "worker_lifecycle"] {
+        for backend in ["redis", "postgres"] {
+            for version in [1, 2] {
+                let mut manifest = serde_json::json!({"schema_version":version,"seed":42,"backend":backend,"scenarios":[scenario]});
+                if version == 2 {
+                    manifest["trials"] = 1.into();
+                }
+                std::fs::write(
+                    workspace.0.join("suite.json"),
+                    serde_json::to_vec(&manifest).unwrap(),
+                )
+                .unwrap();
+                let output = workspace.run(&["--manifest", "suite.json", "--output", "invalid"]);
+                assert!(!output.status.success());
+                assert!(
+                    String::from_utf8_lossy(&output.stderr).contains("requires the memory backend")
+                );
+                assert!(!workspace.0.join("invalid").exists());
             }
-            std::fs::write(
-                workspace.0.join("suite.json"),
-                serde_json::to_vec(&manifest).unwrap(),
-            )
-            .unwrap();
-            let output = workspace.run(&["--manifest", "suite.json", "--output", "invalid"]);
-            assert!(!output.status.success());
-            assert!(
-                String::from_utf8_lossy(&output.stderr).contains("requires the memory backend")
-            );
-            assert!(!workspace.0.join("invalid").exists());
         }
     }
-    std::fs::write(workspace.0.join("suite.json"), r#"{"schema_version":2,"seed":42,"backend":"memory","trials":2,"scenarios":["deadline_safety"]}"#).unwrap();
+    std::fs::write(workspace.0.join("suite.json"), r#"{"schema_version":2,"seed":42,"backend":"memory","trials":2,"scenarios":["deadline_safety","worker_lifecycle"]}"#).unwrap();
     let output = workspace.run(&["--manifest", "suite.json", "--output", "first"]);
     assert!(
         output.status.success(),

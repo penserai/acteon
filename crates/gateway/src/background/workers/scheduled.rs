@@ -1,4 +1,3 @@
-use chrono::Utc;
 use tracing::{debug, info, warn};
 
 use acteon_state::{KeyKind, StateKey};
@@ -21,7 +20,7 @@ impl BackgroundProcessor {
             return Ok(());
         };
 
-        let now_ms = Utc::now().timestamp_millis();
+        let now_ms = self.clock.now().timestamp_millis();
 
         // Use the timeout index for efficient O(log N + M) queries instead of
         // scanning all PendingScheduled keys (which would be O(N)).

@@ -245,7 +245,7 @@ struct TaskIdParams {
 /// task transitions land on the same hash chain as action records.
 async fn task_engine(state: &AppState) -> TaskEngine {
     let gw = state.gateway.read().await;
-    let mut engine = TaskEngine::new(gw.state_store().clone());
+    let mut engine = TaskEngine::new(gw.state_store().clone()).with_clock(gw.clock());
     if let Some(audit) = gw.audit_store() {
         engine = engine.with_audit(audit);
     }
@@ -276,11 +276,12 @@ async fn method_message_send(
     } else {
         // Mint a new task with this message as its first history entry.
         let task_id = uuid::Uuid::now_v7().to_string();
-        let mut task = Task::new(&task_id, &scope.namespace, &scope.tenant);
+        let now = engine.clock().now();
+        let mut task = Task::new_at(&task_id, &scope.namespace, &scope.tenant, now);
         task.context_id.clone_from(&message.context_id);
         // Bind the message to the task it now belongs to.
         message.task_id = Some(task_id);
-        task.append_history(message)
+        task.append_history_at(message, now)
             .map_err(|e| A2aError::invalid_params(e.to_string()))?;
         Ok(engine.create_task(task).await?)
     }

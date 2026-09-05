@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use chrono::Utc;
 use tracing::{debug, info, warn};
 
 use acteon_core::{StreamEvent, StreamEventType};
@@ -72,7 +71,7 @@ impl BackgroundProcessor {
 
             // Flush the group (marks it as notified, advances timing)
             if let Some(flushed_group) = self.group_manager.flush_group(&group_key) {
-                let flushed_at = Utc::now();
+                let flushed_at = self.clock.now();
 
                 info!(
                     group_id = %flushed_group.group_id,

@@ -1,4 +1,3 @@
-use chrono::Utc;
 use tracing::{debug, info, warn};
 
 use acteon_core::{StreamEvent, StreamEventType};
@@ -15,7 +14,7 @@ impl BackgroundProcessor {
     pub(crate) async fn process_timeouts(
         &self,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let now = Utc::now();
+        let now = self.clock.now();
         let now_ms = now.timestamp_millis();
 
         // Get only the expired timeout keys using the efficient index query.
