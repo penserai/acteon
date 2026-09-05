@@ -21,8 +21,6 @@ use super::{Scenario, ScenarioReport, evaluation::derived_seed};
 use crate::SimulationError;
 
 const SCENARIO: Scenario = Scenario::WorkerLifecycle;
-pub(super) const CLOCK_DESCRIPTION: &str =
-    "worker_lifecycle=manual UTC epoch 2023-11-14T22:13:20Z; other scenarios=wall_clock";
 
 fn error(error: impl std::fmt::Display) -> SimulationError {
     SimulationError::Gateway(error.to_string())
@@ -247,7 +245,7 @@ async fn due_ticks(report: &mut ScenarioReport, mutation: Mutation) -> Result<()
     store.index_timeout(&event, due).await.map_err(error)?;
     let scheduled = StateKey::new("workers", "alice", KeyKind::ScheduledAction, "scheduled");
     store
-        .set(&scheduled, &json!({"action":action}).to_string(), None)
+        .set(&scheduled, &json!({"action_id":"scheduled","action":action,"scheduled_for":clock.now()+chrono::Duration::seconds(1),"created_at":clock.now()}).to_string(), None)
         .await
         .map_err(error)?;
     let pending = StateKey::new("workers", "alice", KeyKind::PendingScheduled, "scheduled");

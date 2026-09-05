@@ -202,7 +202,6 @@ impl Gateway {
             )
             .await?;
 
-        let now = Utc::now();
         let mut leased = Vec::new();
         for (index_key, _) in pending {
             if leased.len() >= max_tasks.max(1) {
@@ -225,6 +224,7 @@ impl Gateway {
             let Ok(mut task) = serde_json::from_str::<WorkerTask>(&raw) else {
                 continue;
             };
+            let now = self.clock.now();
             if !task.leasable(now) {
                 // A settled/leased task with a leftover pending entry is a
                 // crash artifact — clean it up so polls stop revisiting it.
@@ -306,9 +306,8 @@ impl Gateway {
             };
             let mut task: WorkerTask = serde_json::from_str(&raw)
                 .map_err(|e| GatewayError::TaskQueue(format!("failed to deserialize task: {e}")))?;
-            Self::verify_lease(&task, lease_token)?;
-
-            let now = Utc::now();
+            let now = self.clock.now();
+            Self::verify_lease(&task, lease_token, now)?;
             #[allow(clippy::cast_possible_wrap)]
             let expires = now + chrono::Duration::seconds(extend as i64);
             task.lease_expires_at = Some(expires);
@@ -450,7 +449,7 @@ impl Gateway {
                     task.status
                 )));
             }
-            let now = Utc::now();
+            let now = self.clock.now();
             task.status = WorkerTaskStatus::Cancelled;
             task.lease_expires_at = None;
             task.updated_at = now;
@@ -499,10 +498,11 @@ impl Gateway {
             };
             let mut task: WorkerTask = serde_json::from_str(&raw)
                 .map_err(|e| GatewayError::TaskQueue(format!("failed to deserialize task: {e}")))?;
-            Self::verify_lease(&task, lease_token)?;
+            let now = self.clock.now();
+            Self::verify_lease(&task, lease_token, now)?;
 
             let queue = task.queue.clone();
-            mutate(&mut task, Utc::now());
+            mutate(&mut task, now);
             let terminal = !task.status.is_active();
             let ttl = terminal.then_some(COMPLETED_TASK_TTL);
             let json = serde_json::to_string(&task)
@@ -527,11 +527,21 @@ impl Gateway {
         )))
     }
 
-    fn verify_lease(task: &WorkerTask, lease_token: &str) -> Result<(), GatewayError> {
+    fn verify_lease(
+        task: &WorkerTask,
+        lease_token: &str,
+        now: chrono::DateTime<Utc>,
+    ) -> Result<(), GatewayError> {
         if task.status != WorkerTaskStatus::Leased {
             return Err(GatewayError::TaskQueue(format!(
                 "task {} is not leased (status: {:?})",
                 task.task_id, task.status
+            )));
+        }
+        if task.lease_expires_at.is_none_or(|expires| now >= expires) {
+            return Err(GatewayError::TaskQueue(format!(
+                "lease expired for task {}",
+                task.task_id
             )));
         }
         if task.lease_token.as_deref() != Some(lease_token) {
@@ -552,7 +562,7 @@ impl Gateway {
         tenant: &str,
         queue: &str,
     ) -> Result<(), GatewayError> {
-        let now = Utc::now();
+        let now = self.clock.now();
         let leased = self
             .state
             .scan_keys(
@@ -779,7 +789,7 @@ impl Gateway {
 
             let chain_key = StateKey::new(namespace, tenant, KeyKind::Chain, chain_id);
             let pending_key = StateKey::new(namespace, tenant, KeyKind::PendingChains, chain_id);
-            let now = Utc::now();
+            let now = self.clock.now();
 
             match outcome {
                 Ok(result_value) => {

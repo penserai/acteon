@@ -106,16 +106,13 @@ combined deadline/worker replay byte for byte, and forged clock provenance.
 The CI script runs and replays this suite alongside the existing suites, retaining
 the exact executable identified by each report.
 
-This evidence observes worker handoff, not completed external delivery. Scheduled
-handoff still removes discovery keys before consumer acknowledgement; retaining
-the payload alone cannot guarantee recovery if the consumer crashes. Durable
-handoff/reconciliation belongs to the next deployment/scheduling phase. Likewise,
-clock injection does not make state retention transactional or task audit writes
-durable. Remote TTLs, audit-store/DLQ retention, network/process scheduling,
-generated UUID timestamps, worker-queue leases/retries (`task_queue.rs`), workflow
-convenience constructors, and model capability are outside these assertions.
-Those queue clocks must be injected before deterministic deployment and tenant
-scheduling scenarios can cover end-to-end recovery.
+This suite observes worker handoff. The subsequent
+[durable scheduling phase](durable-scheduling.md) retains discovery until outcome
+acknowledgement, repairs missing indexes, and adds queue/workflow clocks and
+restart evidence. Clock injection does not make state retention transactional or
+task audit writes durable. Remote TTLs, audit-store/DLQ retention, network/process
+scheduling, generated UUID timestamps, and model capability remain outside this
+worker suite's assertions.
 
 ## Verification
 

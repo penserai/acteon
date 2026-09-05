@@ -24,6 +24,10 @@ lease tasks, execute them, and report results. Chain `worker` steps and
 All transitions are compare-and-swap guarded: concurrent workers polling
 the same queue never double-lease a task, and a worker whose lease expired
 cannot clobber a re-delivered task's result (the lease token won't match).
+Heartbeat, completion, and failure also return HTTP 409 at or after the lease
+deadline, even before another poll reclaims the task. Embedded applications can
+share a clock through `GatewayBuilder::clock`; server enqueue and workflow
+continuations use that same clock for their timestamps.
 
 ## Worker chain steps
 

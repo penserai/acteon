@@ -35,7 +35,8 @@ target/debug/acteon-scenario --replay scenario-results/portfolio/report.json --o
 
 Schema 2 accepts `schema_version`, `seed`, `backend`, `trials` (1–32), and
 `scenarios`: `incident_response`, `refund_fulfillment`, `prompt_injection`,
-`deadline_safety`, or `worker_lifecycle`. The last two require memory.
+`deadline_safety`, `worker_lifecycle`, or `durable_scheduling`. These last three
+require memory.
 It derives independent trial/scenario seeds, reports fixed weighted dimensions
 and mandatory safety gates, and rejects missing/duplicate grading evidence.
 Scores are regression diagnostics; every check must pass. Summary fields report
@@ -74,8 +75,9 @@ See [clock injection and deadline evaluation](../docs/virtual-time.md).
 
 The memory-only `workers.json` suite adds task timestamps, heartbeat/staleness
 boundaries, audit/SSE emission, explicit group/timeout/scheduled ticks, and polling
-cadence. CI runs all four memory suites and replays them. Grader `portfolio-v3`
-adds the worker rubric; old reports still require their preserved runner.
+cadence. CI runs all five memory suites and replays them. Grader `portfolio-v4`
+adds the scheduling rubric alongside the worker rubric; old reports still require
+their preserved runner.
 See [worker lifecycle evaluation](../docs/worker-lifecycle.md).
 
 For the kernel and product portfolio, sequence numbers and parent links represent logical causality. The trace records
@@ -92,3 +94,11 @@ fixtures exercise the network and serialization boundaries separately. They do
 not demonstrate exactly-once external effects after a crash between provider
 execution and completion persistence. Downstream idempotency and reconciliation
 remain necessary for that failure window.
+
+The memory-only `scheduling.json` suite exercises deployment restart with preserved
+checkpoints, queue expiry/backoff, workflow timers, and leased one-shot scheduled
+delivery. It injects a completion-write outage after an external effect and checks
+rediscovery, stale receipt rejection, downstream idempotency, and tenant quota
+boundaries. Three negative mutations must fail mandatory gates. See
+[durable scheduling](../docs/durable-scheduling.md) for delivery, upgrade, and
+remaining crash-window limits.

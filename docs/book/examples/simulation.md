@@ -366,3 +366,12 @@ cycle without advancing time. `scenarios/workers.json` exercises this API, task
 liveness, and polling with a manual clock; `scripts/ci/scenarios.sh memory` runs
 and replays it alongside the existing suites. Remote TTLs and process scheduling
 remain outside this clock domain. See [the worker lifecycle contract](https://github.com/penserai/acteon/blob/main/docs/worker-lifecycle.md).
+
+### Durable scheduling and deployment recovery
+
+`scenarios/scheduling.json` adds manual-time deployment restart/checkpoint and
+workflow-timer evidence, plus scheduled-action redelivery after a failed outcome
+write. It checks discovery repair, stale ownership, downstream idempotency, and
+tenant quota isolation. Run it with the same `acteon-scenario --manifest` and
+`--replay` commands above. See [the recovery contract](../../durable-scheduling.md)
+for receipt consumption, upgrade requirements, and untested crash windows.

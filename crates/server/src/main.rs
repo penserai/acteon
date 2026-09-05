@@ -1827,7 +1827,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Build a summary notification action from the grouped events.
                 // Uses the first event's metadata and aggregates the payloads.
                 let payloads: Vec<_> = group.events.iter().map(|e| e.payload.clone()).collect();
-                let mut summary_payload = serde_json::json!({
+                let summary_payload = serde_json::json!({
                     "group_id": group.group_id,
                     "group_key": group.group_key,
                     "event_count": group.size(),
@@ -1835,11 +1835,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "labels": group.labels,
                     "flushed_at": event.flushed_at.to_rfc3339(),
                 });
-
-                // Mark as a group re-dispatch so quota enforcement is skipped.
-                if let Some(obj) = summary_payload.as_object_mut() {
-                    obj.insert("_group_dispatch".to_string(), serde_json::Value::Bool(true));
-                }
 
                 // Extract namespace/tenant from labels or use defaults.
                 let namespace = group
@@ -1896,7 +1891,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 // Dispatch the notification through the gateway.
                 let gw = flush_gateway.read().await;
-                match gw.dispatch(action, None).await {
+                match gw.dispatch_precounted_action(action).await {
                     Ok(outcome) => {
                         info!(
                             group_id = %group.group_id,
@@ -2098,75 +2093,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         });
 
-        // Spawn consumer for scheduled action events.
-        // Dispatches the action through the gateway and emits an SSE event.
-        // The action data key is deleted only after successful dispatch
-        // (at-least-once delivery semantics).
+        // Consume durable scheduled receipts. The gateway reloads the action,
+        // renews ownership, and persists its outcome before index cleanup.
         let scheduled_gateway = Arc::clone(&gateway);
-        let scheduled_store = Arc::clone(&store);
         tokio::spawn(async move {
             while let Some(event) = scheduled_action_rx.recv().await {
-                info!(
-                    action_id = %event.action_id,
-                    namespace = %event.namespace,
-                    tenant = %event.tenant,
-                    "dispatching scheduled action"
-                );
-
-                // Emit SSE stream event for the scheduled action.
                 let gw = scheduled_gateway.read().await;
-                let _ = gw.stream_tx().send(StreamEvent {
-                    id: uuid::Uuid::now_v7().to_string(),
-                    timestamp: chrono::Utc::now(),
-                    event_type: StreamEventType::ScheduledActionDue {
-                        action_id: event.action_id.clone(),
-                    },
-                    namespace: event.namespace.clone(),
-                    tenant: event.tenant.clone(),
-                    action_type: Some(event.action.action_type.clone()),
-                    action_id: Some(event.action_id.clone()),
-                });
-
-                // Mark the action payload so that handle_schedule rejects re-scheduling.
-                // This prevents infinite loops when a Schedule rule matches
-                // the same action on re-dispatch.
-                let mut action = event.action;
-                if let Some(obj) = action.payload.as_object_mut() {
-                    obj.insert(
-                        "_scheduled_dispatch".to_string(),
-                        serde_json::Value::Bool(true),
-                    );
-                }
-                match gw.dispatch(action, None).await {
-                    Ok(outcome) => {
-                        info!(
-                            action_id = %event.action_id,
-                            ?outcome,
-                            "scheduled action dispatched"
-                        );
-                        // Delete action data only after successful dispatch
-                        // (at-least-once delivery). On crash before this point,
-                        // the claim key expires and the action is re-delivered.
-                        let sched_key = acteon_state::StateKey::new(
-                            event.namespace.as_str(),
-                            event.tenant.as_str(),
-                            acteon_state::KeyKind::ScheduledAction,
-                            &event.action_id,
-                        );
-                        if let Err(e) = scheduled_store.delete(&sched_key).await {
-                            tracing::warn!(
-                                action_id = %event.action_id,
-                                error = %e,
-                                "failed to clean up scheduled action data after dispatch"
-                            );
-                        }
+                match gw.dispatch_scheduled_action(&event).await {
+                    Ok(Some(outcome)) => {
+                        info!(action_id = %event.action_id, ?outcome, "scheduled action dispatched");
                     }
-                    Err(e) => {
-                        tracing::error!(
-                            action_id = %event.action_id,
-                            error = %e,
-                            "failed to dispatch scheduled action"
-                        );
+                    Ok(None) => {
+                        tracing::debug!(action_id = %event.action_id, "stale or already consumed scheduled delivery");
+                    }
+                    Err(error) => {
+                        tracing::error!(action_id = %event.action_id, %error, "scheduled dispatch failed; delivery remains recoverable");
                     }
                 }
             }
@@ -2189,15 +2130,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
 
                 // Construct a concrete Action from the template.
-                let mut payload = recurring.action_template.payload.clone();
-                // Mark as a recurring re-dispatch so quota enforcement
-                // does not double-count the action.
-                if let Some(obj) = payload.as_object_mut() {
-                    obj.insert(
-                        "_recurring_dispatch".to_string(),
-                        serde_json::Value::Bool(true),
-                    );
-                }
+                let payload = recurring.action_template.payload.clone();
                 let mut action = acteon_core::Action::new(
                     event.namespace.as_str(),
                     event.tenant.as_str(),
@@ -2263,7 +2196,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     continue;
                 }
 
-                match gw.dispatch(action, None).await {
+                match gw.dispatch_precounted_action(action).await {
                     Ok(outcome) => {
                         info!(
                             recurring_id = %event.recurring_id,

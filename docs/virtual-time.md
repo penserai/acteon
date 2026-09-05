@@ -141,6 +141,8 @@ convenience constructors and generated UUIDs retain default timestamps unless a
 caller uses an explicit-time API. These suites do not certify whole-system
 virtual-time replay or durable audit behavior.
 
-Next add durable deployment and tenant scheduling scenarios with crash, lease,
-audit outage, transport, and partition adapters. The wider remaining portfolio
+[The durable scheduling follow-up](durable-scheduling.md) adds queue/workflow
+clocks, deployment restart/checkpoint evidence, and scheduled delivery recovery
+with a state-outcome write fault. Audit outage, transport, and partition adapters
+remain future work. The wider remaining portfolio
 and release work stays in [the evaluation plan](scenario-evaluation.md#remaining-plan).

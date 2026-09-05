@@ -75,27 +75,8 @@ impl Gateway {
     ) -> Result<Option<ActionOutcome>, GatewayError> {
         const CACHE_TTL_SECS: i64 = 60;
 
-        // Skip quota for internal re-dispatches (scheduled, recurring, groups)
-        // to avoid double-counting. The action was already counted when it
-        // first entered the gateway.
-        if action
-            .payload
-            .get("_scheduled_dispatch")
-            .and_then(serde_json::Value::as_bool)
-            == Some(true)
-            || action
-                .payload
-                .get("_recurring_dispatch")
-                .and_then(serde_json::Value::as_bool)
-                == Some(true)
-            || action
-                .payload
-                .get("_group_dispatch")
-                .and_then(serde_json::Value::as_bool)
-                == Some(true)
-        {
-            return Ok(None);
-        }
+        // Internal re-dispatch accounting is selected by a trusted gateway
+        // entry point. Caller-controlled payload fields cannot bypass quotas.
 
         let bucket_key = format!("{}:{}", action.namespace, action.tenant);
         let now = self.clock.now();

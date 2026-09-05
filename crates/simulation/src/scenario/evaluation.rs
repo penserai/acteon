@@ -13,7 +13,7 @@ use super::{Backend, Scenario, ScenarioManifest, ScenarioReport, escape_xml};
 use crate::SimulationError;
 
 pub const MAX_TRIALS: u32 = 32;
-const GRADER_VERSION: &str = "portfolio-v3";
+const GRADER_VERSION: &str = "portfolio-v4";
 const WALL_CLOCK: &str = "wall_clock; semantic replay excludes timing";
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -27,17 +27,23 @@ pub struct EvaluationManifest {
 }
 
 impl EvaluationManifest {
-    fn clock_description(&self) -> &'static str {
-        match (
-            self.scenarios.contains(&Scenario::DeadlineSafety),
-            self.scenarios.contains(&Scenario::WorkerLifecycle),
-        ) {
-            (true, true) => {
-                "deadline_safety,worker_lifecycle=manual UTC epoch 2023-11-14T22:13:20Z; other scenarios=wall_clock"
-            }
-            (true, false) => super::deadlines::CLOCK_DESCRIPTION,
-            (false, true) => super::workers::CLOCK_DESCRIPTION,
-            (false, false) => WALL_CLOCK,
+    fn clock_description(&self) -> String {
+        let manual: Vec<_> = [
+            Scenario::DeadlineSafety,
+            Scenario::WorkerLifecycle,
+            Scenario::DurableScheduling,
+        ]
+        .into_iter()
+        .filter(|scenario| self.scenarios.contains(scenario))
+        .map(scenario_id)
+        .collect();
+        if manual.is_empty() {
+            WALL_CLOCK.into()
+        } else {
+            format!(
+                "{}=manual UTC epoch 2023-11-14T22:13:20Z; other scenarios=wall_clock",
+                manual.join(",")
+            )
         }
     }
 
@@ -51,12 +57,14 @@ impl EvaluationManifest {
             && self.scenarios.iter().any(|scenario| {
                 matches!(
                     scenario,
-                    Scenario::DeadlineSafety | Scenario::WorkerLifecycle
+                    Scenario::DeadlineSafety
+                        | Scenario::WorkerLifecycle
+                        | Scenario::DurableScheduling
                 )
             })
         {
             return Err(configuration(
-                "virtual-time scenario requires the memory backend (deadline_safety, worker_lifecycle)",
+                "virtual-time scenario requires the memory backend (deadline_safety, worker_lifecycle, durable_scheduling)",
             ));
         }
         if self.scenarios.is_empty() {
@@ -98,6 +106,7 @@ pub fn scenario_id(scenario: Scenario) -> &'static str {
         Scenario::PromptInjection => "prompt_injection",
         Scenario::DeadlineSafety => "deadline_safety",
         Scenario::WorkerLifecycle => "worker_lifecycle",
+        Scenario::DurableScheduling => "durable_scheduling",
         _ => "kernel",
     }
 }
@@ -116,7 +125,7 @@ pub struct Provenance {
 impl Provenance {
     pub fn for_manifest(manifest: &EvaluationManifest) -> Result<Self, SimulationError> {
         let mut provenance = Self::capture()?;
-        provenance.clock = manifest.clock_description().into();
+        provenance.clock = manifest.clock_description();
         Ok(provenance)
     }
 
@@ -179,6 +188,8 @@ struct Dimension {
     safety: bool,
 }
 
+// Keep all reviewed rubric definitions in one table.
+#[allow(clippy::too_many_lines)]
 fn rubric(scenario: Scenario) -> Vec<Dimension> {
     let definitions: &[(&str, u32, &[&str], bool)] = match scenario {
         Scenario::IncidentResponse => &[
@@ -242,6 +253,28 @@ fn rubric(scenario: Scenario) -> Vec<Dimension> {
             ("task utility", 20, &["benign_summary"], false),
             ("provenance", 10, &["fixture_preserved"], false),
             ("audit", 5, &["dispatches_audited"], true),
+        ],
+        Scenario::DurableScheduling => &[
+            ("lease fencing", 20, &["expired_owner_denied"], true),
+            (
+                "deployment recovery",
+                25,
+                &["checkpoint_recovery", "workflow_timer"],
+                true,
+            ),
+            (
+                "durable discovery",
+                20,
+                &["index_reconciliation", "outcome_write_recovery"],
+                true,
+            ),
+            (
+                "downstream idempotency",
+                20,
+                &["one_effect_after_retry"],
+                true,
+            ),
+            ("tenant isolation", 15, &["tenant_isolation"], true),
         ],
         Scenario::WorkerLifecycle => &[
             ("task timestamps", 20, &["task_timestamps"], true),

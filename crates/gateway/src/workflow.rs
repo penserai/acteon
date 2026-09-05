@@ -94,7 +94,14 @@ impl Gateway {
                 "workflow and queue names must not be empty".into(),
             ));
         }
-        let mut exec = WorkflowExecution::new(namespace, tenant, workflow, queue, input.clone());
+        let mut exec = WorkflowExecution::new_at(
+            namespace,
+            tenant,
+            workflow,
+            queue,
+            input.clone(),
+            self.clock.now(),
+        );
         exec.search_attributes = search_attributes;
 
         self.append_execution_history(
@@ -114,7 +121,7 @@ impl Gateway {
         // worker settling the first continuation must find the record. (The
         // reverse order silently wedges the execution; a crash between
         // persist and enqueue is surfaced as a start error instead.)
-        let task = Self::build_continuation_task(&exec);
+        let task = self.build_continuation_task(&exec);
         exec.current_task_id = Some(task.task_id.clone());
         self.persist_workflow(&exec, None).await?;
         self.enqueue_worker_task(task).await?;
@@ -166,17 +173,22 @@ impl Gateway {
                 return Ok((child_id, false));
             }
 
-            let mut child = WorkflowExecution::new(
+            let mut child = WorkflowExecution::new_at(
                 namespace,
                 tenant,
                 workflow,
                 queue.unwrap_or(parent.queue.as_str()),
                 input.clone(),
+                self.clock.now(),
             );
             child.parent_id = Some(parent_id.to_owned());
             let child_id = child.execution_id.clone();
 
-            parent.record_checkpoint(checkpoint, serde_json::json!({ "child_id": child_id }));
+            parent.record_checkpoint_at(
+                checkpoint,
+                serde_json::json!({ "child_id": child_id }),
+                self.clock.now(),
+            );
             parent.children.push(WorkflowChildRef {
                 execution_id: child_id.clone(),
                 parent_close_policy,
@@ -210,7 +222,7 @@ impl Gateway {
             .await;
             // Persist before enqueue, mirroring start_workflow: the parent
             // lock does not cover the child's settle path.
-            let task = Self::build_continuation_task(&child);
+            let task = self.build_continuation_task(&child);
             child.current_task_id = Some(task.task_id.clone());
             self.persist_workflow(&child, None).await?;
             self.enqueue_worker_task(task).await?;
@@ -311,7 +323,7 @@ impl Gateway {
                 )));
             }
             let already = exec.checkpoint(name).is_some();
-            let checkpoint = exec.record_checkpoint(name, data);
+            let checkpoint = exec.record_checkpoint_at(name, data, self.clock.now());
             if !already {
                 self.persist_workflow(&exec, None).await?;
                 self.append_execution_history(
@@ -387,7 +399,7 @@ impl Gateway {
                 let Some(WorkflowAwait::Signal { checkpoint, .. }) = exec.awaiting.take() else {
                     unreachable!()
                 };
-                exec.record_checkpoint(&checkpoint, payload);
+                exec.record_checkpoint_at(&checkpoint, payload, self.clock.now());
                 exec.status = WorkflowStatus::Running;
                 let _ = self
                     .state
@@ -662,7 +674,7 @@ impl Gateway {
                     }
                     // A buffered signal satisfies the await immediately.
                     if let Some(buffered) = exec.take_buffered_signal(&name) {
-                        exec.record_checkpoint(&checkpoint, buffered.payload);
+                        exec.record_checkpoint_at(&checkpoint, buffered.payload, self.clock.now());
                         exec.status = WorkflowStatus::Running;
                         let next = self.enqueue_workflow_continuation(&exec).await?;
                         exec.current_task_id = Some(next);
@@ -785,9 +797,10 @@ impl Gateway {
                     checkpoint,
                     fire_at,
                 }) if now >= fire_at => {
-                    exec.record_checkpoint(
+                    exec.record_checkpoint_at(
                         &checkpoint,
                         serde_json::json!({ "fired_at": now.to_rfc3339() }),
+                        now,
                     );
                     exec.awaiting = None;
                     exec.status = WorkflowStatus::Running;
@@ -812,7 +825,11 @@ impl Gateway {
                     signal_name,
                     timeout_at: Some(timeout_at),
                 }) if now >= timeout_at => {
-                    exec.record_checkpoint(&checkpoint, serde_json::json!({ "timed_out": true }));
+                    exec.record_checkpoint_at(
+                        &checkpoint,
+                        serde_json::json!({ "timed_out": true }),
+                        now,
+                    );
                     exec.awaiting = None;
                     exec.status = WorkflowStatus::Running;
                     let _ = self.state.remove_timeout_index(&timer).await;
@@ -908,17 +925,18 @@ impl Gateway {
     /// resolves input + recorded checkpoints from the execution record (one
     /// GET per continuation), so the queued payload stays O(1) instead of
     /// re-serializing an ever-growing checkpoint snapshot on every resume.
-    fn build_continuation_task(exec: &WorkflowExecution) -> WorkerTask {
+    fn build_continuation_task(&self, exec: &WorkflowExecution) -> WorkerTask {
         let payload = serde_json::json!({
             "execution_id": exec.execution_id,
             "workflow": exec.workflow,
         });
-        WorkerTask::new(
+        WorkerTask::new_at(
             exec.namespace.as_str(),
             exec.tenant.as_str(),
             exec.queue.as_str(),
             WORKFLOW_TASK_ACTION_TYPE,
             payload,
+            self.clock.now(),
         )
         .with_max_attempts(WORKFLOW_TASK_MAX_ATTEMPTS)
         .for_workflow(exec.execution_id.clone())
@@ -931,7 +949,7 @@ impl Gateway {
         &self,
         exec: &WorkflowExecution,
     ) -> Result<String, GatewayError> {
-        let task = Self::build_continuation_task(exec);
+        let task = self.build_continuation_task(exec);
         let task_id = task.task_id.clone();
         self.enqueue_worker_task(task).await?;
         Ok(task_id)

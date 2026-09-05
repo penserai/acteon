@@ -24,6 +24,7 @@ fn queue_error_response(e: &acteon_gateway::GatewayError) -> axum::response::Res
         StatusCode::NOT_FOUND
     } else if msg.contains("not leased")
         || msg.contains("lease token mismatch")
+        || msg.contains("lease expired")
         || msg.contains("not active")
     {
         StatusCode::CONFLICT
@@ -247,19 +248,20 @@ pub async fn enqueue_task(
     if !identity.can_manage_scope(&req.tenant, &req.namespace) {
         return tenant_forbidden(&req.namespace, &req.tenant);
     }
-    let task = WorkerTask::new(
+    let gw = state.gateway.read().await;
+    let task = WorkerTask::new_at(
         req.namespace.as_str(),
         req.tenant.as_str(),
         &queue,
         &req.action_type,
         req.payload,
+        gw.clock().now(),
     )
     .with_max_attempts(
         req.max_attempts
             .unwrap_or(acteon_core::DEFAULT_TASK_MAX_ATTEMPTS),
     );
 
-    let gw = state.gateway.read().await;
     match gw.enqueue_worker_task(task).await {
         Ok(task) => (StatusCode::CREATED, Json(WorkerTaskDto::from(&task))).into_response(),
         Err(e) => queue_error_response(&e),
@@ -325,7 +327,7 @@ pub async fn poll_queue(
     responses(
         (status = 200, description = "Lease extended", body = WorkerTaskDto),
         (status = 404, description = "Task not found", body = ErrorResponse),
-        (status = 409, description = "Lease token mismatch", body = ErrorResponse),
+        (status = 409, description = "Expired lease or token mismatch", body = ErrorResponse),
     )
 )]
 pub async fn heartbeat_task(
@@ -366,7 +368,7 @@ pub async fn heartbeat_task(
     responses(
         (status = 200, description = "Task completed", body = WorkerTaskDto),
         (status = 404, description = "Task not found", body = ErrorResponse),
-        (status = 409, description = "Lease token mismatch", body = ErrorResponse),
+        (status = 409, description = "Expired lease or token mismatch", body = ErrorResponse),
     )
 )]
 pub async fn complete_task(
@@ -408,7 +410,7 @@ pub async fn complete_task(
     responses(
         (status = 200, description = "Failure recorded", body = WorkerTaskDto),
         (status = 404, description = "Task not found", body = ErrorResponse),
-        (status = 409, description = "Lease token mismatch", body = ErrorResponse),
+        (status = 409, description = "Expired lease or token mismatch", body = ErrorResponse),
     )
 )]
 pub async fn fail_task(
