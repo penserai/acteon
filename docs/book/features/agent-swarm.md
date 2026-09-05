@@ -800,95 +800,110 @@ let roles = RoleRegistry::with_builtins();
 let warnings = validate_plan(&plan, &roles.names()).unwrap();
 ```
 
-## Adversarial Loop with Eval Harness (Autoresearch Pattern)
+## Adversarial review and independently verified recovery
 
-After the primary swarm completes its objective, an optional **adversarial phase** critiques the output using a separate LLM engine, then the primary engine recovers by addressing the valid challenges. This design is inspired by [Karpathy's autoresearch](https://github.com/karpathy/autoresearch) pattern, which distills autonomous improvement into three primitives: an **editable asset** (the workspace), a **scalar metric** (the eval score), and **time-boxed cycles** (timeouts). The adversarial critique adds a fourth dimension that autoresearch does not have: **cross-model blind-spot detection**. By pitting a separate engine (e.g., Gemini) against the primary engine (e.g., Claude), the system surfaces assumptions and failure modes that a single model would never flag on its own output.
-
-### Sequence
+An adversarial engine can propose challenges after the primary swarm. Recovery
+requires a configured evaluator. Agent prose and process exit status cannot
+certify a fix: each actionable challenge must have passing evidence from the
+operator-controlled evaluator.
 
 ```mermaid
 sequenceDiagram
-    participant PS as Primary Swarm
-    participant OR as Orchestrator
-    participant EV as Eval Harness
-    participant AS as Adversarial Engine (Gemini)
-    participant PM as program.md
-    participant RE as Recovery Agents (Claude)
-    participant GIT as Git Snapshot
-
-    PS->>OR: Primary run complete (artifacts)
-    OR->>EV: Run eval (baseline score)
-    EV-->>OR: SCORE: 0.9
-    OR->>PM: Generate program.md (scope + baseline + rules)
-    loop Up to max_rounds
-        OR->>AS: Challenge phase (adversarial engine)
-        AS-->>OR: Challenges (category + severity)
-        OR->>OR: Filter by severity_threshold
-        alt No actionable challenges
-            OR->>OR: Accept output
-        else Actionable challenges remain
-            OR->>GIT: git stash (snapshot)
-            OR->>PM: Inject challenges into program.md
-            OR->>RE: Spawn recovery agents (Claude Code, sequential)
-            RE-->>OR: Files patched
-            OR->>EV: Run eval (post-recovery score)
-            EV-->>OR: SCORE: 0.9
-            alt Score dropped
-                OR->>GIT: git stash pop (revert)
-                OR->>OR: Discard recovery, keep prior state
-            else Score held or improved
-                OR->>GIT: git stash drop (discard snapshot)
-                OR->>OR: Keep recovery changes
-            end
-        end
+    participant O as Orchestrator
+    participant W as Original workspace
+    participant C as Candidate worktree
+    participant A as Recovery agents
+    participant E as Independent evaluator
+    O->>W: Capture tracked, staged, and nonignored untracked files
+    O->>C: Create isolated candidate from captured tree
+    O->>A: Review and repair candidate
+    A-->>C: Candidate edits
+    O->>E: Evaluate candidate and pending challenge IDs
+    E-->>O: Versioned checks and hard-gate results
+    alt All required checks pass, no regression, original unchanged
+        O->>W: Apply candidate diff, preserving original index and stashes
+    else Missing evidence, timeout, failure, or concurrent original edit
+        O->>C: Discard candidate; preserve original workspace
     end
-    OR-->>PS: Final output + adversarial report
 ```
 
-1. The primary swarm runs to completion as normal.
-2. The eval harness runs to establish a **baseline score**.
-3. A `program.md` constraint doc is generated and injected into recovery prompts.
-4. The orchestrator hands the output to the adversarial engine for critique.
-5. Challenges below `severity_threshold` are filtered out.
-6. A git snapshot is taken before recovery begins.
-7. The primary engine spawns recovery agents (real Claude Code agents that edit files) to address each actionable challenge.
-8. The eval harness runs again. If the score drops, the recovery is reverted via `git stash pop`. If the score holds or improves, the snapshot is discarded and changes are kept.
-9. If unresolved challenges remain and rounds are left, the loop repeats.
-10. A final adversarial report is persisted alongside the swarm output.
+Subprocess stdout and stderr each have a 1 MiB bound. Timeout, cancellation, and
+output-limit failures terminate the process; on Unix the owned process group is
+also terminated. Deliberately detached processes still require an OS sandbox.
 
-### Eval Harness
+### Evaluator protocol
 
-The eval harness provides the scalar metric that drives the keep/revert decision. Configure it in `swarm.toml`:
+Keep the evaluator outside the writable agent workspace. Configure a literal
+program and argument array:
 
 ```toml
 [eval_harness]
 enabled = true
-command = "cargo test && cargo clippy"
+program = "/opt/acteon-graders/project-evaluator"
+args = []
 timeout_seconds = 300
 pass_threshold = 0.7
 ```
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `enabled` | bool | `false` | Enable the eval harness |
-| `command` | string | *required* | Shell command to run as the eval (tests, lints, custom scripts) |
-| `timeout_seconds` | u64 | `300` | Maximum time for the eval command to complete |
-| `pass_threshold` | f64 | `0.7` | Minimum score to consider the run passing |
+The evaluator runs with the candidate as its working directory. The environment
+variable `ACTEON_EVAL_CHALLENGES` contains a JSON array of pending challenges.
+Successful execution must emit one JSON report to stdout:
 
-**Score signals.** The harness parses stdout for structured score lines:
+```json
+{
+  "schema_version": 1,
+  "checks": [
+    {"id": "regression-suite", "passed": true, "hard_gate": true},
+    {"id": "unsafe-input-reproduction", "passed": true, "hard_gate": true, "challenge_id": "c-1-1"}
+  ]
+}
+```
 
-| Signal | Format | Example |
-|--------|--------|---------|
-| Explicit score | `SCORE: <f64>` | `SCORE: 0.85` |
-| Test pass rate | `PASS: <n>/<total>` | `PASS: 42/50` (yields 0.84) |
-| Warning count | `WARNINGS: <n>` | `WARNINGS: 3` (penalty applied) |
+Check IDs must be unique and nonempty. A report must contain at least one check.
+Unknown fields and schema versions are rejected. Any failing hard gate rejects
+the candidate even if its average score meets the threshold. All checks for an
+actionable challenge must pass before that challenge can be resolved. A failed
+or missing baseline cannot silently produce success without a passing final
+evaluation. The final status is saved in `swarm-run-<id>.json`.
 
-**Fallback.** If no structured signal is found, the harness uses the exit code: `0` maps to `1.0`, non-zero maps to `0.0`.
+Legacy, trusted `command` configuration remains available but cannot be combined
+with `program`/`args`. Legacy stdout requires exactly one `SCORE: <0..1>` or
+`PASS: <passed>/<nonzero total>` signal, with optional nonnegative `WARNINGS`.
+Missing, duplicate, malformed, nonfinite, and out-of-range scores fail. Nonzero
+process exit status always fails. Legacy scalar scores cannot certify challenge
+IDs, so use the JSON protocol for recovery acceptance.
 
-**Git snapshot/revert behavior.** Before recovery agents start editing files, the orchestrator runs `git stash` to snapshot the workspace. After recovery, the eval runs again:
+### Regression plans
 
-- If the post-recovery score is **lower** than the baseline, the orchestrator runs `git stash pop` to revert all recovery changes.
-- If the post-recovery score is **equal or higher**, the orchestrator runs `git stash drop` to discard the snapshot and keep the changes.
+Generate a reviewable command plan from known root manifests:
+
+```sh
+acteon-swarm eval generate --working-directory /path/to/project --output eval-plan.json
+acteon-swarm eval run --plan eval-plan.json --working-directory /path/to/project
+```
+
+The plan contains literal executable/argument pairs and never model-generated
+shell snippets. These baseline checks do not automatically certify challenge
+fixes. Review both the commands and the project scripts they invoke. Git worktree
+isolation preserves user work; it does not prevent a hostile process from
+accessing the host, credentials, or an evaluator running under the same user.
+
+### Policy installation
+
+Before starting agents, set `safety.rules_directory` to the gateway's shared
+rule directory and register `safety.approval_notify_provider` (default
+`approval-notifications`). The orchestrator validates the generated YAML with the
+real parser, installs it atomically, reloads the gateway, verifies the rules are
+enabled, and checks a suppression probe. An unavailable notification provider,
+failed reload, or shadowing rule prevents agent startup.
+
+The generated policy is scoped to the run namespace and tenant. Unknown tools,
+credential-file writes, destructive commands, and network shell utilities are
+blocked. Package installation and Git push require approval. Pending approval,
+deduplication, suppression, and rerouting never authorize the original local
+tool effect. Command patterns are defense in depth, not shell-language analysis.
+Approved gateway actions do not automatically resume a previously blocked local
+tool; an integration must explicitly arrange the approved operation.
 
 ### program.md
 
@@ -937,7 +952,8 @@ max_recovery_agents = 5
 
 [eval_harness]
 enabled = true
-command = "cargo test && cargo clippy"
+program = "/opt/acteon-graders/project-evaluator"
+args = []
 timeout_seconds = 300
 pass_threshold = 0.7
 ```
@@ -948,7 +964,7 @@ pass_threshold = 0.7
 |-----------|------|---------|-------------|
 | `enabled` | bool | `false` | Enable the adversarial challenge-recovery loop |
 | `engine` | string | `"gemini"` | LLM engine for the adversarial phase (`"claude"` or `"gemini"`) |
-| `max_rounds` | u32 | `2` | Maximum challenge-recovery iterations before accepting the output |
+| `max_rounds` | u32 | `2` | Maximum challenge-recovery iterations before returning a verified result or failure |
 | `max_agents` | u32 | `3` | Maximum concurrent adversarial agents during the challenge phase |
 | `challenge_timeout_seconds` | u64 | `300` | Timeout for each challenge phase |
 | `recovery_timeout_seconds` | u64 | `600` | Timeout for each recovery phase |
@@ -961,7 +977,8 @@ pass_threshold = 0.7
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `enabled` | bool | `false` | Enable the eval harness |
-| `command` | string | *required* | Shell command to run as the eval |
+| `program` / `args` | string / array | unset | Trusted evaluator executable and literal arguments |
+| `command` | string | unset | Legacy trusted shell command, exclusive with program/args |
 | `timeout_seconds` | u64 | `300` | Maximum time for the eval command |
 | `pass_threshold` | f64 | `0.7` | Minimum score to consider the run passing |
 
@@ -984,7 +1001,7 @@ acteon-swarm run --plan plan.json --adversarial --recovery-mode fix
 
 # Configure eval harness from CLI
 acteon-swarm run --plan plan.json --adversarial \
-  --eval-command "cargo test && cargo clippy" \
+  --eval-command "/opt/acteon-graders/project-evaluator" \
   --eval-timeout 300 \
   --eval-threshold 0.7
 ```

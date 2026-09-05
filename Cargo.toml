@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/http",
     # Core components
     "crates/core",
     "crates/client",
@@ -80,7 +81,7 @@ members = [
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
-repository = "https://github.com/acteon/acteon"
+repository = "https://github.com/penserai/acteon"
 rust-version = "1.88"
 
 [workspace.dependencies]
@@ -91,6 +92,7 @@ acteon-server = { path = "crates/server" }
 acteon-gateway = { path = "crates/gateway" }
 acteon-simulation = { path = "crates/simulation" }
 acteon-executor = { path = "crates/executor" }
+acteon-http = { path = "crates/http" }
 acteon-provider = { path = "crates/provider" }
 acteon-crypto = { path = "crates/crypto" }
 
@@ -195,22 +197,22 @@ redis = { version = "0.27", features = ["tokio-comp", "connection-manager", "scr
 deadpool-redis = "0.18"
 
 # AWS
-aws-sdk-dynamodb = "1"
-aws-sdk-sns = "1"
-aws-sdk-lambda = "1"
-aws-sdk-eventbridge = "1"
-aws-sdk-sqs = "1"
-aws-sdk-sesv2 = "1"
-aws-sdk-s3 = "1"
-aws-sdk-ec2 = "1"
-aws-sdk-autoscaling = "1"
+aws-sdk-dynamodb = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-sns = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-lambda = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-eventbridge = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-sqs = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-sesv2 = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-s3 = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-ec2 = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-autoscaling = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-config = { version = "1", features = ["behavior-version-latest"] }
 
 # Azure
-azure_core = "0.32"
-azure_identity = "0.32"
-azure_storage_blob = "0.9"
-azure_messaging_eventhubs = "0.11"
+azure_core = "1.1"
+azure_identity = "1.0"
+azure_storage_blob = "1.0"
+azure_messaging_eventhubs = "0.15"
 
 # GCP
 google-cloud-pubsub = "=0.32.3-preview"
@@ -289,7 +291,7 @@ tracing-opentelemetry = "0.29"
 croner = "2"
 
 # MCP
-rmcp = { version = "0.15", features = ["server", "transport-io"] }
+rmcp = { version = "1.4.0", features = ["server", "transport-io"] }
 schemars = "1"
 
 # TLS
@@ -299,7 +301,7 @@ webpki-roots = "0.26"
 tokio-rustls = "0.26"
 
 # WASM
-wasmtime = "29"
+wasmtime = { version = "36.0.7", default-features = false, features = ["runtime", "cranelift", "wat", "std"] }
 
 # Benchmarking
 criterion = { version = "0.5", features = ["async_tokio"] }
@@ -320,7 +322,7 @@ proptest = "1"
 opt-level = 2
 [profile.dev.package.cranelift-codegen]
 opt-level = 2
-[profile.dev.package.wasmtime-cranelift]
+[profile.dev.package.wasmtime-internal-cranelift]
 opt-level = 2
 [profile.dev.package.regalloc2]
 opt-level = 2

@@ -57,10 +57,10 @@ impl Provider for SwarmProvider {
         Ok(ProviderResponse::success(body))
     }
 
-    async fn health_check(&self) -> Result<(), ProviderError> {
+    fn health_check(&self) -> impl std::future::Future<Output = Result<(), ProviderError>> + Send {
         // Always healthy — the registry is an in-process data structure; if
         // the executor is broken, individual runs will flip to Failed.
-        Ok(())
+        std::future::ready(Ok(()))
     }
 }
 

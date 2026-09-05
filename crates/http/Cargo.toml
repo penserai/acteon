@@ -1,0 +1,16 @@
+[package]
+name = "acteon-http"
+description = "Outbound HTTP destination enforcement for Acteon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+reqwest.workspace = true
+tokio.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

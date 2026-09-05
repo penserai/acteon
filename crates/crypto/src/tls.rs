@@ -221,6 +221,23 @@ pub fn build_reqwest_client(
     ca_bundle_path: Option<&str>,
     danger_accept_invalid_certs: bool,
 ) -> Result<reqwest::Client, TlsError> {
+    reqwest_client_builder(
+        client_cert_path,
+        client_key_path,
+        ca_bundle_path,
+        danger_accept_invalid_certs,
+    )?
+    .build()
+    .map_err(|e| TlsError::ReqwestBuild(e.to_string()))
+}
+
+/// Prepare a TLS client builder so callers can attach outbound destination policy.
+pub fn reqwest_client_builder(
+    client_cert_path: Option<&str>,
+    client_key_path: Option<&str>,
+    ca_bundle_path: Option<&str>,
+    danger_accept_invalid_certs: bool,
+) -> Result<reqwest::ClientBuilder, TlsError> {
     let mut builder = reqwest::Client::builder()
         .use_rustls_tls()
         .danger_accept_invalid_certs(danger_accept_invalid_certs);
@@ -262,9 +279,7 @@ pub fn build_reqwest_client(
         builder = builder.identity(identity);
     }
 
-    builder
-        .build()
-        .map_err(|e| TlsError::ReqwestBuild(e.to_string()))
+    Ok(builder)
 }
 
 /// Certificate verifier that accepts any certificate (for dev/test use only).

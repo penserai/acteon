@@ -9,9 +9,10 @@ rust-version.workspace = true
 [features]
 default = []
 trace-context = ["reqwest"]
-webhook = ["reqwest"]
+webhook = ["reqwest", "dep:acteon-http"]
 
 [dependencies]
+acteon-http = { workspace = true, optional = true }
 acteon-core = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }

@@ -21,7 +21,7 @@ clients already provide this.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
 from .errors import ApiError, HttpError
@@ -40,7 +40,7 @@ def _seg(s: str) -> str:
     return quote(s, safe="")
 
 
-def _raise_for_status(resp: "httpx.Response") -> None:
+def _raise_for_status(resp: httpx.Response) -> None:
     """Translate a non-2xx response into either ``ApiError`` (with the
     server's structured error envelope) or ``HttpError`` (raw body).
     """
@@ -49,9 +49,7 @@ def _raise_for_status(resp: "httpx.Response") -> None:
     try:
         data = resp.json()
         message = (
-            data.get("error")
-            or data.get("message")
-            or f"queue error (status {resp.status_code})"
+            data.get("error") or data.get("message") or f"queue error (status {resp.status_code})"
         )
         raise ApiError(
             code=data.get("code", "QUEUE"),
@@ -87,15 +85,15 @@ class WorkerTask:
     max_attempts: int
     created_at: str
     updated_at: str
-    lease_token: Optional[str] = None
-    lease_expires_at: Optional[str] = None
+    lease_token: str | None = None
+    lease_expires_at: str | None = None
     result: Any = None
-    error: Optional[str] = None
-    chain_id: Optional[str] = None
-    workflow_execution_id: Optional[str] = None
+    error: str | None = None
+    chain_id: str | None = None
+    workflow_execution_id: str | None = None
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "WorkerTask":
+    def from_dict(cls, d: dict[str, Any]) -> WorkerTask:
         return cls(
             task_id=d["task_id"],
             queue=d["queue"],
@@ -127,14 +125,15 @@ class _QueuesClientMixin:
     # set by the concrete ``ActeonClient`` it gets mixed into. Stub
     # the types so ``mypy`` (and humans) understand the contract.
     if TYPE_CHECKING:
+
         def _request(  # noqa: D401
             self,
             method: str,
             path: str,
             *,
-            json: Optional[dict] = None,
-            params: Optional[dict] = None,
-        ) -> "httpx.Response": ...
+            json: dict[str, Any] | list[dict[str, Any]] | None = None,
+            params: dict[str, Any] | None = None,
+        ) -> httpx.Response: ...
 
     def enqueue_task(
         self,
@@ -144,7 +143,7 @@ class _QueuesClientMixin:
         action_type: str,
         payload: Any,
         *,
-        max_attempts: Optional[int] = None,
+        max_attempts: int | None = None,
     ) -> WorkerTask:
         """Enqueue a new task on ``queue``.
 
@@ -181,9 +180,9 @@ class _QueuesClientMixin:
         namespace: str,
         tenant: str,
         *,
-        max_tasks: Optional[int] = None,
-        lease_seconds: Optional[int] = None,
-        worker_id: Optional[str] = None,
+        max_tasks: int | None = None,
+        lease_seconds: int | None = None,
+        worker_id: str | None = None,
     ) -> list[WorkerTask]:
         """Poll ``queue`` for available tasks, leasing each one returned.
 
@@ -221,7 +220,7 @@ class _QueuesClientMixin:
         tenant: str,
         lease_token: str,
         *,
-        extend_seconds: Optional[int] = None,
+        extend_seconds: int | None = None,
     ) -> WorkerTask:
         """Extend the lease on a task that is still being worked.
 
@@ -246,9 +245,7 @@ class _QueuesClientMixin:
         }
         if extend_seconds is not None:
             body["extend_seconds"] = extend_seconds
-        resp = self._request(
-            "POST", f"/v1/queues/tasks/{_seg(task_id)}/heartbeat", json=body
-        )
+        resp = self._request("POST", f"/v1/queues/tasks/{_seg(task_id)}/heartbeat", json=body)
         _raise_for_status(resp)
         return WorkerTask.from_dict(resp.json())
 
@@ -330,9 +327,7 @@ class _QueuesClientMixin:
         _raise_for_status(resp)
         return WorkerTask.from_dict(resp.json())
 
-    def get_task(
-        self, task_id: str, namespace: str, tenant: str
-    ) -> Optional[WorkerTask]:
+    def get_task(self, task_id: str, namespace: str, tenant: str) -> WorkerTask | None:
         """Get a single task by ID.
 
         Returns:
@@ -358,7 +353,7 @@ class _QueuesClientMixin:
         namespace: str,
         tenant: str,
         *,
-        status: Optional[str] = None,
+        status: str | None = None,
     ) -> list[WorkerTask]:
         """List tasks on ``queue``, optionally filtered by status.
 
@@ -379,9 +374,7 @@ class _QueuesClientMixin:
         params: dict[str, Any] = {"namespace": namespace, "tenant": tenant}
         if status is not None:
             params["status"] = status
-        resp = self._request(
-            "GET", f"/v1/queues/{_seg(queue)}/tasks", params=params
-        )
+        resp = self._request("GET", f"/v1/queues/{_seg(queue)}/tasks", params=params)
         _raise_for_status(resp)
         return [WorkerTask.from_dict(t) for t in resp.json().get("tasks", [])]
 
@@ -400,14 +393,15 @@ class _AsyncQueuesClientMixin:
     """Async mixin providing the task-queue REST surface."""
 
     if TYPE_CHECKING:
+
         async def _request(  # noqa: D401
             self,
             method: str,
             path: str,
             *,
-            json: Optional[dict] = None,
-            params: Optional[dict] = None,
-        ) -> "httpx.Response": ...
+            json: dict[str, Any] | list[dict[str, Any]] | None = None,
+            params: dict[str, Any] | None = None,
+        ) -> httpx.Response: ...
 
     async def enqueue_task(
         self,
@@ -417,7 +411,7 @@ class _AsyncQueuesClientMixin:
         action_type: str,
         payload: Any,
         *,
-        max_attempts: Optional[int] = None,
+        max_attempts: int | None = None,
     ) -> WorkerTask:
         """Enqueue a new task on ``queue``. See the sync mixin."""
         body: dict[str, Any] = {
@@ -438,9 +432,9 @@ class _AsyncQueuesClientMixin:
         namespace: str,
         tenant: str,
         *,
-        max_tasks: Optional[int] = None,
-        lease_seconds: Optional[int] = None,
-        worker_id: Optional[str] = None,
+        max_tasks: int | None = None,
+        lease_seconds: int | None = None,
+        worker_id: str | None = None,
     ) -> list[WorkerTask]:
         """Poll ``queue`` for available tasks. See the sync mixin."""
         body: dict[str, Any] = {"namespace": namespace, "tenant": tenant}
@@ -461,7 +455,7 @@ class _AsyncQueuesClientMixin:
         tenant: str,
         lease_token: str,
         *,
-        extend_seconds: Optional[int] = None,
+        extend_seconds: int | None = None,
     ) -> WorkerTask:
         """Extend the lease on a task. See the sync mixin."""
         body: dict[str, Any] = {
@@ -471,9 +465,7 @@ class _AsyncQueuesClientMixin:
         }
         if extend_seconds is not None:
             body["extend_seconds"] = extend_seconds
-        resp = await self._request(
-            "POST", f"/v1/queues/tasks/{_seg(task_id)}/heartbeat", json=body
-        )
+        resp = await self._request("POST", f"/v1/queues/tasks/{_seg(task_id)}/heartbeat", json=body)
         _raise_for_status(resp)
         return WorkerTask.from_dict(resp.json())
 
@@ -523,9 +515,7 @@ class _AsyncQueuesClientMixin:
         _raise_for_status(resp)
         return WorkerTask.from_dict(resp.json())
 
-    async def get_task(
-        self, task_id: str, namespace: str, tenant: str
-    ) -> Optional[WorkerTask]:
+    async def get_task(self, task_id: str, namespace: str, tenant: str) -> WorkerTask | None:
         """Get a single task by ID, or None on 404. See the sync mixin."""
         resp = await self._request(
             "GET",
@@ -543,14 +533,12 @@ class _AsyncQueuesClientMixin:
         namespace: str,
         tenant: str,
         *,
-        status: Optional[str] = None,
+        status: str | None = None,
     ) -> list[WorkerTask]:
         """List tasks on ``queue``. See the sync mixin."""
         params: dict[str, Any] = {"namespace": namespace, "tenant": tenant}
         if status is not None:
             params["status"] = status
-        resp = await self._request(
-            "GET", f"/v1/queues/{_seg(queue)}/tasks", params=params
-        )
+        resp = await self._request("GET", f"/v1/queues/{_seg(queue)}/tasks", params=params)
         _raise_for_status(resp)
         return [WorkerTask.from_dict(t) for t in resp.json().get("tasks", [])]

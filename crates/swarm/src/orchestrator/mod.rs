@@ -4,7 +4,9 @@ pub mod engine;
 pub mod eval;
 pub mod eval_gen;
 pub mod monitor;
+pub(crate) mod process;
 pub mod program;
 pub mod refiner;
+pub mod workspace;
 
 pub use engine::{execute_swarm, execute_swarm_with_adversarial};

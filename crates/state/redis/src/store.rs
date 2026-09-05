@@ -218,24 +218,21 @@ impl StateStore for RedisStateStore {
         delta: i64,
         ttl: Option<Duration>,
     ) -> Result<i64, StateError> {
-        // Counters use plain string keys with INCRBY.
-        let redis_key = self.string_key(key);
         let mut conn = self.conn().await?;
-
-        let new_val: i64 = conn
-            .incr(&redis_key, delta)
+        // Respect values created by set/CAS as well as legacy string counters.
+        // The increment and its TTL update are one atomic operation.
+        let ttl_ms = ttl.map_or(-1, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
+        let value: String = Script::new(scripts::INCREMENT)
+            .key(self.string_key(key))
+            .key(self.hash_key(key))
+            .arg(delta)
+            .arg(ttl_ms)
+            .invoke_async(&mut conn)
             .await
             .map_err(|e| StateError::Backend(e.to_string()))?;
-
-        if let Some(d) = ttl {
-            let ms = i64::try_from(d.as_millis()).unwrap_or(i64::MAX);
-            let () = conn
-                .pexpire(&redis_key, ms)
-                .await
-                .map_err(|e| StateError::Backend(e.to_string()))?;
-        }
-
-        Ok(new_val)
+        value
+            .parse()
+            .map_err(|e| StateError::Serialization(format!("invalid counter result: {e}")))
     }
 
     async fn compare_and_swap(

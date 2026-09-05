@@ -675,14 +675,19 @@ impl Gateway {
                 &task.action_type,
                 task.payload.clone(),
             );
-            dlq.push(
-                action,
-                task.error
-                    .clone()
-                    .unwrap_or_else(|| "worker task failed".into()),
-                task.attempt,
-            )
-            .await;
+            if dlq
+                .push(
+                    action,
+                    task.error
+                        .clone()
+                        .unwrap_or_else(|| "worker task failed".into()),
+                    task.attempt,
+                )
+                .await
+                .is_err()
+            {
+                tracing::error!("failed action was not retained in dead-letter storage");
+            }
         }
     }
 

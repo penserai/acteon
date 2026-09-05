@@ -18,6 +18,9 @@ use serde::Deserialize;
 /// ```
 #[derive(Debug, Deserialize)]
 pub struct ProviderConfig {
+    /// Exact host exceptions for outbound webhooks on private networks.
+    #[serde(default)]
+    pub internal_hosts: Vec<String>,
     /// Unique name for this provider.
     pub name: String,
     /// Provider type: `"webhook"`, `"log"`, `"twilio"`, `"teams"`, `"discord"`,

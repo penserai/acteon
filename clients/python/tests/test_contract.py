@@ -18,9 +18,7 @@ from acteon_client.worker import WORKFLOW_ACTION_TYPE, Worker
 from acteon_client.workflows import WorkflowCheckpoint, WorkflowContext, _Suspend
 
 FIXTURES = json.loads(
-    (Path(__file__).parent / "../../contract-fixtures/workflow-contract.json")
-    .resolve()
-    .read_text()
+    (Path(__file__).parent / "../../contract-fixtures/workflow-contract.json").resolve().read_text()
 )
 
 
@@ -85,9 +83,7 @@ def _run_scenario(ops: list[dict[str, Any]]) -> list[str]:
             assert key not in checkpoints, "suspended on a recorded checkpoint"
             keys.append(key)
             # Resolve the suspension the way the server would.
-            checkpoints[key] = (
-                {} if s.directive["directive"] == "sleep" else {"payload": True}
-            )
+            checkpoints[key] = {} if s.directive["directive"] == "sleep" else {"payload": True}
     raise AssertionError("scenario did not settle in 100 continuations")
 
 
@@ -113,9 +109,7 @@ class TestCheckpointKeys(unittest.TestCase):
     def test_scenarios(self):
         for scenario in FIXTURES["checkpoint_key_scenarios"]:
             with self.subTest(scenario=scenario["name"]):
-                self.assertEqual(
-                    _run_scenario(scenario["ops"]), scenario["expected_keys"]
-                )
+                self.assertEqual(_run_scenario(scenario["ops"]), scenario["expected_keys"])
 
 
 class TestDirectiveShapes(unittest.TestCase):
@@ -203,9 +197,7 @@ class TestCoercions(unittest.TestCase):
     def test_sleep_seconds_coercion(self):
         for case in FIXTURES["sleep_coercions"]:
             with self.subTest(input=case["input_seconds"]):
-                directive = _suspension_directive(
-                    lambda ctx, s=case["input_seconds"]: ctx.sleep(s)
-                )
+                directive = _suspension_directive(lambda ctx, s=case["input_seconds"]: ctx.sleep(s))
                 self.assertEqual(directive["seconds"], case["expected_seconds"])
                 self.assertIsInstance(directive["seconds"], int)
 
@@ -213,13 +205,9 @@ class TestCoercions(unittest.TestCase):
         for case in FIXTURES["signal_timeout_coercions"]:
             with self.subTest(input=case["input_seconds"]):
                 directive = _suspension_directive(
-                    lambda ctx, s=case["input_seconds"]: ctx.wait_for_signal(
-                        "x", timeout_seconds=s
-                    )
+                    lambda ctx, s=case["input_seconds"]: ctx.wait_for_signal("x", timeout_seconds=s)
                 )
-                self.assertEqual(
-                    directive["timeout_seconds"], case["expected_seconds"]
-                )
+                self.assertEqual(directive["timeout_seconds"], case["expected_seconds"])
                 self.assertIsInstance(directive["timeout_seconds"], int)
 
 

@@ -106,6 +106,9 @@ pub struct WebhookConfig {
 
     /// Whether to follow redirects.
     pub follow_redirects: bool,
+
+    /// Exact internal-host exceptions configured by the operator.
+    pub outbound_policy: acteon_http::OutboundPolicy,
 }
 
 impl WebhookConfig {
@@ -122,8 +125,16 @@ impl WebhookConfig {
             payload_mode: PayloadMode::FullAction,
             timeout: Duration::from_secs(30),
             success_status_codes: Vec::new(),
-            follow_redirects: true,
+            follow_redirects: false,
+            outbound_policy: acteon_http::OutboundPolicy::default(),
         }
+    }
+
+    /// Explicitly permit a local/private destination (e.g. a test server).
+    #[must_use]
+    pub fn with_internal_host(mut self, host: impl Into<String>) -> Self {
+        self.outbound_policy.internal_hosts.push(host.into());
+        self
     }
 
     /// Set the HTTP method.
@@ -199,7 +210,7 @@ mod tests {
         assert_eq!(config.payload_mode, PayloadMode::FullAction);
         assert_eq!(config.timeout, Duration::from_secs(30));
         assert!(config.success_status_codes.is_empty());
-        assert!(config.follow_redirects);
+        assert!(!config.follow_redirects);
     }
 
     #[test]

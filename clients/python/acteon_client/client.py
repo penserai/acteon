@@ -1,116 +1,101 @@
 """HTTP client for the Acteon action gateway."""
 
-from collections.abc import AsyncIterator
-from typing import Iterator, Optional, Union
+from collections.abc import AsyncIterator, Iterator
+from typing import Any, Optional
 from urllib.parse import quote
+
 import httpx
-
-from .errors import ActeonError, ConnectionError, HttpError, ApiError
-from .models import (
-    Action,
-    ActionOutcome,
-    BatchResult,
-    RuleInfo,
-    ReloadResult,
-    EvaluateRulesRequest,
-    EvaluateRulesResponse,
-    AuditQuery,
-    AuditPage,
-    AuditRecord,
-    EventQuery,
-    EventState,
-    EventListResponse,
-    TransitionResponse,
-    GroupSummary,
-    GroupListResponse,
-    GroupDetail,
-    FlushGroupResponse,
-    ApprovalActionResponse,
-    ApprovalStatus,
-    ApprovalListResponse,
-    ReplayResult,
-    ReplaySummary,
-    ReplayQuery,
-    CreateRecurringAction,
-    CreateRecurringResponse,
-    RecurringFilter,
-    RecurringSummary,
-    ListRecurringResponse,
-    RecurringDetail,
-    UpdateRecurringAction,
-    SwarmRunSnapshot,
-    SwarmRunFilter,
-    ListSwarmRunsResponse,
-    CreateQuotaRequest,
-    UpdateQuotaRequest,
-    QuotaPolicy,
-    ListQuotasResponse,
-    QuotaUsage,
-    SilenceMatcher,
-    CreateSilenceRequest,
-    UpdateSilenceRequest,
-    Silence,
-    ListSilencesResponse,
-    CreateTimeIntervalRequest,
-    UpdateTimeIntervalRequest,
-    TimeInterval,
-    ListTimeIntervalsResponse,
-    CreateRetentionRequest,
-    UpdateRetentionRequest,
-    RetentionPolicy,
-    ListRetentionResponse,
-    ProviderHealthStatus,
-    ListProviderHealthResponse,
-    WasmPluginConfig,
-    WasmPlugin,
-    RegisterPluginRequest,
-    ListPluginsResponse,
-    PluginInvocationRequest,
-    PluginInvocationResponse,
-    ComplianceStatus,
-    HashChainVerification,
-    VerifyHashChainRequest,
-    TemplateInfo,
-    CreateTemplateRequest,
-    UpdateTemplateRequest,
-    ListTemplatesResponse,
-    TemplateProfileInfo,
-    TemplateProfileField,
-    CreateProfileRequest,
-    UpdateProfileRequest,
-    ListProfilesResponse,
-    RenderPreviewRequest,
-    RenderPreviewResponse,
-    ChainSummary,
-    ListChainsResponse,
-    ChainDetailResponse,
-    ChainHistoryResponse,
-    DagNode,
-    DagEdge,
-    DagResponse,
-    DlqStatsResponse,
-    DlqDrainResponse,
-    SseEvent,
-    _parse_sse_stream,
-    AnalyticsResponse,
-    CoverageKey,
-    CoverageEntry,
-    CoverageQuery,
-    CoverageReport,
-    SigningKeyEntry,
-    SigningKeysResponse,
-)
-
 
 from .a2a import _A2AClientMixin, _AsyncA2AClientMixin
 from .bus import _AsyncBusClientMixin, _BusClientMixin
+from .errors import ApiError, ConnectionError, HttpError
+from .models import (
+    Action,
+    ActionOutcome,
+    AnalyticsResponse,
+    ApprovalActionResponse,
+    ApprovalListResponse,
+    ApprovalStatus,
+    AuditPage,
+    AuditQuery,
+    AuditRecord,
+    BatchResult,
+    ChainDetailResponse,
+    ChainHistoryResponse,
+    ComplianceStatus,
+    CoverageQuery,
+    CoverageReport,
+    CreateProfileRequest,
+    CreateQuotaRequest,
+    CreateRecurringAction,
+    CreateRecurringResponse,
+    CreateRetentionRequest,
+    CreateSilenceRequest,
+    CreateTemplateRequest,
+    CreateTimeIntervalRequest,
+    DagResponse,
+    DlqDrainResponse,
+    DlqStatsResponse,
+    EvaluateRulesRequest,
+    EvaluateRulesResponse,
+    EventListResponse,
+    EventQuery,
+    EventState,
+    FlushGroupResponse,
+    GroupDetail,
+    GroupListResponse,
+    HashChainVerification,
+    ListChainsResponse,
+    ListPluginsResponse,
+    ListProfilesResponse,
+    ListProviderHealthResponse,
+    ListQuotasResponse,
+    ListRecurringResponse,
+    ListRetentionResponse,
+    ListSilencesResponse,
+    ListSwarmRunsResponse,
+    ListTemplatesResponse,
+    ListTimeIntervalsResponse,
+    PluginInvocationRequest,
+    PluginInvocationResponse,
+    QuotaPolicy,
+    QuotaUsage,
+    RecurringDetail,
+    RecurringFilter,
+    RegisterPluginRequest,
+    ReloadResult,
+    RenderPreviewRequest,
+    RenderPreviewResponse,
+    ReplayQuery,
+    ReplayResult,
+    ReplaySummary,
+    RetentionPolicy,
+    RuleInfo,
+    SigningKeysResponse,
+    Silence,
+    SseEvent,
+    SwarmRunFilter,
+    SwarmRunSnapshot,
+    TemplateInfo,
+    TemplateProfileInfo,
+    TimeInterval,
+    TransitionResponse,
+    UpdateProfileRequest,
+    UpdateQuotaRequest,
+    UpdateRecurringAction,
+    UpdateRetentionRequest,
+    UpdateSilenceRequest,
+    UpdateTemplateRequest,
+    UpdateTimeIntervalRequest,
+    VerifyHashChainRequest,
+    WasmPlugin,
+    _parse_sse_stream,
+)
 from .queues import _AsyncQueuesClientMixin, _QueuesClientMixin
 from .workflows import _AsyncWorkflowsClientMixin, _WorkflowsClientMixin
 
 
-class ActeonClient(
-    _A2AClientMixin, _BusClientMixin, _QueuesClientMixin, _WorkflowsClientMixin
-):
+class ActeonClient(_A2AClientMixin, _BusClientMixin, _QueuesClientMixin, _WorkflowsClientMixin):
     """HTTP client for the Acteon action gateway.
 
     Example:
@@ -132,10 +117,10 @@ class ActeonClient(
         base_url: str,
         *,
         timeout: float = 30.0,
-        api_key: Optional[str] = None,
-        ca_cert_path: Optional[str] = None,
-        client_cert_path: Optional[str] = None,
-        client_key_path: Optional[str] = None,
+        api_key: str | None = None,
+        ca_cert_path: str | None = None,
+        client_cert_path: str | None = None,
+        client_key_path: str | None = None,
         verify_ssl: bool = True,
     ):
         """Create a new Acteon client.
@@ -156,17 +141,17 @@ class ActeonClient(
         """
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
-        verify: Union[bool, str] = ca_cert_path if ca_cert_path else verify_ssl
+        verify: bool | str = ca_cert_path if ca_cert_path else verify_ssl
         cert = (client_cert_path, client_key_path) if client_cert_path and client_key_path else None
         self._client = httpx.Client(timeout=timeout, verify=verify, cert=cert)
 
-    def __enter__(self):
+    def __enter__(self) -> "ActeonClient":
         return self
 
-    def __exit__(self, *args):
+    def __exit__(self, *args: object) -> None:
         self.close()
 
-    def close(self):
+    def close(self) -> None:
         """Close the HTTP client."""
         self._client.close()
 
@@ -182,9 +167,9 @@ class ActeonClient(
         method: str,
         path: str,
         *,
-        json: Optional[dict] = None,
-        params: Optional[dict] = None,
-        extra_headers: Optional[dict[str, str]] = None,
+        json: dict[str, Any] | list[dict[str, Any]] | None = None,
+        params: dict[str, Any] | None = None,
+        extra_headers: dict[str, str] | None = None,
         skip_auth: bool = False,
     ) -> httpx.Response:
         """Make an HTTP request.
@@ -267,17 +252,13 @@ class ActeonClient(
             # when the 200 body isn't JSON. Rewrap so callers get a
             # typed "malformed response" signal instead of a raw
             # JSON decode error.
-            raise ConnectionError(
-                f"malformed signing keys response: {e}"
-            ) from e
+            raise ConnectionError(f"malformed signing keys response: {e}") from e
 
     # =========================================================================
     # Action Dispatch
     # =========================================================================
 
-    def dispatch(
-        self, action: Action, *, dry_run: bool = False
-    ) -> ActionOutcome:
+    def dispatch(self, action: Action, *, dry_run: bool = False) -> ActionOutcome:
         """Dispatch a single action.
 
         Args:
@@ -291,10 +272,8 @@ class ActeonClient(
             ConnectionError: If unable to connect to the server.
             ApiError: If the server returns an error.
         """
-        params = {"dry_run": "true"} if dry_run else None
-        response = self._request(
-            "POST", "/v1/dispatch", json=action.to_dict(), params=params
-        )
+        params: dict[str, Any] | None = {"dry_run": "true"} if dry_run else None
+        response = self._request("POST", "/v1/dispatch", json=action.to_dict(), params=params)
 
         if response.status_code == 200:
             return ActionOutcome.from_dict(response.json())
@@ -323,9 +302,7 @@ class ActeonClient(
         """
         return self.dispatch(action, dry_run=True)
 
-    def dispatch_batch(
-        self, actions: list[Action], *, dry_run: bool = False
-    ) -> list[BatchResult]:
+    def dispatch_batch(self, actions: list[Action], *, dry_run: bool = False) -> list[BatchResult]:
         """Dispatch multiple actions in a single request.
 
         Args:
@@ -339,7 +316,7 @@ class ActeonClient(
             ConnectionError: If unable to connect to the server.
             ApiError: If the server returns a batch-level error.
         """
-        params = {"dry_run": "true"} if dry_run else None
+        params: dict[str, Any] | None = {"dry_run": "true"} if dry_run else None
         response = self._request(
             "POST",
             "/v1/dispatch/batch",
@@ -393,7 +370,7 @@ class ActeonClient(
         if response.status_code == 200:
             return [RuleInfo.from_dict(r) for r in response.json()]
         else:
-            raise HttpError(response.status_code, f"Failed to list rules")
+            raise HttpError(response.status_code, "Failed to list rules")
 
     def reload_rules(self) -> ReloadResult:
         """Reload rules from the configured directory.
@@ -410,7 +387,7 @@ class ActeonClient(
         if response.status_code == 200:
             return ReloadResult.from_dict(response.json())
         else:
-            raise HttpError(response.status_code, f"Failed to reload rules")
+            raise HttpError(response.status_code, "Failed to reload rules")
 
     def set_rule_enabled(self, rule_name: str, enabled: bool) -> None:
         """Enable or disable a specific rule.
@@ -430,7 +407,7 @@ class ActeonClient(
         )
 
         if response.status_code != 200:
-            raise HttpError(response.status_code, f"Failed to set rule enabled")
+            raise HttpError(response.status_code, "Failed to set rule enabled")
 
     def evaluate_rules(self, request: EvaluateRulesRequest) -> EvaluateRulesResponse:
         """Evaluate rules against a test action without dispatching.
@@ -449,7 +426,7 @@ class ActeonClient(
             ConnectionError: If unable to connect to the server.
             HttpError: If the server returns an error.
         """
-        body: dict = {
+        body: dict[str, Any] = {
             "namespace": request.namespace,
             "tenant": request.tenant,
             "provider": request.provider,
@@ -478,7 +455,7 @@ class ActeonClient(
     # Audit Trail
     # =========================================================================
 
-    def query_audit(self, query: Optional[AuditQuery] = None) -> AuditPage:
+    def query_audit(self, query: AuditQuery | None = None) -> AuditPage:
         """Query audit records.
 
         Args:
@@ -497,9 +474,9 @@ class ActeonClient(
         if response.status_code == 200:
             return AuditPage.from_dict(response.json())
         else:
-            raise HttpError(response.status_code, f"Failed to query audit")
+            raise HttpError(response.status_code, "Failed to query audit")
 
-    def get_audit_record(self, action_id: str) -> Optional[AuditRecord]:
+    def get_audit_record(self, action_id: str) -> AuditRecord | None:
         """Get a specific audit record by action ID.
 
         Args:
@@ -519,7 +496,7 @@ class ActeonClient(
         elif response.status_code == 404:
             return None
         else:
-            raise HttpError(response.status_code, f"Failed to get audit record")
+            raise HttpError(response.status_code, "Failed to get audit record")
 
     # =========================================================================
     # Audit Replay
@@ -549,7 +526,7 @@ class ActeonClient(
         else:
             raise HttpError(response.status_code, "Failed to replay action")
 
-    def replay_audit(self, query: Optional[ReplayQuery] = None) -> ReplaySummary:
+    def replay_audit(self, query: ReplayQuery | None = None) -> ReplaySummary:
         """Bulk replay actions from the audit trail matching the given query.
 
         Args:
@@ -594,9 +571,7 @@ class ActeonClient(
         else:
             raise HttpError(response.status_code, "Failed to list events")
 
-    def get_event(
-        self, fingerprint: str, namespace: str, tenant: str
-    ) -> Optional[EventState]:
+    def get_event(self, fingerprint: str, namespace: str, tenant: str) -> EventState | None:
         """Get the current state of an event by fingerprint.
 
         Args:
@@ -682,7 +657,7 @@ class ActeonClient(
         else:
             raise HttpError(response.status_code, "Failed to list groups")
 
-    def get_group(self, group_key: str) -> Optional[GroupDetail]:
+    def get_group(self, group_key: str) -> GroupDetail | None:
         """Get details of a specific group.
 
         Args:
@@ -736,7 +711,15 @@ class ActeonClient(
     # Approvals (Human-in-the-Loop)
     # =========================================================================
 
-    def approve(self, namespace: str, tenant: str, id: str, sig: str, expires_at: int, kid: Optional[str] = None) -> ApprovalActionResponse:
+    def approve(
+        self,
+        namespace: str,
+        tenant: str,
+        id: str,
+        sig: str,
+        expires_at: int,
+        kid: str | None = None,
+    ) -> ApprovalActionResponse:
         """Approve a pending action by namespace, tenant, ID, and HMAC signature.
 
         Args:
@@ -754,7 +737,7 @@ class ActeonClient(
             ConnectionError: If unable to connect to the server.
             HttpError: If approval not found (404) or already decided (410).
         """
-        params: dict = {"sig": sig, "expires_at": expires_at}
+        params: dict[str, Any] = {"sig": sig, "expires_at": expires_at}
         if kid is not None:
             params["kid"] = kid
         response = self._request(
@@ -772,7 +755,15 @@ class ActeonClient(
         else:
             raise HttpError(response.status_code, "Failed to approve")
 
-    def reject(self, namespace: str, tenant: str, id: str, sig: str, expires_at: int, kid: Optional[str] = None) -> ApprovalActionResponse:
+    def reject(
+        self,
+        namespace: str,
+        tenant: str,
+        id: str,
+        sig: str,
+        expires_at: int,
+        kid: str | None = None,
+    ) -> ApprovalActionResponse:
         """Reject a pending action by namespace, tenant, ID, and HMAC signature.
 
         Args:
@@ -790,7 +781,7 @@ class ActeonClient(
             ConnectionError: If unable to connect to the server.
             HttpError: If approval not found (404) or already decided (410).
         """
-        params: dict = {"sig": sig, "expires_at": expires_at}
+        params: dict[str, Any] = {"sig": sig, "expires_at": expires_at}
         if kid is not None:
             params["kid"] = kid
         response = self._request(
@@ -808,7 +799,15 @@ class ActeonClient(
         else:
             raise HttpError(response.status_code, "Failed to reject")
 
-    def get_approval(self, namespace: str, tenant: str, id: str, sig: str, expires_at: int, kid: Optional[str] = None) -> Optional[ApprovalStatus]:
+    def get_approval(
+        self,
+        namespace: str,
+        tenant: str,
+        id: str,
+        sig: str,
+        expires_at: int,
+        kid: str | None = None,
+    ) -> ApprovalStatus | None:
         """Get the status of an approval by namespace, tenant, ID, and HMAC signature.
 
         Args:
@@ -826,7 +825,7 @@ class ActeonClient(
             ConnectionError: If unable to connect to the server.
             HttpError: If the server returns an error (other than 404).
         """
-        params: dict = {"sig": sig, "expires_at": expires_at}
+        params: dict[str, Any] = {"sig": sig, "expires_at": expires_at}
         if kid is not None:
             params["kid"] = kid
         response = self._request(
@@ -842,9 +841,7 @@ class ActeonClient(
         else:
             raise HttpError(response.status_code, "Failed to get approval")
 
-    def list_approvals(
-        self, namespace: str, tenant: str
-    ) -> ApprovalListResponse:
+    def list_approvals(self, namespace: str, tenant: str) -> ApprovalListResponse:
         """List pending approvals filtered by namespace and tenant.
 
         Args:
@@ -869,14 +866,11 @@ class ActeonClient(
         else:
             raise HttpError(response.status_code, "Failed to list approvals")
 
-
     # =========================================================================
     # Recurring Actions
     # =========================================================================
 
-    def create_recurring(
-        self, recurring: CreateRecurringAction
-    ) -> CreateRecurringResponse:
+    def create_recurring(self, recurring: CreateRecurringAction) -> CreateRecurringResponse:
         """Create a recurring action.
 
         Args:
@@ -901,9 +895,7 @@ class ActeonClient(
                 retryable=data.get("retryable", False),
             )
 
-    def list_recurring(
-        self, filter: Optional[RecurringFilter] = None
-    ) -> ListRecurringResponse:
+    def list_recurring(self, filter: RecurringFilter | None = None) -> ListRecurringResponse:
         """List recurring actions.
 
         Args:
@@ -926,7 +918,7 @@ class ActeonClient(
 
     def get_recurring(
         self, recurring_id: str, namespace: str, tenant: str
-    ) -> Optional[RecurringDetail]:
+    ) -> RecurringDetail | None:
         """Get details of a specific recurring action.
 
         Args:
@@ -954,9 +946,7 @@ class ActeonClient(
         else:
             raise HttpError(response.status_code, "Failed to get recurring action")
 
-    def update_recurring(
-        self, recurring_id: str, update: UpdateRecurringAction
-    ) -> RecurringDetail:
+    def update_recurring(self, recurring_id: str, update: UpdateRecurringAction) -> RecurringDetail:
         """Update a recurring action.
 
         Args:
@@ -971,9 +961,7 @@ class ActeonClient(
             HttpError: If the recurring action is not found (404).
             ApiError: If the server returns a validation error.
         """
-        response = self._request(
-            "PUT", f"/v1/recurring/{recurring_id}", json=update.to_dict()
-        )
+        response = self._request("PUT", f"/v1/recurring/{recurring_id}", json=update.to_dict())
 
         if response.status_code == 200:
             return RecurringDetail.from_dict(response.json())
@@ -987,9 +975,7 @@ class ActeonClient(
                 retryable=data.get("retryable", False),
             )
 
-    def delete_recurring(
-        self, recurring_id: str, namespace: str, tenant: str
-    ) -> None:
+    def delete_recurring(self, recurring_id: str, namespace: str, tenant: str) -> None:
         """Delete a recurring action.
 
         Args:
@@ -1014,9 +1000,7 @@ class ActeonClient(
         else:
             raise HttpError(response.status_code, "Failed to delete recurring action")
 
-    def pause_recurring(
-        self, recurring_id: str, namespace: str, tenant: str
-    ) -> RecurringDetail:
+    def pause_recurring(self, recurring_id: str, namespace: str, tenant: str) -> RecurringDetail:
         """Pause a recurring action.
 
         Args:
@@ -1046,9 +1030,7 @@ class ActeonClient(
         else:
             raise HttpError(response.status_code, "Failed to pause recurring action")
 
-    def resume_recurring(
-        self, recurring_id: str, namespace: str, tenant: str
-    ) -> RecurringDetail:
+    def resume_recurring(self, recurring_id: str, namespace: str, tenant: str) -> RecurringDetail:
         """Resume a paused recurring action.
 
         Args:
@@ -1109,10 +1091,10 @@ class ActeonClient(
 
     def list_quotas(
         self,
-        namespace: Optional[str] = None,
-        tenant: Optional[str] = None,
-        provider: Optional[str] = None,
-        principal: Optional[str] = None,
+        namespace: str | None = None,
+        tenant: str | None = None,
+        provider: str | None = None,
+        principal: str | None = None,
     ) -> "ListQuotasResponse":
         """List quota policies.
 
@@ -1134,7 +1116,7 @@ class ActeonClient(
             ConnectionError: If unable to connect to the server.
             HttpError: If the server returns an error.
         """
-        params: dict = {}
+        params: dict[str, Any] = {}
         if namespace is not None:
             params["namespace"] = namespace
         if tenant is not None:
@@ -1172,9 +1154,7 @@ class ActeonClient(
         else:
             raise HttpError(response.status_code, "Failed to get quota")
 
-    def update_quota(
-        self, quota_id: str, update: "UpdateQuotaRequest"
-    ) -> "QuotaPolicy":
+    def update_quota(self, quota_id: str, update: "UpdateQuotaRequest") -> "QuotaPolicy":
         """Update a quota policy.
 
         Args:
@@ -1189,9 +1169,7 @@ class ActeonClient(
             HttpError: If the quota is not found (404).
             ApiError: If the server returns a validation error.
         """
-        response = self._request(
-            "PUT", f"/v1/quotas/{quota_id}", json=update.to_dict()
-        )
+        response = self._request("PUT", f"/v1/quotas/{quota_id}", json=update.to_dict())
 
         if response.status_code == 200:
             return QuotaPolicy.from_dict(response.json())
@@ -1205,9 +1183,7 @@ class ActeonClient(
                 retryable=data.get("retryable", False),
             )
 
-    def delete_quota(
-        self, quota_id: str, namespace: str, tenant: str
-    ) -> None:
+    def delete_quota(self, quota_id: str, namespace: str, tenant: str) -> None:
         """Delete a quota policy.
 
         Args:
@@ -1286,8 +1262,8 @@ class ActeonClient(
 
     def list_silences(
         self,
-        namespace: Optional[str] = None,
-        tenant: Optional[str] = None,
+        namespace: str | None = None,
+        tenant: str | None = None,
         include_expired: bool = False,
     ) -> "ListSilencesResponse":
         """List silences, optionally filtered by scope or expiry.
@@ -1305,7 +1281,7 @@ class ActeonClient(
             ConnectionError: If unable to connect to the server.
             HttpError: If the server returns an error.
         """
-        params: dict = {}
+        params: dict[str, Any] = {}
         if namespace is not None:
             params["namespace"] = namespace
         if tenant is not None:
@@ -1341,9 +1317,7 @@ class ActeonClient(
         else:
             raise HttpError(response.status_code, "Failed to get silence")
 
-    def update_silence(
-        self, silence_id: str, update: "UpdateSilenceRequest"
-    ) -> "Silence":
+    def update_silence(self, silence_id: str, update: "UpdateSilenceRequest") -> "Silence":
         """Extend a silence or edit its comment.
 
         Matchers are immutable — to change them, expire the silence
@@ -1361,9 +1335,7 @@ class ActeonClient(
             HttpError: If the silence is not found (404).
             ApiError: If the server returns a validation error.
         """
-        response = self._request(
-            "PUT", f"/v1/silences/{silence_id}", json=update.to_dict()
-        )
+        response = self._request("PUT", f"/v1/silences/{silence_id}", json=update.to_dict())
 
         if response.status_code == 200:
             return Silence.from_dict(response.json())
@@ -1403,9 +1375,7 @@ class ActeonClient(
     # Time Intervals
     # =========================================================================
 
-    def create_time_interval(
-        self, req: "CreateTimeIntervalRequest"
-    ) -> "TimeInterval":
+    def create_time_interval(self, req: "CreateTimeIntervalRequest") -> "TimeInterval":
         """Create a time interval."""
         response = self._request("POST", "/v1/time-intervals", json=req.to_dict())
         if response.status_code == 201:
@@ -1419,11 +1389,11 @@ class ActeonClient(
 
     def list_time_intervals(
         self,
-        namespace: Optional[str] = None,
-        tenant: Optional[str] = None,
+        namespace: str | None = None,
+        tenant: str | None = None,
     ) -> "ListTimeIntervalsResponse":
         """List time intervals filtered by namespace/tenant."""
-        params: dict = {}
+        params: dict[str, Any] = {}
         if namespace is not None:
             params["namespace"] = namespace
         if tenant is not None:
@@ -1433,13 +1403,9 @@ class ActeonClient(
             return ListTimeIntervalsResponse.from_dict(response.json())
         raise HttpError(response.status_code, "Failed to list time intervals")
 
-    def get_time_interval(
-        self, namespace: str, tenant: str, name: str
-    ) -> Optional["TimeInterval"]:
+    def get_time_interval(self, namespace: str, tenant: str, name: str) -> Optional["TimeInterval"]:
         """Fetch a single time interval. Returns ``None`` on 404."""
-        response = self._request(
-            "GET", f"/v1/time-intervals/{namespace}/{tenant}/{name}"
-        )
+        response = self._request("GET", f"/v1/time-intervals/{namespace}/{tenant}/{name}")
         if response.status_code == 200:
             return TimeInterval.from_dict(response.json())
         if response.status_code == 404:
@@ -1470,13 +1436,9 @@ class ActeonClient(
             retryable=data.get("retryable", False),
         )
 
-    def delete_time_interval(
-        self, namespace: str, tenant: str, name: str
-    ) -> None:
+    def delete_time_interval(self, namespace: str, tenant: str, name: str) -> None:
         """Delete a time interval."""
-        response = self._request(
-            "DELETE", f"/v1/time-intervals/{namespace}/{tenant}/{name}"
-        )
+        response = self._request("DELETE", f"/v1/time-intervals/{namespace}/{tenant}/{name}")
         if response.status_code == 204:
             return
         if response.status_code == 404:
@@ -1514,10 +1476,10 @@ class ActeonClient(
 
     def list_retention(
         self,
-        namespace: Optional[str] = None,
-        tenant: Optional[str] = None,
-        limit: Optional[int] = None,
-        offset: Optional[int] = None,
+        namespace: str | None = None,
+        tenant: str | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
     ) -> "ListRetentionResponse":
         """List retention policies.
 
@@ -1534,7 +1496,7 @@ class ActeonClient(
             ConnectionError: If unable to connect to the server.
             HttpError: If the server returns an error.
         """
-        params: dict = {}
+        params: dict[str, Any] = {}
         if namespace is not None:
             params["namespace"] = namespace
         if tenant is not None:
@@ -1589,9 +1551,7 @@ class ActeonClient(
             HttpError: If the retention policy is not found (404).
             ApiError: If the server returns a validation error.
         """
-        response = self._request(
-            "PUT", f"/v1/retention/{retention_id}", json=update.to_dict()
-        )
+        response = self._request("PUT", f"/v1/retention/{retention_id}", json=update.to_dict())
 
         if response.status_code == 200:
             return RetentionPolicy.from_dict(response.json())
@@ -1658,8 +1618,8 @@ class ActeonClient(
 
     def list_templates(
         self,
-        namespace: Optional[str] = None,
-        tenant: Optional[str] = None,
+        namespace: str | None = None,
+        tenant: str | None = None,
     ) -> "ListTemplatesResponse":
         """List payload templates.
 
@@ -1674,7 +1634,7 @@ class ActeonClient(
             ConnectionError: If unable to connect to the server.
             HttpError: If the server returns an error.
         """
-        params: dict = {}
+        params: dict[str, Any] = {}
         if namespace is not None:
             params["namespace"] = namespace
         if tenant is not None:
@@ -1708,9 +1668,7 @@ class ActeonClient(
         else:
             raise HttpError(response.status_code, "Failed to get template")
 
-    def update_template(
-        self, template_id: str, update: "UpdateTemplateRequest"
-    ) -> "TemplateInfo":
+    def update_template(self, template_id: str, update: "UpdateTemplateRequest") -> "TemplateInfo":
         """Update a payload template.
 
         Args:
@@ -1725,9 +1683,7 @@ class ActeonClient(
             HttpError: If the template is not found (404).
             ApiError: If the server returns a validation error.
         """
-        response = self._request(
-            "PUT", f"/v1/templates/{template_id}", json=update.to_dict()
-        )
+        response = self._request("PUT", f"/v1/templates/{template_id}", json=update.to_dict())
 
         if response.status_code == 200:
             return TemplateInfo.from_dict(response.json())
@@ -1787,8 +1743,8 @@ class ActeonClient(
 
     def list_profiles(
         self,
-        namespace: Optional[str] = None,
-        tenant: Optional[str] = None,
+        namespace: str | None = None,
+        tenant: str | None = None,
     ) -> "ListProfilesResponse":
         """List template profiles.
 
@@ -1803,7 +1759,7 @@ class ActeonClient(
             ConnectionError: If unable to connect to the server.
             HttpError: If the server returns an error.
         """
-        params: dict = {}
+        params: dict[str, Any] = {}
         if namespace is not None:
             params["namespace"] = namespace
         if tenant is not None:
@@ -2039,9 +1995,7 @@ class ActeonClient(
             HttpError: If the plugin is not found (404).
             ApiError: If the server returns a validation error.
         """
-        response = self._request(
-            "POST", f"/v1/plugins/{name}/invoke", json=req.to_dict()
-        )
+        response = self._request("POST", f"/v1/plugins/{name}/invoke", json=req.to_dict())
 
         if response.status_code == 200:
             return PluginInvocationResponse.from_dict(response.json())
@@ -2075,9 +2029,7 @@ class ActeonClient(
         else:
             raise HttpError(response.status_code, "Failed to get compliance status")
 
-    def verify_audit_chain(
-        self, req: "VerifyHashChainRequest"
-    ) -> HashChainVerification:
+    def verify_audit_chain(self, req: "VerifyHashChainRequest") -> HashChainVerification:
         """Verify the integrity of the audit hash chain for a namespace/tenant pair.
 
         Args:
@@ -2102,7 +2054,7 @@ class ActeonClient(
     # =========================================================================
 
     def list_chains(
-        self, namespace: str, tenant: str, *, status: Optional[str] = None
+        self, namespace: str, tenant: str, *, status: str | None = None
     ) -> ListChainsResponse:
         """List chain executions filtered by namespace, tenant, and optional status.
 
@@ -2118,7 +2070,7 @@ class ActeonClient(
             ConnectionError: If unable to connect to the server.
             HttpError: If the server returns an error.
         """
-        params: dict = {"namespace": namespace, "tenant": tenant}
+        params: dict[str, Any] = {"namespace": namespace, "tenant": tenant}
         if status is not None:
             params["status"] = status
         response = self._request("GET", "/v1/chains", params=params)
@@ -2128,9 +2080,7 @@ class ActeonClient(
         else:
             raise HttpError(response.status_code, "Failed to list chains")
 
-    def get_chain(
-        self, chain_id: str, namespace: str, tenant: str
-    ) -> Optional[ChainDetailResponse]:
+    def get_chain(self, chain_id: str, namespace: str, tenant: str) -> ChainDetailResponse | None:
         """Get full details of a chain execution.
 
         Args:
@@ -2164,8 +2114,8 @@ class ActeonClient(
         namespace: str,
         tenant: str,
         *,
-        reason: Optional[str] = None,
-        cancelled_by: Optional[str] = None,
+        reason: str | None = None,
+        cancelled_by: str | None = None,
     ) -> ChainDetailResponse:
         """Cancel a running chain execution.
 
@@ -2183,15 +2133,13 @@ class ActeonClient(
             ConnectionError: If unable to connect to the server.
             HttpError: If the chain is not found (404) or already finished (409).
         """
-        body: dict = {"namespace": namespace, "tenant": tenant}
+        body: dict[str, Any] = {"namespace": namespace, "tenant": tenant}
         if reason is not None:
             body["reason"] = reason
         if cancelled_by is not None:
             body["cancelled_by"] = cancelled_by
 
-        response = self._request(
-            "POST", f"/v1/chains/{chain_id}/cancel", json=body
-        )
+        response = self._request("POST", f"/v1/chains/{chain_id}/cancel", json=body)
 
         if response.status_code == 200:
             return ChainDetailResponse.from_dict(response.json())
@@ -2202,9 +2150,7 @@ class ActeonClient(
         else:
             raise HttpError(response.status_code, "Failed to cancel chain")
 
-    def get_chain_dag(
-        self, chain_id: str, namespace: str, tenant: str
-    ) -> DagResponse:
+    def get_chain_dag(self, chain_id: str, namespace: str, tenant: str) -> DagResponse:
         """Get the DAG representation for a running chain instance.
 
         Args:
@@ -2255,13 +2201,9 @@ class ActeonClient(
         elif response.status_code == 404:
             raise HttpError(404, f"Chain definition not found: {name}")
         else:
-            raise HttpError(
-                response.status_code, "Failed to get chain definition DAG"
-            )
+            raise HttpError(response.status_code, "Failed to get chain definition DAG")
 
-    def get_chain_history(
-        self, chain_id: str, namespace: str, tenant: str
-    ) -> ChainHistoryResponse:
+    def get_chain_history(self, chain_id: str, namespace: str, tenant: str) -> ChainHistoryResponse:
         """Get the retry history for a chain execution.
 
         Args:
@@ -2287,9 +2229,7 @@ class ActeonClient(
         elif response.status_code == 404:
             raise HttpError(404, f"Chain not found: {chain_id}")
         else:
-            raise HttpError(
-                response.status_code, "Failed to get chain history"
-            )
+            raise HttpError(response.status_code, "Failed to get chain history")
 
     # =========================================================================
     # DLQ (Dead-Letter Queue)
@@ -2342,16 +2282,16 @@ class ActeonClient(
         self,
         metric: str,
         *,
-        namespace: Optional[str] = None,
-        tenant: Optional[str] = None,
-        provider: Optional[str] = None,
-        action_type: Optional[str] = None,
-        outcome: Optional[str] = None,
-        interval: Optional[str] = None,
-        from_time: Optional[str] = None,
-        to_time: Optional[str] = None,
-        group_by: Optional[str] = None,
-        top_n: Optional[int] = None,
+        namespace: str | None = None,
+        tenant: str | None = None,
+        provider: str | None = None,
+        action_type: str | None = None,
+        outcome: str | None = None,
+        interval: str | None = None,
+        from_time: str | None = None,
+        to_time: str | None = None,
+        group_by: str | None = None,
+        top_n: int | None = None,
     ) -> "AnalyticsResponse":
         """Query analytics data.
 
@@ -2411,7 +2351,7 @@ class ActeonClient(
     # Rule Coverage
     # =========================================================================
 
-    def rules_coverage(self, query: Optional[CoverageQuery] = None) -> CoverageReport:
+    def rules_coverage(self, query: CoverageQuery | None = None) -> CoverageReport:
         """Analyze rule coverage by querying the server's aggregation endpoint.
 
         The server groups audit records by
@@ -2456,8 +2396,8 @@ class ActeonClient(
         entity_type: str,
         entity_id: str,
         *,
-        namespace: Optional[str] = None,
-        tenant: Optional[str] = None,
+        namespace: str | None = None,
+        tenant: str | None = None,
         include_history: bool = True,
     ) -> Iterator[SseEvent]:
         """Subscribe to events for a specific entity via SSE.
@@ -2479,7 +2419,7 @@ class ActeonClient(
             ConnectionError: If unable to connect to the server.
             HttpError: If the server returns an error.
         """
-        params: dict = {"include_history": str(include_history).lower()}
+        params: dict[str, Any] = {"include_history": str(include_history).lower()}
         if namespace is not None:
             params["namespace"] = namespace
         if tenant is not None:
@@ -2492,9 +2432,7 @@ class ActeonClient(
         headers.pop("Content-Type", None)
 
         try:
-            with self._client.stream(
-                "GET", url, params=params, headers=headers
-            ) as response:
+            with self._client.stream("GET", url, params=params, headers=headers) as response:
                 if response.status_code != 200:
                     response.read()
                     raise HttpError(response.status_code, "Failed to subscribe")
@@ -2511,14 +2449,14 @@ class ActeonClient(
     def stream(
         self,
         *,
-        namespace: Optional[str] = None,
-        action_type: Optional[str] = None,
-        outcome: Optional[str] = None,
-        event_type: Optional[str] = None,
-        chain_id: Optional[str] = None,
-        group_id: Optional[str] = None,
-        action_id: Optional[str] = None,
-        last_event_id: Optional[str] = None,
+        namespace: str | None = None,
+        action_type: str | None = None,
+        outcome: str | None = None,
+        event_type: str | None = None,
+        chain_id: str | None = None,
+        group_id: str | None = None,
+        action_id: str | None = None,
+        last_event_id: str | None = None,
     ) -> Iterator[SseEvent]:
         """Subscribe to the real-time event stream via SSE.
 
@@ -2542,7 +2480,7 @@ class ActeonClient(
             ConnectionError: If unable to connect to the server.
             HttpError: If the server returns an error.
         """
-        params: dict = {}
+        params: dict[str, Any] = {}
         if namespace is not None:
             params["namespace"] = namespace
         if action_type is not None:
@@ -2567,9 +2505,7 @@ class ActeonClient(
             headers["Last-Event-ID"] = last_event_id
 
         try:
-            with self._client.stream(
-                "GET", url, params=params, headers=headers
-            ) as response:
+            with self._client.stream("GET", url, params=params, headers=headers) as response:
                 if response.status_code != 200:
                     response.read()
                     raise HttpError(response.status_code, "Failed to open stream")
@@ -2579,14 +2515,11 @@ class ActeonClient(
         except httpx.TimeoutException as e:
             raise ConnectionError(f"Request timed out: {e}") from e
 
-
     # ------------------------------------------------------------------
     # Swarm runs
     # ------------------------------------------------------------------
 
-    def list_swarm_runs(
-        self, filter: Optional[SwarmRunFilter] = None
-    ) -> ListSwarmRunsResponse:
+    def list_swarm_runs(self, filter: SwarmRunFilter | None = None) -> ListSwarmRunsResponse:
         """List swarm runs tracked by the server-side registry."""
         params = filter.to_params() if filter else {}
         response = self._request("GET", "/v1/swarm/runs", params=params)
@@ -2594,7 +2527,7 @@ class ActeonClient(
             return ListSwarmRunsResponse.from_dict(response.json())
         raise HttpError(response.status_code, "Failed to list swarm runs")
 
-    def get_swarm_run(self, run_id: str) -> Optional[SwarmRunSnapshot]:
+    def get_swarm_run(self, run_id: str) -> SwarmRunSnapshot | None:
         """Fetch a single swarm run snapshot. Returns ``None`` if unknown."""
         # quote() with safe="" encodes '/', '?', and '#' — otherwise a
         # maliciously crafted run_id could inject path/query segments.
@@ -2606,7 +2539,7 @@ class ActeonClient(
             return None
         raise HttpError(response.status_code, "Failed to fetch swarm run")
 
-    def cancel_swarm_run(self, run_id: str) -> Optional[SwarmRunSnapshot]:
+    def cancel_swarm_run(self, run_id: str) -> SwarmRunSnapshot | None:
         """Request cancellation of an inflight swarm run."""
         encoded = quote(run_id, safe="")
         response = self._request("POST", f"/v1/swarm/runs/{encoded}/cancel")
@@ -2637,10 +2570,10 @@ class AsyncActeonClient(
         base_url: str,
         *,
         timeout: float = 30.0,
-        api_key: Optional[str] = None,
-        ca_cert_path: Optional[str] = None,
-        client_cert_path: Optional[str] = None,
-        client_key_path: Optional[str] = None,
+        api_key: str | None = None,
+        ca_cert_path: str | None = None,
+        client_cert_path: str | None = None,
+        client_key_path: str | None = None,
         verify_ssl: bool = True,
     ):
         """Create a new async Acteon client.
@@ -2661,17 +2594,17 @@ class AsyncActeonClient(
         """
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
-        verify: Union[bool, str] = ca_cert_path if ca_cert_path else verify_ssl
+        verify: bool | str = ca_cert_path if ca_cert_path else verify_ssl
         cert = (client_cert_path, client_key_path) if client_cert_path and client_key_path else None
         self._client = httpx.AsyncClient(timeout=timeout, verify=verify, cert=cert)
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> "AsyncActeonClient":
         return self
 
-    async def __aexit__(self, *args):
+    async def __aexit__(self, *args: object) -> None:
         await self.close()
 
-    async def close(self):
+    async def close(self) -> None:
         await self._client.aclose()
 
     def _headers(self) -> dict[str, str]:
@@ -2685,9 +2618,9 @@ class AsyncActeonClient(
         method: str,
         path: str,
         *,
-        json: Optional[dict] = None,
-        params: Optional[dict] = None,
-        extra_headers: Optional[dict[str, str]] = None,
+        json: dict[str, Any] | list[dict[str, Any]] | None = None,
+        params: dict[str, Any] | None = None,
+        extra_headers: dict[str, str] | None = None,
         skip_auth: bool = False,
     ) -> httpx.Response:
         """Async counterpart of the sync ``_request``.
@@ -2733,17 +2666,11 @@ class AsyncActeonClient(
         try:
             return SigningKeysResponse.from_dict(response.json())
         except ValueError as e:
-            raise ConnectionError(
-                f"malformed signing keys response: {e}"
-            ) from e
+            raise ConnectionError(f"malformed signing keys response: {e}") from e
 
-    async def dispatch(
-        self, action: Action, *, dry_run: bool = False
-    ) -> ActionOutcome:
-        params = {"dry_run": "true"} if dry_run else None
-        response = await self._request(
-            "POST", "/v1/dispatch", json=action.to_dict(), params=params
-        )
+    async def dispatch(self, action: Action, *, dry_run: bool = False) -> ActionOutcome:
+        params: dict[str, Any] | None = {"dry_run": "true"} if dry_run else None
+        response = await self._request("POST", "/v1/dispatch", json=action.to_dict(), params=params)
         if response.status_code == 200:
             return ActionOutcome.from_dict(response.json())
         else:
@@ -2760,7 +2687,7 @@ class AsyncActeonClient(
     async def dispatch_batch(
         self, actions: list[Action], *, dry_run: bool = False
     ) -> list[BatchResult]:
-        params = {"dry_run": "true"} if dry_run else None
+        params: dict[str, Any] | None = {"dry_run": "true"} if dry_run else None
         response = await self._request(
             "POST",
             "/v1/dispatch/batch",
@@ -2777,9 +2704,7 @@ class AsyncActeonClient(
                 retryable=data.get("retryable", False),
             )
 
-    async def dispatch_batch_dry_run(
-        self, actions: list[Action]
-    ) -> list[BatchResult]:
+    async def dispatch_batch_dry_run(self, actions: list[Action]) -> list[BatchResult]:
         return await self.dispatch_batch(actions, dry_run=True)
 
     async def list_rules(self) -> list[RuleInfo]:
@@ -2787,14 +2712,14 @@ class AsyncActeonClient(
         if response.status_code == 200:
             return [RuleInfo.from_dict(r) for r in response.json()]
         else:
-            raise HttpError(response.status_code, f"Failed to list rules")
+            raise HttpError(response.status_code, "Failed to list rules")
 
     async def reload_rules(self) -> ReloadResult:
         response = await self._request("POST", "/v1/rules/reload")
         if response.status_code == 200:
             return ReloadResult.from_dict(response.json())
         else:
-            raise HttpError(response.status_code, f"Failed to reload rules")
+            raise HttpError(response.status_code, "Failed to reload rules")
 
     async def set_rule_enabled(self, rule_name: str, enabled: bool) -> None:
         response = await self._request(
@@ -2803,13 +2728,11 @@ class AsyncActeonClient(
             json={"enabled": enabled},
         )
         if response.status_code != 200:
-            raise HttpError(response.status_code, f"Failed to set rule enabled")
+            raise HttpError(response.status_code, "Failed to set rule enabled")
 
-    async def evaluate_rules(
-        self, request: EvaluateRulesRequest
-    ) -> EvaluateRulesResponse:
+    async def evaluate_rules(self, request: EvaluateRulesRequest) -> EvaluateRulesResponse:
         """Evaluate rules against a test action without dispatching."""
-        body: dict = {
+        body: dict[str, Any] = {
             "namespace": request.namespace,
             "tenant": request.tenant,
             "provider": request.provider,
@@ -2833,22 +2756,22 @@ class AsyncActeonClient(
         else:
             raise HttpError(response.status_code, "Failed to evaluate rules")
 
-    async def query_audit(self, query: Optional[AuditQuery] = None) -> AuditPage:
+    async def query_audit(self, query: AuditQuery | None = None) -> AuditPage:
         params = query.to_params() if query else {}
         response = await self._request("GET", "/v1/audit", params=params)
         if response.status_code == 200:
             return AuditPage.from_dict(response.json())
         else:
-            raise HttpError(response.status_code, f"Failed to query audit")
+            raise HttpError(response.status_code, "Failed to query audit")
 
-    async def get_audit_record(self, action_id: str) -> Optional[AuditRecord]:
+    async def get_audit_record(self, action_id: str) -> AuditRecord | None:
         response = await self._request("GET", f"/v1/audit/{action_id}")
         if response.status_code == 200:
             return AuditRecord.from_dict(response.json())
         elif response.status_code == 404:
             return None
         else:
-            raise HttpError(response.status_code, f"Failed to get audit record")
+            raise HttpError(response.status_code, "Failed to get audit record")
 
     # =========================================================================
     # Audit Replay
@@ -2866,7 +2789,7 @@ class AsyncActeonClient(
         else:
             raise HttpError(response.status_code, "Failed to replay action")
 
-    async def replay_audit(self, query: Optional[ReplayQuery] = None) -> ReplaySummary:
+    async def replay_audit(self, query: ReplayQuery | None = None) -> ReplaySummary:
         """Bulk replay actions from the audit trail."""
         params = query.to_params() if query else {}
         response = await self._request("POST", "/v1/audit/replay", params=params)
@@ -2886,9 +2809,7 @@ class AsyncActeonClient(
         else:
             raise HttpError(response.status_code, "Failed to list events")
 
-    async def get_event(
-        self, fingerprint: str, namespace: str, tenant: str
-    ) -> Optional[EventState]:
+    async def get_event(self, fingerprint: str, namespace: str, tenant: str) -> EventState | None:
         response = await self._request(
             "GET",
             f"/v1/events/{fingerprint}",
@@ -2932,7 +2853,7 @@ class AsyncActeonClient(
         else:
             raise HttpError(response.status_code, "Failed to list groups")
 
-    async def get_group(self, group_key: str) -> Optional[GroupDetail]:
+    async def get_group(self, group_key: str) -> GroupDetail | None:
         response = await self._request("GET", f"/v1/groups/{group_key}")
         if response.status_code == 200:
             return GroupDetail.from_dict(response.json())
@@ -2959,8 +2880,16 @@ class AsyncActeonClient(
     # Approvals (Human-in-the-Loop)
     # =========================================================================
 
-    async def approve(self, namespace: str, tenant: str, id: str, sig: str, expires_at: int, kid: Optional[str] = None) -> ApprovalActionResponse:
-        params: dict = {"sig": sig, "expires_at": expires_at}
+    async def approve(
+        self,
+        namespace: str,
+        tenant: str,
+        id: str,
+        sig: str,
+        expires_at: int,
+        kid: str | None = None,
+    ) -> ApprovalActionResponse:
+        params: dict[str, Any] = {"sig": sig, "expires_at": expires_at}
         if kid is not None:
             params["kid"] = kid
         response = await self._request(
@@ -2977,8 +2906,16 @@ class AsyncActeonClient(
         else:
             raise HttpError(response.status_code, "Failed to approve")
 
-    async def reject(self, namespace: str, tenant: str, id: str, sig: str, expires_at: int, kid: Optional[str] = None) -> ApprovalActionResponse:
-        params: dict = {"sig": sig, "expires_at": expires_at}
+    async def reject(
+        self,
+        namespace: str,
+        tenant: str,
+        id: str,
+        sig: str,
+        expires_at: int,
+        kid: str | None = None,
+    ) -> ApprovalActionResponse:
+        params: dict[str, Any] = {"sig": sig, "expires_at": expires_at}
         if kid is not None:
             params["kid"] = kid
         response = await self._request(
@@ -2995,8 +2932,16 @@ class AsyncActeonClient(
         else:
             raise HttpError(response.status_code, "Failed to reject")
 
-    async def get_approval(self, namespace: str, tenant: str, id: str, sig: str, expires_at: int, kid: Optional[str] = None) -> Optional[ApprovalStatus]:
-        params: dict = {"sig": sig, "expires_at": expires_at}
+    async def get_approval(
+        self,
+        namespace: str,
+        tenant: str,
+        id: str,
+        sig: str,
+        expires_at: int,
+        kid: str | None = None,
+    ) -> ApprovalStatus | None:
+        params: dict[str, Any] = {"sig": sig, "expires_at": expires_at}
         if kid is not None:
             params["kid"] = kid
         response = await self._request(
@@ -3011,9 +2956,7 @@ class AsyncActeonClient(
         else:
             raise HttpError(response.status_code, "Failed to get approval")
 
-    async def list_approvals(
-        self, namespace: str, tenant: str
-    ) -> ApprovalListResponse:
+    async def list_approvals(self, namespace: str, tenant: str) -> ApprovalListResponse:
         response = await self._request(
             "GET",
             "/v1/approvals",
@@ -3028,13 +2971,9 @@ class AsyncActeonClient(
     # Recurring Actions
     # =========================================================================
 
-    async def create_recurring(
-        self, recurring: CreateRecurringAction
-    ) -> CreateRecurringResponse:
+    async def create_recurring(self, recurring: CreateRecurringAction) -> CreateRecurringResponse:
         """Create a recurring action."""
-        response = await self._request(
-            "POST", "/v1/recurring", json=recurring.to_dict()
-        )
+        response = await self._request("POST", "/v1/recurring", json=recurring.to_dict())
         if response.status_code == 201:
             return CreateRecurringResponse.from_dict(response.json())
         else:
@@ -3045,9 +2984,7 @@ class AsyncActeonClient(
                 retryable=data.get("retryable", False),
             )
 
-    async def list_recurring(
-        self, filter: Optional[RecurringFilter] = None
-    ) -> ListRecurringResponse:
+    async def list_recurring(self, filter: RecurringFilter | None = None) -> ListRecurringResponse:
         """List recurring actions."""
         params = filter.to_params() if filter else {}
         response = await self._request("GET", "/v1/recurring", params=params)
@@ -3058,7 +2995,7 @@ class AsyncActeonClient(
 
     async def get_recurring(
         self, recurring_id: str, namespace: str, tenant: str
-    ) -> Optional[RecurringDetail]:
+    ) -> RecurringDetail | None:
         """Get details of a specific recurring action."""
         response = await self._request(
             "GET",
@@ -3091,9 +3028,7 @@ class AsyncActeonClient(
                 retryable=data.get("retryable", False),
             )
 
-    async def delete_recurring(
-        self, recurring_id: str, namespace: str, tenant: str
-    ) -> None:
+    async def delete_recurring(self, recurring_id: str, namespace: str, tenant: str) -> None:
         """Delete a recurring action."""
         response = await self._request(
             "DELETE",
@@ -3162,16 +3097,16 @@ class AsyncActeonClient(
 
     async def list_quotas(
         self,
-        namespace: Optional[str] = None,
-        tenant: Optional[str] = None,
-        provider: Optional[str] = None,
-        principal: Optional[str] = None,
+        namespace: str | None = None,
+        tenant: str | None = None,
+        provider: str | None = None,
+        principal: str | None = None,
     ) -> "ListQuotasResponse":
         """List quota policies, optionally filtered by namespace,
         tenant, provider scope (``"generic"`` matches generic policies;
         a provider name matches per-provider policies), and principal
         (caller) scope."""
-        params: dict = {}
+        params: dict[str, Any] = {}
         if namespace is not None:
             params["namespace"] = namespace
         if tenant is not None:
@@ -3196,13 +3131,9 @@ class AsyncActeonClient(
         else:
             raise HttpError(response.status_code, "Failed to get quota")
 
-    async def update_quota(
-        self, quota_id: str, update: "UpdateQuotaRequest"
-    ) -> "QuotaPolicy":
+    async def update_quota(self, quota_id: str, update: "UpdateQuotaRequest") -> "QuotaPolicy":
         """Update a quota policy."""
-        response = await self._request(
-            "PUT", f"/v1/quotas/{quota_id}", json=update.to_dict()
-        )
+        response = await self._request("PUT", f"/v1/quotas/{quota_id}", json=update.to_dict())
         if response.status_code == 200:
             return QuotaPolicy.from_dict(response.json())
         elif response.status_code == 404:
@@ -3215,9 +3146,7 @@ class AsyncActeonClient(
                 retryable=data.get("retryable", False),
             )
 
-    async def delete_quota(
-        self, quota_id: str, namespace: str, tenant: str
-    ) -> None:
+    async def delete_quota(self, quota_id: str, namespace: str, tenant: str) -> None:
         """Delete a quota policy."""
         response = await self._request(
             "DELETE",
@@ -3247,9 +3176,7 @@ class AsyncActeonClient(
 
     async def create_silence(self, req: "CreateSilenceRequest") -> "Silence":
         """Create a silence. Supply either ``ends_at`` or ``duration_seconds``."""
-        response = await self._request(
-            "POST", "/v1/silences", json=req.to_dict()
-        )
+        response = await self._request("POST", "/v1/silences", json=req.to_dict())
         if response.status_code == 201:
             return Silence.from_dict(response.json())
         else:
@@ -3262,12 +3189,12 @@ class AsyncActeonClient(
 
     async def list_silences(
         self,
-        namespace: Optional[str] = None,
-        tenant: Optional[str] = None,
+        namespace: str | None = None,
+        tenant: str | None = None,
         include_expired: bool = False,
     ) -> "ListSilencesResponse":
         """List silences, optionally filtered by scope or expiry."""
-        params: dict = {}
+        params: dict[str, Any] = {}
         if namespace is not None:
             params["namespace"] = namespace
         if tenant is not None:
@@ -3290,13 +3217,9 @@ class AsyncActeonClient(
         else:
             raise HttpError(response.status_code, "Failed to get silence")
 
-    async def update_silence(
-        self, silence_id: str, update: "UpdateSilenceRequest"
-    ) -> "Silence":
+    async def update_silence(self, silence_id: str, update: "UpdateSilenceRequest") -> "Silence":
         """Extend a silence or edit its comment. Matchers are immutable."""
-        response = await self._request(
-            "PUT", f"/v1/silences/{silence_id}", json=update.to_dict()
-        )
+        response = await self._request("PUT", f"/v1/silences/{silence_id}", json=update.to_dict())
         if response.status_code == 200:
             return Silence.from_dict(response.json())
         elif response.status_code == 404:
@@ -3338,13 +3261,13 @@ class AsyncActeonClient(
 
     async def list_retention(
         self,
-        namespace: Optional[str] = None,
-        tenant: Optional[str] = None,
-        limit: Optional[int] = None,
-        offset: Optional[int] = None,
+        namespace: str | None = None,
+        tenant: str | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
     ) -> "ListRetentionResponse":
         """List retention policies."""
-        params: dict = {}
+        params: dict[str, Any] = {}
         if namespace is not None:
             params["namespace"] = namespace
         if tenant is not None:
@@ -3420,11 +3343,11 @@ class AsyncActeonClient(
 
     async def list_templates(
         self,
-        namespace: Optional[str] = None,
-        tenant: Optional[str] = None,
+        namespace: str | None = None,
+        tenant: str | None = None,
     ) -> "ListTemplatesResponse":
         """List payload templates."""
-        params: dict = {}
+        params: dict[str, Any] = {}
         if namespace is not None:
             params["namespace"] = namespace
         if tenant is not None:
@@ -3449,9 +3372,7 @@ class AsyncActeonClient(
         self, template_id: str, update: "UpdateTemplateRequest"
     ) -> "TemplateInfo":
         """Update a payload template."""
-        response = await self._request(
-            "PUT", f"/v1/templates/{template_id}", json=update.to_dict()
-        )
+        response = await self._request("PUT", f"/v1/templates/{template_id}", json=update.to_dict())
         if response.status_code == 200:
             return TemplateInfo.from_dict(response.json())
         elif response.status_code == 404:
@@ -3489,11 +3410,11 @@ class AsyncActeonClient(
 
     async def list_profiles(
         self,
-        namespace: Optional[str] = None,
-        tenant: Optional[str] = None,
+        namespace: str | None = None,
+        tenant: str | None = None,
     ) -> "ListProfilesResponse":
         """List template profiles."""
-        params: dict = {}
+        params: dict[str, Any] = {}
         if namespace is not None:
             params["namespace"] = namespace
         if tenant is not None:
@@ -3617,9 +3538,7 @@ class AsyncActeonClient(
         self, name: str, req: "PluginInvocationRequest"
     ) -> "PluginInvocationResponse":
         """Test-invoke a WASM plugin."""
-        response = await self._request(
-            "POST", f"/v1/plugins/{name}/invoke", json=req.to_dict()
-        )
+        response = await self._request("POST", f"/v1/plugins/{name}/invoke", json=req.to_dict())
         if response.status_code == 200:
             return PluginInvocationResponse.from_dict(response.json())
         elif response.status_code == 404:
@@ -3644,13 +3563,9 @@ class AsyncActeonClient(
         else:
             raise HttpError(response.status_code, "Failed to get compliance status")
 
-    async def verify_audit_chain(
-        self, req: "VerifyHashChainRequest"
-    ) -> HashChainVerification:
+    async def verify_audit_chain(self, req: "VerifyHashChainRequest") -> HashChainVerification:
         """Verify the integrity of the audit hash chain for a namespace/tenant pair."""
-        response = await self._request(
-            "POST", "/v1/audit/verify", json=req.to_dict()
-        )
+        response = await self._request("POST", "/v1/audit/verify", json=req.to_dict())
         if response.status_code == 200:
             return HashChainVerification.from_dict(response.json())
         else:
@@ -3661,10 +3576,10 @@ class AsyncActeonClient(
     # =========================================================================
 
     async def list_chains(
-        self, namespace: str, tenant: str, *, status: Optional[str] = None
+        self, namespace: str, tenant: str, *, status: str | None = None
     ) -> ListChainsResponse:
         """List chain executions filtered by namespace, tenant, and optional status."""
-        params: dict = {"namespace": namespace, "tenant": tenant}
+        params: dict[str, Any] = {"namespace": namespace, "tenant": tenant}
         if status is not None:
             params["status"] = status
         response = await self._request("GET", "/v1/chains", params=params)
@@ -3675,7 +3590,7 @@ class AsyncActeonClient(
 
     async def get_chain(
         self, chain_id: str, namespace: str, tenant: str
-    ) -> Optional[ChainDetailResponse]:
+    ) -> ChainDetailResponse | None:
         """Get full details of a chain execution."""
         response = await self._request(
             "GET",
@@ -3695,18 +3610,16 @@ class AsyncActeonClient(
         namespace: str,
         tenant: str,
         *,
-        reason: Optional[str] = None,
-        cancelled_by: Optional[str] = None,
+        reason: str | None = None,
+        cancelled_by: str | None = None,
     ) -> ChainDetailResponse:
         """Cancel a running chain execution."""
-        body: dict = {"namespace": namespace, "tenant": tenant}
+        body: dict[str, Any] = {"namespace": namespace, "tenant": tenant}
         if reason is not None:
             body["reason"] = reason
         if cancelled_by is not None:
             body["cancelled_by"] = cancelled_by
-        response = await self._request(
-            "POST", f"/v1/chains/{chain_id}/cancel", json=body
-        )
+        response = await self._request("POST", f"/v1/chains/{chain_id}/cancel", json=body)
         if response.status_code == 200:
             return ChainDetailResponse.from_dict(response.json())
         elif response.status_code == 404:
@@ -3716,9 +3629,7 @@ class AsyncActeonClient(
         else:
             raise HttpError(response.status_code, "Failed to cancel chain")
 
-    async def get_chain_dag(
-        self, chain_id: str, namespace: str, tenant: str
-    ) -> DagResponse:
+    async def get_chain_dag(self, chain_id: str, namespace: str, tenant: str) -> DagResponse:
         """Get the DAG representation for a running chain instance."""
         response = await self._request(
             "GET",
@@ -3743,9 +3654,7 @@ class AsyncActeonClient(
         elif response.status_code == 404:
             raise HttpError(404, f"Chain definition not found: {name}")
         else:
-            raise HttpError(
-                response.status_code, "Failed to get chain definition DAG"
-            )
+            raise HttpError(response.status_code, "Failed to get chain definition DAG")
 
     async def get_chain_history(
         self, chain_id: str, namespace: str, tenant: str
@@ -3761,9 +3670,7 @@ class AsyncActeonClient(
         elif response.status_code == 404:
             raise HttpError(404, f"Chain not found: {chain_id}")
         else:
-            raise HttpError(
-                response.status_code, "Failed to get chain history"
-            )
+            raise HttpError(response.status_code, "Failed to get chain history")
 
     # =========================================================================
     # DLQ (Dead-Letter Queue)
@@ -3795,16 +3702,16 @@ class AsyncActeonClient(
         self,
         metric: str,
         *,
-        namespace: Optional[str] = None,
-        tenant: Optional[str] = None,
-        provider: Optional[str] = None,
-        action_type: Optional[str] = None,
-        outcome: Optional[str] = None,
-        interval: Optional[str] = None,
-        from_time: Optional[str] = None,
-        to_time: Optional[str] = None,
-        group_by: Optional[str] = None,
-        top_n: Optional[int] = None,
+        namespace: str | None = None,
+        tenant: str | None = None,
+        provider: str | None = None,
+        action_type: str | None = None,
+        outcome: str | None = None,
+        interval: str | None = None,
+        from_time: str | None = None,
+        to_time: str | None = None,
+        group_by: str | None = None,
+        top_n: int | None = None,
     ) -> "AnalyticsResponse":
         """Query analytics data.
 
@@ -3864,7 +3771,7 @@ class AsyncActeonClient(
     # Rule Coverage
     # =========================================================================
 
-    async def rules_coverage(self, query: Optional[CoverageQuery] = None) -> CoverageReport:
+    async def rules_coverage(self, query: CoverageQuery | None = None) -> CoverageReport:
         """Analyze rule coverage by querying the server's aggregation endpoint.
 
         The server groups audit records by
@@ -3909,8 +3816,8 @@ class AsyncActeonClient(
         entity_type: str,
         entity_id: str,
         *,
-        namespace: Optional[str] = None,
-        tenant: Optional[str] = None,
+        namespace: str | None = None,
+        tenant: str | None = None,
         include_history: bool = True,
     ) -> AsyncIterator[SseEvent]:
         """Subscribe to events for a specific entity via SSE.
@@ -3932,7 +3839,7 @@ class AsyncActeonClient(
             ConnectionError: If unable to connect to the server.
             HttpError: If the server returns an error.
         """
-        params: dict = {"include_history": str(include_history).lower()}
+        params: dict[str, Any] = {"include_history": str(include_history).lower()}
         if namespace is not None:
             params["namespace"] = namespace
         if tenant is not None:
@@ -3944,9 +3851,7 @@ class AsyncActeonClient(
         headers.pop("Content-Type", None)
 
         try:
-            async with self._client.stream(
-                "GET", url, params=params, headers=headers
-            ) as response:
+            async with self._client.stream("GET", url, params=params, headers=headers) as response:
                 if response.status_code != 200:
                     await response.aread()
                     raise HttpError(response.status_code, "Failed to subscribe")
@@ -3964,14 +3869,14 @@ class AsyncActeonClient(
     async def stream(
         self,
         *,
-        namespace: Optional[str] = None,
-        action_type: Optional[str] = None,
-        outcome: Optional[str] = None,
-        event_type: Optional[str] = None,
-        chain_id: Optional[str] = None,
-        group_id: Optional[str] = None,
-        action_id: Optional[str] = None,
-        last_event_id: Optional[str] = None,
+        namespace: str | None = None,
+        action_type: str | None = None,
+        outcome: str | None = None,
+        event_type: str | None = None,
+        chain_id: str | None = None,
+        group_id: str | None = None,
+        action_id: str | None = None,
+        last_event_id: str | None = None,
     ) -> AsyncIterator[SseEvent]:
         """Subscribe to the real-time event stream via SSE.
 
@@ -3995,7 +3900,7 @@ class AsyncActeonClient(
             ConnectionError: If unable to connect to the server.
             HttpError: If the server returns an error.
         """
-        params: dict = {}
+        params: dict[str, Any] = {}
         if namespace is not None:
             params["namespace"] = namespace
         if action_type is not None:
@@ -4019,9 +3924,7 @@ class AsyncActeonClient(
             headers["Last-Event-ID"] = last_event_id
 
         try:
-            async with self._client.stream(
-                "GET", url, params=params, headers=headers
-            ) as response:
+            async with self._client.stream("GET", url, params=params, headers=headers) as response:
                 if response.status_code != 200:
                     await response.aread()
                     raise HttpError(response.status_code, "Failed to open stream")
@@ -4033,7 +3936,7 @@ class AsyncActeonClient(
             raise ConnectionError(f"Request timed out: {e}") from e
 
 
-async def _async_parse_sse_stream(aiter_lines) -> AsyncIterator[SseEvent]:
+async def _async_parse_sse_stream(aiter_lines: AsyncIterator[str]) -> AsyncIterator[SseEvent]:
     """Parse a text/event-stream from an async line iterator into SseEvent objects.
 
     This is the async equivalent of ``_parse_sse_stream``.
@@ -4046,8 +3949,8 @@ async def _async_parse_sse_stream(aiter_lines) -> AsyncIterator[SseEvent]:
     """
     import json as _json
 
-    event_type: Optional[str] = None
-    event_id: Optional[str] = None
+    event_type: str | None = None
+    event_id: str | None = None
     data_parts: list[str] = []
 
     async for line in aiter_lines:
@@ -4066,8 +3969,8 @@ async def _async_parse_sse_stream(aiter_lines) -> AsyncIterator[SseEvent]:
             data_parts = []
             continue
         if line.startswith("event:"):
-            event_type = line[len("event:"):].strip()
+            event_type = line[len("event:") :].strip()
         elif line.startswith("id:"):
-            event_id = line[len("id:"):].strip()
+            event_id = line[len("id:") :].strip()
         elif line.startswith("data:"):
-            data_parts.append(line[len("data:"):].strip())
+            data_parts.append(line[len("data:") :].strip())

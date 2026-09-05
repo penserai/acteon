@@ -1,7 +1,8 @@
 """Tests for provider health models in acteon_client.models."""
 
 import unittest
-from acteon_client.models import ProviderHealthStatus, ListProviderHealthResponse
+
+from acteon_client.models import ListProviderHealthResponse, ProviderHealthStatus
 
 
 class TestProviderHealthStatus(unittest.TestCase):

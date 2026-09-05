@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   SCCACHE_GHA_ENABLED: "true"
@@ -27,15 +30,15 @@ jobs:
       matrix:
         rust: [stable, "1.88"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install librdkafka build deps
         run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master
         with:
           toolchain: ${{ matrix.rust }}
-      - uses: mozilla-actions/sccache-action@v0.0.9
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo check --workspace
+      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - run: cargo check --locked --workspace --all-targets
 
   clippy:
     name: "Clippy (${{ matrix.rust }})"
@@ -45,16 +48,16 @@ jobs:
       matrix:
         rust: [stable, "1.88"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install librdkafka build deps
         run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master
         with:
           toolchain: ${{ matrix.rust }}
           components: clippy
-      - uses: mozilla-actions/sccache-action@v0.0.9
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --workspace --no-deps -- -D warnings
+      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - run: cargo clippy --locked --workspace --no-deps -- -D warnings
 
   test:
     name: "Test (${{ matrix.rust }})"
@@ -64,7 +67,7 @@ jobs:
       matrix:
         rust: [stable, "1.88"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       # This job builds the full workspace with debug info plus the cloud
       # provider feature matrices; the runner's default free space is no
       # longer enough and the linker dies with SIGBUS at 0 MB free.
@@ -76,31 +79,34 @@ jobs:
           df -h /
       - name: Install librdkafka build deps
         run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master
         with:
           toolchain: ${{ matrix.rust }}
-      - uses: mozilla-actions/sccache-action@v0.0.9
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@nextest
-      - run: cargo nextest run --workspace --lib --bins --tests
+      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8 # nextest
+        with:
+          tool: cargo-nextest
+      - run: cargo nextest run --locked --workspace --lib --bins --tests
       - name: Test AWS providers
-        run: cargo nextest run -p acteon-aws --features full --lib --tests
+        run: cargo nextest run --locked -p acteon-aws --features full --lib --tests
       - name: Test Azure providers
-        run: cargo nextest run -p acteon-azure --features full --lib --tests
+        run: cargo nextest run --locked -p acteon-azure --features full --lib --tests
       - name: Test GCP providers
-        run: cargo nextest run -p acteon-gcp --features full --lib --tests
+        run: cargo nextest run --locked -p acteon-gcp --features full --lib --tests
       - name: Build server with opt-in messaging providers
-        run: cargo check -p acteon-server --features extras-alerting
+        run: cargo check --locked -p acteon-server --features extras-alerting
       - name: Run doctests
-        run: cargo test --workspace --doc
+        run: cargo test --locked --workspace --doc
 
   fmt:
     name: Format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # stable
         with:
+          toolchain: stable
           components: rustfmt
       - run: cargo fmt --all -- --check
 
@@ -108,8 +114,8 @@ jobs:
     name: Frontend
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
           cache: 'npm'
@@ -117,17 +123,29 @@ jobs:
       - run: cd ui && npm ci
       - run: cd ui && npm run lint
       - run: cd ui && npm run build
+      - run: cd ui && npm audit --audit-level=high
+      - run: cd ui && npx playwright install --with-deps chromium
+      - run: cd ui && npm run test:smoke
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: browser-evidence
+          path: |
+            ui/playwright-report
+            ui/test-results
 
   doc:
     name: Doc
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install librdkafka build deps
         run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: mozilla-actions/sccache-action@v0.0.9
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # stable
+        with:
+          toolchain: stable
+      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: cargo doc --workspace --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
@@ -136,8 +154,8 @@ jobs:
     name: TLA+ Specs
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
         with:
           distribution: temurin
           java-version: 17
@@ -157,13 +175,45 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: mozilla-actions/sccache-action@v0.0.9
-      - uses: Swatinem/rust-cache@v2
-      # Run integration tests only for backends with running services.
-      # Redis is the only service configured in this CI job.
-      - run: cargo test -p acteon-state-redis --features integration
+      postgres:
+        image: postgres:16
         env:
-          REDIS_URL: redis://localhost:6379
+          POSTGRES_USER: acteon
+          POSTGRES_PASSWORD: ci-local-only
+          POSTGRES_DB: acteon_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U acteon"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      REDIS_URL: redis://localhost:6379
+      DATABASE_URL: postgres://acteon:ci-local-only@localhost:5432/acteon_test
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # stable
+        with:
+          toolchain: stable
+      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - run: cargo test --locked -p acteon-state-redis -p acteon-state-postgres --features integration --lib
+      - name: Start disposable DynamoDB
+        run: docker run -d --name acteon-ci-dynamodb -p 127.0.0.1:8000:8000 amazon/dynamodb-local:3.3.0 -jar DynamoDBLocal.jar -inMemory -sharedDb
+      - name: DynamoDB state and lock conformance
+        run: cargo test --locked -p acteon-state-dynamodb --features integration --lib
+        env:
+          DYNAMODB_ENDPOINT: http://127.0.0.1:8000
+          AWS_ACCESS_KEY_ID: acteonlocaltest
+          AWS_SECRET_ACCESS_KEY: acteon-local-test
+          AWS_EC2_METADATA_DISABLED: 'true'
+      - run: cargo test --locked -p acteon-simulation --features swarm,redis,postgres --lib
+      - run: scripts/ci/scenarios.sh memory redis postgres
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: scenario-evidence
+          path: scenario-results

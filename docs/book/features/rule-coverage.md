@@ -207,7 +207,7 @@ console.log(`uncovered: ${report.uncovered}`);
 import (
     "context"
     "time"
-    "github.com/acteon/acteon/clients/go/acteon"
+    "github.com/penserai/acteon/clients/go/acteon"
 )
 
 client := acteon.NewClient("http://localhost:8080")

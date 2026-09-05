@@ -44,3 +44,9 @@ test-results/
 examples/agent-swarm-coordination/swarm/workspaces/
 posit-clone/
 acteon.toml
+
+# Reproducible test artifacts
+playwright-report/
+scenario-results/
+*.egg-info/
+dependency-evidence/

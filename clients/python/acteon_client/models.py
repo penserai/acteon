@@ -1,10 +1,11 @@
 """Data models for the Acteon client."""
 
-from dataclasses import dataclass, field
-from typing import Any, Dict, Iterator, List, Optional
-from datetime import datetime
 import json
 import uuid
+from collections.abc import Iterator
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from typing import Any, Optional
 
 
 @dataclass
@@ -18,6 +19,7 @@ class Attachment:
         content_type: MIME type (e.g., "application/pdf").
         data_base64: Base64-encoded file content.
     """
+
     id: str
     name: str
     filename: str
@@ -51,36 +53,40 @@ class Action:
         created_at: Timestamp when the action was created.
         attachments: Optional list of attachments.
     """
+
     namespace: str
     tenant: str
     provider: str
     action_type: str
     payload: dict[str, Any]
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    dedup_key: Optional[str] = None
-    metadata: Optional[dict[str, str]] = None
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    template: Optional[str] = None
-    attachments: Optional[list[Attachment]] = None
-    signature: Optional[str] = None
-    signer_id: Optional[str] = None
-    kid: Optional[str] = None
+    dedup_key: str | None = None
+    metadata: dict[str, str] | None = None
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    template: str | None = None
+    attachments: list[Attachment] | None = None
+    signature: str | None = None
+    signer_id: str | None = None
+    kid: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
-        result = {
+        timestamp = self.created_at
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=UTC)
+        result: dict[str, Any] = {
             "id": self.id,
             "namespace": self.namespace,
             "tenant": self.tenant,
             "provider": self.provider,
             "action_type": self.action_type,
             "payload": self.payload,
-            "created_at": self.created_at.isoformat() + "Z",
+            "created_at": timestamp.astimezone(UTC).isoformat().replace("+00:00", "Z"),
         }
         if self.dedup_key:
             result["dedup_key"] = self.dedup_key
         if self.metadata:
-            result["metadata"] = {"labels": self.metadata}
+            result["metadata"] = self.metadata
         if self.template:
             result["template"] = self.template
         if self.attachments:
@@ -97,6 +103,7 @@ class Action:
 @dataclass
 class ProviderResponse:
     """Response from a provider after executing an action."""
+
     status: str
     body: dict[str, Any]
     headers: dict[str, str] = field(default_factory=dict)
@@ -121,24 +128,29 @@ class ActionOutcome:
         action_id: Scheduled action identifier (for scheduled).
         scheduled_for: RFC 3339 timestamp for scheduled execution (for scheduled).
     """
+
     outcome_type: str
-    response: Optional[ProviderResponse] = None
-    rule: Optional[str] = None
-    original_provider: Optional[str] = None
-    new_provider: Optional[str] = None
-    retry_after_secs: Optional[float] = None
-    error: Optional[dict[str, Any]] = None
-    verdict_details: Optional[dict[str, Any]] = None
-    action_id: Optional[str] = None
-    scheduled_for: Optional[str] = None
-    tenant: Optional[str] = None
-    limit: Optional[int] = None
-    used: Optional[int] = None
-    overage_behavior: Optional[str] = None
+    response: ProviderResponse | None = None
+    rule: str | None = None
+    original_provider: str | None = None
+    new_provider: str | None = None
+    retry_after_secs: float | None = None
+    error: dict[str, Any] | None = None
+    verdict_details: dict[str, Any] | None = None
+    action_id: str | None = None
+    scheduled_for: str | None = None
+    tenant: str | None = None
+    limit: int | None = None
+    used: int | None = None
+    overage_behavior: str | None = None
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "ActionOutcome":
+    def from_dict(cls, data: dict[str, Any] | str) -> "ActionOutcome":
         """Parse from API response."""
+        if isinstance(data, str):
+            if data == "Deduplicated":
+                return cls(outcome_type="deduplicated")
+            raise ValueError(f"Unknown action outcome: {data}")
         if "Executed" in data:
             resp_data = data["Executed"]
             return cls(
@@ -149,7 +161,7 @@ class ActionOutcome:
                     headers=resp_data.get("headers", {}),
                 ),
             )
-        elif data == "Deduplicated" or "Deduplicated" in data:
+        elif "Deduplicated" in data:
             return cls(outcome_type="deduplicated")
         elif "Suppressed" in data:
             return cls(outcome_type="suppressed", rule=data["Suppressed"].get("rule"))
@@ -232,6 +244,7 @@ class ActionOutcome:
 @dataclass
 class ErrorResponse:
     """Error response from the API."""
+
     code: str
     message: str
     retryable: bool = False
@@ -240,9 +253,10 @@ class ErrorResponse:
 @dataclass
 class BatchResult:
     """Result from a batch dispatch operation."""
+
     success: bool
-    outcome: Optional[ActionOutcome] = None
-    error: Optional[ErrorResponse] = None
+    outcome: ActionOutcome | None = None
+    error: ErrorResponse | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "BatchResult":
@@ -264,10 +278,11 @@ class BatchResult:
 @dataclass
 class RuleInfo:
     """Information about a loaded rule."""
+
     name: str
     priority: int
     enabled: bool
-    description: Optional[str] = None
+    description: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "RuleInfo":
@@ -282,6 +297,7 @@ class RuleInfo:
 @dataclass
 class ReloadResult:
     """Result of reloading rules."""
+
     loaded: int
     errors: list[str]
 
@@ -306,16 +322,17 @@ class EvaluateRulesRequest:
         evaluate_at: Optional ISO 8601 timestamp to simulate evaluation at a specific time.
         mock_state: Optional mock state entries for evaluation.
     """
+
     namespace: str
     tenant: str
     provider: str
     action_type: str
-    payload: Dict[str, Any]
-    metadata: Optional[Dict[str, str]] = None
+    payload: dict[str, Any]
+    metadata: dict[str, str] | None = None
     include_disabled: bool = False
     evaluate_all: bool = False
-    evaluate_at: Optional[str] = None
-    mock_state: Optional[Dict[str, str]] = None
+    evaluate_at: str | None = None
+    mock_state: dict[str, str] | None = None
 
 
 @dataclass
@@ -328,6 +345,7 @@ class SemanticMatchDetail:
         similarity: The computed similarity score.
         threshold: The threshold that was configured on the rule.
     """
+
     extracted_text: str
     topic: str
     similarity: float
@@ -354,10 +372,11 @@ class TraceContext:
         accessed_state_keys: State keys actually accessed during evaluation.
         effective_timezone: The effective timezone used for time-based conditions.
     """
-    time: Dict[str, Any]
-    environment_keys: List[str]
-    accessed_state_keys: List[str] = field(default_factory=list)
-    effective_timezone: Optional[str] = None
+
+    time: dict[str, Any]
+    environment_keys: list[str]
+    accessed_state_keys: list[str] = field(default_factory=list)
+    effective_timezone: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TraceContext":
@@ -391,6 +410,7 @@ class RuleTraceEntry:
         modified_payload_preview: Cumulative payload after applying this rule's
             patch (only for Modify rules in evaluate_all mode).
     """
+
     rule_name: str
     priority: int
     enabled: bool
@@ -399,12 +419,12 @@ class RuleTraceEntry:
     evaluation_duration_us: int
     action: str
     source: str
-    description: Optional[str] = None
-    skip_reason: Optional[str] = None
-    error: Optional[str] = None
-    semantic_details: Optional[SemanticMatchDetail] = None
-    modify_patch: Optional[Dict[str, Any]] = None
-    modified_payload_preview: Optional[Dict[str, Any]] = None
+    description: str | None = None
+    skip_reason: str | None = None
+    error: str | None = None
+    semantic_details: SemanticMatchDetail | None = None
+    modify_patch: dict[str, Any] | None = None
+    modified_payload_preview: dict[str, Any] | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "RuleTraceEntry":
@@ -422,9 +442,7 @@ class RuleTraceEntry:
             skip_reason=data.get("skip_reason"),
             error=data.get("error"),
             semantic_details=(
-                SemanticMatchDetail.from_dict(semantic_raw)
-                if semantic_raw is not None
-                else None
+                SemanticMatchDetail.from_dict(semantic_raw) if semantic_raw is not None else None
             ),
             modify_patch=data.get("modify_patch"),
             modified_payload_preview=data.get("modified_payload_preview"),
@@ -446,15 +464,16 @@ class EvaluateRulesResponse:
         has_errors: Whether any rule evaluation produced an error.
         modified_payload: The payload after rule modifications (if any).
     """
+
     verdict: str
     total_rules_evaluated: int
     total_rules_skipped: int
     evaluation_duration_us: int
-    trace: List[RuleTraceEntry]
+    trace: list[RuleTraceEntry]
     context: TraceContext
-    matched_rule: Optional[str] = None
+    matched_rule: str | None = None
     has_errors: bool = False
-    modified_payload: Optional[Dict[str, Any]] = None
+    modified_payload: dict[str, Any] | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "EvaluateRulesResponse":
@@ -480,18 +499,19 @@ class AuditQuery:
     by a prior :class:`AuditPage` back in here to fetch the next page in
     O(limit) time. Treat the cursor as opaque.
     """
-    namespace: Optional[str] = None
-    tenant: Optional[str] = None
-    provider: Optional[str] = None
-    action_type: Optional[str] = None
-    outcome: Optional[str] = None
-    limit: Optional[int] = None
-    offset: Optional[int] = None
-    cursor: Optional[str] = None
+
+    namespace: str | None = None
+    tenant: str | None = None
+    provider: str | None = None
+    action_type: str | None = None
+    outcome: str | None = None
+    limit: int | None = None
+    offset: int | None = None
+    cursor: str | None = None
 
     def to_params(self) -> dict[str, Any]:
         """Convert to query parameters."""
-        params = {}
+        params: dict[str, Any] = {}
         if self.namespace:
             params["namespace"] = self.namespace
         if self.tenant:
@@ -514,6 +534,7 @@ class AuditQuery:
 @dataclass
 class AuditRecord:
     """An audit record."""
+
     id: str
     action_id: str
     namespace: str
@@ -522,12 +543,12 @@ class AuditRecord:
     action_type: str
     verdict: str
     outcome: str
-    matched_rule: Optional[str]
+    matched_rule: str | None
     duration_ms: int
     dispatched_at: str
-    record_hash: Optional[str] = None
-    previous_hash: Optional[str] = None
-    sequence_number: Optional[int] = None
+    record_hash: str | None = None
+    previous_hash: str | None = None
+    sequence_number: int | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AuditRecord":
@@ -558,11 +579,12 @@ class AuditPage:
     when this page is the last; otherwise pass it to the next
     :class:`AuditQuery` to resume.
     """
+
     records: list[AuditRecord]
-    total: Optional[int]
+    total: int | None
     limit: int
     offset: int
-    next_cursor: Optional[str] = None
+    next_cursor: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AuditPage":
@@ -583,10 +605,11 @@ class AuditPage:
 @dataclass
 class EventQuery:
     """Query parameters for listing events."""
+
     namespace: str
     tenant: str
-    status: Optional[str] = None
-    limit: Optional[int] = None
+    status: str | None = None
+    limit: int | None = None
 
     def to_params(self) -> dict[str, Any]:
         """Convert to query parameters."""
@@ -604,10 +627,11 @@ class EventQuery:
 @dataclass
 class EventState:
     """Current state of an event."""
+
     fingerprint: str
     state: str
-    action_type: Optional[str] = None
-    updated_at: Optional[str] = None
+    action_type: str | None = None
+    updated_at: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "EventState":
@@ -622,6 +646,7 @@ class EventState:
 @dataclass
 class EventListResponse:
     """Response from listing events."""
+
     events: list[EventState]
     count: int
 
@@ -636,6 +661,7 @@ class EventListResponse:
 @dataclass
 class TransitionResponse:
     """Response from transitioning an event."""
+
     fingerprint: str
     previous_state: str
     new_state: str
@@ -659,12 +685,13 @@ class TransitionResponse:
 @dataclass
 class GroupSummary:
     """Summary of an event group."""
+
     group_id: str
     group_key: str
     event_count: int
     state: str
-    notify_at: Optional[str] = None
-    created_at: Optional[str] = None
+    notify_at: str | None = None
+    created_at: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "GroupSummary":
@@ -681,6 +708,7 @@ class GroupSummary:
 @dataclass
 class GroupListResponse:
     """Response from listing groups."""
+
     groups: list[GroupSummary]
     total: int
 
@@ -695,6 +723,7 @@ class GroupListResponse:
 @dataclass
 class GroupDetail:
     """Detailed information about a group."""
+
     group: GroupSummary
     events: list[str]
     labels: dict[str, str]
@@ -711,6 +740,7 @@ class GroupDetail:
 @dataclass
 class FlushGroupResponse:
     """Response from flushing a group."""
+
     group_id: str
     event_count: int
     notified: bool
@@ -732,9 +762,10 @@ class FlushGroupResponse:
 @dataclass
 class ApprovalActionResponse:
     """Response from approving or rejecting an action."""
+
     id: str
     status: str
-    outcome: Optional[dict[str, Any]] = None
+    outcome: dict[str, Any] | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ApprovalActionResponse":
@@ -748,13 +779,14 @@ class ApprovalActionResponse:
 @dataclass
 class ApprovalStatus:
     """Public-facing approval status (no payload exposed)."""
+
     token: str
     status: str
     rule: str
     created_at: str
     expires_at: str
-    decided_at: Optional[str] = None
-    message: Optional[str] = None
+    decided_at: str | None = None
+    message: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ApprovalStatus":
@@ -772,6 +804,7 @@ class ApprovalStatus:
 @dataclass
 class ApprovalListResponse:
     """Response from listing pending approvals."""
+
     approvals: list[ApprovalStatus]
     count: int
 
@@ -800,10 +833,11 @@ class WebhookPayload:
         headers: Additional HTTP headers to include.
         body: The JSON body to send to the webhook endpoint.
     """
+
     url: str
     body: dict[str, Any]
     method: str = "POST"
-    headers: Optional[dict[str, str]] = None
+    headers: dict[str, str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to payload dictionary for an Action."""
@@ -825,9 +859,9 @@ def create_webhook_action(
     *,
     action_type: str = "webhook",
     method: str = "POST",
-    headers: Optional[dict[str, str]] = None,
-    dedup_key: Optional[str] = None,
-    metadata: Optional[dict[str, str]] = None,
+    headers: dict[str, str] | None = None,
+    dedup_key: str | None = None,
+    metadata: dict[str, str] | None = None,
 ) -> Action:
     """Create an Action targeting the webhook provider.
 
@@ -874,13 +908,14 @@ def create_webhook_action(
 @dataclass
 class ReplayResult:
     """Result of replaying a single action."""
+
     original_action_id: str
     new_action_id: str
     success: bool
-    error: Optional[str] = None
+    error: str | None = None
 
     @classmethod
-    def from_dict(cls, data: dict) -> "ReplayResult":
+    def from_dict(cls, data: dict[str, Any]) -> "ReplayResult":
         return cls(
             original_action_id=data["original_action_id"],
             new_action_id=data["new_action_id"],
@@ -892,13 +927,14 @@ class ReplayResult:
 @dataclass
 class ReplaySummary:
     """Summary of a bulk replay operation."""
+
     replayed: int
     failed: int
     skipped: int
     results: list[ReplayResult]
 
     @classmethod
-    def from_dict(cls, data: dict) -> "ReplaySummary":
+    def from_dict(cls, data: dict[str, Any]) -> "ReplaySummary":
         return cls(
             replayed=data["replayed"],
             failed=data["failed"],
@@ -910,19 +946,20 @@ class ReplaySummary:
 @dataclass
 class ReplayQuery:
     """Query parameters for bulk audit replay."""
-    namespace: Optional[str] = None
-    tenant: Optional[str] = None
-    provider: Optional[str] = None
-    action_type: Optional[str] = None
-    outcome: Optional[str] = None
-    verdict: Optional[str] = None
-    matched_rule: Optional[str] = None
-    from_time: Optional[str] = None
-    to_time: Optional[str] = None
-    limit: Optional[int] = None
 
-    def to_params(self) -> dict:
-        params = {}
+    namespace: str | None = None
+    tenant: str | None = None
+    provider: str | None = None
+    action_type: str | None = None
+    outcome: str | None = None
+    verdict: str | None = None
+    matched_rule: str | None = None
+    from_time: str | None = None
+    to_time: str | None = None
+    limit: int | None = None
+
+    def to_params(self) -> dict[str, Any]:
+        params: dict[str, Any] = {}
         if self.namespace is not None:
             params["namespace"] = self.namespace
         if self.tenant is not None:
@@ -954,20 +991,21 @@ class ReplayQuery:
 @dataclass
 class CreateRecurringAction:
     """Request to create a recurring action."""
+
     namespace: str
     tenant: str
     provider: str
     action_type: str
     payload: dict[str, Any]
     cron_expression: str
-    name: Optional[str] = None
-    metadata: Optional[dict[str, str]] = None
-    timezone: Optional[str] = None
-    end_date: Optional[str] = None
-    max_executions: Optional[int] = None
-    description: Optional[str] = None
-    dedup_key: Optional[str] = None
-    labels: Optional[dict[str, str]] = None
+    name: str | None = None
+    metadata: dict[str, str] | None = None
+    timezone: str | None = None
+    end_date: str | None = None
+    max_executions: int | None = None
+    description: str | None = None
+    dedup_key: str | None = None
+    labels: dict[str, str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -1001,10 +1039,11 @@ class CreateRecurringAction:
 @dataclass
 class CreateRecurringResponse:
     """Response from creating a recurring action."""
+
     id: str
     status: str
-    name: Optional[str] = None
-    next_execution_at: Optional[str] = None
+    name: str | None = None
+    next_execution_at: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "CreateRecurringResponse":
@@ -1019,11 +1058,12 @@ class CreateRecurringResponse:
 @dataclass
 class RecurringFilter:
     """Query parameters for listing recurring actions."""
-    namespace: Optional[str] = None
-    tenant: Optional[str] = None
-    status: Optional[str] = None
-    limit: Optional[int] = None
-    offset: Optional[int] = None
+
+    namespace: str | None = None
+    tenant: str | None = None
+    status: str | None = None
+    limit: int | None = None
+    offset: int | None = None
 
     def to_params(self) -> dict[str, Any]:
         params: dict[str, Any] = {}
@@ -1043,6 +1083,7 @@ class RecurringFilter:
 @dataclass
 class RecurringSummary:
     """Summary of a recurring action in list responses."""
+
     id: str
     namespace: str
     tenant: str
@@ -1053,8 +1094,8 @@ class RecurringSummary:
     action_type: str
     execution_count: int
     created_at: str
-    next_execution_at: Optional[str] = None
-    description: Optional[str] = None
+    next_execution_at: str | None = None
+    description: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "RecurringSummary":
@@ -1077,15 +1118,14 @@ class RecurringSummary:
 @dataclass
 class ListRecurringResponse:
     """Response from listing recurring actions."""
+
     recurring_actions: list[RecurringSummary]
     count: int
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ListRecurringResponse":
         return cls(
-            recurring_actions=[
-                RecurringSummary.from_dict(r) for r in data["recurring_actions"]
-            ],
+            recurring_actions=[RecurringSummary.from_dict(r) for r in data["recurring_actions"]],
             count=data["count"],
         )
 
@@ -1093,6 +1133,7 @@ class ListRecurringResponse:
 @dataclass
 class RecurringDetail:
     """Detailed information about a recurring action."""
+
     id: str
     namespace: str
     tenant: str
@@ -1107,11 +1148,11 @@ class RecurringDetail:
     created_at: str
     updated_at: str
     labels: dict[str, str]
-    next_execution_at: Optional[str] = None
-    last_executed_at: Optional[str] = None
-    ends_at: Optional[str] = None
-    description: Optional[str] = None
-    dedup_key: Optional[str] = None
+    next_execution_at: str | None = None
+    last_executed_at: str | None = None
+    ends_at: str | None = None
+    description: str | None = None
+    dedup_key: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "RecurringDetail":
@@ -1141,18 +1182,19 @@ class RecurringDetail:
 @dataclass
 class UpdateRecurringAction:
     """Request to update a recurring action."""
+
     namespace: str
     tenant: str
-    name: Optional[str] = None
-    payload: Optional[dict[str, Any]] = None
-    metadata: Optional[dict[str, str]] = None
-    cron_expression: Optional[str] = None
-    timezone: Optional[str] = None
-    end_date: Optional[str] = None
-    max_executions: Optional[int] = None
-    description: Optional[str] = None
-    dedup_key: Optional[str] = None
-    labels: Optional[dict[str, str]] = None
+    name: str | None = None
+    payload: dict[str, Any] | None = None
+    metadata: dict[str, str] | None = None
+    cron_expression: str | None = None
+    timezone: str | None = None
+    end_date: str | None = None
+    max_executions: int | None = None
+    description: str | None = None
+    dedup_key: str | None = None
+    labels: dict[str, str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -1199,16 +1241,17 @@ class CreateQuotaRequest:
     ``(namespace, tenant)`` and are evaluated together at dispatch
     time (strictest outcome wins).
     """
+
     namespace: str
     tenant: str
     max_actions: int
     window: str
     overage_behavior: str
-    provider: Optional[str] = None
-    principal: Optional[str] = None
+    provider: str | None = None
+    principal: str | None = None
     per_principal: bool = False
-    description: Optional[str] = None
-    labels: Optional[dict[str, str]] = None
+    description: str | None = None
+    labels: dict[str, str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -1235,13 +1278,14 @@ class CreateQuotaRequest:
 @dataclass
 class UpdateQuotaRequest:
     """Request to update a quota policy."""
+
     namespace: str
     tenant: str
-    max_actions: Optional[int] = None
-    window: Optional[str] = None
-    overage_behavior: Optional[str] = None
-    description: Optional[str] = None
-    enabled: Optional[bool] = None
+    max_actions: int | None = None
+    window: str | None = None
+    overage_behavior: str | None = None
+    description: str | None = None
+    enabled: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -1270,6 +1314,7 @@ class QuotaPolicy:
     a provider name (e.g. ``"slack"``) when the policy is scoped
     to a single provider.
     """
+
     id: str
     namespace: str
     tenant: str
@@ -1279,11 +1324,11 @@ class QuotaPolicy:
     enabled: bool
     created_at: str
     updated_at: str
-    provider: Optional[str] = None
-    principal: Optional[str] = None
+    provider: str | None = None
+    principal: str | None = None
     per_principal: bool = False
-    description: Optional[str] = None
-    labels: Optional[dict[str, str]] = None
+    description: str | None = None
+    labels: dict[str, str] | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "QuotaPolicy":
@@ -1308,6 +1353,7 @@ class QuotaPolicy:
 @dataclass
 class ListQuotasResponse:
     """Response from listing quota policies."""
+
     quotas: list[QuotaPolicy]
     count: int
 
@@ -1322,6 +1368,7 @@ class ListQuotasResponse:
 @dataclass
 class QuotaUsage:
     """Current usage statistics for a quota."""
+
     tenant: str
     namespace: str
     used: int
@@ -1388,9 +1435,9 @@ class CreateSilenceRequest:
     tenant: str
     matchers: list[SilenceMatcher]
     comment: str
-    starts_at: Optional[str] = None
-    ends_at: Optional[str] = None
-    duration_seconds: Optional[int] = None
+    starts_at: str | None = None
+    ends_at: str | None = None
+    duration_seconds: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -1416,8 +1463,8 @@ class UpdateSilenceRequest:
     create a new one.
     """
 
-    ends_at: Optional[str] = None
-    comment: Optional[str] = None
+    ends_at: str | None = None
+    comment: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {}
@@ -1555,9 +1602,7 @@ class TimeRange:
         return cls(
             times=[TimeOfDayInput(**t) for t in data.get("times", [])],
             weekdays=[WeekdayRange.from_dict(w) for w in data.get("weekdays", [])],
-            days_of_month=[
-                IntRange.from_dict(d) for d in data.get("days_of_month", [])
-            ],
+            days_of_month=[IntRange.from_dict(d) for d in data.get("days_of_month", [])],
             months=[IntRange.from_dict(m) for m in data.get("months", [])],
             years=[IntRange.from_dict(y) for y in data.get("years", [])],
         )
@@ -1571,8 +1616,8 @@ class CreateTimeIntervalRequest:
     namespace: str
     tenant: str
     time_ranges: list[TimeRange] = field(default_factory=list)
-    location: Optional[str] = None
-    description: Optional[str] = None
+    location: str | None = None
+    description: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -1592,9 +1637,9 @@ class CreateTimeIntervalRequest:
 class UpdateTimeIntervalRequest:
     """Partial update for a time interval. ``None`` fields are unchanged."""
 
-    time_ranges: Optional[list[TimeRange]] = None
-    location: Optional[str] = None
-    description: Optional[str] = None
+    time_ranges: list[TimeRange] | None = None
+    location: str | None = None
+    description: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {}
@@ -1619,8 +1664,8 @@ class TimeInterval:
     created_at: str
     updated_at: str
     matches_now: bool = False
-    location: Optional[str] = None
-    description: Optional[str] = None
+    location: str | None = None
+    description: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TimeInterval":
@@ -1646,9 +1691,7 @@ class ListTimeIntervalsResponse:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ListTimeIntervalsResponse":
         return cls(
-            time_intervals=[
-                TimeInterval.from_dict(t) for t in data.get("time_intervals", [])
-            ],
+            time_intervals=[TimeInterval.from_dict(t) for t in data.get("time_intervals", [])],
             count=data.get("count", 0),
         )
 
@@ -1661,14 +1704,15 @@ class ListTimeIntervalsResponse:
 @dataclass
 class CreateRetentionRequest:
     """Request to create a retention policy."""
+
     namespace: str
     tenant: str
     audit_ttl_seconds: int
     state_ttl_seconds: int
     event_ttl_seconds: int
     compliance_hold: bool = False
-    description: Optional[str] = None
-    labels: Optional[dict[str, str]] = None
+    description: str | None = None
+    labels: dict[str, str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -1690,13 +1734,14 @@ class CreateRetentionRequest:
 @dataclass
 class UpdateRetentionRequest:
     """Request to update a retention policy."""
-    enabled: Optional[bool] = None
-    audit_ttl_seconds: Optional[int] = None
-    state_ttl_seconds: Optional[int] = None
-    event_ttl_seconds: Optional[int] = None
-    compliance_hold: Optional[bool] = None
-    description: Optional[str] = None
-    labels: Optional[dict[str, str]] = None
+
+    enabled: bool | None = None
+    audit_ttl_seconds: int | None = None
+    state_ttl_seconds: int | None = None
+    event_ttl_seconds: int | None = None
+    compliance_hold: bool | None = None
+    description: str | None = None
+    labels: dict[str, str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -1721,6 +1766,7 @@ class UpdateRetentionRequest:
 @dataclass
 class RetentionPolicy:
     """A retention policy."""
+
     id: str
     namespace: str
     tenant: str
@@ -1731,8 +1777,8 @@ class RetentionPolicy:
     compliance_hold: bool
     created_at: str
     updated_at: str
-    description: Optional[str] = None
-    labels: Optional[dict[str, str]] = None
+    description: str | None = None
+    labels: dict[str, str] | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "RetentionPolicy":
@@ -1755,6 +1801,7 @@ class RetentionPolicy:
 @dataclass
 class ListRetentionResponse:
     """Response from listing retention policies."""
+
     policies: list[RetentionPolicy]
     count: int
 
@@ -1785,6 +1832,7 @@ class ChainSummary:
         updated_at: When the chain was last updated.
         parent_chain_id: Parent chain ID if this is a sub-chain.
     """
+
     chain_id: str
     chain_name: str
     status: str
@@ -1792,7 +1840,7 @@ class ChainSummary:
     total_steps: int
     started_at: str
     updated_at: str
-    parent_chain_id: Optional[str] = None
+    parent_chain_id: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ChainSummary":
@@ -1811,6 +1859,7 @@ class ChainSummary:
 @dataclass
 class ListChainsResponse:
     """Response from listing chain executions."""
+
     chains: list[ChainSummary]
 
     @classmethod
@@ -1836,17 +1885,18 @@ class ChainStepStatus:
         sub_chain: Name of the sub-chain this step triggers, if any.
         child_chain_id: ID of the child chain instance spawned by this step, if any.
     """
+
     name: str
     provider: str
     status: str
-    response_body: Optional[Any] = None
-    error: Optional[str] = None
-    completed_at: Optional[str] = None
-    sub_chain: Optional[str] = None
-    child_chain_id: Optional[str] = None
-    parallel_sub_steps: Optional[List["ChainStepStatus"]] = None
-    attempt: Optional[int] = None
-    max_retries: Optional[int] = None
+    response_body: Any | None = None
+    error: str | None = None
+    completed_at: str | None = None
+    sub_chain: str | None = None
+    child_chain_id: str | None = None
+    parallel_sub_steps: list["ChainStepStatus"] | None = None
+    attempt: int | None = None
+    max_retries: int | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ChainStepStatus":
@@ -1861,9 +1911,7 @@ class ChainStepStatus:
             sub_chain=data.get("sub_chain"),
             child_chain_id=data.get("child_chain_id"),
             parallel_sub_steps=(
-                [ChainStepStatus.from_dict(s) for s in raw_subs]
-                if raw_subs is not None
-                else None
+                [ChainStepStatus.from_dict(s) for s in raw_subs] if raw_subs is not None else None
             ),
             attempt=data.get("attempt"),
             max_retries=data.get("max_retries"),
@@ -1890,6 +1938,7 @@ class ChainDetailResponse:
         parent_chain_id: Parent chain ID if this is a sub-chain.
         child_chain_ids: IDs of child chains spawned by sub-chain steps.
     """
+
     chain_id: str
     chain_name: str
     status: str
@@ -1898,11 +1947,11 @@ class ChainDetailResponse:
     steps: list[ChainStepStatus]
     started_at: str
     updated_at: str
-    expires_at: Optional[str] = None
-    cancel_reason: Optional[str] = None
-    cancelled_by: Optional[str] = None
+    expires_at: str | None = None
+    cancel_reason: str | None = None
+    cancelled_by: str | None = None
     execution_path: list[str] = field(default_factory=list)
-    parent_chain_id: Optional[str] = None
+    parent_chain_id: str | None = None
     child_chain_ids: list[str] = field(default_factory=list)
 
     @classmethod
@@ -1944,18 +1993,19 @@ class DagNode:
         child_chain_id: ID of the child chain instance (for instance DAGs).
         children: Nested DAG for sub-chain expansion.
     """
+
     name: str
     node_type: str
-    provider: Optional[str] = None
-    action_type: Optional[str] = None
-    sub_chain_name: Optional[str] = None
-    status: Optional[str] = None
-    child_chain_id: Optional[str] = None
+    provider: str | None = None
+    action_type: str | None = None
+    sub_chain_name: str | None = None
+    status: str | None = None
+    child_chain_id: str | None = None
     children: Optional["DagResponse"] = None
-    parallel_children: Optional[List["DagNode"]] = None
-    parallel_join: Optional[str] = None
-    attempt: Optional[int] = None
-    max_retries: Optional[int] = None
+    parallel_children: list["DagNode"] | None = None
+    parallel_join: str | None = None
+    attempt: int | None = None
+    max_retries: int | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "DagNode":
@@ -1969,15 +2019,9 @@ class DagNode:
             sub_chain_name=data.get("sub_chain_name"),
             status=data.get("status"),
             child_chain_id=data.get("child_chain_id"),
-            children=(
-                DagResponse.from_dict(children_data)
-                if children_data is not None
-                else None
-            ),
+            children=(DagResponse.from_dict(children_data) if children_data is not None else None),
             parallel_children=(
-                [DagNode.from_dict(n) for n in raw_parallel]
-                if raw_parallel is not None
-                else None
+                [DagNode.from_dict(n) for n in raw_parallel] if raw_parallel is not None else None
             ),
             parallel_join=data.get("parallel_join"),
             attempt=data.get("attempt"),
@@ -1995,9 +2039,10 @@ class DagEdge:
         label: Edge label (e.g., branch condition).
         on_execution_path: Whether this edge is on the execution path.
     """
+
     source: str
     target: str
-    label: Optional[str] = None
+    label: str | None = None
     on_execution_path: bool = False
 
     @classmethod
@@ -2022,12 +2067,13 @@ class DagResponse:
         edges: Edges connecting the nodes.
         execution_path: Ordered list of step names on the execution path.
     """
+
     chain_name: str
-    nodes: List[DagNode]
-    edges: List[DagEdge]
-    chain_id: Optional[str] = None
-    status: Optional[str] = None
-    execution_path: List[str] = field(default_factory=list)
+    nodes: list[DagNode]
+    edges: list[DagEdge]
+    chain_id: str | None = None
+    status: str | None = None
+    execution_path: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "DagResponse":
@@ -2058,12 +2104,13 @@ class StepAttemptResponse:
         duration_ms: Duration in milliseconds.
         error: Error message (if failed).
     """
+
     attempt: int
     started_at: str
     success: bool
     duration_ms: int
-    completed_at: Optional[str] = None
-    error: Optional[str] = None
+    completed_at: str | None = None
+    error: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "StepAttemptResponse":
@@ -2088,11 +2135,12 @@ class StepHistoryEntry:
         max_retries: Maximum number of retries configured.
         attempts: List of execution attempts.
     """
+
     name: str
     step_index: int
     current_attempt: int
     max_retries: int
-    attempts: List[StepAttemptResponse]
+    attempts: list[StepAttemptResponse]
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "StepHistoryEntry":
@@ -2101,10 +2149,7 @@ class StepHistoryEntry:
             step_index=data["step_index"],
             current_attempt=data["current_attempt"],
             max_retries=data["max_retries"],
-            attempts=[
-                StepAttemptResponse.from_dict(a)
-                for a in data.get("attempts", [])
-            ],
+            attempts=[StepAttemptResponse.from_dict(a) for a in data.get("attempts", [])],
         )
 
 
@@ -2118,10 +2163,11 @@ class ChainHistoryResponse:
         status: Current chain status.
         steps: Per-step retry history.
     """
+
     chain_id: str
     chain_name: str
     status: str
-    steps: List[StepHistoryEntry]
+    steps: list[StepHistoryEntry]
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ChainHistoryResponse":
@@ -2129,10 +2175,7 @@ class ChainHistoryResponse:
             chain_id=data["chain_id"],
             chain_name=data["chain_name"],
             status=data["status"],
-            steps=[
-                StepHistoryEntry.from_dict(s)
-                for s in data.get("steps", [])
-            ],
+            steps=[StepHistoryEntry.from_dict(s) for s in data.get("steps", [])],
         )
 
 
@@ -2149,6 +2192,7 @@ class DlqStatsResponse:
         enabled: Whether the DLQ is enabled.
         count: Number of entries in the DLQ.
     """
+
     enabled: bool
     count: int
 
@@ -2174,6 +2218,7 @@ class DlqEntry:
         attempts: Number of execution attempts made.
         timestamp: Unix timestamp (seconds) when the entry was created.
     """
+
     action_id: str
     namespace: str
     tenant: str
@@ -2205,6 +2250,7 @@ class DlqDrainResponse:
         entries: Entries drained from the DLQ.
         count: Number of entries drained.
     """
+
     entries: list[DlqEntry]
     count: int
 
@@ -2230,9 +2276,10 @@ class SseEvent:
         id: The event ID (if present).
         data: The parsed JSON data payload.
     """
-    event: Optional[str] = None
-    id: Optional[str] = None
-    data: Optional[Any] = None
+
+    event: str | None = None
+    id: str | None = None
+    data: Any | None = None
 
 
 def _parse_sse_stream(lines: Iterator[str]) -> Iterator[SseEvent]:
@@ -2249,8 +2296,8 @@ def _parse_sse_stream(lines: Iterator[str]) -> Iterator[SseEvent]:
     Yields:
         Parsed SseEvent objects.
     """
-    event_type: Optional[str] = None
-    event_id: Optional[str] = None
+    event_type: str | None = None
+    event_id: str | None = None
     data_parts: list[str] = []
 
     for line in lines:
@@ -2272,11 +2319,11 @@ def _parse_sse_stream(lines: Iterator[str]) -> Iterator[SseEvent]:
             data_parts = []
             continue
         if line.startswith("event:"):
-            event_type = line[len("event:"):].strip()
+            event_type = line[len("event:") :].strip()
         elif line.startswith("id:"):
-            event_id = line[len("id:"):].strip()
+            event_id = line[len("id:") :].strip()
         elif line.startswith("data:"):
-            data_parts.append(line[len("data:"):].strip())
+            data_parts.append(line[len("data:") :].strip())
         # Other fields are ignored per the SSE spec.
 
 
@@ -2305,6 +2352,7 @@ class ProviderHealthStatus:
         last_request_at: Timestamp of last request (milliseconds since epoch).
         last_error: Last error message (if any).
     """
+
     provider: str
     healthy: bool
     circuit_breaker_state: str
@@ -2316,9 +2364,9 @@ class ProviderHealthStatus:
     p50_latency_ms: float
     p95_latency_ms: float
     p99_latency_ms: float
-    health_check_error: Optional[str] = None
-    last_request_at: Optional[int] = None
-    last_error: Optional[str] = None
+    health_check_error: str | None = None
+    last_request_at: int | None = None
+    last_error: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ProviderHealthStatus":
@@ -2343,6 +2391,7 @@ class ProviderHealthStatus:
 @dataclass
 class ListProviderHealthResponse:
     """Response from listing provider health."""
+
     providers: list[ProviderHealthStatus]
 
     @classmethod
@@ -2377,17 +2426,18 @@ class AnalyticsQuery:
             "outcome").
         top_n: Optional limit for top-N queries.
     """
+
     metric: str
-    namespace: Optional[str] = None
-    tenant: Optional[str] = None
-    provider: Optional[str] = None
-    action_type: Optional[str] = None
-    outcome: Optional[str] = None
-    interval: Optional[str] = None
-    from_time: Optional[str] = None
-    to_time: Optional[str] = None
-    group_by: Optional[str] = None
-    top_n: Optional[int] = None
+    namespace: str | None = None
+    tenant: str | None = None
+    provider: str | None = None
+    action_type: str | None = None
+    outcome: str | None = None
+    interval: str | None = None
+    from_time: str | None = None
+    to_time: str | None = None
+    group_by: str | None = None
+    top_n: int | None = None
 
     def to_params(self) -> dict[str, str]:
         """Convert to query parameter dictionary."""
@@ -2429,14 +2479,15 @@ class AnalyticsBucket:
         p99_duration_ms: 99th percentile duration in milliseconds.
         error_rate: Fraction of actions that failed (0.0 to 1.0).
     """
+
     timestamp: str
     count: int
-    group: Optional[str] = None
-    avg_duration_ms: Optional[float] = None
-    p50_duration_ms: Optional[float] = None
-    p95_duration_ms: Optional[float] = None
-    p99_duration_ms: Optional[float] = None
-    error_rate: Optional[float] = None
+    group: str | None = None
+    avg_duration_ms: float | None = None
+    p50_duration_ms: float | None = None
+    p95_duration_ms: float | None = None
+    p99_duration_ms: float | None = None
+    error_rate: float | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AnalyticsBucket":
@@ -2461,6 +2512,7 @@ class AnalyticsTopEntry:
         count: Number of occurrences.
         percentage: Percentage of total.
     """
+
     label: str
     count: int
     percentage: float
@@ -2487,6 +2539,7 @@ class AnalyticsResponse:
         top_entries: List of top-N entries (for top_action_types metric).
         total_count: Total count across all buckets.
     """
+
     metric: str
     interval: str
     from_time: str
@@ -2503,12 +2556,8 @@ class AnalyticsResponse:
             from_time=data["from"],
             to_time=data["to"],
             total_count=data["total_count"],
-            buckets=[
-                AnalyticsBucket.from_dict(b) for b in data.get("buckets", [])
-            ],
-            top_entries=[
-                AnalyticsTopEntry.from_dict(e) for e in data.get("top_entries", [])
-            ],
+            buckets=[AnalyticsBucket.from_dict(b) for b in data.get("buckets", [])],
+            top_entries=[AnalyticsTopEntry.from_dict(e) for e in data.get("top_entries", [])],
         )
 
 
@@ -2521,8 +2570,8 @@ def twilio_sms_payload(
     to: str,
     body: str,
     *,
-    from_number: Optional[str] = None,
-    media_url: Optional[str] = None,
+    from_number: str | None = None,
+    media_url: str | None = None,
 ) -> dict[str, Any]:
     """Build a payload for the Twilio SMS provider.
 
@@ -2546,9 +2595,9 @@ def twilio_sms_payload(
 def teams_message_payload(
     text: str,
     *,
-    title: Optional[str] = None,
-    theme_color: Optional[str] = None,
-    summary: Optional[str] = None,
+    title: str | None = None,
+    theme_color: str | None = None,
+    summary: str | None = None,
 ) -> dict[str, Any]:
     """Build a payload for the Microsoft Teams provider (MessageCard).
 
@@ -2597,9 +2646,10 @@ class WasmPluginConfig:
         timeout_ms: Maximum execution time in milliseconds.
         allowed_host_functions: List of host functions the plugin may call.
     """
-    memory_limit_bytes: Optional[int] = None
-    timeout_ms: Optional[int] = None
-    allowed_host_functions: Optional[List[str]] = None
+
+    memory_limit_bytes: int | None = None
+    timeout_ms: int | None = None
+    allowed_host_functions: list[str] | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "WasmPluginConfig":
@@ -2635,14 +2685,15 @@ class WasmPlugin:
         description: Optional human-readable description.
         config: Plugin resource configuration.
     """
+
     name: str
     status: str
     enabled: bool
     created_at: str
     updated_at: str
     invocation_count: int = 0
-    description: Optional[str] = None
-    config: Optional[WasmPluginConfig] = None
+    description: str | None = None
+    config: WasmPluginConfig | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "WasmPlugin":
@@ -2655,11 +2706,7 @@ class WasmPlugin:
             updated_at=data["updated_at"],
             invocation_count=data.get("invocation_count", 0),
             description=data.get("description"),
-            config=(
-                WasmPluginConfig.from_dict(config_data)
-                if config_data is not None
-                else None
-            ),
+            config=(WasmPluginConfig.from_dict(config_data) if config_data is not None else None),
         )
 
 
@@ -2674,11 +2721,12 @@ class RegisterPluginRequest:
         wasm_path: Path to the WASM file (server-side).
         config: Plugin resource configuration.
     """
+
     name: str
-    description: Optional[str] = None
-    wasm_bytes: Optional[str] = None
-    wasm_path: Optional[str] = None
-    config: Optional[WasmPluginConfig] = None
+    description: str | None = None
+    wasm_bytes: str | None = None
+    wasm_path: str | None = None
+    config: WasmPluginConfig | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -2697,6 +2745,7 @@ class RegisterPluginRequest:
 @dataclass
 class ListPluginsResponse:
     """Response from listing WASM plugins."""
+
     plugins: list[WasmPlugin]
     count: int
 
@@ -2716,8 +2765,9 @@ class PluginInvocationRequest:
         input: JSON input to pass to the plugin.
         function: The function to invoke (default: "evaluate").
     """
-    input: Dict[str, Any]
-    function: Optional[str] = None
+
+    input: dict[str, Any]
+    function: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -2737,10 +2787,11 @@ class PluginInvocationResponse:
         metadata: Optional structured metadata from the plugin.
         duration_ms: Execution time in milliseconds.
     """
+
     verdict: bool
-    message: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None
-    duration_ms: Optional[float] = None
+    message: str | None = None
+    metadata: dict[str, Any] | None = None
+    duration_ms: float | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "PluginInvocationResponse":
@@ -2767,6 +2818,7 @@ class ComplianceStatus:
         immutable_audit: Whether audit records are immutable (deletes rejected).
         hash_chain: Whether SHA-256 hash chaining is enabled for audit records.
     """
+
     mode: str
     sync_audit_writes: bool
     immutable_audit: bool
@@ -2793,11 +2845,12 @@ class HashChainVerification:
         first_record_id: ID of the first record in the verified range.
         last_record_id: ID of the last record in the verified range.
     """
+
     valid: bool
     records_checked: int
-    first_broken_at: Optional[str] = None
-    first_record_id: Optional[str] = None
-    last_record_id: Optional[str] = None
+    first_broken_at: str | None = None
+    first_record_id: str | None = None
+    last_record_id: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "HashChainVerification":
@@ -2820,10 +2873,11 @@ class VerifyHashChainRequest:
         from_time: Optional start of the time range (ISO 8601).
         to_time: Optional end of the time range (ISO 8601).
     """
+
     namespace: str
     tenant: str
-    from_time: Optional[str] = None
-    to_time: Optional[str] = None
+    from_time: str | None = None
+    to_time: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         body: dict[str, Any] = {
@@ -2845,6 +2899,7 @@ class VerifyHashChainRequest:
 @dataclass
 class TemplateInfo:
     """A payload template."""
+
     id: str
     name: str
     namespace: str
@@ -2852,8 +2907,8 @@ class TemplateInfo:
     content: str
     created_at: str
     updated_at: str
-    description: Optional[str] = None
-    labels: Optional[dict[str, str]] = None
+    description: str | None = None
+    labels: dict[str, str] | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TemplateInfo":
@@ -2873,12 +2928,13 @@ class TemplateInfo:
 @dataclass
 class CreateTemplateRequest:
     """Request to create a payload template."""
+
     name: str
     namespace: str
     tenant: str
     content: str
-    description: Optional[str] = None
-    labels: Optional[dict[str, str]] = None
+    description: str | None = None
+    labels: dict[str, str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -2897,9 +2953,10 @@ class CreateTemplateRequest:
 @dataclass
 class UpdateTemplateRequest:
     """Request to update a payload template."""
-    content: Optional[str] = None
-    description: Optional[str] = None
-    labels: Optional[dict[str, str]] = None
+
+    content: str | None = None
+    description: str | None = None
+    labels: dict[str, str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {}
@@ -2915,6 +2972,7 @@ class UpdateTemplateRequest:
 @dataclass
 class ListTemplatesResponse:
     """Response from listing templates."""
+
     templates: list[TemplateInfo]
     count: int
 
@@ -2932,8 +2990,9 @@ class TemplateProfileField:
 
     Either an inline string value or a reference to a template via ``$ref``.
     """
-    value: Optional[str] = None
-    ref: Optional[str] = None
+
+    value: str | None = None
+    ref: str | None = None
 
     def to_dict(self) -> Any:
         if self.ref is not None:
@@ -2952,6 +3011,7 @@ class TemplateProfileField:
 @dataclass
 class TemplateProfileInfo:
     """A template profile that groups multiple templates."""
+
     id: str
     name: str
     namespace: str
@@ -2959,8 +3019,8 @@ class TemplateProfileInfo:
     fields: dict[str, TemplateProfileField]
     created_at: str
     updated_at: str
-    description: Optional[str] = None
-    labels: Optional[dict[str, str]] = None
+    description: str | None = None
+    labels: dict[str, str] | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TemplateProfileInfo":
@@ -2982,12 +3042,13 @@ class TemplateProfileInfo:
 @dataclass
 class CreateProfileRequest:
     """Request to create a template profile."""
+
     name: str
     namespace: str
     tenant: str
     fields: dict[str, TemplateProfileField]
-    description: Optional[str] = None
-    labels: Optional[dict[str, str]] = None
+    description: str | None = None
+    labels: dict[str, str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -3006,9 +3067,10 @@ class CreateProfileRequest:
 @dataclass
 class UpdateProfileRequest:
     """Request to update a template profile."""
-    fields: Optional[dict[str, TemplateProfileField]] = None
-    description: Optional[str] = None
-    labels: Optional[dict[str, str]] = None
+
+    fields: dict[str, TemplateProfileField] | None = None
+    description: str | None = None
+    labels: dict[str, str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {}
@@ -3024,6 +3086,7 @@ class UpdateProfileRequest:
 @dataclass
 class ListProfilesResponse:
     """Response from listing template profiles."""
+
     profiles: list[TemplateProfileInfo]
     count: int
 
@@ -3038,6 +3101,7 @@ class ListProfilesResponse:
 @dataclass
 class RenderPreviewRequest:
     """Request to render a template profile with payload data."""
+
     profile: str
     namespace: str
     tenant: str
@@ -3055,6 +3119,7 @@ class RenderPreviewRequest:
 @dataclass
 class RenderPreviewResponse:
     """Response from rendering a template profile."""
+
     rendered: dict[str, str]
 
     @classmethod
@@ -3064,11 +3129,11 @@ class RenderPreviewResponse:
 
 def discord_message_payload(
     *,
-    content: Optional[str] = None,
-    embeds: Optional[List[dict[str, Any]]] = None,
-    username: Optional[str] = None,
-    avatar_url: Optional[str] = None,
-    tts: Optional[bool] = None,
+    content: str | None = None,
+    embeds: list[dict[str, Any]] | None = None,
+    username: str | None = None,
+    avatar_url: str | None = None,
+    tts: bool | None = None,
 ) -> dict[str, Any]:
     """Build a payload for the Discord webhook provider.
 
@@ -3106,10 +3171,10 @@ def discord_message_payload(
 def sns_publish_payload(
     message: str,
     *,
-    subject: Optional[str] = None,
-    topic_arn: Optional[str] = None,
-    message_group_id: Optional[str] = None,
-    message_dedup_id: Optional[str] = None,
+    subject: str | None = None,
+    topic_arn: str | None = None,
+    message_group_id: str | None = None,
+    message_dedup_id: str | None = None,
 ) -> dict[str, Any]:
     """Build a payload for the AWS SNS provider.
 
@@ -3138,8 +3203,8 @@ def sns_publish_payload(
 def lambda_invoke_payload(
     payload_data: Any = None,
     *,
-    function_name: Optional[str] = None,
-    invocation_type: Optional[str] = None,
+    function_name: str | None = None,
+    invocation_type: str | None = None,
 ) -> dict[str, Any]:
     """Build a payload for the AWS Lambda provider.
 
@@ -3166,8 +3231,8 @@ def eventbridge_put_event_payload(
     detail_type: str,
     detail: Any,
     *,
-    event_bus_name: Optional[str] = None,
-    resources: Optional[List[str]] = None,
+    event_bus_name: str | None = None,
+    resources: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build a payload for the AWS ``EventBridge`` provider.
 
@@ -3196,11 +3261,11 @@ def eventbridge_put_event_payload(
 def sqs_send_message_payload(
     message_body: str,
     *,
-    queue_url: Optional[str] = None,
-    delay_seconds: Optional[int] = None,
-    message_group_id: Optional[str] = None,
-    message_dedup_id: Optional[str] = None,
-    message_attributes: Optional[dict[str, str]] = None,
+    queue_url: str | None = None,
+    delay_seconds: int | None = None,
+    message_group_id: str | None = None,
+    message_dedup_id: str | None = None,
+    message_attributes: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Build a payload for the AWS SQS provider.
 
@@ -3232,11 +3297,11 @@ def sqs_send_message_payload(
 def s3_put_object_payload(
     key: str,
     *,
-    bucket: Optional[str] = None,
-    body: Optional[str] = None,
-    body_base64: Optional[str] = None,
-    content_type: Optional[str] = None,
-    metadata: Optional[dict[str, str]] = None,
+    bucket: str | None = None,
+    body: str | None = None,
+    body_base64: str | None = None,
+    content_type: str | None = None,
+    metadata: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Build a payload for the AWS S3 put-object action.
 
@@ -3269,7 +3334,7 @@ def s3_put_object_payload(
 def s3_get_object_payload(
     key: str,
     *,
-    bucket: Optional[str] = None,
+    bucket: str | None = None,
 ) -> dict[str, Any]:
     """Build a payload for the AWS S3 get-object action.
 
@@ -3290,7 +3355,7 @@ def s3_get_object_payload(
 def s3_delete_object_payload(
     key: str,
     *,
-    bucket: Optional[str] = None,
+    bucket: str | None = None,
 ) -> dict[str, Any]:
     """Build a payload for the AWS S3 delete-object action.
 
@@ -3314,7 +3379,7 @@ def s3_delete_object_payload(
 
 
 def ec2_start_instances_payload(
-    instance_ids: List[str],
+    instance_ids: list[str],
 ) -> dict[str, Any]:
     """Build a payload for the AWS EC2 start-instances action.
 
@@ -3329,10 +3394,10 @@ def ec2_start_instances_payload(
 
 
 def ec2_stop_instances_payload(
-    instance_ids: List[str],
+    instance_ids: list[str],
     *,
-    hibernate: Optional[bool] = None,
-    force: Optional[bool] = None,
+    hibernate: bool | None = None,
+    force: bool | None = None,
 ) -> dict[str, Any]:
     """Build a payload for the AWS EC2 stop-instances action.
 
@@ -3354,7 +3419,7 @@ def ec2_stop_instances_payload(
 
 
 def ec2_reboot_instances_payload(
-    instance_ids: List[str],
+    instance_ids: list[str],
 ) -> dict[str, Any]:
     """Build a payload for the AWS EC2 reboot-instances action.
 
@@ -3369,7 +3434,7 @@ def ec2_reboot_instances_payload(
 
 
 def ec2_terminate_instances_payload(
-    instance_ids: List[str],
+    instance_ids: list[str],
 ) -> dict[str, Any]:
     """Build a payload for the AWS EC2 terminate-instances action.
 
@@ -3384,7 +3449,7 @@ def ec2_terminate_instances_payload(
 
 
 def ec2_hibernate_instances_payload(
-    instance_ids: List[str],
+    instance_ids: list[str],
 ) -> dict[str, Any]:
     """Build a payload for the AWS EC2 hibernate-instances action.
 
@@ -3402,14 +3467,14 @@ def ec2_run_instances_payload(
     image_id: str,
     instance_type: str,
     *,
-    min_count: Optional[int] = None,
-    max_count: Optional[int] = None,
-    key_name: Optional[str] = None,
-    security_group_ids: Optional[List[str]] = None,
-    subnet_id: Optional[str] = None,
-    user_data: Optional[str] = None,
-    tags: Optional[dict[str, str]] = None,
-    iam_instance_profile: Optional[str] = None,
+    min_count: int | None = None,
+    max_count: int | None = None,
+    key_name: str | None = None,
+    security_group_ids: list[str] | None = None,
+    subnet_id: str | None = None,
+    user_data: str | None = None,
+    tags: dict[str, str] | None = None,
+    iam_instance_profile: str | None = None,
 ) -> dict[str, Any]:
     """Build a payload for the AWS EC2 run-instances action.
 
@@ -3478,9 +3543,9 @@ def ec2_attach_volume_payload(
 def ec2_detach_volume_payload(
     volume_id: str,
     *,
-    instance_id: Optional[str] = None,
-    device: Optional[str] = None,
-    force: Optional[bool] = None,
+    instance_id: str | None = None,
+    device: str | None = None,
+    force: bool | None = None,
 ) -> dict[str, Any]:
     """Build a payload for the AWS EC2 detach-volume action.
 
@@ -3506,7 +3571,7 @@ def ec2_detach_volume_payload(
 
 def ec2_describe_instances_payload(
     *,
-    instance_ids: Optional[List[str]] = None,
+    instance_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build a payload for the AWS EC2 describe-instances action.
 
@@ -3530,7 +3595,7 @@ def ec2_describe_instances_payload(
 
 def autoscaling_describe_groups_payload(
     *,
-    group_names: Optional[List[str]] = None,
+    group_names: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build a payload for the AWS Auto Scaling describe-groups action.
 
@@ -3551,7 +3616,7 @@ def autoscaling_set_desired_capacity_payload(
     group_name: str,
     desired_capacity: int,
     *,
-    honor_cooldown: Optional[bool] = None,
+    honor_cooldown: bool | None = None,
 ) -> dict[str, Any]:
     """Build a payload for the AWS Auto Scaling set-desired-capacity action.
 
@@ -3576,12 +3641,12 @@ def autoscaling_set_desired_capacity_payload(
 def autoscaling_update_group_payload(
     group_name: str,
     *,
-    min_size: Optional[int] = None,
-    max_size: Optional[int] = None,
-    desired_capacity: Optional[int] = None,
-    default_cooldown: Optional[int] = None,
-    health_check_type: Optional[str] = None,
-    health_check_grace_period: Optional[int] = None,
+    min_size: int | None = None,
+    max_size: int | None = None,
+    desired_capacity: int | None = None,
+    default_cooldown: int | None = None,
+    health_check_type: str | None = None,
+    health_check_grace_period: int | None = None,
 ) -> dict[str, Any]:
     """Build a payload for the AWS Auto Scaling update-group action.
 
@@ -3624,11 +3689,11 @@ def autoscaling_update_group_payload(
 def azure_blob_upload_payload(
     blob_name: str,
     *,
-    container: Optional[str] = None,
-    body: Optional[str] = None,
-    body_base64: Optional[str] = None,
-    content_type: Optional[str] = None,
-    metadata: Optional[dict[str, str]] = None,
+    container: str | None = None,
+    body: str | None = None,
+    body_base64: str | None = None,
+    content_type: str | None = None,
+    metadata: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Build a payload for an Azure Blob Storage upload action.
 
@@ -3661,7 +3726,7 @@ def azure_blob_upload_payload(
 def azure_blob_download_payload(
     blob_name: str,
     *,
-    container: Optional[str] = None,
+    container: str | None = None,
 ) -> dict[str, Any]:
     """Build a payload for an Azure Blob Storage download action.
 
@@ -3682,7 +3747,7 @@ def azure_blob_download_payload(
 def azure_blob_delete_payload(
     blob_name: str,
     *,
-    container: Optional[str] = None,
+    container: str | None = None,
 ) -> dict[str, Any]:
     """Build a payload for an Azure Blob Storage delete action.
 
@@ -3708,9 +3773,9 @@ def azure_blob_delete_payload(
 def azure_eventhubs_send_payload(
     body: Any,
     *,
-    event_hub_name: Optional[str] = None,
-    partition_id: Optional[str] = None,
-    properties: Optional[dict[str, str]] = None,
+    event_hub_name: str | None = None,
+    partition_id: str | None = None,
+    properties: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Build a payload for an Azure Event Hubs send action.
 
@@ -3735,9 +3800,9 @@ def azure_eventhubs_send_payload(
 
 
 def azure_eventhubs_send_batch_payload(
-    events: List[dict[str, Any]],
+    events: list[dict[str, Any]],
     *,
-    event_hub_name: Optional[str] = None,
+    event_hub_name: str | None = None,
 ) -> dict[str, Any]:
     """Build a payload for an Azure Event Hubs send-batch action.
 
@@ -3763,10 +3828,10 @@ def azure_eventhubs_send_batch_payload(
 def gcp_pubsub_publish_payload(
     data: str,
     *,
-    data_base64: Optional[str] = None,
-    attributes: Optional[dict[str, str]] = None,
-    ordering_key: Optional[str] = None,
-    topic: Optional[str] = None,
+    data_base64: str | None = None,
+    attributes: dict[str, str] | None = None,
+    ordering_key: str | None = None,
+    topic: str | None = None,
 ) -> dict[str, Any]:
     """Build a payload for a GCP Pub/Sub publish action.
 
@@ -3794,9 +3859,9 @@ def gcp_pubsub_publish_payload(
 
 
 def gcp_pubsub_publish_batch_payload(
-    messages: List[dict[str, Any]],
+    messages: list[dict[str, Any]],
     *,
-    topic: Optional[str] = None,
+    topic: str | None = None,
 ) -> dict[str, Any]:
     """Build a payload for a GCP Pub/Sub publish-batch action.
 
@@ -3822,11 +3887,11 @@ def gcp_pubsub_publish_batch_payload(
 def gcp_storage_upload_payload(
     object_name: str,
     *,
-    bucket: Optional[str] = None,
-    body: Optional[str] = None,
-    body_base64: Optional[str] = None,
-    content_type: Optional[str] = None,
-    metadata: Optional[dict[str, str]] = None,
+    bucket: str | None = None,
+    body: str | None = None,
+    body_base64: str | None = None,
+    content_type: str | None = None,
+    metadata: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Build a payload for a GCP Cloud Storage upload action.
 
@@ -3859,7 +3924,7 @@ def gcp_storage_upload_payload(
 def gcp_storage_download_payload(
     object_name: str,
     *,
-    bucket: Optional[str] = None,
+    bucket: str | None = None,
 ) -> dict[str, Any]:
     """Build a payload for a GCP Cloud Storage download action.
 
@@ -3880,7 +3945,7 @@ def gcp_storage_download_payload(
 def gcp_storage_delete_payload(
     object_name: str,
     *,
-    bucket: Optional[str] = None,
+    bucket: str | None = None,
 ) -> dict[str, Any]:
     """Build a payload for a GCP Cloud Storage delete action.
 
@@ -3901,6 +3966,7 @@ def gcp_storage_delete_payload(
 @dataclass
 class CoverageKey:
     """A unique combination of coverage dimensions."""
+
     namespace: str
     tenant: str
     provider: str
@@ -3910,6 +3976,7 @@ class CoverageKey:
 @dataclass
 class CoverageEntry:
     """Per-combination coverage statistics."""
+
     key: CoverageKey
     total: int
     covered: int
@@ -3935,17 +4002,19 @@ class CoverageEntry:
 @dataclass
 class CoverageQuery:
     """Options for a rule coverage analysis."""
-    namespace: Optional[str] = None
-    tenant: Optional[str] = None
-    from_time: Optional[str] = None  # RFC 3339 timestamp
-    to_time: Optional[str] = None    # RFC 3339 timestamp
+
+    namespace: str | None = None
+    tenant: str | None = None
+    from_time: str | None = None  # RFC 3339 timestamp
+    to_time: str | None = None  # RFC 3339 timestamp
 
 
 @dataclass
 class CoverageReport:
     """Full rule coverage report."""
+
     scanned_from: str  # RFC 3339 timestamp
-    scanned_to: str    # RFC 3339 timestamp
+    scanned_to: str  # RFC 3339 timestamp
     total_actions: int
     unique_combinations: int
     fully_covered: int
@@ -4032,9 +4101,9 @@ class SwarmRunSnapshot:
     started_at: str
     namespace: str
     tenant: str
-    finished_at: Optional[str] = None
-    metrics: Optional[dict[str, Any]] = None
-    error: Optional[str] = None
+    finished_at: str | None = None
+    metrics: dict[str, Any] | None = None
+    error: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "SwarmRunSnapshot":
@@ -4056,11 +4125,11 @@ class SwarmRunSnapshot:
 class SwarmRunFilter:
     """Query parameters for listing swarm runs."""
 
-    namespace: Optional[str] = None
-    tenant: Optional[str] = None
-    status: Optional[str] = None
-    limit: Optional[int] = None
-    offset: Optional[int] = None
+    namespace: str | None = None
+    tenant: str | None = None
+    status: str | None = None
+    limit: int | None = None
+    offset: int | None = None
 
     def to_params(self) -> dict[str, Any]:
         params: dict[str, Any] = {}

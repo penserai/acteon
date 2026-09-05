@@ -219,9 +219,15 @@ pub struct EvalHarnessConfig {
     /// Enable the eval harness.
     #[serde(default)]
     pub enabled: bool,
-    /// Shell command to run (e.g., `"cargo test && cargo clippy"`).
+    /// Legacy, operator-authored shell command. Never populated from model output.
     #[serde(default)]
     pub command: String,
+    /// Executable for direct invocation, mutually exclusive with `command`.
+    #[serde(default)]
+    pub program: Option<String>,
+    /// Literal arguments for `program` (no shell expansion).
+    #[serde(default)]
+    pub args: Vec<String>,
     /// Timeout for the eval command in seconds.
     #[serde(default = "default_eval_timeout")]
     pub timeout_seconds: u64,
@@ -235,6 +241,8 @@ impl Default for EvalHarnessConfig {
         Self {
             enabled: false,
             command: String::new(),
+            program: None,
+            args: Vec::new(),
             timeout_seconds: default_eval_timeout(),
             pass_threshold: default_pass_threshold(),
         }
@@ -256,6 +264,9 @@ pub struct SafetyConfig {
     /// Directory containing custom rule YAML files.
     #[serde(default)]
     pub rules_directory: Option<PathBuf>,
+    /// Provider that delivers human approval notifications.
+    #[serde(default = "default_approval_notify_provider")]
+    pub approval_notify_provider: String,
 }
 
 impl Default for SafetyConfig {
@@ -265,8 +276,13 @@ impl Default for SafetyConfig {
             approval_timeout_seconds: default_approval_timeout(),
             blocked_commands: Vec::new(),
             rules_directory: None,
+            approval_notify_provider: default_approval_notify_provider(),
         }
     }
+}
+
+fn default_approval_notify_provider() -> String {
+    "approval-notifications".into()
 }
 
 /// Custom agent role definition in config.

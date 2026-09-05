@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::process::Stdio;
 
 use chrono::Utc;
 use uuid::Uuid;
@@ -8,7 +7,7 @@ use crate::config::{AgentEngine, EvalHarnessConfig, RecoveryMode, SwarmConfig};
 use crate::error::SwarmError;
 use crate::orchestrator::agent_spawner::{spawn_agent, wait_for_agent};
 use crate::orchestrator::eval;
-use crate::orchestrator::eval_gen;
+use crate::orchestrator::workspace::WorkspaceCandidate;
 use crate::types::adversarial::{
     AdversarialChallenge, AdversarialResult, AdversarialRound, ChallengeSeverity,
 };
@@ -33,7 +32,7 @@ pub struct AdversarialContext<'a> {
 /// 1. **Challenge phase** — adversarial agents critique the primary swarm's output.
 /// 2. **Filter** — only challenges above `severity_threshold` trigger recovery.
 /// 3. **Recovery phase** — agents address challenges (text analysis or code-writing).
-/// 4. **Eval** — if eval harness is enabled, measure score and revert on regression.
+/// 4. **Eval** — require independent checks and promote only verified candidates.
 /// 5. **Check** — if all challenges are resolved (or below threshold), stop early.
 #[allow(clippy::too_many_lines)]
 pub async fn run_adversarial_loop(
@@ -42,6 +41,14 @@ pub async fn run_adversarial_loop(
     primary_output_summary: &str,
 ) -> Result<AdversarialResult, SwarmError> {
     let adv = &ctx.config.adversarial;
+    if adv.max_rounds == 0
+        || !adv.severity_threshold.is_finite()
+        || !(0.0..=1.0).contains(&adv.severity_threshold)
+    {
+        return Err(SwarmError::Config(
+            "adversarial rounds must be positive and severity threshold finite in [0,1]".into(),
+        ));
+    }
     let primary_engine = ctx.config.defaults.engine;
     let adversarial_engine = adv.effective_engine(primary_engine);
 
@@ -60,16 +67,19 @@ pub async fn run_adversarial_loop(
     let mut cumulative_context = primary_output_summary.to_string();
     let mut current_score = ctx.baseline_score;
 
+    let eval_config = ctx.eval_config.ok_or_else(|| {
+        SwarmError::EvalHarness("adversarial acceptance requires an independent evaluator".into())
+    })?;
+    let mut verification_passed = false;
     for round_num in 1..=adv.max_rounds {
-        // Git snapshot before recovery (so we can revert if score regresses).
-        let snapshot = if ctx.eval_config.is_some() {
-            eval::git_snapshot(ctx.working_dir).await
-        } else {
-            String::new()
+        let candidate = WorkspaceCandidate::create(ctx.working_dir)?;
+        let candidate_path = candidate.path();
+        let candidate_ctx = AdversarialContext {
+            working_dir: &candidate_path,
+            ..*ctx
         };
-
         let mut round_result = execute_adversarial_round(
-            ctx,
+            &candidate_ctx,
             primary_engine,
             adversarial_engine,
             run,
@@ -77,96 +87,88 @@ pub async fn run_adversarial_loop(
             round_num,
         )
         .await?;
-
-        // Generate challenge-specific eval script from this round's challenges.
-        if ctx.eval_config.is_some()
-            && let Ok(script) = eval_gen::generate_eval_script(
-                ctx.config,
-                &round_result.challenges,
-                ctx.working_dir,
-                adv.severity_threshold,
-            )
-            .await
-        {
-            let script_path = ctx.working_dir.join("eval-harness.sh");
-            if let Err(e) = tokio::fs::write(&script_path, &script).await {
-                tracing::warn!("failed to write eval script: {e}");
-            } else {
-                tracing::info!(
-                    assertions = round_result.challenges.len(),
-                    "generated challenge-specific eval script"
+        if round_result.challenges.iter().any(|challenge| {
+            rounds.iter().any(|prior: &AdversarialRound| {
+                prior
+                    .challenges
+                    .iter()
+                    .any(|other| other.id == challenge.id)
+            })
+        }) {
+            return Err(SwarmError::AdversarialChallenge(
+                "challenge IDs must remain unique across rounds".into(),
+            ));
+        }
+        round_result.pre_eval_score = current_score;
+        let pending: Vec<_> = rounds
+            .iter()
+            .flat_map(|round: &AdversarialRound| round.challenges.iter())
+            .chain(round_result.challenges.iter())
+            .cloned()
+            .collect();
+        let evaluation =
+            eval::run_eval_with_challenges(eval_config, &candidate_path, &pending).await;
+        verification_passed = false;
+        match evaluation {
+            Ok(result)
+                if result.passed
+                    && current_score.is_none_or(|previous| result.score >= previous) =>
+            {
+                round_result.post_eval_score = Some(result.score);
+                verify_challenges(
+                    &mut round_result,
+                    &result.verified_challenges,
+                    adv.severity_threshold,
                 );
-            }
-        }
-
-        // Eval gating: run eval after recovery, compare to previous score.
-        // Use the generated eval script if available, fall back to static config.
-        if let Some(eval_cfg) = ctx.eval_config {
-            round_result.pre_eval_score = current_score;
-
-            let generated_script = ctx.working_dir.join("eval-harness.sh");
-            let effective_eval = if generated_script.exists() {
-                EvalHarnessConfig {
-                    enabled: true,
-                    command: format!("sh {}", generated_script.display()),
-                    timeout_seconds: eval_cfg.timeout_seconds,
-                    pass_threshold: eval_cfg.pass_threshold,
+                for previous in &mut rounds {
+                    verify_challenges(
+                        previous,
+                        &result.verified_challenges,
+                        adv.severity_threshold,
+                    );
                 }
-            } else {
-                eval_cfg.clone()
-            };
-
-            match eval::run_eval_harness(&effective_eval, ctx.working_dir).await {
-                Ok(eval_result) => {
-                    let post_score = eval_result.score;
-                    round_result.post_eval_score = Some(post_score);
-
-                    if let Some(prev) = current_score {
-                        if post_score < prev {
-                            tracing::warn!(
-                                round = round_num,
-                                pre = prev,
-                                post = post_score,
-                                "eval score regressed — reverting recovery changes"
-                            );
-                            eval::git_revert_to_snapshot(ctx.working_dir, &snapshot).await;
-                            round_result.post_eval_score = current_score;
-                            rounds.push(round_result);
-                            break;
-                        }
-                        tracing::info!(
-                            round = round_num,
-                            pre = prev,
-                            post = post_score,
-                            delta = post_score - prev,
-                            "eval score after recovery"
-                        );
-                    }
-
-                    eval::git_discard_snapshot(ctx.working_dir, &snapshot).await;
-                    current_score = Some(post_score);
-                }
-                Err(e) => {
-                    tracing::warn!(round = round_num, "eval harness failed: {e}");
-                    eval::git_discard_snapshot(ctx.working_dir, &snapshot).await;
+                // Only the trusted oracle can mark challenge fixes as resolved.
+                verification_passed = pending
+                    .iter()
+                    .filter(|c| c.severity_score >= adv.severity_threshold)
+                    .all(|c| result.verified_challenges.contains(&c.id));
+                if verification_passed {
+                    candidate.promote()?;
+                    current_score = Some(result.score);
                 }
             }
+            Ok(result) => {
+                round_result.post_eval_score = Some(result.score);
+                tracing::warn!(score = result.score, "candidate rejected by evaluator");
+            }
+            Err(error) => {
+                tracing::warn!(%error, "candidate evaluation failed; original workspace preserved");
+            }
         }
-
-        let stop = round_result.fully_resolved() || round_result.actionable_challenges == 0;
+        if !verification_passed {
+            // Candidate changes were not promoted; claims cannot survive their artifact.
+            for challenge in &mut round_result.challenges {
+                challenge.resolved = false;
+            }
+            round_result.resolved_count = 0;
+            for previous in &mut rounds {
+                verify_challenges(previous, &[], adv.severity_threshold);
+            }
+        }
         rounds.push(round_result);
-
-        if stop {
+        if verification_passed {
             break;
         }
     }
+    run.metrics.challenges_resolved = rounds.iter().map(|r| r.resolved_count as u64).sum();
 
     // Update final eval score in metrics.
     if let Some(score) = current_score {
         run.metrics.eval_final_score = Some(score);
     }
 
-    let result = AdversarialResult::from_rounds(rounds, adv.severity_threshold);
+    let mut result = AdversarialResult::from_rounds(rounds, adv.severity_threshold);
+    result.accepted &= verification_passed;
     tracing::info!(
         accepted = result.accepted,
         total_challenges = result.total_challenges,
@@ -194,7 +196,7 @@ async fn execute_adversarial_round(
     let challenge_started_at = Utc::now();
 
     // ── Challenge phase ────────────────────────────────────────────────────
-    let mut challenges = run_challenge_phase(
+    let challenges = run_challenge_phase(
         adv,
         adversarial_engine,
         ctx.plan,
@@ -249,9 +251,8 @@ async fn execute_adversarial_round(
         }
     };
 
-    let resolved_count =
-        mark_resolved_challenges(&mut challenges, &recovery_summary, adv.severity_threshold);
-    run.metrics.challenges_resolved += resolved_count as u64;
+    // Recovery prose is context, never a verdict.
+    let resolved_count = 0;
     run.metrics.adversarial_rounds += 1;
 
     tracing::info!(
@@ -286,7 +287,7 @@ async fn execute_adversarial_round(
 ///
 /// Each agent gets the challenge description, suggested fix, and program.md
 /// constraints. Agents run in the workspace with full coder tools and modify
-/// files directly. Returns a summary compatible with `mark_resolved_challenges`.
+/// candidate files directly. Returns context for the next round, never a verdict.
 async fn run_recovery_agents(
     ctx: &AdversarialContext<'_>,
     challenges: &[AdversarialChallenge],
@@ -427,7 +428,10 @@ async fn spawn_single_recovery_agent(
         Ok(result) if result.exit_code == 0 => {
             run.metrics.agents_completed += 1;
             tracing::info!(challenge_id = %challenge.id, "recovery agent completed");
-            format!("RESOLVED: {} - agent applied fix", challenge.id)
+            format!(
+                "FIX_ATTEMPTED: {} - awaiting independent verification",
+                challenge.id
+            )
         }
         Ok(result) => {
             run.metrics.agents_failed += 1;
@@ -574,7 +578,29 @@ Output ONLY JSON lines, one per issue. If no issues are found, output a single l
 
     let raw_output =
         invoke_engine(engine, &prompt, adv.challenge_timeout_seconds, "challenge").await?;
-    Ok(parse_challenges(&raw_output, round))
+    let challenges = parse_challenges(&raw_output, round);
+    let mut ids = std::collections::HashSet::new();
+    if challenges.iter().any(|challenge| {
+        challenge.id.trim().is_empty()
+            || !ids.insert(&challenge.id)
+            || challenge.description.trim().is_empty()
+            || !challenge.severity_score.is_finite()
+            || !(0.0..=1.0).contains(&challenge.severity_score)
+    }) {
+        return Err(SwarmError::AdversarialChallenge(
+            "invalid or duplicate challenge evidence".into(),
+        ));
+    }
+    if challenges.is_empty() {
+        let no_findings = serde_json::from_str::<serde_json::Value>(raw_output.trim())
+            .is_ok_and(|value| value["id"] == "none" && value["category"] == "none");
+        if !no_findings {
+            return Err(SwarmError::AdversarialChallenge(
+                "no valid challenge report or explicit no-findings sentinel".into(),
+            ));
+        }
+    }
+    Ok(challenges)
 }
 
 // ── Engine invocation ──────────────────────────────────────────────────────────
@@ -603,11 +629,8 @@ async fn invoke_engine(
         }
     }
 
-    let result = tokio::time::timeout(
-        std::time::Duration::from_secs(timeout_seconds),
-        cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).output(),
-    )
-    .await;
+    let result =
+        super::process::run(&mut cmd, std::time::Duration::from_secs(timeout_seconds)).await;
 
     let make_err = |msg: String| -> SwarmError {
         if phase == "recovery" {
@@ -618,20 +641,18 @@ async fn invoke_engine(
     };
 
     match result {
-        Ok(Ok(output)) if output.status.success() => {
+        Ok(output) if output.status.success() => {
             Ok(String::from_utf8_lossy(&output.stdout).to_string())
         }
-        Ok(Ok(output)) => {
+        Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
             Err(make_err(format!(
                 "{cmd_name} exited with status {}: {stderr}",
                 output.status
             )))
         }
-        Ok(Err(e)) => Err(make_err(format!("failed to spawn {cmd_name}: {e}"))),
-        Err(_) => Err(make_err(format!(
-            "{cmd_name} timed out after {timeout_seconds}s"
-        ))),
+
+        Err(error) => Err(make_err(format!("{cmd_name} failed: {error}"))),
     }
 }
 
@@ -696,7 +717,7 @@ fn challenge_from_json(
     let severity_score = json
         .get("severity_score")
         .and_then(serde_json::Value::as_f64)
-        .unwrap_or(0.5);
+        .unwrap_or(-1.0);
 
     let severity = json
         .get("severity")
@@ -720,7 +741,7 @@ fn challenge_from_json(
         description: json
             .get("description")
             .and_then(serde_json::Value::as_str)
-            .unwrap_or("no description")
+            .unwrap_or("")
             .to_string(),
         severity,
         severity_score,
@@ -733,38 +754,16 @@ fn challenge_from_json(
     })
 }
 
-/// Mark challenges as resolved based on the recovery output.
-fn mark_resolved_challenges(
-    challenges: &mut [AdversarialChallenge],
-    recovery_output: &str,
-    severity_threshold: f64,
-) -> usize {
-    let mut resolved_count = 0;
-
-    for line in recovery_output.lines() {
-        let line = line.trim();
-        if let Some(rest) = line
-            .strip_prefix("RESOLVED:")
-            .or_else(|| line.strip_prefix("RESOLVED "))
-        {
-            let (id_part, explanation) = rest
-                .split_once(" \u{2014} ")
-                .or_else(|| rest.split_once(" - "))
-                .map(|(id, expl)| (id.trim(), Some(expl.trim().to_string())))
-                .unwrap_or((rest.trim(), None));
-
-            if let Some(challenge) = challenges
-                .iter_mut()
-                .find(|c| c.id == id_part && c.severity_score >= severity_threshold)
-            {
-                challenge.resolved = true;
-                challenge.resolution = explanation;
-                resolved_count += 1;
-            }
+/// Apply only challenge IDs certified by the independently configured evaluator.
+fn verify_challenges(round: &mut AdversarialRound, verified: &[String], threshold: f64) {
+    for challenge in &mut round.challenges {
+        challenge.resolved =
+            challenge.severity_score >= threshold && verified.contains(&challenge.id);
+        if challenge.resolved {
+            challenge.resolution = Some("Verified by independent evaluator".into());
         }
     }
-
-    resolved_count
+    round.resolved_count = round.challenges.iter().filter(|c| c.resolved).count();
 }
 
 #[cfg(test)]
@@ -821,73 +820,25 @@ mod tests {
     }
 
     #[test]
-    fn test_mark_resolved_challenges() {
-        let mut challenges = vec![
-            AdversarialChallenge {
-                id: "c-1-1".into(),
-                target_task_id: None,
-                category: "correctness".into(),
-                description: "Bug".into(),
-                severity: ChallengeSeverity::High,
-                severity_score: 0.75,
-                suggested_fix: None,
-                resolved: false,
-                resolution: None,
-            },
-            AdversarialChallenge {
-                id: "c-1-2".into(),
-                target_task_id: None,
-                category: "style".into(),
-                description: "Naming".into(),
-                severity: ChallengeSeverity::Low,
-                severity_score: 0.25,
-                suggested_fix: None,
-                resolved: false,
-                resolution: None,
-            },
-        ];
-
-        let recovery = "RESOLVED: c-1-1 \u{2014} Added null check to fix the bug\nUNRESOLVED: c-1-2 \u{2014} Style preference, not a blocker";
-
-        let count = mark_resolved_challenges(&mut challenges, recovery, 0.5);
-        assert_eq!(count, 1);
-        assert!(challenges[0].resolved);
-        assert_eq!(
-            challenges[0].resolution.as_deref(),
-            Some("Added null check to fix the bug")
-        );
-        assert!(!challenges[1].resolved);
-    }
-
-    #[test]
-    fn test_mark_resolved_with_dash_separator() {
-        let mut challenges = vec![AdversarialChallenge {
-            id: "c-1-1".into(),
-            target_task_id: None,
-            category: "correctness".into(),
-            description: "Bug".into(),
-            severity: ChallengeSeverity::High,
-            severity_score: 0.75,
-            suggested_fix: None,
-            resolved: false,
-            resolution: None,
-        }];
-
-        let recovery = "RESOLVED: c-1-1 - Fixed the issue";
-        let count = mark_resolved_challenges(&mut challenges, recovery, 0.5);
-        assert_eq!(count, 1);
-        assert!(challenges[0].resolved);
-    }
-
-    #[test]
-    fn test_recovery_mode_serde() {
-        let json_fix = serde_json::to_string(&RecoveryMode::Fix).unwrap();
-        assert_eq!(json_fix, "\"fix\"");
-
-        let json_analyze = serde_json::to_string(&RecoveryMode::Analyze).unwrap();
-        assert_eq!(json_analyze, "\"analyze\"");
-
-        let parsed: RecoveryMode = serde_json::from_str("\"fix\"").unwrap();
-        assert_eq!(parsed, RecoveryMode::Fix);
+    fn prose_and_noop_recovery_cannot_certify_a_challenge() {
+        let mut round = AdversarialRound {
+            round: 1,
+            challenge_engine: AgentEngine::Claude,
+            recovery_engine: AgentEngine::Claude,
+            challenges: parse_challenges(
+                r#"{"id":"c1","category":"security","severity_score":1.0,"description":"unsafe"}"#,
+                1,
+            ),
+            actionable_challenges: 1,
+            resolved_count: 0,
+            challenge_started_at: Utc::now(),
+            recovery_finished_at: None,
+            pre_eval_score: None,
+            post_eval_score: None,
+        };
+        verify_challenges(&mut round, &[], 0.5);
+        assert!(!round.fully_resolved());
+        verify_challenges(&mut round, &["c1".into()], 0.5);
+        assert!(round.fully_resolved());
     }
 }

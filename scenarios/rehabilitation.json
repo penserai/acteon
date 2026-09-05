@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "seed": 42,
+  "backend": "memory",
+  "scenarios": [
+    "generated_policy",
+    "approval",
+    "tenant_deduplication",
+    "retry_recovery",
+    "evaluator_integrity",
+    "state_failure"
+  ]
+}

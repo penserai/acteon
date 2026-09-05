@@ -284,6 +284,16 @@ impl Action {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shared_sdk_wire_fixture_deserializes_and_preserves_metadata() {
+        let fixture = include_str!("../../../clients/contract-fixtures/action-wire.json");
+        let action: super::Action = serde_json::from_str(fixture).unwrap();
+        assert_eq!(action.metadata.labels.get("owner").unwrap(), "alice");
+        let wire = serde_json::to_value(action).unwrap();
+        let expected: serde_json::Value = serde_json::from_str(fixture).unwrap();
+        assert_eq!(wire["metadata"], expected["metadata"]);
+    }
+
     use super::*;
 
     #[test]

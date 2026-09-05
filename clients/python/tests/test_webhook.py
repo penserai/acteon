@@ -1,6 +1,7 @@
 """Tests for webhook helpers in acteon_client.models."""
 
 import unittest
+
 from acteon_client.models import Action, WebhookPayload, create_webhook_action
 
 
@@ -37,11 +38,14 @@ class TestWebhookPayload(unittest.TestCase):
             body={"alert": True},
         )
         result = payload.to_dict()
-        self.assertEqual(result, {
-            "url": "https://example.com/hook",
-            "method": "POST",
-            "body": {"alert": True},
-        })
+        self.assertEqual(
+            result,
+            {
+                "url": "https://example.com/hook",
+                "method": "POST",
+                "body": {"alert": True},
+            },
+        )
         self.assertNotIn("headers", result)
 
     def test_to_dict_with_headers(self):
@@ -54,12 +58,15 @@ class TestWebhookPayload(unittest.TestCase):
             headers=headers,
         )
         result = payload.to_dict()
-        self.assertEqual(result, {
-            "url": "https://example.com/hook",
-            "method": "PATCH",
-            "body": {"data": 42},
-            "headers": {"X-Custom": "abc", "Content-Type": "application/json"},
-        })
+        self.assertEqual(
+            result,
+            {
+                "url": "https://example.com/hook",
+                "method": "PATCH",
+                "body": {"data": 42},
+                "headers": {"X-Custom": "abc", "Content-Type": "application/json"},
+            },
+        )
 
     def test_to_dict_with_empty_headers(self):
         """to_dict() should omit headers when the dict is empty (falsy)."""
@@ -184,12 +191,16 @@ class TestCreateWebhookAction(unittest.TestCase):
     def test_action_has_auto_generated_id(self):
         """Each action should receive a unique auto-generated id."""
         action1 = create_webhook_action(
-            namespace="ns", tenant="t1",
-            url="https://example.com/hook", body={},
+            namespace="ns",
+            tenant="t1",
+            url="https://example.com/hook",
+            body={},
         )
         action2 = create_webhook_action(
-            namespace="ns", tenant="t1",
-            url="https://example.com/hook", body={},
+            namespace="ns",
+            tenant="t1",
+            url="https://example.com/hook",
+            body={},
         )
         self.assertIsNotNone(action1.id)
         self.assertIsNotNone(action2.id)
@@ -198,8 +209,10 @@ class TestCreateWebhookAction(unittest.TestCase):
     def test_action_has_created_at(self):
         """Each action should have a created_at timestamp."""
         action = create_webhook_action(
-            namespace="ns", tenant="t1",
-            url="https://example.com/hook", body={},
+            namespace="ns",
+            tenant="t1",
+            url="https://example.com/hook",
+            body={},
         )
         self.assertIsNotNone(action.created_at)
 
@@ -224,13 +237,15 @@ class TestCreateWebhookAction(unittest.TestCase):
         self.assertEqual(d["payload"]["body"], {"key": "val"})
         self.assertEqual(d["payload"]["headers"], {"X-Trace": "abc123"})
         self.assertEqual(d["dedup_key"], "dup-1")
-        self.assertEqual(d["metadata"], {"labels": {"team": "platform"}})
+        self.assertEqual(d["metadata"], {"team": "platform"})
 
     def test_headers_omitted_when_none(self):
         """When headers are not provided, they should not appear in the payload."""
         action = create_webhook_action(
-            namespace="ns", tenant="t1",
-            url="https://example.com/hook", body={},
+            namespace="ns",
+            tenant="t1",
+            url="https://example.com/hook",
+            body={},
         )
         self.assertNotIn("headers", action.payload)
 

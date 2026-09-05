@@ -179,7 +179,7 @@ pub struct PushDeliveryMetricsSnapshot {
 /// spawned dispatch + delivery task.
 struct Shared {
     state: Arc<dyn StateStore>,
-    http: reqwest::Client,
+    http: acteon_http::GuardedClient,
     delivery_permits: Arc<Semaphore>,
     cache: Mutex<HashMap<CacheKey, CacheEntry>>,
     metrics: Arc<PushDeliveryMetrics>,
@@ -214,7 +214,7 @@ impl PushDeliveryWorker {
     #[must_use]
     pub fn new(
         state: Arc<dyn StateStore>,
-        http: reqwest::Client,
+        http: acteon_http::GuardedClient,
         rx: broadcast::Receiver<StreamEvent>,
     ) -> Self {
         Self::with_metrics(state, http, rx, Arc::new(PushDeliveryMetrics::default()))
@@ -225,7 +225,7 @@ impl PushDeliveryWorker {
     #[must_use]
     pub fn with_metrics(
         state: Arc<dyn StateStore>,
-        http: reqwest::Client,
+        http: acteon_http::GuardedClient,
         rx: broadcast::Receiver<StreamEvent>,
         metrics: Arc<PushDeliveryMetrics>,
     ) -> Self {
@@ -641,6 +641,7 @@ impl Shared {
         let mut req = self
             .http
             .post(&config.url)
+            .map_err(|e| DeliveryError::Terminal(e.to_string()))?
             .timeout(REQUEST_TIMEOUT)
             .json(event);
         if let Some(token) = &config.token {
@@ -828,7 +829,13 @@ mod tests {
     #[tokio::test(flavor = "current_thread", start_paused = false)]
     async fn delivers_one_event_to_one_config() {
         let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
-        let http = reqwest::Client::new();
+        let http = acteon_http::GuardedClient::new(
+            acteon_http::OutboundPolicy {
+                internal_hosts: vec!["127.0.0.1".into(), "localhost".into()],
+            },
+            REQUEST_TIMEOUT,
+        )
+        .unwrap();
         let hits = Arc::new(AtomicUsize::new(0));
         let url = start_mock(200, Arc::clone(&hits)).await;
         let cfg = TaskPushNotificationConfig::new("cfg-1", "task-1", "agents", "demo", &url);
@@ -846,7 +853,13 @@ mod tests {
     #[tokio::test(flavor = "current_thread", start_paused = false)]
     async fn ignores_non_a2a_events() {
         let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
-        let http = reqwest::Client::new();
+        let http = acteon_http::GuardedClient::new(
+            acteon_http::OutboundPolicy {
+                internal_hosts: vec!["127.0.0.1".into(), "localhost".into()],
+            },
+            REQUEST_TIMEOUT,
+        )
+        .unwrap();
         let hits = Arc::new(AtomicUsize::new(0));
         let url = start_mock(200, Arc::clone(&hits)).await;
         let cfg = TaskPushNotificationConfig::new("cfg-1", "task-1", "agents", "demo", &url);
@@ -870,7 +883,13 @@ mod tests {
     #[tokio::test(flavor = "current_thread", start_paused = false)]
     async fn skips_when_no_configs_registered() {
         let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
-        let http = reqwest::Client::new();
+        let http = acteon_http::GuardedClient::new(
+            acteon_http::OutboundPolicy {
+                internal_hosts: vec!["127.0.0.1".into(), "localhost".into()],
+            },
+            REQUEST_TIMEOUT,
+        )
+        .unwrap();
         let hits = Arc::new(AtomicUsize::new(0));
         let _url = start_mock(200, Arc::clone(&hits)).await;
         let (tx, rx) = broadcast::channel::<StreamEvent>(8);
@@ -886,7 +905,13 @@ mod tests {
     #[tokio::test(flavor = "current_thread", start_paused = false)]
     async fn fan_outs_to_multiple_configs_for_same_task() {
         let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
-        let http = reqwest::Client::new();
+        let http = acteon_http::GuardedClient::new(
+            acteon_http::OutboundPolicy {
+                internal_hosts: vec!["127.0.0.1".into(), "localhost".into()],
+            },
+            REQUEST_TIMEOUT,
+        )
+        .unwrap();
         let hits = Arc::new(AtomicUsize::new(0));
         let url = start_mock(200, Arc::clone(&hits)).await;
         for n in 0..3 {
@@ -916,7 +941,13 @@ mod tests {
     #[tokio::test(flavor = "current_thread", start_paused = false)]
     async fn does_not_retry_on_non_transient_4xx() {
         let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
-        let http = reqwest::Client::new();
+        let http = acteon_http::GuardedClient::new(
+            acteon_http::OutboundPolicy {
+                internal_hosts: vec!["127.0.0.1".into(), "localhost".into()],
+            },
+            REQUEST_TIMEOUT,
+        )
+        .unwrap();
         let hits = Arc::new(AtomicUsize::new(0));
         let url = start_mock(404, Arc::clone(&hits)).await;
         let cfg = TaskPushNotificationConfig::new("cfg-1", "task-1", "agents", "demo", &url);
@@ -969,7 +1000,13 @@ mod tests {
     #[tokio::test(flavor = "current_thread", start_paused = false)]
     async fn retries_on_429_rate_limited() {
         let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
-        let http = reqwest::Client::new();
+        let http = acteon_http::GuardedClient::new(
+            acteon_http::OutboundPolicy {
+                internal_hosts: vec!["127.0.0.1".into(), "localhost".into()],
+            },
+            REQUEST_TIMEOUT,
+        )
+        .unwrap();
         let hits = Arc::new(AtomicUsize::new(0));
         let url = start_mock_first_then_ok(429, Arc::clone(&hits)).await;
         let cfg = TaskPushNotificationConfig::new("cfg-1", "task-1", "agents", "demo", &url);
@@ -1002,7 +1039,13 @@ mod tests {
     #[tokio::test(flavor = "current_thread", start_paused = false)]
     async fn exhausted_retries_write_a_dlq_entry() {
         let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
-        let http = reqwest::Client::new();
+        let http = acteon_http::GuardedClient::new(
+            acteon_http::OutboundPolicy {
+                internal_hosts: vec!["127.0.0.1".into(), "localhost".into()],
+            },
+            REQUEST_TIMEOUT,
+        )
+        .unwrap();
         let hits = Arc::new(AtomicUsize::new(0));
         // Every request returns 503 (transient) — the worker burns
         // through all retries and gives up.
@@ -1055,7 +1098,13 @@ mod tests {
     #[tokio::test(flavor = "current_thread", start_paused = false)]
     async fn ssrf_guard_refuses_loopback_delivery_url() {
         let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
-        let http = reqwest::Client::new();
+        let http = acteon_http::GuardedClient::new(
+            acteon_http::OutboundPolicy {
+                internal_hosts: vec!["127.0.0.1".into(), "localhost".into()],
+            },
+            REQUEST_TIMEOUT,
+        )
+        .unwrap();
         let hits = Arc::new(AtomicUsize::new(0));
         // The mock binds 127.0.0.1; a config pointing at it is
         // exactly the internal-target an SSRF guard must block.
@@ -1107,7 +1156,13 @@ mod tests {
     #[tokio::test(flavor = "current_thread", start_paused = false)]
     async fn slow_webhook_does_not_starve_other_tenants() {
         let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
-        let http = reqwest::Client::new();
+        let http = acteon_http::GuardedClient::new(
+            acteon_http::OutboundPolicy {
+                internal_hosts: vec!["127.0.0.1".into(), "localhost".into()],
+            },
+            REQUEST_TIMEOUT,
+        )
+        .unwrap();
         let fast_hits = Arc::new(AtomicUsize::new(0));
         let slow_hits = Arc::new(AtomicUsize::new(0));
         let fast = start_mock_with_delay(200, Duration::ZERO, Arc::clone(&fast_hits)).await;
@@ -1152,7 +1207,13 @@ mod tests {
     #[tokio::test(flavor = "current_thread", start_paused = false)]
     async fn config_cache_collapses_burst_to_single_scan() {
         let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
-        let http = reqwest::Client::new();
+        let http = acteon_http::GuardedClient::new(
+            acteon_http::OutboundPolicy {
+                internal_hosts: vec!["127.0.0.1".into(), "localhost".into()],
+            },
+            REQUEST_TIMEOUT,
+        )
+        .unwrap();
         let hits = Arc::new(AtomicUsize::new(0));
         let url = start_mock(200, Arc::clone(&hits)).await;
         let cfg = TaskPushNotificationConfig::new("cfg-1", "task-1", "agents", "demo", &url);
@@ -1190,7 +1251,13 @@ mod tests {
     #[tokio::test(flavor = "current_thread", start_paused = false)]
     async fn metrics_count_success_and_attempts() {
         let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
-        let http = reqwest::Client::new();
+        let http = acteon_http::GuardedClient::new(
+            acteon_http::OutboundPolicy {
+                internal_hosts: vec!["127.0.0.1".into(), "localhost".into()],
+            },
+            REQUEST_TIMEOUT,
+        )
+        .unwrap();
         let hits = Arc::new(AtomicUsize::new(0));
         let url = start_mock(200, Arc::clone(&hits)).await;
         let cfg = TaskPushNotificationConfig::new("cfg-1", "task-1", "agents", "demo", &url);

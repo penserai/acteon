@@ -61,6 +61,12 @@ pub async fn prometheus_metrics(State(state): State<AppState>) -> impl IntoRespo
     let snap = gw.metrics().snapshot();
 
     let mut buf = render_snapshot(&snap);
+    write_counter(
+        &mut buf,
+        "acteon_dlq_failures_total",
+        "Failed dead-letter storage or cryptographic operations.",
+        gw.dlq_failure_count(),
+    );
 
     // -- Embedding metrics (optional) --
     if let Some(em) = state.embedding_metrics.as_ref() {

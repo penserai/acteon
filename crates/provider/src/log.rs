@@ -25,7 +25,10 @@ impl Provider for LogProvider {
         &self.name
     }
 
-    async fn execute(&self, action: &Action) -> Result<ProviderResponse, ProviderError> {
+    fn execute(
+        &self,
+        action: &Action,
+    ) -> impl std::future::Future<Output = Result<ProviderResponse, ProviderError>> + Send {
         info!(
             provider = %self.name,
             action_id = %action.id,
@@ -34,15 +37,14 @@ impl Provider for LogProvider {
             tenant = %action.tenant,
             "log provider executed action"
         );
-        Ok(ProviderResponse::success(serde_json::json!({
+        std::future::ready(Ok(ProviderResponse::success(serde_json::json!({
             "provider": self.name,
             "logged": true,
-        })))
+        }))))
     }
 
-    #[allow(clippy::unused_async)]
-    async fn health_check(&self) -> Result<(), ProviderError> {
-        Ok(())
+    fn health_check(&self) -> impl std::future::Future<Output = Result<(), ProviderError>> + Send {
+        std::future::ready(Ok(()))
     }
 }
 

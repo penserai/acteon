@@ -109,7 +109,7 @@ export function actionToRequest(action: Action): Record<string, unknown> {
     result.dedup_key = action.dedupKey;
   }
   if (action.metadata) {
-    result.metadata = { labels: action.metadata };
+    result.metadata = action.metadata;
   }
   if (action.template) {
     result.template = action.template;

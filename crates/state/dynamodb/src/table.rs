@@ -39,6 +39,10 @@ pub fn build_lock_sk(name: &str) -> String {
 ///
 /// Returns an error if the `CreateTable` call fails for reasons other than
 /// the table already existing.
+#[allow(
+    clippy::result_large_err,
+    reason = "preserve the public AWS SDK error type for this provisioning helper"
+)]
 pub async fn create_table(
     client: &Client,
     table_name: &str,

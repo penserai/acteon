@@ -21,7 +21,7 @@ every settle call — the same boundary the ``_StubClient`` pattern in
 import threading
 import time
 import unittest
-from typing import Any, Optional
+from typing import Any
 
 from acteon_client import (
     NonRetryableError,
@@ -30,6 +30,7 @@ from acteon_client import (
     WorkerTask,
 )
 from acteon_client.worker import WORKFLOW_ACTION_TYPE
+from acteon_client.workflows import WorkflowExecution
 
 
 def _task(action_type: str = "send_email", payload: Any = None, **overrides: Any) -> WorkerTask:
@@ -57,11 +58,7 @@ def _workflow_task(workflow: str = "onboarding") -> WorkerTask:
     )
 
 
-def _execution(
-    input: Any = None, checkpoints: Optional[list] = None
-) -> "WorkflowExecution":
-    from acteon_client.workflows import WorkflowExecution
-
+def _execution(input: Any = None, checkpoints: list | None = None) -> "WorkflowExecution":
     return WorkflowExecution.from_dict(
         {
             "execution_id": "ex-1",
@@ -83,7 +80,7 @@ class _FakeClient:
     returns empty), emulating a queue that drains.
     """
 
-    def __init__(self, batches: Optional[list[list[WorkerTask]]] = None):
+    def __init__(self, batches: list[list[WorkerTask]] | None = None):
         self.batches = batches or []
         self.poll_calls: list[dict[str, Any]] = []
         self.heartbeats: list[str] = []
@@ -93,11 +90,12 @@ class _FakeClient:
         # Executions served to slim continuation fetches, keyed by ID.
         self.executions: dict[str, Any] = {}
         self.get_execution_calls: list[str] = []
-        self.get_execution_error: Optional[Exception] = None
+        self.get_execution_error: Exception | None = None
         self._lock = threading.Lock()
 
-    def poll_tasks(self, queue, namespace, tenant, *, max_tasks=None,
-                   lease_seconds=None, worker_id=None):
+    def poll_tasks(
+        self, queue, namespace, tenant, *, max_tasks=None, lease_seconds=None, worker_id=None
+    ):
         with self._lock:
             self.poll_calls.append(
                 {
@@ -113,8 +111,7 @@ class _FakeClient:
                 return self.batches.pop(0)
             return []
 
-    def heartbeat_task(self, task_id, namespace, tenant, lease_token, *,
-                       extend_seconds=None):
+    def heartbeat_task(self, task_id, namespace, tenant, lease_token, *, extend_seconds=None):
         with self._lock:
             self.heartbeats.append(task_id)
         return _task(task_id=task_id)
@@ -420,9 +417,7 @@ class TestWorkflowTasks(unittest.TestCase):
         worker.register_workflow("onboarding", onboarding)
         worker.run_once()
 
-        self.assertEqual(
-            client.checkpoint_calls, [("step:provision#0", {"account": "acct-9"})]
-        )
+        self.assertEqual(client.checkpoint_calls, [("step:provision#0", {"account": "acct-9"})])
         self.assertEqual(
             client.completes,
             [("t-1", {"directive": "sleep", "checkpoint": "sleep#0", "seconds": 30})],

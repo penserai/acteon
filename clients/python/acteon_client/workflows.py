@@ -33,10 +33,12 @@ suspension point is deterministic.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable, Optional
+from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
+from ._json import json_string
 from .errors import ApiError, HttpError
 
 if TYPE_CHECKING:
@@ -53,7 +55,7 @@ def _seg(s: str) -> str:
     return quote(s, safe="")
 
 
-def _raise_for_status(resp: "httpx.Response") -> None:
+def _raise_for_status(resp: httpx.Response) -> None:
     """Translate a non-2xx response into either ``ApiError`` (with the
     server's structured error envelope) or ``HttpError`` (raw body).
     """
@@ -88,10 +90,10 @@ class WorkflowCheckpoint:
     seq: int
     name: str
     data: Any
-    recorded_at: Optional[str] = None
+    recorded_at: str | None = None
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "WorkflowCheckpoint":
+    def from_dict(cls, d: dict[str, Any]) -> WorkflowCheckpoint:
         return cls(
             seq=d["seq"],
             name=d["name"],
@@ -118,22 +120,20 @@ class WorkflowExecution:
     created_at: str
     updated_at: str
     result: Any = None
-    error: Optional[str] = None
+    error: str | None = None
     awaiting: Any = None
-    parent_id: Optional[str] = None
-    children: Optional[list[str]] = None
+    parent_id: str | None = None
+    children: list[str] | None = None
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "WorkflowExecution":
+    def from_dict(cls, d: dict[str, Any]) -> WorkflowExecution:
         return cls(
             execution_id=d["execution_id"],
             workflow=d["workflow"],
             queue=d["queue"],
             status=d["status"],
             input=d.get("input"),
-            checkpoints=[
-                WorkflowCheckpoint.from_dict(c) for c in d.get("checkpoints", [])
-            ],
+            checkpoints=[WorkflowCheckpoint.from_dict(c) for c in d.get("checkpoints", [])],
             search_attributes=d.get("search_attributes", {}) or {},
             created_at=d["created_at"],
             updated_at=d["updated_at"],
@@ -153,7 +153,7 @@ class ExecutionHistory:
     events: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "ExecutionHistory":
+    def from_dict(cls, d: dict[str, Any]) -> ExecutionHistory:
         return cls(
             execution_id=d["execution_id"],
             events=d.get("events", []) or [],
@@ -172,14 +172,15 @@ class _WorkflowsClientMixin:
     # set by the concrete ``ActeonClient`` it gets mixed into. Stub
     # the types so ``mypy`` (and humans) understand the contract.
     if TYPE_CHECKING:
+
         def _request(  # noqa: D401
             self,
             method: str,
             path: str,
             *,
-            json: Optional[dict] = None,
-            params: Optional[dict] = None,
-        ) -> "httpx.Response": ...
+            json: dict[str, Any] | list[dict[str, Any]] | None = None,
+            params: dict[str, Any] | None = None,
+        ) -> httpx.Response: ...
 
     def start_workflow(
         self,
@@ -189,7 +190,7 @@ class _WorkflowsClientMixin:
         queue: str,
         input: Any,
         *,
-        search_attributes: Optional[dict[str, Any]] = None,
+        search_attributes: dict[str, Any] | None = None,
     ) -> WorkflowExecution:
         """Start a new workflow execution.
 
@@ -226,9 +227,9 @@ class _WorkflowsClientMixin:
         namespace: str,
         tenant: str,
         *,
-        workflow: Optional[str] = None,
-        status: Optional[str] = None,
-        limit: Optional[int] = None,
+        workflow: str | None = None,
+        status: str | None = None,
+        limit: int | None = None,
     ) -> list[WorkflowExecution]:
         """List workflow executions, optionally filtered.
 
@@ -257,13 +258,11 @@ class _WorkflowsClientMixin:
             params["limit"] = limit
         resp = self._request("GET", "/v1/workflows/executions", params=params)
         _raise_for_status(resp)
-        return [
-            WorkflowExecution.from_dict(e) for e in resp.json().get("executions", [])
-        ]
+        return [WorkflowExecution.from_dict(e) for e in resp.json().get("executions", [])]
 
     def get_workflow_execution(
         self, execution_id: str, namespace: str, tenant: str
-    ) -> Optional[WorkflowExecution]:
+    ) -> WorkflowExecution | None:
         """Get a single workflow execution by ID.
 
         Returns:
@@ -325,7 +324,7 @@ class _WorkflowsClientMixin:
         namespace: str,
         tenant: str,
         *,
-        reason: Optional[str] = None,
+        reason: str | None = None,
     ) -> None:
         """Cancel a workflow execution.
 
@@ -400,8 +399,8 @@ class _WorkflowsClientMixin:
         workflow: str,
         input: Any,
         *,
-        queue: Optional[str] = None,
-        parent_close_policy: Optional[str] = None,
+        queue: str | None = None,
+        parent_close_policy: str | None = None,
     ) -> str:
         """Start a child workflow execution under a parent.
 
@@ -442,7 +441,7 @@ class _WorkflowsClientMixin:
             json=body,
         )
         _raise_for_status(resp)
-        return resp.json()["child_execution_id"]
+        return json_string(resp.json()["child_execution_id"])
 
     def get_execution_history(
         self, execution_id: str, namespace: str, tenant: str
@@ -484,14 +483,15 @@ class _AsyncWorkflowsClientMixin:
     """Async mixin providing the workflow REST surface."""
 
     if TYPE_CHECKING:
+
         async def _request(  # noqa: D401
             self,
             method: str,
             path: str,
             *,
-            json: Optional[dict] = None,
-            params: Optional[dict] = None,
-        ) -> "httpx.Response": ...
+            json: dict[str, Any] | list[dict[str, Any]] | None = None,
+            params: dict[str, Any] | None = None,
+        ) -> httpx.Response: ...
 
     async def start_workflow(
         self,
@@ -501,7 +501,7 @@ class _AsyncWorkflowsClientMixin:
         queue: str,
         input: Any,
         *,
-        search_attributes: Optional[dict[str, Any]] = None,
+        search_attributes: dict[str, Any] | None = None,
     ) -> WorkflowExecution:
         """Start a new workflow execution. See the sync mixin."""
         body: dict[str, Any] = {
@@ -522,9 +522,9 @@ class _AsyncWorkflowsClientMixin:
         namespace: str,
         tenant: str,
         *,
-        workflow: Optional[str] = None,
-        status: Optional[str] = None,
-        limit: Optional[int] = None,
+        workflow: str | None = None,
+        status: str | None = None,
+        limit: int | None = None,
     ) -> list[WorkflowExecution]:
         """List workflow executions. See the sync mixin."""
         params: dict[str, Any] = {"namespace": namespace, "tenant": tenant}
@@ -536,13 +536,11 @@ class _AsyncWorkflowsClientMixin:
             params["limit"] = limit
         resp = await self._request("GET", "/v1/workflows/executions", params=params)
         _raise_for_status(resp)
-        return [
-            WorkflowExecution.from_dict(e) for e in resp.json().get("executions", [])
-        ]
+        return [WorkflowExecution.from_dict(e) for e in resp.json().get("executions", [])]
 
     async def get_workflow_execution(
         self, execution_id: str, namespace: str, tenant: str
-    ) -> Optional[WorkflowExecution]:
+    ) -> WorkflowExecution | None:
         """Get a single execution by ID, or None on 404. See the sync mixin."""
         resp = await self._request(
             "GET",
@@ -580,7 +578,7 @@ class _AsyncWorkflowsClientMixin:
         namespace: str,
         tenant: str,
         *,
-        reason: Optional[str] = None,
+        reason: str | None = None,
     ) -> None:
         """Cancel a workflow execution. See the sync mixin."""
         body: dict[str, Any] = {"namespace": namespace, "tenant": tenant}
@@ -624,8 +622,8 @@ class _AsyncWorkflowsClientMixin:
         workflow: str,
         input: Any,
         *,
-        queue: Optional[str] = None,
-        parent_close_policy: Optional[str] = None,
+        queue: str | None = None,
+        parent_close_policy: str | None = None,
     ) -> str:
         """Start a child execution (idempotent by checkpoint). See the sync mixin."""
         body: dict[str, Any] = {
@@ -645,7 +643,7 @@ class _AsyncWorkflowsClientMixin:
             json=body,
         )
         _raise_for_status(resp)
-        return resp.json()["child_execution_id"]
+        return json_string(resp.json()["child_execution_id"])
 
     async def get_execution_history(
         self, execution_id: str, namespace: str, tenant: str
@@ -778,13 +776,9 @@ class WorkflowContext:
             return
         # The server's directive schema requires integer seconds; a float
         # would fail deserialization and fail the execution.
-        raise _Suspend(
-            {"directive": "sleep", "checkpoint": key, "seconds": max(1, int(seconds))}
-        )
+        raise _Suspend({"directive": "sleep", "checkpoint": key, "seconds": max(1, int(seconds))})
 
-    def wait_for_signal(
-        self, name: str, timeout_seconds: Optional[float] = None
-    ) -> Any:
+    def wait_for_signal(self, name: str, timeout_seconds: float | None = None) -> Any:
         """Suspend until the named signal arrives (or times out).
 
         On replay returns the recorded signal payload, or ``None`` if
@@ -820,7 +814,7 @@ class WorkflowContext:
         workflow: str,
         input: Any,
         *,
-        queue: Optional[str] = None,
+        queue: str | None = None,
         parent_close_policy: str = "abandon",
     ) -> str:
         """Start a child workflow execution exactly once across re-runs.
@@ -840,7 +834,7 @@ class WorkflowContext:
         """
         key = self._next_key(f"child:{workflow}")
         if key in self._checkpoints:
-            return self._checkpoints[key]["child_id"]
+            return json_string(self._checkpoints[key]["child_id"])
         child_id = self._client.start_child_workflow(
             self._execution_id,
             self._namespace,
@@ -852,11 +846,9 @@ class WorkflowContext:
             parent_close_policy=parent_close_policy,
         )
         self._checkpoints[key] = {"child_id": child_id}
-        return child_id
+        return json_string(child_id)
 
-    def wait_for_child(
-        self, child_id: str, timeout_seconds: Optional[float] = None
-    ) -> Any:
+    def wait_for_child(self, child_id: str, timeout_seconds: float | None = None) -> Any:
         """Suspend until the child execution closes (or the wait times out).
 
         The server delivers child completion as the well-known signal

@@ -24,6 +24,7 @@ pub struct RecordingProvider {
     response_fn: Option<Arc<ResponseFn>>,
     delay: Option<Duration>,
     failure_mode: FailureMode,
+    seed: u64,
 }
 
 impl std::fmt::Debug for RecordingProvider {
@@ -76,6 +77,7 @@ impl RecordingProvider {
             response_fn: None,
             delay: None,
             failure_mode: FailureMode::None,
+            seed: 0,
         }
     }
 
@@ -100,6 +102,13 @@ impl RecordingProvider {
     #[must_use]
     pub fn with_failure_mode(mut self, mode: FailureMode) -> Self {
         self.failure_mode = mode;
+        self
+    }
+
+    /// Seed probabilistic failures for replay. The call number selects each draw.
+    #[must_use]
+    pub fn with_seed(mut self, seed: u64) -> Self {
+        self.seed = seed;
         self
     }
 
@@ -178,7 +187,12 @@ impl RecordingProvider {
         match &self.failure_mode {
             FailureMode::None => false,
             FailureMode::EveryN(n) => call_number.is_multiple_of(*n),
-            FailureMode::Probabilistic(p) => rand::random::<f64>() < *p,
+            FailureMode::Probabilistic(p) => {
+                use rand::{Rng, SeedableRng};
+                let mut rng =
+                    rand::rngs::StdRng::seed_from_u64(self.seed.wrapping_add(call_number as u64));
+                rng.gen_range(0.0..1.0) < *p
+            }
             FailureMode::FirstN(n) => call_number <= *n,
             FailureMode::Always => true,
         }

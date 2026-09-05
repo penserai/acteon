@@ -40,9 +40,9 @@ type Action struct {
 	Metadata    *ActionMetadata `json:"metadata,omitempty"`
 	CreatedAt   time.Time       `json:"created_at"`
 	Template    string          `json:"template,omitempty"`
-	Attachments []Attachment `json:"attachments,omitempty"`
-	Signature   string       `json:"signature,omitempty"`
-	SignerID    string       `json:"signer_id,omitempty"`
+	Attachments []Attachment    `json:"attachments,omitempty"`
+	Signature   string          `json:"signature,omitempty"`
+	SignerID    string          `json:"signer_id,omitempty"`
 	// Kid is an optional key identifier for rotation. When the same
 	// SignerID has multiple active keys on the server, Kid selects
 	// the specific key to verify against. Discoverable via
@@ -53,6 +53,18 @@ type Action struct {
 // ActionMetadata contains optional metadata for an action.
 type ActionMetadata struct {
 	Labels map[string]string `json:"labels,omitempty"`
+}
+
+// MarshalJSON matches Rust ActionMetadata's flattened wire representation.
+func (m ActionMetadata) MarshalJSON() ([]byte, error) {
+	if m.Labels == nil {
+		return []byte("{}"), nil
+	}
+	return json.Marshal(m.Labels)
+}
+
+func (m *ActionMetadata) UnmarshalJSON(data []byte) error {
+	return json.Unmarshal(data, &m.Labels)
 }
 
 // NewAction creates a new action with an auto-generated ID.
@@ -656,7 +668,7 @@ type RecurringSummary struct {
 // ListRecurringResponse is the response from listing recurring actions.
 type ListRecurringResponse struct {
 	RecurringActions []RecurringSummary `json:"recurring_actions"`
-	Count            int               `json:"count"`
+	Count            int                `json:"count"`
 }
 
 // RecurringDetail is detailed information about a recurring action.
@@ -1192,7 +1204,7 @@ type EvaluateRulesResponse struct {
 	TotalRulesSkipped   int                    `json:"total_rules_skipped"`
 	EvaluationDuration  uint64                 `json:"evaluation_duration_us"`
 	Trace               []RuleTraceEntry       `json:"trace"`
-	Context             TraceContext            `json:"context"`
+	Context             TraceContext           `json:"context"`
 	ModifiedPayload     map[string]interface{} `json:"modified_payload,omitempty"`
 }
 
@@ -1232,20 +1244,20 @@ type SseEvent struct {
 
 // ProviderHealthStatus represents health and metrics for a single provider.
 type ProviderHealthStatus struct {
-	Provider             string   `json:"provider"`
-	Healthy              bool     `json:"healthy"`
-	HealthCheckError     *string  `json:"health_check_error,omitempty"`
-	CircuitBreakerState  string   `json:"circuit_breaker_state"`
-	TotalRequests        int      `json:"total_requests"`
-	Successes            int      `json:"successes"`
-	Failures             int      `json:"failures"`
-	SuccessRate          float64  `json:"success_rate"`
-	AvgLatencyMs         float64  `json:"avg_latency_ms"`
-	P50LatencyMs         float64  `json:"p50_latency_ms"`
-	P95LatencyMs         float64  `json:"p95_latency_ms"`
-	P99LatencyMs         float64  `json:"p99_latency_ms"`
-	LastRequestAt        *int64   `json:"last_request_at,omitempty"`
-	LastError            *string  `json:"last_error,omitempty"`
+	Provider            string  `json:"provider"`
+	Healthy             bool    `json:"healthy"`
+	HealthCheckError    *string `json:"health_check_error,omitempty"`
+	CircuitBreakerState string  `json:"circuit_breaker_state"`
+	TotalRequests       int     `json:"total_requests"`
+	Successes           int     `json:"successes"`
+	Failures            int     `json:"failures"`
+	SuccessRate         float64 `json:"success_rate"`
+	AvgLatencyMs        float64 `json:"avg_latency_ms"`
+	P50LatencyMs        float64 `json:"p50_latency_ms"`
+	P95LatencyMs        float64 `json:"p95_latency_ms"`
+	P99LatencyMs        float64 `json:"p99_latency_ms"`
+	LastRequestAt       *int64  `json:"last_request_at,omitempty"`
+	LastError           *string `json:"last_error,omitempty"`
 }
 
 // ListProviderHealthResponse is the response from listing provider health.
@@ -1889,7 +1901,7 @@ func NewAsgDescribeGroupsPayload(groupNames []string) map[string]any {
 func NewAsgSetDesiredCapacityPayload(groupName string, desiredCapacity int) map[string]any {
 	return map[string]any{
 		"auto_scaling_group_name": groupName,
-		"desired_capacity":       desiredCapacity,
+		"desired_capacity":        desiredCapacity,
 	}
 }
 

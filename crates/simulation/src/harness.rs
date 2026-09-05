@@ -30,12 +30,21 @@ pub struct SimulationHarness {
     port_allocator: PortAllocator,
     #[allow(dead_code)]
     shared_state: Option<Arc<dyn StateStore>>,
+    state_backend_identity: &'static str,
 }
 
 impl SimulationHarness {
     /// Start a simulation cluster with the given configuration.
-    #[allow(clippy::unused_async)] // Async for future backend connections
     pub async fn start(config: SimulationConfig) -> Result<Self, SimulationError> {
+        Self::start_with_providers(config, Vec::new()).await
+    }
+
+    /// Inject controlled providers while retaining the real backend factory.
+    #[allow(clippy::unused_async)] // External-backend awaits are feature-gated.
+    pub async fn start_with_providers(
+        config: SimulationConfig,
+        injected: Vec<Arc<RecordingProvider>>,
+    ) -> Result<Self, SimulationError> {
         let port_allocator = PortAllocator::new();
 
         // Parse rules from YAML
@@ -47,30 +56,27 @@ impl SimulationHarness {
             providers.insert(name.clone(), Arc::new(RecordingProvider::new(name)));
         }
 
+        for provider in injected {
+            providers.insert(provider.name().to_owned(), provider);
+        }
+
         // Convert to DynProvider references
         let provider_refs: Vec<Arc<dyn DynProvider>> = providers
             .values()
             .map(|p| Arc::clone(p) as Arc<dyn DynProvider>)
             .collect();
 
-        // Create shared state if needed
-        let shared_state: Option<Arc<dyn StateStore>> = if config.shared_state || config.nodes > 1 {
-            match &config.state_backend {
-                StateBackendConfig::Memory => Some(Arc::new(MemoryStateStore::new())),
-                #[cfg(feature = "redis")]
-                StateBackendConfig::Redis { url: _, prefix: _ } => {
-                    // For now, fall back to memory even when Redis is configured
-                    // A real implementation would create a Redis connection here
-                    Some(Arc::new(MemoryStateStore::new()))
-                }
-            }
-        } else {
-            None
-        };
+        if config.nodes == 0 {
+            return Err(SimulationError::Configuration(
+                "simulation requires at least one node".into(),
+            ));
+        }
+        let (shared_state, shared_lock, state_backend_identity) =
+            create_state_backend(&config).await?;
 
-        // Create shared lock
-        let shared_lock: Arc<dyn DistributedLock> = Arc::new(MemoryDistributedLock::new());
-
+        // All nodes in one simulated deployment share approval signing keys.
+        let approval_secret =
+            format!("{}{}", uuid::Uuid::new_v4(), uuid::Uuid::new_v4()).into_bytes();
         // Create nodes
         let mut nodes = Vec::with_capacity(config.nodes);
         for i in 0..config.nodes {
@@ -97,6 +103,7 @@ impl SimulationHarness {
                 audit,
                 config.environment.clone(),
                 config.state_machines.clone(),
+                Some(approval_secret.clone()),
             )?;
 
             nodes.push(node);
@@ -107,6 +114,7 @@ impl SimulationHarness {
             providers,
             port_allocator,
             shared_state,
+            state_backend_identity,
         })
     }
 
@@ -150,6 +158,12 @@ impl SimulationHarness {
                 .build(),
         )
         .await
+    }
+
+    /// Actual factory-selected state and lock backend, recorded in evaluation manifests.
+    #[must_use]
+    pub fn state_backend_identity(&self) -> &'static str {
+        self.state_backend_identity
     }
 
     /// Get a reference to a recording provider by name.
@@ -295,6 +309,73 @@ impl SimulationHarness {
 
         Ok(rules)
     }
+}
+
+type StateComponents = (
+    Option<Arc<dyn StateStore>>,
+    Arc<dyn DistributedLock>,
+    &'static str,
+);
+
+/// Construct the selected concrete backend pair; no fallback is permitted.
+#[allow(clippy::unused_async)] // External-backend awaits are feature-gated.
+async fn create_state_backend(
+    config: &SimulationConfig,
+) -> Result<StateComponents, SimulationError> {
+    let components: StateComponents = match &config.state_backend {
+        StateBackendConfig::Memory => (
+            config
+                .shared_state
+                .then(|| Arc::new(MemoryStateStore::new()) as Arc<dyn StateStore>),
+            Arc::new(MemoryDistributedLock::new()),
+            "memory",
+        ),
+        #[cfg(feature = "postgres")]
+        StateBackendConfig::Postgres { url } => {
+            use acteon_state_postgres::{
+                PostgresConfig, PostgresDistributedLock, PostgresStateStore,
+            };
+            let postgres = PostgresConfig {
+                url: url.clone(),
+                table_prefix: format!("sim_{}_", uuid::Uuid::new_v4().simple()),
+                ..Default::default()
+            };
+            let state = PostgresStateStore::new(postgres.clone())
+                .await
+                .map_err(|e| SimulationError::BackendConnection(e.to_string()))?;
+            let lock = PostgresDistributedLock::new(postgres)
+                .await
+                .map_err(|e| SimulationError::BackendConnection(e.to_string()))?;
+            (Some(Arc::new(state)), Arc::new(lock), "postgres")
+        }
+        #[cfg(feature = "redis")]
+        StateBackendConfig::Redis { url, prefix } => {
+            use acteon_state_redis::{RedisConfig, RedisDistributedLock, RedisStateStore};
+            let redis = RedisConfig {
+                url: url.clone(),
+                prefix: prefix
+                    .clone()
+                    .unwrap_or_else(|| format!("sim-{}", uuid::Uuid::new_v4())),
+                ..Default::default()
+            };
+            let state = RedisStateStore::new(&redis)
+                .map_err(|e| SimulationError::BackendConnection(e.to_string()))?;
+            let lock = RedisDistributedLock::new(&redis)
+                .map_err(|e| SimulationError::BackendConnection(e.to_string()))?;
+            // Exercise the selected backend during startup; never defer into a memory fallback.
+            state
+                .get(&acteon_state::StateKey::new(
+                    "simulation",
+                    "startup",
+                    acteon_state::KeyKind::State,
+                    "probe",
+                ))
+                .await
+                .map_err(|e| SimulationError::BackendConnection(e.to_string()))?;
+            (Some(Arc::new(state)), Arc::new(lock), "redis")
+        }
+    };
+    Ok(components)
 }
 
 /// Builder for `SimulationHarness` with fluent API.
@@ -517,5 +598,29 @@ mod tests {
         assert!(harness.provider("sms").is_some());
 
         harness.teardown().await.unwrap();
+    }
+    #[cfg(feature = "redis")]
+    #[tokio::test]
+    async fn unavailable_redis_is_an_explicit_startup_failure() {
+        let socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = socket.local_addr().unwrap().port();
+        drop(socket);
+        // A refused connection must be reported, rather than substituted with memory.
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            SimulationHarness::start(
+                SimulationConfig::builder()
+                    .state_backend(StateBackendConfig::Redis {
+                        url: format!("redis://127.0.0.1:{port}"),
+                        prefix: None,
+                    })
+                    .build(),
+            ),
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Ok(Err(SimulationError::BackendConnection(_)))
+        ));
     }
 }

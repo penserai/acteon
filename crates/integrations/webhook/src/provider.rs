@@ -1,14 +1,14 @@
 use acteon_core::{Action, ProviderResponse};
+use acteon_http::GuardedClient;
 use acteon_provider::{
     DispatchContext, MAX_ERROR_BODY_READ_BYTES, MAX_RESPONSE_BODY_READ_BYTES, Provider,
     ProviderError, read_bounded_body, truncate_error_body,
 };
 use hmac::{Hmac, Mac};
-use reqwest::Client;
 use sha2::Sha256;
 use tracing::{debug, instrument, warn};
 
-use crate::config::{AuthMethod, HttpMethod, PayloadMode, WebhookConfig};
+use crate::config::{AuthMethod, PayloadMode, WebhookConfig};
 use crate::error::WebhookError;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -34,7 +34,7 @@ pub struct WebhookProvider {
     /// Unique name for this provider instance.
     provider_name: String,
     config: WebhookConfig,
-    client: Client,
+    client: GuardedClient,
 }
 
 impl WebhookProvider {
@@ -42,15 +42,12 @@ impl WebhookProvider {
     ///
     /// Uses a default `reqwest::Client` with the configured timeout.
     pub fn new(name: impl Into<String>, config: WebhookConfig) -> Self {
-        let client = Client::builder()
-            .timeout(config.timeout)
-            .redirect(if config.follow_redirects {
-                reqwest::redirect::Policy::default()
-            } else {
-                reqwest::redirect::Policy::none()
-            })
-            .build()
-            .expect("failed to build HTTP client");
+        let client = GuardedClient::from_builder(
+            reqwest::Client::builder().timeout(config.timeout),
+            config.outbound_policy.clone(),
+            config.follow_redirects,
+        )
+        .expect("failed to build guarded webhook client");
 
         Self {
             provider_name: name.into(),
@@ -62,7 +59,11 @@ impl WebhookProvider {
     /// Create a new webhook provider with a custom HTTP client.
     ///
     /// Useful for testing or for sharing a connection pool across providers.
-    pub fn with_client(name: impl Into<String>, config: WebhookConfig, client: Client) -> Self {
+    pub fn with_client(
+        name: impl Into<String>,
+        config: WebhookConfig,
+        client: GuardedClient,
+    ) -> Self {
         Self {
             provider_name: name.into(),
             config,
@@ -124,14 +125,12 @@ impl WebhookProvider {
     }
 
     /// Build a `reqwest::RequestBuilder` for the configured method and URL.
-    fn build_request(&self) -> reqwest::RequestBuilder {
-        match self.config.method {
-            HttpMethod::Get => self.client.get(&self.config.url),
-            HttpMethod::Post => self.client.post(&self.config.url),
-            HttpMethod::Put => self.client.put(&self.config.url),
-            HttpMethod::Patch => self.client.patch(&self.config.url),
-            HttpMethod::Delete => self.client.delete(&self.config.url),
-        }
+    fn build_request(&self) -> Result<reqwest::RequestBuilder, ProviderError> {
+        let method = reqwest::Method::from_bytes(self.config.method.as_str().as_bytes())
+            .map_err(|e| ProviderError::Configuration(e.to_string()))?;
+        self.client
+            .request(method, &self.config.url)
+            .map_err(|e| ProviderError::Configuration(e.to_string()))
     }
 
     /// Interpret the HTTP response from the webhook endpoint, handling
@@ -195,7 +194,7 @@ impl Provider for WebhookProvider {
             "dispatching webhook"
         );
 
-        let mut request = self.build_request();
+        let mut request = self.build_request()?;
 
         // Set content type and body.
         request = request
@@ -260,7 +259,7 @@ impl Provider for WebhookProvider {
             form = form.part(format!("file_{i}"), part);
         }
 
-        let mut request = self.build_request();
+        let mut request = self.build_request()?;
         request = request.multipart(form);
 
         // Apply static headers.
@@ -293,6 +292,7 @@ impl Provider for WebhookProvider {
         let response = self
             .client
             .head(&self.config.url)
+            .map_err(|e| ProviderError::Configuration(e.to_string()))?
             .send()
             .await
             .map_err(|e| ProviderError::Connection(e.to_string()))?;
@@ -395,7 +395,7 @@ mod tests {
     #[tokio::test]
     async fn execute_success_post() {
         let server = MockWebhookServer::start().await;
-        let config = WebhookConfig::new(&server.base_url);
+        let config = WebhookConfig::new(&server.base_url).with_internal_host("127.0.0.1");
         let provider = WebhookProvider::new("post-hook", config);
 
         let action = make_action(serde_json::json!({"event": "test"}));
@@ -415,7 +415,9 @@ mod tests {
     #[tokio::test]
     async fn execute_success_put() {
         let server = MockWebhookServer::start().await;
-        let config = WebhookConfig::new(&server.base_url).with_method(HttpMethod::Put);
+        let config = WebhookConfig::new(&server.base_url)
+            .with_method(HttpMethod::Put)
+            .with_internal_host("127.0.0.1");
         let provider = WebhookProvider::new("put-hook", config);
 
         let action = make_action(serde_json::json!({"event": "update"}));
@@ -437,8 +439,9 @@ mod tests {
     #[tokio::test]
     async fn execute_payload_only_mode() {
         let server = MockWebhookServer::start().await;
-        let config =
-            WebhookConfig::new(&server.base_url).with_payload_mode(PayloadMode::PayloadOnly);
+        let config = WebhookConfig::new(&server.base_url)
+            .with_payload_mode(PayloadMode::PayloadOnly)
+            .with_internal_host("127.0.0.1");
         let provider = WebhookProvider::new("payload-hook", config);
 
         let action = make_action(serde_json::json!({"event": "minimal"}));
@@ -466,6 +469,7 @@ mod tests {
     async fn execute_with_bearer_auth() {
         let server = MockWebhookServer::start().await;
         let config = WebhookConfig::new(&server.base_url)
+            .with_internal_host("127.0.0.1")
             .with_auth(AuthMethod::Bearer("my-secret-token".into()));
         let provider = WebhookProvider::new("bearer-hook", config);
 
@@ -491,10 +495,12 @@ mod tests {
     #[tokio::test]
     async fn execute_with_api_key_auth() {
         let server = MockWebhookServer::start().await;
-        let config = WebhookConfig::new(&server.base_url).with_auth(AuthMethod::ApiKey {
-            header: "X-API-Key".into(),
-            value: "key-12345".into(),
-        });
+        let config = WebhookConfig::new(&server.base_url)
+            .with_internal_host("127.0.0.1")
+            .with_auth(AuthMethod::ApiKey {
+                header: "X-API-Key".into(),
+                value: "key-12345".into(),
+            });
         let provider = WebhookProvider::new("apikey-hook", config);
 
         let action = make_action(serde_json::json!({"event": "test"}));
@@ -519,10 +525,12 @@ mod tests {
     #[tokio::test]
     async fn execute_with_hmac_auth() {
         let server = MockWebhookServer::start().await;
-        let config = WebhookConfig::new(&server.base_url).with_auth(AuthMethod::HmacSha256 {
-            secret: "webhook-secret".into(),
-            header: "X-Signature".into(),
-        });
+        let config = WebhookConfig::new(&server.base_url)
+            .with_internal_host("127.0.0.1")
+            .with_auth(AuthMethod::HmacSha256 {
+                secret: "webhook-secret".into(),
+                header: "X-Signature".into(),
+            });
         let provider = WebhookProvider::new("hmac-hook", config);
 
         let action = make_action(serde_json::json!({"event": "signed"}));
@@ -548,6 +556,7 @@ mod tests {
     async fn execute_with_custom_headers() {
         let server = MockWebhookServer::start().await;
         let config = WebhookConfig::new(&server.base_url)
+            .with_internal_host("127.0.0.1")
             .with_header("X-Custom-One", "value1")
             .with_header("X-Custom-Two", "value2");
         let provider = WebhookProvider::new("header-hook", config);
@@ -572,7 +581,7 @@ mod tests {
     #[tokio::test]
     async fn execute_rate_limited_is_retryable() {
         let server = MockWebhookServer::start().await;
-        let config = WebhookConfig::new(&server.base_url);
+        let config = WebhookConfig::new(&server.base_url).with_internal_host("127.0.0.1");
         let provider = WebhookProvider::new("rate-hook", config);
 
         let action = make_action(serde_json::json!({"event": "test"}));
@@ -591,7 +600,7 @@ mod tests {
     #[tokio::test]
     async fn execute_server_error_returns_failure_response() {
         let server = MockWebhookServer::start().await;
-        let config = WebhookConfig::new(&server.base_url);
+        let config = WebhookConfig::new(&server.base_url).with_internal_host("127.0.0.1");
         let provider = WebhookProvider::new("err-hook", config);
 
         let action = make_action(serde_json::json!({"event": "test"}));
@@ -610,8 +619,9 @@ mod tests {
     #[tokio::test]
     async fn execute_custom_success_codes() {
         let server = MockWebhookServer::start().await;
-        let config =
-            WebhookConfig::new(&server.base_url).with_success_status_codes(vec![200, 201, 202]);
+        let config = WebhookConfig::new(&server.base_url)
+            .with_success_status_codes(vec![200, 201, 202])
+            .with_internal_host("127.0.0.1");
         let provider = WebhookProvider::new("custom-status", config);
 
         let action = make_action(serde_json::json!({"event": "test"}));
@@ -630,7 +640,7 @@ mod tests {
     #[tokio::test]
     async fn execute_captures_response_headers() {
         let server = MockWebhookServer::start().await;
-        let config = WebhookConfig::new(&server.base_url);
+        let config = WebhookConfig::new(&server.base_url).with_internal_host("127.0.0.1");
         let provider = WebhookProvider::new("headers-hook", config);
 
         let action = make_action(serde_json::json!({"event": "test"}));
@@ -649,7 +659,7 @@ mod tests {
     #[tokio::test]
     async fn health_check_success() {
         let server = MockWebhookServer::start().await;
-        let config = WebhookConfig::new(&server.base_url);
+        let config = WebhookConfig::new(&server.base_url).with_internal_host("127.0.0.1");
         let provider = WebhookProvider::new("health-hook", config);
 
         let server_handle = tokio::spawn(async move { server.respond_once(200, "").await });
@@ -663,7 +673,7 @@ mod tests {
     #[tokio::test]
     async fn health_check_rate_limited() {
         let server = MockWebhookServer::start().await;
-        let config = WebhookConfig::new(&server.base_url);
+        let config = WebhookConfig::new(&server.base_url).with_internal_host("127.0.0.1");
         let provider = WebhookProvider::new("health-rate", config);
 
         let server_handle = tokio::spawn(async move {
@@ -680,7 +690,7 @@ mod tests {
     #[tokio::test]
     async fn health_check_server_error() {
         let server = MockWebhookServer::start().await;
-        let config = WebhookConfig::new(&server.base_url);
+        let config = WebhookConfig::new(&server.base_url).with_internal_host("127.0.0.1");
         let provider = WebhookProvider::new("health-err", config);
 
         let server_handle =

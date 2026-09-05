@@ -1,0 +1,43 @@
+name: Dependency security
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '23 8 * * 1'
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: stable
+      - uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8
+        with:
+          tool: cargo-audit@0.22.1,cargo-deny@0.20.2
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.25.5'
+          cache: false
+      - name: Install Gitleaks from its Go module
+        run: |
+          GOBIN="$RUNNER_TEMP/gitleaks-bin" go install github.com/zricethezav/gitleaks/v8@v8.30.1
+          echo "$RUNNER_TEMP/gitleaks-bin" >> "$GITHUB_PATH"
+      - run: scripts/ci/security.sh
+      - run: cargo deny --locked check licenses sources
+      - run: scripts/ci/secrets.sh
+      - name: Save dependency inventory
+        if: always()
+        run: |
+          mkdir -p dependency-evidence
+          cargo metadata --locked --format-version 1 > dependency-evidence/cargo-metadata.json
+          cargo audit --json > dependency-evidence/rustsec.json || true
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: dependency-evidence
+          path: dependency-evidence

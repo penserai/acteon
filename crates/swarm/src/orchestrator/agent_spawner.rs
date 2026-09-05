@@ -1,8 +1,9 @@
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
 
 use crate::config::SwarmConfig;
@@ -61,9 +62,13 @@ pub async fn spawn_agent(
     let engine = config.defaults.engine;
 
     // Generate settings with hooks pointing to our hook binary.
-    if hooks_binary.exists() {
-        setup_workspace_hooks(workspace, hooks_binary, config, &session.id).await?;
+    if !hooks_binary.is_file() {
+        return Err(SwarmError::AgentSpawn(format!(
+            "required policy hook binary is missing: {}",
+            hooks_binary.display()
+        )));
     }
+    setup_workspace_hooks(workspace, hooks_binary, config, &session.id).await?;
 
     // Per-run tenant isolation: the PreToolUse gate reads ACTEON_NAMESPACE /
     // ACTEON_TENANT from the inherited environment, so every gated action for
@@ -91,9 +96,13 @@ pub async fn spawn_agent(
             workspace,
             &swarm_env,
         )?,
-        crate::config::AgentEngine::Gemini => {
-            spawn_gemini_agent(subtask, system_prompt, workspace, &swarm_env)?
-        }
+        crate::config::AgentEngine::Gemini => spawn_gemini_agent(
+            subtask,
+            system_prompt,
+            workspace,
+            &swarm_env,
+            config.acteon.api_key.as_deref(),
+        )?,
     };
 
     Ok(child)
@@ -118,6 +127,7 @@ fn spawn_claude_agent(
         Some(BridgeKind::Python(path)) => {
             tracing::info!("using Python Agent SDK bridge");
             let mut cmd = Command::new("python3.10");
+            super::process::configure(&mut cmd);
             cmd.arg(&path)
                 .arg("--prompt")
                 .arg(&subtask.prompt)
@@ -130,7 +140,8 @@ fn spawn_claude_agent(
             for (k, v) in swarm_env {
                 cmd.env(k, v);
             }
-            cmd.stdout(Stdio::piped())
+            cmd.env_optional("ACTEON_AGENT_KEY", config.acteon.api_key.as_deref())
+                .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .current_dir(workspace)
                 .spawn()
@@ -139,6 +150,7 @@ fn spawn_claude_agent(
         Some(BridgeKind::Node(path)) => {
             tracing::info!("using Node.js Agent SDK bridge");
             let mut cmd = Command::new("node");
+            super::process::configure(&mut cmd);
             cmd.arg(&path)
                 .arg("--prompt")
                 .arg(&subtask.prompt)
@@ -163,6 +175,7 @@ fn spawn_claude_agent(
             tracing::warn!("Agent SDK bridge not found, falling back to `claude -p`");
             let full_prompt = format!("{system_prompt}\n\n## Task\n{}", subtask.prompt);
             let mut cmd = Command::new("claude");
+            super::process::configure(&mut cmd);
             cmd.arg("-p")
                 .arg(&full_prompt)
                 .arg("--model")
@@ -189,10 +202,12 @@ fn spawn_gemini_agent(
     system_prompt: &str,
     workspace: &Path,
     swarm_env: &[(&str, &str)],
+    api_key: Option<&str>,
 ) -> Result<Child, SwarmError> {
     tracing::info!("spawning gemini agent");
     let full_prompt = format!("{system_prompt}\n\n## Task\n{}", subtask.prompt);
     let mut cmd = Command::new("gemini");
+    super::process::configure(&mut cmd);
     cmd.arg("-p")
         .arg(&full_prompt)
         .arg("--yolo")
@@ -202,7 +217,8 @@ fn spawn_gemini_agent(
     for (k, v) in swarm_env {
         cmd.env(k, v);
     }
-    cmd.stdout(Stdio::piped())
+    cmd.env_optional("ACTEON_AGENT_KEY", api_key)
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| SwarmError::AgentSpawn(format!("failed to spawn gemini: {e}")))
@@ -215,17 +231,25 @@ pub async fn read_agent_messages(child: &mut Child) -> Result<Vec<AgentMessage>,
         .take()
         .ok_or_else(|| SwarmError::AgentSpawn("no stdout handle".into()))?;
 
-    let reader = BufReader::new(stdout);
-    let mut lines = reader.lines();
+    let mut bytes = Vec::new();
+    stdout
+        .take((super::process::MAX_OUTPUT_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .await?;
+    if bytes.len() > super::process::MAX_OUTPUT_BYTES {
+        return Err(SwarmError::AgentSpawn(
+            "agent output exceeded 1 MiB limit".into(),
+        ));
+    }
+    let output = String::from_utf8(bytes)
+        .map_err(|e| SwarmError::AgentSpawn(format!("invalid agent output: {e}")))?;
     let mut messages = Vec::new();
 
-    while let Some(line) = lines.next_line().await.map_err(|e: std::io::Error| {
-        SwarmError::AgentSpawn(format!("failed to read agent output: {e}"))
-    })? {
+    for line in output.lines() {
         if line.trim().is_empty() {
             continue;
         }
-        match serde_json::from_str::<AgentMessage>(&line) {
+        match serde_json::from_str::<AgentMessage>(line) {
             Ok(msg) => messages.push(msg),
             Err(e) => {
                 tracing::debug!("skipping non-JSON agent output: {e}");
@@ -242,14 +266,10 @@ pub async fn wait_for_agent(
     session_id: &str,
     timeout_seconds: u64,
 ) -> Result<AgentResult, SwarmError> {
-    let result = tokio::time::timeout(
-        std::time::Duration::from_secs(timeout_seconds),
-        child.wait_with_output(),
-    )
-    .await;
+    let result = super::process::wait(child, std::time::Duration::from_secs(timeout_seconds)).await;
 
     match result {
-        Ok(Ok(output)) => {
+        Ok(output) => {
             let mut exit_code = output.status.code().unwrap_or(-1);
             let result_text = String::from_utf8_lossy(&output.stdout).to_string();
 
@@ -269,9 +289,11 @@ pub async fn wait_for_agent(
                 exit_code,
             })
         }
-        Ok(Err(e)) => Err(SwarmError::AgentSpawn(format!("agent process error: {e}"))),
+        Err(e) if e.kind() != std::io::ErrorKind::TimedOut => {
+            Err(SwarmError::AgentSpawn(format!("agent process error: {e}")))
+        }
         Err(_) => {
-            // Timeout: child is consumed by wait_with_output; just report.
+            // Managed process group has been terminated and the child reaped.
             Err(SwarmError::AgentTimeout {
                 agent_id: session_id.into(),
                 timeout_seconds,
@@ -312,6 +334,12 @@ async fn setup_claude_hooks(
     tesserai_url: &str,
     agent_id: &str,
 ) -> Result<(), SwarmError> {
+    let (hook_bin, acteon_url, tesserai_url, agent_id) = (
+        shell_word(hook_bin),
+        shell_word(acteon_url),
+        shell_word(tesserai_url),
+        shell_word(agent_id),
+    );
     let claude_dir = workspace.join(".claude");
     tokio::fs::create_dir_all(&claude_dir)
         .await
@@ -323,7 +351,7 @@ async fn setup_claude_hooks(
     let settings = serde_json::json!({
         "hooks": {
             "PreToolUse": [{
-                "matcher": "Bash|Write|Edit|WebFetch|WebSearch|Task",
+                "matcher": "",
                 "hooks": [{
                     "type": "command",
                     "command": format!("{hook_bin} gate --acteon-url {acteon_url} --agent-id {agent_id}"),
@@ -352,14 +380,7 @@ async fn setup_claude_hooks(
     });
 
     let settings_path = claude_dir.join("settings.json");
-    tokio::fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)
-        .await
-        .map_err(|e| SwarmError::WorkspaceSetup {
-            path: settings_path,
-            reason: format!("failed to write settings.json: {e}"),
-        })?;
-
-    Ok(())
+    merge_hook_settings(&settings_path, &settings, &hook_bin).await
 }
 
 /// Write Gemini CLI hook settings into `<workspace>/.gemini/settings.json`.
@@ -370,6 +391,12 @@ async fn setup_gemini_hooks(
     tesserai_url: &str,
     agent_id: &str,
 ) -> Result<(), SwarmError> {
+    let (hook_bin, acteon_url, tesserai_url, agent_id) = (
+        shell_word(hook_bin),
+        shell_word(acteon_url),
+        shell_word(tesserai_url),
+        shell_word(agent_id),
+    );
     let gemini_dir = workspace.join(".gemini");
     tokio::fs::create_dir_all(&gemini_dir)
         .await
@@ -381,7 +408,7 @@ async fn setup_gemini_hooks(
     let settings = serde_json::json!({
         "hooks": {
             "BeforeTool": [{
-                "matcher": "run_shell_command|write_file|replace|web_fetch|google_web_search|generalist",
+                "matcher": ".*",
                 "hooks": [{
                     "type": "command",
                     "command": format!("{hook_bin} gate --acteon-url {acteon_url} --agent-id {agent_id}"),
@@ -410,13 +437,76 @@ async fn setup_gemini_hooks(
     });
 
     let settings_path = gemini_dir.join("settings.json");
-    tokio::fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)
-        .await
-        .map_err(|e| SwarmError::WorkspaceSetup {
-            path: settings_path,
-            reason: format!("failed to write settings.json: {e}"),
-        })?;
+    merge_hook_settings(&settings_path, &settings, &hook_bin).await
+}
 
+fn shell_word(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// Preserve operator settings and unrelated hooks; replace only this binary's entries.
+async fn merge_hook_settings(
+    path: &Path,
+    generated: &serde_json::Value,
+    binary: &str,
+) -> Result<(), SwarmError> {
+    let mut settings: serde_json::Value = match tokio::fs::read(path).await {
+        Ok(bytes) => serde_json::from_slice(&bytes)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
+        Err(error) => return Err(error.into()),
+    };
+    if settings
+        .get("disableAllHooks")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+    {
+        return Err(SwarmError::Hook(
+            "workspace disables required policy hooks".into(),
+        ));
+    }
+    let object = settings
+        .as_object_mut()
+        .ok_or_else(|| SwarmError::Hook("hook settings must be an object".into()))?;
+    let hooks = object
+        .entry("hooks")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .ok_or_else(|| SwarmError::Hook("hooks must be an object".into()))?;
+    for (event, entries) in generated["hooks"]
+        .as_object()
+        .expect("generated hooks object")
+    {
+        let existing = hooks
+            .entry(event.clone())
+            .or_insert_with(|| serde_json::json!([]))
+            .as_array_mut()
+            .ok_or_else(|| SwarmError::Hook("hook event must be an array".into()))?;
+        existing.retain(|entry| {
+            !entry["hooks"].as_array().is_some_and(|commands| {
+                !commands.is_empty()
+                    && commands.iter().all(|command| {
+                        command["command"].as_str().is_some_and(|command| {
+                            ["gate", "record", "complete"]
+                                .iter()
+                                .any(|mode| command.starts_with(&format!("{binary} {mode} ")))
+                        })
+                    })
+            })
+        });
+        existing.extend(
+            entries
+                .as_array()
+                .expect("generated hook array")
+                .iter()
+                .cloned(),
+        );
+    }
+    // A complete file replaces the old one only after serialization and writing succeed.
+    let mut temporary = tempfile::NamedTempFile::new_in(path.parent().unwrap_or(Path::new(".")))?;
+    temporary.write_all(&serde_json::to_vec_pretty(&settings)?)?;
+    temporary
+        .persist(path)
+        .map_err(|error| SwarmError::Io(error.error))?;
     Ok(())
 }
 
@@ -472,5 +562,50 @@ impl CommandEnvExt for Command {
             self.env(key, v);
         }
         self
+    }
+}
+
+#[cfg(test)]
+mod hook_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn installing_hooks_preserves_settings_and_gates_new_tools() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir(directory.path().join(".claude")).unwrap();
+        let path = directory.path().join(".claude/settings.json");
+        std::fs::write(&path, r#"{"model":"operator-choice","hooks":{"PreToolUse":[{"matcher":"Write","hooks":[{"type":"command","command":"user-lint"}]}]}}"#).unwrap();
+        for id in ["one", "two"] {
+            setup_claude_hooks(
+                directory.path(),
+                "/a path/hook",
+                "http://localhost",
+                "http://localhost",
+                id,
+            )
+            .await
+            .unwrap();
+        }
+        let settings: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(settings["model"], "operator-choice");
+        let hooks = settings["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(hooks.len(), 2);
+        assert_eq!(hooks[0]["hooks"][0]["command"], "user-lint");
+        assert_eq!(hooks[1]["matcher"], "");
+        assert!(
+            hooks[1]["hooks"][0]["command"]
+                .as_str()
+                .unwrap()
+                .starts_with("'/a path/hook' gate ")
+        );
+        setup_gemini_hooks(directory.path(), "hook", "url", "url", "id")
+            .await
+            .unwrap();
+        let settings: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(directory.path().join(".gemini/settings.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(settings["hooks"]["BeforeTool"][0]["matcher"], ".*");
     }
 }

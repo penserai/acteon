@@ -15,6 +15,9 @@ pub struct ServerConfig {
     /// Address to bind to.
     #[serde(default = "default_host")]
     pub host: String,
+    /// Explicit acknowledgement for unauthenticated non-loopback development binds.
+    #[serde(default)]
+    pub allow_unauthenticated_remote: bool,
     /// Port to listen on.
     #[serde(default = "default_port")]
     pub port: u16,
@@ -51,7 +54,7 @@ pub struct ServerConfig {
     pub max_concurrent_dispatch: usize,
     /// Allowed CORS origins.
     ///
-    /// When empty (default), CORS allows all origins (permissive).
+    /// When empty (default), browsers may only use same-origin requests.
     /// Set to a list of specific origins to restrict cross-origin access,
     /// e.g. `["https://admin.example.com", "http://localhost:3000"]`.
     #[serde(default)]
@@ -62,6 +65,7 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             host: default_host(),
+            allow_unauthenticated_remote: false,
             port: default_port(),
             shutdown_timeout_seconds: default_shutdown_timeout(),
             external_url: None,
@@ -117,4 +121,55 @@ fn default_ui_enabled() -> bool {
 
 fn default_ui_dist() -> String {
     "ui/dist".to_owned()
+}
+
+impl ServerConfig {
+    /// Refuse an exposed unauthenticated listener unless explicitly acknowledged.
+    pub fn validate_exposure(
+        &self,
+        host: &str,
+        authenticated: bool,
+        cli_acknowledged: bool,
+    ) -> Result<(), String> {
+        let loopback = host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback());
+        if !loopback && !authenticated && !self.allow_unauthenticated_remote && !cli_acknowledged {
+            return Err("non-loopback binding requires authentication; for local development explicitly set server.allow_unauthenticated_remote=true or --allow-unauthenticated-remote".into());
+        }
+        for origin in &self.cors_allowed_origins {
+            let url = reqwest::Url::parse(origin).map_err(|_| "invalid CORS origin")?;
+            if !matches!(url.scheme(), "http" | "https")
+                || !url.username().is_empty()
+                || url.password().is_some()
+                || url.query().is_some()
+                || url.fragment().is_some()
+                || url.path() != "/"
+                || url.host_str().is_none()
+            {
+                return Err(
+                    "CORS origins must be explicit HTTP(S) origins without credentials or paths"
+                        .into(),
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod exposure_tests {
+    use super::*;
+    #[test]
+    fn remote_authentication_requires_explicit_acknowledgement() {
+        let config = ServerConfig::default();
+        for host in ["127.0.0.1", "::1"] {
+            assert!(config.validate_exposure(host, false, false).is_ok());
+        }
+        for host in ["0.0.0.0", "::", "10.0.0.1", "localhost.evil.test"] {
+            assert!(config.validate_exposure(host, false, false).is_err());
+            assert!(config.validate_exposure(host, true, false).is_ok());
+            assert!(config.validate_exposure(host, false, true).is_ok());
+        }
+    }
 }

@@ -8,7 +8,7 @@ is observable from a fake ``_request`` capture.
 """
 
 import unittest
-from typing import Any, Optional
+from typing import Any
 
 from acteon_client import (
     A2A_PROTOCOL_VERSION,
@@ -28,9 +28,9 @@ class _Captured:
         self,
         method: str,
         path: str,
-        json: Optional[dict],
-        params: Optional[dict],
-        extra_headers: Optional[dict],
+        json: dict | None,
+        params: dict | None,
+        extra_headers: dict | None,
         skip_auth: bool,
     ):
         self.method = method
@@ -70,14 +70,12 @@ class _StubClient(_A2AClientMixin):
         method: str,
         path: str,
         *,
-        json: Optional[dict] = None,
-        params: Optional[dict] = None,
-        extra_headers: Optional[dict] = None,
+        json: dict | None = None,
+        params: dict | None = None,
+        extra_headers: dict | None = None,
         skip_auth: bool = False,
     ):
-        self.calls.append(
-            _Captured(method, path, json, params, extra_headers, skip_auth)
-        )
+        self.calls.append(_Captured(method, path, json, params, extra_headers, skip_auth))
         return _FakeResponse(status_code=self._status_code, body=self._body)
 
 

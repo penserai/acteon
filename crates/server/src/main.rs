@@ -40,6 +40,10 @@ struct Cli {
     #[arg(long)]
     port: Option<u16>,
 
+    /// Permit an unauthenticated non-loopback listener for development.
+    #[arg(long)]
+    allow_unauthenticated_remote: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -87,6 +91,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return run_migrate(&config).await;
     }
 
+    config.server.validate_exposure(
+        cli.host.as_deref().unwrap_or(&config.server.host),
+        config.auth.enabled,
+        cli.allow_unauthenticated_remote,
+    )?;
+
     // Initialize tracing subscriber (with optional OpenTelemetry layer).
     // Must happen after config is loaded so we know whether OTel is enabled,
     // but before any tracing calls.
@@ -112,24 +122,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Build a shared HTTP client with TLS config for all outbound calls.
-    let shared_http_client = if config.tls.enabled {
-        if config.tls.client.danger_accept_invalid_certs {
-            warn!(
-                "TLS certificate verification is DISABLED (danger_accept_invalid_certs = true). \
+    let http_builder = || -> Result<reqwest::ClientBuilder, acteon_crypto::tls::TlsError> {
+        if config.tls.enabled {
+            if config.tls.client.danger_accept_invalid_certs {
+                warn!(
+                    "TLS certificate verification is DISABLED (danger_accept_invalid_certs = true). \
                  All outbound HTTPS connections will accept any certificate. \
                  This setting MUST NOT be used in production."
-            );
+                );
+            }
+            acteon_crypto::tls::reqwest_client_builder(
+                config.tls.client.cert_path.as_deref(),
+                config.tls.client.key_path.as_deref(),
+                config.tls.client.ca_bundle_path.as_deref(),
+                config.tls.client.danger_accept_invalid_certs,
+            )
+        } else {
+            Ok(reqwest::Client::builder())
         }
-        acteon_crypto::tls::build_reqwest_client(
-            config.tls.client.cert_path.as_deref(),
-            config.tls.client.key_path.as_deref(),
-            config.tls.client.ca_bundle_path.as_deref(),
-            config.tls.client.danger_accept_invalid_certs,
-        )
-        .map_err(|e| format!("TLS HTTP client: {e}"))?
-    } else {
-        reqwest::Client::new()
     };
+    let shared_http_client = http_builder()?.build()?;
 
     // Create the state backend.
     let (store, lock) = acteon_server::state_factory::create_state(&config.state).await?;
@@ -649,10 +661,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         provider_cfg.name
                     )
                 })?;
-                validate_provider_url(&provider_cfg.name, url)?;
+                let policy = acteon_http::OutboundPolicy {
+                    internal_hosts: provider_cfg.internal_hosts.clone(),
+                };
+                policy.validate_url(url)?;
+                let webhook_client = acteon_http::GuardedClient::from_builder(
+                    http_builder()?.timeout(Duration::from_secs(30)),
+                    policy,
+                    false,
+                )?;
                 let mut wp =
                     acteon_provider::webhook::WebhookProvider::new(&provider_cfg.name, url)
-                        .with_client(shared_http_client.clone());
+                        .with_client(webhook_client);
                 if !provider_cfg.headers.is_empty() {
                     wp = wp.with_headers(provider_cfg.headers.clone());
                 }
@@ -1672,7 +1692,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let rx = gateway.read().await.stream_tx().subscribe();
         let worker = acteon_server::api::a2a_push_worker::PushDeliveryWorker::new(
             state_store,
-            shared_http_client.clone(),
+            acteon_http::GuardedClient::from_builder(
+                http_builder()?.timeout(Duration::from_secs(30)),
+                acteon_http::OutboundPolicy::default(),
+                false,
+            )?,
             rx,
         );
         tokio::spawn(worker.run())
@@ -2681,57 +2705,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Validate that a configured endpoint URL uses an allowed scheme.
-///
-/// Rejects URLs that do not start with `https://` or `http://localhost`
-/// (including `http://127.0.0.1` and `http://[::1]`). Plain `http://` to
-/// non-loopback destinations is logged as a warning because it exposes
-/// credentials and payloads on the wire.
-///
-/// This is a defence-in-depth measure against SSRF via operator-controlled
-/// configuration (e.g. `acteon.toml`).
+/// Check operator-controlled integration URLs with the shared public policy.
 fn validate_provider_url(provider_name: &str, url: &str) -> Result<(), String> {
-    let lower = url.to_lowercase();
-
-    // Allow https always.
-    if lower.starts_with("https://") {
-        return Ok(());
-    }
-
-    // Explicitly block cloud metadata service (AWS/GCP/Azure) which is a common SSRF target.
-    if lower.contains("169.254.169.254") {
-        return Err(format!(
-            "provider '{provider_name}': URL references restricted cloud metadata IP (169.254.169.254)"
-        ));
-    }
-
-    // Allow http to loopback addresses (local dev / emulators).
-    if lower.starts_with("http://localhost")
-        || lower.starts_with("http://127.")
-        || lower.starts_with("http://[::1]")
-    {
-        return Ok(());
-    }
-
-    // Reject non-HTTP schemes entirely (file://, ftp://, gopher://, etc.).
-    if !lower.starts_with("http://") {
-        return Err(format!(
-            "provider '{provider_name}': URL scheme not allowed — only https:// \
-             and http://localhost are permitted, got: {url}"
-        ));
-    }
-
-    // Warn about plain http:// to non-loopback destinations but allow it
-    // to avoid breaking existing deployments (Docker networks, k8s services,
-    // internal VPNs). Operators should migrate to HTTPS.
-    warn!(
-        provider = %provider_name,
-        url = %url,
-        "provider URL uses plain http:// to a non-loopback destination — \
-         credentials and payloads will be transmitted in cleartext. \
-         Use https:// in production."
-    );
-    Ok(())
+    acteon_http::OutboundPolicy::default()
+        .validate_url(url)
+        .map(|_| ())
+        .map_err(|error| format!("provider '{provider_name}': {error}"))
 }
 
 /// Decrypt a config value, requiring `ACTEON_AUTH_KEY` if the value is encrypted.

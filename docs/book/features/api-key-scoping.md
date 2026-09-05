@@ -209,7 +209,7 @@ const client = new ActeonClient("http://localhost:8080", { apiKey: "my-raw-key" 
 
 ```go
 // Go
-import "github.com/acteon/acteon/clients/go/acteon"
+import "github.com/penserai/acteon/clients/go/acteon"
 client := acteon.NewClient("http://localhost:8080", acteon.WithAPIKey("my-raw-key"))
 ```
 

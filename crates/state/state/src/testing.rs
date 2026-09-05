@@ -133,6 +133,43 @@ async fn test_increment(store: &dyn StateStore) -> Result<(), StateError> {
 
     let val = store.increment(&key, -2, None).await?;
     assert_eq!(val, 4, "negative delta should decrement");
+    assert_eq!(store.get(&key).await?.as_deref(), Some("4"));
+    store.set(&key, "10", None).await?;
+    assert_eq!(
+        store.increment(&key, 2, None).await?,
+        12,
+        "increment must use an existing value created by set"
+    );
+    assert_eq!(store.get(&key).await?.as_deref(), Some("12"));
+    store.set(&key, "invalid-counter", None).await?;
+    assert!(
+        store.increment(&key, 1, None).await.is_err(),
+        "invalid counters must not silently reset"
+    );
+    assert_eq!(store.get(&key).await?.as_deref(), Some("invalid-counter"));
+    store.set(&key, &i64::MAX.to_string(), None).await?;
+    assert!(
+        store.increment(&key, 1, None).await.is_err(),
+        "overflow must fail"
+    );
+    assert_eq!(
+        store.get(&key).await?,
+        Some(i64::MAX.to_string()),
+        "failed increment must preserve the previous value"
+    );
+    let concurrent = test_key(KeyKind::Counter, "counter-concurrent");
+    let worker = || async {
+        for _ in 0..16 {
+            store.increment(&concurrent, 1, None).await?;
+        }
+        Ok::<_, StateError>(())
+    };
+    tokio::try_join!(worker(), worker(), worker(), worker())?;
+    assert_eq!(
+        store.get(&concurrent).await?.as_deref(),
+        Some("64"),
+        "concurrent increments must not lose updates"
+    );
     Ok(())
 }
 

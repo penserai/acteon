@@ -26,7 +26,14 @@ pub fn map_tool_to_action_type(tool_name: &str) -> Option<&'static str> {
         "Task" | "generalist" => Some("spawn_agent"),
 
         // Read-only tools pass through without gating.
-        _ => None,
+        "Read"
+        | "Glob"
+        | "Grep"
+        | "read_file"
+        | "list_directory"
+        | "search_file_content"
+        | "glob" => None,
+        _ => Some("unknown_tool"),
     }
 }
 
@@ -44,11 +51,12 @@ pub fn build_dedup_key(
         let file_path = tool_input
             .get("file_path")
             .or_else(|| tool_input.get("path"))
+            .or_else(|| tool_input.get("absolute_path"))
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
         if !file_path.is_empty() {
-            return format!("write-{}", md5_hex(file_path));
+            return format!("write-{}", md5_hex(&normalized_path(file_path)));
         }
     }
 
@@ -82,13 +90,25 @@ pub async fn dispatch_to_acteon(
         "claude-code"
     };
 
+    let mut payload = input.tool_input.clone();
+    if action_type == "write_file" {
+        let path = payload
+            .get("file_path")
+            .or_else(|| payload.get("path"))
+            .or_else(|| payload.get("absolute_path"))
+            .and_then(serde_json::Value::as_str)
+            .map(normalized_path);
+        if let (Some(path), Some(object)) = (path, payload.as_object_mut()) {
+            object.insert("file_path".into(), path.into());
+        }
+    }
     let body = serde_json::json!({
         "id": action_id,
         "namespace": namespace,
         "tenant": tenant,
         "provider": engine_provider,
         "action_type": action_type,
-        "payload": input.tool_input,
+        "payload": payload,
         "metadata": {
             "tool_name": input.tool_name,
             "session_id": input.session_id,
@@ -99,7 +119,9 @@ pub async fn dispatch_to_acteon(
         "dedup_key": dedup_key,
     });
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
     let url = format!("{acteon_url}/v1/dispatch");
     let mut req = client.post(&url).json(&body);
 
@@ -126,51 +148,67 @@ pub async fn dispatch_to_acteon(
         .await
         .map_err(|e| SwarmError::Hook(format!("failed to parse Acteon response: {e}")))?;
 
-    // Response is a Rust enum: {"Executed":{...}}, {"Suppressed":{...}}, etc.
-    let outcome = body
-        .as_object()
-        .and_then(|obj| obj.keys().next())
-        .map_or("unknown", String::as_str);
+    Ok(outcome_allows_tool(body))
+}
 
-    match outcome {
-        "Executed" | "Deduplicated" => Ok(true),
-        "PendingApproval" => {
-            let approval_id = body["PendingApproval"]["approval_id"]
-                .as_str()
-                .unwrap_or("unknown");
+/// Decode the actual server enum, including string unit variants. Any ambiguity denies.
+fn outcome_allows_tool(body: serde_json::Value) -> bool {
+    use acteon_core::ActionOutcome;
+    match serde_json::from_value::<ActionOutcome>(body) {
+        Ok(ActionOutcome::Executed(response))
+            if response.status == acteon_core::ResponseStatus::Success =>
+        {
+            true
+        }
+        Ok(ActionOutcome::Deduplicated) => {
+            eprintln!("Duplicate tool action suppressed; the local tool must not execute");
+            false
+        }
+        Ok(ActionOutcome::PendingApproval { approval_id, .. }) => {
             eprintln!("Action held for human approval (ID: {approval_id})");
-            Ok(false)
+            false
         }
-        "Suppressed" => {
-            let rule = body["Suppressed"]["rule"]
-                .as_str()
-                .unwrap_or("unknown rule");
+        Ok(ActionOutcome::Suppressed { rule }) => {
             eprintln!("BLOCKED by Acteon rule '{rule}'");
-            Ok(false)
+            false
         }
-        "Throttled" => {
-            let retry = body["Throttled"]["retry_after"]["secs"]
-                .as_u64()
-                .unwrap_or(0);
-            eprintln!("Rate limited -- retry after {retry}s");
-            Ok(false)
+        // A rerouted action does not authorize the original local effect.
+        Ok(_) => {
+            eprintln!("Acteon did not authorize this local tool action");
+            false
         }
-        "Rerouted" => {
-            let target = body["Rerouted"]["target_provider"]
-                .as_str()
-                .unwrap_or("unknown");
-            eprintln!("Action rerouted to '{target}'");
-            Ok(true)
-        }
-        "QuotaExceeded" => {
-            eprintln!("Tenant quota exceeded -- action blocked");
-            Ok(false)
-        }
-        _ => {
-            eprintln!("Unexpected Acteon outcome: {outcome} -- blocking for safety");
-            Ok(false)
+        Err(_) => {
+            eprintln!("Malformed or unknown Acteon outcome; blocking tool action");
+            false
         }
     }
+}
+
+fn normalized_path(raw: &str) -> String {
+    use std::path::{Component, Path, PathBuf};
+    let path = Path::new(raw);
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().unwrap_or_default().join(path)
+    };
+    // Resolve existing ancestors so aliases and symlinks share a coordination key.
+    let mut resolved = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                resolved.pop();
+            }
+            other => {
+                resolved.push(other.as_os_str());
+                if let Ok(canonical) = resolved.canonicalize() {
+                    resolved = canonical;
+                }
+            }
+        }
+    }
+    resolved.to_string_lossy().into_owned()
 }
 
 fn md5_hex(input: &str) -> String {
@@ -181,6 +219,28 @@ fn md5_hex(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn actual_wire_outcomes_preserve_denial() {
+        use acteon_core::{ActionOutcome, ProviderResponse};
+        assert!(!outcome_allows_tool(
+            serde_json::to_value(ActionOutcome::Deduplicated).unwrap()
+        ));
+        assert!(!outcome_allows_tool(serde_json::json!({"Deduplicated":{}})));
+        assert!(!outcome_allows_tool(
+            serde_json::json!({"Executed":{}, "Suppressed":{}})
+        ));
+        assert!(outcome_allows_tool(
+            serde_json::to_value(ActionOutcome::Executed(ProviderResponse::success(
+                serde_json::json!({})
+            )))
+            .unwrap()
+        ));
+        assert_eq!(
+            map_tool_to_action_type("new_unknown_tool"),
+            Some("unknown_tool")
+        );
+    }
 
     #[test]
     fn test_map_tool_to_action_type() {
@@ -201,6 +261,20 @@ mod tests {
         // Same file path should produce same key regardless of session.
         let key2 = build_dedup_key("write_file", "session-2", &input);
         assert_eq!(key, key2);
+    }
+
+    #[test]
+    fn file_aliases_share_a_coordination_key() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("file.rs");
+        let alias = directory.path().join("./file.rs");
+        let first = build_dedup_key("write_file", "one", &serde_json::json!({"file_path":file}));
+        let second = build_dedup_key(
+            "write_file",
+            "two",
+            &serde_json::json!({"absolute_path":alias}),
+        );
+        assert_eq!(first, second);
     }
 
     #[test]

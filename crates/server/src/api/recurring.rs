@@ -496,19 +496,19 @@ async fn check_tenant_limit(
     namespace: &str,
     tenant: &str,
     max_actions: usize,
-) -> Result<(), axum::response::Response> {
+) -> Result<(), Box<axum::response::Response>> {
     match state_store
         .scan_keys(namespace, tenant, KeyKind::RecurringAction, None)
         .await
     {
-        Ok(keys) if keys.len() >= max_actions => Err(error_response(
+        Ok(keys) if keys.len() >= max_actions => Err(Box::new(error_response(
             StatusCode::TOO_MANY_REQUESTS,
             &format!("recurring action limit reached for tenant ({max_actions})"),
-        )),
-        Err(e) => Err(error_response(
+        ))),
+        Err(e) => Err(Box::new(error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &format!("failed to check recurring action limit: {e}"),
-        )),
+        ))),
         _ => Ok(()),
     }
 }
@@ -576,7 +576,7 @@ pub async fn create_recurring(
     )
     .await
     {
-        return resp;
+        return *resp;
     }
 
     // Validate cron, timezone, and minimum interval.

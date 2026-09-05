@@ -119,7 +119,7 @@ pub struct AppState {
     pub ui_path: Option<String>,
     /// Whether the Admin UI is enabled.
     pub ui_enabled: bool,
-    /// Allowed CORS origins (empty = permissive).
+    /// Allowed CORS origins (empty = same-origin only).
     pub cors_allowed_origins: Vec<String>,
     /// Optional signature verifier for Ed25519 action signing.
     pub signature_verifier: Option<Arc<SignatureVerifier>>,
@@ -655,7 +655,7 @@ pub fn router(state: AppState) -> Router {
     }
 
     let cors = if state.cors_allowed_origins.is_empty() {
-        CorsLayer::permissive()
+        CorsLayer::new()
     } else {
         let origins: Vec<axum::http::HeaderValue> = state
             .cors_allowed_origins

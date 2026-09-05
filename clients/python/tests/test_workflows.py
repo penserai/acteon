@@ -13,7 +13,7 @@ enabled; instead these tests pin two contracts:
 """
 
 import unittest
-from typing import Any, Optional
+from typing import Any
 
 from acteon_client import (
     ExecutionHistory,
@@ -49,8 +49,8 @@ class _Captured:
         self,
         method: str,
         path: str,
-        json: Optional[dict],
-        params: Optional[dict],
+        json: dict | None,
+        params: dict | None,
     ):
         self.method = method
         self.path = path
@@ -87,8 +87,8 @@ class _StubClient(_WorkflowsClientMixin):
         method: str,
         path: str,
         *,
-        json: Optional[dict] = None,
-        params: Optional[dict] = None,
+        json: dict | None = None,
+        params: dict | None = None,
     ):
         self.calls.append(_Captured(method, path, json, params))
         return _FakeResponse(status_code=self._status_code, body=self._body)
@@ -103,7 +103,11 @@ class TestWorkflowEndpoints(unittest.TestCase):
     def test_start_workflow(self):
         c = _StubClient(body=_execution_body())
         execution = c.start_workflow(
-            "ns", "te", "onboarding", "wf-queue", {"user": "u-1"},
+            "ns",
+            "te",
+            "onboarding",
+            "wf-queue",
+            {"user": "u-1"},
             search_attributes={"team": "growth"},
         )
         call = c.calls[0]
@@ -175,24 +179,18 @@ class TestWorkflowEndpoints(unittest.TestCase):
         call = c.calls[0]
         self.assertEqual(call.method, "POST")
         self.assertEqual(call.path, "/v1/workflows/executions/ex-1/signal/approved")
-        self.assertEqual(
-            call.json, {"namespace": "ns", "tenant": "te", "payload": {"by": "ops"}}
-        )
+        self.assertEqual(call.json, {"namespace": "ns", "tenant": "te", "payload": {"by": "ops"}})
 
     def test_cancel_workflow(self):
         c = _StubClient()
         c.cancel_workflow("ex-1", "ns", "te", reason="superseded")
         call = c.calls[0]
         self.assertEqual(call.path, "/v1/workflows/executions/ex-1/cancel")
-        self.assertEqual(
-            call.json, {"namespace": "ns", "tenant": "te", "reason": "superseded"}
-        )
+        self.assertEqual(call.json, {"namespace": "ns", "tenant": "te", "reason": "superseded"})
 
     def test_record_workflow_checkpoint(self):
         c = _StubClient(body={"name": "step:fetch#0", "seq": 1, "data": {"rows": 3}})
-        checkpoint = c.record_workflow_checkpoint(
-            "ex-1", "ns", "te", "step:fetch#0", {"rows": 3}
-        )
+        checkpoint = c.record_workflow_checkpoint("ex-1", "ns", "te", "step:fetch#0", {"rows": 3})
         call = c.calls[0]
         self.assertEqual(call.path, "/v1/workflows/executions/ex-1/checkpoints")
         self.assertEqual(
@@ -211,8 +209,14 @@ class TestWorkflowEndpoints(unittest.TestCase):
     def test_start_child_workflow(self):
         c = _StubClient(body={"child_execution_id": "ex-child"})
         child_id = c.start_child_workflow(
-            "ex-1", "ns", "te", "child:sub#0", "sub", {"n": 1},
-            queue="other", parent_close_policy="cancel",
+            "ex-1",
+            "ns",
+            "te",
+            "child:sub#0",
+            "sub",
+            {"n": 1},
+            queue="other",
+            parent_close_policy="cancel",
         )
         call = c.calls[0]
         self.assertEqual(call.path, "/v1/workflows/executions/ex-1/children")
@@ -231,9 +235,7 @@ class TestWorkflowEndpoints(unittest.TestCase):
         self.assertEqual(child_id, "ex-child")
 
     def test_get_execution_history(self):
-        c = _StubClient(
-            body={"execution_id": "ex-1", "events": [{"type": "started"}]}
-        )
+        c = _StubClient(body={"execution_id": "ex-1", "events": [{"type": "started"}]})
         history = c.get_execution_history("ex-1", "ns", "te")
         call = c.calls[0]
         self.assertEqual(call.method, "GET")
@@ -245,9 +247,7 @@ class TestWorkflowEndpoints(unittest.TestCase):
     def test_path_segments_are_escaped(self):
         c = _StubClient()
         c.signal_workflow("ex/1", "go/now", "ns", "te")
-        self.assertEqual(
-            c.calls[0].path, "/v1/workflows/executions/ex%2F1/signal/go%2Fnow"
-        )
+        self.assertEqual(c.calls[0].path, "/v1/workflows/executions/ex%2F1/signal/go%2Fnow")
 
     def test_error_body_raises_api_error(self):
         c = _StubClient(status_code=409, body={"error": "already cancelled"})
@@ -288,19 +288,23 @@ class _FakeWorkflowClient:
         self.child_calls: list[dict[str, Any]] = []
         self._next_child = 0
 
-    def record_workflow_checkpoint(
-        self, execution_id, namespace, tenant, name, data
-    ):
+    def record_workflow_checkpoint(self, execution_id, namespace, tenant, name, data):
         self.checkpoint_calls.append((name, data))
         if name not in self.checkpoints:
             self.checkpoints[name] = data
-        return WorkflowCheckpoint(
-            seq=len(self.checkpoints), name=name, data=self.checkpoints[name]
-        )
+        return WorkflowCheckpoint(seq=len(self.checkpoints), name=name, data=self.checkpoints[name])
 
     def start_child_workflow(
-        self, execution_id, namespace, tenant, checkpoint, workflow, input,
-        *, queue=None, parent_close_policy=None,
+        self,
+        execution_id,
+        namespace,
+        tenant,
+        checkpoint,
+        workflow,
+        input,
+        *,
+        queue=None,
+        parent_close_policy=None,
     ):
         self.child_calls.append(
             {
@@ -315,7 +319,7 @@ class _FakeWorkflowClient:
         return f"ex-child-{self._next_child}"
 
 
-def _ctx(checkpoints: Optional[dict] = None, client=None) -> WorkflowContext:
+def _ctx(checkpoints: dict | None = None, client=None) -> WorkflowContext:
     return WorkflowContext(
         client if client is not None else _FakeWorkflowClient(),
         "ns",
@@ -459,9 +463,7 @@ class TestWorkflowContext(unittest.TestCase):
 
     def test_start_child_replays_recorded_child_id(self):
         client = _FakeWorkflowClient()
-        ctx = _ctx(
-            checkpoints={"child:sub#0": {"child_id": "ex-prior"}}, client=client
-        )
+        ctx = _ctx(checkpoints={"child:sub#0": {"child_id": "ex-prior"}}, client=client)
         self.assertEqual(ctx.start_child("sub", {"n": 1}), "ex-prior")
         self.assertEqual(client.child_calls, [])
 

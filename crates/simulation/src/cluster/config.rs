@@ -9,7 +9,7 @@ use acteon_core::StateMachineConfig;
 pub struct SimulationConfig {
     /// Number of nodes in the cluster.
     pub nodes: usize,
-    /// Whether nodes share state (requires Redis for multi-node).
+    /// Whether memory nodes share state. External backends always share their configured store.
     pub shared_state: bool,
     /// State backend configuration.
     pub state_backend: StateBackendConfig,
@@ -155,6 +155,9 @@ impl SimulationConfigBuilder {
 pub enum StateBackendConfig {
     /// In-memory state (isolated per node unless shared).
     Memory,
+    /// PostgreSQL-backed state and locks (shared across nodes).
+    #[cfg(feature = "postgres")]
+    Postgres { url: String },
     /// Redis-backed state (shared across nodes).
     #[cfg(feature = "redis")]
     Redis {

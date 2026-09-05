@@ -106,3 +106,23 @@ if owner == ARGV[1] then
 end
 return 0
 ";
+/// Increment either storage representation without losing integer precision in Lua.
+/// KEYS are the string key and hash key; ARGV are delta and TTL ms (-1 preserves TTL).
+pub const INCREMENT: &str = r"
+local key = KEYS[1]
+local value
+if redis.call('EXISTS', KEYS[2]) == 1 then
+    key = KEYS[2]
+    redis.call('HINCRBY', key, 'v', ARGV[1])
+    redis.call('HINCRBY', key, 'ver', 1)
+    value = redis.call('HGET', key, 'v')
+else
+    redis.call('INCRBY', key, ARGV[1])
+    value = redis.call('GET', key)
+end
+local ttl = tonumber(ARGV[2])
+if ttl >= 0 then
+    redis.call('PEXPIRE', key, ttl)
+end
+return value
+";

@@ -42,12 +42,16 @@ import inspect
 import logging
 import threading
 import uuid
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any
 
 from .errors import ActeonError, NonRetryableError
-from .queues import WorkerTask, _QueuesClientMixin
+from .queues import WorkerTask
 from .workflows import WorkflowContext, _Suspend
+
+if TYPE_CHECKING:
+    from .client import ActeonClient
 
 logger = logging.getLogger("acteon_client.worker")
 
@@ -75,8 +79,14 @@ class _LeaseHeartbeat:
     surface the real error.
     """
 
-    def __init__(self, client: _QueuesClientMixin, task: WorkerTask,
-                 namespace: str, tenant: str, lease_seconds: int):
+    def __init__(
+        self,
+        client: ActeonClient,
+        task: WorkerTask,
+        namespace: str,
+        tenant: str,
+        lease_seconds: int,
+    ):
         self._client = client
         self._task = task
         self._namespace = namespace
@@ -108,9 +118,7 @@ class _LeaseHeartbeat:
                     extend_seconds=self._lease_seconds,
                 )
             except ActeonError as e:
-                logger.warning(
-                    "heartbeat failed for task %s: %s", self._task.task_id, e
-                )
+                logger.warning("heartbeat failed for task %s: %s", self._task.task_id, e)
                 return
 
 
@@ -127,12 +135,12 @@ class Worker:
 
     def __init__(
         self,
-        client: _QueuesClientMixin,
+        client: ActeonClient,
         namespace: str,
         tenant: str,
         queue: str,
         *,
-        worker_id: Optional[str] = None,
+        worker_id: str | None = None,
         poll_interval: float = 1.0,
         lease_seconds: int = 60,
         max_concurrent: int = 4,
@@ -186,14 +194,10 @@ class Worker:
             ValueError: If ``action_type`` is the reserved workflow type.
         """
         if action_type == WORKFLOW_ACTION_TYPE:
-            raise ValueError(
-                f"{WORKFLOW_ACTION_TYPE} is reserved; use register_workflow()"
-            )
+            raise ValueError(f"{WORKFLOW_ACTION_TYPE} is reserved; use register_workflow()")
         self._handlers[action_type] = handler
 
-    def register_workflow(
-        self, name: str, fn: Callable[[WorkflowContext, Any], Any]
-    ) -> None:
+    def register_workflow(self, name: str, fn: Callable[[WorkflowContext, Any], Any]) -> None:
         """Register a workflow function under ``name``.
 
         Invoked as ``fn(ctx, input)`` on every continuation of the
@@ -220,7 +224,7 @@ class Worker:
         after ``poll_interval``.
         """
         self._stop_event.clear()
-        inflight: set[Future] = set()
+        inflight: set[Future[Any]] = set()
         with ThreadPoolExecutor(
             max_workers=self._max_concurrent,
             thread_name_prefix=f"acteon-{self._worker_id}",
@@ -246,7 +250,7 @@ class Worker:
                 if not tasks:
                     self._stop_event.wait(self._poll_interval)
 
-    def run_once(self, *, max_tasks: Optional[int] = None) -> int:
+    def run_once(self, *, max_tasks: int | None = None) -> int:
         """Poll once and process every returned task on this thread.
 
         Intended for tests and cron-style invocations.
@@ -334,9 +338,7 @@ class Worker:
         if "checkpoints" in payload:
             # Legacy fat payload (pre-slim server): state is embedded.
             input = payload.get("input")
-            checkpoints = {
-                c["name"]: c.get("data") for c in payload.get("checkpoints") or []
-            }
+            checkpoints = {c["name"]: c.get("data") for c in payload.get("checkpoints") or []}
         else:
             # Slim payload: resolve the execution's input and recorded
             # checkpoints from the server.
@@ -355,9 +357,7 @@ class Worker:
             if execution is None:
                 # The execution record is gone (deleted or expired);
                 # re-delivery cannot help.
-                self._fail(
-                    task, f"workflow execution not found: {execution_id}", False
-                )
+                self._fail(task, f"workflow execution not found: {execution_id}", False)
                 return
             input = execution.input
             checkpoints = {c.name: c.data for c in execution.checkpoints}

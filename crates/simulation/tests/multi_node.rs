@@ -118,17 +118,7 @@ mod isolated_state {
         let action = Action::new("ns", "tenant", "email", "dedup-test", serde_json::json!({}))
             .with_dedup_key("isolated-key");
 
-        // Note: When shared_state is false but nodes > 1, the harness
-        // actually creates separate state stores for each node.
-        // However, in the current implementation, it still uses shared
-        // state for multi-node clusters for simplicity.
-
-        // This test documents the expected behavior for truly isolated state.
-        // If state were truly isolated:
-        // - Dispatch to node 0 would execute
-        // - Dispatch to node 1 would also execute (different state)
-
-        // With current implementation (shared state for multi-node):
+        // Each node executes once because its deduplication state is isolated.
         let outcome0 = harness
             .dispatch_to(0, &action)
             .await
@@ -139,9 +129,15 @@ mod isolated_state {
             .dispatch_to(1, &action)
             .await
             .expect("dispatch to node 1");
-        // This will be deduplicated because state is actually shared
-        // If truly isolated, this would assert_executed()
-        outcome1.assert_deduplicated();
+        outcome1.assert_executed();
+        for node in 0..2 {
+            harness
+                .dispatch_to(node, &action)
+                .await
+                .expect("repeat dispatch")
+                .assert_deduplicated();
+        }
+        harness.provider("email").unwrap().assert_called(2);
 
         harness.teardown().await.unwrap();
     }
