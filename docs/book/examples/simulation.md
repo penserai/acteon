@@ -375,3 +375,12 @@ write. It checks discovery repair, stale ownership, downstream idempotency, and
 tenant quota isolation. Run it with the same `acteon-scenario --manifest` and
 `--replay` commands above. See [the recovery contract](../../durable-scheduling.md)
 for receipt consumption, upgrade requirements, and untested crash windows.
+
+### Worker queue recovery
+
+`scenarios/queues.json` exercises interrupted enqueue repair, retry acknowledgement
+loss, ownership and tenant isolation, terminal cleanup, and encrypted records on
+memory, Redis, and PostgreSQL. The same manifest/replay commands apply. The CI
+script runs twelve suite/backend pairs and preserves their executable. See
+[worker queue recovery](../../queue-recovery.md) for the write-fault adapter,
+manual-clock race contracts, and remaining terminal-handoff gap.

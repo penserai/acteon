@@ -13,54 +13,60 @@ local hash_exists = redis.call('EXISTS', KEYS[2])
 if str_exists == 1 or hash_exists == 1 then
     return 0
 end
-redis.call('SET', KEYS[1], ARGV[1])
+redis.call('HSET', KEYS[2], 'v', ARGV[1], 'ver', 1)
 local ttl = tonumber(ARGV[2])
 if ttl > 0 then
-    redis.call('PEXPIRE', KEYS[1], ttl)
+    redis.call('PEXPIRE', KEYS[2], ttl)
 end
 return 1
 ";
 
-/// Lua script for atomic compare-and-swap using a hash with `v` (value) and
-/// `ver` (version) fields.
-///
-/// KEYS\[1\] = the hash key
-/// ARGV\[1\] = expected version
-/// ARGV\[2\] = new value
-/// ARGV\[3\] = TTL in milliseconds (0 means no expiry)
-///
-/// Returns a two-element array:
-///   - `[1, new_ver]` on success
-///   - `[0, cur_ver, cur_val]` on conflict
-///   - `[1, 1]` if key does not exist and expected version is 0
+/// Read a versioned entry atomically, promoting legacy strings while preserving
+/// their remaining TTL. KEYS: hash, legacy string. Returns [value | false, version].
+/// Any shadow legacy value is removed so it cannot reappear after hash expiry.
+pub const GET_VERSIONED: &str = r"
+local value = redis.call('HGET', KEYS[1], 'v')
+if value then
+    local version = redis.call('HGET', KEYS[1], 'ver')
+    if not version then return redis.error_reply('missing entry version') end
+    redis.call('DEL', KEYS[2])
+    return {value, tonumber(version)}
+end
+local legacy = redis.call('GET', KEYS[2])
+if not legacy then return {false, 0} end
+local ttl = redis.call('PTTL', KEYS[2])
+redis.call('HSET', KEYS[1], 'v', legacy, 'ver', 1)
+if ttl >= 0 then redis.call('PEXPIRE', KEYS[1], ttl) end
+redis.call('DEL', KEYS[2])
+return {legacy, 1}
+";
+
+/// Atomic CAS over existing values. KEYS: hash, legacy string. ARGV: expected
+/// version, replacement value, TTL ms (0 clears expiry). Conflicts leave the
+/// value and TTL unchanged. Missing records always conflict, even at version 0.
 pub const COMPARE_AND_SWAP: &str = r"
-local exists = redis.call('EXISTS', KEYS[1])
+local current = redis.call('HGET', KEYS[1], 'v')
+local version
+if current then
+    version = tonumber(redis.call('HGET', KEYS[1], 'ver'))
+else
+    current = redis.call('GET', KEYS[2])
+    if not current then return {0, 0, false} end
+    version = 1
+end
+if not version then return redis.error_reply('missing entry version') end
 local expected = tonumber(ARGV[1])
-if exists == 0 then
-    if expected ~= 0 then
-        return {0, 0, false}
-    end
-    redis.call('HSET', KEYS[1], 'v', ARGV[2], 'ver', 1)
-    local ttl = tonumber(ARGV[3])
-    if ttl > 0 then
-        redis.call('PEXPIRE', KEYS[1], ttl)
-    end
-    return {1, 1}
-end
-local cur_ver = tonumber(redis.call('HGET', KEYS[1], 'ver'))
-if cur_ver ~= expected then
-    local cur_val = redis.call('HGET', KEYS[1], 'v')
-    return {0, cur_ver, cur_val}
-end
-local new_ver = cur_ver + 1
-redis.call('HSET', KEYS[1], 'v', ARGV[2], 'ver', new_ver)
+if version ~= expected then return {0, version, current} end
+local next_version = version + 1
+redis.call('HSET', KEYS[1], 'v', ARGV[2], 'ver', next_version)
+redis.call('DEL', KEYS[2])
 local ttl = tonumber(ARGV[3])
 if ttl > 0 then
     redis.call('PEXPIRE', KEYS[1], ttl)
 else
     redis.call('PERSIST', KEYS[1])
 end
-return {1, new_ver}
+return {1, next_version}
 ";
 
 /// Lua script for acquiring a distributed lock (SET NX PX).

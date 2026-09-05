@@ -15,9 +15,9 @@ use crate::scripts;
 /// Redis-backed implementation of [`StateStore`].
 ///
 /// Uses a `deadpool-redis` connection pool and Lua scripts for atomicity.
-/// Regular values are stored as plain Redis strings. Versioned values (used by
-/// `compare_and_swap` and `set`) are stored as Redis hashes with fields `v`
-/// (value) and `ver` (version).
+/// Values are stored as Redis hashes with fields `v` (value) and `ver`
+/// (version). Reads atomically promote legacy strings, including counters,
+/// preserving their remaining expiry and removing shadow values.
 pub struct RedisStateStore {
     pool: Pool,
     prefix: String,
@@ -95,53 +95,20 @@ impl StateStore for RedisStateStore {
     }
 
     async fn get(&self, key: &StateKey) -> Result<Option<String>, StateError> {
-        let redis_key = self.hash_key(key);
-        let mut conn = self.conn().await?;
-
-        // First try hash-based storage (set by `set` / `compare_and_swap`).
-        let val: Option<String> = conn
-            .hget(&redis_key, "v")
+        self.get_versioned(key)
             .await
-            .map_err(|e| StateError::Backend(e.to_string()))?;
-
-        if val.is_some() {
-            return Ok(val);
-        }
-
-        // Fall back to plain string key (set by `check_and_set`).
-        let string_key = self.string_key(key);
-        let val: Option<String> = conn
-            .get(&string_key)
-            .await
-            .map_err(|e| StateError::Backend(e.to_string()))?;
-
-        Ok(val)
+            .map(|entry| entry.map(|(value, _)| value))
     }
 
     async fn get_versioned(&self, key: &StateKey) -> Result<Option<(String, u64)>, StateError> {
-        let hash_key = self.hash_key(key);
         let mut conn = self.conn().await?;
-        // Hash storage carries the version; CAS-only callers update
-        // through this path.
-        let (val, ver): (Option<String>, Option<u64>) = redis::pipe()
-            .hget(&hash_key, "v")
-            .hget(&hash_key, "ver")
-            .query_async(&mut conn)
+        let (value, version): (Option<String>, u64) = Script::new(scripts::GET_VERSIONED)
+            .key(self.hash_key(key))
+            .key(self.string_key(key))
+            .invoke_async(&mut conn)
             .await
             .map_err(|e| StateError::Backend(e.to_string()))?;
-        if let (Some(v), Some(ver)) = (val, ver) {
-            return Ok(Some((v, ver)));
-        }
-        // Plain-string fallback for entries written by `check_and_set`
-        // (no version tracked). Report version 0 — the first
-        // `compare_and_swap(_, 0, ...)` call will atomically promote
-        // the entry into hash form with version 1.
-        let string_key = self.string_key(key);
-        let val: Option<String> = conn
-            .get(&string_key)
-            .await
-            .map_err(|e| StateError::Backend(e.to_string()))?;
-        Ok(val.map(|v| (v, 0)))
+        Ok(value.map(|value| (value, version)))
     }
 
     async fn set(
@@ -249,6 +216,7 @@ impl StateStore for RedisStateStore {
         let script = Script::new(scripts::COMPARE_AND_SWAP);
         let result: Vec<redis::Value> = script
             .key(&redis_key)
+            .key(self.string_key(key))
             .arg(expected_version)
             .arg(new_value)
             .arg(ttl_ms)
@@ -311,8 +279,8 @@ impl StateStore for RedisStateStore {
                 .map_err(|e| StateError::Backend(e.to_string()))?;
 
             for key in keys {
-                // Dispatch on the key shape: `set` writes hashes (suffix
-                // `:h`), `check_and_set` writes plain strings. Issuing HGET
+                // Dispatch on the key shape: versioned hashes use suffix
+                // `:h`; legacy entries/counters may be strings. Issuing HGET
                 // against a string key fails the WHOLE scan with WRONGTYPE, so
                 // pick the matching read per key.
                 let value = if key.ends_with(":h") {
@@ -376,8 +344,8 @@ impl StateStore for RedisStateStore {
                 .map_err(|e| StateError::Backend(e.to_string()))?;
 
             for key in keys {
-                // Dispatch on the key shape: `set` writes hashes (suffix
-                // `:h`), `check_and_set` writes plain strings. Issuing HGET
+                // Dispatch on the key shape: versioned hashes use suffix
+                // `:h`; legacy entries/counters may be strings. Issuing HGET
                 // against a string key fails the WHOLE scan with WRONGTYPE, so
                 // pick the matching read per key.
                 let value = if key.ends_with(":h") {
@@ -554,5 +522,109 @@ mod integration_tests {
         acteon_state::testing::run_store_conformance_tests(&store)
             .await
             .expect("conformance tests should pass");
+    }
+
+    #[tokio::test]
+    async fn legacy_read_promotes_value_and_preserves_remaining_expiry() {
+        let store = RedisStateStore::new(&test_config()).unwrap();
+        let key = StateKey::new("ns", "tenant", KeyKind::Dedup, "legacy");
+        let mut conn = store.conn().await.unwrap();
+        let _: () = conn
+            .set_ex(store.string_key(&key), "original", 30)
+            .await
+            .unwrap();
+        let before: i64 = conn.pttl(store.string_key(&key)).await.unwrap();
+
+        assert_eq!(
+            store.get_versioned(&key).await.unwrap(),
+            Some(("original".into(), 1))
+        );
+        let after: i64 = conn.pttl(store.hash_key(&key)).await.unwrap();
+        assert!(after > 0 && after <= before);
+        assert!(
+            !conn
+                .exists::<_, bool>(store.string_key(&key))
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            store
+                .compare_and_swap(&key, 1, "replacement", None)
+                .await
+                .unwrap(),
+            CasResult::Ok
+        );
+        assert_eq!(conn.pttl::<_, i64>(store.hash_key(&key)).await.unwrap(), -1);
+        store.delete(&key).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn legacy_cas_conflict_preserves_value_and_success_removes_shadow() {
+        let store = RedisStateStore::new(&test_config()).unwrap();
+        let key = StateKey::new("ns", "tenant", KeyKind::Dedup, "legacy-cas");
+        let mut conn = store.conn().await.unwrap();
+        let _: () = conn
+            .set_ex(store.string_key(&key), "original", 30)
+            .await
+            .unwrap();
+        assert!(matches!(
+            store
+                .compare_and_swap(&key, 0, "stale", None)
+                .await
+                .unwrap(),
+            CasResult::Conflict { .. }
+        ));
+        assert_eq!(
+            conn.get::<_, String>(store.string_key(&key)).await.unwrap(),
+            "original"
+        );
+        assert!(conn.pttl::<_, i64>(store.string_key(&key)).await.unwrap() > 0);
+        assert_eq!(
+            store
+                .compare_and_swap(&key, 1, "replacement", None)
+                .await
+                .unwrap(),
+            CasResult::Ok
+        );
+        assert!(
+            !conn
+                .exists::<_, bool>(store.string_key(&key))
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            store.get_versioned(&key).await.unwrap(),
+            Some(("replacement".into(), 2))
+        );
+        store.delete(&key).await.unwrap();
+        assert!(matches!(
+            store
+                .compare_and_swap(&key, 0, "resurrected", None)
+                .await
+                .unwrap(),
+            CasResult::Conflict { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn legacy_shadow_cannot_reappear_after_hash_expiry() {
+        let store = RedisStateStore::new(&test_config()).unwrap();
+        let key = StateKey::new("ns", "tenant", KeyKind::Dedup, "shadow");
+        let mut conn = store.conn().await.unwrap();
+        store
+            .set(&key, "terminal", Some(Duration::from_secs(1)))
+            .await
+            .unwrap();
+        // Reproduce the dual representation left by older CAS implementations.
+        let _: () = conn.set(store.string_key(&key), "original").await.unwrap();
+        assert_eq!(store.get(&key).await.unwrap().as_deref(), Some("terminal"));
+        assert!(
+            !conn
+                .exists::<_, bool>(store.string_key(&key))
+                .await
+                .unwrap()
+        );
+        tokio::time::sleep(Duration::from_millis(1300)).await;
+        assert_eq!(store.get(&key).await.unwrap(), None);
     }
 }

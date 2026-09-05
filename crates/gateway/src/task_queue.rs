@@ -6,12 +6,15 @@
 //! [`Gateway::complete_worker_task`] / [`Gateway::fail_worker_task`]. All
 //! transitions go through compare-and-swap, so concurrent workers polling
 //! the same queue never double-lease a task. Expired leases are reclaimed
-//! lazily on poll (workers poll continuously, so reclamation latency is
-//! bounded by the poll interval).
+//! lazily on poll. Active discovery survives lease/retry transitions; cleanup
+//! reconciliation repairs interrupted initial index writes. Index rows are hints,
+//! while the scoped task record controls ownership and delivery eligibility.
 //!
 //! Tasks enqueued by a `worker` chain step resume their owning chain on
 //! completion; tasks that drive workflow executions are routed to the
 //! workflow engine.
+
+mod recovery;
 
 use std::time::Duration;
 
@@ -30,9 +33,9 @@ use crate::gateway::Gateway;
 
 /// State-store kind for worker task records.
 const WORKER_TASK_KIND: &str = "worker_task";
-/// State-store kind for the per-queue pending index (`{queue}:{task_id}`).
+/// Per-queue active discovery (`{queue}:{task_id}`), retaining its legacy kind name.
 const QUEUE_PENDING_KIND: &str = "queue_pending";
-/// State-store kind for the per-queue leased index (`{queue}:{task_id}`).
+/// Legacy leased index, read only for migration cleanup.
 const QUEUE_LEASED_KIND: &str = "queue_leased";
 
 /// CAS retry budget for task transitions.
@@ -93,28 +96,98 @@ pub(crate) fn validate_queue_name(queue: &str) -> Result<(), GatewayError> {
     Ok(())
 }
 
+fn validate_worker_scope(
+    task: &WorkerTask,
+    namespace: &str,
+    tenant: &str,
+    id: &str,
+) -> Result<(), GatewayError> {
+    validate_queue_name(&task.queue)?;
+    if namespace.is_empty()
+        || tenant.is_empty()
+        || id.is_empty()
+        || namespace.contains(':')
+        || tenant.contains(':')
+        || task.namespace != namespace
+        || task.tenant != tenant
+        || task.task_id != id
+        || !id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        || task.max_attempts == 0
+    {
+        return Err(GatewayError::TaskQueue(
+            "invalid worker task scope or attempt budget".into(),
+        ));
+    }
+    Ok(())
+}
+
 impl Gateway {
-    /// Enqueue a task on a named worker queue.
+    /// Enqueue a new task. Existing IDs are never overwritten, including when
+    /// an earlier call persisted its task but lost the index-write response.
     pub async fn enqueue_worker_task(&self, task: WorkerTask) -> Result<WorkerTask, GatewayError> {
-        validate_queue_name(&task.queue)?;
+        validate_worker_scope(&task, &task.namespace, &task.tenant, &task.task_id)?;
+        if task.status != WorkerTaskStatus::Pending
+            || task.attempt != 0
+            || task.lease_token.is_some()
+            || task.lease_expires_at.is_some()
+            || task.worker_id.is_some()
+            || task.result.is_some()
+            || task.error.is_some()
+        {
+            return Err(GatewayError::TaskQueue(
+                "enqueue requires a new pending task".into(),
+            ));
+        }
         let key = task_key(&task.namespace, &task.tenant, &task.task_id);
-        let json = serde_json::to_string(&task)
-            .map_err(|e| GatewayError::TaskQueue(format!("failed to serialize task: {e}")))?;
-        self.state.set(&key, &json, None).await?;
+        let json = self.encode_worker_task(&task)?;
+        if !self.state.check_and_set(&key, &json, None).await? {
+            return Err(GatewayError::TaskQueue(format!(
+                "task already exists: {}",
+                task.task_id
+            )));
+        }
         self.state
             .set(
                 &pending_key(&task.namespace, &task.tenant, &task.queue, &task.task_id),
-                "pending",
+                "active",
                 None,
             )
             .await?;
-        debug!(
-            task_id = %task.task_id,
-            queue = %task.queue,
-            action_type = %task.action_type,
-            "worker task enqueued"
-        );
+        debug!(task_id = %task.task_id, queue = %task.queue, "worker task enqueued");
         Ok(task)
+    }
+
+    fn decode_worker_task(
+        &self,
+        raw: &str,
+        namespace: &str,
+        tenant: &str,
+        id: &str,
+    ) -> Result<WorkerTask, GatewayError> {
+        let clear = self.decrypt_state_value(raw)?;
+        let task: WorkerTask = serde_json::from_str(&clear)
+            .map_err(|e| GatewayError::TaskQueue(format!("failed to deserialize task: {e}")))?;
+        validate_worker_scope(&task, namespace, tenant, id)?;
+        Ok(task)
+    }
+
+    fn encode_worker_task(&self, task: &WorkerTask) -> Result<String, GatewayError> {
+        let clear = serde_json::to_string(task)
+            .map_err(|e| GatewayError::TaskQueue(format!("failed to serialize task: {e}")))?;
+        self.encrypt_state_value(&clear)
+    }
+
+    async fn remove_worker_indexes(&self, task: &WorkerTask) {
+        for key in [
+            pending_key(&task.namespace, &task.tenant, &task.queue, &task.task_id),
+            leased_key(&task.namespace, &task.tenant, &task.queue, &task.task_id),
+        ] {
+            if let Err(error) = self.state.delete(&key).await {
+                warn!(%error, task_id = %task.task_id, "terminal queue index cleanup will retry");
+            }
+        }
     }
 
     /// Load a worker task by ID.
@@ -129,9 +202,9 @@ impl Gateway {
             .get(&task_key(namespace, tenant, task_id))
             .await?
         {
-            Some(raw) => serde_json::from_str(&raw)
-                .map(Some)
-                .map_err(|e| GatewayError::TaskQueue(format!("failed to deserialize task: {e}"))),
+            Some(raw) => self
+                .decode_worker_task(&raw, namespace, tenant, task_id)
+                .map(Some),
             None => Ok(None),
         }
     }
@@ -155,8 +228,12 @@ impl Gateway {
             )
             .await?;
         let mut tasks = Vec::new();
-        for (_, raw) in entries {
-            let Ok(task) = serde_json::from_str::<WorkerTask>(&raw) else {
+        let prefix = format!("{namespace}:{tenant}:{WORKER_TASK_KIND}:");
+        for (key, raw) in entries {
+            let Some(id) = key.strip_prefix(&prefix) else {
+                continue;
+            };
+            let Ok(task) = self.decode_worker_task(&raw, namespace, tenant, id) else {
                 continue;
             };
             if queue.is_some_and(|q| task.queue != q) {
@@ -173,8 +250,8 @@ impl Gateway {
 
     /// Lease up to `max_tasks` pending tasks from a queue for a worker.
     ///
-    /// Also reclaims expired leases on the queue first, so abandoned tasks
-    /// are re-delivered (or failed once their attempt budget is exhausted).
+    /// Reclaims expired leases while visiting active records, even after the
+    /// delivery limit is reached. Reclaimed tasks retain their retry backoff.
     pub async fn poll_worker_tasks(
         &self,
         namespace: &str,
@@ -189,9 +266,6 @@ impl Gateway {
             .unwrap_or(DEFAULT_TASK_LEASE_SECONDS)
             .clamp(1, MAX_TASK_LEASE_SECONDS);
 
-        self.reclaim_expired_leases(namespace, tenant, queue)
-            .await?;
-
         let pending = self
             .state
             .scan_keys(
@@ -203,39 +277,51 @@ impl Gateway {
             .await?;
 
         let mut leased = Vec::new();
+        let prefix = format!("{namespace}:{tenant}:{QUEUE_PENDING_KIND}:{queue}:");
         for (index_key, _) in pending {
-            if leased.len() >= max_tasks.max(1) {
-                break;
-            }
-            // Index keys are canonical `{ns}:{tenant}:{kind}:{queue}:{task_id}`;
-            // the task ID is the last segment.
-            let Some(task_id) = index_key.rsplit(':').next().map(str::to_owned) else {
+            let Some(task_id) = index_key.strip_prefix(&prefix) else {
                 continue;
             };
-            let key = task_key(namespace, tenant, &task_id);
+            let key = task_key(namespace, tenant, task_id);
             let Some((raw, version)) = self.state.get_versioned(&key).await? else {
-                // Stale index entry; clean it up.
                 let _ = self
                     .state
-                    .delete(&pending_key(namespace, tenant, queue, &task_id))
+                    .delete(&pending_key(namespace, tenant, queue, task_id))
                     .await;
                 continue;
             };
-            let Ok(mut task) = serde_json::from_str::<WorkerTask>(&raw) else {
-                continue;
+            let task = match self.decode_worker_task(&raw, namespace, tenant, task_id) {
+                Ok(task) => task,
+                Err(error) => {
+                    warn!(%error, task_id, "invalid queue record; retained for repair");
+                    continue;
+                }
             };
+            if task.queue != queue {
+                let _ = self
+                    .state
+                    .delete(&pending_key(namespace, tenant, queue, task_id))
+                    .await;
+                continue;
+            }
+            if !task.status.is_active() {
+                self.remove_worker_indexes(&task).await;
+                continue;
+            }
             let now = self.clock.now();
-            if !task.leasable(now) {
-                // A settled/leased task with a leftover pending entry is a
-                // crash artifact — clean it up so polls stop revisiting it.
-                if task.status != WorkerTaskStatus::Pending {
-                    let _ = self
-                        .state
-                        .delete(&pending_key(namespace, tenant, queue, &task_id))
-                        .await;
+            if task.status == WorkerTaskStatus::Leased {
+                if task.lease_expires_at.is_none_or(|at| now >= at) {
+                    self.reclaim_worker_lease(task, version, now).await?;
                 }
                 continue;
             }
+            if leased.len() >= max_tasks.max(1)
+                || !task.leasable(now)
+                || task.attempt >= task.max_attempts
+            {
+                continue;
+            }
+            let mut task = task;
 
             task.status = WorkerTaskStatus::Leased;
             task.attempt += 1;
@@ -247,38 +333,16 @@ impl Gateway {
             task.not_before = None;
             task.updated_at = now;
 
-            // Crash-safe ordering: write the leased-index entry BEFORE the
-            // CAS. A crash before the CAS leaves a stale leased entry that
-            // reclaim cleans up (the task is still Pending); the reverse
-            // order would leave a Leased task invisible to both reclaim
-            // (scans the leased index) and poll (`leasable` excludes
-            // Leased) — stranded forever.
-            self.state
-                .set(
-                    &leased_key(namespace, tenant, queue, &task_id),
-                    &expires.timestamp_millis().to_string(),
-                    None,
-                )
-                .await?;
-            let json = serde_json::to_string(&task)
-                .map_err(|e| GatewayError::TaskQueue(format!("failed to serialize task: {e}")))?;
-            match self
+            let json = self.encode_worker_task(&task)?;
+            if self
                 .state
                 .compare_and_swap(&key, version, &json, None)
                 .await?
+                == CasResult::Ok
             {
-                CasResult::Ok => {
-                    let _ = self
-                        .state
-                        .delete(&pending_key(namespace, tenant, queue, &task_id))
-                        .await;
-                    leased.push(task);
-                }
-                // Another worker won the race; undo our index entry only if
-                // the winner hasn't already overwritten it with its own
-                // expiry (the winner's set happens before its CAS, so ours
-                // can only be stale if we lost to a non-poll transition).
-                CasResult::Conflict { .. } => {}
+                // Keep discovery for the entire active lifetime. A delayed
+                // poll must never delete a later owner's retry entry.
+                leased.push(task);
             }
         }
         Ok(leased)
@@ -304,29 +368,20 @@ impl Gateway {
                     "task not found: {task_id}"
                 )));
             };
-            let mut task: WorkerTask = serde_json::from_str(&raw)
-                .map_err(|e| GatewayError::TaskQueue(format!("failed to deserialize task: {e}")))?;
+            let mut task = self.decode_worker_task(&raw, namespace, tenant, task_id)?;
             let now = self.clock.now();
             Self::verify_lease(&task, lease_token, now)?;
             #[allow(clippy::cast_possible_wrap)]
             let expires = now + chrono::Duration::seconds(extend as i64);
             task.lease_expires_at = Some(expires);
             task.updated_at = now;
-            let json = serde_json::to_string(&task)
-                .map_err(|e| GatewayError::TaskQueue(format!("failed to serialize task: {e}")))?;
+            let json = self.encode_worker_task(&task)?;
             match self
                 .state
                 .compare_and_swap(&key, version, &json, None)
                 .await?
             {
                 CasResult::Ok => {
-                    self.state
-                        .set(
-                            &leased_key(namespace, tenant, &task.queue, task_id),
-                            &expires.timestamp_millis().to_string(),
-                            None,
-                        )
-                        .await?;
                     return Ok(task);
                 }
                 CasResult::Conflict { .. } => {}
@@ -376,16 +431,9 @@ impl Gateway {
         error: &str,
         retryable: bool,
     ) -> Result<WorkerTask, GatewayError> {
-        // Decide retry vs terminal from the current attempt count.
-        let current = self
-            .get_worker_task(namespace, tenant, task_id)
-            .await?
-            .ok_or_else(|| GatewayError::TaskQueue(format!("task not found: {task_id}")))?;
-        let will_retry = retryable && current.attempt < current.max_attempts;
-
         let task = self
             .settle_worker_task(namespace, tenant, task_id, lease_token, |task, now| {
-                if will_retry {
+                if retryable && task.attempt < task.max_attempts {
                     task.status = WorkerTaskStatus::Pending;
                     task.not_before = Some(now + retry_backoff(task.attempt));
                     task.error = Some(error.to_owned());
@@ -401,14 +449,7 @@ impl Gateway {
             })
             .await?;
 
-        if will_retry {
-            self.state
-                .set(
-                    &pending_key(namespace, tenant, &task.queue, task_id),
-                    "pending",
-                    None,
-                )
-                .await?;
+        if task.status == WorkerTaskStatus::Pending {
             debug!(
                 task_id = %task_id,
                 attempt = task.attempt,
@@ -441,8 +482,7 @@ impl Gateway {
                     "task not found: {task_id}"
                 )));
             };
-            let mut task: WorkerTask = serde_json::from_str(&raw)
-                .map_err(|e| GatewayError::TaskQueue(format!("failed to deserialize task: {e}")))?;
+            let mut task = self.decode_worker_task(&raw, namespace, tenant, task_id)?;
             if !task.status.is_active() {
                 return Err(GatewayError::TaskQueue(format!(
                     "task is not active (status: {:?})",
@@ -453,22 +493,14 @@ impl Gateway {
             task.status = WorkerTaskStatus::Cancelled;
             task.lease_expires_at = None;
             task.updated_at = now;
-            let json = serde_json::to_string(&task)
-                .map_err(|e| GatewayError::TaskQueue(format!("failed to serialize task: {e}")))?;
+            let json = self.encode_worker_task(&task)?;
             match self
                 .state
                 .compare_and_swap(&key, version, &json, Some(COMPLETED_TASK_TTL))
                 .await?
             {
                 CasResult::Ok => {
-                    let _ = self
-                        .state
-                        .delete(&pending_key(namespace, tenant, &task.queue, task_id))
-                        .await;
-                    let _ = self
-                        .state
-                        .delete(&leased_key(namespace, tenant, &task.queue, task_id))
-                        .await;
+                    self.remove_worker_indexes(&task).await;
                     return Ok(task);
                 }
                 CasResult::Conflict { .. } => {}
@@ -496,27 +528,23 @@ impl Gateway {
                     "task not found: {task_id}"
                 )));
             };
-            let mut task: WorkerTask = serde_json::from_str(&raw)
-                .map_err(|e| GatewayError::TaskQueue(format!("failed to deserialize task: {e}")))?;
+            let mut task = self.decode_worker_task(&raw, namespace, tenant, task_id)?;
             let now = self.clock.now();
             Self::verify_lease(&task, lease_token, now)?;
 
-            let queue = task.queue.clone();
             mutate(&mut task, now);
             let terminal = !task.status.is_active();
             let ttl = terminal.then_some(COMPLETED_TASK_TTL);
-            let json = serde_json::to_string(&task)
-                .map_err(|e| GatewayError::TaskQueue(format!("failed to serialize task: {e}")))?;
+            let json = self.encode_worker_task(&task)?;
             match self
                 .state
                 .compare_and_swap(&key, version, &json, ttl)
                 .await?
             {
                 CasResult::Ok => {
-                    let _ = self
-                        .state
-                        .delete(&leased_key(namespace, tenant, &queue, task_id))
-                        .await;
+                    if terminal {
+                        self.remove_worker_indexes(&task).await;
+                    }
                     return Ok(task);
                 }
                 CasResult::Conflict { .. } => {}
@@ -553,124 +581,49 @@ impl Gateway {
         Ok(())
     }
 
-    /// Reclaim expired leases on a queue: re-queue tasks with attempts left,
-    /// fail the rest terminally.
-    #[allow(clippy::too_many_lines)]
-    async fn reclaim_expired_leases(
+    /// Reclaim from the same versioned row used for the expiry decision.
+    async fn reclaim_worker_lease(
         &self,
-        namespace: &str,
-        tenant: &str,
-        queue: &str,
+        mut task: WorkerTask,
+        version: u64,
+        now: chrono::DateTime<Utc>,
     ) -> Result<(), GatewayError> {
-        let now = self.clock.now();
-        let leased = self
+        let exhausted = task.attempt >= task.max_attempts;
+        if exhausted {
+            task.status = WorkerTaskStatus::Failed;
+            task.error = Some(format!(
+                "lease expired after attempt {}/{} (worker did not heartbeat)",
+                task.attempt, task.max_attempts
+            ));
+        } else {
+            task.status = WorkerTaskStatus::Pending;
+            task.not_before = Some(now + retry_backoff(task.attempt));
+        }
+        task.lease_token = None;
+        task.lease_expires_at = None;
+        task.worker_id = None;
+        task.updated_at = now;
+        let json = self.encode_worker_task(&task)?;
+        let key = task_key(&task.namespace, &task.tenant, &task.task_id);
+        if self
             .state
-            .scan_keys(
-                namespace,
-                tenant,
-                KeyKind::Custom(QUEUE_LEASED_KIND.into()),
-                Some(&format!("{queue}:")),
+            .compare_and_swap(
+                &key,
+                version,
+                &json,
+                exhausted.then_some(COMPLETED_TASK_TTL),
             )
-            .await?;
-
-        for (index_key, expires_ms) in leased {
-            let expired = expires_ms
-                .parse::<i64>()
-                .is_ok_and(|ms| ms <= now.timestamp_millis());
-            if !expired {
-                continue;
-            }
-            let Some(task_id) = index_key.rsplit(':').next().map(str::to_owned) else {
-                continue;
-            };
-            let key = task_key(namespace, tenant, &task_id);
-            let Some((raw, version)) = self.state.get_versioned(&key).await? else {
-                let _ = self
-                    .state
-                    .delete(&leased_key(namespace, tenant, queue, &task_id))
+            .await?
+            == CasResult::Ok
+            && exhausted
+        {
+            self.remove_worker_indexes(&task).await;
+            self.push_task_to_dlq(&task).await;
+            if task.chain_id.is_some() {
+                self.resume_chain_worker_step(&task, Err(task.error.clone().unwrap_or_default()))
                     .await;
-                continue;
-            };
-            let Ok(mut task) = serde_json::from_str::<WorkerTask>(&raw) else {
-                continue;
-            };
-            if !task.lease_expired(now) {
-                if task.status != WorkerTaskStatus::Leased {
-                    // Crash artifact: a leased-index entry for a task that
-                    // never completed the lease CAS (still Pending) or has
-                    // already settled — drop the stale entry.
-                    let _ = self
-                        .state
-                        .delete(&leased_key(namespace, tenant, queue, &task_id))
-                        .await;
-                } else if let Some(at) = task.lease_expires_at {
-                    // Heartbeat raced the index; refresh the index entry.
-                    let _ = self
-                        .state
-                        .set(
-                            &leased_key(namespace, tenant, queue, &task_id),
-                            &at.timestamp_millis().to_string(),
-                            None,
-                        )
-                        .await;
-                }
-                continue;
             }
-
-            let exhausted = task.attempt >= task.max_attempts;
-            if exhausted {
-                task.status = WorkerTaskStatus::Failed;
-                task.error = Some(format!(
-                    "lease expired after attempt {}/{} (worker did not heartbeat)",
-                    task.attempt, task.max_attempts
-                ));
-            } else {
-                task.status = WorkerTaskStatus::Pending;
-                task.not_before = Some(now + retry_backoff(task.attempt));
-            }
-            task.lease_token = None;
-            task.lease_expires_at = None;
-            task.worker_id = None;
-            task.updated_at = now;
-
-            let ttl = exhausted.then_some(COMPLETED_TASK_TTL);
-            let Ok(json) = serde_json::to_string(&task) else {
-                continue;
-            };
-            match self
-                .state
-                .compare_and_swap(&key, version, &json, ttl)
-                .await?
-            {
-                CasResult::Ok => {
-                    let _ = self
-                        .state
-                        .delete(&leased_key(namespace, tenant, queue, &task_id))
-                        .await;
-                    if exhausted {
-                        warn!(task_id = %task_id, queue = %queue, "worker task lease expired; attempts exhausted");
-                        self.push_task_to_dlq(&task).await;
-                        if task.chain_id.is_some() {
-                            self.resume_chain_worker_step(
-                                &task,
-                                Err(task.error.clone().unwrap_or_default()),
-                            )
-                            .await;
-                        }
-                        self.route_workflow_task_result(&task).await;
-                    } else {
-                        self.state
-                            .set(
-                                &pending_key(namespace, tenant, queue, &task_id),
-                                "pending",
-                                None,
-                            )
-                            .await?;
-                        debug!(task_id = %task_id, queue = %queue, "expired lease reclaimed; task re-queued");
-                    }
-                }
-                CasResult::Conflict { .. } => {}
-            }
+            self.route_workflow_task_result(&task).await;
         }
         Ok(())
     }

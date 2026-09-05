@@ -22,7 +22,8 @@ fn queue_error_response(e: &acteon_gateway::GatewayError) -> axum::response::Res
     let msg = e.to_string();
     let code = if msg.contains("not found") {
         StatusCode::NOT_FOUND
-    } else if msg.contains("not leased")
+    } else if msg.contains("already exists")
+        || msg.contains("not leased")
         || msg.contains("lease token mismatch")
         || msg.contains("lease expired")
         || msg.contains("not active")
@@ -236,7 +237,9 @@ pub struct TaskQueryParams {
     request_body = EnqueueTaskRequest,
     responses(
         (status = 201, description = "Task enqueued", body = WorkerTaskDto),
+        (status = 400, description = "Invalid task", body = ErrorResponse),
         (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 409, description = "Task ID already exists", body = ErrorResponse),
     )
 )]
 pub async fn enqueue_task(

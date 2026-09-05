@@ -1,3 +1,5 @@
+pub mod faults;
+
 use std::time::Duration;
 
 use crate::error::StateError;
@@ -24,6 +26,7 @@ pub async fn run_store_conformance_tests(store: &dyn StateStore) -> Result<(), S
     test_delete(store).await?;
     test_increment(store).await?;
     test_compare_and_swap(store).await?;
+    test_create_then_cas_expiry(store).await?;
     test_ttl_set(store).await?;
     test_scan_by_kind_includes_check_and_set(store).await?;
     test_set_clears_ttl_on_overwrite(store).await?;
@@ -236,6 +239,47 @@ async fn test_compare_and_swap(store: &dyn StateStore) -> Result<(), StateError>
 
     let val = store.get(&key).await?;
     assert_eq!(val.as_deref(), Some("updated"));
+    Ok(())
+}
+
+/// Create-only records must participate in CAS without surviving terminal TTL
+/// or being resurrected by a stale update after their original expiry.
+async fn test_create_then_cas_expiry(store: &dyn StateStore) -> Result<(), StateError> {
+    let terminal = test_key(KeyKind::State, "create-cas-terminal");
+    let expired = test_key(KeyKind::State, "create-cas-expired");
+    assert!(store.check_and_set(&terminal, "initial", None).await?);
+    assert!(
+        store
+            .check_and_set(&expired, "initial", Some(Duration::from_secs(1)))
+            .await?
+    );
+    let (_, version) = store.get_versioned(&terminal).await?.expect("created");
+    assert!(version > 0, "create-only entries must have a real version");
+    let (_, old_version) = store.get_versioned(&expired).await?.expect("created");
+    assert_eq!(
+        store
+            .compare_and_swap(&terminal, version, "done", Some(Duration::from_secs(1)))
+            .await?,
+        CasResult::Ok
+    );
+    assert!(matches!(
+        store
+            .compare_and_swap(&terminal, version, "stale", None)
+            .await?,
+        CasResult::Conflict { .. }
+    ));
+    tokio::time::sleep(Duration::from_millis(1300)).await;
+    assert!(
+        store.get(&terminal).await?.is_none(),
+        "initial representation must not reappear after completion expires"
+    );
+    assert!(matches!(
+        store
+            .compare_and_swap(&expired, old_version, "resurrected", None)
+            .await?,
+        CasResult::Conflict { .. }
+    ));
+    assert!(store.get(&expired).await?.is_none());
     Ok(())
 }
 
