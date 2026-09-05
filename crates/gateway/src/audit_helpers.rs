@@ -5,8 +5,6 @@
 
 use std::time::Duration;
 
-use chrono::Utc;
-
 use acteon_audit::{A2A_AUDIT_PROVIDER, AuditEventKind, AuditRecord};
 use acteon_core::{Action, ActionOutcome, Caller, Task, TaskState};
 use acteon_rules::RuleVerdict;
@@ -176,6 +174,7 @@ pub(crate) fn build_task_audit_record(
 /// Build an `AuditRecord` from the dispatch context.
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub(crate) fn build_audit_record(
+    completed_at: chrono::DateTime<chrono::Utc>,
     id: String,
     action: &Action,
     verdict: &RuleVerdict,
@@ -186,7 +185,6 @@ pub(crate) fn build_audit_record(
     store_payload: bool,
     caller: Option<&Caller>,
 ) -> AuditRecord {
-    let completed_at = Utc::now();
     #[allow(clippy::cast_possible_wrap)]
     let expires_at = ttl_seconds.map(|secs| dispatched_at + chrono::Duration::seconds(secs as i64));
 

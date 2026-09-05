@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+use acteon_time::{Clock, SystemClock};
 use async_trait::async_trait;
 use dashmap::DashMap;
-use tokio::time::Instant;
 
 use acteon_state::error::StateError;
 use acteon_state::key::{KeyKind, StateKey};
@@ -15,20 +15,19 @@ use acteon_state::store::{CasResult, StateStore};
 struct Entry {
     value: String,
     version: u64,
-    expires_at: Option<Instant>,
+    expires_at: Option<Duration>,
 }
 
 impl Entry {
     /// Returns `true` if this entry has passed its TTL deadline.
-    fn is_expired(&self) -> bool {
-        self.expires_at
-            .is_some_and(|deadline| Instant::now() >= deadline)
+    fn is_expired(&self, now: Duration) -> bool {
+        self.expires_at.is_some_and(|deadline| now >= deadline)
     }
 }
 
 /// Compute the expiry instant from an optional TTL duration.
-fn expiry_from_ttl(ttl: Option<Duration>) -> Option<Instant> {
-    ttl.map(|d| Instant::now() + d)
+fn expiry_from_ttl(clock: &dyn Clock, ttl: Option<Duration>) -> Option<Duration> {
+    ttl.map(|d| clock.monotonic().saturating_add(d))
 }
 
 /// In-memory [`StateStore`] backed by a [`DashMap`].
@@ -38,6 +37,7 @@ fn expiry_from_ttl(ttl: Option<Duration>) -> Option<Instant> {
 /// reclaim entries that are never read again. This implementation is fully
 /// synchronous internally; the async trait methods return immediately.
 pub struct MemoryStateStore {
+    clock: Arc<dyn Clock>,
     data: DashMap<String, Entry>,
     /// Sorted index for timeout queries: maps `expiration_ms` -> set of keys.
     /// Using `RwLock` because `BTreeMap` doesn't support concurrent access.
@@ -48,17 +48,14 @@ pub struct MemoryStateStore {
 
 impl Default for MemoryStateStore {
     fn default() -> Self {
-        Self {
-            data: DashMap::new(),
-            timeout_index: RwLock::new(BTreeMap::new()),
-            chain_ready_index: RwLock::new(BTreeMap::new()),
-        }
+        Self::with_clock(Arc::new(SystemClock::default()))
     }
 }
 
 impl std::fmt::Debug for MemoryStateStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MemoryStateStore")
+            .field("clock", &self.clock)
             .field("data", &self.data)
             .field("timeout_index", &"<RwLock<BTreeMap>>")
             .field("chain_ready_index", &"<RwLock<BTreeMap>>")
@@ -70,6 +67,17 @@ impl MemoryStateStore {
     /// Create a new, empty in-memory state store.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Use a shared clock for TTL decisions. All users of this store must share
+    /// its time domain, including gateways and lock managers.
+    pub fn with_clock(clock: Arc<dyn Clock>) -> Self {
+        Self {
+            clock,
+            data: DashMap::new(),
+            timeout_index: RwLock::new(BTreeMap::new()),
+            chain_ready_index: RwLock::new(BTreeMap::new()),
+        }
     }
 
     /// Proactively evict every entry whose TTL has elapsed and drop any
@@ -89,7 +97,7 @@ impl MemoryStateStore {
     pub fn sweep_expired(&self) -> usize {
         let mut removed = 0usize;
         self.data.retain(|_, entry| {
-            let keep = !entry.is_expired();
+            let keep = !entry.is_expired(self.clock.monotonic());
             if !keep {
                 removed += 1;
             }
@@ -145,14 +153,15 @@ impl StateStore for MemoryStateStore {
 
         // Check if a live entry already exists.
         if let Some(existing) = self.data.get(&rendered)
-            && !existing.is_expired()
+            && !existing.is_expired(self.clock.monotonic())
         {
             return Ok(false);
         }
         // Drop the read guard before writing.
         // Remove any expired entry, then try to insert.
-        self.data
-            .remove_if(&rendered, |_, entry| entry.is_expired());
+        self.data.remove_if(&rendered, |_, entry| {
+            entry.is_expired(self.clock.monotonic())
+        });
 
         // Use `entry` API for atomicity: only insert if vacant.
         let was_inserted = match self.data.entry(rendered) {
@@ -161,7 +170,7 @@ impl StateStore for MemoryStateStore {
                 vacant.insert(Entry {
                     value: value.to_owned(),
                     version: 1,
-                    expires_at: expiry_from_ttl(ttl),
+                    expires_at: expiry_from_ttl(self.clock.as_ref(), ttl),
                 });
                 true
             }
@@ -173,30 +182,31 @@ impl StateStore for MemoryStateStore {
     async fn get(&self, key: &StateKey) -> Result<Option<String>, StateError> {
         let rendered = Self::render_key(key);
 
-        // Lazy TTL eviction: check and remove if expired.
-        if let Some(entry) = self.data.get(&rendered) {
-            if entry.is_expired() {
-                drop(entry);
-                self.data.remove(&rendered);
-                return Ok(None);
+        match self.data.entry(rendered) {
+            dashmap::mapref::entry::Entry::Occupied(entry) => {
+                if entry.get().is_expired(self.clock.monotonic()) {
+                    entry.remove();
+                    Ok(None)
+                } else {
+                    Ok(Some(entry.get().value.clone()))
+                }
             }
-            return Ok(Some(entry.value.clone()));
+            dashmap::mapref::entry::Entry::Vacant(_) => Ok(None),
         }
-
-        Ok(None)
     }
 
     async fn get_versioned(&self, key: &StateKey) -> Result<Option<(String, u64)>, StateError> {
-        let rendered = Self::render_key(key);
-        if let Some(entry) = self.data.get(&rendered) {
-            if entry.is_expired() {
-                drop(entry);
-                self.data.remove(&rendered);
-                return Ok(None);
+        match self.data.entry(Self::render_key(key)) {
+            dashmap::mapref::entry::Entry::Occupied(entry) => {
+                if entry.get().is_expired(self.clock.monotonic()) {
+                    entry.remove();
+                    Ok(None)
+                } else {
+                    Ok(Some((entry.get().value.clone(), entry.get().version)))
+                }
             }
-            return Ok(Some((entry.value.clone(), entry.version)));
+            dashmap::mapref::entry::Entry::Vacant(_) => Ok(None),
         }
-        Ok(None)
     }
 
     async fn set(
@@ -206,7 +216,7 @@ impl StateStore for MemoryStateStore {
         ttl: Option<Duration>,
     ) -> Result<(), StateError> {
         let rendered = Self::render_key(key);
-        let expires_at = expiry_from_ttl(ttl);
+        let expires_at = expiry_from_ttl(self.clock.as_ref(), ttl);
 
         self.data
             .entry(rendered)
@@ -229,7 +239,7 @@ impl StateStore for MemoryStateStore {
 
         // Remove, but treat expired entries as "not found".
         match self.data.remove(&rendered) {
-            Some((_, entry)) => Ok(!entry.is_expired()),
+            Some((_, entry)) => Ok(!entry.is_expired(self.clock.monotonic())),
             None => Ok(false),
         }
     }
@@ -241,11 +251,12 @@ impl StateStore for MemoryStateStore {
         ttl: Option<Duration>,
     ) -> Result<i64, StateError> {
         let rendered = Self::render_key(key);
-        let expires_at = expiry_from_ttl(ttl);
+        let expires_at = expiry_from_ttl(self.clock.as_ref(), ttl);
 
         // Remove any expired entry first so the counter starts fresh.
-        self.data
-            .remove_if(&rendered, |_, entry| entry.is_expired());
+        self.data.remove_if(&rendered, |_, entry| {
+            entry.is_expired(self.clock.monotonic())
+        });
 
         let mut ref_mut = self.data.entry(rendered).or_insert_with(|| Entry {
             value: "0".to_owned(),
@@ -282,8 +293,9 @@ impl StateStore for MemoryStateStore {
         let rendered = Self::render_key(key);
 
         // Remove expired entries so they appear as missing.
-        self.data
-            .remove_if(&rendered, |_, entry| entry.is_expired());
+        self.data.remove_if(&rendered, |_, entry| {
+            entry.is_expired(self.clock.monotonic())
+        });
 
         let Some(mut entry) = self.data.get_mut(&rendered) else {
             return Ok(CasResult::Conflict {
@@ -301,7 +313,7 @@ impl StateStore for MemoryStateStore {
 
         new_value.clone_into(&mut entry.value);
         entry.version += 1;
-        entry.expires_at = expiry_from_ttl(ttl).or(entry.expires_at);
+        entry.expires_at = expiry_from_ttl(self.clock.as_ref(), ttl).or(entry.expires_at);
 
         Ok(CasResult::Ok)
     }
@@ -324,7 +336,7 @@ impl StateStore for MemoryStateStore {
 
         for entry in &self.data {
             let key = entry.key();
-            if key.starts_with(&full_prefix) && !entry.value().is_expired() {
+            if key.starts_with(&full_prefix) && !entry.value().is_expired(self.clock.monotonic()) {
                 results.push((key.clone(), entry.value().value.clone()));
             }
         }
@@ -342,7 +354,10 @@ impl StateStore for MemoryStateStore {
             let key = entry.key();
             // Parse the key to extract the kind segment
             let parts: Vec<&str> = key.splitn(4, ':').collect();
-            if parts.len() >= 3 && parts[2] == kind_str && !entry.value().is_expired() {
+            if parts.len() >= 3
+                && parts[2] == kind_str
+                && !entry.value().is_expired(self.clock.monotonic())
+            {
                 results.push((key.clone(), entry.value().value.clone()));
             }
         }
@@ -427,6 +442,43 @@ impl StateStore for MemoryStateStore {
 
 #[cfg(test)]
 mod tests {
+
+    #[tokio::test]
+    async fn manual_clock_expires_versioned_counters_and_cas_at_the_deadline() {
+        let clock = std::sync::Arc::new(acteon_time::ManualClock::new(
+            chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
+        ));
+        let store = MemoryStateStore::with_clock(clock.clone());
+        let key = test_key(KeyKind::Counter, "boundary");
+        store
+            .set(&key, "40", Some(Duration::from_secs(1)))
+            .await
+            .unwrap();
+        clock.advance_to(Duration::from_millis(999)).unwrap();
+        let version = store.get_versioned(&key).await.unwrap().unwrap().1;
+        clock.advance_to(Duration::from_secs(1)).unwrap();
+        assert_eq!(
+            store
+                .compare_and_swap(&key, version, "99", None)
+                .await
+                .unwrap(),
+            CasResult::Conflict {
+                current_value: None,
+                current_version: 0
+            }
+        );
+        assert_eq!(
+            store
+                .increment(&key, 2, Some(Duration::from_secs(1)))
+                .await
+                .unwrap(),
+            2
+        );
+        clock.advance_to(Duration::from_secs(2)).unwrap();
+        assert_eq!(store.get_versioned(&key).await.unwrap(), None);
+        assert!(store.check_and_set(&key, "new", None).await.unwrap());
+        assert_eq!(store.get(&key).await.unwrap().as_deref(), Some("new"));
+    }
     use std::time::Duration;
 
     use acteon_state::key::{KeyKind, StateKey};

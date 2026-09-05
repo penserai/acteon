@@ -147,3 +147,62 @@ fn replay_preserves_hard_linked_input() {
         b"original evidence"
     );
 }
+
+#[test]
+fn cli_replays_virtual_time_and_rejects_remote_ttls_or_forged_clocks() {
+    let workspace = Workspace::new();
+    for backend in ["redis", "postgres"] {
+        for version in [1, 2] {
+            let mut manifest = serde_json::json!({"schema_version":version,"seed":42,"backend":backend,"scenarios":["deadline_safety"]});
+            if version == 2 {
+                manifest["trials"] = 1.into();
+            }
+            std::fs::write(
+                workspace.0.join("suite.json"),
+                serde_json::to_vec(&manifest).unwrap(),
+            )
+            .unwrap();
+            let output = workspace.run(&["--manifest", "suite.json", "--output", "invalid"]);
+            assert!(!output.status.success());
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains("requires the memory backend")
+            );
+            assert!(!workspace.0.join("invalid").exists());
+        }
+    }
+    std::fs::write(workspace.0.join("suite.json"), r#"{"schema_version":2,"seed":42,"backend":"memory","trials":2,"scenarios":["deadline_safety"]}"#).unwrap();
+    let output = workspace.run(&["--manifest", "suite.json", "--output", "first"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = workspace.run(&["--replay", "first/report.json", "--output", "replay"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let first = std::fs::read(workspace.0.join("first/report.json")).unwrap();
+    assert_eq!(
+        first,
+        std::fs::read(workspace.0.join("replay/report.json")).unwrap()
+    );
+    let mut forged: serde_json::Value = serde_json::from_slice(&first).unwrap();
+    assert!(
+        forged["provenance"]["clock"]
+            .as_str()
+            .unwrap()
+            .contains("manual UTC epoch")
+    );
+    forged["provenance"]["clock"] = "wall_clock".into();
+    std::fs::write(
+        workspace.0.join("forged-clock.json"),
+        serde_json::to_vec(&forged).unwrap(),
+    )
+    .unwrap();
+    let output = workspace.run(&["--replay", "forged-clock.json", "--output", "forged"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("provenance differs"));
+    assert!(!workspace.0.join("forged").exists());
+}

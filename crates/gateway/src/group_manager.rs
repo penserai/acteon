@@ -18,18 +18,32 @@ use acteon_state::{KeyKind, StateKey, StateStore};
 use crate::error::GatewayError;
 
 /// Manages event groups for batched notifications.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct GroupManager {
+    clock: Arc<dyn acteon_time::Clock>,
     /// In-memory cache of active groups (for fast access).
     /// Key is `group_key` (hash of `group_by` fields).
     pub(crate) groups: Arc<RwLock<HashMap<String, EventGroup>>>,
+}
+
+impl Default for GroupManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl GroupManager {
     /// Create a new group manager.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_clock(Arc::new(acteon_time::SystemClock::default()))
+    }
+
+    /// Construct a group manager in the gateway's clock domain.
+    #[must_use]
+    pub fn with_clock(clock: Arc<dyn acteon_time::Clock>) -> Self {
         Self {
+            clock,
             groups: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -70,7 +84,7 @@ impl GroupManager {
             // top level so direct deserialization fails.
             let group: Option<EventGroup> = serde_json::from_str::<EventGroup>(&value)
                 .ok()
-                .or_else(|| parse_legacy_group(&value));
+                .or_else(|| parse_legacy_group(&value, self.clock.now()));
 
             match group {
                 Some(mut group) => {
@@ -144,13 +158,14 @@ impl GroupManager {
         let group_key = compute_group_key(action, group_by);
 
         // Create grouped event from action
-        let grouped_event = GroupedEvent::new(action.id.clone(), action.payload.clone())
+        let mut grouped_event = GroupedEvent::new(action.id.clone(), action.payload.clone())
             .with_fingerprint(
                 action
                     .fingerprint
                     .clone()
                     .unwrap_or_else(|| compute_fingerprint(action, group_by)),
             );
+        grouped_event.received_at = self.clock.now();
         let grouped_event = if let Some(status) = &action.status {
             grouped_event.with_status(status)
         } else {
@@ -169,7 +184,7 @@ impl GroupManager {
                 // Existing group: handle the Notified → Pending
                 // transition for persistent groups, then append the
                 // event (dropping oldest if at capacity).
-                let now = Utc::now();
+                let now = self.clock.now();
                 if matches!(group.state, GroupState::Notified) {
                     // Only persistent groups (with repeat_interval) can
                     // be in Notified state at this point; ephemeral
@@ -189,7 +204,7 @@ impl GroupManager {
                     // saw activity.
                     group.idle_flushes = 0;
                 }
-                group.add_event(grouped_event);
+                group.add_event_at(grouped_event, self.clock.now());
                 group.clone()
             } else {
                 // New group. Record timing params + scope from the
@@ -197,15 +212,17 @@ impl GroupManager {
                 // to re-plumb them.
                 let group_id = Uuid::new_v4().to_string();
                 #[allow(clippy::cast_possible_wrap)]
-                let notify_at = Utc::now() + chrono::Duration::seconds(group_wait_seconds as i64);
-                let mut group = EventGroup::new(&group_id, &group_key, notify_at)
-                    .with_timing(
-                        group_wait_seconds,
-                        group_interval_seconds,
-                        repeat_interval_seconds,
-                        max_group_size,
-                    )
-                    .with_scope(action.namespace.as_str(), action.tenant.as_str());
+                let notify_at =
+                    self.clock.now() + chrono::Duration::seconds(group_wait_seconds as i64);
+                let mut group =
+                    EventGroup::new_at(&group_id, &group_key, notify_at, self.clock.now())
+                        .with_timing(
+                            group_wait_seconds,
+                            group_interval_seconds,
+                            repeat_interval_seconds,
+                            max_group_size,
+                        )
+                        .with_scope(action.namespace.as_str(), action.tenant.as_str());
 
                 // Capture trace context from the first event in the group
                 group.trace_context.clone_from(&action.trace_context);
@@ -218,7 +235,7 @@ impl GroupManager {
                     }
                 }
                 group = group.with_labels(labels);
-                group.add_event(grouped_event);
+                group.add_event_at(grouped_event, self.clock.now());
 
                 let snapshot = group.clone();
                 groups.insert(group_key.clone(), group);
@@ -288,7 +305,7 @@ impl GroupManager {
             // partial-JSON format for pre-Phase-2 records.
             let group: Option<EventGroup> = serde_json::from_str::<EventGroup>(&value)
                 .ok()
-                .or_else(|| parse_legacy_group(&value));
+                .or_else(|| parse_legacy_group(&value, self.clock.now()));
 
             match group {
                 Some(g) => {
@@ -330,7 +347,7 @@ impl GroupManager {
     /// persistent group that has had no new events).
     #[must_use]
     pub fn get_ready_groups(&self) -> Vec<EventGroup> {
-        let now = Utc::now();
+        let now = self.clock.now();
         self.groups
             .read()
             .values()
@@ -372,7 +389,7 @@ impl GroupManager {
             return None;
         }
 
-        let now = Utc::now();
+        let now = self.clock.now();
         group.state = GroupState::Notified;
         group.last_notified_at = Some(now);
         group.updated_at = now;
@@ -435,7 +452,7 @@ impl GroupManager {
 /// restored as ephemeral (no `repeat_interval`), in Pending state,
 /// which is the safest assumption since we don't know the original
 /// rule's timing parameters.
-fn parse_legacy_group(raw: &str) -> Option<EventGroup> {
+fn parse_legacy_group(raw: &str, now: DateTime<Utc>) -> Option<EventGroup> {
     let metadata: serde_json::Value = serde_json::from_str(raw).ok()?;
     let group_id = metadata.get("group_id")?.as_str()?.to_string();
     let group_key = metadata.get("group_key")?.as_str()?.to_string();
@@ -443,7 +460,7 @@ fn parse_legacy_group(raw: &str) -> Option<EventGroup> {
         .get("notify_at")
         .and_then(|v| v.as_str())
         .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-        .map_or_else(Utc::now, |dt| dt.with_timezone(&Utc));
+        .map_or(now, |dt| dt.with_timezone(&Utc));
 
     let trace_context: HashMap<String, String> = metadata
         .get("trace_context")
@@ -458,7 +475,7 @@ fn parse_legacy_group(raw: &str) -> Option<EventGroup> {
         .and_then(|v| serde_json::from_value(v.clone()).ok())
         .unwrap_or_default();
 
-    let mut group = EventGroup::new(&group_id, &group_key, notify_at);
+    let mut group = EventGroup::new_at(&group_id, &group_key, notify_at, now);
     group.trace_context = trace_context;
     group.labels = labels;
     for event in events {

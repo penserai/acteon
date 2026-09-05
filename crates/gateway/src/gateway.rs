@@ -84,6 +84,13 @@ impl ApprovalKeySet {
     }
 }
 
+// Signed URLs have whole-second precision. Round up so a link does not
+// expire before the precise record deadline; decision paths also check the
+// record itself, so rounding cannot extend approval authority.
+fn approval_signature_expiry(expires_at: chrono::DateTime<Utc>) -> i64 {
+    expires_at.timestamp() + i64::from(expires_at.timestamp_subsec_nanos() != 0)
+}
+
 /// A stored approval record awaiting human decision.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApprovalRecord {
@@ -190,6 +197,7 @@ pub(crate) type PinnedConfigCache = HashMap<(String, String, String, u64), Arc<C
 /// 3. Execute the verdict (allow, deduplicate, suppress, reroute, throttle, etc.).
 /// 4. Release the lock and return the [`ActionOutcome`].
 pub struct Gateway {
+    pub(crate) clock: Arc<dyn acteon_time::Clock>,
     // Note: manual `Debug` impl below because trait objects lack `Debug`.
     pub(crate) state: Arc<dyn StateStore>,
     pub(crate) lock: Arc<dyn DistributedLock>,
@@ -445,7 +453,7 @@ impl Gateway {
                 format!("{}-intent", uuid::Uuid::now_v7()),
                 action,
                 &RuleVerdict::Allow(None),
-                Utc::now(),
+                self.clock.now(),
                 self.effective_audit_ttl(&action.namespace, &action.tenant),
                 self.audit_store_payload,
                 caller,
@@ -531,8 +539,8 @@ impl Gateway {
         dry_run: bool,
     ) -> Result<ActionOutcome, GatewayError> {
         self.metrics.increment_dispatched();
-        let start = std::time::Instant::now();
-        let dispatched_at = Utc::now();
+        let start = self.clock.monotonic();
+        let dispatched_at = self.clock.now();
         let event_id = uuid::Uuid::now_v7().to_string();
 
         // 1. Build a lock name scoped to this specific action.
@@ -625,12 +633,13 @@ impl Gateway {
                 let dummy_verdict = RuleVerdict::Allow(None);
                 if let Some(ref audit) = self.audit {
                     let record = build_audit_record(
+                        self.clock.now(),
                         event_id.clone(),
                         &action,
                         &dummy_verdict,
                         &outcome,
                         dispatched_at,
-                        start.elapsed(),
+                        self.clock.monotonic().saturating_sub(start),
                         self.effective_audit_ttl(&action.namespace, &action.tenant),
                         self.audit_store_payload,
                         caller,
@@ -700,7 +709,8 @@ impl Gateway {
         }
 
         // 3. Build the evaluation context and evaluate rules.
-        let mut eval_ctx = EvalContext::new(&action, self.state.as_ref(), &self.environment);
+        let mut eval_ctx = EvalContext::new(&action, self.state.as_ref(), &self.environment)
+            .with_now(self.clock.now());
         if let Some(ref emb) = self.embedding {
             eval_ctx = eval_ctx.with_embedding(Arc::clone(emb));
         }
@@ -762,12 +772,13 @@ impl Gateway {
             // `execute_action` or any verdict handler.
             if let Some(ref audit) = self.audit {
                 let record = build_audit_record(
+                    self.clock.now(),
                     event_id.clone(),
                     &action,
                     &verdict,
                     &outcome,
                     dispatched_at,
-                    start.elapsed(),
+                    self.clock.monotonic().saturating_sub(start),
                     self.effective_audit_ttl(&action.namespace, &action.tenant),
                     self.audit_store_payload,
                     caller,
@@ -809,7 +820,7 @@ impl Gateway {
             action.namespace.as_str(),
             action.tenant.as_str(),
             crate::audit_helpers::rule_name_for_lookup(&verdict).as_deref(),
-            Utc::now(),
+            self.clock.now(),
         );
         if let Some(interval_name) = ti_decision.interval_name() {
             self.metrics.increment_muted();
@@ -821,12 +832,13 @@ impl Gateway {
 
             if let Some(ref audit) = self.audit {
                 let record = build_audit_record(
+                    self.clock.now(),
                     event_id.clone(),
                     &action,
                     &verdict,
                     &outcome,
                     dispatched_at,
-                    start.elapsed(),
+                    self.clock.monotonic().saturating_sub(start),
                     self.effective_audit_ttl(&action.namespace, &action.tenant),
                     self.audit_store_payload,
                     caller,
@@ -972,12 +984,13 @@ impl Gateway {
         // 5. Emit audit record (sync when compliance requires it, async otherwise).
         if let Some(ref audit) = self.audit {
             let record = build_audit_record(
+                self.clock.now(),
                 event_id.clone(),
                 &action,
                 &verdict,
                 &outcome,
                 dispatched_at,
-                start.elapsed(),
+                self.clock.monotonic().saturating_sub(start),
                 self.effective_audit_ttl(&action.namespace, &action.tenant),
                 self.audit_store_payload,
                 caller,
@@ -1322,7 +1335,7 @@ impl Gateway {
     /// coexist for the same tenant.
     pub fn set_quota_policy(&self, policy: acteon_core::QuotaPolicy) {
         let key = format!("{}:{}", policy.namespace, policy.tenant);
-        let now = Utc::now();
+        let now = self.clock.now();
         let mut map = self.quota_policies.write();
         let bucket = map.entry(key).or_insert_with(|| CachedPolicy {
             policies: Vec::new(),
@@ -1433,7 +1446,8 @@ impl Gateway {
             })
         };
 
-        let mut eval_ctx = EvalContext::new(action, state_store.as_ref(), &self.environment);
+        let mut eval_ctx = EvalContext::new(action, state_store.as_ref(), &self.environment)
+            .with_now(self.clock.now());
         if let Some(ts) = evaluate_at {
             eval_ctx = eval_ctx.with_now(ts);
         }
@@ -1571,9 +1585,15 @@ impl Gateway {
             fallback = %target_name,
             "circuit open, rerouting to fallback provider"
         );
-        let exec_start = std::time::Instant::now();
+        let exec_start = self.clock.monotonic();
         let result = self.executor.execute(action, target.as_ref()).await;
-        let latency_us = u64::try_from(exec_start.elapsed().as_micros()).unwrap_or(u64::MAX);
+        let latency_us = u64::try_from(
+            self.clock
+                .monotonic()
+                .saturating_sub(exec_start)
+                .as_micros(),
+        )
+        .unwrap_or(u64::MAX);
 
         // Record per-provider metrics for the fallback provider.
         match &result {
@@ -1731,7 +1751,7 @@ impl Gateway {
             None
         };
 
-        let exec_start = std::time::Instant::now();
+        let exec_start = self.clock.monotonic();
         let result = if let Some(ref ctx) = dispatch_ctx {
             self.executor
                 .execute_with_context(action, provider, ctx)
@@ -1739,7 +1759,13 @@ impl Gateway {
         } else {
             self.executor.execute(action, provider).await
         };
-        let latency_us = u64::try_from(exec_start.elapsed().as_micros()).unwrap_or(u64::MAX);
+        let latency_us = u64::try_from(
+            self.clock
+                .monotonic()
+                .saturating_sub(exec_start)
+                .as_micros(),
+        )
+        .unwrap_or(u64::MAX);
         (result, latency_us)
     }
 
@@ -1785,9 +1811,15 @@ impl Gateway {
             .get(target_provider)
             .ok_or_else(|| GatewayError::ProviderNotFound(target_provider.to_owned()))?;
 
-        let exec_start = std::time::Instant::now();
+        let exec_start = self.clock.monotonic();
         let result = self.executor.execute(action, provider.as_ref()).await;
-        let latency_us = u64::try_from(exec_start.elapsed().as_micros()).unwrap_or(u64::MAX);
+        let latency_us = u64::try_from(
+            self.clock
+                .monotonic()
+                .saturating_sub(exec_start)
+                .as_micros(),
+        )
+        .unwrap_or(u64::MAX);
 
         // Record per-provider metrics for the reroute target.
         match &result {
@@ -1940,7 +1972,7 @@ impl Gateway {
         let state_value = serde_json::json!({
             "state": &new_state,
             "fingerprint": &fingerprint,
-            "updated_at": Utc::now().to_rfc3339(),
+            "updated_at": self.clock.now().to_rfc3339(),
             "action_type": &action.action_type,
         });
         let state_value_str = self.encrypt_state_value(&state_value.to_string())?;
@@ -1964,7 +1996,7 @@ impl Gateway {
         if let Some(timeout_config) = state_machine.get_timeout_for_state(&new_state) {
             #[allow(clippy::cast_possible_wrap)]
             let expires_at =
-                Utc::now() + chrono::Duration::seconds(timeout_config.after_seconds as i64);
+                self.clock.now() + chrono::Duration::seconds(timeout_config.after_seconds as i64);
             let timeout_key = StateKey::new(
                 action.namespace.as_str(),
                 action.tenant.as_str(),
@@ -1977,7 +2009,7 @@ impl Gateway {
                 "current_state": &new_state,
                 "transition_to": &timeout_config.transition_to,
                 "expires_at": expires_at.to_rfc3339(),
-                "created_at": Utc::now().to_rfc3339(),
+                "created_at": self.clock.now().to_rfc3339(),
                 "trace_context": &action.trace_context,
             });
             let timeout_value_str = self.encrypt_state_value(&timeout_value.to_string())?;
@@ -2022,7 +2054,7 @@ impl Gateway {
         if current_state != new_state {
             self.emit_stream_event(StreamEvent {
                 id: uuid::Uuid::now_v7().to_string(),
-                timestamp: Utc::now(),
+                timestamp: self.clock.now(),
                 event_type: StreamEventType::ActionStatusChanged {
                     action_id: action.id.to_string(),
                     fingerprint: fingerprint.clone(),
@@ -2136,13 +2168,13 @@ impl Gateway {
         // Generate a UUID as the approval ID
         let id = uuid::Uuid::new_v4().to_string();
 
-        let now = Utc::now();
+        let now = self.clock.now();
         #[allow(clippy::cast_possible_wrap)]
         let expires_at = now + chrono::Duration::seconds(timeout_seconds as i64);
         let ttl = Some(Duration::from_secs(timeout_seconds));
 
         // Compute HMAC signature (includes expires_at to bind sig to this TTL)
-        let expires_ts = expires_at.timestamp();
+        let expires_ts = approval_signature_expiry(expires_at);
         let (sig, kid) = self.compute_approval_sig(
             action.namespace.as_str(),
             action.tenant.as_str(),
@@ -2315,7 +2347,7 @@ impl Gateway {
 
         self.emit_stream_event(StreamEvent {
             id: uuid::Uuid::now_v7().to_string(),
-            timestamp: Utc::now(),
+            timestamp: self.clock.now(),
             event_type: StreamEventType::GroupEventAdded {
                 group_id: group_id.clone(),
                 group_key: group_key.clone(),
@@ -2395,7 +2427,7 @@ impl Gateway {
             ));
         }
 
-        let now = Utc::now();
+        let now = self.clock.now();
         #[allow(clippy::cast_possible_wrap)]
         let scheduled_for = now + chrono::Duration::seconds(delay_seconds as i64);
         let action_id = uuid::Uuid::new_v4().to_string();
@@ -2474,7 +2506,7 @@ impl Gateway {
         }
 
         let chain_id = uuid::Uuid::new_v4().to_string();
-        let now = Utc::now();
+        let now = self.clock.now();
         let total_steps = chain_config.steps.len();
         let first_step = chain_config.steps[0].name.clone();
 
@@ -2652,7 +2684,7 @@ impl Gateway {
 
         // Check timeout.
         if let Some(expires_at) = chain_state.expires_at
-            && Utc::now() >= expires_at
+            && self.clock.now() >= expires_at
         {
             // Stop the work, not just the chain: a parked worker task must
             // not execute after the chain has timed out.
@@ -2662,7 +2694,7 @@ impl Gateway {
             }
             chain_state.status = ChainStatus::TimedOut;
             chain_state.wait_state = None;
-            chain_state.updated_at = Utc::now();
+            chain_state.updated_at = self.clock.now();
             self.persist_chain_state(&chain_key, &chain_state, self.completed_chain_ttl)
                 .await?;
             self.cleanup_pending_chain(namespace, tenant, chain_id)
@@ -2672,7 +2704,7 @@ impl Gateway {
                 .await;
             self.emit_stream_event(StreamEvent {
                 id: uuid::Uuid::now_v7().to_string(),
-                timestamp: Utc::now(),
+                timestamp: self.clock.now(),
                 event_type: StreamEventType::ChainCompleted {
                     chain_id: chain_id.to_string(),
                     status: "timed_out".to_string(),
@@ -2723,7 +2755,7 @@ impl Gateway {
         // panicking the background advancer.
         if step_idx >= chain_config.steps.len() || step_idx >= chain_state.step_results.len() {
             chain_state.status = ChainStatus::Failed;
-            chain_state.updated_at = Utc::now();
+            chain_state.updated_at = self.clock.now();
             self.persist_chain_state(&chain_key, &chain_state, self.completed_chain_ttl)
                 .await?;
             self.cleanup_pending_chain(namespace, tenant, chain_id)
@@ -2733,7 +2765,7 @@ impl Gateway {
                 .await;
             self.emit_stream_event(StreamEvent {
                 id: uuid::Uuid::now_v7().to_string(),
-                timestamp: Utc::now(),
+                timestamp: self.clock.now(),
                 event_type: StreamEventType::ChainCompleted {
                     chain_id: chain_id.to_string(),
                     status: "failed".to_string(),
@@ -2767,7 +2799,7 @@ impl Gateway {
         match step_config.kind() {
             // --- Durable timer step handling ---
             StepKind::Timer(timer_cfg) => {
-                let now = Utc::now();
+                let now = self.clock.now();
                 let wait = chain_state.wait_state.clone();
                 match wait {
                     Some(WaitState::Timer {
@@ -2867,7 +2899,7 @@ impl Gateway {
 
             // --- Wait-for-signal step handling ---
             StepKind::Signal(signal_cfg) => {
-                let now = Utc::now();
+                let now = self.clock.now();
 
                 // Consume a buffered signal if one has already been delivered
                 // (whether the chain was waiting or the signal arrived early).
@@ -3036,7 +3068,7 @@ impl Gateway {
 
             // --- Worker-queue step handling ---
             StepKind::Worker(worker_cfg) => {
-                let now = Utc::now();
+                let now = self.clock.now();
                 let wait = chain_state.wait_state.clone();
                 match wait {
                     Some(WaitState::Worker {
@@ -3283,12 +3315,12 @@ impl Gateway {
                             .await?;
 
                         chain_state.status = ChainStatus::WaitingSubChain;
-                        chain_state.updated_at = Utc::now();
+                        chain_state.updated_at = self.clock.now();
                         self.persist_chain_state(&chain_key, &chain_state, None)
                             .await?;
 
                         // Re-index to poll again in 5 seconds.
-                        let ready_at = Utc::now().timestamp_millis() + 5000;
+                        let ready_at = self.clock.now().timestamp_millis() + 5000;
                         self.state.index_chain_ready(&pending_key, ready_at).await?;
 
                         debug!(
@@ -3309,10 +3341,10 @@ impl Gateway {
                             ChainStatus::Completed => {
                                 // Sub-chain completed — extract result and continue.
                                 let step_result =
-                                    Self::extract_sub_chain_result(sub_chain_name, &child_state);
+                                    self.extract_sub_chain_result(sub_chain_name, &child_state);
                                 chain_state.step_results[step_idx] = Some(step_result.clone());
                                 chain_state.status = ChainStatus::Running;
-                                chain_state.updated_at = Utc::now();
+                                chain_state.updated_at = self.clock.now();
 
                                 let next_step_idx = Self::resolve_next_step(
                                     &chain_config,
@@ -3330,7 +3362,8 @@ impl Gateway {
                                         .await?;
                                     let ready_at =
                                         chain_config.steps[next_idx].delay_seconds.map_or(0, |d| {
-                                            Utc::now().timestamp_millis() + (d.cast_signed() * 1000)
+                                            self.clock.now().timestamp_millis()
+                                                + (d.cast_signed() * 1000)
                                         });
                                     self.state.index_chain_ready(&pending_key, ready_at).await?;
                                 } else {
@@ -3368,7 +3401,7 @@ impl Gateway {
                                     success: false,
                                     response_body: None,
                                     error: Some(error_msg.clone()),
-                                    completed_at: Utc::now(),
+                                    completed_at: self.clock.now(),
                                     attempt: None,
                                     started_at: None,
                                 };
@@ -3383,7 +3416,7 @@ impl Gateway {
                                 match step_policy {
                                     acteon_core::chain::StepFailurePolicy::Abort => {
                                         chain_state.status = ChainStatus::Failed;
-                                        chain_state.updated_at = Utc::now();
+                                        chain_state.updated_at = self.clock.now();
                                         self.persist_chain_state(
                                             &chain_key,
                                             &chain_state,
@@ -3413,7 +3446,7 @@ impl Gateway {
                                         );
                                         if let Some(next_idx) = next_step_idx {
                                             chain_state.current_step = next_idx;
-                                            chain_state.updated_at = Utc::now();
+                                            chain_state.updated_at = self.clock.now();
                                             chain_state
                                                 .execution_path
                                                 .push(chain_config.steps[next_idx].name.clone());
@@ -3426,7 +3459,7 @@ impl Gateway {
                                             let ready_at = chain_config.steps[next_idx]
                                                 .delay_seconds
                                                 .map_or(0, |d| {
-                                                    Utc::now().timestamp_millis()
+                                                    self.clock.now().timestamp_millis()
                                                         + (d.cast_signed() * 1000)
                                                 });
                                             self.state
@@ -3434,7 +3467,7 @@ impl Gateway {
                                                 .await?;
                                         } else {
                                             chain_state.status = ChainStatus::Completed;
-                                            chain_state.updated_at = Utc::now();
+                                            chain_state.updated_at = self.clock.now();
                                             self.persist_chain_state(
                                                 &chain_key,
                                                 &chain_state,
@@ -3453,7 +3486,7 @@ impl Gateway {
                                     }
                                     acteon_core::chain::StepFailurePolicy::Dlq => {
                                         chain_state.status = ChainStatus::Failed;
-                                        chain_state.updated_at = Utc::now();
+                                        chain_state.updated_at = self.clock.now();
                                         self.persist_chain_state(
                                             &chain_key,
                                             &chain_state,
@@ -3485,10 +3518,10 @@ impl Gateway {
                             | ChainStatus::WaitingWorker => {
                                 // Still running — re-schedule poll in 5 seconds.
                                 chain_state.status = ChainStatus::WaitingSubChain;
-                                chain_state.updated_at = Utc::now();
+                                chain_state.updated_at = self.clock.now();
                                 self.persist_chain_state(&chain_key, &chain_state, None)
                                     .await?;
-                                let ready_at = Utc::now().timestamp_millis() + 5000;
+                                let ready_at = self.clock.now().timestamp_millis() + 5000;
                                 self.state.index_chain_ready(&pending_key, ready_at).await?;
 
                                 guard
@@ -3563,7 +3596,7 @@ impl Gateway {
         let dedup_ttl = chain_state.expires_at.map_or(
             Duration::from_secs(86400), // 24h default
             |ea| {
-                let remaining = ea - Utc::now();
+                let remaining = ea - self.clock.now();
                 Duration::from_secs(remaining.num_seconds().max(1).cast_unsigned())
             },
         );
@@ -3609,12 +3642,12 @@ impl Gateway {
                 success: false,
                 response_body: None,
                 error: Some("step interrupted (duplicate dispatch detected)".to_string()),
-                completed_at: Utc::now(),
+                completed_at: self.clock.now(),
                 attempt: None,
                 started_at: None,
             });
             chain_state.status = ChainStatus::Failed;
-            chain_state.updated_at = Utc::now();
+            chain_state.updated_at = self.clock.now();
             self.persist_chain_state(&chain_key, &chain_state, self.completed_chain_ttl)
                 .await?;
             self.cleanup_pending_chain(namespace, tenant, chain_id)
@@ -3710,7 +3743,7 @@ impl Gateway {
                 }
             }
             if let Some(_blocked) = blocked {
-                let now = Utc::now();
+                let now = self.clock.now();
                 chain_state.step_results[step_idx] = Some(StepResult {
                     step_name: step_config.name.clone(),
                     success: false,
@@ -3757,7 +3790,7 @@ impl Gateway {
             chain_state.step_attempts[step_idx] += 1;
         }
 
-        let step_started_at = Utc::now();
+        let step_started_at = self.clock.now();
 
         // Compliance fail-closed (pre-execution intent record), mirroring the
         // single-dispatch step 3f. If the intent cannot be durably recorded we
@@ -3778,7 +3811,7 @@ impl Gateway {
                 "chain step intent audit write failed — failing closed before execution"
             );
             let _ = self.state.delete(&step_dedup_key).await;
-            let retry_at = (Utc::now() + chrono::Duration::seconds(5)).timestamp_millis();
+            let retry_at = (self.clock.now() + chrono::Duration::seconds(5)).timestamp_millis();
             let _ = self.state.index_chain_ready(&pending_key, retry_at).await;
             guard
                 .release()
@@ -3787,10 +3820,10 @@ impl Gateway {
             return Err(e);
         }
 
-        let step_start = std::time::Instant::now();
+        let step_start = self.clock.monotonic();
         let outcome = self.execute_action(&step_action).await;
-        let step_duration = step_start.elapsed();
-        let now = Utc::now();
+        let step_duration = self.clock.monotonic().saturating_sub(step_start);
+        let now = self.clock.now();
 
         let current_attempt = if step_idx < chain_state.step_attempts.len() {
             chain_state.step_attempts[step_idx]
@@ -3854,7 +3887,7 @@ impl Gateway {
                     .await;
                     self.emit_stream_event(StreamEvent {
                         id: uuid::Uuid::now_v7().to_string(),
-                        timestamp: Utc::now(),
+                        timestamp: self.clock.now(),
                         event_type: StreamEventType::ChainStepCompleted {
                             chain_id: chain_id.to_string(),
                             step_name: step_config.name.clone(),
@@ -3891,7 +3924,7 @@ impl Gateway {
                         .await;
                     self.emit_stream_event(StreamEvent {
                         id: uuid::Uuid::now_v7().to_string(),
-                        timestamp: Utc::now(),
+                        timestamp: self.clock.now(),
                         event_type: StreamEventType::ChainStepCompleted {
                             chain_id: chain_id.to_string(),
                             step_name: step_config.name.clone(),
@@ -3906,7 +3939,7 @@ impl Gateway {
                     });
                     self.emit_stream_event(StreamEvent {
                         id: uuid::Uuid::now_v7().to_string(),
-                        timestamp: Utc::now(),
+                        timestamp: self.clock.now(),
                         event_type: StreamEventType::ChainCompleted {
                             chain_id: chain_id.to_string(),
                             status: "completed".to_string(),
@@ -4046,7 +4079,7 @@ impl Gateway {
                             .await;
                         self.emit_stream_event(StreamEvent {
                             id: uuid::Uuid::now_v7().to_string(),
-                            timestamp: Utc::now(),
+                            timestamp: self.clock.now(),
                             event_type: StreamEventType::ChainStepCompleted {
                                 chain_id: chain_id.to_string(),
                                 step_name: step_config.name.clone(),
@@ -4061,7 +4094,7 @@ impl Gateway {
                         });
                         self.emit_stream_event(StreamEvent {
                             id: uuid::Uuid::now_v7().to_string(),
-                            timestamp: Utc::now(),
+                            timestamp: self.clock.now(),
                             event_type: StreamEventType::ChainCompleted {
                                 chain_id: chain_id.to_string(),
                                 status: "failed".to_string(),
@@ -4116,7 +4149,7 @@ impl Gateway {
                             .await;
                             self.emit_stream_event(StreamEvent {
                                 id: uuid::Uuid::now_v7().to_string(),
-                                timestamp: Utc::now(),
+                                timestamp: self.clock.now(),
                                 event_type: StreamEventType::ChainStepCompleted {
                                     chain_id: chain_id.to_string(),
                                     step_name: step_config.name.clone(),
@@ -4156,7 +4189,7 @@ impl Gateway {
                                 .await;
                             self.emit_stream_event(StreamEvent {
                                 id: uuid::Uuid::now_v7().to_string(),
-                                timestamp: Utc::now(),
+                                timestamp: self.clock.now(),
                                 event_type: StreamEventType::ChainStepCompleted {
                                     chain_id: chain_id.to_string(),
                                     step_name: step_config.name.clone(),
@@ -4171,7 +4204,7 @@ impl Gateway {
                             });
                             self.emit_stream_event(StreamEvent {
                                 id: uuid::Uuid::now_v7().to_string(),
-                                timestamp: Utc::now(),
+                                timestamp: self.clock.now(),
                                 event_type: StreamEventType::ChainCompleted {
                                     chain_id: chain_id.to_string(),
                                     status: "completed".to_string(),
@@ -4224,7 +4257,7 @@ impl Gateway {
                         if let Some(ref sr) = chain_state.step_results[step_idx] {
                             self.emit_stream_event(StreamEvent {
                                 id: uuid::Uuid::now_v7().to_string(),
-                                timestamp: Utc::now(),
+                                timestamp: self.clock.now(),
                                 event_type: StreamEventType::ChainStepCompleted {
                                     chain_id: chain_id.to_string(),
                                     step_name: sr.step_name.clone(),
@@ -4240,7 +4273,7 @@ impl Gateway {
                         }
                         self.emit_stream_event(StreamEvent {
                             id: uuid::Uuid::now_v7().to_string(),
-                            timestamp: Utc::now(),
+                            timestamp: self.clock.now(),
                             event_type: StreamEventType::ChainCompleted {
                                 chain_id: chain_id.to_string(),
                                 status: "failed".to_string(),
@@ -4289,7 +4322,7 @@ impl Gateway {
                     .await;
                 self.emit_stream_event(StreamEvent {
                     id: uuid::Uuid::now_v7().to_string(),
-                    timestamp: Utc::now(),
+                    timestamp: self.clock.now(),
                     event_type: StreamEventType::ChainStepCompleted {
                         chain_id: chain_id.to_string(),
                         step_name: step_config.name.clone(),
@@ -4304,7 +4337,7 @@ impl Gateway {
                 });
                 self.emit_stream_event(StreamEvent {
                     id: uuid::Uuid::now_v7().to_string(),
-                    timestamp: Utc::now(),
+                    timestamp: self.clock.now(),
                     event_type: StreamEventType::ChainCompleted {
                         chain_id: chain_id.to_string(),
                         status: "failed".to_string(),
@@ -4427,7 +4460,7 @@ impl Gateway {
         step_index_map: &HashMap<String, usize>,
         audit_outcome: &str,
     ) -> Result<(), GatewayError> {
-        let now = Utc::now();
+        let now = self.clock.now();
         chain_state.step_results[step_idx] = Some(step_result.clone());
 
         let next_step_idx =
@@ -4457,7 +4490,7 @@ impl Gateway {
             .await;
             self.emit_stream_event(StreamEvent {
                 id: uuid::Uuid::now_v7().to_string(),
-                timestamp: Utc::now(),
+                timestamp: self.clock.now(),
                 event_type: StreamEventType::ChainStepCompleted {
                     chain_id: chain_id.to_string(),
                     step_name: step_config.name.clone(),
@@ -4492,7 +4525,7 @@ impl Gateway {
                 .await;
             self.emit_stream_event(StreamEvent {
                 id: uuid::Uuid::now_v7().to_string(),
-                timestamp: Utc::now(),
+                timestamp: self.clock.now(),
                 event_type: StreamEventType::ChainStepCompleted {
                     chain_id: chain_id.to_string(),
                     step_name: step_config.name.clone(),
@@ -4507,7 +4540,7 @@ impl Gateway {
             });
             self.emit_stream_event(StreamEvent {
                 id: uuid::Uuid::now_v7().to_string(),
-                timestamp: Utc::now(),
+                timestamp: self.clock.now(),
                 event_type: StreamEventType::ChainCompleted {
                     chain_id: chain_id.to_string(),
                     status: "completed".to_string(),
@@ -4541,7 +4574,7 @@ impl Gateway {
         step_result: StepResult,
         step_index_map: &HashMap<String, usize>,
     ) -> Result<(), GatewayError> {
-        let now = Utc::now();
+        let now = self.clock.now();
         let step_policy = step_config
             .on_failure
             .as_ref()
@@ -4590,7 +4623,7 @@ impl Gateway {
             .await;
         self.emit_stream_event(StreamEvent {
             id: uuid::Uuid::now_v7().to_string(),
-            timestamp: Utc::now(),
+            timestamp: self.clock.now(),
             event_type: StreamEventType::ChainStepCompleted {
                 chain_id: chain_id.to_string(),
                 step_name: step_config.name.clone(),
@@ -4605,7 +4638,7 @@ impl Gateway {
         });
         self.emit_stream_event(StreamEvent {
             id: uuid::Uuid::now_v7().to_string(),
-            timestamp: Utc::now(),
+            timestamp: self.clock.now(),
             event_type: StreamEventType::ChainCompleted {
                 chain_id: chain_id.to_string(),
                 status: "failed".to_string(),
@@ -4712,7 +4745,7 @@ impl Gateway {
         let dedup_ttl = chain_state.expires_at.map_or(
             Duration::from_secs(86400), // 24h default
             |ea| {
-                let remaining = ea - Utc::now();
+                let remaining = ea - self.clock.now();
                 Duration::from_secs(remaining.num_seconds().max(1).cast_unsigned())
             },
         );
@@ -4748,14 +4781,15 @@ impl Gateway {
                         )
                     })
                     .collect(),
-                started_at: Utc::now(),
+                started_at: self.clock.now(),
                 expires_at: group.timeout_seconds.map(|secs| {
-                    Utc::now() + chrono::Duration::seconds(i64::try_from(secs).unwrap_or(i64::MAX))
+                    self.clock.now()
+                        + chrono::Duration::seconds(i64::try_from(secs).unwrap_or(i64::MAX))
                 }),
             };
             chain_state.status = ChainStatus::WaitingParallel;
             chain_state.parallel_state = Some(parallel_state);
-            chain_state.updated_at = Utc::now();
+            chain_state.updated_at = self.clock.now();
             self.persist_chain_state(chain_key, chain_state, None)
                 .await?;
         }
@@ -4786,9 +4820,13 @@ impl Gateway {
                 );
                 let sub_name = sub_step.name.clone();
                 async move {
-                    let start = std::time::Instant::now();
+                    let start = self.clock.monotonic();
                     let outcome = self.execute_action(&sub_action).await;
-                    (sub_name, outcome, start.elapsed())
+                    (
+                        sub_name,
+                        outcome,
+                        self.clock.monotonic().saturating_sub(start),
+                    )
                 }
             })
             .collect();
@@ -4824,7 +4862,8 @@ impl Gateway {
                     for k in &sub_dedup_keys {
                         let _ = self.state.delete(k).await;
                     }
-                    let retry_at = (Utc::now() + chrono::Duration::seconds(5)).timestamp_millis();
+                    let retry_at =
+                        (self.clock.now() + chrono::Duration::seconds(5)).timestamp_millis();
                     let _ = self.state.index_chain_ready(pending_key, retry_at).await;
                     guard
                         .release()
@@ -4844,7 +4883,7 @@ impl Gateway {
                 .as_ref()
                 .and_then(|ps| ps.expires_at)
                 .map(|ea| {
-                    let remaining = ea - Utc::now();
+                    let remaining = ea - self.clock.now();
                     Duration::from_secs(remaining.num_seconds().max(1).cast_unsigned())
                 })
         } else {
@@ -4856,7 +4895,8 @@ impl Gateway {
                 .map_or(Duration::from_secs(300), Duration::from_secs)
         });
 
-        let Ok(results) = tokio::time::timeout(
+        let Ok(results) = acteon_time::timeout(
+            self.clock.as_ref(),
             group_timeout,
             self.execute_parallel_group(
                 sub_step_futures,
@@ -4868,7 +4908,7 @@ impl Gateway {
         .await
         else {
             // Timeout — mark the parent step as failed.
-            let now = Utc::now();
+            let now = self.clock.now();
             let parent_result = StepResult {
                 step_name: step_config.name.clone(),
                 success: false,
@@ -4944,7 +4984,7 @@ impl Gateway {
         let mut merged_body = serde_json::Map::new();
         let mut all_success = true;
         let mut any_success = false;
-        let now = Utc::now();
+        let now = self.clock.now();
 
         // Lookup from sub-step name → index into `pending_sub_steps` / `sub_payloads`
         // (only the freshly-dispatched ones). Used to find the audit payload.
@@ -5497,7 +5537,7 @@ impl Gateway {
         }
 
         let child_id = uuid::Uuid::new_v4().to_string();
-        let now = Utc::now();
+        let now = self.clock.now();
         let total_steps = sub_config.steps.len();
         let first_step = sub_config.steps[0].name.clone();
 
@@ -5626,7 +5666,7 @@ impl Gateway {
 
     /// Extract the result from a completed sub-chain to use as the parent
     /// step's result.
-    fn extract_sub_chain_result(sub_chain_name: &str, child: &ChainState) -> StepResult {
+    fn extract_sub_chain_result(&self, sub_chain_name: &str, child: &ChainState) -> StepResult {
         // Find the last completed step in the child's execution path.
         let last_result = child
             .execution_path
@@ -5656,7 +5696,7 @@ impl Gateway {
                 success: true,
                 response_body: None,
                 error: None,
-                completed_at: Utc::now(),
+                completed_at: self.clock.now(),
                 attempt: None,
                 started_at: None,
             },
@@ -6246,7 +6286,7 @@ impl Gateway {
         }
 
         if let Some(ref audit) = self.audit {
-            let now = Utc::now();
+            let now = self.clock.now();
 
             let step_results_json: Vec<serde_json::Value> = chain_state
                 .step_results
@@ -6469,7 +6509,7 @@ impl Gateway {
             )));
         }
 
-        let cancelled_at = Utc::now();
+        let cancelled_at = self.clock.now();
         // Stop the work, not just the chain: cancel the outstanding worker
         // task so it cannot execute after the cancellation.
         if let Some(WaitState::Worker { task_id, .. }) = &chain_state.wait_state {
@@ -6490,7 +6530,7 @@ impl Gateway {
             .await;
         self.emit_stream_event(StreamEvent {
             id: uuid::Uuid::now_v7().to_string(),
-            timestamp: Utc::now(),
+            timestamp: self.clock.now(),
             event_type: StreamEventType::ChainCompleted {
                 chain_id: chain_id.to_string(),
                 status: "cancelled".to_string(),
@@ -6640,7 +6680,7 @@ impl Gateway {
         // TTL enforcement, which may be missing (Postgres) or
         // eventually consistent (DynamoDB). This is the authoritative
         // server-side gate.
-        if chrono::Utc::now().timestamp() > expires_at {
+        if self.clock.now().timestamp() >= expires_at {
             return Err(GatewayError::ApprovalNotFound);
         }
 
@@ -6686,6 +6726,9 @@ impl Gateway {
         if record.status != "pending" {
             return Err(GatewayError::ApprovalAlreadyDecided(record.status));
         }
+        if self.clock.now() >= record.expires_at {
+            return Err(GatewayError::ApprovalNotFound);
+        }
 
         // 4. TOCTOU: re-evaluate rules against the stored action BEFORE
         //    committing the approval. The status flip and the compliance intent
@@ -6698,7 +6741,8 @@ impl Gateway {
         //    transient audit-store outage in compliance mode would otherwise
         //    permanently brick the approval.
         let action = &record.action;
-        let mut eval_ctx = EvalContext::new(action, self.state.as_ref(), &self.environment);
+        let mut eval_ctx = EvalContext::new(action, self.state.as_ref(), &self.environment)
+            .with_now(self.clock.now());
         if let Some(ref emb) = self.embedding {
             eval_ctx = eval_ctx.with_embedding(Arc::clone(emb));
         }
@@ -6713,8 +6757,8 @@ impl Gateway {
         // Suppress/Deny refuse execution; every other verdict runs the provider.
         let will_execute = !matches!(&verdict, RuleVerdict::Suppress(_) | RuleVerdict::Deny(_));
 
-        let dispatched_at = Utc::now();
-        let exec_start = std::time::Instant::now();
+        let dispatched_at = self.clock.now();
+        let exec_start = self.clock.monotonic();
 
         // Compliance fail-closed: durably record the INTENT to run this approved
         // action *before* the provider side effect, mirroring single dispatch
@@ -6745,7 +6789,7 @@ impl Gateway {
         //    the approval in an unretryable "approved" state.
         let mut updated = record.clone();
         updated.status = "approved".to_string();
-        updated.decided_at = Some(Utc::now());
+        updated.decided_at = Some(self.clock.now());
         let updated_json = serde_json::to_string(&updated).map_err(|e| {
             GatewayError::Configuration(format!("failed to serialize approval: {e}"))
         })?;
@@ -6756,7 +6800,7 @@ impl Gateway {
 
         self.emit_stream_event(StreamEvent {
             id: uuid::Uuid::now_v7().to_string(),
-            timestamp: Utc::now(),
+            timestamp: self.clock.now(),
             event_type: StreamEventType::ApprovalResolved {
                 approval_id: id.to_string(),
                 decision: "approved".to_string(),
@@ -6804,12 +6848,13 @@ impl Gateway {
         // awaited (durable) in compliance mode and best-effort otherwise.
         if let Some(ref audit) = self.audit {
             let record = build_audit_record(
+                self.clock.now(),
                 uuid::Uuid::now_v7().to_string(),
                 action,
                 &verdict,
                 &outcome,
                 dispatched_at,
-                exec_start.elapsed(),
+                self.clock.monotonic().saturating_sub(exec_start),
                 self.effective_audit_ttl(&action.namespace, &action.tenant),
                 self.audit_store_payload,
                 None,
@@ -6842,7 +6887,7 @@ impl Gateway {
         // TTL enforcement, which may be missing (Postgres) or
         // eventually consistent (DynamoDB). This is the authoritative
         // server-side gate.
-        if chrono::Utc::now().timestamp() > expires_at {
+        if self.clock.now().timestamp() >= expires_at {
             return Err(GatewayError::ApprovalNotFound);
         }
 
@@ -6887,11 +6932,14 @@ impl Gateway {
         if record.status != "pending" {
             return Err(GatewayError::ApprovalAlreadyDecided(record.status));
         }
+        if self.clock.now() >= record.expires_at {
+            return Err(GatewayError::ApprovalNotFound);
+        }
 
         // 4. Update status to "rejected"
         let mut updated = record.clone();
         updated.status = "rejected".to_string();
-        updated.decided_at = Some(Utc::now());
+        updated.decided_at = Some(self.clock.now());
         let updated_json = serde_json::to_string(&updated).map_err(|e| {
             GatewayError::Configuration(format!("failed to serialize approval: {e}"))
         })?;
@@ -6902,7 +6950,7 @@ impl Gateway {
 
         self.emit_stream_event(StreamEvent {
             id: uuid::Uuid::now_v7().to_string(),
-            timestamp: Utc::now(),
+            timestamp: self.clock.now(),
             event_type: StreamEventType::ApprovalResolved {
                 approval_id: id.to_string(),
                 decision: "rejected".to_string(),
@@ -6944,12 +6992,12 @@ impl Gateway {
         }
 
         // Check if expired
-        if record.expires_at <= Utc::now() {
+        if record.expires_at <= self.clock.now() {
             return Ok(false);
         }
 
         // Compute HMAC signature for the URLs (includes expires_at)
-        let expires_ts = record.expires_at.timestamp();
+        let expires_ts = approval_signature_expiry(record.expires_at);
         let (sig, kid) = self.compute_approval_sig(namespace, tenant, id, expires_ts);
 
         let external_url = self
@@ -6983,7 +7031,8 @@ impl Gateway {
 
         // Look up the notification provider from the rule that created this approval.
         // We re-evaluate rules to find the matching RequestApproval rule.
-        let mut eval_ctx = EvalContext::new(&record.action, self.state.as_ref(), &self.environment);
+        let mut eval_ctx = EvalContext::new(&record.action, self.state.as_ref(), &self.environment)
+            .with_now(self.clock.now());
         if let Some(ref emb) = self.embedding {
             eval_ctx = eval_ctx.with_embedding(Arc::clone(emb));
         }
@@ -7048,7 +7097,7 @@ impl Gateway {
         let updated_encrypted = self.encrypt_state_value(&updated_json)?;
 
         // Preserve the original TTL by computing remaining time
-        let remaining = updated.expires_at - Utc::now();
+        let remaining = updated.expires_at - self.clock.now();
         #[allow(clippy::cast_sign_loss)]
         let ttl = if remaining.num_seconds() > 0 {
             Some(Duration::from_secs(remaining.num_seconds() as u64))
@@ -7182,6 +7231,11 @@ impl Gateway {
                 "bridge: chain → task projection failed",
             );
         }
+    }
+
+    /// Shared clock used by gateway decisions and execution timers.
+    pub fn clock(&self) -> Arc<dyn acteon_time::Clock> {
+        Arc::clone(&self.clock)
     }
 
     /// Get a clone of the broadcast sender for SSE event streaming.

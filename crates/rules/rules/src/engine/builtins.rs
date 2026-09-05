@@ -8,6 +8,15 @@ use crate::error::RuleError;
 
 /// Dispatch a built-in function call by name.
 pub fn call_builtin(name: &str, args: &[Value]) -> Result<Value, RuleError> {
+    call_builtin_at(name, args, Utc::now())
+}
+
+/// Evaluate functions against the rule context's time snapshot.
+pub fn call_builtin_at(
+    name: &str,
+    args: &[Value],
+    now: chrono::DateTime<Utc>,
+) -> Result<Value, RuleError> {
     match name {
         "len" => builtin_len(args),
         "lower" => builtin_lower(args),
@@ -16,7 +25,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Result<Value, RuleError> {
         "starts_with" => builtin_starts_with(args),
         "ends_with" => builtin_ends_with(args),
         "matches" => builtin_matches(args),
-        "now" => builtin_now(args),
+        "now" => builtin_now(args, now),
         "duration" => builtin_duration(args),
         "format" => builtin_format(args),
         "abs" => builtin_abs(args),
@@ -138,9 +147,9 @@ fn builtin_matches(args: &[Value]) -> Result<Value, RuleError> {
 }
 
 /// `now()` - returns the current Unix timestamp in seconds.
-fn builtin_now(args: &[Value]) -> Result<Value, RuleError> {
+fn builtin_now(args: &[Value], now: chrono::DateTime<Utc>) -> Result<Value, RuleError> {
     expect_args("now", args, 0)?;
-    Ok(Value::Int(Utc::now().timestamp()))
+    Ok(Value::Int(now.timestamp()))
 }
 
 /// `duration(seconds)` - returns a duration value in seconds (identity for numeric).

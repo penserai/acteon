@@ -122,6 +122,7 @@ impl Default for CircuitData {
 /// - `HalfOpen` -> `Closed` after consecutive successes reach the threshold
 /// - `HalfOpen` -> `Open` on any failure
 pub struct CircuitBreaker {
+    clock: Arc<dyn acteon_time::Clock>,
     provider: String,
     config: CircuitBreakerConfig,
     store: Arc<dyn StateStore>,
@@ -137,6 +138,7 @@ impl CircuitBreaker {
         lock: Arc<dyn DistributedLock>,
     ) -> Self {
         Self {
+            clock: Arc::new(acteon_time::SystemClock::default()),
             provider: provider.into(),
             config,
             store,
@@ -218,14 +220,14 @@ impl CircuitBreaker {
         }
     }
 
-    fn now_ms() -> i64 {
-        chrono::Utc::now().timestamp_millis()
+    fn now_ms(&self) -> i64 {
+        self.clock.now().timestamp_millis()
     }
 
     /// Check whether a probe is currently active (not stale).
-    fn is_probe_active(data: &CircuitData) -> bool {
+    fn is_probe_active(&self, data: &CircuitData) -> bool {
         data.probe_started_at_ms
-            .is_some_and(|t| (Self::now_ms() - t) < PROBE_TIMEOUT_MS)
+            .is_some_and(|t| (self.now_ms() - t) < PROBE_TIMEOUT_MS)
     }
 
     /// Acquire permission to send a request through this circuit breaker.
@@ -257,7 +259,7 @@ impl CircuitBreaker {
 
         match data.state {
             CircuitState::Open => {
-                let now = Self::now_ms();
+                let now = self.now_ms();
                 let elapsed_ms = data
                     .last_failure_time_ms
                     .map_or(i64::MAX, |t| (now - t).max(0));
@@ -282,12 +284,12 @@ impl CircuitBreaker {
                 }
             }
             CircuitState::HalfOpen => {
-                if Self::is_probe_active(&data) {
+                if self.is_probe_active(&data) {
                     // Probe in flight — reject.
                     result = (CircuitState::Open, None);
                 } else {
                     // No active probe — allow this request as the new probe.
-                    data.probe_started_at_ms = Some(Self::now_ms());
+                    data.probe_started_at_ms = Some(self.now_ms());
                     self.save_state(&data).await;
                     result = (CircuitState::HalfOpen, None);
                 }
@@ -352,7 +354,7 @@ impl CircuitBreaker {
         let guard = self.acquire_mutation_lock().await?;
 
         let mut data = self.load_state().await;
-        let now = Self::now_ms();
+        let now = self.now_ms();
         let transition;
 
         match data.state {
@@ -422,7 +424,7 @@ impl CircuitBreaker {
                 state: CircuitState::Open,
                 consecutive_failures: self.config.failure_threshold,
                 consecutive_successes: 0,
-                last_failure_time_ms: Some(Self::now_ms()),
+                last_failure_time_ms: Some(self.now_ms()),
                 probe_started_at_ms: None,
             };
             self.save_state(&data).await;
@@ -455,6 +457,7 @@ impl std::fmt::Debug for CircuitBreaker {
 /// their own internal mutability through the shared [`StateStore`] and
 /// [`DistributedLock`].
 pub struct CircuitBreakerRegistry {
+    clock: Arc<dyn acteon_time::Clock>,
     breakers: HashMap<String, CircuitBreaker>,
     store: Arc<dyn StateStore>,
     lock: Arc<dyn DistributedLock>,
@@ -464,24 +467,34 @@ impl CircuitBreakerRegistry {
     /// Create an empty registry backed by the given state store and lock.
     pub fn new(store: Arc<dyn StateStore>, lock: Arc<dyn DistributedLock>) -> Self {
         Self {
+            clock: Arc::new(acteon_time::SystemClock::default()),
             breakers: HashMap::new(),
             store,
             lock,
         }
     }
 
+    /// Use a shared clock for recovery and probe expiration.
+    #[must_use]
+    pub fn clock(mut self, clock: Arc<dyn acteon_time::Clock>) -> Self {
+        for breaker in self.breakers.values_mut() {
+            breaker.clock = Arc::clone(&clock);
+        }
+        self.clock = clock;
+        self
+    }
+
     /// Register a circuit breaker for a provider.
     pub fn register(&mut self, provider: impl Into<String>, config: CircuitBreakerConfig) {
         let name = provider.into();
-        self.breakers.insert(
-            name.clone(),
-            CircuitBreaker::new(
-                name,
-                config,
-                Arc::clone(&self.store),
-                Arc::clone(&self.lock),
-            ),
+        let mut breaker = CircuitBreaker::new(
+            name,
+            config,
+            Arc::clone(&self.store),
+            Arc::clone(&self.lock),
         );
+        breaker.clock = Arc::clone(&self.clock);
+        self.breakers.insert(breaker.provider.clone(), breaker);
     }
 
     /// Look up the circuit breaker for a provider.

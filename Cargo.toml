@@ -4,6 +4,7 @@ members = [
     "crates/http",
     # Core components
     "crates/core",
+    "crates/time",
     "crates/client",
     "crates/server",
     "crates/gateway",
@@ -87,6 +88,7 @@ rust-version = "1.88"
 [workspace.dependencies]
 # Internal crates - Core
 acteon-core = { path = "crates/core" }
+acteon-time = { path = "crates/time" }
 acteon-client = { path = "crates/client" }
 acteon-server = { path = "crates/server" }
 acteon-gateway = { path = "crates/gateway" }

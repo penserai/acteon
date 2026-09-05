@@ -2,6 +2,11 @@
 
 ## Unreleased — rehabilitation
 
+- Add shared gateway/executor/memory clocks, cancel-safe virtual timers, and a
+  bounded deterministic scheduler with a replayable deadline safety suite.
+  Reject approvals at exact expiry and memory lock acquisition after its wait
+  deadline; prevent TTL eviction from deleting a replacement. Rule `now()` uses
+  the evaluation time snapshot. Existing constructors keep production clocks.
 - Add version 2 scenario evaluations with repeated seeded trials, weighted
   diagnostic scorecards, mandatory safety gates, exact runner fingerprints, and
   replay validation. Exercise incident approval/deduplication, refund ACK loss,

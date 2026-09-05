@@ -1,6 +1,6 @@
 //! Versioned, replayable semantic scenarios over production gateway boundaries.
-//! Logical sequence numbers encode causality. Wall-clock TTLs and OS scheduling
-//! are not virtualized; volatile IDs/timestamps never substitute for invariants.
+//! Logical sequence numbers encode causality. The deadline suite uses explicit
+//! virtual time; other suites use real clocks. Volatile IDs never replace checks.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,6 +15,7 @@ use crate::{
     StateBackendConfig,
 };
 
+mod deadlines;
 pub mod evaluation;
 mod portfolio;
 
@@ -47,6 +48,7 @@ pub enum Scenario {
     IncidentResponse,
     RefundFulfillment,
     PromptInjection,
+    DeadlineSafety,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -229,6 +231,12 @@ pub async fn run(manifest: ScenarioManifest) -> Result<ScenarioReport, Simulatio
             return Err(SimulationError::Configuration("duplicate scenario".into()));
         }
     }
+    if manifest.backend != Backend::Memory && manifest.scenarios.contains(&Scenario::DeadlineSafety)
+    {
+        return Err(SimulationError::Configuration(
+            "deadline_safety requires the memory backend".into(),
+        ));
+    }
     let digest = Sha256::digest(serde_json::to_vec(&manifest).expect("manifest serializes"));
     let mut report = ScenarioReport {
         schema_version: 1,
@@ -249,6 +257,7 @@ pub async fn run(manifest: ScenarioManifest) -> Result<ScenarioReport, Simulatio
             Scenario::IncidentResponse => portfolio::incident(&mut report).await,
             Scenario::RefundFulfillment => portfolio::refund(&mut report).await,
             Scenario::PromptInjection => portfolio::injection(&mut report).await,
+            Scenario::DeadlineSafety => deadlines::run(&mut report).await,
         };
         if let Err(error) = result {
             report.check(scenario, "scenario completed", false, error.to_string());

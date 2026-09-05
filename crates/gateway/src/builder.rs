@@ -29,6 +29,7 @@ use crate::metrics::GatewayMetrics;
 /// be supplied. All other fields have sensible defaults (empty rules, empty
 /// providers, default executor config).
 pub struct GatewayBuilder {
+    clock: Arc<dyn acteon_time::Clock>,
     state: Option<Arc<dyn StateStore>>,
     lock: Option<Arc<dyn DistributedLock>>,
     rules: Vec<Rule>,
@@ -75,6 +76,7 @@ impl GatewayBuilder {
     /// Create a new builder with all optional fields set to their defaults.
     pub fn new() -> Self {
         Self {
+            clock: Arc::new(acteon_time::SystemClock::default()),
             state: None,
             lock: None,
             rules: Vec::new(),
@@ -120,6 +122,16 @@ impl GatewayBuilder {
             max_inline_bytes: 5_242_880,
             max_attachments_per_action: 10,
         }
+    }
+
+    /// Set the shared clock for gateway decisions and executor timers.
+    ///
+    /// Memory state and locks must be constructed with the same clock. Remote
+    /// database TTLs keep their server clocks and cannot be virtualized by this.
+    #[must_use]
+    pub fn clock(mut self, clock: Arc<dyn acteon_time::Clock>) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// Set the state store implementation.
@@ -753,10 +765,12 @@ impl GatewayBuilder {
             acteon_executor::ActionExecutor::new(self.executor_config)
         };
 
+        let executor = executor.clock(Arc::clone(&self.clock));
+
         // Use provided group manager or create a new one.
         let group_manager = self
             .group_manager
-            .unwrap_or_else(|| Arc::new(GroupManager::new()));
+            .unwrap_or_else(|| Arc::new(GroupManager::with_clock(Arc::clone(&self.clock))));
 
         // Use provided key set, or wrap a single secret, or generate a random key.
         let approval_keys = if let Some(keys) = self.approval_keys {
@@ -779,9 +793,13 @@ impl GatewayBuilder {
             &self.providers,
             Arc::clone(&state),
             Arc::clone(&lock),
-        )?;
+        )?
+        .map(|registry| registry.clock(Arc::clone(&self.clock)));
 
-        let quota_policies = Self::validate_and_wrap_quota_policies(self.quota_policies)?;
+        let mut quota_policies = Self::validate_and_wrap_quota_policies(self.quota_policies)?;
+        for bucket in quota_policies.values_mut() {
+            bucket.cached_at = self.clock.now();
+        }
 
         // Validate the sub-chain reference graph (dangling refs + cycles).
         let chain_graph_errors = acteon_core::validate_chain_graph(&self.chains);
@@ -831,6 +849,7 @@ impl GatewayBuilder {
         };
 
         Ok(Gateway {
+            clock: self.clock,
             state,
             lock,
             engine,

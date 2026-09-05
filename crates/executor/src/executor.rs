@@ -20,6 +20,7 @@ use crate::dlq::DeadLetterSink;
 /// When a dead-letter queue sink is configured, actions that exhaust all retries
 /// are pushed to the sink before returning [`ActionOutcome::Failed`].
 pub struct ActionExecutor {
+    clock: Arc<dyn acteon_time::Clock>,
     config: ExecutorConfig,
     semaphore: Arc<Semaphore>,
     dlq: Option<Arc<dyn DeadLetterSink>>,
@@ -38,6 +39,7 @@ impl ActionExecutor {
     pub fn new(config: ExecutorConfig) -> Self {
         let semaphore = Arc::new(Semaphore::new(config.max_concurrent));
         Self {
+            clock: Arc::new(acteon_time::SystemClock::default()),
             config,
             semaphore,
             dlq: None,
@@ -50,10 +52,18 @@ impl ActionExecutor {
     pub fn with_dlq(config: ExecutorConfig, dlq: Arc<dyn DeadLetterSink>) -> Self {
         let semaphore = Arc::new(Semaphore::new(config.max_concurrent));
         Self {
+            clock: Arc::new(acteon_time::SystemClock::default()),
             config,
             semaphore,
             dlq: Some(dlq),
         }
+    }
+
+    /// Use a shared clock for execution deadlines and retry delays.
+    #[must_use]
+    pub fn clock(mut self, clock: Arc<dyn acteon_time::Clock>) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// Return a reference to the executor configuration.
@@ -142,7 +152,8 @@ impl ActionExecutor {
                 "executing action"
             );
 
-            let result = tokio::time::timeout(
+            let result = acteon_time::timeout(
+                self.clock.as_ref(),
                 self.config.execution_timeout,
                 match ctx {
                     Some(c) => provider.execute_with_context(action, c),
@@ -166,7 +177,7 @@ impl ActionExecutor {
                             delay_ms = %delay.as_millis(),
                             "retryable error, will retry"
                         );
-                        tokio::time::sleep(delay).await;
+                        self.clock.sleep(delay).await;
                         last_error = Some(err);
                     } else {
                         // Non-retryable or final attempt.
@@ -203,7 +214,7 @@ impl ActionExecutor {
                             delay_ms = %delay.as_millis(),
                             "execution timed out, will retry"
                         );
-                        tokio::time::sleep(delay).await;
+                        self.clock.sleep(delay).await;
                         last_error = Some(err);
                     } else {
                         let attempts = attempt + 1;

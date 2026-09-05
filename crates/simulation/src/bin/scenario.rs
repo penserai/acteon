@@ -105,19 +105,19 @@ async fn suite(input: serde_json::Value, replay: bool, output: &Path) -> Result<
     } else {
         None
     };
-    if previous
-        .as_ref()
-        .is_some_and(|previous| !previous.consistent())
-    {
-        return Err("saved evaluation has inconsistent identities, scores, or evidence".into());
-    }
     if let Some(previous) = &previous
-        && previous.provenance != evaluation::Provenance::capture()?
+        && previous.provenance != evaluation::Provenance::for_manifest(&previous.manifest)?
     {
         return Err(
             "evaluation runner provenance differs; replay with the original binary and Cargo.lock"
                 .into(),
         );
+    }
+    if previous
+        .as_ref()
+        .is_some_and(|previous| !previous.consistent())
+    {
+        return Err("saved evaluation has inconsistent identities, scores, or evidence".into());
     }
     let manifest = if let Some(previous) = &previous {
         previous.manifest.clone()

@@ -160,7 +160,7 @@ impl Gateway {
     /// via a dot-strict prefix match.
     #[must_use]
     pub fn check_silence(&self, action: &Action) -> Option<String> {
-        let now = Utc::now();
+        let now = self.clock.now();
         let silences = self.silences.read();
         let list = silences.get(action.namespace.as_str())?;
         let labels = action_labels(&action.metadata);
