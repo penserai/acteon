@@ -14,7 +14,8 @@ for its scope, grading contract, and the work that remains. Follow-ups add
 [clock injection and deadline safety evaluation](virtual-time.md), then
 [worker ticks and task lifecycle evaluation](worker-lifecycle.md).
 Later phases add [durable scheduling](durable-scheduling.md) and
-[worker queue recovery](queue-recovery.md).
+[worker queue recovery](queue-recovery.md), followed by
+[terminal worker-result handoffs](task-handoff-recovery.md).
 
 ## Implemented behavior
 

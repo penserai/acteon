@@ -14,6 +14,7 @@
 //! completion; tasks that drive workflow executions are routed to the
 //! workflow engine.
 
+mod handoff;
 mod recovery;
 
 use std::time::Duration;
@@ -23,7 +24,7 @@ use tracing::{debug, warn};
 
 use acteon_core::chain::WaitState;
 use acteon_core::{
-    Action, ChainStatus, DEFAULT_TASK_LEASE_SECONDS, ExecutionEventType, MAX_TASK_LEASE_SECONDS,
+    ChainStatus, DEFAULT_TASK_LEASE_SECONDS, ExecutionEventType, MAX_TASK_LEASE_SECONDS,
     StepResult, WorkerTask, WorkerTaskStatus,
 };
 use acteon_state::{CasResult, KeyKind, StateKey};
@@ -115,6 +116,17 @@ fn validate_worker_scope(
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
         || task.max_attempts == 0
+        || task.handoff.as_ref().is_some_and(|handoff| {
+            task.status.is_active()
+                || handoff.delivery_id.is_empty()
+                || (handoff.completed_at.is_some()
+                    && (handoff.pending()
+                        || handoff.lease_token.is_some()
+                        || handoff.lease_expires_at.is_some()))
+                || (handoff.chain_pending && (task.chain_id.is_none() || task.step_index.is_none()))
+                || (handoff.workflow_pending && task.workflow_execution_id.is_none())
+                || (handoff.dlq_pending && task.status != WorkerTaskStatus::Failed)
+        })
     {
         return Err(GatewayError::TaskQueue(
             "invalid worker task scope or attempt budget".into(),
@@ -135,6 +147,9 @@ impl Gateway {
             || task.worker_id.is_some()
             || task.result.is_some()
             || task.error.is_some()
+            || task.handoff.is_some()
+            || task.chain_id.is_some() != task.step_index.is_some()
+            || task.chain_id.is_some() != task.step_name.is_some()
         {
             return Err(GatewayError::TaskQueue(
                 "enqueue requires a new pending task".into(),
@@ -411,11 +426,7 @@ impl Gateway {
             })
             .await?;
 
-        if task.chain_id.is_some() {
-            self.resume_chain_worker_step(&task, Ok(task.result.clone().unwrap_or_default()))
-                .await;
-        }
-        self.route_workflow_task_result(&task).await;
+        self.try_worker_handoff(&task).await;
         Ok(task)
     }
 
@@ -457,12 +468,7 @@ impl Gateway {
                 "worker task failed; re-queued with backoff"
             );
         } else {
-            self.push_task_to_dlq(&task).await;
-            if task.chain_id.is_some() {
-                self.resume_chain_worker_step(&task, Err(error.to_owned()))
-                    .await;
-            }
-            self.route_workflow_task_result(&task).await;
+            self.try_worker_handoff(&task).await;
         }
         Ok(task)
     }
@@ -534,7 +540,11 @@ impl Gateway {
 
             mutate(&mut task, now);
             let terminal = !task.status.is_active();
-            let ttl = terminal.then_some(COMPLETED_TASK_TTL);
+            let ttl = if terminal {
+                self.prepare_worker_handoff(&mut task)
+            } else {
+                None
+            };
             let json = self.encode_worker_task(&task)?;
             match self
                 .state
@@ -603,87 +613,40 @@ impl Gateway {
         task.lease_expires_at = None;
         task.worker_id = None;
         task.updated_at = now;
+        let ttl = if exhausted {
+            self.prepare_worker_handoff(&mut task)
+        } else {
+            None
+        };
         let json = self.encode_worker_task(&task)?;
         let key = task_key(&task.namespace, &task.tenant, &task.task_id);
         if self
             .state
-            .compare_and_swap(
-                &key,
-                version,
-                &json,
-                exhausted.then_some(COMPLETED_TASK_TTL),
-            )
+            .compare_and_swap(&key, version, &json, ttl)
             .await?
             == CasResult::Ok
             && exhausted
         {
             self.remove_worker_indexes(&task).await;
-            self.push_task_to_dlq(&task).await;
-            if task.chain_id.is_some() {
-                self.resume_chain_worker_step(&task, Err(task.error.clone().unwrap_or_default()))
-                    .await;
-            }
-            self.route_workflow_task_result(&task).await;
+            self.try_worker_handoff(&task).await;
         }
         Ok(())
     }
 
-    /// Push a terminally-failed task to the dead letter queue (best-effort).
-    async fn push_task_to_dlq(&self, task: &WorkerTask) {
-        if let Some(ref dlq) = self.dlq {
-            let action = Action::new(
-                task.namespace.as_str(),
-                task.tenant.as_str(),
-                format!("queue:{}", task.queue),
-                &task.action_type,
-                task.payload.clone(),
-            );
-            if dlq
-                .push(
-                    action,
-                    task.error
-                        .clone()
-                        .unwrap_or_else(|| "worker task failed".into()),
-                    task.attempt,
-                )
-                .await
-                .is_err()
-            {
-                tracing::error!("failed action was not retained in dead-letter storage");
-            }
-        }
-    }
-
-    /// Route a settled task to the workflow engine when it drives a
-    /// workflow execution. No-op for plain queue tasks.
-    pub(crate) async fn route_workflow_task_result(&self, task: &WorkerTask) {
-        if task.workflow_execution_id.is_some() {
-            self.settle_workflow_task(task).await;
-        }
-    }
-
-    /// Resume the chain that owns a worker-step task with the task's
-    /// terminal outcome. Best-effort: the chain may have been cancelled or
-    /// timed out while the worker ran.
+    /// Apply a worker result under the receiving chain's lock. Failures leave
+    /// the source task's durable handoff pending for reconciliation.
     pub(crate) async fn resume_chain_worker_step(
         &self,
         task: &WorkerTask,
         outcome: Result<serde_json::Value, String>,
-    ) {
+    ) -> Result<(), GatewayError> {
         let (Some(chain_id), Some(step_idx)) = (task.chain_id.as_deref(), task.step_index) else {
-            return;
+            return Err(GatewayError::TaskQueue(
+                "worker chain handoff has incomplete identity".into(),
+            ));
         };
-        if let Err(e) = self
-            .resume_chain_worker_step_inner(task, chain_id, step_idx, outcome)
+        self.resume_chain_worker_step_inner(task, chain_id, step_idx, outcome)
             .await
-        {
-            warn!(
-                chain_id = %chain_id,
-                task_id = %task.task_id,
-                error = %e,
-                "failed to resume chain from worker task result"
-            );
-        }
     }
 
     #[allow(clippy::too_many_lines)]
@@ -705,10 +668,25 @@ impl Gateway {
             .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
 
         let result: Result<(), GatewayError> = async {
-            let Some(mut chain_state) = self.get_chain_status(namespace, tenant, chain_id).await?
-            else {
-                return Ok(());
+            let key = StateKey::new(namespace, tenant, KeyKind::Chain, chain_id);
+            let Some((raw, version)) = self.state.get_versioned(&key).await? else {
+                return Err(GatewayError::ChainError(
+                    "worker handoff target is missing".into(),
+                ));
             };
+            let clear = self.decrypt_state_value(&raw)?;
+            let mut chain_state: acteon_core::ChainState =
+                serde_json::from_str(&clear).map_err(|e| {
+                    GatewayError::ChainError(format!("invalid worker handoff receiver: {e}"))
+                })?;
+            if chain_state.namespace != namespace
+                || chain_state.tenant != tenant
+                || chain_state.chain_id != chain_id
+            {
+                return Err(GatewayError::ChainError(
+                    "worker chain handoff scope mismatch".into(),
+                ));
+            }
 
             // Only resume when the chain is still waiting on this exact task.
             let waiting_on_this_task = matches!(
@@ -722,6 +700,29 @@ impl Gateway {
                     task_id = %task.task_id,
                     "chain no longer waiting on this task; skipping resume"
                 );
+                // The previous delivery may have saved the next step and then
+                // failed before publishing its ready index. Repair from the
+                // current receiver state without applying the old result again.
+                if chain_state.status == ChainStatus::Running {
+                    let config = self.execution_config(&chain_state).await?.ok_or_else(|| {
+                        GatewayError::ChainError(
+                            "chain configuration missing during handoff repair".into(),
+                        )
+                    })?;
+                    let step = config.steps.get(chain_state.current_step).ok_or_else(|| {
+                        GatewayError::ChainError("invalid chain step during handoff repair".into())
+                    })?;
+                    let delay = i64::try_from(step.delay_seconds.unwrap_or(0))
+                        .unwrap_or(i64::MAX)
+                        .saturating_mul(1000);
+                    let ready_at = chain_state
+                        .updated_at
+                        .timestamp_millis()
+                        .saturating_add(delay);
+                    let pending =
+                        StateKey::new(namespace, tenant, KeyKind::PendingChains, chain_id);
+                    self.state.index_chain_ready(&pending, ready_at).await?;
+                }
                 return Ok(());
             }
 
@@ -731,8 +732,10 @@ impl Gateway {
                     chain_state.chain_name
                 ))
             })?;
-            if step_idx >= chain_config.steps.len() {
-                return Ok(());
+            if step_idx >= chain_config.steps.len() || step_idx >= chain_state.step_results.len() {
+                return Err(GatewayError::ChainError(
+                    "worker step is missing from chain configuration".into(),
+                ));
             }
             let step_config = chain_config.steps[step_idx].clone();
             let step_index_map = chain_config.step_index_map();
@@ -778,6 +781,7 @@ impl Gateway {
                         step_result,
                         &step_index_map,
                         "chain_step_completed",
+                        Some(version),
                     )
                     .await
                 }
@@ -809,6 +813,7 @@ impl Gateway {
                         &step_config,
                         step_result,
                         &step_index_map,
+                        Some(version),
                     )
                     .await
                 }

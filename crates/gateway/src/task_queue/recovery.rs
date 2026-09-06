@@ -8,6 +8,55 @@ use super::{
 };
 
 impl Gateway {
+    /// Idempotently publish a continuation whose identity is already stored in
+    /// its receiving workflow. A lost create acknowledgement must not reset it.
+    pub(crate) async fn ensure_worker_task(
+        &self,
+        expected: acteon_core::WorkerTask,
+    ) -> Result<(), GatewayError> {
+        if self
+            .get_worker_task(&expected.namespace, &expected.tenant, &expected.task_id)
+            .await?
+            .is_none()
+            && let Err(error) = self.enqueue_worker_task(expected.clone()).await
+            && self
+                .get_worker_task(&expected.namespace, &expected.tenant, &expected.task_id)
+                .await?
+                .is_none()
+        {
+            return Err(error);
+        }
+        let current = self
+            .get_worker_task(&expected.namespace, &expected.tenant, &expected.task_id)
+            .await?
+            .ok_or_else(|| GatewayError::TaskQueue("continuation task disappeared".into()))?;
+        if current.queue != expected.queue
+            || current.action_type != expected.action_type
+            || current.workflow_execution_id != expected.workflow_execution_id
+            || current.chain_id != expected.chain_id
+            || current.payload != expected.payload
+        {
+            return Err(GatewayError::TaskQueue(
+                "continuation task identity mismatch".into(),
+            ));
+        }
+        if current.status.is_active() {
+            self.state
+                .set(
+                    &pending_key(
+                        &current.namespace,
+                        &current.tenant,
+                        &current.queue,
+                        &current.task_id,
+                    ),
+                    "active",
+                    None,
+                )
+                .await?;
+        }
+        Ok(())
+    }
+
     /// Reconcile queue indexes across scopes. Active records remain discoverable
     /// through leases and retries; terminal and orphaned hints are removed.
     /// Returns the number of active records successfully reindexed. Invalid or

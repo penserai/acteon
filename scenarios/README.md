@@ -24,7 +24,8 @@ reports; seeded RNG output is not promised stable across dependency upgrades.
 
 The script runs `rehabilitation.json` (schema 1, the six kernel cases below) and
 `portfolio.json` (schema 2, three product workflows with three trials each), and
-`queues.json` (schema 2, three queue recovery trials) on every backend.
+`queues.json` (schema 2, three queue recovery trials), and `handoffs.json`
+(schema 2, three terminal-result recovery trials) on every backend.
 Outputs are in `scenario-results/<backend>/<suite>/{first,replay}/`.
 
 Run only the portfolio using the already-built executable:
@@ -36,7 +37,7 @@ target/debug/acteon-scenario --replay scenario-results/portfolio/report.json --o
 
 Schema 2 accepts `schema_version`, `seed`, `backend`, `trials` (1–32), and
 `scenarios`: `incident_response`, `refund_fulfillment`, `prompt_injection`,
-`queue_recovery`, `deadline_safety`, `worker_lifecycle`, or `durable_scheduling`. These last three
+`queue_recovery`, `task_handoff_recovery`, `deadline_safety`, `worker_lifecycle`, or `durable_scheduling`. These last three
 require memory.
 It derives independent trial/scenario seeds, reports fixed weighted dimensions
 and mandatory safety gates, and rejects missing/duplicate grading evidence.
@@ -76,8 +77,8 @@ See [clock injection and deadline evaluation](../docs/virtual-time.md).
 
 The memory-only `workers.json` suite adds task timestamps, heartbeat/staleness
 boundaries, audit/SSE emission, explicit group/timeout/scheduled ticks, and polling
-cadence. CI runs all six memory suites and replays them. Grader `portfolio-v5`
-adds queue recovery to the existing rubrics; old reports still require
+cadence. CI runs all seven memory suites and replays them. Grader `portfolio-v6`
+adds terminal handoff recovery to the existing rubrics; old reports still require
 their preserved runner.
 See [worker lifecycle evaluation](../docs/worker-lifecycle.md).
 
@@ -110,3 +111,10 @@ and checks duplicate-ID ownership, queue/tenant scope, terminal cleanup, and
 payload encryption. Three negative mutations must fail mandatory gates. Its
 real-clock evidence is semantic; exact expiry and delayed-poll races use separate
 manual-clock contracts. See [worker queue recovery](../docs/queue-recovery.md).
+
+The all-backend `handoffs.json` suite covers lost terminal-write acknowledgement,
+receiver outages, chain discovery repair, DLQ acknowledgement loss, scoped
+receivers, and encrypted delivery progress. Negative mutations remove repair,
+acknowledge an undelivered result, or remove downstream deduplication. See
+[terminal handoff recovery](../docs/task-handoff-recovery.md) for the contract
+and remaining evidence gaps. CI now retains fifteen suite/backend replay pairs.

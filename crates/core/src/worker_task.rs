@@ -33,6 +33,30 @@ pub enum WorkerTaskStatus {
     Cancelled,
 }
 
+/// Durable delivery progress for a terminal worker result. Stored atomically
+/// with the result; unfinished handoffs have no record expiry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkerTaskHandoff {
+    /// Stable identity for downstream deduplication across retries.
+    pub delivery_id: String,
+    pub chain_pending: bool,
+    pub workflow_pending: bool,
+    pub dlq_pending: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_expires_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+impl WorkerTaskHandoff {
+    #[must_use]
+    pub fn pending(&self) -> bool {
+        self.chain_pending || self.workflow_pending || self.dlq_pending
+    }
+}
+
 impl WorkerTaskStatus {
     /// Returns `true` for statuses where the task can still make progress.
     #[must_use]
@@ -95,6 +119,10 @@ pub struct WorkerTask {
     /// Workflow execution this task drives, when it is a workflow task.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow_execution_id: Option<String>,
+    /// Internal delivery progress; absent on active and legacy task records.
+    /// Worker HTTP responses omit this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff: Option<WorkerTaskHandoff>,
     /// When the task was enqueued.
     pub created_at: DateTime<Utc>,
     /// When the task was last updated.
@@ -144,6 +172,7 @@ impl WorkerTask {
             step_index: None,
             step_name: None,
             workflow_execution_id: None,
+            handoff: None,
             created_at: now,
             updated_at: now,
         }

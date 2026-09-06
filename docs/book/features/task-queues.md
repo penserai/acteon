@@ -125,9 +125,12 @@ Scaling is horizontal: add more workers polling the same queue.
   tasks. Enqueue never overwrites an existing task ID.
 - Configured payload encryption covers stored queue inputs and results. Upgrade
   with old queue consumers stopped, then reconcile before resuming workers.
-- Terminal task persistence and workflow/chain/DLQ handoff are separate writes;
-  that handoff still needs recovery after a crash. External handlers need
-  downstream idempotency where repeated effects are unacceptable.
+- Terminal results retain durable handoff progress until their workflow, chain,
+  and configured DLQ destinations acknowledge delivery. Unfinished handoffs do
+  not expire; the normal terminal TTL starts after delivery finishes. External
+  handlers and DLQ sinks need downstream idempotency where repeats are unacceptable.
 
 See [worker queue recovery](../../queue-recovery.md) for migration details,
 validation rules, scan costs, and fault-injection evidence.
+See [terminal handoff recovery](../../task-handoff-recovery.md) for acknowledgement,
+recipient repair, and DLQ durability requirements.

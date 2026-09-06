@@ -11,6 +11,8 @@
 //! deferred until the local lock is released, so parent/child lock pairs
 //! are never held simultaneously.
 
+mod recovery;
+
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -21,7 +23,7 @@ use acteon_core::{
     WorkerTask, WorkerTaskStatus, WorkflowAwait, WorkflowCheckpoint, WorkflowChildRef,
     WorkflowDirective, WorkflowExecution, WorkflowStatus,
 };
-use acteon_state::{KeyKind, StateKey};
+use acteon_state::{CasResult, KeyKind, StateKey};
 
 use crate::error::GatewayError;
 use crate::gateway::Gateway;
@@ -118,12 +120,11 @@ impl Gateway {
         .await;
 
         // Persist the execution BEFORE the task becomes pollable: a fast
-        // worker settling the first continuation must find the record. (The
-        // reverse order silently wedges the execution; a crash between
-        // persist and enqueue is surfaced as a start error instead.)
+        // worker settling the first continuation must find the record. A
+        // publication failure leaves the chosen task ID available for repair.
         let task = self.build_continuation_task(&exec);
         exec.current_task_id = Some(task.task_id.clone());
-        self.persist_workflow(&exec, None).await?;
+        self.persist_workflow(&mut exec, None).await?;
         self.enqueue_worker_task(task).await?;
         debug!(
             execution_id = %exec.execution_id,
@@ -193,7 +194,7 @@ impl Gateway {
                 execution_id: child_id.clone(),
                 parent_close_policy,
             });
-            self.persist_workflow(&parent, None).await?;
+            self.persist_workflow(&mut parent, None).await?;
             self.append_execution_history(
                 namespace,
                 tenant,
@@ -224,7 +225,7 @@ impl Gateway {
             // lock does not cover the child's settle path.
             let task = self.build_continuation_task(&child);
             child.current_task_id = Some(task.task_id.clone());
-            self.persist_workflow(&child, None).await?;
+            self.persist_workflow(&mut child, None).await?;
             self.enqueue_worker_task(task).await?;
             Ok((child_id, true))
         }
@@ -325,7 +326,7 @@ impl Gateway {
             let already = exec.checkpoint(name).is_some();
             let checkpoint = exec.record_checkpoint_at(name, data, self.clock.now());
             if !already {
-                self.persist_workflow(&exec, None).await?;
+                self.persist_workflow(&mut exec, None).await?;
                 self.append_execution_history(
                     namespace,
                     tenant,
@@ -359,6 +360,20 @@ impl Gateway {
         signal_name: &str,
         payload: serde_json::Value,
     ) -> Result<(), GatewayError> {
+        self.signal_workflow_delivery(namespace, tenant, execution_id, signal_name, payload, None)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn signal_workflow_delivery(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        execution_id: &str,
+        signal_name: &str,
+        payload: serde_json::Value,
+        delivery_id: Option<&str>,
+    ) -> Result<(), GatewayError> {
         if signal_name.is_empty() {
             return Err(GatewayError::TaskQueue(
                 "signal name must not be empty".into(),
@@ -372,11 +387,22 @@ impl Gateway {
                 .ok_or_else(|| {
                     GatewayError::TaskQueue(format!("workflow execution not found: {execution_id}"))
                 })?;
+            if !exec.status.is_active() && delivery_id.is_some() {
+                return Ok(());
+            }
             if !exec.status.is_active() {
                 return Err(GatewayError::TaskQueue(format!(
                     "workflow execution is not active (status: {:?})",
                     exec.status
                 )));
+            }
+
+            if let Some(id) = delivery_id {
+                if exec.received_signal_ids.iter().any(|seen| seen == id) {
+                    self.repair_workflow_discovery(&exec).await?;
+                    return Ok(());
+                }
+                exec.received_signal_ids.push(id.to_owned());
             }
 
             self.append_execution_history(
@@ -405,9 +431,7 @@ impl Gateway {
                     .state
                     .remove_timeout_index(&timer_key(namespace, tenant, execution_id))
                     .await;
-                let task_id = self.enqueue_workflow_continuation(&exec).await?;
-                exec.current_task_id = Some(task_id);
-                self.persist_workflow(&exec, None).await?;
+                self.enqueue_workflow_continuation(&mut exec).await?;
                 debug!(
                     execution_id,
                     signal_name, "workflow signal consumed; resumed"
@@ -419,7 +443,7 @@ impl Gateway {
                     received_at: self.clock.now(),
                 });
                 exec.updated_at = self.clock.now();
-                self.persist_workflow(&exec, None).await?;
+                self.persist_workflow(&mut exec, None).await?;
                 debug!(execution_id, signal_name, "workflow signal buffered");
             }
             Ok(())
@@ -457,6 +481,7 @@ impl Gateway {
                 )));
             }
             exec.status = WorkflowStatus::Cancelled;
+            exec.close_pending = true;
             exec.error.clone_from(&reason);
             exec.awaiting = None;
             exec.updated_at = self.clock.now();
@@ -464,8 +489,7 @@ impl Gateway {
                 .state
                 .remove_timeout_index(&timer_key(namespace, tenant, execution_id))
                 .await;
-            self.persist_workflow(&exec, Some(COMPLETED_WORKFLOW_TTL))
-                .await?;
+            self.persist_workflow(&mut exec, None).await?;
             self.append_execution_history(
                 namespace,
                 tenant,
@@ -489,17 +513,18 @@ impl Gateway {
             .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
 
         let (exec, follow_ups) = result?;
-        self.run_follow_ups(namespace, tenant, follow_ups).await;
+        self.run_follow_ups(namespace, tenant, follow_ups).await?;
+        self.finish_workflow_close(namespace, tenant, execution_id, exec.state_version)
+            .await?;
         Ok(exec)
     }
 
     /// Apply the outcome of a settled continuation task to its workflow
     /// execution. Called by the task queue when a workflow task completes
-    /// or fails terminally. Best-effort: errors are logged, never returned
-    /// to the worker that settled the task.
-    pub(crate) async fn settle_workflow_task(&self, task: &WorkerTask) {
+    /// or fails terminally. Errors leave the task handoff pending for retry.
+    pub(crate) async fn settle_workflow_task(&self, task: &WorkerTask) -> Result<(), GatewayError> {
         let Some(execution_id) = task.workflow_execution_id.clone() else {
-            return;
+            return Ok(());
         };
         let directive = match task.status {
             WorkerTaskStatus::Completed => {
@@ -523,25 +548,16 @@ impl Gateway {
                     .clone()
                     .unwrap_or_else(|| "workflow task failed".into()),
             },
-            _ => return,
+            _ => return Ok(()),
         };
-        if let Err(e) = self
-            .apply_workflow_directive(
-                &task.namespace,
-                &task.tenant,
-                &execution_id,
-                &task.task_id,
-                directive,
-            )
-            .await
-        {
-            warn!(
-                execution_id = %execution_id,
-                task_id = %task.task_id,
-                error = %e,
-                "failed to apply workflow directive"
-            );
-        }
+        self.apply_workflow_directive(
+            &task.namespace,
+            &task.tenant,
+            &execution_id,
+            &task.task_id,
+            directive,
+        )
+        .await
     }
 
     /// Apply a directive from a settled continuation task.
@@ -555,12 +571,16 @@ impl Gateway {
         directive: WorkflowDirective,
     ) -> Result<(), GatewayError> {
         let guard = self.lock_workflow(execution_id).await?;
+        let mut close_version = None;
         let result: Result<Vec<FollowUp>, GatewayError> = async {
             let Some(mut exec) = self.load_workflow(namespace, tenant, execution_id).await? else {
-                return Ok(Vec::new());
+                return Err(GatewayError::TaskQueue(
+                    "workflow handoff target is missing".into(),
+                ));
             };
             if !exec.status.is_active() {
-                return Ok(Vec::new());
+                close_version = exec.state_version;
+                return Ok(Self::terminal_workflow_follow_ups(&exec));
             }
             // Ignore directives from stale tasks (e.g. a lease expired,
             // the task was re-delivered, and the original worker finished
@@ -571,6 +591,7 @@ impl Gateway {
                     execution_id,
                     task_id, "stale workflow task settled; directive ignored"
                 );
+                self.repair_workflow_discovery(&exec).await?;
                 return Ok(Vec::new());
             }
             exec.current_task_id = None;
@@ -578,11 +599,12 @@ impl Gateway {
             match directive {
                 WorkflowDirective::Complete { result } => {
                     exec.status = WorkflowStatus::Completed;
+                    exec.close_pending = true;
                     exec.result = Some(result.clone());
                     exec.awaiting = None;
                     exec.updated_at = self.clock.now();
-                    self.persist_workflow(&exec, Some(COMPLETED_WORKFLOW_TTL))
-                        .await?;
+                    self.persist_workflow(&mut exec, None).await?;
+                    close_version = exec.state_version;
                     self.append_execution_history(
                         namespace,
                         tenant,
@@ -599,11 +621,12 @@ impl Gateway {
                 }
                 WorkflowDirective::Fail { error } => {
                     exec.status = WorkflowStatus::Failed;
+                    exec.close_pending = true;
                     exec.error = Some(error.clone());
                     exec.awaiting = None;
                     exec.updated_at = self.clock.now();
-                    self.persist_workflow(&exec, Some(COMPLETED_WORKFLOW_TTL))
-                        .await?;
+                    self.persist_workflow(&mut exec, None).await?;
+                    close_version = exec.state_version;
                     self.append_execution_history(
                         namespace,
                         tenant,
@@ -626,9 +649,7 @@ impl Gateway {
                 } => {
                     if exec.checkpoint(&checkpoint).is_some() {
                         // Already slept (replayed suspend); continue at once.
-                        let next = self.enqueue_workflow_continuation(&exec).await?;
-                        exec.current_task_id = Some(next);
-                        self.persist_workflow(&exec, None).await?;
+                        self.enqueue_workflow_continuation(&mut exec).await?;
                         return Ok(Vec::new());
                     }
                     #[allow(clippy::cast_possible_wrap)]
@@ -640,7 +661,7 @@ impl Gateway {
                     });
                     exec.status = WorkflowStatus::WaitingTimer;
                     exec.updated_at = self.clock.now();
-                    self.persist_workflow(&exec, None).await?;
+                    self.persist_workflow(&mut exec, None).await?;
                     self.state
                         .index_timeout(
                             &timer_key(namespace, tenant, execution_id),
@@ -667,18 +688,14 @@ impl Gateway {
                     timeout_seconds,
                 } => {
                     if exec.checkpoint(&checkpoint).is_some() {
-                        let next = self.enqueue_workflow_continuation(&exec).await?;
-                        exec.current_task_id = Some(next);
-                        self.persist_workflow(&exec, None).await?;
+                        self.enqueue_workflow_continuation(&mut exec).await?;
                         return Ok(Vec::new());
                     }
                     // A buffered signal satisfies the await immediately.
                     if let Some(buffered) = exec.take_buffered_signal(&name) {
                         exec.record_checkpoint_at(&checkpoint, buffered.payload, self.clock.now());
                         exec.status = WorkflowStatus::Running;
-                        let next = self.enqueue_workflow_continuation(&exec).await?;
-                        exec.current_task_id = Some(next);
-                        self.persist_workflow(&exec, None).await?;
+                        self.enqueue_workflow_continuation(&mut exec).await?;
                         self.append_execution_history(
                             namespace,
                             tenant,
@@ -702,7 +719,7 @@ impl Gateway {
                     });
                     exec.status = WorkflowStatus::WaitingSignal;
                     exec.updated_at = self.clock.now();
-                    self.persist_workflow(&exec, None).await?;
+                    self.persist_workflow(&mut exec, None).await?;
                     if let Some(t) = timeout_at {
                         self.state
                             .index_timeout(
@@ -736,7 +753,9 @@ impl Gateway {
             .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
 
         let follow_ups = result?;
-        self.run_follow_ups(namespace, tenant, follow_ups).await;
+        self.run_follow_ups(namespace, tenant, follow_ups).await?;
+        self.finish_workflow_close(namespace, tenant, execution_id, close_version)
+            .await?;
         Ok(())
     }
 
@@ -805,9 +824,7 @@ impl Gateway {
                     exec.awaiting = None;
                     exec.status = WorkflowStatus::Running;
                     let _ = self.state.remove_timeout_index(&timer).await;
-                    let next = self.enqueue_workflow_continuation(&exec).await?;
-                    exec.current_task_id = Some(next);
-                    self.persist_workflow(&exec, None).await?;
+                    self.enqueue_workflow_continuation(&mut exec).await?;
                     self.append_execution_history(
                         namespace,
                         tenant,
@@ -833,9 +850,7 @@ impl Gateway {
                     exec.awaiting = None;
                     exec.status = WorkflowStatus::Running;
                     let _ = self.state.remove_timeout_index(&timer).await;
-                    let next = self.enqueue_workflow_continuation(&exec).await?;
-                    exec.current_task_id = Some(next);
-                    self.persist_workflow(&exec, None).await?;
+                    self.enqueue_workflow_continuation(&mut exec).await?;
                     self.append_execution_history(
                         namespace,
                         tenant,
@@ -887,38 +902,76 @@ impl Gateway {
         follow_ups
     }
 
-    /// Apply cross-execution effects after the local lock is released.
-    async fn run_follow_ups(&self, namespace: &str, tenant: &str, follow_ups: Vec<FollowUp>) {
+    /// Apply cross-execution effects after releasing the receiver lock.
+    async fn run_follow_ups(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        follow_ups: Vec<FollowUp>,
+    ) -> Result<(), GatewayError> {
+        let mut first_error = None;
         for follow_up in follow_ups {
-            match follow_up {
+            let result = match follow_up {
                 FollowUp::NotifyParent {
                     parent_id,
                     child_id,
                     payload,
                 } => {
                     let signal = format!("{CHILD_RESULT_SIGNAL_PREFIX}{child_id}");
-                    if let Err(e) = self
-                        .signal_workflow(namespace, tenant, &parent_id, &signal, payload)
-                        .await
-                    {
-                        // The parent may itself already be terminal.
-                        debug!(parent_id, child_id, error = %e, "child-result signal not delivered");
-                    }
-                }
-                FollowUp::CancelChild { child_id } => {
-                    if let Err(e) = Box::pin(self.cancel_workflow(
+                    let delivery_id = format!("child-result:{child_id}");
+                    self.signal_workflow_delivery(
                         namespace,
                         tenant,
-                        &child_id,
-                        Some("parent workflow closed".into()),
-                    ))
+                        &parent_id,
+                        &signal,
+                        payload,
+                        Some(&delivery_id),
+                    )
                     .await
-                    {
-                        debug!(child_id, error = %e, "child not cancelled (may be terminal)");
-                    }
                 }
+                FollowUp::CancelChild { child_id } => {
+                    self.cancel_child_delivery(namespace, tenant, &child_id)
+                        .await
+                }
+            };
+            if let Err(error) = result {
+                first_error.get_or_insert(error);
             }
         }
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
+    async fn cancel_child_delivery(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        child_id: &str,
+    ) -> Result<(), GatewayError> {
+        let Some(child) = self.load_workflow(namespace, tenant, child_id).await? else {
+            return Ok(());
+        };
+        if child.status.is_active() {
+            Box::pin(self.cancel_workflow(
+                namespace,
+                tenant,
+                child_id,
+                Some("parent workflow closed".into()),
+            ))
+            .await?;
+        } else {
+            Box::pin(self.run_follow_ups(
+                namespace,
+                tenant,
+                Self::terminal_workflow_follow_ups(&child),
+            ))
+            .await?;
+            self.finish_workflow_close(namespace, tenant, child_id, child.state_version)
+                .await?;
+        }
+        Ok(())
     }
 
     /// Build a slim continuation task referencing the execution. The worker
@@ -942,17 +995,16 @@ impl Gateway {
         .for_workflow(exec.execution_id.clone())
     }
 
-    /// Enqueue a continuation task for an execution mutation made under the
-    /// workflow lock (settle paths take the same lock, so enqueue-then-
-    /// persist is race-free there).
+    /// Persist the chosen continuation identity under the workflow lock, then
+    /// publish it. Discovery repair can retry publication after a write failure.
     async fn enqueue_workflow_continuation(
         &self,
-        exec: &WorkflowExecution,
-    ) -> Result<String, GatewayError> {
+        exec: &mut WorkflowExecution,
+    ) -> Result<(), GatewayError> {
         let task = self.build_continuation_task(exec);
-        let task_id = task.task_id.clone();
-        self.enqueue_worker_task(task).await?;
-        Ok(task_id)
+        exec.current_task_id = Some(task.task_id.clone());
+        self.persist_workflow(exec, None).await?;
+        self.ensure_worker_task(task).await
     }
 
     async fn lock_workflow(
@@ -977,16 +1029,26 @@ impl Gateway {
     ) -> Result<Option<WorkflowExecution>, GatewayError> {
         match self
             .state
-            .get(&exec_key(namespace, tenant, execution_id))
+            .get_versioned(&exec_key(namespace, tenant, execution_id))
             .await?
         {
-            Some(raw) => {
+            Some((raw, version)) => {
                 let json = self.decrypt_state_value(&raw)?;
-                serde_json::from_str(&json).map(Some).map_err(|e| {
+                let mut exec: WorkflowExecution = serde_json::from_str(&json).map_err(|e| {
                     GatewayError::TaskQueue(format!(
                         "failed to deserialize workflow execution: {e}"
                     ))
-                })
+                })?;
+                if exec.namespace != namespace
+                    || exec.tenant != tenant
+                    || exec.execution_id != execution_id
+                {
+                    return Err(GatewayError::TaskQueue(
+                        "workflow record scope mismatch".into(),
+                    ));
+                }
+                exec.state_version = Some(version);
+                Ok(Some(exec))
             }
             None => Ok(None),
         }
@@ -994,20 +1056,35 @@ impl Gateway {
 
     async fn persist_workflow(
         &self,
-        exec: &WorkflowExecution,
+        exec: &mut WorkflowExecution,
         ttl: Option<Duration>,
     ) -> Result<(), GatewayError> {
         let json = serde_json::to_string(exec).map_err(|e| {
             GatewayError::TaskQueue(format!("failed to serialize workflow execution: {e}"))
         })?;
         let stored = self.encrypt_state_value(&json)?;
-        self.state
-            .set(
-                &exec_key(&exec.namespace, &exec.tenant, &exec.execution_id),
-                &stored,
-                ttl,
-            )
-            .await?;
+        let key = exec_key(&exec.namespace, &exec.tenant, &exec.execution_id);
+        let version = if let Some(version) = exec.state_version {
+            if self
+                .state
+                .compare_and_swap(&key, version, &stored, ttl)
+                .await?
+                != CasResult::Ok
+            {
+                return Err(GatewayError::TaskQueue(
+                    "workflow changed during update".into(),
+                ));
+            }
+            version + 1
+        } else {
+            if !self.state.check_and_set(&key, &stored, ttl).await? {
+                return Err(GatewayError::TaskQueue(
+                    "workflow execution already exists".into(),
+                ));
+            }
+            1
+        };
+        exec.state_version = Some(version);
         Ok(())
     }
 }

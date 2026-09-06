@@ -106,8 +106,8 @@ Custom consumers must use the new receipt API; constructing a receipt now requir
 `delivery_token`. Completed records remain visible in raw state until their TTL.
 
 The subsequent [worker queue recovery phase](queue-recovery.md) repairs discovery
-across queue-row/index write gaps. Terminal task-to-workflow/chain/DLQ handoff
-still needs durable recovery. Recurring schedules retain their existing handoff behavior.
+across queue-row/index write gaps. [Terminal task handoff recovery](task-handoff-recovery.md)
+then adds durable workflow/chain/DLQ delivery. Recurring schedules retain their existing handoff behavior.
 Audit persistence, DLQ retention, real database TTLs, transport failures,
 partitions, and OS scheduling remain separate evidence gaps. Remote backend runs
 exercise the existing kernel and product suites, not virtual-clock lease expiry.

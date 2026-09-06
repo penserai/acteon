@@ -146,7 +146,7 @@ pub use time_interval::{
 pub use types::{ActionId, Namespace, ProviderId, TenantId};
 pub use worker_task::{
     DEFAULT_TASK_LEASE_SECONDS, DEFAULT_TASK_MAX_ATTEMPTS, MAX_TASK_LEASE_SECONDS, WorkerTask,
-    WorkerTaskStatus,
+    WorkerTaskHandoff, WorkerTaskStatus,
 };
 pub use workflow::{
     BufferedSignal, CHILD_RESULT_SIGNAL_PREFIX, ParentClosePolicy, WORKFLOW_TASK_ACTION_TYPE,

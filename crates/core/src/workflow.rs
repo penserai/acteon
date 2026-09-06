@@ -156,6 +156,9 @@ pub struct WorkflowExecution {
     /// Signals received but not yet consumed by an await.
     #[serde(default)]
     pub buffered_signals: Vec<BufferedSignal>,
+    /// Internal cross-execution delivery receipts, persisted with signal effects.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub received_signal_ids: Vec<String>,
     /// What the execution is waiting on, when suspended.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub awaiting: Option<WorkflowAwait>,
@@ -171,6 +174,13 @@ pub struct WorkflowExecution {
     /// ID of the in-flight continuation task, when `Running`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_task_id: Option<String>,
+    /// Durable cross-execution close effects still awaiting acknowledgement.
+    #[serde(default)]
+    pub close_pending: bool,
+    /// Store revision used by the gateway to fence writes after lock expiry.
+    /// Runtime-only; never serialized or exposed in workflow HTTP responses.
+    #[serde(skip)]
+    pub state_version: Option<u64>,
     /// When the execution started.
     pub created_at: DateTime<Utc>,
     /// When the execution was last updated.
@@ -212,11 +222,14 @@ impl WorkflowExecution {
             error: None,
             checkpoints: Vec::new(),
             buffered_signals: Vec::new(),
+            received_signal_ids: Vec::new(),
             awaiting: None,
             parent_id: None,
             children: Vec::new(),
             search_attributes: HashMap::new(),
             current_task_id: None,
+            close_pending: false,
+            state_version: None,
             created_at: now,
             updated_at: now,
         }
