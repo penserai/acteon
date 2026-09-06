@@ -7,7 +7,76 @@ use super::{
     Gateway, GatewayError, QUEUE_LEASED_KIND, QUEUE_PENDING_KIND, WORKER_TASK_KIND, pending_key,
 };
 
+/// Durable identity of work admitted for one chain worker step.
+pub(crate) struct ChainWorkerTaskIdentity<'a> {
+    pub(crate) namespace: &'a str,
+    pub(crate) tenant: &'a str,
+    pub(crate) chain_id: &'a str,
+    pub(crate) step_index: usize,
+    pub(crate) step_name: &'a str,
+    pub(crate) queue: &'a str,
+    pub(crate) action_type: &'a str,
+    pub(crate) admitted_after: chrono::DateTime<chrono::Utc>,
+}
+
 impl Gateway {
+    /// Find the one task that was admitted for a chain step after the supplied
+    /// chain revision. A worker task is written before the chain can persist
+    /// its `WaitingWorker` state, so an interrupted admission must adopt the
+    /// durable task instead of generating another task ID on retry.
+    ///
+    /// The chain lock serializes new admissions. More than one matching task
+    /// therefore represents legacy/interrupted ambiguity; fail closed rather
+    /// than guessing which external worker delivery belongs to this step.
+    pub(crate) async fn find_worker_task_for_chain_step(
+        &self,
+        identity: &ChainWorkerTaskIdentity<'_>,
+    ) -> Result<Option<acteon_core::WorkerTask>, GatewayError> {
+        let rows = self
+            .state
+            .scan_keys(
+                identity.namespace,
+                identity.tenant,
+                KeyKind::Custom(WORKER_TASK_KIND.into()),
+                None,
+            )
+            .await?;
+        let mut found = None;
+        for (key, raw) in rows {
+            let Some(task_id) = key.rsplit(':').next() else {
+                continue;
+            };
+            let task = match self.decode_worker_task(
+                &raw,
+                identity.namespace,
+                identity.tenant,
+                task_id,
+            ) {
+                Ok(task) => task,
+                Err(error) => {
+                    warn!(%error, %task_id, "invalid worker record retained during chain admission lookup");
+                    return Err(error);
+                }
+            };
+            let matches_step = task.chain_id.as_deref() == Some(identity.chain_id)
+                && task.step_index == Some(identity.step_index)
+                && task.step_name.as_deref() == Some(identity.step_name)
+                && task.queue == identity.queue
+                && task.action_type == identity.action_type
+                && task.created_at >= identity.admitted_after;
+            if !matches_step {
+                continue;
+            }
+            if found.replace(task).is_some() {
+                return Err(GatewayError::TaskQueue(format!(
+                    "multiple worker tasks found for chain `{}` step `{}`",
+                    identity.chain_id, identity.step_name
+                )));
+            }
+        }
+        Ok(found)
+    }
+
     /// Idempotently publish a continuation whose identity is already stored in
     /// its receiving workflow. A lost create acknowledgement must not reset it.
     pub(crate) async fn ensure_worker_task(

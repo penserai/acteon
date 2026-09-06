@@ -172,8 +172,21 @@ impl Gateway {
                 _ => Some(now.timestamp_millis()),
             },
             ChainStatus::WaitingWorker => match &chain_state.wait_state {
-                Some(WaitState::Worker { timeout_at, .. }) => {
-                    Self::park_wake_at_ms(*timeout_at, chain_state.expires_at)
+                Some(WaitState::Worker {
+                    task_id,
+                    timeout_at,
+                    ..
+                }) => {
+                    // A task can settle after its source row is durable but
+                    // before its chain wake survives. Requeue immediately so
+                    // the normal wait path consumes the recorded result.
+                    match self
+                        .get_worker_task(&chain_state.namespace, &chain_state.tenant, task_id)
+                        .await?
+                    {
+                        Some(task) if !task.status.is_active() => Some(now.timestamp_millis()),
+                        _ => Self::park_wake_at_ms(*timeout_at, chain_state.expires_at),
+                    }
                 }
                 _ => Some(now.timestamp_millis()),
             },
@@ -274,9 +287,67 @@ impl Gateway {
             }
         }
 
+        // `cancel_chain` persists its own terminal state before it can walk
+        // children. If that process is interrupted, the reverse relation in
+        // child primary rows lets the next sweep finish the cascade.
+        if let Err(error) = self.reconcile_cancelled_chain_children().await {
+            first_error.get_or_insert(error);
+        }
+
         match first_error {
             Some(error) => Err(error),
             None => Ok(repaired),
+        }
+    }
+
+    async fn reconcile_cancelled_chain_children(&self) -> Result<(), GatewayError> {
+        let rows = self.state.scan_keys_by_kind(KeyKind::Chain).await?;
+        let mut first_error = None;
+        for (key, _) in rows {
+            let parts: Vec<_> = key.splitn(4, ':').collect();
+            if parts.len() != 4 || parts[2] != KeyKind::Chain.as_str() {
+                continue;
+            }
+            let child = match self.get_chain_status(parts[0], parts[1], parts[3]).await {
+                Ok(Some(child)) => child,
+                Ok(None) => continue,
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                    continue;
+                }
+            };
+            if !child.status.is_active() {
+                continue;
+            }
+            let Some(parent_id) = child.parent_chain_id.as_deref() else {
+                continue;
+            };
+            let parent = match self.get_chain_status(parts[0], parts[1], parent_id).await {
+                Ok(Some(parent)) => parent,
+                Ok(None) => continue,
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                    continue;
+                }
+            };
+            if parent.status != ChainStatus::Cancelled {
+                continue;
+            }
+            if let Err(error) = Box::pin(self.cancel_chain(
+                parts[0],
+                parts[1],
+                &child.chain_id,
+                Some(format!("parent chain {parent_id} cancelled")),
+                parent.cancelled_by,
+            ))
+            .await
+            {
+                first_error.get_or_insert(error);
+            }
+        }
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
         }
     }
 

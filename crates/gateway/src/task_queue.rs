@@ -17,6 +17,8 @@
 mod handoff;
 mod recovery;
 
+pub(crate) use recovery::ChainWorkerTaskIdentity;
+
 use std::time::Duration;
 
 use chrono::Utc;
