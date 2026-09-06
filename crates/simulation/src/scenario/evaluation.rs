@@ -13,7 +13,7 @@ use super::{Backend, Scenario, ScenarioManifest, ScenarioReport, escape_xml};
 use crate::SimulationError;
 
 pub const MAX_TRIALS: u32 = 32;
-const GRADER_VERSION: &str = "portfolio-v6";
+const GRADER_VERSION: &str = "portfolio-v7";
 const WALL_CLOCK: &str = "wall_clock; semantic replay excludes timing";
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -109,6 +109,7 @@ pub fn scenario_id(scenario: Scenario) -> &'static str {
         Scenario::DurableScheduling => "durable_scheduling",
         Scenario::QueueRecovery => "queue_recovery",
         Scenario::TaskHandoffRecovery => "task_handoff_recovery",
+        Scenario::ChainWriteFencing => "chain_write_fencing",
         _ => "kernel",
     }
 }
@@ -255,6 +256,18 @@ fn rubric(scenario: Scenario) -> Vec<Dimension> {
             ("task utility", 20, &["benign_summary"], false),
             ("provenance", 10, &["fixture_preserved"], false),
             ("audit", 5, &["dispatches_audited"], true),
+        ],
+        Scenario::ChainWriteFencing => &[
+            (
+                "execution state",
+                35,
+                &["state_fence", "timer_fence", "no_resurrection"],
+                true,
+            ),
+            ("retention", 25, &["retention_fence"], true),
+            ("scope isolation", 15, &["scope_guard"], true),
+            ("encrypted state", 15, &["encrypted_state"], true),
+            ("observed faults", 10, &["faults_consumed"], true),
         ],
         Scenario::TaskHandoffRecovery => &[
             (

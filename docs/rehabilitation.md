@@ -15,7 +15,8 @@ for its scope, grading contract, and the work that remains. Follow-ups add
 [worker ticks and task lifecycle evaluation](worker-lifecycle.md).
 Later phases add [durable scheduling](durable-scheduling.md) and
 [worker queue recovery](queue-recovery.md), followed by
-[terminal worker-result handoffs](task-handoff-recovery.md).
+[terminal worker-result handoffs](task-handoff-recovery.md) and
+[chain state/retention fencing](chain-state-fencing.md).
 
 ## Implemented behavior
 

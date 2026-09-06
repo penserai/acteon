@@ -2541,7 +2541,8 @@ impl Gateway {
             }
         }
 
-        let chain_state = ChainState {
+        let mut chain_state = ChainState {
+            state_version: None,
             chain_id: chain_id.clone(),
             chain_name: chain_name.to_owned(),
             origin_action: action.clone(),
@@ -2609,11 +2610,8 @@ impl Gateway {
             KeyKind::Chain,
             &chain_id,
         );
-        let state_json = serde_json::to_string(&chain_state).map_err(|e| {
-            GatewayError::ChainError(format!("failed to serialize chain state: {e}"))
-        })?;
-        let state_encrypted = self.encrypt_state_value(&state_json)?;
-        self.state.set(&chain_key, &state_encrypted, None).await?;
+        self.persist_chain_state(&chain_key, &mut chain_state, None)
+            .await?;
 
         // Add to pending chains index.
         let pending_key = StateKey::new(
@@ -2675,13 +2673,12 @@ impl Gateway {
             .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
 
         // Load current chain state.
-        let state_raw = self.state.get(&chain_key).await?.ok_or_else(|| {
-            GatewayError::ChainError(format!("chain state not found: {chain_id}"))
-        })?;
-        let state_json = self.decrypt_state_value(&state_raw)?;
-        let mut chain_state: ChainState = serde_json::from_str(&state_json).map_err(|e| {
-            GatewayError::ChainError(format!("failed to deserialize chain state: {e}"))
-        })?;
+        let mut chain_state = self
+            .get_chain_status(namespace, tenant, chain_id)
+            .await?
+            .ok_or_else(|| {
+                GatewayError::ChainError(format!("chain state not found: {chain_id}"))
+            })?;
 
         // Remove from the ready index to prevent double-scheduling.
         let pending_key = StateKey::new(namespace, tenant, KeyKind::PendingChains, chain_id);
@@ -2709,7 +2706,7 @@ impl Gateway {
             chain_state.status = ChainStatus::TimedOut;
             chain_state.wait_state = None;
             chain_state.updated_at = self.clock.now();
-            self.persist_chain_state(&chain_key, &chain_state, self.completed_chain_ttl)
+            self.persist_chain_state(&chain_key, &mut chain_state, self.completed_chain_ttl)
                 .await?;
             self.cleanup_pending_chain(namespace, tenant, chain_id)
                 .await?;
@@ -2770,7 +2767,7 @@ impl Gateway {
         if step_idx >= chain_config.steps.len() || step_idx >= chain_state.step_results.len() {
             chain_state.status = ChainStatus::Failed;
             chain_state.updated_at = self.clock.now();
-            self.persist_chain_state(&chain_key, &chain_state, self.completed_chain_ttl)
+            self.persist_chain_state(&chain_key, &mut chain_state, self.completed_chain_ttl)
                 .await?;
             self.cleanup_pending_chain(namespace, tenant, chain_id)
                 .await?;
@@ -2853,7 +2850,6 @@ impl Gateway {
                                 step_result,
                                 &step_index_map,
                                 "chain_step_completed",
-                                None,
                             )
                             .await?;
                         } else {
@@ -2879,7 +2875,7 @@ impl Gateway {
                         });
                         chain_state.status = ChainStatus::WaitingTimer;
                         chain_state.updated_at = now;
-                        self.persist_chain_state(&chain_key, &chain_state, None)
+                        self.persist_chain_state(&chain_key, &mut chain_state, None)
                             .await?;
                         self.append_execution_history(
                             namespace,
@@ -2939,7 +2935,6 @@ impl Gateway {
                         step_result,
                         &step_index_map,
                         "chain_step_completed",
-                        None,
                     )
                     .await?;
                     // Pop only after the consuming chain state is persisted; a
@@ -2994,7 +2989,7 @@ impl Gateway {
                                 chain_state
                                     .execution_path
                                     .push(chain_config.steps[target].name.clone());
-                                self.persist_chain_state(&chain_key, &chain_state, None)
+                                self.persist_chain_state(&chain_key, &mut chain_state, None)
                                     .await?;
                                 let ready_at =
                                     chain_config.steps[target].delay_seconds.map_or(0, |d| {
@@ -3025,7 +3020,6 @@ impl Gateway {
                                     step_config,
                                     step_result,
                                     &step_index_map,
-                                    None,
                                 )
                                 .await?;
                             }
@@ -3049,7 +3043,7 @@ impl Gateway {
                         });
                         chain_state.status = ChainStatus::WaitingSignal;
                         chain_state.updated_at = now;
-                        self.persist_chain_state(&chain_key, &chain_state, None)
+                        self.persist_chain_state(&chain_key, &mut chain_state, None)
                             .await?;
                         self.append_execution_history(
                             namespace,
@@ -3137,7 +3131,6 @@ impl Gateway {
                                     step_result,
                                     &step_index_map,
                                     "chain_step_completed",
-                                    None,
                                 )
                                 .await?;
                             }
@@ -3181,7 +3174,6 @@ impl Gateway {
                                     step_config,
                                     step_result,
                                     &step_index_map,
-                                    None,
                                 )
                                 .await?;
                             }
@@ -3223,7 +3215,6 @@ impl Gateway {
                                     step_config,
                                     step_result,
                                     &step_index_map,
-                                    None,
                                 )
                                 .await?;
                             }
@@ -3287,7 +3278,7 @@ impl Gateway {
                         });
                         chain_state.status = ChainStatus::WaitingWorker;
                         chain_state.updated_at = now;
-                        self.persist_chain_state(&chain_key, &chain_state, None)
+                        self.persist_chain_state(&chain_key, &mut chain_state, None)
                             .await?;
                         self.append_execution_history(
                             namespace,
@@ -3337,7 +3328,7 @@ impl Gateway {
 
                         chain_state.status = ChainStatus::WaitingSubChain;
                         chain_state.updated_at = self.clock.now();
-                        self.persist_chain_state(&chain_key, &chain_state, None)
+                        self.persist_chain_state(&chain_key, &mut chain_state, None)
                             .await?;
 
                         // Re-index to poll again in 5 seconds.
@@ -3379,7 +3370,7 @@ impl Gateway {
                                     chain_state
                                         .execution_path
                                         .push(chain_config.steps[next_idx].name.clone());
-                                    self.persist_chain_state(&chain_key, &chain_state, None)
+                                    self.persist_chain_state(&chain_key, &mut chain_state, None)
                                         .await?;
                                     let ready_at =
                                         chain_config.steps[next_idx].delay_seconds.map_or(0, |d| {
@@ -3391,7 +3382,7 @@ impl Gateway {
                                     chain_state.status = ChainStatus::Completed;
                                     self.persist_chain_state(
                                         &chain_key,
-                                        &chain_state,
+                                        &mut chain_state,
                                         self.completed_chain_ttl,
                                     )
                                     .await?;
@@ -3440,7 +3431,7 @@ impl Gateway {
                                         chain_state.updated_at = self.clock.now();
                                         self.persist_chain_state(
                                             &chain_key,
-                                            &chain_state,
+                                            &mut chain_state,
                                             self.completed_chain_ttl,
                                         )
                                         .await?;
@@ -3473,7 +3464,7 @@ impl Gateway {
                                                 .push(chain_config.steps[next_idx].name.clone());
                                             self.persist_chain_state(
                                                 &chain_key,
-                                                &chain_state,
+                                                &mut chain_state,
                                                 None,
                                             )
                                             .await?;
@@ -3491,7 +3482,7 @@ impl Gateway {
                                             chain_state.updated_at = self.clock.now();
                                             self.persist_chain_state(
                                                 &chain_key,
-                                                &chain_state,
+                                                &mut chain_state,
                                                 self.completed_chain_ttl,
                                             )
                                             .await?;
@@ -3510,7 +3501,7 @@ impl Gateway {
                                         chain_state.updated_at = self.clock.now();
                                         self.persist_chain_state(
                                             &chain_key,
-                                            &chain_state,
+                                            &mut chain_state,
                                             self.completed_chain_ttl,
                                         )
                                         .await?;
@@ -3540,7 +3531,7 @@ impl Gateway {
                                 // Still running — re-schedule poll in 5 seconds.
                                 chain_state.status = ChainStatus::WaitingSubChain;
                                 chain_state.updated_at = self.clock.now();
-                                self.persist_chain_state(&chain_key, &chain_state, None)
+                                self.persist_chain_state(&chain_key, &mut chain_state, None)
                                     .await?;
                                 let ready_at = self.clock.now().timestamp_millis() + 5000;
                                 self.state.index_chain_ready(&pending_key, ready_at).await?;
@@ -3669,7 +3660,7 @@ impl Gateway {
             });
             chain_state.status = ChainStatus::Failed;
             chain_state.updated_at = self.clock.now();
-            self.persist_chain_state(&chain_key, &chain_state, self.completed_chain_ttl)
+            self.persist_chain_state(&chain_key, &mut chain_state, self.completed_chain_ttl)
                 .await?;
             self.cleanup_pending_chain(namespace, tenant, chain_id)
                 .await?;
@@ -3776,7 +3767,7 @@ impl Gateway {
                 });
                 chain_state.status = ChainStatus::Failed;
                 chain_state.updated_at = now;
-                self.persist_chain_state(&chain_key, &chain_state, self.completed_chain_ttl)
+                self.persist_chain_state(&chain_key, &mut chain_state, self.completed_chain_ttl)
                     .await?;
                 self.cleanup_pending_chain(namespace, tenant, chain_id)
                     .await?;
@@ -3889,7 +3880,7 @@ impl Gateway {
                     chain_state
                         .execution_path
                         .push(chain_config.steps[next_idx].name.clone());
-                    self.persist_chain_state(&chain_key, &chain_state, None)
+                    self.persist_chain_state(&chain_key, &mut chain_state, None)
                         .await?;
                     let ready_at = chain_config.steps[next_idx]
                         .delay_seconds
@@ -3925,8 +3916,12 @@ impl Gateway {
                     // Chain completed successfully.
                     chain_state.status = ChainStatus::Completed;
                     chain_state.updated_at = now;
-                    self.persist_chain_state(&chain_key, &chain_state, self.completed_chain_ttl)
-                        .await?;
+                    self.persist_chain_state(
+                        &chain_key,
+                        &mut chain_state,
+                        self.completed_chain_ttl,
+                    )
+                    .await?;
                     self.cleanup_pending_chain(namespace, tenant, chain_id)
                         .await?;
                     self.metrics.increment_chains_completed();
@@ -4024,7 +4019,7 @@ impl Gateway {
                     // Don't record a final step_result yet — leave it as None for re-execution.
                     chain_state.step_results[step_idx] = None;
                     chain_state.updated_at = now;
-                    self.persist_chain_state(&chain_key, &chain_state, None)
+                    self.persist_chain_state(&chain_key, &mut chain_state, None)
                         .await?;
 
                     let ready_at =
@@ -4076,7 +4071,7 @@ impl Gateway {
                         chain_state.updated_at = now;
                         self.persist_chain_state(
                             &chain_key,
-                            &chain_state,
+                            &mut chain_state,
                             self.completed_chain_ttl,
                         )
                         .await?;
@@ -4137,11 +4132,12 @@ impl Gateway {
                         // step may branch to a recovery step).
                         let skip_result = chain_state.step_results[step_idx]
                             .as_ref()
-                            .expect("step result was just set");
+                            .expect("step result was just set")
+                            .clone();
                         let next_step_idx = Self::resolve_next_step(
                             &chain_config,
                             step_idx,
-                            skip_result,
+                            &skip_result,
                             &step_index_map,
                         );
 
@@ -4151,7 +4147,7 @@ impl Gateway {
                             chain_state
                                 .execution_path
                                 .push(chain_config.steps[next_idx].name.clone());
-                            self.persist_chain_state(&chain_key, &chain_state, None)
+                            self.persist_chain_state(&chain_key, &mut chain_state, None)
                                 .await?;
                             let ready_at = chain_config.steps[next_idx]
                                 .delay_seconds
@@ -4163,7 +4159,7 @@ impl Gateway {
                                 step_config,
                                 step_idx,
                                 "chain_step_skipped",
-                                skip_result,
+                                &skip_result,
                                 step_duration,
                                 Some(&step_payload),
                             )
@@ -4188,7 +4184,7 @@ impl Gateway {
                             chain_state.updated_at = now;
                             self.persist_chain_state(
                                 &chain_key,
-                                &chain_state,
+                                &mut chain_state,
                                 self.completed_chain_ttl,
                             )
                             .await?;
@@ -4201,7 +4197,7 @@ impl Gateway {
                                 step_config,
                                 step_idx,
                                 "chain_step_skipped",
-                                skip_result,
+                                &skip_result,
                                 step_duration,
                                 Some(&step_payload),
                             )
@@ -4253,7 +4249,7 @@ impl Gateway {
                         chain_state.updated_at = now;
                         self.persist_chain_state(
                             &chain_key,
-                            &chain_state,
+                            &mut chain_state,
                             self.completed_chain_ttl,
                         )
                         .await?;
@@ -4321,7 +4317,7 @@ impl Gateway {
                 });
                 chain_state.status = ChainStatus::Failed;
                 chain_state.updated_at = now;
-                self.persist_chain_state(&chain_key, &chain_state, self.completed_chain_ttl)
+                self.persist_chain_state(&chain_key, &mut chain_state, self.completed_chain_ttl)
                     .await?;
                 self.cleanup_pending_chain(namespace, tenant, chain_id)
                     .await?;
@@ -4480,7 +4476,6 @@ impl Gateway {
         step_result: StepResult,
         step_index_map: &HashMap<String, usize>,
         audit_outcome: &str,
-        expected_version: Option<u64>,
     ) -> Result<(), GatewayError> {
         let now = self.clock.now();
         chain_state.step_results[step_idx] = Some(step_result.clone());
@@ -4494,7 +4489,7 @@ impl Gateway {
             chain_state
                 .execution_path
                 .push(chain_config.steps[next_idx].name.clone());
-            self.persist_wait_step_state(chain_key, chain_state, None, expected_version)
+            self.persist_chain_state(chain_key, chain_state, None)
                 .await?;
             let ready_at = chain_config.steps[next_idx]
                 .delay_seconds
@@ -4528,13 +4523,8 @@ impl Gateway {
         } else {
             chain_state.status = ChainStatus::Completed;
             chain_state.updated_at = now;
-            self.persist_wait_step_state(
-                chain_key,
-                chain_state,
-                self.completed_chain_ttl,
-                expected_version,
-            )
-            .await?;
+            self.persist_chain_state(chain_key, chain_state, self.completed_chain_ttl)
+                .await?;
             self.cleanup_pending_chain(namespace, tenant, chain_id)
                 .await?;
             self.metrics.increment_chains_completed();
@@ -4600,7 +4590,6 @@ impl Gateway {
         step_config: &ChainStepConfig,
         step_result: StepResult,
         step_index_map: &HashMap<String, usize>,
-        expected_version: Option<u64>,
     ) -> Result<(), GatewayError> {
         let now = self.clock.now();
         let step_policy = step_config
@@ -4623,7 +4612,6 @@ impl Gateway {
                     step_result,
                     step_index_map,
                     "chain_step_skipped",
-                    expected_version,
                 )
                 .await;
         }
@@ -4633,13 +4621,8 @@ impl Gateway {
         chain_state.step_results[step_idx] = Some(step_result.clone());
         chain_state.status = ChainStatus::Failed;
         chain_state.updated_at = now;
-        self.persist_wait_step_state(
-            chain_key,
-            chain_state,
-            self.completed_chain_ttl,
-            expected_version,
-        )
-        .await?;
+        self.persist_chain_state(chain_key, chain_state, self.completed_chain_ttl)
+            .await?;
         self.cleanup_pending_chain(namespace, tenant, chain_id)
             .await?;
         self.metrics.increment_chains_failed();
@@ -5587,7 +5570,8 @@ impl Gateway {
             (None, None) => None,
         };
 
-        let child_state = ChainState {
+        let mut child_state = ChainState {
+            state_version: None,
             chain_id: child_id.clone(),
             chain_name: sub_chain_name.to_owned(),
             origin_action: parent.origin_action.clone(),
@@ -5653,11 +5637,8 @@ impl Gateway {
             KeyKind::Chain,
             &child_id,
         );
-        let child_json = serde_json::to_string(&child_state).map_err(|e| {
-            GatewayError::ChainError(format!("failed to serialize child chain state: {e}"))
-        })?;
-        let child_encrypted = self.encrypt_state_value(&child_json)?;
-        self.state.set(&child_key, &child_encrypted, None).await?;
+        self.persist_chain_state(&child_key, &mut child_state, None)
+            .await?;
 
         // Index child chain for processing.
         let child_pending_key = StateKey::new(
@@ -6015,45 +5996,37 @@ impl Gateway {
     /// When `ttl` is `Some`, the record will expire after the given duration.
     /// Use this for terminal chain states (completed, failed, cancelled, timed out)
     /// so they are automatically cleaned up.
-    async fn persist_chain_state(
+    pub(crate) async fn persist_chain_state(
         &self,
         chain_key: &StateKey,
-        chain_state: &ChainState,
+        chain_state: &mut ChainState,
         ttl: Option<Duration>,
     ) -> Result<(), GatewayError> {
         let json = serde_json::to_string(chain_state).map_err(|e| {
             GatewayError::ChainError(format!("failed to serialize chain state: {e}"))
         })?;
         let encrypted = self.encrypt_state_value(&json)?;
-        self.state.set(chain_key, &encrypted, ttl).await?;
-        Ok(())
-    }
-
-    /// Fence a worker result against changes made after its execution lock expired.
-    async fn persist_wait_step_state(
-        &self,
-        key: &StateKey,
-        state: &ChainState,
-        ttl: Option<Duration>,
-        expected: Option<u64>,
-    ) -> Result<(), GatewayError> {
-        let Some(version) = expected else {
-            return self.persist_chain_state(key, state, ttl).await;
+        let version = if let Some(version) = chain_state.state_version {
+            if self
+                .state
+                .compare_and_swap(chain_key, version, &encrypted, ttl)
+                .await?
+                != acteon_state::CasResult::Ok
+            {
+                return Err(GatewayError::ChainError(
+                    "chain changed during update".into(),
+                ));
+            }
+            version + 1
+        } else {
+            if !self.state.check_and_set(chain_key, &encrypted, ttl).await? {
+                return Err(GatewayError::ChainError(
+                    "chain execution already exists".into(),
+                ));
+            }
+            1
         };
-        let json = serde_json::to_string(state).map_err(|e| {
-            GatewayError::ChainError(format!("failed to serialize chain state: {e}"))
-        })?;
-        let stored = self.encrypt_state_value(&json)?;
-        if self
-            .state
-            .compare_and_swap(key, version, &stored, ttl)
-            .await?
-            != acteon_state::CasResult::Ok
-        {
-            return Err(GatewayError::ChainError(
-                "chain changed during worker handoff".into(),
-            ));
-        }
+        chain_state.state_version = Some(version);
         Ok(())
     }
 
@@ -6487,12 +6460,21 @@ impl Gateway {
         chain_id: &str,
     ) -> Result<Option<ChainState>, GatewayError> {
         let chain_key = StateKey::new(namespace, tenant, KeyKind::Chain, chain_id);
-        match self.state.get(&chain_key).await? {
-            Some(raw) => {
+        match self.state.get_versioned(&chain_key).await? {
+            Some((raw, version)) => {
                 let json = self.decrypt_state_value(&raw)?;
-                let state: ChainState = serde_json::from_str(&json).map_err(|e| {
+                let mut state: ChainState = serde_json::from_str(&json).map_err(|e| {
                     GatewayError::ChainError(format!("failed to deserialize chain state: {e}"))
                 })?;
+                if state.namespace != namespace
+                    || state.tenant != tenant
+                    || state.chain_id != chain_id
+                {
+                    return Err(GatewayError::ChainError(
+                        "chain record scope mismatch".into(),
+                    ));
+                }
+                state.state_version = Some(version);
                 Ok(Some(state))
             }
             None => Ok(None),
@@ -6550,15 +6532,10 @@ impl Gateway {
             .await
             .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
 
-        let state_raw = self
-            .state
-            .get(&chain_key)
+        let mut chain_state = self
+            .get_chain_status(namespace, tenant, chain_id)
             .await?
             .ok_or_else(|| GatewayError::ChainError(format!("chain not found: {chain_id}")))?;
-        let state_json = self.decrypt_state_value(&state_raw)?;
-        let mut chain_state: ChainState = serde_json::from_str(&state_json).map_err(|e| {
-            GatewayError::ChainError(format!("failed to deserialize chain state: {e}"))
-        })?;
 
         if !chain_state.status.is_active() {
             guard
@@ -6583,7 +6560,7 @@ impl Gateway {
         chain_state.updated_at = cancelled_at;
         chain_state.cancel_reason.clone_from(&reason);
         chain_state.cancelled_by.clone_from(&cancelled_by);
-        self.persist_chain_state(&chain_key, &chain_state, self.completed_chain_ttl)
+        self.persist_chain_state(&chain_key, &mut chain_state, self.completed_chain_ttl)
             .await?;
         self.cleanup_pending_chain(namespace, tenant, chain_id)
             .await?;
@@ -7327,6 +7304,15 @@ struct PlaygroundStateStore<'a> {
 
 #[async_trait::async_trait]
 impl acteon_state::StateStore for PlaygroundStateStore<'_> {
+    async fn compare_and_delete(
+        &self,
+        _: &acteon_state::StateKey,
+        _: u64,
+    ) -> Result<bool, acteon_state::StateError> {
+        Err(acteon_state::StateError::Backend(
+            "Playground state store is read-only".into(),
+        ))
+    }
     async fn get(
         &self,
         key: &acteon_state::StateKey,
@@ -7470,6 +7456,13 @@ struct BorrowedStateStore<'a>(&'a dyn acteon_state::StateStore);
 
 #[async_trait::async_trait]
 impl acteon_state::StateStore for BorrowedStateStore<'_> {
+    async fn compare_and_delete(
+        &self,
+        key: &acteon_state::StateKey,
+        version: u64,
+    ) -> Result<bool, acteon_state::StateError> {
+        self.0.compare_and_delete(key, version).await
+    }
     async fn get(
         &self,
         k: &acteon_state::StateKey,
@@ -12293,6 +12286,7 @@ mod tests {
 
         let now = Utc::now();
         let chain_state = ChainState {
+            state_version: None,
             chain_id: "c1".into(),
             chain_name: "shrink-test".into(),
             origin_action: test_action(),
@@ -12367,6 +12361,7 @@ mod tests {
 
         let now = Utc::now();
         let chain_state = ChainState {
+            state_version: None,
             chain_id: "g1".into(),
             chain_name: "grow-test".into(),
             origin_action: test_action(),
@@ -12447,6 +12442,7 @@ mod tests {
 
         let now = Utc::now();
         let chain_state = ChainState {
+            state_version: None,
             chain_id: "d1".into(),
             chain_name: "dag-grow".into(),
             origin_action: test_action(),
@@ -12511,6 +12507,7 @@ mod tests {
 
         let now = Utc::now();
         let chain_state = ChainState {
+            state_version: None,
             chain_id: chain_id.to_owned(),
             chain_name: "compliance-chain".into(),
             origin_action: test_action(),
@@ -12737,6 +12734,7 @@ mod tests {
 
         let now = Utc::now();
         let chain_state = ChainState {
+            state_version: None,
             chain_id: "cp1".into(),
             chain_name: "compliance-parallel".into(),
             origin_action: test_action(),

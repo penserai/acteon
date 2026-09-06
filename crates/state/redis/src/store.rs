@@ -179,6 +179,22 @@ impl StateStore for RedisStateStore {
         Ok(deleted > 0)
     }
 
+    async fn compare_and_delete(
+        &self,
+        key: &StateKey,
+        expected_version: u64,
+    ) -> Result<bool, StateError> {
+        let mut conn = self.conn().await?;
+        let deleted: i64 = Script::new(scripts::COMPARE_AND_DELETE)
+            .key(self.hash_key(key))
+            .key(self.string_key(key))
+            .arg(expected_version)
+            .invoke_async(&mut conn)
+            .await
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+        Ok(deleted == 1)
+    }
+
     async fn increment(
         &self,
         key: &StateKey,
@@ -522,6 +538,39 @@ mod integration_tests {
         acteon_state::testing::run_store_conformance_tests(&store)
             .await
             .expect("conformance tests should pass");
+    }
+
+    #[tokio::test]
+    async fn conditional_delete_preserves_conflicting_legacy_values_and_removes_shadows() {
+        let store = RedisStateStore::new(&test_config()).unwrap();
+        let key = StateKey::new("ns", "tenant", KeyKind::Chain, "delete-legacy");
+        let mut conn = store.conn().await.unwrap();
+        let _: () = conn
+            .set_ex(store.string_key(&key), "legacy", 30)
+            .await
+            .unwrap();
+        let before: i64 = conn.pttl(store.string_key(&key)).await.unwrap();
+        assert!(!store.compare_and_delete(&key, 2).await.unwrap());
+        let after: i64 = conn.pttl(store.string_key(&key)).await.unwrap();
+        assert!(after > 0 && after <= before);
+        assert_eq!(
+            conn.get::<_, String>(store.string_key(&key)).await.unwrap(),
+            "legacy"
+        );
+        assert!(store.compare_and_delete(&key, 1).await.unwrap());
+        assert!(store.get(&key).await.unwrap().is_none());
+
+        store.set(&key, "current", None).await.unwrap();
+        let _: () = conn.set(store.string_key(&key), "shadow").await.unwrap();
+        assert!(store.compare_and_delete(&key, 1).await.unwrap());
+        assert!(!conn.exists::<_, bool>(store.hash_key(&key)).await.unwrap());
+        assert!(
+            !conn
+                .exists::<_, bool>(store.string_key(&key))
+                .await
+                .unwrap()
+        );
+        assert!(!store.compare_and_delete(&key, 1).await.unwrap());
     }
 
     #[tokio::test]

@@ -25,6 +25,13 @@ impl CompletionFault {
 }
 #[async_trait::async_trait]
 impl StateStore for CompletionFault {
+    async fn compare_and_delete(
+        &self,
+        key: &StateKey,
+        expected_version: u64,
+    ) -> Result<bool, StateError> {
+        self.inner.compare_and_delete(key, expected_version).await
+    }
     async fn compare_and_swap(
         &self,
         key: &StateKey,

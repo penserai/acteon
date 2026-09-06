@@ -15,6 +15,7 @@ use crate::{
     StateBackendConfig,
 };
 
+mod chain_fencing;
 mod deadlines;
 pub mod evaluation;
 mod handoffs;
@@ -58,6 +59,7 @@ pub enum Scenario {
     DurableScheduling,
     QueueRecovery,
     TaskHandoffRecovery,
+    ChainWriteFencing,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -278,6 +280,7 @@ pub async fn run(manifest: ScenarioManifest) -> Result<ScenarioReport, Simulatio
             Scenario::DurableScheduling => scheduling::run(&mut report).await,
             Scenario::QueueRecovery => queues::run(&mut report).await,
             Scenario::TaskHandoffRecovery => handoffs::run(&mut report).await,
+            Scenario::ChainWriteFencing => chain_fencing::run(&mut report).await,
         };
         if let Err(error) = result {
             report.check(scenario, "scenario completed", false, error.to_string());

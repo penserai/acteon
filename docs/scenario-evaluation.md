@@ -110,6 +110,7 @@ adds [durable scheduling and deployment recovery](durable-scheduling.md).
 The follow-up from `b7b588c` adds [worker queue recovery](queue-recovery.md), with
 write-fault evidence on memory, Redis, and PostgreSQL and manual-clock race tests.
 The phase from `ea53c24` adds [terminal worker-result handoff recovery](task-handoff-recovery.md).
+The phase from `12c9aa1` extends [chain state and retention fencing](chain-state-fencing.md).
 
 ## Remaining plan
 
@@ -124,7 +125,9 @@ The phase from `ea53c24` adds [terminal worker-result handoff recovery](task-han
    cover memory, Redis, and PostgreSQL. Terminal task-to-workflow/chain/DLQ handoffs
    now have durable progress, recipient discovery repair, and controlled receiver
    races. Next, add process-crash, audit-outage, transport, and partition adapters
-   across the relevant backends; extend receiver fencing to other chain paths.
+   across the relevant backends. Chain updates and retention now use version
+   checks; ready/pending discovery and the remaining chain side effects still
+   need durable recovery across interrupted multi-record operations.
    No test here establishes exactly-once effects across a crash between external
    execution and durable completion persistence.
 3. Expand the injection portfolio to transport-level redirect/rebinding and

@@ -1147,6 +1147,7 @@ mod tests {
     ) -> ChainState {
         let now = Utc::now();
         ChainState {
+            state_version: None,
             chain_id: chain_id.into(),
             chain_name: "test-chain".into(),
             origin_action: acteon_core::Action::new(

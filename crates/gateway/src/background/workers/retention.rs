@@ -109,7 +109,7 @@ impl BackgroundProcessor {
         let mut errors = 0u64;
         let mut skipped = 0u64;
 
-        for (key, raw_value) in entries {
+        for (key, _) in entries {
             // Key format: {namespace}:{tenant}:chain:{id}
             let parts: Vec<&str> = key.splitn(4, ':').collect();
             if parts.len() < 4 {
@@ -137,6 +137,14 @@ impl BackgroundProcessor {
             let ttl_seconds = policy.state_ttl_seconds.unwrap();
             #[allow(clippy::cast_possible_wrap)]
             let cutoff = now - chrono::Duration::seconds(ttl_seconds as i64);
+
+            // Re-read the authoritative row: the scan may predate a reset or
+            // another update. The conditional delete below also fences changes
+            // made while this retention decision is in flight.
+            let state_key = StateKey::new(namespace, tenant, KeyKind::Chain, parts[3]);
+            let Some((raw_value, version)) = self.state.get_versioned(&state_key).await? else {
+                continue;
+            };
 
             let Ok(value) = self.decrypt_state_value(&raw_value) else {
                 continue;
@@ -168,12 +176,12 @@ impl BackgroundProcessor {
             };
 
             if ts.with_timezone(&Utc) < cutoff {
-                let state_key = StateKey::new(namespace, tenant, KeyKind::Chain, parts[3]);
-                match self.state.delete(&state_key).await {
-                    Ok(_) => {
+                match self.state.compare_and_delete(&state_key, version).await {
+                    Ok(true) => {
                         deleted += 1;
                         self.metrics.increment_retention_deleted_state();
                     }
+                    Ok(false) => {}
                     Err(e) => {
                         warn!(
                             namespace = %namespace,

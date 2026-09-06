@@ -141,6 +141,18 @@ abandoned (a pending worker task is cancelled), an already-expired timeout
 window is restarted, and the reset itself is recorded in the event history
 (`execution_reset`).
 
+## Concurrent updates and retention
+
+Chain state updates use the version read with the execution. An operation delayed
+past its lock lease cannot overwrite a newer cancellation, reset, or metadata
+update; it returns a conflict error and callers can reload the execution. Retention
+also checks the version atomically when deleting a terminal record, preserving
+concurrent resets. The internal revision does not appear in HTTP responses.
+
+External effects and auxiliary indexes remain separate operations. See
+[chain state fencing](../../chain-state-fencing.md) for upgrade requirements,
+controlled race evidence, and the remaining recovery boundaries.
+
 ## Statuses
 
 In addition to the existing chain statuses, durable executions introduce:

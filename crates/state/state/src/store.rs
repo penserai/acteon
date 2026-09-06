@@ -52,6 +52,15 @@ pub trait StateStore: Send + Sync {
     /// Delete a key. Returns `true` if the key existed.
     async fn delete(&self, key: &StateKey) -> Result<bool, StateError>;
 
+    /// Atomically delete a live entry only when its version matches.
+    /// Missing, expired, or changed entries return `false` without mutation.
+    /// Implementations must not emulate this with a separate read and delete.
+    async fn compare_and_delete(
+        &self,
+        key: &StateKey,
+        expected_version: u64,
+    ) -> Result<bool, StateError>;
+
     /// Atomically increment a counter by `delta`. Returns the new value.
     /// Creates the counter at 0 if it doesn't exist before incrementing.
     async fn increment(
