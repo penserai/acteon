@@ -1251,6 +1251,10 @@ impl StepResult {
 /// Runtime state of a chain execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChainState {
+    /// Store revision used to fence updates after an execution lock expires.
+    /// Runtime-only; absent from stored JSON and HTTP responses.
+    #[serde(skip)]
+    pub state_version: Option<u64>,
     /// Unique identifier for this chain execution.
     pub chain_id: String,
     /// Name of the chain configuration.

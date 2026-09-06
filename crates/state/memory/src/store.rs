@@ -244,6 +244,19 @@ impl StateStore for MemoryStateStore {
         }
     }
 
+    async fn compare_and_delete(
+        &self,
+        key: &StateKey,
+        expected_version: u64,
+    ) -> Result<bool, StateError> {
+        Ok(self
+            .data
+            .remove_if(&Self::render_key(key), |_, entry| {
+                entry.version == expected_version && !entry.is_expired(self.clock.monotonic())
+            })
+            .is_some())
+    }
+
     async fn increment(
         &self,
         key: &StateKey,

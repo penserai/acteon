@@ -172,7 +172,7 @@ fn cli_replays_virtual_time_and_rejects_remote_ttls_or_forged_clocks() {
             }
         }
     }
-    std::fs::write(workspace.0.join("suite.json"), r#"{"schema_version":2,"seed":42,"backend":"memory","trials":2,"scenarios":["deadline_safety","worker_lifecycle","durable_scheduling","queue_recovery","task_handoff_recovery"]}"#).unwrap();
+    std::fs::write(workspace.0.join("suite.json"), r#"{"schema_version":2,"seed":42,"backend":"memory","trials":2,"scenarios":["deadline_safety","worker_lifecycle","durable_scheduling","queue_recovery","task_handoff_recovery","chain_write_fencing"]}"#).unwrap();
     let output = workspace.run(&["--manifest", "suite.json", "--output", "first"]);
     assert!(
         output.status.success(),

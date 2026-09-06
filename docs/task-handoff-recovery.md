@@ -128,7 +128,8 @@ runner. These scripted cases do not assess model capability.
 Initial multi-record admission, including child creation, is not an idempotent
 transaction. Audit/history emission remains best-effort and may repeat or be
 absent after a failure. Other chain paths retain their existing lock/write
-behavior; the added chain CAS fencing applies to worker-result receipt. External
+behavior in this phase; [the next phase](chain-state-fencing.md) extends chain
+state and retention fencing. External
 effects still require downstream idempotency. Process-crash, audit-outage,
 transport/partition, and production-load evidence remain subsequent work.
 

@@ -24,6 +24,7 @@ pub async fn run_store_conformance_tests(store: &dyn StateStore) -> Result<(), S
     test_check_and_set_new(store).await?;
     test_check_and_set_existing(store).await?;
     test_delete(store).await?;
+    test_compare_and_delete(store).await?;
     test_increment(store).await?;
     test_compare_and_swap(store).await?;
     test_create_then_cas_expiry(store).await?;
@@ -33,6 +34,55 @@ pub async fn run_store_conformance_tests(store: &dyn StateStore) -> Result<(), S
     test_cas_replaces_ttl(store).await?;
     test_timeout_index_reindex_replaces(store).await?;
     test_chain_ready_index_reindex_replaces(store).await?;
+    Ok(())
+}
+
+async fn test_compare_and_delete(store: &dyn StateStore) -> Result<(), StateError> {
+    let key = test_key(KeyKind::State, "conditional-delete");
+    assert!(!store.compare_and_delete(&key, 0).await?);
+    store.check_and_set(&key, "old", None).await?;
+    let (_, old) = store.get_versioned(&key).await?.expect("created record");
+    store.set(&key, "new", None).await?;
+    assert!(!store.compare_and_delete(&key, old).await?);
+    assert_eq!(store.get(&key).await?.as_deref(), Some("new"));
+    let (_, version) = store.get_versioned(&key).await?.expect("updated record");
+    // A delete and an update of the same version cannot both win.
+    let (deleted, updated) = tokio::join!(
+        store.compare_and_delete(&key, version),
+        store.compare_and_swap(&key, version, "winner", None),
+    );
+    let deleted = deleted?;
+    assert_ne!(deleted, updated? == CasResult::Ok);
+    assert_eq!(
+        store.get(&key).await?.as_deref(),
+        if deleted { None } else { Some("winner") }
+    );
+    if !deleted {
+        assert!(store.compare_and_delete(&key, version + 1).await?);
+    }
+    assert!(!store.compare_and_delete(&key, version + 1).await?);
+
+    let expiring = test_key(KeyKind::State, "conditional-delete-expiry");
+    let other = StateKey::new(
+        "test-ns",
+        "other-tenant",
+        KeyKind::State,
+        "conditional-delete-expiry",
+    );
+    store
+        .set(&expiring, "ephemeral", Some(Duration::from_secs(1)))
+        .await?;
+    store.set(&other, "isolated", None).await?;
+    let (_, version) = store
+        .get_versioned(&expiring)
+        .await?
+        .expect("expiring record");
+    assert!(!store.compare_and_delete(&expiring, version + 1).await?);
+    // A conflict must not extend the record's lifetime.
+    tokio::time::sleep(Duration::from_millis(1300)).await;
+    assert!(!store.compare_and_delete(&expiring, version).await?);
+    assert!(store.get(&expiring).await?.is_none());
+    assert_eq!(store.get(&other).await?.as_deref(), Some("isolated"));
     Ok(())
 }
 

@@ -297,6 +297,40 @@ impl StateStore for DynamoStateStore {
         Ok(())
     }
 
+    async fn compare_and_delete(
+        &self,
+        key: &StateKey,
+        expected_version: u64,
+    ) -> Result<bool, StateError> {
+        let result = self
+            .client
+            .delete_item()
+            .table_name(&self.table_name)
+            .key("pk", AttributeValue::S(build_pk(&self.prefix, key)))
+            .key("sk", AttributeValue::S(build_sk(key)))
+            .condition_expression(
+                "version = :expected AND (attribute_not_exists(expires_at) OR expires_at > :now)",
+            )
+            .expression_attribute_values(
+                ":expected",
+                AttributeValue::N(expected_version.to_string()),
+            )
+            .expression_attribute_values(":now", AttributeValue::N(Self::now_epoch().to_string()))
+            .send()
+            .await;
+        match result {
+            Ok(_) => Ok(true),
+            Err(error) => {
+                let error = error.into_service_error();
+                if error.is_conditional_check_failed_exception() {
+                    Ok(false)
+                } else {
+                    Err(StateError::Backend(error.to_string()))
+                }
+            }
+        }
+    }
+
     async fn delete(&self, key: &StateKey) -> Result<bool, StateError> {
         let pk = build_pk(&self.prefix, key);
         let sk = build_sk(key);

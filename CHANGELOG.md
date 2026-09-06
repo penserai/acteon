@@ -2,6 +2,11 @@
 
 ## Unreleased — rehabilitation
 
+- Fence chain state updates across advancement, parallel/wait steps, cancellation,
+  reset, and metadata changes. Add atomic conditional deletion on all four state
+  stores so chain retention cannot delete a concurrent reset. Extend replay with
+  real-backend stale-writer and retention races under grader `portfolio-v7`.
+
 - Persist terminal worker-result handoffs with the result, lease and retry their
   independent destinations, and retain unfinished work without expiry. Repair
   workflow continuation/timer and chain ready discovery; deduplicate internal

@@ -69,6 +69,24 @@ end
 return {1, next_version}
 ";
 
+/// Conditional deletion of a live version, including legacy strings at version 1.
+/// KEYS: hash, legacy string. ARGV: expected version. A conflict changes neither.
+pub const COMPARE_AND_DELETE: &str = r"
+local current = redis.call('HGET', KEYS[1], 'v')
+local version
+if current then
+    version = tonumber(redis.call('HGET', KEYS[1], 'ver'))
+else
+    current = redis.call('GET', KEYS[2])
+    if not current then return 0 end
+    version = 1
+end
+if not version then return redis.error_reply('missing entry version') end
+if version ~= tonumber(ARGV[1]) then return 0 end
+redis.call('DEL', KEYS[1], KEYS[2])
+return 1
+";
+
 /// Lua script for acquiring a distributed lock (SET NX PX).
 ///
 /// KEYS\[1\] = lock key

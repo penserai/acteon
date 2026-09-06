@@ -235,6 +235,27 @@ impl StateStore for PostgresStateStore {
         Ok(result.rows_affected() > 0)
     }
 
+    async fn compare_and_delete(
+        &self,
+        key: &StateKey,
+        expected_version: u64,
+    ) -> Result<bool, StateError> {
+        let Ok(version) = i64::try_from(expected_version) else {
+            return Ok(false);
+        };
+        let table = self.config.state_table();
+        let query = format!(
+            "DELETE FROM {table} WHERE key = $1 AND version = $2 AND (expires_at IS NULL OR expires_at > NOW())"
+        );
+        let result = sqlx::query(&query)
+            .bind(key.canonical())
+            .bind(version)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+        Ok(result.rows_affected() > 0)
+    }
+
     async fn increment(
         &self,
         key: &StateKey,

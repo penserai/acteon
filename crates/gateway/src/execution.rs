@@ -617,11 +617,8 @@ impl Gateway {
                 self.completed_chain_ttl
             };
             let chain_key = StateKey::new(namespace, tenant, KeyKind::Chain, chain_id);
-            let json = serde_json::to_string(&chain_state).map_err(|e| {
-                GatewayError::ChainError(format!("failed to serialize chain state: {e}"))
-            })?;
-            let stored = self.encrypt_state_value(&json)?;
-            self.state.set(&chain_key, &stored, ttl).await?;
+            self.persist_chain_state(&chain_key, &mut chain_state, ttl)
+                .await?;
 
             self.append_execution_history(
                 namespace,
@@ -761,11 +758,8 @@ impl Gateway {
             }
 
             let chain_key = StateKey::new(namespace, tenant, KeyKind::Chain, chain_id);
-            let json = serde_json::to_string(&chain_state).map_err(|e| {
-                GatewayError::ChainError(format!("failed to serialize chain state: {e}"))
-            })?;
-            let stored = self.encrypt_state_value(&json)?;
-            self.state.set(&chain_key, &stored, None).await?;
+            self.persist_chain_state(&chain_key, &mut chain_state, None)
+                .await?;
 
             // Terminal executions were removed from the pending index;
             // re-register so the background advancer drives the re-run.

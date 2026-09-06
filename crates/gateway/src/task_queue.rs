@@ -668,25 +668,12 @@ impl Gateway {
             .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
 
         let result: Result<(), GatewayError> = async {
-            let key = StateKey::new(namespace, tenant, KeyKind::Chain, chain_id);
-            let Some((raw, version)) = self.state.get_versioned(&key).await? else {
-                return Err(GatewayError::ChainError(
-                    "worker handoff target is missing".into(),
-                ));
-            };
-            let clear = self.decrypt_state_value(&raw)?;
-            let mut chain_state: acteon_core::ChainState =
-                serde_json::from_str(&clear).map_err(|e| {
-                    GatewayError::ChainError(format!("invalid worker handoff receiver: {e}"))
+            let mut chain_state = self
+                .get_chain_status(namespace, tenant, chain_id)
+                .await?
+                .ok_or_else(|| {
+                    GatewayError::ChainError("worker handoff target is missing".into())
                 })?;
-            if chain_state.namespace != namespace
-                || chain_state.tenant != tenant
-                || chain_state.chain_id != chain_id
-            {
-                return Err(GatewayError::ChainError(
-                    "worker chain handoff scope mismatch".into(),
-                ));
-            }
 
             // Only resume when the chain is still waiting on this exact task.
             let waiting_on_this_task = matches!(
@@ -781,7 +768,6 @@ impl Gateway {
                         step_result,
                         &step_index_map,
                         "chain_step_completed",
-                        Some(version),
                     )
                     .await
                 }
@@ -813,7 +799,6 @@ impl Gateway {
                         &step_config,
                         step_result,
                         &step_index_map,
-                        Some(version),
                     )
                     .await
                 }

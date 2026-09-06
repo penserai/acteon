@@ -15,6 +15,7 @@ pub enum WriteOperation {
     Set,
     CheckAndSet,
     CompareAndSwap,
+    CompareAndDelete,
     Delete,
     IndexTimeout,
     IndexChainReady,
@@ -127,6 +128,21 @@ impl FaultStore {
 
 #[async_trait::async_trait]
 impl StateStore for FaultStore {
+    async fn compare_and_delete(
+        &self,
+        key: &StateKey,
+        expected_version: u64,
+    ) -> Result<bool, StateError> {
+        self.interrupt(key, WriteOperation::CompareAndDelete, FaultTiming::Before)
+            .await?;
+        let deleted = self.inner.compare_and_delete(key, expected_version).await?;
+        if deleted {
+            self.interrupt(key, WriteOperation::CompareAndDelete, FaultTiming::After)
+                .await?;
+        }
+        Ok(deleted)
+    }
+
     async fn compare_and_swap(
         &self,
         key: &StateKey,

@@ -505,6 +505,7 @@ mod tests {
     fn sample_chain(chain_id: &str, status: ChainStatus) -> ChainState {
         let now = Utc::now();
         ChainState {
+            state_version: None,
             chain_id: chain_id.into(),
             chain_name: "test-chain".into(),
             origin_action: Action::new(
