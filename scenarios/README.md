@@ -77,7 +77,7 @@ See [clock injection and deadline evaluation](../docs/virtual-time.md).
 
 The memory-only `workers.json` suite adds task timestamps, heartbeat/staleness
 boundaries, audit/SSE emission, explicit group/timeout/scheduled ticks, and polling
-cadence. CI runs all eight memory suites and replays them. Grader `portfolio-v7`
+cadence. CI runs all nine memory suites and replays them. Grader `portfolio-v8`
 adds terminal handoff recovery to the existing rubrics; old reports still require
 their preserved runner.
 See [worker lifecycle evaluation](../docs/worker-lifecycle.md).
@@ -117,7 +117,7 @@ receiver outages, chain discovery repair, DLQ acknowledgement loss, scoped
 receivers, and encrypted delivery progress. Negative mutations remove repair,
 acknowledge an undelivered result, or remove downstream deduplication. See
 [terminal handoff recovery](../docs/task-handoff-recovery.md) for the contract
-and remaining evidence gaps. CI now retains eighteen suite/backend replay pairs.
+and remaining evidence gaps. CI now retains 21 suite/backend replay pairs.
 
 
 `fencing.json` exercises stale chain updates, deleted receivers, retention racing
@@ -125,3 +125,8 @@ reset, scope, and encryption on memory, Redis, and PostgreSQL. A test adapter
 shortens explicitly armed acquisitions on the selected real lock backend; production leases
 are unchanged. See [chain state fencing](../docs/chain-state-fencing.md) for the
 conditional-delete contract, safety mutations, and remaining multi-record gaps.
+
+`chain-recovery.json` rebuilds pending/ready discovery from authoritative chain
+records after interrupted creation and signal delivery, and removes terminal
+orphans. Its three mutations skip repair, retain an orphan, or write plaintext.
+See [chain discovery recovery](../docs/chain-discovery-recovery.md).

@@ -381,7 +381,7 @@ for receipt consumption, upgrade requirements, and untested crash windows.
 `scenarios/queues.json` exercises interrupted enqueue repair, retry acknowledgement
 loss, ownership and tenant isolation, terminal cleanup, and encrypted records on
 memory, Redis, and PostgreSQL. The same manifest/replay commands apply. The CI
-script runs eighteen suite/backend pairs and preserves their executable. See
+script runs 21 suite/backend pairs and preserves their executable. See
 [worker queue recovery](../../queue-recovery.md) for the write-fault adapter,
 manual-clock race contracts, and the boundary with terminal-result delivery below.
 
@@ -389,7 +389,7 @@ manual-clock race contracts, and the boundary with terminal-result delivery belo
 
 `scenarios/handoffs.json` tests retained result delivery across terminal-write and
 receiver outages, chain discovery repair, DLQ acknowledgement loss, tenant scope,
-and encryption on all three backends. The script retains eighteen suite/backend
+and encryption on all three backends. The script retains 21 suite/backend
 report/replay pairs. See [terminal handoff recovery](../../task-handoff-recovery.md)
 for destination acknowledgements, receiver fencing, and controlled race evidence.
 
@@ -399,5 +399,11 @@ for destination acknowledgements, receiver fencing, and controlled race evidence
 `scenarios/fencing.json` adds stale-writer and retention/reset races on all three
 scenario backends. The selected backend supplies both state and locks, with
 explicitly shortened test leases. See [chain state fencing](../../chain-state-fencing.md)
-for the atomic deletion contract, mutation gates, and limits. CI preserves eighteen
-suite/backend report/replay pairs under grader `portfolio-v7`.
+for the atomic deletion contract, mutation gates, and limits. CI preserves 21
+suite/backend report/replay pairs under grader `portfolio-v8`.
+
+### Chain discovery recovery
+
+`scenarios/chain-recovery.json` proves recovery of pending/ready entries after an
+interrupted create or buffered signal delivery and prunes terminal orphans across
+memory, Redis, and PostgreSQL. See [chain discovery recovery](../../chain-discovery-recovery.md).

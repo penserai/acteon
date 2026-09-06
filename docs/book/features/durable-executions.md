@@ -150,8 +150,9 @@ also checks the version atomically when deleting a terminal record, preserving
 concurrent resets. The internal revision does not appear in HTTP responses.
 
 External effects and auxiliary indexes remain separate operations. See
-[chain state fencing](../../chain-state-fencing.md) for upgrade requirements,
-controlled race evidence, and the remaining recovery boundaries.
+[chain state fencing](../../chain-state-fencing.md) and
+[chain discovery recovery](../../chain-discovery-recovery.md) for upgrade
+requirements, controlled race evidence, and the remaining recovery boundaries.
 
 ## Statuses
 

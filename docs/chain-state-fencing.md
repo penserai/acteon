@@ -67,7 +67,7 @@ reaches a controlled pause, the scenario waits 100 ms and lets a successor updat
 the execution. Production lease durations are unchanged. A separate paused
 retention decision races an execution reset.
 
-Grader `portfolio-v7` requires every dimension:
+Grader `portfolio-v8` requires every dimension:
 
 | Dimension | Weight | Observation |
 | --- | ---: | --- |
@@ -82,9 +82,9 @@ or plaintext persistence; each fails a mandatory gate. Replay excludes generated
 IDs, ciphertext, and wall-clock timestamps. These controlled tests do not kill
 processes or establish model capability or production performance.
 
-CI retains eighteen report/replay pairs: eight memory suites and five each on
-Redis and PostgreSQL, plus the exact executable used. Older reports require their
-preserved runner.
+CI retains 21 report/replay pairs: nine memory suites and six each on Redis and
+PostgreSQL, plus the exact executable used. Older reports require their preserved
+runner.
 
 ## Verification
 
@@ -95,7 +95,7 @@ tests. State and lock suites on memory and disposable Redis, PostgreSQL, and
 DynamoDB backends passed 39 tests in total,
 including Redis legacy-string and shadow-key deletion coverage.
 
-All eighteen scenario report/replay pairs matched and passed every mandatory
+All 21 scenario report/replay pairs matched and passed every mandatory
 gate. Their JUnit and JSONL artifacts and the preserved runner hash were checked.
 The three unsafe fencing mutations each failed their intended gate. Validation
 also passed workspace and feature-enabled simulation Clippy, Rust 1.88 checks,
@@ -108,12 +108,11 @@ tests remained concurrent.
 
 ## Remaining boundaries
 
-The version checks protect the authoritative chain record. Ready/pending indexes,
-signal buffers, child/task admission, cancellation notifications, A2A projections,
-and audit/history writes remain separate operations. They are not a transaction
-with the chain update. In particular, interrupted publication or a delayed index
-cleanup racing a reset still needs broader chain discovery recovery. The existing
-worker-handoff repair handles its documented subset of ready-index failures.
+The version checks protect the authoritative chain record. Ready/pending indexes
+are now rebuilt from it by [chain discovery recovery](chain-discovery-recovery.md),
+including delayed terminal cleanup racing a reset. Signal buffers, child/task
+admission, cancellation notifications, A2A projections, and audit/history writes
+remain separate operations. They are not a transaction with the chain update.
 
 Already-started external effects cannot be revoked by a state conflict. Child and
 worker creation can still be interrupted between records. Process-crash,
