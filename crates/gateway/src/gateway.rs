@@ -4397,7 +4397,7 @@ impl Gateway {
     /// (timer fire, signal/worker timeout) or the chain-level `expires_at`,
     /// whichever comes first. Chains parked on an untimed wait still wake
     /// at `expires_at` so the chain-level timeout is enforced.
-    fn park_wake_at_ms(
+    pub(crate) fn park_wake_at_ms(
         step_deadline: Option<chrono::DateTime<Utc>>,
         expires_at: Option<chrono::DateTime<Utc>>,
     ) -> Option<i64> {
@@ -6031,7 +6031,7 @@ impl Gateway {
     }
 
     /// Remove a chain from the pending chains index.
-    async fn cleanup_pending_chain(
+    pub(crate) async fn cleanup_pending_chain(
         &self,
         namespace: &str,
         tenant: &str,
@@ -6040,6 +6040,18 @@ impl Gateway {
         let pending_key = StateKey::new(namespace, tenant, KeyKind::PendingChains, chain_id);
         let _ = self.state.delete(&pending_key).await;
         let _ = self.state.remove_chain_ready_index(&pending_key).await;
+        // A terminal state write and discovery cleanup are separate records.
+        // If a reset wins after the terminal persist while this cleanup is
+        // delayed, deleting blindly here would orphan the reset. Reload the
+        // authoritative row after both deletions and rebuild its discovery
+        // when it became active in the gap. A later reset writes its own
+        // discovery after this check, so either ordering keeps it visible.
+        if let Ok(Some(current)) = self.get_chain_status(namespace, tenant, chain_id).await
+            && current.status.is_active()
+            && let Err(error) = self.repair_chain_discovery(&current).await
+        {
+            warn!(%error, %chain_id, "active chain discovery repair after terminal cleanup failed");
+        }
         Ok(())
     }
 

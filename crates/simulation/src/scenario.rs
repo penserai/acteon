@@ -2,8 +2,8 @@
 //! Logical sequence numbers encode causality. The deadline suite uses explicit
 //! virtual time; other suites use real clocks. Volatile IDs never replace checks.
 
-use std::sync::Arc;
 use std::time::Duration;
+use std::{future::Future, pin::Pin, sync::Arc};
 
 use acteon_core::{Action, ActionOutcome};
 use rand::{Rng, SeedableRng};
@@ -16,6 +16,7 @@ use crate::{
 };
 
 mod chain_fencing;
+mod chain_recovery;
 mod deadlines;
 pub mod evaluation;
 mod handoffs;
@@ -60,6 +61,7 @@ pub enum Scenario {
     QueueRecovery,
     TaskHandoffRecovery,
     ChainWriteFencing,
+    ChainDiscoveryRecovery,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -265,23 +267,26 @@ pub async fn run(manifest: ScenarioManifest) -> Result<ScenarioReport, Simulatio
         trace: Vec::new(),
     };
     for scenario in report.manifest.scenarios.clone() {
-        let result = match scenario {
-            Scenario::GeneratedPolicy => policy(&mut report).await,
-            Scenario::Approval => approval(&mut report).await,
-            Scenario::TenantDeduplication => dedup(&mut report).await,
-            Scenario::RetryRecovery => retry(&mut report).await,
-            Scenario::EvaluatorIntegrity => evaluator(&mut report).await,
-            Scenario::StateFailure => state_failure(&mut report).await,
-            Scenario::IncidentResponse => portfolio::incident(&mut report).await,
-            Scenario::RefundFulfillment => portfolio::refund(&mut report).await,
-            Scenario::PromptInjection => portfolio::injection(&mut report).await,
-            Scenario::DeadlineSafety => deadlines::run(&mut report).await,
-            Scenario::WorkerLifecycle => workers::run(&mut report).await,
-            Scenario::DurableScheduling => scheduling::run(&mut report).await,
-            Scenario::QueueRecovery => queues::run(&mut report).await,
-            Scenario::TaskHandoffRecovery => handoffs::run(&mut report).await,
-            Scenario::ChainWriteFencing => chain_fencing::run(&mut report).await,
+        let result: Pin<Box<dyn Future<Output = Result<(), SimulationError>> + '_>> = match scenario
+        {
+            Scenario::GeneratedPolicy => Box::pin(policy(&mut report)),
+            Scenario::Approval => Box::pin(approval(&mut report)),
+            Scenario::TenantDeduplication => Box::pin(dedup(&mut report)),
+            Scenario::RetryRecovery => Box::pin(retry(&mut report)),
+            Scenario::EvaluatorIntegrity => Box::pin(evaluator(&mut report)),
+            Scenario::StateFailure => Box::pin(state_failure(&mut report)),
+            Scenario::IncidentResponse => Box::pin(portfolio::incident(&mut report)),
+            Scenario::RefundFulfillment => Box::pin(portfolio::refund(&mut report)),
+            Scenario::PromptInjection => Box::pin(portfolio::injection(&mut report)),
+            Scenario::DeadlineSafety => Box::pin(deadlines::run(&mut report)),
+            Scenario::WorkerLifecycle => Box::pin(workers::run(&mut report)),
+            Scenario::DurableScheduling => Box::pin(scheduling::run(&mut report)),
+            Scenario::QueueRecovery => Box::pin(queues::run(&mut report)),
+            Scenario::TaskHandoffRecovery => Box::pin(handoffs::run(&mut report)),
+            Scenario::ChainWriteFencing => Box::pin(chain_fencing::run(&mut report)),
+            Scenario::ChainDiscoveryRecovery => Box::pin(chain_recovery::run(&mut report)),
         };
+        let result = result.await;
         if let Err(error) = result {
             report.check(scenario, "scenario completed", false, error.to_string());
         }

@@ -67,6 +67,219 @@ pub struct ExecutionFilter {
 }
 
 impl Gateway {
+    /// Recreate secondary discovery for one active chain from its authoritative
+    /// state. A chain record is written before its pending/ready indexes, so
+    /// this is safe to repeat after an interrupted create, reset, or handoff.
+    ///
+    /// The index time comes from persisted state rather than the reconciliation
+    /// clock: restarting must not make a delayed step, retry, or parked wait
+    /// eligible early. Signal buffers are authoritative for an immediately
+    /// wakeable signal wait.
+    #[allow(clippy::too_many_lines)]
+    pub(crate) async fn repair_chain_discovery(
+        &self,
+        chain_state: &ChainState,
+    ) -> Result<(), GatewayError> {
+        if !chain_state.status.is_active() {
+            return Ok(());
+        }
+
+        let pending_key = StateKey::new(
+            chain_state.namespace.as_str(),
+            chain_state.tenant.as_str(),
+            KeyKind::PendingChains,
+            &chain_state.chain_id,
+        );
+        let pending_value = serde_json::json!({
+            "chain_id": &chain_state.chain_id,
+            "chain_name": &chain_state.chain_name,
+            "started_at": chain_state.started_at.to_rfc3339(),
+        });
+        self.state
+            .set(&pending_key, &pending_value.to_string(), None)
+            .await?;
+
+        let now = self.clock.now();
+        let ready_at = match chain_state.status {
+            ChainStatus::Running => {
+                let chain_config = self.execution_config(chain_state).await?.ok_or_else(|| {
+                    GatewayError::ChainError(format!(
+                        "chain configuration not found during discovery repair: {}",
+                        chain_state.chain_name
+                    ))
+                })?;
+                let step = chain_config
+                    .steps
+                    .get(chain_state.current_step)
+                    .ok_or_else(|| {
+                        GatewayError::ChainError(
+                            "chain step missing during discovery repair".into(),
+                        )
+                    })?;
+                let retry_delay = step.retry.as_ref().and_then(|retry| {
+                    let attempts = chain_state
+                        .step_attempts
+                        .get(chain_state.current_step)
+                        .copied()
+                        .unwrap_or_default();
+                    (attempts > 0
+                        && chain_state
+                            .step_results
+                            .get(chain_state.current_step)
+                            .is_some_and(Option::is_none))
+                    .then(|| retry.compute_delay_ms(attempts))
+                });
+                let delay_ms = retry_delay.or_else(|| {
+                    step.delay_seconds
+                        .map(|seconds| seconds.saturating_mul(1_000))
+                });
+                Some(
+                    delay_ms.map_or(chain_state.updated_at.timestamp_millis(), |delay| {
+                        chain_state
+                            .updated_at
+                            .timestamp_millis()
+                            .saturating_add(i64::try_from(delay).unwrap_or(i64::MAX))
+                    }),
+                )
+            }
+            ChainStatus::WaitingTimer => match &chain_state.wait_state {
+                Some(WaitState::Timer { fire_at, .. }) => {
+                    Self::park_wake_at_ms(Some(*fire_at), chain_state.expires_at)
+                }
+                _ => Some(now.timestamp_millis()),
+            },
+            ChainStatus::WaitingSignal => match &chain_state.wait_state {
+                Some(WaitState::Signal {
+                    signal_name,
+                    timeout_at,
+                    ..
+                }) => {
+                    if self
+                        .peek_buffered_signal(
+                            &chain_state.namespace,
+                            &chain_state.tenant,
+                            &chain_state.chain_id,
+                            signal_name,
+                        )
+                        .await?
+                        .is_some()
+                    {
+                        Some(now.timestamp_millis())
+                    } else {
+                        Self::park_wake_at_ms(*timeout_at, chain_state.expires_at)
+                    }
+                }
+                _ => Some(now.timestamp_millis()),
+            },
+            ChainStatus::WaitingWorker => match &chain_state.wait_state {
+                Some(WaitState::Worker { timeout_at, .. }) => {
+                    Self::park_wake_at_ms(*timeout_at, chain_state.expires_at)
+                }
+                _ => Some(now.timestamp_millis()),
+            },
+            // Parent chains poll their child and a persisted parallel state
+            // resumes any sub-steps that were interrupted after its durable
+            // progress record was written.
+            ChainStatus::WaitingSubChain => Self::park_wake_at_ms(
+                Some(now + chrono::Duration::seconds(5)),
+                chain_state.expires_at,
+            ),
+            ChainStatus::WaitingParallel => Some(now.timestamp_millis()),
+            ChainStatus::Completed
+            | ChainStatus::Failed
+            | ChainStatus::Cancelled
+            | ChainStatus::TimedOut => None,
+        };
+        if let Some(ready_at) = ready_at {
+            self.state.index_chain_ready(&pending_key, ready_at).await?;
+        } else {
+            self.state.remove_chain_ready_index(&pending_key).await?;
+        }
+        Ok(())
+    }
+
+    /// Rebuild chain pending/ready discovery from primary records and prune
+    /// orphaned or terminal hints. Run after restart and periodically when a
+    /// background cleanup processor is attached.
+    pub async fn reconcile_chain_discovery(&self) -> Result<usize, GatewayError> {
+        let rows = self.state.scan_keys_by_kind(KeyKind::Chain).await?;
+        let mut repaired = 0;
+        let mut first_error = None;
+        for (key, _) in rows {
+            let parts: Vec<_> = key.splitn(4, ':').collect();
+            if parts.len() != 4 || parts[2] != KeyKind::Chain.as_str() {
+                continue;
+            }
+            let repair = async {
+                let guard = self
+                    .lock
+                    .acquire(
+                        &format!("chain:{}", parts[3]),
+                        Duration::from_secs(30),
+                        Duration::from_secs(5),
+                    )
+                    .await
+                    .map_err(|error| GatewayError::LockFailed(error.to_string()))?;
+                let result = async {
+                    if let Some(chain_state) =
+                        self.get_chain_status(parts[0], parts[1], parts[3]).await?
+                    {
+                        if chain_state.status.is_active() {
+                            self.repair_chain_discovery(&chain_state).await?;
+                            return Ok(true);
+                        }
+                        self.cleanup_pending_chain(parts[0], parts[1], parts[3])
+                            .await?;
+                    }
+                    Ok(false)
+                }
+                .await;
+                guard
+                    .release()
+                    .await
+                    .map_err(|error| GatewayError::LockFailed(error.to_string()))?;
+                result
+            }
+            .await;
+            match repair {
+                Ok(true) => repaired += 1,
+                Ok(false) => {}
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                }
+            }
+        }
+
+        // Primary scans do not reveal pending hints whose execution was
+        // retained only in an index, so validate and remove those separately.
+        for (key, _) in self.state.scan_keys_by_kind(KeyKind::PendingChains).await? {
+            let parts: Vec<_> = key.splitn(4, ':').collect();
+            if parts.len() != 4 || parts[2] != KeyKind::PendingChains.as_str() {
+                continue;
+            }
+            match self.get_chain_status(parts[0], parts[1], parts[3]).await {
+                Ok(Some(chain_state)) if chain_state.status.is_active() => {}
+                Ok(_) => {
+                    if let Err(error) = self
+                        .cleanup_pending_chain(parts[0], parts[1], parts[3])
+                        .await
+                    {
+                        first_error.get_or_insert(error);
+                    }
+                }
+                Err(error) => {
+                    warn!(%error, chain_id = parts[3], "chain index cannot be validated; retained for repair");
+                    first_error.get_or_insert(error);
+                }
+            }
+        }
+
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(repaired),
+        }
+    }
+
     /// Append an event to an execution's history log. Best-effort: failures
     /// are logged but never propagate, so a history outage cannot fail the
     /// execution itself.

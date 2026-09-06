@@ -16,7 +16,8 @@ for its scope, grading contract, and the work that remains. Follow-ups add
 Later phases add [durable scheduling](durable-scheduling.md) and
 [worker queue recovery](queue-recovery.md), followed by
 [terminal worker-result handoffs](task-handoff-recovery.md) and
-[chain state/retention fencing](chain-state-fencing.md).
+[chain state/retention fencing](chain-state-fencing.md), then
+[chain discovery recovery](chain-discovery-recovery.md).
 
 ## Implemented behavior
 

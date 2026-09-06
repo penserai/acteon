@@ -2,10 +2,15 @@
 
 ## Unreleased — rehabilitation
 
+- Rebuild chain pending/ready discovery from authoritative state after interrupted
+  creates and buffered signal delivery, and prune terminal orphans without letting
+  delayed cleanup erase a reset. Add real-backend replay and mutation coverage on
+  memory, Redis, and PostgreSQL under grader `portfolio-v8`.
+
 - Fence chain state updates across advancement, parallel/wait steps, cancellation,
   reset, and metadata changes. Add atomic conditional deletion on all four state
   stores so chain retention cannot delete a concurrent reset. Extend replay with
-  real-backend stale-writer and retention races under grader `portfolio-v7`.
+  real-backend stale-writer and retention races under grader `portfolio-v8`.
 
 - Persist terminal worker-result handoffs with the result, lease and retry their
   independent destinations, and retain unfinished work without expiry. Repair
