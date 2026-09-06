@@ -381,6 +381,14 @@ for receipt consumption, upgrade requirements, and untested crash windows.
 `scenarios/queues.json` exercises interrupted enqueue repair, retry acknowledgement
 loss, ownership and tenant isolation, terminal cleanup, and encrypted records on
 memory, Redis, and PostgreSQL. The same manifest/replay commands apply. The CI
-script runs twelve suite/backend pairs and preserves their executable. See
+script runs fifteen suite/backend pairs and preserves their executable. See
 [worker queue recovery](../../queue-recovery.md) for the write-fault adapter,
-manual-clock race contracts, and remaining terminal-handoff gap.
+manual-clock race contracts, and the boundary with terminal-result delivery below.
+
+### Terminal worker-result handoffs
+
+`scenarios/handoffs.json` tests retained result delivery across terminal-write and
+receiver outages, chain discovery repair, DLQ acknowledgement loss, tenant scope,
+and encryption on all three backends. The script retains fifteen suite/backend
+report/replay pairs. See [terminal handoff recovery](../../task-handoff-recovery.md)
+for destination acknowledgements, receiver fencing, and controlled race evidence.

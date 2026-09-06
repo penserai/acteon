@@ -2,6 +2,13 @@
 
 ## Unreleased — rehabilitation
 
+- Persist terminal worker-result handoffs with the result, lease and retry their
+  independent destinations, and retain unfinished work without expiry. Repair
+  workflow continuation/timer and chain ready discovery; deduplicate internal
+  child-result signals and retain unfinished workflow close effects. Fence
+  workflow writes and worker-result chain writes against expired execution locks.
+  Add all-backend handoff replay and controlled acknowledgement/cancellation races.
+
 - Keep worker tasks discoverable through leases and retries; reconcile interrupted
   enqueue writes and stale indexes. Reject duplicate IDs and mismatched queue
   scope, and encrypt persisted queue payloads/results. Promote legacy Redis

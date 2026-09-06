@@ -109,6 +109,7 @@ scheduler, and deadline safety suite. The follow-up from `a514c5b` extends it to
 adds [durable scheduling and deployment recovery](durable-scheduling.md).
 The follow-up from `b7b588c` adds [worker queue recovery](queue-recovery.md), with
 write-fault evidence on memory, Redis, and PostgreSQL and manual-clock race tests.
+The phase from `ea53c24` adds [terminal worker-result handoff recovery](task-handoff-recovery.md).
 
 ## Remaining plan
 
@@ -120,9 +121,10 @@ write-fault evidence on memory, Redis, and PostgreSQL and manual-clock race test
 2. Extend [durable deployment and tenant scheduling](durable-scheduling.md) beyond
    the implemented gateway restart, checkpoint/timer, and scheduled-outcome fault
    cases. Queue index reconciliation and before/after-write fault injection now
-   cover memory, Redis, and PostgreSQL. Next, persist and reconcile terminal
-   task-to-workflow/chain/DLQ handoffs, then add process-crash, audit-outage,
-   transport, and partition adapters across the relevant backends.
+   cover memory, Redis, and PostgreSQL. Terminal task-to-workflow/chain/DLQ handoffs
+   now have durable progress, recipient discovery repair, and controlled receiver
+   races. Next, add process-crash, audit-outage, transport, and partition adapters
+   across the relevant backends; extend receiver fencing to other chain paths.
    No test here establishes exactly-once effects across a crash between external
    execution and durable completion persistence.
 3. Expand the injection portfolio to transport-level redirect/rebinding and

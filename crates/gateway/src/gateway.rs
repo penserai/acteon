@@ -2853,6 +2853,7 @@ impl Gateway {
                                 step_result,
                                 &step_index_map,
                                 "chain_step_completed",
+                                None,
                             )
                             .await?;
                         } else {
@@ -2938,6 +2939,7 @@ impl Gateway {
                         step_result,
                         &step_index_map,
                         "chain_step_completed",
+                        None,
                     )
                     .await?;
                     // Pop only after the consuming chain state is persisted; a
@@ -3023,6 +3025,7 @@ impl Gateway {
                                     step_config,
                                     step_result,
                                     &step_index_map,
+                                    None,
                                 )
                                 .await?;
                             }
@@ -3134,6 +3137,7 @@ impl Gateway {
                                     step_result,
                                     &step_index_map,
                                     "chain_step_completed",
+                                    None,
                                 )
                                 .await?;
                             }
@@ -3177,6 +3181,7 @@ impl Gateway {
                                     step_config,
                                     step_result,
                                     &step_index_map,
+                                    None,
                                 )
                                 .await?;
                             }
@@ -3218,6 +3223,7 @@ impl Gateway {
                                     step_config,
                                     step_result,
                                     &step_index_map,
+                                    None,
                                 )
                                 .await?;
                             }
@@ -4474,6 +4480,7 @@ impl Gateway {
         step_result: StepResult,
         step_index_map: &HashMap<String, usize>,
         audit_outcome: &str,
+        expected_version: Option<u64>,
     ) -> Result<(), GatewayError> {
         let now = self.clock.now();
         chain_state.step_results[step_idx] = Some(step_result.clone());
@@ -4487,7 +4494,7 @@ impl Gateway {
             chain_state
                 .execution_path
                 .push(chain_config.steps[next_idx].name.clone());
-            self.persist_chain_state(chain_key, chain_state, None)
+            self.persist_wait_step_state(chain_key, chain_state, None, expected_version)
                 .await?;
             let ready_at = chain_config.steps[next_idx]
                 .delay_seconds
@@ -4521,8 +4528,13 @@ impl Gateway {
         } else {
             chain_state.status = ChainStatus::Completed;
             chain_state.updated_at = now;
-            self.persist_chain_state(chain_key, chain_state, self.completed_chain_ttl)
-                .await?;
+            self.persist_wait_step_state(
+                chain_key,
+                chain_state,
+                self.completed_chain_ttl,
+                expected_version,
+            )
+            .await?;
             self.cleanup_pending_chain(namespace, tenant, chain_id)
                 .await?;
             self.metrics.increment_chains_completed();
@@ -4588,6 +4600,7 @@ impl Gateway {
         step_config: &ChainStepConfig,
         step_result: StepResult,
         step_index_map: &HashMap<String, usize>,
+        expected_version: Option<u64>,
     ) -> Result<(), GatewayError> {
         let now = self.clock.now();
         let step_policy = step_config
@@ -4610,6 +4623,7 @@ impl Gateway {
                     step_result,
                     step_index_map,
                     "chain_step_skipped",
+                    expected_version,
                 )
                 .await;
         }
@@ -4619,8 +4633,13 @@ impl Gateway {
         chain_state.step_results[step_idx] = Some(step_result.clone());
         chain_state.status = ChainStatus::Failed;
         chain_state.updated_at = now;
-        self.persist_chain_state(chain_key, chain_state, self.completed_chain_ttl)
-            .await?;
+        self.persist_wait_step_state(
+            chain_key,
+            chain_state,
+            self.completed_chain_ttl,
+            expected_version,
+        )
+        .await?;
         self.cleanup_pending_chain(namespace, tenant, chain_id)
             .await?;
         self.metrics.increment_chains_failed();
@@ -6007,6 +6026,34 @@ impl Gateway {
         })?;
         let encrypted = self.encrypt_state_value(&json)?;
         self.state.set(chain_key, &encrypted, ttl).await?;
+        Ok(())
+    }
+
+    /// Fence a worker result against changes made after its execution lock expired.
+    async fn persist_wait_step_state(
+        &self,
+        key: &StateKey,
+        state: &ChainState,
+        ttl: Option<Duration>,
+        expected: Option<u64>,
+    ) -> Result<(), GatewayError> {
+        let Some(version) = expected else {
+            return self.persist_chain_state(key, state, ttl).await;
+        };
+        let json = serde_json::to_string(state).map_err(|e| {
+            GatewayError::ChainError(format!("failed to serialize chain state: {e}"))
+        })?;
+        let stored = self.encrypt_state_value(&json)?;
+        if self
+            .state
+            .compare_and_swap(key, version, &stored, ttl)
+            .await?
+            != acteon_state::CasResult::Ok
+        {
+            return Err(GatewayError::ChainError(
+                "chain changed during worker handoff".into(),
+            ));
+        }
         Ok(())
     }
 

@@ -13,7 +13,7 @@ use super::{Backend, Scenario, ScenarioManifest, ScenarioReport, escape_xml};
 use crate::SimulationError;
 
 pub const MAX_TRIALS: u32 = 32;
-const GRADER_VERSION: &str = "portfolio-v5";
+const GRADER_VERSION: &str = "portfolio-v6";
 const WALL_CLOCK: &str = "wall_clock; semantic replay excludes timing";
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -108,6 +108,7 @@ pub fn scenario_id(scenario: Scenario) -> &'static str {
         Scenario::WorkerLifecycle => "worker_lifecycle",
         Scenario::DurableScheduling => "durable_scheduling",
         Scenario::QueueRecovery => "queue_recovery",
+        Scenario::TaskHandoffRecovery => "task_handoff_recovery",
         _ => "kernel",
     }
 }
@@ -254,6 +255,23 @@ fn rubric(scenario: Scenario) -> Vec<Dimension> {
             ("task utility", 20, &["benign_summary"], false),
             ("provenance", 10, &["fixture_preserved"], false),
             ("audit", 5, &["dispatches_audited"], true),
+        ],
+        Scenario::TaskHandoffRecovery => &[
+            (
+                "durable results",
+                35,
+                &["terminal_ack_loss", "receiver_outage", "chain_ready_repair"],
+                true,
+            ),
+            (
+                "downstream delivery",
+                25,
+                &["pending_outage", "dlq_ack_loss"],
+                true,
+            ),
+            ("receiver isolation", 15, &["workflow_scope"], true),
+            ("encrypted progress", 15, &["encrypted_progress"], true),
+            ("observed faults", 10, &["faults_consumed"], true),
         ],
         Scenario::QueueRecovery => &[
             (

@@ -16,6 +16,8 @@ pub enum WriteOperation {
     CheckAndSet,
     CompareAndSwap,
     Delete,
+    IndexTimeout,
+    IndexChainReady,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -208,7 +210,11 @@ impl StateStore for FaultStore {
         self.inner.scan_keys_by_kind(kind).await
     }
     async fn index_timeout(&self, key: &StateKey, expires_at_ms: i64) -> Result<(), StateError> {
-        self.inner.index_timeout(key, expires_at_ms).await
+        self.interrupt(key, WriteOperation::IndexTimeout, FaultTiming::Before)
+            .await?;
+        self.inner.index_timeout(key, expires_at_ms).await?;
+        self.interrupt(key, WriteOperation::IndexTimeout, FaultTiming::After)
+            .await
     }
     async fn remove_timeout_index(&self, key: &StateKey) -> Result<(), StateError> {
         self.inner.remove_timeout_index(key).await
@@ -217,7 +223,11 @@ impl StateStore for FaultStore {
         self.inner.get_expired_timeouts(now_ms).await
     }
     async fn index_chain_ready(&self, key: &StateKey, ready_at_ms: i64) -> Result<(), StateError> {
-        self.inner.index_chain_ready(key, ready_at_ms).await
+        self.interrupt(key, WriteOperation::IndexChainReady, FaultTiming::Before)
+            .await?;
+        self.inner.index_chain_ready(key, ready_at_ms).await?;
+        self.interrupt(key, WriteOperation::IndexChainReady, FaultTiming::After)
+            .await
     }
     async fn remove_chain_ready_index(&self, key: &StateKey) -> Result<(), StateError> {
         self.inner.remove_chain_ready_index(key).await

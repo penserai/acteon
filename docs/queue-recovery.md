@@ -107,9 +107,9 @@ CI runs six memory suites and three suites on each remote backend, retaining
 twelve report/replay pairs and the exact executable. Old reports require their
 preserved runner. These scripted cases do not measure model capability.
 
-Recovery here covers task discovery and ownership. A crash after terminal task
-persistence but before workflow/chain continuation or DLQ handoff can still lose
-that handoff; it needs a durable outbox/reconciler in the next phase. External
+Recovery here covers task discovery and ownership. The subsequent
+[terminal handoff phase](task-handoff-recovery.md) persists and reconciles
+workflow/chain/DLQ delivery after the worker result is saved. External
 effects remain at least once and require downstream idempotency where duplicates
 are unacceptable. Audit outages, transport failures, partitions, and production
 load remain separate evidence gaps.

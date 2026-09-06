@@ -26,6 +26,26 @@ impl BackgroundProcessor {
         } else {
             Ok(())
         };
+        let handoffs = if let Some(gateway) = &self.gateway {
+            gateway
+                .read()
+                .await
+                .reconcile_worker_handoffs()
+                .await
+                .map(|_| ())
+        } else {
+            Ok(())
+        };
+        let workflows = if let Some(gateway) = &self.gateway {
+            gateway
+                .read()
+                .await
+                .reconcile_workflow_discovery()
+                .await
+                .map(|_| ())
+        } else {
+            Ok(())
+        };
 
         // Clean up resolved/notified groups that are no longer needed
         let groups = self.group_manager.list_pending_groups();
@@ -40,6 +60,8 @@ impl BackgroundProcessor {
 
         scheduled?;
         queues?;
+        handoffs?;
+        workflows?;
         Ok(())
     }
 
