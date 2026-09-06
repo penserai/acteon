@@ -17,7 +17,8 @@ Later phases add [durable scheduling](durable-scheduling.md) and
 [worker queue recovery](queue-recovery.md), followed by
 [terminal worker-result handoffs](task-handoff-recovery.md) and
 [chain state/retention fencing](chain-state-fencing.md), then
-[chain discovery recovery](chain-discovery-recovery.md).
+[chain discovery recovery](chain-discovery-recovery.md) and
+[chain admission recovery](chain-admission-recovery.md).
 
 ## Implemented behavior
 

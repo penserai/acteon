@@ -2,6 +2,10 @@
 
 ## Unreleased — rehabilitation
 
+- Recover chain worker and sub-chain admission after an interrupted parent
+  write. Existing task/child primary rows are adopted instead of duplicated,
+  and cancellation re-discovers children missing from the parent's cached link.
+
 - Rebuild chain pending/ready discovery from authoritative state after interrupted
   creates and buffered signal delivery, and prune terminal orphans without letting
   delayed cleanup erase a reset. Add real-backend replay and mutation coverage on

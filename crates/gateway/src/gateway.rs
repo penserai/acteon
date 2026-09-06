@@ -3080,6 +3080,10 @@ impl Gateway {
             // --- Worker-queue step handling ---
             StepKind::Worker(worker_cfg) => {
                 let now = self.clock.now();
+                let action_type = worker_cfg
+                    .action_type
+                    .clone()
+                    .unwrap_or_else(|| step_config.name.clone());
                 let wait = chain_state.wait_state.clone();
                 match wait {
                     Some(WaitState::Worker {
@@ -3231,6 +3235,73 @@ impl Gateway {
                         }
                     }
                     _ => {
+                        // A task is persisted before the parent can record its
+                        // wait. If that parent write was interrupted, adopt the
+                        // authoritative task instead of enqueuing a second
+                        // external delivery for the same chain step.
+                        if let Some(task) = self
+                            .find_worker_task_for_chain_step(
+                                &crate::task_queue::ChainWorkerTaskIdentity {
+                                    namespace,
+                                    tenant,
+                                    chain_id,
+                                    step_index: step_idx,
+                                    step_name: &step_config.name,
+                                    queue: &worker_cfg.queue,
+                                    action_type: &action_type,
+                                    admitted_after: chain_state.updated_at,
+                                },
+                            )
+                            .await?
+                        {
+                            let task_id = task.task_id.clone();
+                            #[allow(clippy::cast_possible_wrap)]
+                            let timeout_at = worker_cfg.timeout_seconds.map(|seconds| {
+                                task.created_at + chrono::Duration::seconds(seconds as i64)
+                            });
+                            chain_state.wait_state = Some(WaitState::Worker {
+                                step_index: step_idx,
+                                task_id: task.task_id.clone(),
+                                queue: worker_cfg.queue.clone(),
+                                timeout_at,
+                            });
+                            chain_state.status = ChainStatus::WaitingWorker;
+                            chain_state.updated_at = now;
+                            self.persist_chain_state(&chain_key, &mut chain_state, None)
+                                .await?;
+                            self.append_execution_history(
+                                namespace,
+                                tenant,
+                                chain_id,
+                                ExecutionEventType::TaskEnqueued {
+                                    step_name: step_config.name.clone(),
+                                    task_id: task_id.clone(),
+                                    queue: worker_cfg.queue.clone(),
+                                },
+                                None,
+                            )
+                            .await;
+                            let wake = (!task.status.is_active())
+                                .then_some(now.timestamp_millis())
+                                .or_else(|| {
+                                    Self::park_wake_at_ms(timeout_at, chain_state.expires_at)
+                                });
+                            if let Some(wake) = wake {
+                                self.state.index_chain_ready(&pending_key, wake).await?;
+                            }
+                            debug!(
+                                chain_id = %chain_id,
+                                %task_id,
+                                step = %step_config.name,
+                                "adopted interrupted worker-task admission"
+                            );
+                            guard
+                                .release()
+                                .await
+                                .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+                            return Ok(());
+                        }
+
                         // First arrival: enqueue the task and pause the chain.
                         let payload = crate::chain::resolve_template(
                             &step_config.payload_template,
@@ -3246,10 +3317,7 @@ impl Gateway {
                             namespace,
                             tenant,
                             &worker_cfg.queue,
-                            worker_cfg
-                                .action_type
-                                .clone()
-                                .unwrap_or_else(|| step_config.name.clone()),
+                            action_type,
                             payload,
                             self.clock.now(),
                         )
@@ -3349,6 +3417,15 @@ impl Gateway {
                         return Ok(());
                     }
                     Some(child_state) => {
+                        // The child primary row records the parent relation.
+                        // A crash after that row but before the parent CAS
+                        // leaves this redundant link absent; preserve the
+                        // discovered child when the parent is next persisted.
+                        if !chain_state.child_chain_ids.contains(&child_state.chain_id) {
+                            chain_state
+                                .child_chain_ids
+                                .push(child_state.chain_id.clone());
+                        }
                         match child_state.status {
                             ChainStatus::Completed => {
                                 // Sub-chain completed — extract result and continue.
@@ -4676,9 +4753,10 @@ impl Gateway {
 
     /// Find an existing child chain for a sub-chain step.
     ///
-    /// Scans the parent's `child_chain_ids` to find a child chain whose
-    /// `chain_name` matches the sub-chain reference and whose
-    /// `parent_step_index` matches the current step.
+    /// Consults the parent's cached child IDs, then the authoritative child
+    /// rows. A child row is written before its parent can persist the reverse
+    /// link, so the fallback prevents an interrupted admission from starting a
+    /// second child on retry.
     async fn find_child_chain_for_step(
         &self,
         parent: &ChainState,
@@ -4702,7 +4780,90 @@ impl Gateway {
                 }
             }
         }
+
+        // The child carries its parent identity and step index in its primary
+        // record. Search that authoritative relation when the parent's
+        // redundant `child_chain_ids` write was interrupted.
+        let rows = self
+            .state
+            .scan_keys(
+                parent.namespace.as_str(),
+                parent.tenant.as_str(),
+                KeyKind::Chain,
+                None,
+            )
+            .await?;
+        for (key, raw) in rows {
+            let Some(child_id) = key.rsplit(':').next() else {
+                continue;
+            };
+            if child_id == parent.chain_id {
+                continue;
+            }
+            let json = self.decrypt_state_value(&raw)?;
+            let child_state: ChainState = match serde_json::from_str(&json) {
+                Ok(state) => state,
+                Err(error) => {
+                    warn!(%error, %child_id, "invalid chain record retained during child admission lookup");
+                    return Err(GatewayError::ChainError(format!(
+                        "invalid chain record during child admission lookup: {error}"
+                    )));
+                }
+            };
+            if child_state.namespace != parent.namespace
+                || child_state.tenant != parent.tenant
+                || child_state.chain_id != child_id
+            {
+                warn!(%child_id, "invalid child chain scope retained during admission lookup");
+                return Err(GatewayError::ChainError(
+                    "invalid child chain scope during admission lookup".into(),
+                ));
+            }
+            if child_state.parent_chain_id.as_deref() == Some(parent.chain_id.as_str())
+                && child_state.parent_step_index == Some(step_idx)
+                && child_state.chain_name == sub_chain_name
+            {
+                return Ok(Some(child_state));
+            }
+        }
         Ok(None)
+    }
+
+    /// Return child execution IDs from their authoritative parent relation.
+    /// The stored parent list is a convenient cache but cannot be the only
+    /// source used to cascade cancellation after an interrupted child admit.
+    async fn find_child_chain_ids(&self, parent: &ChainState) -> Result<Vec<String>, GatewayError> {
+        let rows = self
+            .state
+            .scan_keys(
+                parent.namespace.as_str(),
+                parent.tenant.as_str(),
+                KeyKind::Chain,
+                None,
+            )
+            .await?;
+        let mut child_ids = Vec::new();
+        for (key, raw) in rows {
+            let Some(child_id) = key.rsplit(':').next() else {
+                continue;
+            };
+            let json = self.decrypt_state_value(&raw)?;
+            let child_state: ChainState = match serde_json::from_str(&json) {
+                Ok(state) => state,
+                Err(error) => {
+                    warn!(%error, %child_id, "invalid chain record retained during cancellation lookup");
+                    continue;
+                }
+            };
+            if child_state.namespace == parent.namespace
+                && child_state.tenant == parent.tenant
+                && child_state.chain_id == child_id
+                && child_state.parent_chain_id.as_deref() == Some(parent.chain_id.as_str())
+            {
+                child_ids.push(child_state.chain_id);
+            }
+        }
+        Ok(child_ids)
     }
 
     /// Handle a parallel step: resolve sub-step payloads, dispatch concurrently,
@@ -6593,8 +6754,22 @@ impl Gateway {
             action_id: Some(chain_state.origin_action.id.to_string()),
         });
 
-        // Cascade cancellation to running child chains.
-        let child_ids = chain_state.child_chain_ids.clone();
+        // Cascade cancellation to running child chains. Include the reverse
+        // relation from child primary records: a crash after child creation
+        // but before the parent link was persisted must not strand that child.
+        let mut child_ids = chain_state.child_chain_ids.clone();
+        match self.find_child_chain_ids(&chain_state).await {
+            Ok(discovered) => {
+                for child_id in discovered {
+                    if !child_ids.contains(&child_id) {
+                        child_ids.push(child_id);
+                    }
+                }
+            }
+            Err(error) => {
+                warn!(%error, %chain_id, "child cancellation discovery failed; retained links will retry");
+            }
+        }
 
         guard
             .release()

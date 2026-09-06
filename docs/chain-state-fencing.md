@@ -114,7 +114,8 @@ including delayed terminal cleanup racing a reset. Signal buffers, child/task
 admission, cancellation notifications, A2A projections, and audit/history writes
 remain separate operations. They are not a transaction with the chain update.
 
-Already-started external effects cannot be revoked by a state conflict. Child and
-worker creation can still be interrupted between records. Process-crash,
+Already-started external effects cannot be revoked by a state conflict. Interrupted
+child and worker creation are recovered by
+[chain admission recovery](chain-admission-recovery.md). Process-crash,
 transport/partition, audit-outage, and production-load evidence remain subsequent
-work, alongside durable recovery for these remaining chain side effects.
+work, alongside durable recovery for the remaining chain side effects.

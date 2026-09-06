@@ -50,9 +50,11 @@ whitespace, and scenario-script syntax also passed.
 
 ## Remaining boundaries
 
-Recovery rebuilds only chain discovery. Signal buffers, child/task creation,
-cancellation notifications, A2A projections, audit/history records, and external
-effects remain independent side effects. A crash between an external effect and
+Recovery rebuilds only chain discovery. [Chain admission recovery](chain-admission-recovery.md)
+now covers internal child and worker creation plus incomplete child cancellation
+cascades. Signal buffers, cancellation notifications, A2A projections,
+audit/history records, and external effects remain independent side effects. A
+crash between an external effect and
 completion persistence still requires idempotent receivers and does not establish
 exactly-once delivery. Process crashes, transport partitions, audit outages, and
 production-load evidence remain subsequent work.
