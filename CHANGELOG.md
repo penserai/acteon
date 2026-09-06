@@ -2,6 +2,15 @@
 
 ## Unreleased — rehabilitation
 
+- Keep worker tasks discoverable through leases and retries; reconcile interrupted
+  enqueue writes and stale indexes. Reject duplicate IDs and mismatched queue
+  scope, and encrypt persisted queue payloads/results. Promote legacy Redis
+  strings atomically and remove shadow values before they can reappear after
+  hash expiry. Reject DynamoDB CAS on expired rows awaiting TTL cleanup and make
+  create-only replacement of expired rows atomic. Add
+  write-fault injection, controlled queue races, and replayable
+  recovery trials on memory, Redis, and PostgreSQL.
+
 - Make one-shot scheduled delivery recoverable through durable CAS leases,
   renewal, outcome persistence, and discovery reconciliation. Clear old memory/Redis
   TTLs on CAS updates with no expiry, with shared backend conformance coverage. Execute due actions

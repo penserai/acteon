@@ -1,0 +1,7 @@
+{
+  "schema_version": 2,
+  "seed": 20260905,
+  "backend": "memory",
+  "trials": 3,
+  "scenarios": ["queue_recovery"]
+}

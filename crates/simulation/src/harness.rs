@@ -320,7 +320,7 @@ type StateComponents = (
 
 /// Construct the selected concrete backend pair; no fallback is permitted.
 #[allow(clippy::unused_async)] // External-backend awaits are feature-gated.
-async fn create_state_backend(
+pub(crate) async fn create_state_backend(
     config: &SimulationConfig,
 ) -> Result<StateComponents, SimulationError> {
     let components: StateComponents = match &config.state_backend {

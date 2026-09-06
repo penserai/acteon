@@ -13,7 +13,7 @@ use super::{Backend, Scenario, ScenarioManifest, ScenarioReport, escape_xml};
 use crate::SimulationError;
 
 pub const MAX_TRIALS: u32 = 32;
-const GRADER_VERSION: &str = "portfolio-v4";
+const GRADER_VERSION: &str = "portfolio-v5";
 const WALL_CLOCK: &str = "wall_clock; semantic replay excludes timing";
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -107,6 +107,7 @@ pub fn scenario_id(scenario: Scenario) -> &'static str {
         Scenario::DeadlineSafety => "deadline_safety",
         Scenario::WorkerLifecycle => "worker_lifecycle",
         Scenario::DurableScheduling => "durable_scheduling",
+        Scenario::QueueRecovery => "queue_recovery",
         _ => "kernel",
     }
 }
@@ -253,6 +254,23 @@ fn rubric(scenario: Scenario) -> Vec<Dimension> {
             ("task utility", 20, &["benign_summary"], false),
             ("provenance", 10, &["fixture_preserved"], false),
             ("audit", 5, &["dispatches_audited"], true),
+        ],
+        Scenario::QueueRecovery => &[
+            (
+                "queue discovery",
+                35,
+                &["enqueue_gap", "retry_ack_loss", "legacy_index_repair"],
+                true,
+            ),
+            (
+                "ownership and scope",
+                25,
+                &["duplicate_id_denied", "scope_isolation"],
+                true,
+            ),
+            ("terminal cleanup", 20, &["terminal_cleanup"], true),
+            ("payload encryption", 10, &["payload_encrypted"], true),
+            ("observed faults", 10, &["faults_consumed"], true),
         ],
         Scenario::DurableScheduling => &[
             ("lease fencing", 20, &["expired_owner_denied"], true),

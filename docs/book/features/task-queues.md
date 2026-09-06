@@ -117,3 +117,17 @@ Scaling is horizontal: add more workers polling the same queue.
   bounded by your workers' poll interval.
 - Terminal failures are pushed to the DLQ with provider
   `queue:{queue_name}` and can be inspected and resubmitted from the UI.
+- Enable `[background] enabled = true` to repair interrupted enqueue discovery
+  on the cleanup cadence (default 60 seconds). Background processing is disabled
+  by default. Embedders can call `Gateway::reconcile_worker_task_indexes()`.
+- Active discovery remains present throughout leases and retries. The scoped
+  primary record determines ownership; stale indexes cannot redeliver terminal
+  tasks. Enqueue never overwrites an existing task ID.
+- Configured payload encryption covers stored queue inputs and results. Upgrade
+  with old queue consumers stopped, then reconcile before resuming workers.
+- Terminal task persistence and workflow/chain/DLQ handoff are separate writes;
+  that handoff still needs recovery after a crash. External handlers need
+  downstream idempotency where repeated effects are unacceptable.
+
+See [worker queue recovery](../../queue-recovery.md) for migration details,
+validation rules, scan costs, and fault-injection evidence.

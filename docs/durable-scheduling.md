@@ -105,9 +105,9 @@ records. Existing payloads whose old TTL has already expired cannot be recovered
 Custom consumers must use the new receipt API; constructing a receipt now requires
 `delivery_token`. Completed records remain visible in raw state until their TTL.
 
-This phase does not make every queue/index mutation transactional. In particular,
-crashes between queue-row transitions and pending/leased index updates still need
-reconciliation work. Recurring schedules retain their existing handoff behavior.
+The subsequent [worker queue recovery phase](queue-recovery.md) repairs discovery
+across queue-row/index write gaps. Terminal task-to-workflow/chain/DLQ handoff
+still needs durable recovery. Recurring schedules retain their existing handoff behavior.
 Audit persistence, DLQ retention, real database TTLs, transport failures,
 partitions, and OS scheduling remain separate evidence gaps. Remote backend runs
 exercise the existing kernel and product suites, not virtual-clock lease expiry.

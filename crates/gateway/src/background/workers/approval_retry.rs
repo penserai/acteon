@@ -10,9 +10,22 @@ use super::super::{ApprovalRetryEvent, BackgroundProcessor};
 impl BackgroundProcessor {
     /// Run periodic cleanup tasks, including approval notification retry sweep.
     pub(crate) async fn run_cleanup(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        if self.config.enable_scheduled_actions {
-            self.reconcile_scheduled_actions().await?;
-        }
+        // Run independent repairs even if another worker's storage operation fails.
+        let scheduled = if self.config.enable_scheduled_actions {
+            self.reconcile_scheduled_actions().await
+        } else {
+            Ok(())
+        };
+        let queues = if let Some(gateway) = &self.gateway {
+            gateway
+                .read()
+                .await
+                .reconcile_worker_task_indexes()
+                .await
+                .map(|_| ())
+        } else {
+            Ok(())
+        };
 
         // Clean up resolved/notified groups that are no longer needed
         let groups = self.group_manager.list_pending_groups();
@@ -25,6 +38,8 @@ impl BackgroundProcessor {
             self.sweep_approval_retries(tx).await;
         }
 
+        scheduled?;
+        queues?;
         Ok(())
     }
 

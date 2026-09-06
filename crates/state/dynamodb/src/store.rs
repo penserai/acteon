@@ -159,16 +159,18 @@ impl StateStore for DynamoStateStore {
         let pk = build_pk(&self.prefix, key);
         let sk = build_sk(key);
 
-        // First try: conditional put with attribute_not_exists.
+        // Replacing an expired item must be one conditional write. A separate
+        // delete after reading expiry can erase another caller's fresh value.
         let mut put = self
             .client
             .put_item()
             .table_name(&self.table_name)
-            .item("pk", AttributeValue::S(pk.clone()))
-            .item("sk", AttributeValue::S(sk.clone()))
+            .item("pk", AttributeValue::S(pk))
+            .item("sk", AttributeValue::S(sk))
             .item("value", AttributeValue::S(value.to_owned()))
             .item("version", AttributeValue::N("1".to_owned()))
-            .condition_expression("attribute_not_exists(pk)");
+            .condition_expression("attribute_not_exists(pk) OR expires_at <= :now")
+            .expression_attribute_values(":now", AttributeValue::N(Self::now_epoch().to_string()));
 
         if let Some(exp) = Self::expires_at(ttl) {
             put = put.item("expires_at", AttributeValue::N(exp.to_string()));
@@ -181,26 +183,6 @@ impl StateStore for DynamoStateStore {
             Err(err) => {
                 let service_err = err.into_service_error();
                 if service_err.is_conditional_check_failed_exception() {
-                    // Item exists. Check if it's expired.
-                    let get_result = self
-                        .client
-                        .get_item()
-                        .table_name(&self.table_name)
-                        .key("pk", AttributeValue::S(pk.clone()))
-                        .key("sk", AttributeValue::S(sk.clone()))
-                        .send()
-                        .await
-                        .map_err(|e| StateError::Backend(e.to_string()))?;
-
-                    if let Some(item) = get_result.item()
-                        && Self::is_expired(item)
-                    {
-                        // Item is expired, delete it and retry.
-                        self.delete_item(&pk, &sk).await?;
-                        return self.check_and_set(key, value, ttl).await;
-                    }
-
-                    // Item exists and is not expired.
                     Ok(false)
                 } else {
                     Err(StateError::Backend(service_err.to_string()))
@@ -446,14 +428,18 @@ impl StateStore for DynamoStateStore {
         let pk = build_pk(&self.prefix, key);
         let sk = build_sk(key);
 
-        // Conditional update: version must match expected.
+        // Expired rows can remain until DynamoDB's asynchronous TTL sweep.
+        // Fence them in the same conditional write as the version check.
         let mut update = self
             .client
             .update_item()
             .table_name(&self.table_name)
             .key("pk", AttributeValue::S(pk.clone()))
             .key("sk", AttributeValue::S(sk.clone()))
-            .condition_expression("version = :expected")
+            .condition_expression(
+                "version = :expected AND (attribute_not_exists(expires_at) OR expires_at > :now)",
+            )
+            .expression_attribute_values(":now", AttributeValue::N(Self::now_epoch().to_string()))
             .expression_attribute_names("#val", "value")
             .expression_attribute_values(
                 ":expected",
@@ -485,6 +471,7 @@ impl StateStore for DynamoStateStore {
                     let get_result = self
                         .client
                         .get_item()
+                        .consistent_read(true)
                         .table_name(&self.table_name)
                         .key("pk", AttributeValue::S(pk))
                         .key("sk", AttributeValue::S(sk))
@@ -493,7 +480,7 @@ impl StateStore for DynamoStateStore {
                         .map_err(|e| StateError::Backend(e.to_string()))?;
 
                     let (current_value, current_version) = match get_result.item() {
-                        Some(item) => {
+                        Some(item) if !Self::is_expired(item) => {
                             let val = match item.get("value") {
                                 Some(AttributeValue::S(v) | AttributeValue::N(v)) => {
                                     Some(v.clone())
@@ -506,7 +493,7 @@ impl StateStore for DynamoStateStore {
                             };
                             (val, ver)
                         }
-                        None => (None, 0),
+                        _ => (None, 0),
                     };
 
                     Ok(CasResult::Conflict {
@@ -885,5 +872,47 @@ mod integration_tests {
         acteon_state::testing::run_store_conformance_tests(&store)
             .await
             .expect("conformance tests should pass");
+    }
+
+    #[tokio::test]
+    async fn expired_create_only_record_has_one_concurrent_replacement() {
+        let store = std::sync::Arc::new(DynamoStateStore::new(&test_config()).await.unwrap());
+        create_table(&store.client, &store.table_name)
+            .await
+            .unwrap();
+        let key = StateKey::new(
+            "ns",
+            "tenant",
+            acteon_state::KeyKind::State,
+            "expired-create",
+        );
+        assert!(
+            store
+                .check_and_set(&key, "expired", Some(Duration::ZERO))
+                .await
+                .unwrap()
+        );
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(32));
+        let mut contenders = tokio::task::JoinSet::new();
+        for id in 0..32 {
+            let store = store.clone();
+            let key = key.clone();
+            let barrier = barrier.clone();
+            contenders.spawn(async move {
+                barrier.wait().await;
+                let value = id.to_string();
+                let created = store.check_and_set(&key, &value, None).await.unwrap();
+                (created, value)
+            });
+        }
+        let mut winners = Vec::new();
+        while let Some(result) = contenders.join_next().await {
+            let (created, value) = result.unwrap();
+            if created {
+                winners.push(value);
+            }
+        }
+        assert_eq!(winners.len(), 1, "expired replacement must be atomic");
+        assert_eq!(store.get(&key).await.unwrap(), winners.pop());
     }
 }

@@ -13,6 +13,8 @@ evaluations. See [the evaluation record and remaining plan](scenario-evaluation.
 for its scope, grading contract, and the work that remains. Follow-ups add
 [clock injection and deadline safety evaluation](virtual-time.md), then
 [worker ticks and task lifecycle evaluation](worker-lifecycle.md).
+Later phases add [durable scheduling](durable-scheduling.md) and
+[worker queue recovery](queue-recovery.md).
 
 ## Implemented behavior
 

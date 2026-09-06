@@ -18,6 +18,7 @@ use crate::{
 mod deadlines;
 pub mod evaluation;
 mod portfolio;
+mod queues;
 mod scheduling;
 mod scheduling_fault;
 mod workers;
@@ -54,6 +55,7 @@ pub enum Scenario {
     DeadlineSafety,
     WorkerLifecycle,
     DurableScheduling,
+    QueueRecovery,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -272,6 +274,7 @@ pub async fn run(manifest: ScenarioManifest) -> Result<ScenarioReport, Simulatio
             Scenario::DeadlineSafety => deadlines::run(&mut report).await,
             Scenario::WorkerLifecycle => workers::run(&mut report).await,
             Scenario::DurableScheduling => scheduling::run(&mut report).await,
+            Scenario::QueueRecovery => queues::run(&mut report).await,
         };
         if let Err(error) = result {
             report.check(scenario, "scenario completed", false, error.to_string());

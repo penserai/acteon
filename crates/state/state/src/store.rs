@@ -62,6 +62,7 @@ pub trait StateStore: Send + Sync {
     ) -> Result<i64, StateError>;
 
     /// Compare-and-swap: update value only if the current version matches.
+    /// Missing or expired records conflict, even when expected version is zero.
     /// A successful swap replaces the TTL; `None` clears any prior expiry.
     /// A conflict must leave both the value and its expiry unchanged.
     async fn compare_and_swap(
