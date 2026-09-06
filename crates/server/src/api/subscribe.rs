@@ -1168,6 +1168,7 @@ mod tests {
             tenant: "t1".into(),
             cancel_reason: None,
             cancelled_by: None,
+            cancellation_handoff: None,
             execution_path,
             parent_chain_id: None,
             parent_step_index: None,

@@ -140,7 +140,7 @@ impl BackgroundProcessor {
                     .sync_groups_from_store(self.state.as_ref(), self.payload_encryptor.as_deref())
                     .await?;
             }
-            BackgroundJob::Cleanup => self.run_cleanup().await?,
+            BackgroundJob::Cleanup => Box::pin(self.run_cleanup()).await?,
         }
         Ok(())
     }
