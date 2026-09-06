@@ -526,6 +526,7 @@ mod tests {
             tenant: "demo".into(),
             cancel_reason: None,
             cancelled_by: None,
+            cancellation_handoff: None,
             execution_path: vec!["step1".into()],
             parent_chain_id: None,
             parent_step_index: None,

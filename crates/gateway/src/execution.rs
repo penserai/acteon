@@ -7,13 +7,16 @@
 //! works uniformly for both.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use tracing::{debug, warn};
 
 use acteon_core::chain::WaitState;
-use acteon_core::{ChainState, ChainStatus, ExecutionEventType, ExecutionHistory};
+use acteon_core::{
+    Action, ActionOutcome, ChainState, ChainStatus, ExecutionEventType, ExecutionHistory,
+};
 use acteon_state::{KeyKind, StateKey};
 
 use crate::error::GatewayError;
@@ -38,6 +41,8 @@ const PINNED_CONFIG_CACHE_CAP: usize = 256;
 
 /// How long a buffered (not-yet-consumed) signal is retained.
 const SIGNAL_BUFFER_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
+const CANCELLATION_HANDOFF_LEASE_SECONDS: i64 = 60;
+const MAX_CANCELLATION_HANDOFF_CAS_ATTEMPTS: usize = 5;
 
 fn signal_buffer_key(namespace: &str, tenant: &str, chain_id: &str, signal_name: &str) -> StateKey {
     StateKey::new(
@@ -297,6 +302,293 @@ impl Gateway {
         match first_error {
             Some(error) => Err(error),
             None => Ok(repaired),
+        }
+    }
+
+    /// Retry cancellation notifications whose terminal chain write succeeded
+    /// before the notification could be acknowledged. The chain record is the
+    /// outbox: it carries a stable action ID, a delivery lease, and the
+    /// acknowledgement. Legacy cancelled records have no handoff metadata and
+    /// are deliberately not replayed because their prior side effect cannot be
+    /// inferred safely.
+    pub async fn reconcile_chain_cancellation_handoffs(&self) -> Result<usize, GatewayError> {
+        let rows = self.state.scan_keys_by_kind(KeyKind::Chain).await?;
+        let mut delivered = 0;
+        let mut first_error = None;
+        for (key, _) in rows {
+            let parts: Vec<_> = key.splitn(4, ':').collect();
+            if parts.len() != 4 || parts[2] != KeyKind::Chain.as_str() {
+                continue;
+            }
+            let chain = match self.get_chain_status(parts[0], parts[1], parts[3]).await {
+                Ok(Some(chain)) => chain,
+                Ok(None) => continue,
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                    continue;
+                }
+            };
+            if chain.status != ChainStatus::Cancelled
+                || chain
+                    .cancellation_handoff
+                    .as_ref()
+                    .is_none_or(|handoff| handoff.completed_at.is_some())
+            {
+                continue;
+            }
+            match Box::pin(self.deliver_chain_cancellation_handoff(parts[0], parts[1], parts[3]))
+                .await
+            {
+                Ok(true) => delivered += 1,
+                Ok(false) => {}
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                }
+            }
+        }
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(delivered),
+        }
+    }
+
+    pub(crate) async fn try_chain_cancellation_handoff(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        chain_id: &str,
+    ) {
+        if let Err(error) =
+            Box::pin(self.deliver_chain_cancellation_handoff(namespace, tenant, chain_id)).await
+        {
+            warn!(%error, %chain_id, "chain cancellation notification retained for retry");
+        }
+    }
+
+    async fn claim_chain_cancellation_handoff(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        chain_id: &str,
+    ) -> Result<Option<ChainState>, GatewayError> {
+        let chain_key = StateKey::new(namespace, tenant, KeyKind::Chain, chain_id);
+        for _ in 0..MAX_CANCELLATION_HANDOFF_CAS_ATTEMPTS {
+            let Some(mut chain) = self.get_chain_status(namespace, tenant, chain_id).await? else {
+                return Ok(None);
+            };
+            if chain.status != ChainStatus::Cancelled {
+                return Ok(None);
+            }
+            let Some(handoff) = chain.cancellation_handoff.as_mut() else {
+                return Ok(None);
+            };
+            let now = self.clock.now();
+            if handoff.completed_at.is_some() || handoff.lease_expires_at.is_some_and(|at| at > now)
+            {
+                return Ok(None);
+            }
+            handoff.lease_token = Some(uuid::Uuid::new_v4().to_string());
+            handoff.lease_expires_at =
+                Some(now + chrono::Duration::seconds(CANCELLATION_HANDOFF_LEASE_SECONDS));
+            match self
+                .persist_chain_state(&chain_key, &mut chain, self.completed_chain_ttl)
+                .await
+            {
+                Ok(()) => return Ok(Some(chain)),
+                Err(GatewayError::ChainError(message))
+                    if message == "chain changed during update" => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Err(GatewayError::ChainError(
+            "cancellation notification claim contention".into(),
+        ))
+    }
+
+    /// Only the current, unexpired claimant can release or acknowledge a
+    /// cancellation notification delivery.
+    async fn update_chain_cancellation_handoff(
+        &self,
+        chain: &ChainState,
+        token: &str,
+        delivered: bool,
+    ) -> Result<(), GatewayError> {
+        let chain_key = StateKey::new(
+            chain.namespace.as_str(),
+            chain.tenant.as_str(),
+            KeyKind::Chain,
+            &chain.chain_id,
+        );
+        for _ in 0..MAX_CANCELLATION_HANDOFF_CAS_ATTEMPTS {
+            let Some(mut current) = self
+                .get_chain_status(&chain.namespace, &chain.tenant, &chain.chain_id)
+                .await?
+            else {
+                break;
+            };
+            if current.status != ChainStatus::Cancelled {
+                break;
+            }
+            let Some(handoff) = current.cancellation_handoff.as_mut() else {
+                break;
+            };
+            let now = self.clock.now();
+            if handoff.lease_token.as_deref() != Some(token)
+                || handoff.lease_expires_at.is_none_or(|at| at <= now)
+            {
+                break;
+            }
+            if delivered {
+                handoff.completed_at = Some(now);
+            }
+            handoff.lease_token = None;
+            handoff.lease_expires_at = None;
+            match self
+                .persist_chain_state(&chain_key, &mut current, self.completed_chain_ttl)
+                .await
+            {
+                Ok(()) => return Ok(()),
+                Err(GatewayError::ChainError(message))
+                    if message == "chain changed during update" => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Err(GatewayError::ChainError(
+            "cancellation notification handoff ownership lost".into(),
+        ))
+    }
+
+    async fn keep_chain_cancellation_handoff_lease(
+        &self,
+        chain: &ChainState,
+        token: &str,
+        delivery: impl Future<Output = Result<(), GatewayError>>,
+    ) -> Result<(), GatewayError> {
+        tokio::pin!(delivery);
+        loop {
+            tokio::select! {
+                result = &mut delivery => return result,
+                () = self.clock.sleep(Duration::from_secs(20)) => {
+                    // A successful renewal preserves the claim without
+                    // acknowledging it. The actual acknowledgement remains a
+                    // separate CAS after provider execution.
+                    self.renew_chain_cancellation_handoff_lease(chain, token).await?;
+                }
+            }
+        }
+    }
+
+    async fn renew_chain_cancellation_handoff_lease(
+        &self,
+        chain: &ChainState,
+        token: &str,
+    ) -> Result<(), GatewayError> {
+        let chain_key = StateKey::new(
+            chain.namespace.as_str(),
+            chain.tenant.as_str(),
+            KeyKind::Chain,
+            &chain.chain_id,
+        );
+        for _ in 0..MAX_CANCELLATION_HANDOFF_CAS_ATTEMPTS {
+            let Some(mut current) = self
+                .get_chain_status(&chain.namespace, &chain.tenant, &chain.chain_id)
+                .await?
+            else {
+                break;
+            };
+            let Some(handoff) = current.cancellation_handoff.as_mut() else {
+                break;
+            };
+            let now = self.clock.now();
+            if current.status != ChainStatus::Cancelled
+                || handoff.lease_token.as_deref() != Some(token)
+                || handoff.lease_expires_at.is_none_or(|at| at <= now)
+            {
+                break;
+            }
+            handoff.lease_expires_at =
+                Some(now + chrono::Duration::seconds(CANCELLATION_HANDOFF_LEASE_SECONDS));
+            match self
+                .persist_chain_state(&chain_key, &mut current, self.completed_chain_ttl)
+                .await
+            {
+                Ok(()) => return Ok(()),
+                Err(GatewayError::ChainError(message))
+                    if message == "chain changed during update" => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Err(GatewayError::ChainError(
+            "cancellation notification handoff ownership lost".into(),
+        ))
+    }
+
+    async fn deliver_chain_cancellation_handoff(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        chain_id: &str,
+    ) -> Result<bool, GatewayError> {
+        let Some(chain) = self
+            .claim_chain_cancellation_handoff(namespace, tenant, chain_id)
+            .await?
+        else {
+            return Ok(false);
+        };
+        let handoff = chain
+            .cancellation_handoff
+            .as_ref()
+            .expect("claimed cancellation handoff");
+        let token = handoff
+            .lease_token
+            .as_deref()
+            .expect("claimed handoff token");
+        let mut notification = Action::new(
+            namespace,
+            tenant,
+            handoff.provider.clone(),
+            handoff.action_type.clone(),
+            serde_json::json!({
+                "chain_id": chain.chain_id,
+                "chain_name": chain.chain_name,
+                "cancel_reason": chain.cancel_reason,
+                "cancelled_by": chain.cancelled_by,
+                "current_step": chain.current_step,
+                "total_steps": chain.total_steps,
+                "cancelled_at": chain.updated_at.to_rfc3339(),
+            }),
+        );
+        notification.id = handoff.delivery_id.clone().into();
+        notification.created_at = chain.updated_at;
+        let delivery = async {
+            match self.dispatch(notification, None).await? {
+                ActionOutcome::Failed(error) => Err(GatewayError::ChainError(format!(
+                    "cancellation notification dispatch failed: {}",
+                    error.message
+                ))),
+                ActionOutcome::Throttled { .. } | ActionOutcome::CircuitOpen { .. } => {
+                    Err(GatewayError::ChainError(
+                        "cancellation notification dispatch was not accepted".into(),
+                    ))
+                }
+                _ => Ok(()),
+            }
+        };
+        match Box::pin(self.keep_chain_cancellation_handoff_lease(&chain, token, delivery)).await {
+            Ok(()) => {
+                self.update_chain_cancellation_handoff(&chain, token, true)
+                    .await?;
+                Ok(true)
+            }
+            Err(error) => {
+                if let Err(release_error) = self
+                    .update_chain_cancellation_handoff(&chain, token, false)
+                    .await
+                {
+                    warn!(%release_error, %chain_id, "failed to release cancellation notification claim");
+                }
+                Err(error)
+            }
         }
     }
 

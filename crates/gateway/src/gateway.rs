@@ -2557,6 +2557,7 @@ impl Gateway {
             tenant: action.tenant.to_string(),
             cancel_reason: None,
             cancelled_by: None,
+            cancellation_handoff: None,
             execution_path: vec![first_step.clone()],
             parent_chain_id: None,
             parent_step_index: None,
@@ -5747,6 +5748,7 @@ impl Gateway {
             tenant: parent.tenant.clone(),
             cancel_reason: None,
             cancelled_by: None,
+            cancellation_handoff: None,
             execution_path: vec![first_step],
             parent_chain_id: Some(parent.chain_id.clone()),
             parent_step_index: Some(step_idx),
@@ -6722,6 +6724,17 @@ impl Gateway {
         }
 
         let cancelled_at = self.clock.now();
+        // Record notification identity with the terminal transition. A
+        // cancelled row without this handoff is legacy state and is never
+        // replayed because its earlier side effect cannot be inferred.
+        let chain_config = self.execution_config(&chain_state).await.ok().flatten();
+        let (notify_provider, notify_action_type) = chain_config
+            .as_ref()
+            .and_then(|config| config.on_cancel.as_ref())
+            .map_or(
+                ("webhook".to_owned(), "chain_cancelled".to_owned()),
+                |target| (target.provider.clone(), target.action_type.clone()),
+            );
         // Stop the work, not just the chain: cancel the outstanding worker
         // task so it cannot execute after the cancellation.
         if let Some(WaitState::Worker { task_id, .. }) = &chain_state.wait_state {
@@ -6733,6 +6746,14 @@ impl Gateway {
         chain_state.updated_at = cancelled_at;
         chain_state.cancel_reason.clone_from(&reason);
         chain_state.cancelled_by.clone_from(&cancelled_by);
+        chain_state.cancellation_handoff = Some(acteon_core::chain::ChainCancellationHandoff {
+            delivery_id: uuid::Uuid::new_v4().to_string(),
+            provider: notify_provider,
+            action_type: notify_action_type,
+            lease_token: None,
+            lease_expires_at: None,
+            completed_at: None,
+        });
         self.persist_chain_state(&chain_key, &mut chain_state, self.completed_chain_ttl)
             .await?;
         self.cleanup_pending_chain(namespace, tenant, chain_id)
@@ -6807,52 +6828,7 @@ impl Gateway {
 
         info!(chain_id = %chain_id, "chain cancelled");
 
-        // Dispatch a cancel notification through the gateway pipeline.
-        // Resolve the notification target from the execution's pinned
-        // definition — the live registry may have been edited or deleted
-        // since this execution started.
-        let chain_config = self.execution_config(&chain_state).await.ok().flatten();
-        let (notify_provider, notify_action_type) = chain_config
-            .as_ref()
-            .and_then(|c| c.on_cancel.as_ref())
-            .map_or(("webhook", "chain_cancelled"), |t| {
-                (t.provider.as_str(), t.action_type.as_str())
-            });
-
-        let notification_payload = serde_json::json!({
-            "chain_id": chain_id,
-            "chain_name": chain_state.chain_name,
-            "cancel_reason": reason,
-            "cancelled_by": cancelled_by,
-            "current_step": chain_state.current_step,
-            "total_steps": chain_state.total_steps,
-            "cancelled_at": cancelled_at.to_rfc3339(),
-        });
-
-        let notification = Action::new(
-            namespace,
-            tenant,
-            notify_provider,
-            notify_action_type,
-            notification_payload,
-        );
-
-        match self.dispatch(notification, None).await {
-            Ok(outcome) => {
-                debug!(
-                    chain_id = %chain_id,
-                    ?outcome,
-                    "chain cancel notification dispatched"
-                );
-            }
-            Err(e) => {
-                warn!(
-                    chain_id = %chain_id,
-                    error = %e,
-                    "failed to dispatch chain cancel notification"
-                );
-            }
-        }
+        Box::pin(self.try_chain_cancellation_handoff(namespace, tenant, chain_id)).await;
 
         // A2A bridge: project the cancel onto a linked task, if any.
         // `chain_state` is already the post-cancel in-memory state,
@@ -12488,6 +12464,7 @@ mod tests {
             tenant: "tenant-1".into(),
             cancel_reason: None,
             cancelled_by: None,
+            cancellation_handoff: None,
             execution_path: Vec::new(),
             parent_chain_id: None,
             parent_step_index: None,
@@ -12563,6 +12540,7 @@ mod tests {
             tenant: "tenant-1".into(),
             cancel_reason: None,
             cancelled_by: None,
+            cancellation_handoff: None,
             execution_path: Vec::new(),
             parent_chain_id: None,
             parent_step_index: None,
@@ -12644,6 +12622,7 @@ mod tests {
             tenant: "tenant-1".into(),
             cancel_reason: None,
             cancelled_by: None,
+            cancellation_handoff: None,
             execution_path: Vec::new(),
             parent_chain_id: None,
             parent_step_index: None,
@@ -12709,6 +12688,7 @@ mod tests {
             tenant: "tenant-1".into(),
             cancel_reason: None,
             cancelled_by: None,
+            cancellation_handoff: None,
             execution_path: Vec::new(),
             parent_chain_id: None,
             parent_step_index: None,
@@ -12936,6 +12916,7 @@ mod tests {
             tenant: "tenant-1".into(),
             cancel_reason: None,
             cancelled_by: None,
+            cancellation_handoff: None,
             execution_path: Vec::new(),
             parent_chain_id: None,
             parent_step_index: None,

@@ -113,6 +113,7 @@ The phase from `ea53c24` adds [terminal worker-result handoff recovery](task-han
 The phase from `12c9aa1` extends [chain state and retention fencing](chain-state-fencing.md).
 The phase from `3a260a2` adds [chain discovery recovery](chain-discovery-recovery.md).
 The follow-up from `d12db56` adds [chain admission recovery](chain-admission-recovery.md).
+The follow-up adds [chain cancellation notification recovery](chain-cancellation-recovery.md).
 
 ## Remaining plan
 
@@ -131,7 +132,9 @@ The follow-up from `d12db56` adds [chain admission recovery](chain-admission-rec
    checks; ready/pending chain discovery now recovers across interrupted
    multi-record operations. Worker and child admission now recover from an
    interrupted parent write and cancellation re-discovers unlinked children.
-   Remaining chain side effects still need durable recovery.
+   Cancellation notifications now have durable handoff progress and replay with
+   a stable delivery ID. A2A projections, audit/history, and other chain side
+   effects still need durable recovery.
    No test here establishes exactly-once effects across a crash between external
    execution and durable completion persistence.
 3. Expand the injection portfolio to transport-level redirect/rebinding and

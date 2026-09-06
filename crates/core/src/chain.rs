@@ -776,6 +776,29 @@ pub struct ChainNotificationTarget {
     pub action_type: String,
 }
 
+/// Durable progress for a cancellation notification.
+///
+/// This is part of the terminal chain record so a successful cancellation
+/// cannot lose its outbound notification between independent writes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChainCancellationHandoff {
+    /// Stable action ID for downstream idempotency across retries.
+    pub delivery_id: String,
+    /// Provider recorded from the execution's pinned definition.
+    pub provider: String,
+    /// Action type recorded from the execution's pinned definition.
+    pub action_type: String,
+    /// Claim token for one retrying gateway instance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_token: Option<String>,
+    /// Claim expiry; a later cleanup sweep may reclaim it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_expires_at: Option<DateTime<Utc>>,
+    /// Set only after a claimant durably records delivery acknowledgement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
 /// Configuration for a task chain — a sequence of steps executed in order.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChainConfig {
@@ -1285,6 +1308,10 @@ pub struct ChainState {
     /// Who cancelled the chain (if cancelled).
     #[serde(default)]
     pub cancelled_by: Option<String>,
+    /// Durable cancellation-notification delivery progress. Missing on chains
+    /// written before notification recovery was introduced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancellation_handoff: Option<ChainCancellationHandoff>,
     /// Ordered list of step names that have been executed (or are being
     /// executed), representing the actual execution path through the chain.
     /// For linear chains this matches the step order; for branching chains
