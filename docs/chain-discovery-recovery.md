@@ -39,9 +39,14 @@ lost terminal-history acknowledgement. The latter commits the receipt to the
 selected state backend before returning an injected error; reconciliation must
 write exactly one original cancellation event from that receipt.
 
-Grader `portfolio-v8` rejects all four controlled mutations: skipping discovery
-recovery, retaining a terminal orphan, skipping terminal-history recovery, or
-persisting plaintext state. CI retains 21
+The same real-backend suite also makes the audit store unavailable after a
+terminal cancellation commits. Once the audit store returns, reconciliation
+must write the one stable, chain-derived cancellation audit record from the
+authoritative terminal state.
+
+Grader `portfolio-v8` rejects all five controlled mutations: skipping discovery
+recovery, retaining a terminal orphan, skipping terminal-audit recovery,
+skipping terminal-history recovery, or persisting plaintext state. CI retains 21
 report/replay pairs: nine memory suites and six each on Redis and PostgreSQL.
 
 ## Verification

@@ -128,6 +128,7 @@ conditional-delete contract, safety mutations, and remaining multi-record gaps.
 
 `chain-recovery.json` rebuilds pending/ready discovery from authoritative chain
 records after interrupted creation and signal delivery, removes terminal
-orphans, and replays a terminal history receipt after a lost acknowledgement.
-Its four mutations skip discovery repair, retain an orphan, skip terminal-history
-recovery, or write plaintext. See [chain discovery recovery](../docs/chain-discovery-recovery.md).
+orphans, and replays terminal audit and history side effects after outages or
+lost acknowledgements. Its five mutations skip discovery repair, retain an
+orphan, skip terminal-audit recovery, skip terminal-history recovery, or write
+plaintext. See [chain discovery recovery](../docs/chain-discovery-recovery.md).

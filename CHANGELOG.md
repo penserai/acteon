@@ -27,6 +27,10 @@
   PostgreSQL scenario backends after a lost acknowledgement, including a
   mutation gate that proves the replay is required.
 
+- Exercise terminal chain-audit outage recovery against memory, Redis, and
+  PostgreSQL scenario backends, including a mutation gate that proves the
+  authoritative terminal state is replayed.
+
 - Rebuild chain pending/ready discovery from authoritative state after interrupted
   creates and buffered signal delivery, and prune terminal orphans without letting
   delayed cleanup erase a reset. Add real-backend replay and mutation coverage on
