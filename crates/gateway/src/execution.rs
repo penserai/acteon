@@ -419,13 +419,7 @@ impl Gateway {
                     continue;
                 }
             };
-            let outcome = match chain.status {
-                ChainStatus::Completed => Some("chain_completed"),
-                ChainStatus::Failed => Some("chain_failed"),
-                ChainStatus::Cancelled => Some("chain_cancelled"),
-                ChainStatus::TimedOut => Some("chain_timed_out"),
-                _ => None,
-            };
+            let outcome = Self::persisted_terminal_chain_outcome(&chain);
             let Some(outcome) = outcome else { continue };
             let audit_id = format!("chain-terminal-{}", chain.chain_id);
             let Some(audit) = self.audit.clone() else {
@@ -479,13 +473,7 @@ impl Gateway {
                     continue;
                 }
             };
-            let outcome = match chain.status {
-                ChainStatus::Completed => Some("chain_completed"),
-                ChainStatus::Failed => Some("chain_failed"),
-                ChainStatus::Cancelled => Some("chain_cancelled"),
-                ChainStatus::TimedOut => Some("chain_timed_out"),
-                _ => None,
-            };
+            let outcome = Self::persisted_terminal_chain_outcome(&chain);
             let Some(event) =
                 outcome.and_then(|outcome| Self::terminal_chain_history_event(&chain, outcome))
             else {
@@ -823,6 +811,21 @@ impl Gateway {
                 reason: chain_state.cancel_reason.clone(),
             }),
             "chain_timed_out" => Some(ExecutionEventType::ExecutionTimedOut),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn persisted_terminal_chain_outcome(chain_state: &ChainState) -> Option<&str> {
+        match chain_state.status {
+            ChainStatus::Completed => Some("chain_completed"),
+            ChainStatus::Failed => Some(
+                chain_state
+                    .terminal_outcome
+                    .as_deref()
+                    .unwrap_or("chain_failed"),
+            ),
+            ChainStatus::Cancelled => Some("chain_cancelled"),
+            ChainStatus::TimedOut => Some("chain_timed_out"),
             _ => None,
         }
     }
@@ -1619,6 +1622,7 @@ impl Gateway {
             chain_state.execution_path.push(target_step.to_owned());
             chain_state.current_step = target_idx;
             chain_state.status = ChainStatus::Running;
+            chain_state.terminal_outcome = None;
             chain_state.cancel_reason = None;
             chain_state.cancelled_by = None;
             chain_state.updated_at = now;

@@ -16,6 +16,10 @@ when it is absent, so a successful retry is not duplicated by later sweeps. If
 the audit store still cannot acknowledge the record, cleanup reports the error
 and leaves the chain eligible for the next sweep.
 
+The terminal state also preserves an explicit outcome when it differs from its
+status. In particular, an interrupted `chain_definition_changed` failure now
+replays with that outcome instead of being flattened to `chain_failed`.
+
 ## Evidence
 
 The terminal-audit fault test takes the audit store offline after chain start,

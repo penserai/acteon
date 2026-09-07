@@ -20,6 +20,9 @@
 - Persist terminal execution-history receipts and replay interrupted chain
   terminal events without allocating duplicates during background cleanup.
 
+- Preserve explicit terminal-chain outcomes with the authoritative state so
+  recovered audit records retain definition-change failures precisely.
+
 - Rebuild chain pending/ready discovery from authoritative state after interrupted
   creates and buffered signal delivery, and prune terminal orphans without letting
   delayed cleanup erase a reset. Add real-backend replay and mutation coverage on
