@@ -9,6 +9,7 @@ use super::super::{ApprovalRetryEvent, BackgroundProcessor};
 
 impl BackgroundProcessor {
     /// Run periodic cleanup tasks, including approval notification retry sweep.
+    #[allow(clippy::too_many_lines)]
     pub(crate) async fn run_cleanup(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Run independent repairs even if another worker's storage operation fails.
         let scheduled = if self.config.enable_scheduled_actions {
@@ -83,6 +84,16 @@ impl BackgroundProcessor {
         } else {
             Ok(())
         };
+        let terminal_histories = if let Some(gateway) = &self.gateway {
+            gateway
+                .read()
+                .await
+                .reconcile_chain_terminal_histories()
+                .await
+                .map(|_| ())
+        } else {
+            Ok(())
+        };
 
         // Clean up resolved/notified groups that are no longer needed
         let groups = self.group_manager.list_pending_groups();
@@ -103,6 +114,7 @@ impl BackgroundProcessor {
         cancellation_handoffs?;
         task_projections?;
         terminal_audits?;
+        terminal_histories?;
         Ok(())
     }
 

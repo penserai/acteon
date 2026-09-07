@@ -6476,37 +6476,14 @@ impl Gateway {
         // Record the terminal outcome in the execution history. The history
         // key inherits the completed-chain TTL so it expires together with
         // the chain state.
-        let last_error = || {
-            chain_state
-                .step_results
-                .iter()
-                .rev()
-                .flatten()
-                .find_map(|r| r.error.clone())
-                .unwrap_or_else(|| "chain failed".to_owned())
-        };
-        let terminal_event = match outcome {
-            "chain_completed" => Some(ExecutionEventType::ExecutionCompleted),
-            "chain_failed" | "chain_definition_changed" => {
-                Some(ExecutionEventType::ExecutionFailed {
-                    error: last_error(),
-                })
-            }
-            "chain_cancelled" => Some(ExecutionEventType::ExecutionCancelled {
-                reason: chain_state.cancel_reason.clone(),
-            }),
-            "chain_timed_out" => Some(ExecutionEventType::ExecutionTimedOut),
-            _ => None,
-        };
-        if include_history && let Some(event) = terminal_event {
-            self.append_execution_history(
-                &chain_state.namespace,
-                &chain_state.tenant,
-                &chain_state.chain_id,
-                event,
-                self.completed_chain_ttl,
-            )
-            .await;
+        let terminal_event = Self::terminal_chain_history_event(chain_state, outcome);
+        if include_history
+            && let Some(event) = terminal_event
+            && let Err(error) = self
+                .append_chain_terminal_history(chain_state, event, self.completed_chain_ttl)
+                .await
+        {
+            warn!(%error, chain_id = %chain_state.chain_id, "terminal chain history retained for recovery");
         }
 
         if let Some(ref audit) = self.audit {

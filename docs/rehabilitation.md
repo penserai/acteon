@@ -20,7 +20,8 @@ Later phases add [durable scheduling](durable-scheduling.md) and
 [chain discovery recovery](chain-discovery-recovery.md) and
 [chain admission recovery](chain-admission-recovery.md), followed by
 [chain cancellation notification recovery](chain-cancellation-recovery.md) and
-[chain terminal-audit recovery](chain-terminal-audit-recovery.md).
+[chain terminal-audit recovery](chain-terminal-audit-recovery.md), then
+[chain terminal-history recovery](chain-terminal-history-recovery.md).
 
 ## Implemented behavior
 

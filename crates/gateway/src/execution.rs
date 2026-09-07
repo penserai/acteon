@@ -26,6 +26,9 @@ use crate::gateway::Gateway;
 pub(crate) const EXEC_HISTORY_KIND: &str = "exec_history";
 /// State-store kind for the per-execution history sequence counter.
 pub(crate) const EXEC_HISTORY_SEQ_KIND: &str = "exec_history_seq";
+/// State-store kind for terminal history receipts. Each receipt records the
+/// event and its allocated sequence until the append is acknowledged.
+pub(crate) const EXEC_HISTORY_TERMINAL_KIND: &str = "exec_history_terminal";
 /// State-store kind for buffered chain signals.
 pub(crate) const CHAIN_SIGNAL_KIND: &str = "chain_signal";
 /// State-store kind for pinned (immutable) chain definitions, keyed
@@ -43,6 +46,11 @@ const PINNED_CONFIG_CACHE_CAP: usize = 256;
 const SIGNAL_BUFFER_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
 const CANCELLATION_HANDOFF_LEASE_SECONDS: i64 = 60;
 const MAX_CANCELLATION_HANDOFF_CAS_ATTEMPTS: usize = 5;
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct TerminalHistoryReceipt {
+    event: acteon_core::ExecutionEvent,
+}
 
 fn signal_buffer_key(namespace: &str, tenant: &str, chain_id: &str, signal_name: &str) -> StateKey {
     StateKey::new(
@@ -161,8 +169,8 @@ impl Gateway {
                 }) => {
                     if self
                         .peek_buffered_signal(
-                            &chain_state.namespace,
-                            &chain_state.tenant,
+                            chain_state.namespace.as_str(),
+                            chain_state.tenant.as_str(),
                             &chain_state.chain_id,
                             signal_name,
                         )
@@ -186,7 +194,11 @@ impl Gateway {
                     // before its chain wake survives. Requeue immediately so
                     // the normal wait path consumes the recorded result.
                     match self
-                        .get_worker_task(&chain_state.namespace, &chain_state.tenant, task_id)
+                        .get_worker_task(
+                            chain_state.namespace.as_str(),
+                            chain_state.tenant.as_str(),
+                            task_id,
+                        )
                         .await?
                     {
                         Some(task) if !task.status.is_active() => Some(now.timestamp_millis()),
@@ -437,6 +449,56 @@ impl Gateway {
                 }
                 Err(error) => {
                     first_error.get_or_insert(GatewayError::ChainError(error.to_string()));
+                }
+            }
+        }
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(replayed),
+        }
+    }
+
+    /// Finish terminal history writes whose chain-state transition committed
+    /// before its receipt and event could both be acknowledged. The receipt
+    /// keeps the original event ID and payload, so replay cannot duplicate a
+    /// terminal history event after a lost write acknowledgement.
+    pub async fn reconcile_chain_terminal_histories(&self) -> Result<usize, GatewayError> {
+        let rows = self.state.scan_keys_by_kind(KeyKind::Chain).await?;
+        let mut replayed = 0;
+        let mut first_error = None;
+        for (key, _) in rows {
+            let parts: Vec<_> = key.splitn(4, ':').collect();
+            if parts.len() != 4 || parts[2] != KeyKind::Chain.as_str() {
+                continue;
+            }
+            let chain = match self.get_chain_status(parts[0], parts[1], parts[3]).await {
+                Ok(Some(chain)) => chain,
+                Ok(None) => continue,
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                    continue;
+                }
+            };
+            let outcome = match chain.status {
+                ChainStatus::Completed => Some("chain_completed"),
+                ChainStatus::Failed => Some("chain_failed"),
+                ChainStatus::Cancelled => Some("chain_cancelled"),
+                ChainStatus::TimedOut => Some("chain_timed_out"),
+                _ => None,
+            };
+            let Some(event) =
+                outcome.and_then(|outcome| Self::terminal_chain_history_event(&chain, outcome))
+            else {
+                continue;
+            };
+            match self
+                .append_chain_terminal_history(&chain, event, self.completed_chain_ttl)
+                .await
+            {
+                Ok(true) => replayed += 1,
+                Ok(false) => {}
+                Err(error) => {
+                    first_error.get_or_insert(error);
                 }
             }
         }
@@ -735,6 +797,149 @@ impl Gateway {
             Some(error) => Err(error),
             None => Ok(()),
         }
+    }
+
+    pub(crate) fn terminal_chain_history_event(
+        chain_state: &ChainState,
+        outcome: &str,
+    ) -> Option<ExecutionEventType> {
+        let last_error = || {
+            chain_state
+                .step_results
+                .iter()
+                .rev()
+                .flatten()
+                .find_map(|result| result.error.clone())
+                .unwrap_or_else(|| "chain failed".to_owned())
+        };
+        match outcome {
+            "chain_completed" => Some(ExecutionEventType::ExecutionCompleted),
+            "chain_failed" | "chain_definition_changed" => {
+                Some(ExecutionEventType::ExecutionFailed {
+                    error: last_error(),
+                })
+            }
+            "chain_cancelled" => Some(ExecutionEventType::ExecutionCancelled {
+                reason: chain_state.cancel_reason.clone(),
+            }),
+            "chain_timed_out" => Some(ExecutionEventType::ExecutionTimedOut),
+            _ => None,
+        }
+    }
+
+    /// Ensure the terminal history event for this durable chain revision is
+    /// present. The receipt owns the allocated event ID and payload, allowing
+    /// recovery to finish an interrupted append without allocating a duplicate.
+    #[allow(clippy::too_many_lines, clippy::single_match_else)]
+    pub(crate) async fn append_chain_terminal_history(
+        &self,
+        chain_state: &ChainState,
+        event: ExecutionEventType,
+        ttl: Option<Duration>,
+    ) -> Result<bool, GatewayError> {
+        let revision = chain_state.state_version.ok_or_else(|| {
+            GatewayError::ChainError("terminal chain state has no version".to_owned())
+        })?;
+        let receipt_key = StateKey::new(
+            chain_state.namespace.as_str(),
+            chain_state.tenant.as_str(),
+            KeyKind::Custom(EXEC_HISTORY_TERMINAL_KIND.into()),
+            format!("{}:{revision}", chain_state.chain_id),
+        );
+        let receipt = match self.state.get(&receipt_key).await? {
+            Some(raw) => {
+                let json = self.decrypt_state_value(&raw)?;
+                serde_json::from_str(&json).map_err(|error| {
+                    GatewayError::ChainError(format!(
+                        "failed to deserialize terminal history receipt: {error}"
+                    ))
+                })?
+            }
+            None => {
+                let counter_key = StateKey::new(
+                    chain_state.namespace.as_str(),
+                    chain_state.tenant.as_str(),
+                    KeyKind::Custom(EXEC_HISTORY_SEQ_KIND.into()),
+                    &chain_state.chain_id,
+                );
+                let sequence = self.state.increment(&counter_key, 1, None).await?;
+                #[allow(clippy::cast_sign_loss)]
+                let event_id = sequence.max(1) as u64;
+                let receipt = TerminalHistoryReceipt {
+                    event: acteon_core::ExecutionEvent {
+                        event_id,
+                        timestamp: self.clock.now(),
+                        event,
+                    },
+                };
+                let json = serde_json::to_string(&receipt).map_err(|error| {
+                    GatewayError::ChainError(format!(
+                        "failed to serialize terminal history receipt: {error}"
+                    ))
+                })?;
+                let stored = self.encrypt_state_value(&json)?;
+                if self.state.check_and_set(&receipt_key, &stored, ttl).await? {
+                    receipt
+                } else {
+                    let raw = self.state.get(&receipt_key).await?.ok_or_else(|| {
+                        GatewayError::ChainError(
+                            "terminal history receipt disappeared during append".to_owned(),
+                        )
+                    })?;
+                    let json = self.decrypt_state_value(&raw)?;
+                    serde_json::from_str(&json).map_err(|error| {
+                        GatewayError::ChainError(format!(
+                            "failed to deserialize terminal history receipt: {error}"
+                        ))
+                    })?
+                }
+            }
+        };
+        let event_key = StateKey::new(
+            chain_state.namespace.as_str(),
+            chain_state.tenant.as_str(),
+            KeyKind::Custom(EXEC_HISTORY_KIND.into()),
+            format!("{}:{:08}", chain_state.chain_id, receipt.event.event_id),
+        );
+        let json = serde_json::to_string(&receipt.event).map_err(|error| {
+            GatewayError::ChainError(format!(
+                "failed to serialize execution history event: {error}"
+            ))
+        })?;
+        let stored = self.encrypt_state_value(&json)?;
+        let appended = self.state.check_and_set(&event_key, &stored, ttl).await?;
+
+        if let Some(ttl) = ttl {
+            let entries = self
+                .state
+                .scan_keys(
+                    chain_state.namespace.as_str(),
+                    chain_state.tenant.as_str(),
+                    KeyKind::Custom(EXEC_HISTORY_KIND.into()),
+                    Some(&format!("{}:", chain_state.chain_id)),
+                )
+                .await?;
+            for (canonical, value) in entries {
+                if let Some(id) = canonical.splitn(4, ':').nth(3) {
+                    let key = StateKey::new(
+                        chain_state.namespace.as_str(),
+                        chain_state.tenant.as_str(),
+                        KeyKind::Custom(EXEC_HISTORY_KIND.into()),
+                        id,
+                    );
+                    self.state.set(&key, &value, Some(ttl)).await?;
+                }
+            }
+            let counter_key = StateKey::new(
+                chain_state.namespace.as_str(),
+                chain_state.tenant.as_str(),
+                KeyKind::Custom(EXEC_HISTORY_SEQ_KIND.into()),
+                &chain_state.chain_id,
+            );
+            let value = receipt.event.event_id.to_string();
+            self.state.set(&counter_key, &value, Some(ttl)).await?;
+        }
+        Ok(appended)
     }
 
     /// Append an event to an execution's history log. Best-effort: failures
