@@ -185,6 +185,9 @@ pub enum StateBackendConfig {
 pub enum AuditBackendConfig {
     /// In-memory audit store.
     Memory,
+    /// PostgreSQL-backed audit store shared by every simulated node.
+    #[cfg(feature = "postgres")]
+    Postgres { url: String },
     /// Disable audit recording.
     Disabled,
 }

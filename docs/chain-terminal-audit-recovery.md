@@ -24,12 +24,16 @@ replays with that outcome instead of being flattened to `chain_failed`.
 
 The terminal-audit fault test takes the audit store offline after chain start,
 cancels the chain, restores the store, and verifies that one recovery creates
-the stable receipt while the next recovery is a no-op.
+the stable receipt while the next recovery is a no-op. The replayable
+`chain-recovery` suite runs this contract against memory and Redis state, and
+against PostgreSQL state plus a real PostgreSQL audit store. The outage injector
+only wraps writes; successful recovery is persisted and read through the
+selected audit backend.
 
 ## Remaining boundary
 
-Execution history is deliberately outside this recovery path. History allocates
-its sequence separately and has no durable receipt keyed to the terminal chain
-transition yet. A later phase must add that receipt before history can be safely
-replayed after a crash. This phase also does not turn an audit store and chain
-state store into one transaction or provide exactly-once external delivery.
+Terminal execution history now has its own durable receipt and recovery sweep.
+Audit and history remain independent of the chain-state transaction, however:
+an interruption before either receipt commits is reconstructed from the retained
+terminal state. This phase does not provide a cross-store transaction or
+exactly-once external delivery.

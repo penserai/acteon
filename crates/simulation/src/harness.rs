@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use acteon_audit::AuditStore;
 use acteon_audit_memory::MemoryAuditStore;
 use acteon_core::{Action, ActionOutcome};
 use acteon_gateway::GatewayError;
@@ -31,6 +32,7 @@ pub struct SimulationHarness {
     #[allow(dead_code)]
     shared_state: Option<Arc<dyn StateStore>>,
     state_backend_identity: &'static str,
+    audit_backend_identity: &'static str,
 }
 
 impl SimulationHarness {
@@ -73,6 +75,7 @@ impl SimulationHarness {
         }
         let (shared_state, shared_lock, state_backend_identity) =
             create_state_backend(&config).await?;
+        let (audit, audit_backend_identity) = create_audit_backend(&config).await?;
 
         // All nodes in one simulated deployment share approval signing keys.
         let approval_secret =
@@ -88,11 +91,6 @@ impl SimulationHarness {
                 .clone()
                 .unwrap_or_else(|| Arc::new(MemoryStateStore::new()));
 
-            let audit: Option<Arc<dyn acteon_audit::AuditStore>> = match &config.audit_backend {
-                AuditBackendConfig::Memory => Some(Arc::new(MemoryAuditStore::new())),
-                AuditBackendConfig::Disabled => None,
-            };
-
             let node = ServerNode::with_executor(
                 format!("node-{i}"),
                 addr,
@@ -100,7 +98,7 @@ impl SimulationHarness {
                 Arc::clone(&shared_lock),
                 rules.clone(),
                 provider_refs.clone(),
-                audit,
+                audit.clone(),
                 config.environment.clone(),
                 config.state_machines.clone(),
                 Some(approval_secret.clone()),
@@ -116,6 +114,7 @@ impl SimulationHarness {
             port_allocator,
             shared_state,
             state_backend_identity,
+            audit_backend_identity,
         })
     }
 
@@ -165,6 +164,12 @@ impl SimulationHarness {
     #[must_use]
     pub fn state_backend_identity(&self) -> &'static str {
         self.state_backend_identity
+    }
+
+    /// Actual factory-selected audit backend, shared by all simulated nodes.
+    #[must_use]
+    pub fn audit_backend_identity(&self) -> &'static str {
+        self.audit_backend_identity
     }
 
     /// Get a reference to a recording provider by name.
@@ -317,6 +322,32 @@ type StateComponents = (
     Arc<dyn DistributedLock>,
     &'static str,
 );
+
+type AuditComponents = (Option<Arc<dyn AuditStore>>, &'static str);
+
+/// Construct the selected concrete audit backend; no fallback is permitted.
+#[allow(clippy::unused_async)] // External-backend awaits are feature-gated.
+pub(crate) async fn create_audit_backend(
+    config: &SimulationConfig,
+) -> Result<AuditComponents, SimulationError> {
+    let components: AuditComponents = match &config.audit_backend {
+        AuditBackendConfig::Memory => (Some(Arc::new(MemoryAuditStore::new())), "memory"),
+        #[cfg(feature = "postgres")]
+        AuditBackendConfig::Postgres { url } => {
+            use acteon_audit_postgres::{PostgresAuditConfig, PostgresAuditStore};
+
+            let audit = PostgresAuditStore::new(
+                &PostgresAuditConfig::new(url)
+                    .with_prefix(format!("sim_{}_", uuid::Uuid::new_v4().simple())),
+            )
+            .await
+            .map_err(|e| SimulationError::BackendConnection(e.to_string()))?;
+            (Some(Arc::new(audit)), "postgres")
+        }
+        AuditBackendConfig::Disabled => (None, "disabled"),
+    };
+    Ok(components)
+}
 
 /// Construct the selected concrete backend pair; no fallback is permitted.
 #[allow(clippy::unused_async)] // External-backend awaits are feature-gated.
@@ -482,6 +513,7 @@ mod tests {
         let harness = SimulationHarness::multi_node_memory(3).await.unwrap();
 
         assert_eq!(harness.node_count(), 3);
+        assert_eq!(harness.audit_backend_identity(), "memory");
         assert!(harness.node(0).is_some());
         assert!(harness.node(1).is_some());
         assert!(harness.node(2).is_some());
