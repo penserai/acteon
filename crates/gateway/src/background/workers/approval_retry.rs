@@ -73,6 +73,16 @@ impl BackgroundProcessor {
         } else {
             Ok(())
         };
+        let terminal_audits = if let Some(gateway) = &self.gateway {
+            gateway
+                .read()
+                .await
+                .reconcile_chain_terminal_audits()
+                .await
+                .map(|_| ())
+        } else {
+            Ok(())
+        };
 
         // Clean up resolved/notified groups that are no longer needed
         let groups = self.group_manager.list_pending_groups();
@@ -92,6 +102,7 @@ impl BackgroundProcessor {
         chains?;
         cancellation_handoffs?;
         task_projections?;
+        terminal_audits?;
         Ok(())
     }
 

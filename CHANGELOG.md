@@ -14,6 +14,9 @@
 - Reconcile interrupted terminal chain-to-A2A-task projections from authoritative
   retained chain state during background cleanup.
 
+- Recover terminal chain audit records after audit-store outages using a stable,
+  chain-derived audit receipt during background cleanup.
+
 - Rebuild chain pending/ready discovery from authoritative state after interrupted
   creates and buffered signal delivery, and prune terminal orphans without letting
   delayed cleanup erase a reset. Add real-backend replay and mutation coverage on

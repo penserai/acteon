@@ -6452,8 +6452,27 @@ impl Gateway {
     }
 
     /// Emit a terminal summary audit record for a chain lifecycle event.
-    #[allow(clippy::too_many_lines)]
     async fn emit_chain_terminal_audit(&self, chain_state: &ChainState, outcome: &str) {
+        self.emit_chain_terminal_effects(chain_state, outcome, true)
+            .await;
+    }
+
+    pub(crate) async fn reconcile_chain_terminal_audit(
+        &self,
+        chain_state: &ChainState,
+        outcome: &str,
+    ) {
+        self.emit_chain_terminal_effects(chain_state, outcome, false)
+            .await;
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn emit_chain_terminal_effects(
+        &self,
+        chain_state: &ChainState,
+        outcome: &str,
+        include_history: bool,
+    ) {
         // Record the terminal outcome in the execution history. The history
         // key inherits the completed-chain TTL so it expires together with
         // the chain state.
@@ -6479,7 +6498,7 @@ impl Gateway {
             "chain_timed_out" => Some(ExecutionEventType::ExecutionTimedOut),
             _ => None,
         };
-        if let Some(event) = terminal_event {
+        if include_history && let Some(event) = terminal_event {
             self.append_execution_history(
                 &chain_state.namespace,
                 &chain_state.tenant,
@@ -6578,7 +6597,10 @@ impl Gateway {
             let duration_ms = duration_ms.max(0) as u64;
 
             let record = AuditRecord {
-                id: uuid::Uuid::now_v7().to_string(),
+                // One terminal record per chain. Reconciliation uses this
+                // stable ID as the durable receipt after an interrupted
+                // best-effort audit write.
+                id: format!("chain-terminal-{}", chain_state.chain_id),
                 action_id: chain_state.origin_action.id.to_string(),
                 chain_id: Some(chain_state.chain_id.clone()),
                 namespace: chain_state.namespace.clone(),
@@ -6616,9 +6638,17 @@ impl Gateway {
                 canonical_hash: None,
             };
 
-            // Route through `emit_audit_record` so compliance mode
-            // (`sync_audit_writes`) makes this durable instead of best-effort.
-            self.emit_audit_record(audit, record).await;
+            match audit.get_by_id(&record.id).await {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    if let Err(error) = audit.record(record).await {
+                        warn!(%error, chain_id = %chain_state.chain_id, "terminal chain audit retained for recovery");
+                    }
+                }
+                Err(error) => {
+                    warn!(%error, chain_id = %chain_state.chain_id, "terminal chain audit receipt check failed");
+                }
+            }
         }
     }
 

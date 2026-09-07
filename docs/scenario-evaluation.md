@@ -133,8 +133,9 @@ The follow-up adds [chain cancellation notification recovery](chain-cancellation
    multi-record operations. Worker and child admission now recover from an
    interrupted parent write and cancellation re-discovers unlinked children.
    Cancellation notifications now have durable handoff progress and replay with
-   a stable delivery ID. Terminal A2A task projections now reconcile from chain
-   state. Audit/history and other chain side effects still need durable recovery.
+   a stable delivery ID. Terminal A2A task projections and terminal audit records
+   now reconcile from chain state. Execution history and other chain side effects
+   still need durable recovery.
    No test here establishes exactly-once effects across a crash between external
    execution and durable completion persistence.
 3. Expand the injection portfolio to transport-level redirect/rebinding and

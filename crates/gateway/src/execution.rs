@@ -384,6 +384,68 @@ impl Gateway {
         }
     }
 
+    /// Replay a terminal audit whose stable chain-derived audit ID is absent.
+    /// History is intentionally excluded here: it currently allocates its
+    /// sequence independently and needs its own receipt protocol.
+    pub async fn reconcile_chain_terminal_audits(&self) -> Result<usize, GatewayError> {
+        if self.audit.is_none() {
+            return Ok(0);
+        }
+        let rows = self.state.scan_keys_by_kind(KeyKind::Chain).await?;
+        let mut replayed = 0;
+        let mut first_error = None;
+        for (key, _) in rows {
+            let parts: Vec<_> = key.splitn(4, ':').collect();
+            if parts.len() != 4 || parts[2] != KeyKind::Chain.as_str() {
+                continue;
+            }
+            let chain = match self.get_chain_status(parts[0], parts[1], parts[3]).await {
+                Ok(Some(chain)) => chain,
+                Ok(None) => continue,
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                    continue;
+                }
+            };
+            let outcome = match chain.status {
+                ChainStatus::Completed => Some("chain_completed"),
+                ChainStatus::Failed => Some("chain_failed"),
+                ChainStatus::Cancelled => Some("chain_cancelled"),
+                ChainStatus::TimedOut => Some("chain_timed_out"),
+                _ => None,
+            };
+            let Some(outcome) = outcome else { continue };
+            let audit_id = format!("chain-terminal-{}", chain.chain_id);
+            let Some(audit) = self.audit.clone() else {
+                continue;
+            };
+            match audit.get_by_id(&audit_id).await {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    self.reconcile_chain_terminal_audit(&chain, outcome).await;
+                    match audit.get_by_id(&audit_id).await {
+                        Ok(Some(_)) => replayed += 1,
+                        Ok(None) => {
+                            first_error.get_or_insert(GatewayError::ChainError(
+                                "terminal audit replay was not acknowledged".to_owned(),
+                            ));
+                        }
+                        Err(error) => {
+                            first_error.get_or_insert(GatewayError::ChainError(error.to_string()));
+                        }
+                    }
+                }
+                Err(error) => {
+                    first_error.get_or_insert(GatewayError::ChainError(error.to_string()));
+                }
+            }
+        }
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(replayed),
+        }
+    }
+
     pub(crate) async fn try_chain_cancellation_handoff(
         &self,
         namespace: &str,
