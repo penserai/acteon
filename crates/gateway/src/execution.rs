@@ -352,6 +352,38 @@ impl Gateway {
         }
     }
 
+    /// Reapply terminal chain state to its linked A2A task after an
+    /// interruption between the authoritative chain write and the best-effort
+    /// bridge mutation. Task transitions and result artifacts are idempotent,
+    /// so retained terminal rows act as the recovery source until the task
+    /// records the matching terminal state.
+    pub async fn reconcile_chain_task_projections(&self) -> Result<usize, GatewayError> {
+        let rows = self.state.scan_keys_by_kind(KeyKind::Chain).await?;
+        let mut projected = 0;
+        let mut first_error = None;
+        for (key, _) in rows {
+            let parts: Vec<_> = key.splitn(4, ':').collect();
+            if parts.len() != 4 || parts[2] != KeyKind::Chain.as_str() {
+                continue;
+            }
+            match self.get_chain_status(parts[0], parts[1], parts[3]).await {
+                Ok(Some(chain)) if !chain.status.is_active() && chain.task_id.is_some() => {
+                    if self.project_chain_to_task(&chain).await {
+                        projected += 1;
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                }
+            }
+        }
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(projected),
+        }
+    }
+
     pub(crate) async fn try_chain_cancellation_handoff(
         &self,
         namespace: &str,
