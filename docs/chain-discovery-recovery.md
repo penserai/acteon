@@ -42,7 +42,9 @@ write exactly one original cancellation event from that receipt.
 The same real-backend suite also makes the audit store unavailable after a
 terminal cancellation commits. Once the audit store returns, reconciliation
 must write the one stable, chain-derived cancellation audit record from the
-authoritative terminal state.
+authoritative terminal state. Its PostgreSQL run uses PostgreSQL for both the
+selected state and audit stores, so the recovered receipt survives in the real
+audit backend.
 
 Grader `portfolio-v8` rejects all five controlled mutations: skipping discovery
 recovery, retaining a terminal orphan, skipping terminal-audit recovery,
@@ -61,9 +63,9 @@ whitespace, and scenario-script syntax also passed.
 
 Recovery rebuilds only chain discovery. [Chain admission recovery](chain-admission-recovery.md)
 now covers internal child and worker creation plus incomplete child cancellation
-cascades. Signal buffers, cancellation notifications, A2A projections,
-audit/history records, and external effects remain independent side effects. A
-crash between an external effect and
-completion persistence still requires idempotent receivers and does not establish
+cascades. Signal buffers, cancellation notifications, A2A projections, and
+terminal audit/history receipts each have independent recovery paths. External
+effects remain independent: a crash between an external effect and completion
+persistence still requires idempotent receivers and does not establish
 exactly-once delivery. Process crashes, transport partitions, audit outages, and
 production-load evidence remain subsequent work.

@@ -28,7 +28,8 @@
   mutation gate that proves the replay is required.
 
 - Exercise terminal chain-audit outage recovery against memory, Redis, and
-  PostgreSQL scenario backends, including a mutation gate that proves the
+  PostgreSQL state backends, with the PostgreSQL run persisting its receipt in
+  a real PostgreSQL audit store. Include a mutation gate that proves the
   authoritative terminal state is replayed.
 
 - Rebuild chain pending/ready discovery from authoritative state after interrupted

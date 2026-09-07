@@ -3,12 +3,9 @@
 //! The primary chain row is authoritative; this scenario deliberately loses
 //! pending/ready discovery after durable writes, then checks semantic replay.
 
-use std::{
-    collections::HashMap,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
 };
 
 use acteon_audit::{AuditError, AuditPage, AuditQuery, AuditRecord, AuditStore};
@@ -28,7 +25,7 @@ use acteon_state::{
 use serde_json::{Value, json};
 
 use super::{Scenario, ScenarioReport, backend_config};
-use crate::{SimulationConfig, SimulationError};
+use crate::{AuditBackendConfig, SimulationConfig, SimulationError};
 
 const SCENARIO: Scenario = Scenario::ChainDiscoveryRecovery;
 
@@ -53,18 +50,19 @@ enum Mutation {
 }
 
 /// A terminal chain transition must not depend on the audit backend accepting
-/// its side effect. This adapter preserves accepted records and can reject a
-/// later write, leaving real state storage to drive reconciliation.
+/// its side effect. This adapter delegates to the selected store while it is
+/// available and can reject a later write, leaving real state storage to drive
+/// reconciliation.
 struct ToggleAuditStore {
     unavailable: AtomicBool,
-    records: Mutex<HashMap<String, AuditRecord>>,
+    inner: Arc<dyn AuditStore>,
 }
 
 impl ToggleAuditStore {
-    fn new() -> Self {
+    fn new(inner: Arc<dyn AuditStore>) -> Self {
         Self {
             unavailable: AtomicBool::new(false),
-            records: Mutex::new(HashMap::new()),
+            inner,
         }
     }
 }
@@ -75,36 +73,34 @@ impl AuditStore for ToggleAuditStore {
         if self.unavailable.load(Ordering::SeqCst) {
             return Err(AuditError::Storage("injected audit outage".to_owned()));
         }
-        self.records.lock().unwrap().insert(entry.id.clone(), entry);
-        Ok(())
+        self.inner.record(entry).await
     }
 
     async fn get_by_action_id(&self, action_id: &str) -> Result<Option<AuditRecord>, AuditError> {
-        Ok(self
-            .records
-            .lock()
-            .unwrap()
-            .values()
-            .find(|record| record.action_id == action_id)
-            .cloned())
+        self.inner.get_by_action_id(action_id).await
     }
 
     async fn get_by_id(&self, id: &str) -> Result<Option<AuditRecord>, AuditError> {
-        Ok(self.records.lock().unwrap().get(id).cloned())
+        self.inner.get_by_id(id).await
     }
 
-    async fn query(&self, _: &AuditQuery) -> Result<AuditPage, AuditError> {
-        Ok(AuditPage {
-            records: Vec::new(),
-            total: Some(0),
-            limit: 0,
-            offset: 0,
-            next_cursor: None,
-        })
+    async fn query(&self, query: &AuditQuery) -> Result<AuditPage, AuditError> {
+        self.inner.query(query).await
     }
 
     async fn cleanup_expired(&self) -> Result<u64, AuditError> {
-        Ok(0)
+        self.inner.cleanup_expired().await
+    }
+}
+
+fn audit_backend_config(backend: super::Backend) -> Result<AuditBackendConfig, SimulationError> {
+    match backend {
+        #[cfg(feature = "postgres")]
+        super::Backend::Postgres => Ok(AuditBackendConfig::Postgres {
+            url: std::env::var("DATABASE_URL")
+                .map_err(|_| SimulationError::Configuration("DATABASE_URL is required".into()))?,
+        }),
+        _ => Ok(AuditBackendConfig::Memory),
     }
 }
 
@@ -122,12 +118,18 @@ impl Fixture {
         let config = SimulationConfig::builder()
             .shared_state(true)
             .state_backend(backend_config(report.manifest.backend)?)
+            .audit_backend(audit_backend_config(report.manifest.backend)?)
             .build();
         let (state, lock, identity) = crate::harness::create_state_backend(&config).await?;
         let state = state.ok_or_else(|| error("chain recovery requires shared state"))?;
         report.event(SCENARIO, "backend instantiated", identity, 0);
         let fault = Arc::new(FaultStore::new(state.clone()));
-        let audit = Arc::new(ToggleAuditStore::new());
+        let (audit_store, audit_identity) = crate::harness::create_audit_backend(&config).await?;
+        let audit =
+            Arc::new(ToggleAuditStore::new(audit_store.ok_or_else(|| {
+                error("chain recovery requires an audit store")
+            })?));
+        report.event(SCENARIO, "audit backend instantiated", audit_identity, 0);
         let cipher = Arc::new(acteon_crypto::PayloadEncryptor::new(
             acteon_crypto::parse_master_key(&"48".repeat(32)).map_err(error)?,
         ));
