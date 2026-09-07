@@ -1160,6 +1160,7 @@ mod tests {
             current_step: step_results.iter().filter(|r| r.is_some()).count(),
             total_steps: step_results.len(),
             status,
+            terminal_outcome: None,
             step_results,
             started_at: now,
             updated_at: now,
