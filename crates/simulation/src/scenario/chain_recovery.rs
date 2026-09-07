@@ -3,8 +3,15 @@
 //! The primary chain row is authoritative; this scenario deliberately loses
 //! pending/ready discovery after durable writes, then checks semantic replay.
 
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
+use acteon_audit::{AuditError, AuditPage, AuditQuery, AuditRecord, AuditStore};
 use acteon_core::{
     Action, ActionOutcome, ChainStatus, ExecutionEventType,
     chain::{ChainConfig, ChainStepConfig, SignalStepConfig},
@@ -40,14 +47,72 @@ enum Mutation {
     None,
     SkipReconciliation,
     KeepOrphan,
+    SkipTerminalAuditRecovery,
     SkipTerminalHistoryRecovery,
     Plaintext,
+}
+
+/// A terminal chain transition must not depend on the audit backend accepting
+/// its side effect. This adapter preserves accepted records and can reject a
+/// later write, leaving real state storage to drive reconciliation.
+struct ToggleAuditStore {
+    unavailable: AtomicBool,
+    records: Mutex<HashMap<String, AuditRecord>>,
+}
+
+impl ToggleAuditStore {
+    fn new() -> Self {
+        Self {
+            unavailable: AtomicBool::new(false),
+            records: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl AuditStore for ToggleAuditStore {
+    async fn record(&self, entry: AuditRecord) -> Result<(), AuditError> {
+        if self.unavailable.load(Ordering::SeqCst) {
+            return Err(AuditError::Storage("injected audit outage".to_owned()));
+        }
+        self.records.lock().unwrap().insert(entry.id.clone(), entry);
+        Ok(())
+    }
+
+    async fn get_by_action_id(&self, action_id: &str) -> Result<Option<AuditRecord>, AuditError> {
+        Ok(self
+            .records
+            .lock()
+            .unwrap()
+            .values()
+            .find(|record| record.action_id == action_id)
+            .cloned())
+    }
+
+    async fn get_by_id(&self, id: &str) -> Result<Option<AuditRecord>, AuditError> {
+        Ok(self.records.lock().unwrap().get(id).cloned())
+    }
+
+    async fn query(&self, _: &AuditQuery) -> Result<AuditPage, AuditError> {
+        Ok(AuditPage {
+            records: Vec::new(),
+            total: Some(0),
+            limit: 0,
+            offset: 0,
+            next_cursor: None,
+        })
+    }
+
+    async fn cleanup_expired(&self) -> Result<u64, AuditError> {
+        Ok(0)
+    }
 }
 
 struct Fixture {
     state: Arc<dyn StateStore>,
     fault: Arc<FaultStore>,
     lock: Arc<dyn DistributedLock>,
+    audit: Arc<ToggleAuditStore>,
     cipher: Arc<acteon_crypto::PayloadEncryptor>,
     mutation: Mutation,
 }
@@ -62,6 +127,7 @@ impl Fixture {
         let state = state.ok_or_else(|| error("chain recovery requires shared state"))?;
         report.event(SCENARIO, "backend instantiated", identity, 0);
         let fault = Arc::new(FaultStore::new(state.clone()));
+        let audit = Arc::new(ToggleAuditStore::new());
         let cipher = Arc::new(acteon_crypto::PayloadEncryptor::new(
             acteon_crypto::parse_master_key(&"48".repeat(32)).map_err(error)?,
         ));
@@ -69,6 +135,7 @@ impl Fixture {
             state,
             fault,
             lock,
+            audit,
             cipher,
             mutation,
         })
@@ -93,6 +160,7 @@ impl Fixture {
         let mut builder = GatewayBuilder::new()
             .state(self.fault.clone())
             .lock(self.lock.clone())
+            .audit(self.audit.clone())
             .chain(chain)
             .rules(vec![rule]);
         if self.mutation != Mutation::Plaintext {
@@ -336,6 +404,58 @@ async fn run_with(report: &mut ScenarioReport, mutation: Mutation) -> Result<(),
         }),
     );
 
+    // The terminal state is retained on the selected state backend even when
+    // the independent audit store rejects the immediate record. Reconciliation
+    // must recreate the stable, chain-derived audit receipt exactly once.
+    let outcome = gateway
+        .dispatch(
+            Action::new("chain-recovery", "alice", "chain", "start", json!({})),
+            None,
+        )
+        .await
+        .map_err(error)?;
+    let ActionOutcome::ChainStarted { chain_id, .. } = outcome else {
+        return Err(error("terminal audit source did not start a chain"));
+    };
+    f.audit.unavailable.store(true, Ordering::SeqCst);
+    gateway
+        .cancel_chain(
+            "chain-recovery",
+            "alice",
+            &chain_id,
+            Some("audit recovery".into()),
+            None,
+        )
+        .await
+        .map_err(error)?;
+    let audit_id = format!("chain-terminal-{chain_id}");
+    let missing_before = f.audit.get_by_id(&audit_id).await.map_err(error)?.is_none();
+    f.audit.unavailable.store(false, Ordering::SeqCst);
+    let replayed = if mutation == Mutation::SkipTerminalAuditRecovery {
+        0
+    } else {
+        gateway
+            .reconcile_chain_terminal_audits()
+            .await
+            .map_err(error)?
+    };
+    let recovered = f.audit.get_by_id(&audit_id).await.map_err(error)?;
+    record(
+        report,
+        "terminal_audit_outage_recovered",
+        missing_before
+            && replayed == 1
+            && recovered.as_ref().is_some_and(|entry| {
+                entry.outcome == "chain_cancelled"
+                    && entry.chain_id.as_deref() == Some(chain_id.as_str())
+            }),
+        &json!({
+            "missing_before": missing_before,
+            "replayed": replayed,
+            "recovered": recovered.is_some(),
+        }),
+    );
+
     let encrypted = f
         .state
         .scan_keys_by_kind(KeyKind::Chain)
@@ -379,6 +499,10 @@ mod tests {
         for (mutation, gate) in [
             (Mutation::SkipReconciliation, "initial_discovery"),
             (Mutation::KeepOrphan, "terminal_orphan_pruned"),
+            (
+                Mutation::SkipTerminalAuditRecovery,
+                "terminal_audit_outage_recovered",
+            ),
             (
                 Mutation::SkipTerminalHistoryRecovery,
                 "terminal_history_ack_recovered",
