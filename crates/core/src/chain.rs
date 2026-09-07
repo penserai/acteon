@@ -1290,6 +1290,11 @@ pub struct ChainState {
     pub total_steps: usize,
     /// Current execution status.
     pub status: ChainStatus,
+    /// Exact terminal outcome selected with the terminal state transition.
+    /// This preserves distinctions such as a definition change when terminal
+    /// side effects must be recovered after a process interruption.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_outcome: Option<String>,
     /// Results for each completed step (indexed by step position).
     pub step_results: Vec<Option<StepResult>>,
     /// When the chain execution started.

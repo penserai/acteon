@@ -28,7 +28,6 @@ does not append another event.
 ## Remaining boundary
 
 The chain-state store and history store are still not one transaction. A stop
-before the receipt is persisted requires reconstruction from terminal state;
-the unusual `chain_definition_changed` failure currently reconstructs as the
-general failed outcome. Other nonterminal history events retain their existing
-best-effort append behavior.
+before the receipt is persisted requires reconstruction from terminal state.
+Other nonterminal history events retain their existing best-effort append
+behavior.

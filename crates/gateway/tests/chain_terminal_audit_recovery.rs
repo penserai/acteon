@@ -18,6 +18,7 @@ use acteon_rules::ir::{
     expr::Expr,
     rule::{Rule, RuleAction},
 };
+use acteon_state::{KeyKind, StateKey};
 use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
 use serde_json::json;
 
@@ -143,4 +144,60 @@ async fn terminal_audit_replays_after_an_outage_with_one_stable_receipt() {
     assert_eq!(record.outcome, "chain_cancelled");
     assert_eq!(record.chain_id.as_deref(), Some(chain_id.as_str()));
     assert_eq!(gateway.reconcile_chain_terminal_audits().await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn definition_change_outcome_survives_audit_recovery() {
+    let audit = Arc::new(ToggleAuditStore::new());
+    let gateway = gateway(audit.clone());
+    let outcome = gateway
+        .dispatch(
+            Action::new(NAMESPACE, TENANT, "source", "start", json!({})),
+            None,
+        )
+        .await
+        .unwrap();
+    let ActionOutcome::ChainStarted { chain_id, .. } = outcome else {
+        panic!("chain did not start");
+    };
+
+    // Reproduce an in-flight execution whose stored position no longer fits
+    // its pinned definition. The terminal transition must retain the more
+    // specific outcome for a later audit replay.
+    let mut chain = gateway
+        .get_chain_status(NAMESPACE, TENANT, &chain_id)
+        .await
+        .unwrap()
+        .unwrap();
+    chain.current_step = chain.total_steps;
+    let key = StateKey::new(NAMESPACE, TENANT, KeyKind::Chain, &chain_id);
+    gateway
+        .state_store()
+        .set(&key, &serde_json::to_string(&chain).unwrap(), None)
+        .await
+        .unwrap();
+
+    audit.unavailable.store(true, Ordering::SeqCst);
+    gateway
+        .advance_chain(NAMESPACE, TENANT, &chain_id)
+        .await
+        .unwrap();
+    let terminal = gateway
+        .get_chain_status(NAMESPACE, TENANT, &chain_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        terminal.terminal_outcome.as_deref(),
+        Some("chain_definition_changed")
+    );
+
+    audit.unavailable.store(false, Ordering::SeqCst);
+    assert_eq!(gateway.reconcile_chain_terminal_audits().await.unwrap(), 1);
+    let record = audit
+        .get_by_id(&format!("chain-terminal-{chain_id}"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.outcome, "chain_definition_changed");
 }

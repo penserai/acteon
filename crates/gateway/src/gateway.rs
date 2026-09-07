@@ -2549,6 +2549,7 @@ impl Gateway {
             current_step: 0,
             total_steps,
             status: ChainStatus::Running,
+            terminal_outcome: None,
             step_results: vec![None; total_steps],
             started_at: now,
             updated_at: now,
@@ -2767,6 +2768,7 @@ impl Gateway {
         // panicking the background advancer.
         if step_idx >= chain_config.steps.len() || step_idx >= chain_state.step_results.len() {
             chain_state.status = ChainStatus::Failed;
+            chain_state.terminal_outcome = Some("chain_definition_changed".to_owned());
             chain_state.updated_at = self.clock.now();
             self.persist_chain_state(&chain_key, &mut chain_state, self.completed_chain_ttl)
                 .await?;
@@ -5735,6 +5737,7 @@ impl Gateway {
             current_step: 0,
             total_steps,
             status: ChainStatus::Running,
+            terminal_outcome: None,
             step_results: vec![None; total_steps],
             started_at: now,
             updated_at: now,
@@ -12461,6 +12464,7 @@ mod tests {
             current_step: 1,
             total_steps: 2,
             status: ChainStatus::Running,
+            terminal_outcome: None,
             step_results: vec![None, None],
             started_at: now,
             updated_at: now,
@@ -12537,6 +12541,7 @@ mod tests {
             current_step: 2,
             total_steps: 2,
             status: ChainStatus::Running,
+            terminal_outcome: None,
             step_results: vec![None, None],
             started_at: now,
             updated_at: now,
@@ -12619,6 +12624,7 @@ mod tests {
             current_step: 0,
             total_steps: 1,
             status: ChainStatus::Running,
+            terminal_outcome: None,
             step_results: vec![None], // sized to 1, config now has 3 steps
             started_at: now,
             updated_at: now,
@@ -12685,6 +12691,7 @@ mod tests {
             current_step: 0,
             total_steps: 1,
             status: ChainStatus::Running,
+            terminal_outcome: None,
             step_results: vec![None],
             started_at: now,
             updated_at: now,
@@ -12913,6 +12920,7 @@ mod tests {
             current_step: 0,
             total_steps: 1,
             status: ChainStatus::Running,
+            terminal_outcome: None,
             step_results: vec![None],
             started_at: now,
             updated_at: now,

@@ -518,6 +518,7 @@ mod tests {
             current_step: 0,
             total_steps: 1,
             status,
+            terminal_outcome: None,
             step_results: vec![None],
             started_at: now,
             updated_at: now,
