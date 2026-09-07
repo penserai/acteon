@@ -405,5 +405,6 @@ suite/backend report/replay pairs under grader `portfolio-v8`.
 ### Chain discovery recovery
 
 `scenarios/chain-recovery.json` proves recovery of pending/ready entries after an
-interrupted create or buffered signal delivery and prunes terminal orphans across
-memory, Redis, and PostgreSQL. See [chain discovery recovery](../../chain-discovery-recovery.md).
+interrupted create or buffered signal delivery, prunes terminal orphans, and
+replays terminal-history receipts after lost acknowledgements across memory,
+Redis, and PostgreSQL. See [chain discovery recovery](../../chain-discovery-recovery.md).

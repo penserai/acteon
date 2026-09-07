@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use acteon_core::{
-    Action, ChainStatus,
+    Action, ActionOutcome, ChainStatus, ExecutionEventType,
     chain::{ChainConfig, ChainStepConfig, SignalStepConfig},
 };
 use acteon_gateway::{Gateway, GatewayBuilder};
@@ -40,6 +40,7 @@ enum Mutation {
     None,
     SkipReconciliation,
     KeepOrphan,
+    SkipTerminalHistoryRecovery,
     Plaintext,
 }
 
@@ -264,6 +265,77 @@ async fn run_with(report: &mut ScenarioReport, mutation: Mutation) -> Result<(),
         &json!({"terminal":terminal,"orphan_pruned":orphan_pruned}),
     );
 
+    // A successful terminal state can lose the acknowledgement after the
+    // history receipt commits. The receipt is in the selected state backend,
+    // so a fresh reconciliation can finish the original event without
+    // allocating a second cancellation entry.
+    let outcome = gateway
+        .dispatch(
+            Action::new("chain-recovery", "alice", "chain", "start", json!({})),
+            None,
+        )
+        .await
+        .map_err(error)?;
+    let ActionOutcome::ChainStarted { chain_id, .. } = outcome else {
+        return Err(error("terminal history source did not start a chain"));
+    };
+    f.fault
+        .fail_next(
+            KeyKind::Custom("exec_history_terminal".into()),
+            WriteOperation::CheckAndSet,
+            FaultTiming::After,
+        )
+        .map_err(error)?;
+    gateway
+        .cancel_chain(
+            "chain-recovery",
+            "alice",
+            &chain_id,
+            Some("receipt recovery".into()),
+            None,
+        )
+        .await
+        .map_err(error)?;
+    let missing_before = !gateway
+        .get_execution_history("chain-recovery", "alice", &chain_id)
+        .await
+        .map_err(error)?
+        .events
+        .iter()
+        .any(|entry| matches!(entry.event, ExecutionEventType::ExecutionCancelled { .. }));
+    let replayed = if mutation == Mutation::SkipTerminalHistoryRecovery {
+        0
+    } else {
+        gateway
+            .reconcile_chain_terminal_histories()
+            .await
+            .map_err(error)?
+    };
+    let recovered_events = gateway
+        .get_execution_history("chain-recovery", "alice", &chain_id)
+        .await
+        .map_err(error)?
+        .events
+        .iter()
+        .filter(|entry| {
+            matches!(
+                &entry.event,
+                ExecutionEventType::ExecutionCancelled { reason: Some(reason) }
+                    if reason == "receipt recovery"
+            )
+        })
+        .count();
+    record(
+        report,
+        "terminal_history_ack_recovered",
+        missing_before && replayed == 1 && recovered_events == 1,
+        &json!({
+            "missing_before": missing_before,
+            "replayed": replayed,
+            "cancelled_events": recovered_events,
+        }),
+    );
+
     let encrypted = f
         .state
         .scan_keys_by_kind(KeyKind::Chain)
@@ -280,7 +352,7 @@ async fn run_with(report: &mut ScenarioReport, mutation: Mutation) -> Result<(),
     record(
         report,
         "faults_consumed",
-        f.fault.consumed() == 1,
+        f.fault.consumed() == 2,
         &json!({"consumed":f.fault.consumed()}),
     );
     Ok(())
@@ -307,6 +379,10 @@ mod tests {
         for (mutation, gate) in [
             (Mutation::SkipReconciliation, "initial_discovery"),
             (Mutation::KeepOrphan, "terminal_orphan_pruned"),
+            (
+                Mutation::SkipTerminalHistoryRecovery,
+                "terminal_history_ack_recovered",
+            ),
             (Mutation::Plaintext, "encrypted_primary_state"),
         ] {
             let mut report = ScenarioReport {
