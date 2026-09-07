@@ -111,11 +111,14 @@ tests remained concurrent.
 The version checks protect the authoritative chain record. Ready/pending indexes
 are now rebuilt from it by [chain discovery recovery](chain-discovery-recovery.md),
 including delayed terminal cleanup racing a reset. Signal buffers, child/task
-admission, cancellation notifications, A2A projections, and audit/history writes
-remain separate operations. They are not a transaction with the chain update.
+admission, A2A projections, and audit/history writes remain separate operations.
+[Cancellation notification recovery](chain-cancellation-recovery.md) makes that
+one side effect a durable handoff, though it remains outside the state transition
+transaction. They are not a transaction with the chain update.
 
 Already-started external effects cannot be revoked by a state conflict. Interrupted
 child and worker creation are recovered by
-[chain admission recovery](chain-admission-recovery.md). Process-crash,
+[chain admission recovery](chain-admission-recovery.md) and [chain cancellation
+notification recovery](chain-cancellation-recovery.md). Process-crash,
 transport/partition, audit-outage, and production-load evidence remain subsequent
 work, alongside durable recovery for the remaining chain side effects.

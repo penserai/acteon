@@ -6,6 +6,11 @@
   write. Existing task/child primary rows are adopted instead of duplicated,
   and cancellation re-discovers children missing from the parent's cached link.
 
+- Persist cancellation-notification delivery identity, lease, and acknowledgement
+  with the terminal chain state. Retry interrupted or failed notifications from
+  background cleanup using the same action ID, including after a lost final
+  acknowledgement write.
+
 - Rebuild chain pending/ready discovery from authoritative state after interrupted
   creates and buffered signal delivery, and prune terminal orphans without letting
   delayed cleanup erase a reset. Add real-backend replay and mutation coverage on

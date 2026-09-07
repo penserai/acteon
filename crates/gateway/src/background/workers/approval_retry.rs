@@ -56,6 +56,13 @@ impl BackgroundProcessor {
         } else {
             Ok(())
         };
+        let cancellation_handoffs = if let Some(gateway) = &self.gateway {
+            Box::pin(gateway.read().await.reconcile_chain_cancellation_handoffs())
+                .await
+                .map(|_| ())
+        } else {
+            Ok(())
+        };
 
         // Clean up resolved/notified groups that are no longer needed
         let groups = self.group_manager.list_pending_groups();
@@ -73,6 +80,7 @@ impl BackgroundProcessor {
         handoffs?;
         workflows?;
         chains?;
+        cancellation_handoffs?;
         Ok(())
     }
 

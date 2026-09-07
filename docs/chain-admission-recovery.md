@@ -41,8 +41,10 @@ ready-index repair and stale state writes.
 
 ## Remaining boundaries
 
-This recovery covers internal worker and child admission only. Cancel
-notifications, A2A projections, audit/history emission, and external effects
-remain independent side effects. A sink that commits before reporting failure
-still requires its own idempotency key; this phase does not establish
-exactly-once delivery across a process crash, transport failure, or partition.
+This recovery covers internal worker and child admission only. [Cancellation
+notification recovery](chain-cancellation-recovery.md) now durably hands off
+that one cancellation side effect. A2A projections, audit/history emission, and
+other external effects remain independent operations. A sink that commits before
+reporting failure still requires its own idempotency key; these phases do not
+establish exactly-once delivery across a process crash, transport failure, or
+partition.

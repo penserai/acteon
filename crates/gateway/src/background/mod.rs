@@ -450,7 +450,7 @@ impl BackgroundProcessor {
                 () = self.clock.sleep_until(deadline) => {}
             }
             let (job, period, _) = schedule[index];
-            if let Err(error) = self.tick(job).await {
+            if let Err(error) = Box::pin(self.tick(job)).await {
                 error!(?job, %error, "background tick failed");
             }
             schedule[index].2 = self.clock.monotonic().checked_add(period);

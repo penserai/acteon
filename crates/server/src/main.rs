@@ -2079,9 +2079,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         action_id: None,
                     });
 
-                    if let Err(e) = gw
-                        .advance_chain(&event.namespace, &event.tenant, &event.chain_id)
-                        .await
+                    if let Err(e) =
+                        Box::pin(gw.advance_chain(&event.namespace, &event.tenant, &event.chain_id))
+                            .await
                     {
                         tracing::error!(
                             chain_id = %event.chain_id,

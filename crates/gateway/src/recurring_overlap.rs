@@ -82,15 +82,14 @@ impl Gateway {
                     previous_execution = prev_id,
                     "cancelling still-running previous execution (overlap policy)"
                 );
-                if let Err(e) = self
-                    .cancel_chain(
-                        namespace,
-                        tenant,
-                        prev_id,
-                        Some("superseded by next recurring occurrence".to_owned()),
-                        Some(format!("recurring:{recurring_id}")),
-                    )
-                    .await
+                if let Err(e) = Box::pin(self.cancel_chain(
+                    namespace,
+                    tenant,
+                    prev_id,
+                    Some("superseded by next recurring occurrence".to_owned()),
+                    Some(format!("recurring:{recurring_id}")),
+                ))
+                .await
                 {
                     // The execution may have settled between the status
                     // read and the cancel — proceed.
