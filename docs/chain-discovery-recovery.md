@@ -34,10 +34,14 @@ Manual-clock gateway contracts cover an interrupted chain start, buffered signal
 recovery after both discovery entries are lost, and an expired terminal-cleanup
 lock racing a reset. The real-backend `chain-recovery.json` suite runs on memory,
 Redis, and PostgreSQL. It checks interrupted creation, signal wake recovery,
-terminal orphan pruning, encrypted primary state, and observed write faults.
+terminal orphan pruning, encrypted primary state, observed write faults, and a
+lost terminal-history acknowledgement. The latter commits the receipt to the
+selected state backend before returning an injected error; reconciliation must
+write exactly one original cancellation event from that receipt.
 
-Grader `portfolio-v8` rejects all three controlled mutations: skipping recovery,
-retaining a terminal orphan, or persisting plaintext state. CI retains 21
+Grader `portfolio-v8` rejects all four controlled mutations: skipping discovery
+recovery, retaining a terminal orphan, skipping terminal-history recovery, or
+persisting plaintext state. CI retains 21
 report/replay pairs: nine memory suites and six each on Redis and PostgreSQL.
 
 ## Verification

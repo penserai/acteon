@@ -273,13 +273,19 @@ fn rubric(scenario: Scenario) -> Vec<Dimension> {
         Scenario::ChainDiscoveryRecovery => &[
             (
                 "active discovery",
-                35,
+                30,
                 &["initial_discovery", "buffered_signal_wake"],
                 true,
             ),
-            ("terminal pruning", 25, &["terminal_orphan_pruned"], true),
-            ("encrypted state", 20, &["encrypted_primary_state"], true),
-            ("observed faults", 20, &["faults_consumed"], true),
+            ("terminal pruning", 20, &["terminal_orphan_pruned"], true),
+            (
+                "terminal history",
+                20,
+                &["terminal_history_ack_recovered"],
+                true,
+            ),
+            ("encrypted state", 15, &["encrypted_primary_state"], true),
+            ("observed faults", 15, &["faults_consumed"], true),
         ],
         Scenario::TaskHandoffRecovery => &[
             (
