@@ -4459,12 +4459,7 @@ impl Gateway {
         // authoritative — load the final state and project best-
         // effort (a projection hiccup must not unwind the chain
         // mutation that just succeeded).
-        if let Ok(Some(raw)) = self
-            .state
-            .get(&StateKey::new(namespace, tenant, KeyKind::Chain, chain_id))
-            .await
-            && let Ok(chain) = serde_json::from_str::<ChainState>(&raw)
-        {
+        if let Ok(Some(chain)) = self.get_chain_status(namespace, tenant, chain_id).await {
             self.project_chain_to_task(&chain).await;
         }
 
@@ -7416,9 +7411,9 @@ impl Gateway {
     /// failure but never propagated — the chain row is authoritative
     /// and a projection hiccup must not unwind the chain mutation
     /// that just succeeded.
-    async fn project_chain_to_task(&self, chain: &ChainState) {
+    pub(crate) async fn project_chain_to_task(&self, chain: &ChainState) -> bool {
         if chain.task_id.is_none() {
-            return;
+            return false;
         }
         let engine = match &self.audit {
             Some(audit) => TaskEngine::new(self.state.clone())
@@ -7426,14 +7421,17 @@ impl Gateway {
                 .with_audit(audit.clone()),
             None => TaskEngine::new(self.state.clone()).with_clock(self.clock.clone()),
         };
-        if let Err(e) = crate::task_chain_bridge::project_chain_to_linked_task(&engine, chain).await
-        {
-            warn!(
-                chain_id = %chain.chain_id,
-                task_id = ?chain.task_id,
-                error = %e,
-                "bridge: chain → task projection failed",
-            );
+        match crate::task_chain_bridge::project_chain_to_linked_task(&engine, chain).await {
+            Ok(projected) => projected,
+            Err(e) => {
+                warn!(
+                    chain_id = %chain.chain_id,
+                    task_id = ?chain.task_id,
+                    error = %e,
+                    "bridge: chain → task projection failed",
+                );
+                false
+            }
         }
     }
 

@@ -179,17 +179,17 @@ async fn set_chain_task_id(
 pub async fn project_chain_to_linked_task(
     engine: &TaskEngine,
     chain_state: &ChainState,
-) -> Result<(), TaskEngineError> {
+) -> Result<bool, TaskEngineError> {
     let Some(task_id) = chain_state.task_id.as_deref() else {
-        return Ok(());
+        return Ok(false);
     };
     let scope = TaskScope::new(&chain_state.namespace, &chain_state.tenant);
     let Some(task) = engine.get_task(&scope, task_id).await? else {
-        return Ok(());
+        return Ok(false);
     };
     let target = project_chain_status_to_task_state(&chain_state.status);
     if task.status.state == target || task.status.state.is_terminal() {
-        return Ok(());
+        return Ok(false);
     }
     // Terminal projection: fold the chain's step results into the task as
     // artifacts + a summary history message *before* settling it, so an A2A
@@ -215,7 +215,7 @@ pub async fn project_chain_to_linked_task(
     engine
         .transition_task(&scope, task_id, target, message)
         .await?;
-    Ok(())
+    Ok(true)
 }
 
 /// Synthesize a brief agent message describing the chain transition
