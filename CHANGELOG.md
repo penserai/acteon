@@ -2,6 +2,10 @@
 
 ## Unreleased — rehabilitation
 
+- Upgrade the Redis client to 1.x and its connection pool to the matching
+  Deadpool release. Record the Boost Software License 1.0 allowance required
+  by Redis's `xxhash-rust` dependency in the dependency-security policy.
+
 - Recover chain worker and sub-chain admission after an interrupted parent
   write. Existing task/child primary rows are adopted instead of duplicated,
   and cancellation re-discovers children missing from the parent's cached link.
