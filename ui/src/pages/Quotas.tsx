@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { createColumnHelper } from '@tanstack/react-table'
+import { createDataTableColumnHelper } from '../components/ui/tableFeatures'
 import {
   Plus, Pencil, Trash2, Gauge,
 } from 'lucide-react'
@@ -91,7 +91,7 @@ interface QuotaRow extends QuotaPolicy {
   _used?: number
 }
 
-const col = createColumnHelper<QuotaRow>()
+const col = createDataTableColumnHelper<QuotaRow>()
 
 // ---- Component ----
 

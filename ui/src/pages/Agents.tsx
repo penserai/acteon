@@ -9,7 +9,7 @@
 
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { createColumnHelper } from '@tanstack/react-table'
+import { createDataTableColumnHelper } from '../components/ui/tableFeatures'
 import { Plus } from 'lucide-react'
 
 import {
@@ -61,7 +61,7 @@ function adminVariant(s: string | undefined): 'success' | 'warning' | 'error' {
   }
 }
 
-const ch = createColumnHelper<BusAgent>()
+const ch = createDataTableColumnHelper<BusAgent>()
 
 export function Agents() {
   const navigate = useNavigate()

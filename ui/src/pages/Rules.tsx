@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { createColumnHelper } from '@tanstack/react-table'
+import { createDataTableColumnHelper } from '../components/ui/tableFeatures'
 import { RefreshCw } from 'lucide-react'
 import { useRules, useReloadRules, useToggleRule } from '../api/hooks/useRules'
 import { PageHeader } from '../components/layout/PageHeader'
@@ -14,7 +14,7 @@ import { useToast } from '../components/ui/useToast'
 import type { RuleSummary } from '../types'
 import styles from './Rules.module.css'
 
-const col = createColumnHelper<RuleSummary>()
+const col = createDataTableColumnHelper<RuleSummary>()
 
 export function Rules() {
   const { data: rules, isLoading } = useRules()

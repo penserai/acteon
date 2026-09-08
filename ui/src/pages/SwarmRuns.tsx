@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Bot, XCircle } from 'lucide-react'
-import { createColumnHelper } from '@tanstack/react-table'
+import { createDataTableColumnHelper } from '../components/ui/tableFeatures'
 import { PageHeader } from '../components/layout/PageHeader'
 import { DataTable } from '../components/ui/DataTable'
 import { Badge } from '../components/ui/Badge'
@@ -35,7 +35,7 @@ const STATUS_OPTIONS = [
 
 const TERMINAL = new Set(['completed', 'failed', 'cancelled', 'timed_out'])
 
-const columnHelper = createColumnHelper<SwarmRunSnapshot>()
+const columnHelper = createDataTableColumnHelper<SwarmRunSnapshot>()
 
 export function SwarmRuns() {
   const [namespace, setNamespace] = useState('')

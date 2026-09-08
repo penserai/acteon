@@ -2,6 +2,10 @@
 
 ## Unreleased — rehabilitation
 
+- Upgrade the shared UI data-table adapter and every table column definition to
+  TanStack React Table 9. Preserve sortable, filterable, paginated table
+  behavior through explicit v9 features and typed column helpers.
+
 - Upgrade the Redis client to 1.x and its connection pool to the matching
   Deadpool release. Record the Boost Software License 1.0 allowance required
   by Redis's `xxhash-rust` dependency in the dependency-security policy.

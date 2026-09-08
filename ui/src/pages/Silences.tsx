@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { createColumnHelper } from '@tanstack/react-table'
+import { createDataTableColumnHelper } from '../components/ui/tableFeatures'
 import { BellOff, Plus, Trash2, X } from 'lucide-react'
 import {
   useSilences,
@@ -65,7 +65,7 @@ function MatchersSummary({ matchers }: { matchers: SilenceMatcher[] }) {
   )
 }
 
-const col = createColumnHelper<Silence>()
+const col = createDataTableColumnHelper<Silence>()
 
 export function Silences() {
   const { toast } = useToast()

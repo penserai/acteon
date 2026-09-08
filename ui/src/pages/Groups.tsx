@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { createColumnHelper } from '@tanstack/react-table'
+import { createDataTableColumnHelper } from '../components/ui/tableFeatures'
 import { useGroups, useFlushGroup, useDeleteGroup } from '../api/hooks/useGroups'
 import { PageHeader } from '../components/layout/PageHeader'
 import { DataTable } from '../components/ui/DataTable'
@@ -15,7 +15,7 @@ import { Play, Trash2 } from 'lucide-react'
 import shared from '../styles/shared.module.css'
 import styles from './Groups.module.css'
 
-const col = createColumnHelper<EventGroup>()
+const col = createDataTableColumnHelper<EventGroup>()
 
 export function Groups() {
   const [ns, setNs] = useState('')

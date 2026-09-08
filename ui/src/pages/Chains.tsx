@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
-import { createColumnHelper } from '@tanstack/react-table'
+import { createDataTableColumnHelper } from '../components/ui/tableFeatures'
 import { useChains } from '../api/hooks/useChains'
 import { PageHeader } from '../components/layout/PageHeader'
 import { DataTable } from '../components/ui/DataTable'
@@ -11,7 +11,7 @@ import { relativeTime } from '../lib/format'
 import type { ChainSummary } from '../types'
 import styles from './Chains.module.css'
 
-const col = createColumnHelper<ChainSummary>()
+const col = createDataTableColumnHelper<ChainSummary>()
 
 export function Chains() {
   const [searchParams, setSearchParams] = useSearchParams()

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { createColumnHelper } from '@tanstack/react-table'
+import { createDataTableColumnHelper } from '../components/ui/tableFeatures'
 import {
   Plus, Trash2, Play,
 } from 'lucide-react'
@@ -28,7 +28,7 @@ import styles from './WasmPlugins.module.css'
 
 // ---- Column definition ----
 
-const col = createColumnHelper<WasmPlugin>()
+const col = createDataTableColumnHelper<WasmPlugin>()
 
 // ---- Component ----
 

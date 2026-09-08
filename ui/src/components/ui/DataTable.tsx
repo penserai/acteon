@@ -1,25 +1,22 @@
 import { useState } from 'react'
 import {
-  useReactTable,
-  getCoreRowModel,
-  getSortedRowModel,
-  getPaginationRowModel,
-  getFilteredRowModel,
-  flexRender,
   type ColumnDef,
+  type RowData,
   type SortingState,
+  useTable,
 } from '@tanstack/react-table'
 import { ChevronUp, ChevronDown, ChevronsUpDown } from 'lucide-react'
 import { cn } from '../../lib/cn'
 import { Button } from './Button'
 import { EmptyState } from './EmptyState'
 import { TableSkeleton } from './Skeleton'
+import { dataTableFeatures } from './tableFeatures'
 import styles from './DataTable.module.css'
 
-interface DataTableProps<T> {
+interface DataTableProps<T extends RowData> {
   data: T[]
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  columns: ColumnDef<T, any>[]
+  columns: ColumnDef<typeof dataTableFeatures, T, any>[]
   loading?: boolean
   onRowClick?: (row: T) => void
   emptyTitle?: string
@@ -30,7 +27,7 @@ interface DataTableProps<T> {
   onPageChange?: (offset: number) => void
 }
 
-export function DataTable<T>({
+export function DataTable<T extends RowData>({
   data,
   columns,
   loading,
@@ -45,16 +42,15 @@ export function DataTable<T>({
   const [sorting, setSorting] = useState<SortingState>([])
   const isServerPaginated = serverTotal !== undefined
 
-  const table = useReactTable({
+  const table = useTable({
+    features: dataTableFeatures,
     data,
     columns,
     state: { sorting },
     onSortingChange: setSorting,
-    getCoreRowModel: getCoreRowModel(),
-    getSortedRowModel: getSortedRowModel(),
-    getPaginationRowModel: isServerPaginated ? undefined : getPaginationRowModel(),
-    getFilteredRowModel: getFilteredRowModel(),
-    initialState: { pagination: { pageSize } },
+    initialState: { pagination: { pageIndex: 0, pageSize } },
+    manualPagination: isServerPaginated,
+    rowCount: serverTotal,
   })
 
   if (loading) return <TableSkeleton rows={5} cols={columns.length} />
@@ -65,7 +61,7 @@ export function DataTable<T>({
 
   const rows = table.getRowModel().rows
   const total = isServerPaginated ? serverTotal! : table.getFilteredRowModel().rows.length
-  const offset = isServerPaginated ? (serverOffset ?? 0) : table.getState().pagination.pageIndex * pageSize
+  const offset = isServerPaginated ? (serverOffset ?? 0) : table.state.pagination.pageIndex * pageSize
   const showing = Math.min(offset + pageSize, total)
 
   return (
@@ -90,7 +86,7 @@ export function DataTable<T>({
                     }
                   >
                     <div className={styles.headerContent}>
-                      {flexRender(header.column.columnDef.header, header.getContext())}
+                      <table.FlexRender header={header} />
                       {header.column.getCanSort() && (
                         <span className={styles.sortIcon}>
                           {header.column.getIsSorted() === 'asc' ? <ChevronUp className={styles.chevron} />
@@ -116,7 +112,7 @@ export function DataTable<T>({
               >
                 {row.getVisibleCells().map((cell) => (
                   <td key={cell.id} className={styles.td}>
-                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                    <table.FlexRender cell={cell} />
                   </td>
                 ))}
               </tr>
