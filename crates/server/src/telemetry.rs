@@ -146,7 +146,7 @@ pub fn init(config: &TelemetryConfig) -> TelemetryGuard {
 /// misconfiguration, etc.).
 fn build_exporter(
     config: &TelemetryConfig,
-) -> Result<opentelemetry_otlp::SpanExporter, opentelemetry::trace::TraceError> {
+) -> Result<opentelemetry_otlp::SpanExporter, opentelemetry_otlp::ExporterBuildError> {
     let timeout = Duration::from_secs(config.timeout_seconds);
 
     match config.protocol.as_str() {
