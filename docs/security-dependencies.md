@@ -47,6 +47,8 @@ when dependencies or feature flags change.
 
 `deny.toml` checks all features against an explicit permissive license list and
 allows only the crates.io registry; unapproved Git sources or registries fail.
+The allowlist includes the OSI-approved Boost Software License 1.0 required by
+`xxhash-rust`, a transitive dependency of the Redis 1.x client.
 Run `cargo deny --locked check licenses sources` with cargo-deny 0.20.2.
 RustSec advisory decisions remain in the separate audit gate described above.
 
