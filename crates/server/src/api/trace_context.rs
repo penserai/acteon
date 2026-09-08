@@ -70,8 +70,10 @@ pub fn restore_trace_context(context: &HashMap<String, String>) {
         p.extract(&extractor)
     });
 
-    if parent_cx.span().span_context().is_valid() {
-        tracing::Span::current().set_parent(parent_cx);
+    if parent_cx.span().span_context().is_valid()
+        && let Err(error) = tracing::Span::current().set_parent(parent_cx)
+    {
+        tracing::debug!(%error, "unable to restore trace context parent");
     }
 }
 
@@ -88,8 +90,10 @@ pub async fn propagate_trace_context(request: Request, next: Next) -> Response {
 
     // If the extracted context has a valid remote span, set it as the parent
     // of the current tracing span so OTel links them.
-    if parent_cx.span().span_context().is_remote() {
-        tracing::Span::current().set_parent(parent_cx);
+    if parent_cx.span().span_context().is_remote()
+        && let Err(error) = tracing::Span::current().set_parent(parent_cx)
+    {
+        tracing::debug!(%error, "unable to set remote trace context parent");
     }
 
     next.run(request).await
