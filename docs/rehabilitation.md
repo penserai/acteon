@@ -22,6 +22,8 @@ Later phases add [durable scheduling](durable-scheduling.md) and
 [chain cancellation notification recovery](chain-cancellation-recovery.md) and
 [chain terminal-audit recovery](chain-terminal-audit-recovery.md), then
 [chain terminal-history recovery](chain-terminal-history-recovery.md).
+The next follow-up adds [recurring dispatch recovery](recurring-dispatch-recovery.md)
+with executable expired-lease evidence aligned to the TLA+ protocol model.
 
 ## Implemented behavior
 

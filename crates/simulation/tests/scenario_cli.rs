@@ -151,7 +151,12 @@ fn replay_preserves_hard_linked_input() {
 #[test]
 fn cli_replays_virtual_time_and_rejects_remote_ttls_or_forged_clocks() {
     let workspace = Workspace::new();
-    for scenario in ["deadline_safety", "worker_lifecycle", "durable_scheduling"] {
+    for scenario in [
+        "deadline_safety",
+        "worker_lifecycle",
+        "durable_scheduling",
+        "recurring_dispatch_recovery",
+    ] {
         for backend in ["redis", "postgres"] {
             for version in [1, 2] {
                 let mut manifest = serde_json::json!({"schema_version":version,"seed":42,"backend":backend,"scenarios":[scenario]});
@@ -172,7 +177,7 @@ fn cli_replays_virtual_time_and_rejects_remote_ttls_or_forged_clocks() {
             }
         }
     }
-    std::fs::write(workspace.0.join("suite.json"), r#"{"schema_version":2,"seed":42,"backend":"memory","trials":2,"scenarios":["deadline_safety","worker_lifecycle","durable_scheduling","queue_recovery","task_handoff_recovery","chain_write_fencing","chain_discovery_recovery"]}"#).unwrap();
+    std::fs::write(workspace.0.join("suite.json"), r#"{"schema_version":2,"seed":42,"backend":"memory","trials":2,"scenarios":["deadline_safety","worker_lifecycle","durable_scheduling","recurring_dispatch_recovery","queue_recovery","task_handoff_recovery","chain_write_fencing","chain_discovery_recovery"]}"#).unwrap();
     let output = workspace.run(&["--manifest", "suite.json", "--output", "first"]);
     assert!(
         output.status.success(),
