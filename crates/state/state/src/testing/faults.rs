@@ -35,6 +35,7 @@ struct ArmedFault {
     kind: KeyKind,
     operation: WriteOperation,
     timing: FaultTiming,
+    matches_before_interrupt: usize,
     interruption: Interruption,
 }
 
@@ -67,6 +68,30 @@ impl FaultStore {
             kind,
             operation,
             timing,
+            matches_before_interrupt: 0,
+            interruption: Interruption::Fail,
+        })
+    }
+
+    /// Fail after this many matching operations have completed normally.
+    ///
+    /// This targets a later persistence boundary in one production operation
+    /// without using timing or a test-only production hook. For example, a
+    /// terminal task projection may persist artifact enrichment before its
+    /// final status transition; `matches_before_interrupt = 1` interrupts the
+    /// latter write.
+    pub fn fail_after_matches(
+        &self,
+        kind: KeyKind,
+        operation: WriteOperation,
+        timing: FaultTiming,
+        matches_before_interrupt: usize,
+    ) -> Result<(), StateError> {
+        self.arm(ArmedFault {
+            kind,
+            operation,
+            timing,
+            matches_before_interrupt,
             interruption: Interruption::Fail,
         })
     }
@@ -81,6 +106,7 @@ impl FaultStore {
             kind,
             operation,
             timing,
+            matches_before_interrupt: 0,
             interruption: Interruption::Pause(rx),
         })?;
         Ok(tx)
@@ -105,12 +131,16 @@ impl FaultStore {
     ) -> Result<(), StateError> {
         let interruption = {
             let mut armed = self.armed.lock().expect("fault controller");
-            if armed.as_ref().is_some_and(|fault| {
-                fault.kind == key.kind && fault.operation == operation && fault.timing == timing
-            }) {
-                armed.take().map(|fault| fault.interruption)
-            } else {
+            let Some(fault) = armed.as_mut() else {
+                return Ok(());
+            };
+            if fault.kind != key.kind || fault.operation != operation || fault.timing != timing {
                 None
+            } else if fault.matches_before_interrupt > 0 {
+                fault.matches_before_interrupt -= 1;
+                None
+            } else {
+                armed.take().map(|fault| fault.interruption)
             }
         };
         let Some(interruption) = interruption else {

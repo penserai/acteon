@@ -115,6 +115,7 @@ pub fn scenario_id(scenario: Scenario) -> &'static str {
         Scenario::ChainWriteFencing => "chain_write_fencing",
         Scenario::ChainDiscoveryRecovery => "chain_discovery_recovery",
         Scenario::CancellationHandoffRecovery => "cancellation_handoff_recovery",
+        Scenario::ChainTaskProjectionRecovery => "chain_task_projection_recovery",
         _ => "kernel",
     }
 }
@@ -322,6 +323,11 @@ fn rubric(scenario: Scenario) -> Vec<Dimension> {
                 &["transport_failures_observed"],
                 true,
             ),
+        ],
+        Scenario::ChainTaskProjectionRecovery => &[
+            ("terminal projection", 60, &["projection_recovered"], true),
+            ("idempotent receipt", 25, &["projection_idempotent"], true),
+            ("observed fault", 15, &["fault_consumed"], true),
         ],
         Scenario::TaskHandoffRecovery => &[
             (

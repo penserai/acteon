@@ -119,6 +119,8 @@ which makes the recurring TLA+ lease-expiry interleaving executable through
 production worker ticks.
 The subsequent phase adds selected-backend [cancellation handoff recovery](chain-cancellation-recovery.md)
 for terminal notification transport loss and gateway reconstruction.
+The next phase adds selected-backend [chain-to-task projection recovery](chain-task-projection-recovery.md)
+for terminal task-row write interruption and gateway reconstruction.
 
 ## Remaining plan
 
@@ -138,8 +140,9 @@ for terminal notification transport loss and gateway reconstruction.
    multi-record operations. Worker and child admission now recover from an
    interrupted parent write and cancellation re-discovers unlinked children.
    Cancellation notifications now have durable handoff progress and replay with
-   a stable delivery ID. Terminal A2A task projections and terminal audit records
-   now reconcile from chain state. Terminal execution history now has a durable
+   a stable delivery ID. Terminal A2A task projections now have selected-backend
+   terminal-write interruption and reconstruction evidence; terminal audit records
+   also reconcile from chain state. Terminal execution history now has a durable
    receipt and replay; other chain side effects still need durable recovery.
    No test here establishes exactly-once effects across a crash between external
    execution and durable completion persistence.
