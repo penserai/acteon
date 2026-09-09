@@ -114,6 +114,9 @@ The phase from `12c9aa1` extends [chain state and retention fencing](chain-state
 The phase from `3a260a2` adds [chain discovery recovery](chain-discovery-recovery.md).
 The follow-up from `d12db56` adds [chain admission recovery](chain-admission-recovery.md).
 The follow-up adds [chain cancellation notification recovery](chain-cancellation-recovery.md).
+The next phase adds [recurring dispatch recovery](recurring-dispatch-recovery.md),
+which makes the recurring TLA+ lease-expiry interleaving executable through
+production worker ticks.
 
 ## Remaining plan
 

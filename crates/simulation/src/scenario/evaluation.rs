@@ -32,6 +32,7 @@ impl EvaluationManifest {
             Scenario::DeadlineSafety,
             Scenario::WorkerLifecycle,
             Scenario::DurableScheduling,
+            Scenario::RecurringDispatchRecovery,
         ]
         .into_iter()
         .filter(|scenario| self.scenarios.contains(scenario))
@@ -60,11 +61,12 @@ impl EvaluationManifest {
                     Scenario::DeadlineSafety
                         | Scenario::WorkerLifecycle
                         | Scenario::DurableScheduling
+                        | Scenario::RecurringDispatchRecovery
                 )
             })
         {
             return Err(configuration(
-                "virtual-time scenario requires the memory backend (deadline_safety, worker_lifecycle, durable_scheduling)",
+                "virtual-time scenario requires the memory backend (deadline_safety, worker_lifecycle, durable_scheduling, recurring_dispatch_recovery)",
             ));
         }
         if self.scenarios.is_empty() {
@@ -107,6 +109,7 @@ pub fn scenario_id(scenario: Scenario) -> &'static str {
         Scenario::DeadlineSafety => "deadline_safety",
         Scenario::WorkerLifecycle => "worker_lifecycle",
         Scenario::DurableScheduling => "durable_scheduling",
+        Scenario::RecurringDispatchRecovery => "recurring_dispatch_recovery",
         Scenario::QueueRecovery => "queue_recovery",
         Scenario::TaskHandoffRecovery => "task_handoff_recovery",
         Scenario::ChainWriteFencing => "chain_write_fencing",
@@ -348,6 +351,21 @@ fn rubric(scenario: Scenario) -> Vec<Dimension> {
                 true,
             ),
             ("tenant isolation", 15, &["tenant_isolation"], true),
+        ],
+        Scenario::RecurringDispatchRecovery => &[
+            ("pre-dispatch re-arm", 35, &["next_occurrence_armed"], true),
+            (
+                "expired-lease recovery",
+                45,
+                &["lease_expiry_no_redelivery"],
+                true,
+            ),
+            (
+                "formal lease assumption",
+                20,
+                &["lease_covers_polling_windows"],
+                true,
+            ),
         ],
         Scenario::WorkerLifecycle => &[
             ("task timestamps", 20, &["task_timestamps"], true),

@@ -22,6 +22,7 @@ pub mod evaluation;
 mod handoffs;
 mod portfolio;
 mod queues;
+mod recurring;
 mod scheduling;
 mod scheduling_fault;
 mod workers;
@@ -58,6 +59,7 @@ pub enum Scenario {
     DeadlineSafety,
     WorkerLifecycle,
     DurableScheduling,
+    RecurringDispatchRecovery,
     QueueRecovery,
     TaskHandoffRecovery,
     ChainWriteFencing,
@@ -248,12 +250,15 @@ pub async fn run(manifest: ScenarioManifest) -> Result<ScenarioReport, Simulatio
         && manifest.scenarios.iter().any(|scenario| {
             matches!(
                 scenario,
-                Scenario::DeadlineSafety | Scenario::WorkerLifecycle | Scenario::DurableScheduling
+                Scenario::DeadlineSafety
+                    | Scenario::WorkerLifecycle
+                    | Scenario::DurableScheduling
+                    | Scenario::RecurringDispatchRecovery
             )
         })
     {
         return Err(SimulationError::Configuration(
-            "virtual-time scenario requires the memory backend (deadline_safety, worker_lifecycle, durable_scheduling)"
+            "virtual-time scenario requires the memory backend (deadline_safety, worker_lifecycle, durable_scheduling, recurring_dispatch_recovery)"
                 .into(),
         ));
     }
@@ -281,6 +286,7 @@ pub async fn run(manifest: ScenarioManifest) -> Result<ScenarioReport, Simulatio
             Scenario::DeadlineSafety => Box::pin(deadlines::run(&mut report)),
             Scenario::WorkerLifecycle => Box::pin(workers::run(&mut report)),
             Scenario::DurableScheduling => Box::pin(scheduling::run(&mut report)),
+            Scenario::RecurringDispatchRecovery => Box::pin(recurring::run(&mut report)),
             Scenario::QueueRecovery => Box::pin(queues::run(&mut report)),
             Scenario::TaskHandoffRecovery => Box::pin(handoffs::run(&mut report)),
             Scenario::ChainWriteFencing => Box::pin(chain_fencing::run(&mut report)),

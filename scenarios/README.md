@@ -37,7 +37,8 @@ target/debug/acteon-scenario --replay scenario-results/portfolio/report.json --o
 
 Schema 2 accepts `schema_version`, `seed`, `backend`, `trials` (1–32), and
 `scenarios`: `incident_response`, `refund_fulfillment`, `prompt_injection`,
-`queue_recovery`, `task_handoff_recovery`, `deadline_safety`, `worker_lifecycle`, or `durable_scheduling`. These last three
+`queue_recovery`, `task_handoff_recovery`, `deadline_safety`, `worker_lifecycle`, `durable_scheduling`, or
+`recurring_dispatch_recovery`. These last four
 require memory.
 It derives independent trial/scenario seeds, reports fixed weighted dimensions
 and mandatory safety gates, and rejects missing/duplicate grading evidence.
@@ -77,7 +78,7 @@ See [clock injection and deadline evaluation](../docs/virtual-time.md).
 
 The memory-only `workers.json` suite adds task timestamps, heartbeat/staleness
 boundaries, audit/SSE emission, explicit group/timeout/scheduled ticks, and polling
-cadence. CI runs all nine memory suites and replays them. Grader `portfolio-v8`
+cadence. CI runs all ten memory suites and replays them. Grader `portfolio-v8`
 adds terminal handoff recovery to the existing rubrics; old reports still require
 their preserved runner.
 See [worker lifecycle evaluation](../docs/worker-lifecycle.md).
@@ -105,6 +106,14 @@ boundaries. Three negative mutations must fail mandatory gates. See
 [durable scheduling](../docs/durable-scheduling.md) for delivery, upgrade, and
 remaining crash-window limits.
 
+The memory-only `recurring-dispatch.json` suite drives two production recurring
+worker ticks against one manual-clock state store. It lets the first worker's
+claim lease expire while the dispatch consumer remains unavailable, then proves
+the re-armed index prevents the second worker from handing off the same
+occurrence. Restoring the stale due index is an explicit negative mutation and
+must fail the expired-lease safety gate. See
+[recurring dispatch recovery](../docs/recurring-dispatch-recovery.md).
+
 The all-backend `queues.json` suite repairs interrupted enqueue discovery after
 gateway reconstruction, preserves retries after lost write acknowledgements,
 and checks duplicate-ID ownership, queue/tenant scope, terminal cleanup, and
@@ -117,7 +126,7 @@ receiver outages, chain discovery repair, DLQ acknowledgement loss, scoped
 receivers, and encrypted delivery progress. Negative mutations remove repair,
 acknowledge an undelivered result, or remove downstream deduplication. See
 [terminal handoff recovery](../docs/task-handoff-recovery.md) for the contract
-and remaining evidence gaps. CI now retains 21 suite/backend replay pairs.
+and remaining evidence gaps. CI now retains 22 suite/backend replay pairs.
 
 
 `fencing.json` exercises stale chain updates, deleted receivers, retention racing
