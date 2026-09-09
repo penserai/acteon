@@ -117,6 +117,8 @@ The follow-up adds [chain cancellation notification recovery](chain-cancellation
 The next phase adds [recurring dispatch recovery](recurring-dispatch-recovery.md),
 which makes the recurring TLA+ lease-expiry interleaving executable through
 production worker ticks.
+The subsequent phase adds selected-backend [cancellation handoff recovery](chain-cancellation-recovery.md)
+for terminal notification transport loss and gateway reconstruction.
 
 ## Remaining plan
 

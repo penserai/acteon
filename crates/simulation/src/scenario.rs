@@ -15,6 +15,7 @@ use crate::{
     StateBackendConfig,
 };
 
+mod cancellation_handoff;
 mod chain_fencing;
 mod chain_recovery;
 mod deadlines;
@@ -64,6 +65,7 @@ pub enum Scenario {
     TaskHandoffRecovery,
     ChainWriteFencing,
     ChainDiscoveryRecovery,
+    CancellationHandoffRecovery,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -291,6 +293,9 @@ pub async fn run(manifest: ScenarioManifest) -> Result<ScenarioReport, Simulatio
             Scenario::TaskHandoffRecovery => Box::pin(handoffs::run(&mut report)),
             Scenario::ChainWriteFencing => Box::pin(chain_fencing::run(&mut report)),
             Scenario::ChainDiscoveryRecovery => Box::pin(chain_recovery::run(&mut report)),
+            Scenario::CancellationHandoffRecovery => {
+                Box::pin(cancellation_handoff::run(&mut report))
+            }
         };
         let result = result.await;
         if let Err(error) = result {

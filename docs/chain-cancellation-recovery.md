@@ -37,9 +37,19 @@ Manual-clock fault tests cover a provider outage after the terminal write and a
 failed acknowledgement write after provider success. They verify that cleanup
 completes the handoff and that every retry uses the persisted delivery ID.
 
+`scenarios/cancellation-handoff.json` adds three replayable trials on memory,
+Redis, and PostgreSQL. It persists the terminal outbox while the notification
+provider is unavailable, reconstructs a gateway over the selected backend, and
+reconciles the retained delivery. A second trial loses the provider response
+after the downstream receiver has accepted the effect. Reconciliation repeats
+the same persisted delivery ID; an independent receiver ledger verifies that
+downstream idempotency produces one effect. Removing reconciliation or receiver
+deduplication fails a mandatory gate.
+
 ## Remaining boundaries
 
 A2A task projections, audit/history emission, and any provider-side effects
-outside this notification are still separate operations. Transport partitions,
-production backend fault runs, and downstream idempotency verification remain
-required before treating a cancellation as an exactly-once workflow.
+outside this notification are still separate operations. The selected-backend
+suite uses a controlled provider transport, not an operating-system network
+partition. Production network partitions and exactly-once external effects
+remain outside this evidence.

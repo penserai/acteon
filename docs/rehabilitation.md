@@ -24,6 +24,8 @@ Later phases add [durable scheduling](durable-scheduling.md) and
 [chain terminal-history recovery](chain-terminal-history-recovery.md).
 The next follow-up adds [recurring dispatch recovery](recurring-dispatch-recovery.md)
 with executable expired-lease evidence aligned to the TLA+ protocol model.
+The subsequent phase adds selected-backend [cancellation handoff recovery](chain-cancellation-recovery.md)
+for provider transport loss and stable downstream delivery identity.
 
 ## Implemented behavior
 
