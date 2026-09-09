@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { createColumnHelper } from '@tanstack/react-table'
+import { createDataTableColumnHelper } from '../components/ui/tableFeatures'
 import {
   Plus, Pencil, Trash2, Clock,
 } from 'lucide-react'
@@ -34,7 +34,7 @@ import styles from './RetentionPolicies.module.css'
 
 // ---- Column definition ----
 
-const col = createColumnHelper<RetentionPolicy>()
+const col = createDataTableColumnHelper<RetentionPolicy>()
 
 // ---- Component ----
 

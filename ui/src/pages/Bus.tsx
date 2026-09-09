@@ -10,7 +10,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
-import { createColumnHelper } from '@tanstack/react-table'
+import { createDataTableColumnHelper } from '../components/ui/tableFeatures'
 import { Ban, Pause, Play, ShieldCheck, Trash2 } from 'lucide-react'
 
 import { PageHeader } from '../components/layout/PageHeader'
@@ -109,7 +109,7 @@ export function Bus() {
 
 // --------------- Topics ---------------
 
-const topicCol = createColumnHelper<BusTopic>()
+const topicCol = createDataTableColumnHelper<BusTopic>()
 
 function TopicsPanel({ ns, tenant }: { ns: string; tenant: string }) {
   const { data, isLoading } = useBusTopics({ namespace: ns || undefined, tenant: tenant || undefined })
@@ -190,7 +190,7 @@ function TopicsPanel({ ns, tenant }: { ns: string; tenant: string }) {
 
 // --------------- Subscriptions ---------------
 
-const subCol = createColumnHelper<BusSubscription>()
+const subCol = createDataTableColumnHelper<BusSubscription>()
 
 function SubscriptionsPanel({ ns, tenant }: { ns: string; tenant: string }) {
   const { data, isLoading } = useBusSubscriptions({
@@ -315,7 +315,7 @@ function LagPill({ lag }: { lag: number }) {
 
 // --------------- Agents ---------------
 
-const agentCol = createColumnHelper<BusAgent>()
+const agentCol = createDataTableColumnHelper<BusAgent>()
 
 function AgentsPanel({ ns, tenant }: { ns: string; tenant: string }) {
   // Admin-state filter is local UI state — passed through as a
@@ -686,7 +686,7 @@ function Heartbeat({ row }: { row: BusAgent }) {
 
 // --------------- Conversations ---------------
 
-const convCol = createColumnHelper<BusConversation>()
+const convCol = createDataTableColumnHelper<BusConversation>()
 
 function ConversationsPanel({ ns, tenant }: { ns: string; tenant: string }) {
   const navigate = useNavigate()

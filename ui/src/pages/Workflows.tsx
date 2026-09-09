@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { createColumnHelper } from '@tanstack/react-table'
+import { createDataTableColumnHelper } from '../components/ui/tableFeatures'
 import { XCircle, Radio, History } from 'lucide-react'
 import {
   useWorkflowExecutions,
@@ -35,7 +35,7 @@ const STATUS_OPTIONS = [
 
 const ACTIVE_STATUSES = new Set(['running', 'waiting_timer', 'waiting_signal'])
 
-const col = createColumnHelper<WorkflowExecutionSummary>()
+const col = createDataTableColumnHelper<WorkflowExecutionSummary>()
 
 export function Workflows() {
   const [searchParams, setSearchParams] = useSearchParams()

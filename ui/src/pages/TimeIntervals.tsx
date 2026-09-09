@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { createColumnHelper } from '@tanstack/react-table'
+import { createDataTableColumnHelper } from '../components/ui/tableFeatures'
 import { Plus, Trash2 } from 'lucide-react'
 import {
   useTimeIntervals,
@@ -17,7 +17,7 @@ import type { CreateTimeIntervalRequest, TimeInterval, TimeRange } from '../type
 import shared from '../styles/shared.module.css'
 import styles from './Silences.module.css'
 
-const col = createColumnHelper<TimeInterval>()
+const col = createDataTableColumnHelper<TimeInterval>()
 
 function summarizeRanges(ranges: TimeRange[]): string {
   if (!ranges || ranges.length === 0) return '—'

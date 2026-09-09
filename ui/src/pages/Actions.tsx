@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { createColumnHelper } from '@tanstack/react-table'
+import { createDataTableColumnHelper } from '../components/ui/tableFeatures'
 import { RotateCcw } from 'lucide-react'
 import { useAudit, useAuditRecord, useReplayAction } from '../api/hooks/useAudit'
 import { PageHeader } from '../components/layout/PageHeader'
@@ -18,7 +18,7 @@ import type { AuditRecord, AuditQuery } from '../types'
 import shared from '../styles/shared.module.css'
 import styles from './Actions.module.css'
 
-const col = createColumnHelper<AuditRecord>()
+const col = createDataTableColumnHelper<AuditRecord>()
 
 // Values MUST be the snake_case strings the server stores (gateway
 // `outcome_tag`); the server filters by exact match, so PascalCase values

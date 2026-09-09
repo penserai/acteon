@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { createColumnHelper } from '@tanstack/react-table'
+import { createDataTableColumnHelper } from '../../components/ui/tableFeatures'
 import { Plus, Pencil, Trash2, FileText } from 'lucide-react'
 import {
   useTemplates,
@@ -24,7 +24,7 @@ import type {
 import shared from '../../styles/shared.module.css'
 import styles from '../Templates.module.css'
 
-const templateCol = createColumnHelper<Template>()
+const templateCol = createDataTableColumnHelper<Template>()
 
 export function TemplatesTab() {
   const { toast } = useToast()

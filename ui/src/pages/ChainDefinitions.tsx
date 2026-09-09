@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { createColumnHelper } from '@tanstack/react-table'
+import { createDataTableColumnHelper } from '../components/ui/tableFeatures'
 import {
   Plus, Pencil, Trash2, ChevronDown, ArrowUp, ArrowDown, GitBranch,
 } from 'lucide-react'
@@ -192,7 +192,7 @@ function stepTypeBadge(step: ChainStepConfig) {
 
 // ---- Column definition ----
 
-const col = createColumnHelper<ChainDefinitionSummary>()
+const col = createDataTableColumnHelper<ChainDefinitionSummary>()
 
 // ---- Main Component ----
 

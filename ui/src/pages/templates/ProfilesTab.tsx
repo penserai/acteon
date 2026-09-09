@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { createColumnHelper } from '@tanstack/react-table'
+import { createDataTableColumnHelper } from '../../components/ui/tableFeatures'
 import { Plus, Pencil, Trash2, Link } from 'lucide-react'
 import {
   useTemplateProfiles,
@@ -25,7 +25,7 @@ import { type FieldEntry, emptyEntry, fieldsToEntries, entriesToFields } from '.
 import shared from '../../styles/shared.module.css'
 import styles from '../Templates.module.css'
 
-const profileCol = createColumnHelper<TemplateProfile>()
+const profileCol = createDataTableColumnHelper<TemplateProfile>()
 
 export function ProfilesTab() {
   const { toast } = useToast()

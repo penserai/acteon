@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { createColumnHelper } from '@tanstack/react-table'
+import { createDataTableColumnHelper } from '../components/ui/tableFeatures'
 import { useEvents, useTransitionEvent } from '../api/hooks/useEvents'
 import { PageHeader } from '../components/layout/PageHeader'
 import { DataTable } from '../components/ui/DataTable'
@@ -13,7 +13,7 @@ import type { EventState } from '../types'
 import shared from '../styles/shared.module.css'
 import styles from './Events.module.css'
 
-const col = createColumnHelper<EventState>()
+const col = createDataTableColumnHelper<EventState>()
 
 export function Events() {
   const [ns, setNs] = useState('')

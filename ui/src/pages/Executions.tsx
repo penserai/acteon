@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
-import { createColumnHelper } from '@tanstack/react-table'
+import { createDataTableColumnHelper } from '../components/ui/tableFeatures'
 import { useExecutions } from '../api/hooks/useExecutions'
 import { PageHeader } from '../components/layout/PageHeader'
 import { DataTable } from '../components/ui/DataTable'
@@ -25,7 +25,7 @@ const STATUS_OPTIONS = [
   { value: 'timed_out', label: 'Timed Out' },
 ]
 
-const col = createColumnHelper<ExecutionSummary>()
+const col = createDataTableColumnHelper<ExecutionSummary>()
 
 export function Executions() {
   const [searchParams, setSearchParams] = useSearchParams()

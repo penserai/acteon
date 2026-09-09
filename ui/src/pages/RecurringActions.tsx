@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { createColumnHelper } from '@tanstack/react-table'
+import { createDataTableColumnHelper } from '../components/ui/tableFeatures'
 import {
   Plus, Pause, Play, Trash2, RefreshCw,
 } from 'lucide-react'
@@ -89,7 +89,7 @@ function statusLabel(enabled: boolean, nextExecution: string | null): string {
 
 // ---- Column definition ----
 
-const col = createColumnHelper<RecurringActionSummary>()
+const col = createDataTableColumnHelper<RecurringActionSummary>()
 
 // ---- Common timezones ----
 
