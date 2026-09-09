@@ -24,7 +24,7 @@ runner="scenario-results/runner/acteon-scenario-$runner_digest"
 mv "$runner_candidate" "$runner"
 chmod +x "$runner"
 for backend in "${@:-memory}"; do
-  suites=(rehabilitation portfolio queues handoffs fencing chain-recovery)
+  suites=(rehabilitation portfolio queues handoffs fencing chain-recovery cancellation-handoff)
   if [[ "$backend" == "memory" ]]; then suites+=(deadlines workers scheduling recurring-dispatch); fi
   for suite in "${suites[@]}"; do
     directory="scenario-results/$backend/$suite"

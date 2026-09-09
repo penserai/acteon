@@ -37,9 +37,9 @@ target/debug/acteon-scenario --replay scenario-results/portfolio/report.json --o
 
 Schema 2 accepts `schema_version`, `seed`, `backend`, `trials` (1–32), and
 `scenarios`: `incident_response`, `refund_fulfillment`, `prompt_injection`,
-`queue_recovery`, `task_handoff_recovery`, `deadline_safety`, `worker_lifecycle`, `durable_scheduling`, or
-`recurring_dispatch_recovery`. These last four
-require memory.
+`queue_recovery`, `task_handoff_recovery`, `deadline_safety`, `worker_lifecycle`,
+`durable_scheduling`, `recurring_dispatch_recovery`, or
+`cancellation_handoff_recovery`. The four virtual-time scenarios require memory.
 It derives independent trial/scenario seeds, reports fixed weighted dimensions
 and mandatory safety gates, and rejects missing/duplicate grading evidence.
 Scores are regression diagnostics; every check must pass. Summary fields report
@@ -78,7 +78,7 @@ See [clock injection and deadline evaluation](../docs/virtual-time.md).
 
 The memory-only `workers.json` suite adds task timestamps, heartbeat/staleness
 boundaries, audit/SSE emission, explicit group/timeout/scheduled ticks, and polling
-cadence. CI runs all ten memory suites and replays them. Grader `portfolio-v8`
+cadence. CI runs all eleven memory suites and replays them. Grader `portfolio-v8`
 adds terminal handoff recovery to the existing rubrics; old reports still require
 their preserved runner.
 See [worker lifecycle evaluation](../docs/worker-lifecycle.md).
@@ -126,7 +126,7 @@ receiver outages, chain discovery repair, DLQ acknowledgement loss, scoped
 receivers, and encrypted delivery progress. Negative mutations remove repair,
 acknowledge an undelivered result, or remove downstream deduplication. See
 [terminal handoff recovery](../docs/task-handoff-recovery.md) for the contract
-and remaining evidence gaps. CI now retains 22 suite/backend replay pairs.
+and remaining evidence gaps. CI now retains 25 suite/backend replay pairs.
 
 
 `fencing.json` exercises stale chain updates, deleted receivers, retention racing
@@ -141,3 +141,10 @@ orphans, and replays terminal audit and history side effects after outages or
 lost acknowledgements. Its five mutations skip discovery repair, retain an
 orphan, skip terminal-audit recovery, skip terminal-history recovery, or write
 plaintext. See [chain discovery recovery](../docs/chain-discovery-recovery.md).
+
+`cancellation-handoff.json` runs on memory, Redis, and PostgreSQL. It retains a
+terminal notification outbox across a provider transport outage and gateway
+reconstruction, then injects a lost provider response after the receiver effect.
+Recovery reuses the persisted delivery ID; the independent receiver ledger must
+produce one effect. Removing reconciliation or receiver deduplication fails a
+mandatory gate. See [cancellation handoff recovery](../docs/chain-cancellation-recovery.md).

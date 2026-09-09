@@ -114,6 +114,7 @@ pub fn scenario_id(scenario: Scenario) -> &'static str {
         Scenario::TaskHandoffRecovery => "task_handoff_recovery",
         Scenario::ChainWriteFencing => "chain_write_fencing",
         Scenario::ChainDiscoveryRecovery => "chain_discovery_recovery",
+        Scenario::CancellationHandoffRecovery => "cancellation_handoff_recovery",
         _ => "kernel",
     }
 }
@@ -295,6 +296,32 @@ fn rubric(scenario: Scenario) -> Vec<Dimension> {
             ),
             ("encrypted state", 10, &["encrypted_primary_state"], true),
             ("observed faults", 10, &["faults_consumed"], true),
+        ],
+        Scenario::CancellationHandoffRecovery => &[
+            (
+                "terminal outbox recovery",
+                35,
+                &["provider_outage_recovered"],
+                true,
+            ),
+            (
+                "stable delivery identity",
+                25,
+                &["stable_delivery_id"],
+                true,
+            ),
+            (
+                "downstream idempotency",
+                30,
+                &["post_effect_transport_loss_one_effect"],
+                true,
+            ),
+            (
+                "transport evidence",
+                10,
+                &["transport_failures_observed"],
+                true,
+            ),
         ],
         Scenario::TaskHandoffRecovery => &[
             (
