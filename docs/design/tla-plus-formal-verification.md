@@ -26,7 +26,7 @@ roadmap.
 > | Dispatch dedup | `DispatchDedup.tla` | ≤ 1 execution per dedup key within a dedup-TTL window, under lock-TTL expiry |
 > | Circuit breaker | `CircuitBreaker.tla` | ≤ 1 non-stale half-open probe; no lock-loss wedge |
 > | Compliance hash-chain | `HashChain.tla` | Contiguous audit chain — no duplicate sequence number, no fork (the PR #227 max-tip fix) |
-> | Recurring dispatch | `RecurringDispatch.tla` | ≤ 1 dispatch per occurrence under claim-TTL expiry (the PR #235 index re-arm) |
+> | Recurring dispatch | `RecurringDispatch.tla` | ≤ 1 dispatch per occurrence under claim-lease expiry (the PR #235 index re-arm and #304 lease margin) |
 > | Message bus | `MessageBus.tla` | Grouped notification emitted ≤ once per window across concurrent flushers (`flush_group` mutex) |
 > | Chain ordering (§4.4) | `ChainOrdering.tla` | Each chain step executed ≤ once and recorded in contiguous order, under concurrent `advance_chain` workers (isolates the fresh re-read CAS at gateway.rs:2986) |
 > | Approval lifecycle (§4.5) | `ApprovalLifecycle.tla` | Approval decided once; side-effect runs ≤ once and only if approved, only after the durable intent (the PR #225 intent-before-flip; gateway 3-state path) |
@@ -544,7 +544,7 @@ specs/
     CircuitBreaker.cfg
     HashChain.tla                    # compliance audit hash-chain sequencing (#227)
     HashChain.cfg
-    RecurringDispatch.tla            # recurring at-most-once dispatch (#235)
+    RecurringDispatch.tla            # recurring at-most-once dispatch (#235/#304)
     RecurringDispatch.cfg
     MessageBus.tla                   # grouped-notification notify-once delivery
     MessageBus.cfg

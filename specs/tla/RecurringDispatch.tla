@@ -5,10 +5,11 @@
  * Models the protocol in crates/gateway/src/background/workers/recurring.rs
  * (and the PR #235 fix). When an occurrence is due (in the timeout index) a
  * worker:
- *   1. claims it via check_and_set(claim_key, ttl = 60s); a loser skips;
+ *   1. claims it via check_and_set. Rust derives the lease as two polling
+ *      intervals plus a recovery margin; a loser skips;
  *   2. RE-ARMS the timeout index to the NEXT occurrence — BEFORE handing off
  *      the dispatch (the PR #235 fix). The actual dispatch happens
- *      consumer-side and can outlive the 60s claim TTL (a chain, an approval,
+ *      consumer-side and can outlive the claim lease (a chain, an approval,
  *      a slow webhook).
  *
  * The bug #235 fixed: without the pre-arm, a dispatch slower than the claim
@@ -25,10 +26,12 @@
 EXTENDS Integers, FiniteSets, TLC
 
 CONSTANTS
-    Workers,   \* concurrent recurring workers / replicas, e.g. {w1, w2}
-    ClaimTTL,  \* claim-key TTL in ticks (60s in production)
-    MaxTime,   \* state-space bound
-    NOBODY     \* sentinel: claim free
+    Workers,        \* concurrent recurring workers / replicas, e.g. {w1, w2}
+    PollInterval,   \* abstract polling window in ticks
+    RecoveryMargin, \* extra lease ticks after two polling windows
+    ClaimTTL,       \* claim-key TTL in ticks
+    MaxTime,        \* state-space bound
+    NOBODY          \* sentinel: claim free
 
 VARIABLES
     armed,        \* BOOLEAN: the current occurrence is still due (re-pollable)
@@ -45,6 +48,14 @@ TypeOK ==
     /\ disp_count \in 0..3
     /\ w_phase \in [Workers -> {"idle", "dispatching", "done"}]
     /\ clock \in 0..MaxTime
+
+\* Rust derives the lease as `2 * recurring_check_interval + 30 seconds`.
+\* This configuration assumption keeps the bounded TLC model aligned with that
+\* contract while AtMostOnce separately proves the pre-arm safety.
+LeaseCoversPollingWindows ==
+    ClaimTTL >= (2 * PollInterval) + RecoveryMargin
+
+ASSUME LeaseCoversPollingWindows
 
 Init ==
     /\ armed = TRUE
