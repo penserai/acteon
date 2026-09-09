@@ -26,6 +26,8 @@ The next follow-up adds [recurring dispatch recovery](recurring-dispatch-recover
 with executable expired-lease evidence aligned to the TLA+ protocol model.
 The subsequent phase adds selected-backend [cancellation handoff recovery](chain-cancellation-recovery.md)
 for provider transport loss and stable downstream delivery identity.
+The next phase adds selected-backend [chain-to-task projection recovery](chain-task-projection-recovery.md)
+for a terminal chain write that outlives an interrupted linked-task projection.
 
 ## Implemented behavior
 

@@ -82,7 +82,7 @@ or plaintext persistence; each fails a mandatory gate. Replay excludes generated
 IDs, ciphertext, and wall-clock timestamps. These controlled tests do not kill
 processes or establish model capability or production performance.
 
-CI retains 25 report/replay pairs: eleven memory suites and seven each on Redis and
+CI retains 28 report/replay pairs: twelve memory suites and eight each on Redis and
 PostgreSQL, plus the exact executable used. Older reports require their preserved
 runner.
 
