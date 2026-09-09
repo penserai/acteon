@@ -107,7 +107,7 @@ RecurringCreated {
 |-----|--------|-----|
 | **Definition** | `{ns}:{tenant}:recurring_action:{id}` | None (permanent until deleted) |
 | **Pending index** | `{ns}:{tenant}:pending_recurring:{id}` | None (managed by processor) |
-| **Claim** | `{ns}:{tenant}:recurring_action:{id}:claim` | 60s (auto-expire) |
+| **Claim** | `{ns}:{tenant}:recurring_action:{id}:claim` | `2 × poll interval + 30s` (150s by default; auto-expire) |
 | **Execution log** (optional) | `{ns}:{tenant}:recurring_action:{id}:exec:{timestamp}` | 7 days |
 
 ### Index Strategy
@@ -138,7 +138,7 @@ This reuse means no new `StateStore` trait methods are required.
 ```rust
 /// Whether recurring action processing is enabled (default: false).
 pub enable_recurring_actions: bool,
-/// How often to check for due recurring actions (default: 5 seconds).
+/// How often to check for due recurring actions (default: 60 seconds).
 pub recurring_check_interval: Duration,
 ```
 
@@ -154,10 +154,9 @@ pub struct RecurringActionDueEvent {
     pub tenant: String,
     /// The recurring action ID.
     pub recurring_id: String,
-    /// The full recurring action definition.
+    /// The deserialized recurring action definition. The consumer resolves its
+    /// action template and persists the execution outcome.
     pub recurring_action: RecurringAction,
-    /// The concrete action to dispatch.
-    pub action: Action,
 }
 ```
 
@@ -170,26 +169,18 @@ pub struct RecurringActionDueEvent {
 4. due_keys = expired_keys.filter(|k| k.contains(":pending_recurring:"))
 5. For each due_key:
    a. Parse namespace, tenant, recurring_id from key
-   b. Atomically claim: check_and_set(claim_key, "claimed", TTL=60s)
+   b. Atomically claim: check_and_set(claim_key, "claimed",
+      TTL=`2 × poll interval + 30s`)
       - If not claimed, skip (another instance is handling it)
-   c. Load RecurringAction definition from state store
-      - If missing, clean up pending index and continue
-   d. Check: if !enabled, skip (but leave index for resume)
-   e. Check: if ends_at is set and ends_at <= now, disable and clean up
-   f. Build concrete Action from action_template:
-      - Generate new UUID for action.id
-      - Set namespace, tenant, provider, action_type, payload from template
-      - Set metadata: merge template metadata + {"_recurring_dispatch": "true",
-        "_recurring_id": recurring_id}
-      - Expand dedup_key template if present
-   g. Remove old pending index + timeout entry
-   h. Compute next_execution_at from cron expression + timezone
-   i. Update RecurringAction in state store:
-      - last_executed_at = now
-      - next_execution_at = computed next
-      - execution_count += 1
-   j. Re-index: set new pending key, index_timeout(pending_key, next_ms)
-   k. Emit RecurringActionDueEvent to channel
+   c. Load and validate the recurring action definition. Missing, disabled, and
+      expired definitions are removed from the pending index.
+   d. Compute the next occurrence from the cron expression and timezone.
+   e. Re-index the next occurrence before emitting the event. This removes the
+      current due entry so an expired claim cannot re-dispatch the same
+      occurrence while a consumer is still running.
+   f. Emit RecurringActionDueEvent to the channel. The consumer resolves the
+      action template, records the authoritative execution outcome, and
+      updates the definition.
 6. Log dispatched count
 ```
 
@@ -348,7 +339,7 @@ Deferred to a follow-up iteration.
 [background]
 # Existing fields...
 enable_recurring_actions = false
-recurring_check_interval_seconds = 5
+recurring_check_interval_seconds = 60
 ```
 
 ### `BackgroundProcessingConfig` additions
@@ -363,7 +354,8 @@ pub enable_recurring_actions: bool,
 pub recurring_check_interval_seconds: u64,
 ```
 
-Default: `recurring_check_interval_seconds = 5`.
+Default: `recurring_check_interval_seconds = 60`. The recurring claim lease is
+derived from this setting as `2 × recurring_check_interval_seconds + 30`.
 
 ### `BackgroundSnapshot` additions
 
@@ -406,15 +398,19 @@ Recurring actions use the same `check_and_set` claim pattern as scheduled
 actions:
 
 1. When the background processor finds a due `PendingRecurring` key, it
-   attempts `check_and_set(claim_key, "claimed", TTL=60s)`.
+   attempts `check_and_set(claim_key, "claimed",
+   TTL=2 × poll interval + 30s)`.
 2. Only one instance wins the CAS. Losers skip silently.
-3. The winner dispatches the action and advances the schedule.
-4. The claim key auto-expires after 60 seconds, providing crash recovery.
+3. The winner advances the pending index before handing the occurrence to the
+   dispatch consumer.
+4. The claim key auto-expires after at least two polling windows plus 30
+   seconds, providing crash recovery without aligning lease expiry with a peer
+   poll.
 
 ### Crash recovery
 
 If the winner crashes after claiming but before re-indexing:
-- The claim key expires after 60s.
+- The claim key expires after `2 × poll interval + 30s`.
 - The `PendingRecurring` index still has the old (past-due) timestamp.
 - On the next poll, the key shows as expired again. Another instance claims it.
 - The no-backfill policy means only the next future occurrence is indexed
@@ -651,7 +647,7 @@ User                API Server           State Store          Background Process
 | Gateway integration | API-only (no RuleAction variant) | Recurring actions are time-driven, not condition-driven |
 | Cron library | `croner` | Timezone support, 5/6/7-field, actively maintained |
 | State storage | Reuse timeout index | Zero new StateStore trait methods |
-| Distributed coordination | CAS claim (60s TTL) | Same proven pattern as scheduled actions |
+| Distributed coordination | CAS claim (`2 × poll interval + 30s` TTL) | Avoids lease expiry at a peer poll boundary |
 | Missed executions | No backfill | Prevents dispatch storms after outages |
 | Background processor | Separate interval + channel | Follows existing scheduled/chain/timeout patterns |
 | Loop prevention | `_recurring_dispatch` metadata flag | Same pattern as `_scheduled_dispatch` |

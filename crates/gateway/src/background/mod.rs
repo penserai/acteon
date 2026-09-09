@@ -132,6 +132,21 @@ impl Default for BackgroundConfig {
     }
 }
 
+impl BackgroundConfig {
+    /// Lease duration for a recurring-action claim.
+    ///
+    /// The lease spans at least two polling windows, plus a fixed recovery
+    /// margin. This keeps a delayed peer poll from taking over work that a
+    /// healthy dispatcher has already claimed.
+    #[must_use]
+    pub fn recurring_claim_ttl(&self) -> Duration {
+        self.recurring_check_interval
+            .checked_mul(2)
+            .unwrap_or(Duration::MAX)
+            .saturating_add(Duration::from_secs(30))
+    }
+}
+
 /// Event emitted when a group is flushed.
 #[derive(Debug, Clone)]
 pub struct GroupFlushEvent {
@@ -1171,11 +1186,21 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn recurring_action_config_defaults() {
+    #[test]
+    fn recurring_action_config_defaults() {
         let config = BackgroundConfig::default();
         assert!(!config.enable_recurring_actions);
         assert_eq!(config.recurring_check_interval, Duration::from_secs(60));
+        assert_eq!(config.recurring_claim_ttl(), Duration::from_secs(150));
+
+        let fast_polling_config = BackgroundConfig {
+            recurring_check_interval: Duration::from_millis(50),
+            ..BackgroundConfig::default()
+        };
+        assert_eq!(
+            fast_polling_config.recurring_claim_ttl(),
+            Duration::from_millis(30_100)
+        );
     }
 
     #[tokio::test]

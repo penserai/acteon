@@ -2,6 +2,10 @@
 
 ## Unreleased — rehabilitation
 
+- Derive recurring-action claim leases from the polling interval with two full
+  intervals plus a recovery margin. Document pre-dispatch re-arming so delayed
+  consumers cannot cause the same due occurrence to be dispatched again.
+
 - Upgrade the shared UI data-table adapter and every table column definition to
   TanStack React Table 9. Preserve sortable, filterable, paginated table
   behavior through explicit v9 features and typed column helpers.

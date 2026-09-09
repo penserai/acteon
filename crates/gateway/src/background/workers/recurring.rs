@@ -115,6 +115,7 @@ impl BackgroundProcessor {
             return Ok(());
         }
 
+        let claim_ttl = self.config.recurring_claim_ttl();
         let mut dispatched = 0u32;
         let mut skipped = 0u32;
 
@@ -144,11 +145,7 @@ impl BackgroundProcessor {
             );
             let claimed = self
                 .state
-                .check_and_set(
-                    &claim_key,
-                    "claimed",
-                    Some(std::time::Duration::from_secs(60)),
-                )
+                .check_and_set(&claim_key, "claimed", Some(claim_ttl))
                 .await?;
             if !claimed {
                 // Another replica grabbed this occurrence first. Normal
@@ -233,8 +230,8 @@ impl BackgroundProcessor {
             }
 
             // Advance the schedule to the next occurrence BEFORE handing off
-            // the dispatch. The dispatch (consumer-side) can outlive the 60s
-            // claim TTL — a chain, an approval, or a slow webhook — and until
+            // the dispatch. The dispatch (consumer-side) can outlive the
+            // claim lease — a chain, an approval, or a slow webhook — and until
             // the consumer re-indexes after it returns, this occurrence stays
             // "due" with a stale `last_executed_at`. A poll in that window
             // would re-claim (the TTL has lapsed) and dispatch the SAME
