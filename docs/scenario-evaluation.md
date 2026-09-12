@@ -121,10 +121,12 @@ The subsequent phase adds selected-backend [cancellation handoff recovery](chain
 for terminal notification transport loss and gateway reconstruction.
 The next phase adds selected-backend [chain-to-task projection recovery](chain-task-projection-recovery.md)
 for terminal task-row write interruption and gateway reconstruction.
+The next phase adds memory-only [audit retention recovery](audit-retention-recovery.md)
+with an exact expiry-boundary contract and action-index consistency evidence.
 
 ## Remaining plan
 
-1. Extend virtual time into DLQ/audit-store retention and the remaining application
+1. Extend virtual time into DLQ retention and the remaining application
    lifecycle paths. Gateway/executor/memory clocks, background workers, and task
    transitions, worker-queue leases/retries, and workflow construction are injected; explicit worker ticks and the deadline and worker
    lifecycle suites now have virtual timing. Existing product portfolio trials,
@@ -142,7 +144,9 @@ for terminal task-row write interruption and gateway reconstruction.
    Cancellation notifications now have durable handoff progress and replay with
    a stable delivery ID. Terminal A2A task projections now have selected-backend
    terminal-write interruption and reconstruction evidence; terminal audit records
-   also reconcile from chain state. Terminal execution history now has a durable
+   also reconcile from chain state. The in-memory audit store now uses the shared
+   clock for exact-boundary retention and has a replayable expiry scenario.
+   Terminal execution history now has a durable
    receipt and replay; other chain side effects still need durable recovery.
    No test here establishes exactly-once effects across a crash between external
    execution and durable completion persistence.

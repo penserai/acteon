@@ -15,6 +15,7 @@ use crate::{
     StateBackendConfig,
 };
 
+mod audit_retention;
 mod cancellation_handoff;
 mod chain_fencing;
 mod chain_recovery;
@@ -68,6 +69,7 @@ pub enum Scenario {
     ChainDiscoveryRecovery,
     CancellationHandoffRecovery,
     ChainTaskProjectionRecovery,
+    AuditRetentionRecovery,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -258,11 +260,12 @@ pub async fn run(manifest: ScenarioManifest) -> Result<ScenarioReport, Simulatio
                     | Scenario::WorkerLifecycle
                     | Scenario::DurableScheduling
                     | Scenario::RecurringDispatchRecovery
+                    | Scenario::AuditRetentionRecovery
             )
         })
     {
         return Err(SimulationError::Configuration(
-            "virtual-time scenario requires the memory backend (deadline_safety, worker_lifecycle, durable_scheduling, recurring_dispatch_recovery)"
+            "virtual-time scenario requires the memory backend (deadline_safety, worker_lifecycle, durable_scheduling, recurring_dispatch_recovery, audit_retention_recovery)"
                 .into(),
         ));
     }
@@ -301,6 +304,7 @@ pub async fn run(manifest: ScenarioManifest) -> Result<ScenarioReport, Simulatio
             Scenario::ChainTaskProjectionRecovery => {
                 Box::pin(chain_task_projection::run(&mut report))
             }
+            Scenario::AuditRetentionRecovery => Box::pin(audit_retention::run(&mut report)),
         };
         let result = result.await;
         if let Err(error) = result {
