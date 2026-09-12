@@ -16,7 +16,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
         with:
           toolchain: stable
-      - uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8
+      - uses: taiki-e/install-action@c3ec0de9ae7f1019cea21aa96aa0a895b9552063
         with:
           tool: cargo-audit@0.22.1,cargo-deny@0.20.2
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
