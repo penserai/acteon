@@ -79,6 +79,7 @@ mod dlq;
 mod events;
 mod executions;
 mod groups;
+mod metrics;
 mod plugins;
 mod providers;
 mod queues;

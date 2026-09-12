@@ -28,6 +28,10 @@ The subsequent phase adds selected-backend [cancellation handoff recovery](chain
 for provider transport loss and stable downstream delivery identity.
 The next phase adds selected-backend [chain-to-task projection recovery](chain-task-projection-recovery.md)
 for a terminal chain write that outlives an interrupted linked-task projection.
+The subsequent hardening slice adds [DLQ retention](dlq-retention.md) across
+the built-in action queue and A2A push-delivery queue.
+The observability follow-up adds generated [Prometheus alerting rules](book/features/prometheus-alerting.md),
+including configuration-backed retention TTL gauges and a CLI export command.
 
 ## Implemented behavior
 

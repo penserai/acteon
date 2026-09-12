@@ -4,8 +4,9 @@ use super::{
     ActeonConfig, AttachmentConfig, AuditConfig, AuditRedactConfig, AuthRefConfig,
     BackgroundProcessingConfig, ChainConfigToml, ChainsConfig, CircuitBreakerServerConfig,
     ComplianceServerConfig, EmbeddingServerConfig, EncryptionConfig, ExecutorConfig,
-    LlmGuardrailServerConfig, ProviderConfig, RateLimitErrorBehavior, RateLimitRefConfig,
-    RulesConfig, ServerConfig, StateConfig, TelemetryConfig, UiConfig, WasmServerConfig,
+    LlmGuardrailServerConfig, ProviderConfig, QuotaConfig, RateLimitErrorBehavior,
+    RateLimitRefConfig, RulesConfig, ServerConfig, StateConfig, TelemetryConfig, UiConfig,
+    WasmServerConfig,
 };
 
 /// Truncate a string to at most `max` characters, appending `"..."` if truncated.
@@ -45,6 +46,8 @@ pub struct ConfigSnapshot {
     pub embedding: EmbeddingSnapshot,
     /// Circuit breaker configuration.
     pub circuit_breaker: CircuitBreakerSnapshot,
+    /// Tenant quota configuration.
+    pub quotas: QuotaSnapshot,
     /// Background processing configuration.
     pub background: BackgroundSnapshot,
     /// Telemetry / `OpenTelemetry` configuration.
@@ -77,6 +80,7 @@ impl From<&ActeonConfig> for ConfigSnapshot {
             llm_guardrail: LlmGuardrailSnapshot::from(&cfg.llm_guardrail),
             embedding: EmbeddingSnapshot::from(&cfg.embedding),
             circuit_breaker: CircuitBreakerSnapshot::from(&cfg.circuit_breaker),
+            quotas: QuotaSnapshot::from(&cfg.quotas),
             background: BackgroundSnapshot::from(&cfg.background),
             telemetry: TelemetrySnapshot::from(&cfg.telemetry),
             chains: ChainsSnapshot::from(&cfg.chains),
@@ -172,6 +176,8 @@ pub struct ExecutorSnapshot {
     pub max_concurrent: Option<usize>,
     /// Whether the dead-letter queue is enabled.
     pub dlq_enabled: bool,
+    /// Retention window for dead-letter entries, in seconds.
+    pub dlq_retention_seconds: Option<u64>,
 }
 
 impl From<&ExecutorConfig> for ExecutorSnapshot {
@@ -181,6 +187,7 @@ impl From<&ExecutorConfig> for ExecutorSnapshot {
             timeout_seconds: cfg.timeout_seconds,
             max_concurrent: cfg.max_concurrent,
             dlq_enabled: cfg.dlq_enabled,
+            dlq_retention_seconds: cfg.dlq_retention_seconds,
         }
     }
 }
@@ -413,6 +420,33 @@ impl From<&CircuitBreakerServerConfig> for CircuitBreakerSnapshot {
             success_threshold: cfg.success_threshold,
             recovery_timeout_seconds: cfg.recovery_timeout_seconds,
             provider_overrides: overrides,
+        }
+    }
+}
+
+/// Sanitized tenant quota configuration.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct QuotaSnapshot {
+    /// Whether quota enforcement is enabled.
+    pub enabled: bool,
+    /// Default window used for new policies.
+    pub default_window: Option<String>,
+    /// Default overage behavior used for new policies.
+    pub default_overage_behavior: Option<String>,
+    /// Path to the static policy file, if configured.
+    pub policies_file: Option<String>,
+    /// Whether the static policy file watcher is enabled.
+    pub watch: bool,
+}
+
+impl From<&QuotaConfig> for QuotaSnapshot {
+    fn from(cfg: &QuotaConfig) -> Self {
+        Self {
+            enabled: cfg.enabled,
+            default_window: cfg.default_window.clone(),
+            default_overage_behavior: cfg.default_overage_behavior.clone(),
+            policies_file: cfg.policies_file.clone(),
+            watch: cfg.watch,
         }
     }
 }

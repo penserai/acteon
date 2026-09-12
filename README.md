@@ -68,7 +68,7 @@ Acteon is the force that manages this transformation. It serves as an Action Gat
 - **Authentication** — API key and JWT support with role-based access control and grant-level authorization
 - **Hot Reload** — Update rules and auth configuration without restarts
 - **Graceful Shutdown** — Drain in-flight requests before stopping
-- **Observability** — Prometheus metrics, structured logging, and comprehensive audit trails
+- **Observability** — Prometheus metrics, generated alerting rules, structured logging, and comprehensive audit trails
 
 ### Developer Experience
 
@@ -215,6 +215,8 @@ backend = "memory"   # "memory", "redis", "postgres", or "dynamodb"
 # max_retries = 3
 # timeout_seconds = 30
 # max_concurrent = 100
+# dlq_enabled = false
+# dlq_retention_seconds = 604800  # Optional DLQ retention (7 days)
 
 [auth]
 # enabled = false
