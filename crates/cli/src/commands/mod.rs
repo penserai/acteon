@@ -10,6 +10,7 @@ pub mod groups;
 pub mod health;
 pub mod import;
 pub mod keys;
+pub mod metrics;
 pub mod plugins;
 pub mod providers;
 pub mod quotas;

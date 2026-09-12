@@ -137,6 +137,7 @@ nav:
     - Tenant Quotas: features/tenant-quotas.md
     - Data Retention: features/data-retention.md
     - Dead-letter Retention: features/dlq-retention.md
+    - Prometheus Alerting Rules: features/prometheus-alerting.md
     - Rule Playground: features/rule-playground.md
     - Rule Coverage: features/rule-coverage.md
     - Silences: features/silences.md

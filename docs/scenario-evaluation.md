@@ -124,6 +124,8 @@ for terminal task-row write interruption and gateway reconstruction.
 The subsequent hardening slice adds [DLQ retention](dlq-retention.md) for the
 built-in action queue and A2A push-delivery queue, with shared-clock boundary
 coverage for the in-memory sink.
+The observability follow-up adds generated [Prometheus alerting rules](book/features/prometheus-alerting.md)
+and configuration-backed retention TTL gauges.
 
 ## Remaining plan
 

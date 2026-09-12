@@ -1703,12 +1703,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             )?,
             rx,
         );
-        let worker = config
-            .executor
-            .dlq_retention_seconds
-            .map_or(worker, |seconds| {
-                worker.with_dlq_retention(Duration::from_secs(seconds))
-            });
+        let worker = match config.executor.dlq_retention_seconds {
+            Some(seconds) => worker.with_dlq_retention(Duration::from_secs(seconds)),
+            None => worker,
+        };
         tokio::spawn(worker.run())
     };
 

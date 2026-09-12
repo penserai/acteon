@@ -68,7 +68,7 @@ Acteon is the force that manages this transformation. It serves as an Action Gat
 - **Authentication** — API key and JWT support with role-based access control and grant-level authorization
 - **Hot Reload** — Update rules and auth configuration without restarts
 - **Graceful Shutdown** — Drain in-flight requests before stopping
-- **Observability** — Prometheus metrics, structured logging, and comprehensive audit trails
+- **Observability** — Prometheus metrics, generated alerting rules, structured logging, and comprehensive audit trails
 
 ### Developer Experience
 

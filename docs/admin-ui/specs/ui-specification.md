@@ -41,6 +41,8 @@ Landing page showing system health at a glance.
 |--------|------|-------------|
 | GET | `/health` | Health check with embedded metrics snapshot |
 | GET | `/metrics` | Standalone metrics counters |
+| GET | `/metrics/prometheus` | Prometheus text exposition metrics |
+| GET | `/v1/metrics/alerts/prometheus.yaml` | Generated Prometheus alerting rules |
 
 ### Data Model: `HealthResponse`
 | Field | Type | Description |
@@ -1109,6 +1111,13 @@ Authorization = "Bearer token"
 | `text_cache_hits` | Text embedding cache hits |
 | `text_cache_misses` | Text cache misses |
 
+### Configuration-backed Prometheus Gauges
+
+| Gauge | Description |
+|--------|-------------|
+| `acteon_audit_retention_ttl_seconds` | Configured audit TTL; zero means indefinite |
+| `acteon_dlq_retention_ttl_seconds` | Configured DLQ TTL; zero means indefinite |
+
 ---
 
 ## 17. Server Configuration Reference
@@ -1129,6 +1138,11 @@ Authorization = "Bearer token"
 | | max_concurrent | usize? | 10 | Concurrency limit |
 | | dlq_enabled | bool | false | Enable DLQ |
 | | dlq_retention_seconds | u64? | none | DLQ retention window in seconds |
+| **quotas** | enabled | bool | true | Enable tenant quota enforcement |
+| | default_window | string? | none | Default quota window for new policies |
+| | default_overage_behavior | string? | none | Default action when a quota is exceeded |
+| | policies_file | string? | none | Static TOML quota policy file |
+| | watch | bool | true | Watch the static policy file for changes |
 | **server** | host | string | "127.0.0.1" | Bind address |
 | | port | u16 | 8080 | Bind port |
 | | shutdown_timeout_seconds | u64 | 30 | Graceful shutdown timeout |
@@ -1372,6 +1386,8 @@ See `telemetry` section in [Server Configuration Reference](#17-server-configura
 |--------|------|---------|------|------------|
 | GET | `/health` | `health` | no | - |
 | GET | `/metrics` | `metrics` | no | - |
+| GET | `/metrics/prometheus` | `prometheus_metrics` | no | - |
+| GET | `/v1/metrics/alerts/prometheus.yaml` | `prometheus_alert_rules` | no | - |
 | POST | `/v1/auth/login` | `login` | no | - |
 | POST | `/v1/auth/logout` | `logout` | yes | - |
 | POST | `/v1/dispatch` | `dispatch` | yes | Dispatch |
