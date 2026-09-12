@@ -172,6 +172,8 @@ pub struct ExecutorSnapshot {
     pub max_concurrent: Option<usize>,
     /// Whether the dead-letter queue is enabled.
     pub dlq_enabled: bool,
+    /// Retention window for dead-letter entries, in seconds.
+    pub dlq_retention_seconds: Option<u64>,
 }
 
 impl From<&ExecutorConfig> for ExecutorSnapshot {
@@ -181,6 +183,7 @@ impl From<&ExecutorConfig> for ExecutorSnapshot {
             timeout_seconds: cfg.timeout_seconds,
             max_concurrent: cfg.max_concurrent,
             dlq_enabled: cfg.dlq_enabled,
+            dlq_retention_seconds: cfg.dlq_retention_seconds,
         }
     }
 }

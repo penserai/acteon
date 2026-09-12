@@ -215,6 +215,8 @@ backend = "memory"   # "memory", "redis", "postgres", or "dynamodb"
 # max_retries = 3
 # timeout_seconds = 30
 # max_concurrent = 100
+# dlq_enabled = false
+# dlq_retention_seconds = 604800  # Optional DLQ retention (7 days)
 
 [auth]
 # enabled = false

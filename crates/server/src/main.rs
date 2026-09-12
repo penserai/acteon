@@ -347,6 +347,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .group_manager(Arc::clone(&group_manager))
         .external_url(external_url);
 
+    if let Some(seconds) = config.executor.dlq_retention_seconds {
+        builder = builder.dlq_retention(Duration::from_secs(seconds));
+    }
+
     if let Some(ref enc) = payload_encryptor {
         builder = builder.payload_encryptor(Arc::clone(enc));
     }
@@ -1699,6 +1703,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             )?,
             rx,
         );
+        let worker = config
+            .executor
+            .dlq_retention_seconds
+            .map_or(worker, |seconds| {
+                worker.with_dlq_retention(Duration::from_secs(seconds))
+            });
         tokio::spawn(worker.run())
     };
 

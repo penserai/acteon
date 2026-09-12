@@ -766,6 +766,7 @@ View and drain actions that exhausted all retry attempts.
 | Config Path | Type | Default | Description |
 |-------------|------|---------|-------------|
 | `executor.dlq_enabled` | bool | false | Enable dead-letter queue |
+| `executor.dlq_retention_seconds` | u64? | none | Retain action and A2A push DLQ entries for this many seconds |
 
 ---
 
@@ -1127,6 +1128,7 @@ Authorization = "Bearer token"
 | | timeout_seconds | u64? | 30 | Execution timeout |
 | | max_concurrent | usize? | 10 | Concurrency limit |
 | | dlq_enabled | bool | false | Enable DLQ |
+| | dlq_retention_seconds | u64? | none | DLQ retention window in seconds |
 | **server** | host | string | "127.0.0.1" | Bind address |
 | | port | u16 | 8080 | Bind port |
 | | shutdown_timeout_seconds | u64 | 30 | Graceful shutdown timeout |

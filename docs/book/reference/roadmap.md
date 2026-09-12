@@ -4,6 +4,13 @@ Planned features and enhancements for Acteon, ordered by estimated value/effort 
 
 ## Quick Wins
 
+### Dead-Letter Retention — shipped
+
+`executor.dlq_retention_seconds` bounds both the built-in action DLQ and the
+state-store-backed A2A push-delivery DLQ. The built-in queue uses the shared
+clock and background cleanup; push-DLQ rows use backend TTLs. See
+[Dead-letter retention](../features/dlq-retention.md).
+
 ### Prometheus Alerting Rules Export
 
 `acteon metrics export-alerts` command and `GET /v1/metrics/alerts/prometheus.yaml` endpoint that auto-generates Prometheus alert rules from your Acteon config — per-provider SLO thresholds, quota utilization alerts, circuit breaker trip alerts, compliance mode audit failures, and retention TTL warnings.

@@ -41,6 +41,7 @@ pub struct GatewayBuilder {
     audit_store_payload: bool,
     dlq: Option<Arc<dyn DeadLetterSink>>,
     dlq_enabled: bool,
+    dlq_retention: Option<Duration>,
     state_machines: HashMap<String, StateMachineConfig>,
     group_manager: Option<Arc<GroupManager>>,
     external_url: Option<String>,
@@ -88,6 +89,7 @@ impl GatewayBuilder {
             audit_store_payload: true,
             dlq: None,
             dlq_enabled: false,
+            dlq_retention: None,
             state_machines: HashMap::new(),
             group_manager: None,
             external_url: None,
@@ -216,6 +218,17 @@ impl GatewayBuilder {
     pub fn dlq_sink(mut self, sink: Arc<dyn DeadLetterSink>) -> Self {
         self.dlq = Some(sink);
         self.dlq_enabled = true;
+        self
+    }
+
+    /// Set how long entries in the built-in in-memory DLQ are retained.
+    ///
+    /// Custom [`DeadLetterSink`] implementations own their persistence and
+    /// retention policy. The configured duration is also used by the server's
+    /// persistent A2A push-DLQ rows when set at the HTTP boundary.
+    #[must_use]
+    pub fn dlq_retention(mut self, retention: Duration) -> Self {
+        self.dlq_retention = Some(retention);
         self
     }
 
@@ -746,7 +759,12 @@ impl GatewayBuilder {
 
         // Create the DLQ if enabled, wrapping with encryption if configured.
         let dlq: Option<Arc<dyn DeadLetterSink>> = if self.dlq_enabled {
-            let raw_dlq = self.dlq.unwrap_or_else(|| Arc::new(DeadLetterQueue::new()));
+            let raw_dlq = self.dlq.unwrap_or_else(|| {
+                Arc::new(DeadLetterQueue::with_clock_and_retention(
+                    Arc::clone(&self.clock),
+                    self.dlq_retention,
+                ))
+            });
             if let Some(ref enc) = self.payload_encryptor {
                 Some(Arc::new(
                     crate::encrypting_dlq::EncryptingDeadLetterSink::new(raw_dlq, Arc::clone(enc)),

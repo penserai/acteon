@@ -1,7 +1,8 @@
-use std::sync::Mutex;
-use std::time::SystemTime;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime};
 
 use acteon_core::Action;
+use acteon_time::{Clock, SystemClock};
 use async_trait::async_trait;
 
 /// An entry in the dead-letter queue representing a permanently failed action.
@@ -43,6 +44,15 @@ pub trait DeadLetterSink: Send + Sync {
     /// Drain all entries from the queue, returning them.
     async fn drain(&self) -> Vec<DeadLetterEntry>;
 
+    /// Remove entries older than the sink's configured retention window.
+    ///
+    /// Sinks without a local retention policy return zero. Persistent sinks
+    /// should enforce retention in their backend; this hook lets in-memory
+    /// sinks participate in the gateway's periodic cleanup cadence.
+    async fn cleanup_expired(&self) -> usize {
+        0
+    }
+
     /// Return the number of entries in the queue.
     async fn len(&self) -> usize;
 
@@ -67,6 +77,8 @@ pub trait DeadLetterSink: Send + Sync {
 /// by never returning a guard.
 pub struct DeadLetterQueue {
     entries: Mutex<Vec<DeadLetterEntry>>,
+    clock: Arc<dyn Clock>,
+    retention: Option<Duration>,
 }
 
 impl DeadLetterQueue {
@@ -81,8 +93,25 @@ impl DeadLetterQueue {
     /// assert!(dlq.is_empty());
     /// ```
     pub fn new() -> Self {
+        Self::with_clock_and_retention(Arc::new(SystemClock::default()), None)
+    }
+
+    /// Create a queue that uses `clock` for timestamps and retention checks.
+    #[must_use]
+    pub fn with_clock(clock: Arc<dyn Clock>) -> Self {
+        Self::with_clock_and_retention(clock, None)
+    }
+
+    /// Create a queue with an optional retention window.
+    ///
+    /// An entry expires when `timestamp + retention <= clock.now()`. A
+    /// `None` retention keeps the historical unbounded in-memory behavior.
+    #[must_use]
+    pub fn with_clock_and_retention(clock: Arc<dyn Clock>, retention: Option<Duration>) -> Self {
         Self {
             entries: Mutex::new(Vec::new()),
+            clock,
+            retention,
         }
     }
 
@@ -94,9 +123,24 @@ impl DeadLetterQueue {
             action,
             error,
             attempts,
-            timestamp: SystemTime::now(),
+            timestamp: self.clock.now().into(),
         };
         self.entries.lock().expect("dlq mutex poisoned").push(entry);
+    }
+
+    /// Remove entries whose retention window has elapsed.
+    pub fn cleanup_expired(&self) -> usize {
+        let Some(retention) = self.retention else {
+            return 0;
+        };
+        let now: SystemTime = self.clock.now().into();
+        let mut guard = self.entries.lock().expect("dlq mutex poisoned");
+        let before = guard.len();
+        guard.retain(|entry| {
+            now.duration_since(entry.timestamp)
+                .map_or(true, |age| age < retention)
+        });
+        before - guard.len()
     }
 
     /// Drain all entries from the queue, returning them as a `Vec`.
@@ -140,6 +184,10 @@ impl DeadLetterSink for DeadLetterQueue {
         DeadLetterQueue::drain(self)
     }
 
+    async fn cleanup_expired(&self) -> usize {
+        DeadLetterQueue::cleanup_expired(self)
+    }
+
     async fn len(&self) -> usize {
         DeadLetterQueue::len(self)
     }
@@ -148,6 +196,9 @@ impl DeadLetterSink for DeadLetterQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use acteon_time::ManualClock;
+    use chrono::{TimeZone, Utc};
+    use std::sync::Arc;
 
     fn test_action() -> Action {
         Action::new("ns", "t", "p", "type", serde_json::Value::Null)
@@ -213,6 +264,44 @@ mod tests {
     fn default_creates_empty_queue() {
         let dlq = DeadLetterQueue::default();
         assert!(dlq.is_empty());
+    }
+
+    #[test]
+    fn retention_expires_at_exact_clock_boundary() {
+        let clock = Arc::new(ManualClock::new(
+            Utc.with_ymd_and_hms(2026, 9, 12, 0, 0, 0).unwrap(),
+        ));
+        let dlq = DeadLetterQueue::with_clock_and_retention(
+            Arc::clone(&clock) as Arc<dyn Clock>,
+            Some(Duration::from_secs(10)),
+        );
+        dlq.push(test_action(), "expired".into(), 1);
+
+        assert_eq!(dlq.cleanup_expired(), 0);
+        clock
+            .advance_to(Duration::from_secs(9))
+            .expect("manual clock advance");
+        assert_eq!(dlq.cleanup_expired(), 0);
+        clock
+            .advance_to(Duration::from_secs(10))
+            .expect("manual clock advance");
+        assert_eq!(dlq.cleanup_expired(), 1);
+        assert_eq!(dlq.cleanup_expired(), 0);
+        assert!(dlq.is_empty());
+    }
+
+    #[test]
+    fn no_retention_preserves_entries() {
+        let clock = Arc::new(ManualClock::new(
+            Utc.with_ymd_and_hms(2026, 9, 12, 0, 0, 0).unwrap(),
+        ));
+        let dlq = DeadLetterQueue::with_clock(Arc::clone(&clock) as Arc<dyn Clock>);
+        dlq.push(test_action(), "kept".into(), 1);
+        clock
+            .advance_to(Duration::from_secs(86_400))
+            .expect("manual clock advance");
+        assert_eq!(dlq.cleanup_expired(), 0);
+        assert_eq!(dlq.len(), 1);
     }
 
     #[allow(dead_code)]
