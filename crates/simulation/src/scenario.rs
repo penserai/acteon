@@ -15,6 +15,7 @@ use crate::{
     StateBackendConfig,
 };
 
+mod audit_retention;
 mod cancellation_handoff;
 mod chain_fencing;
 mod chain_recovery;
@@ -68,6 +69,7 @@ pub enum Scenario {
     ChainDiscoveryRecovery,
     CancellationHandoffRecovery,
     ChainTaskProjectionRecovery,
+    AuditRetentionRecovery,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -301,6 +303,7 @@ pub async fn run(manifest: ScenarioManifest) -> Result<ScenarioReport, Simulatio
             Scenario::ChainTaskProjectionRecovery => {
                 Box::pin(chain_task_projection::run(&mut report))
             }
+            Scenario::AuditRetentionRecovery => Box::pin(audit_retention::run(&mut report)),
         };
         let result = result.await;
         if let Err(error) = result {

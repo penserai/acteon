@@ -38,8 +38,8 @@ target/debug/acteon-scenario --replay scenario-results/portfolio/report.json --o
 Schema 2 accepts `schema_version`, `seed`, `backend`, `trials` (1–32), and
 `scenarios`: `incident_response`, `refund_fulfillment`, `prompt_injection`,
 `queue_recovery`, `task_handoff_recovery`, `deadline_safety`, `worker_lifecycle`,
-`durable_scheduling`, `recurring_dispatch_recovery`, or
-`cancellation_handoff_recovery`, or `chain_task_projection_recovery`. The four
+`durable_scheduling`, `recurring_dispatch_recovery`, `cancellation_handoff_recovery`,
+`chain_task_projection_recovery`, or `audit_retention_recovery`. The five
 virtual-time scenarios require memory.
 It derives independent trial/scenario seeds, reports fixed weighted dimensions
 and mandatory safety gates, and rejects missing/duplicate grading evidence.
@@ -79,7 +79,7 @@ See [clock injection and deadline evaluation](../docs/virtual-time.md).
 
 The memory-only `workers.json` suite adds task timestamps, heartbeat/staleness
 boundaries, audit/SSE emission, explicit group/timeout/scheduled ticks, and polling
-cadence. CI runs all twelve memory suites and replays them. Grader `portfolio-v8`
+cadence. CI runs all thirteen memory suites and replays them. Grader `portfolio-v8`
 adds terminal handoff recovery to the existing rubrics; old reports still require
 their preserved runner.
 See [worker lifecycle evaluation](../docs/worker-lifecycle.md).
@@ -127,7 +127,7 @@ receiver outages, chain discovery repair, DLQ acknowledgement loss, scoped
 receivers, and encrypted delivery progress. Negative mutations remove repair,
 acknowledge an undelivered result, or remove downstream deduplication. See
 [terminal handoff recovery](../docs/task-handoff-recovery.md) for the contract
-and remaining evidence gaps. CI now retains 28 suite/backend replay pairs.
+and remaining evidence gaps. CI now retains 29 suite/backend replay pairs.
 
 
 `fencing.json` exercises stale chain updates, deleted receivers, retention racing
@@ -156,3 +156,9 @@ then reconstructs the gateway and reconciles the retained terminal row. The
 second sweep must be a no-op and the task must retain one stable terminal
 receipt. Skipping reconciliation fails a mandatory gate. See [chain-to-task
 projection recovery](../docs/chain-task-projection-recovery.md).
+
+`audit-retention.json` uses a shared manual clock with the in-memory audit store.
+It verifies that an audit record remains queryable before its expiry, is removed
+at the exact boundary, and leaves the action index and later records intact.
+Skipping the clock advance fails the expiry gate. See [audit retention
+recovery](../docs/audit-retention-recovery.md).

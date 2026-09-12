@@ -381,7 +381,7 @@ for receipt consumption, upgrade requirements, and untested crash windows.
 `scenarios/queues.json` exercises interrupted enqueue repair, retry acknowledgement
 loss, ownership and tenant isolation, terminal cleanup, and encrypted records on
 memory, Redis, and PostgreSQL. The same manifest/replay commands apply. The CI
-script runs 28 suite/backend pairs and preserves their executable. See
+script runs 29 suite/backend pairs and preserves their executable. See
 [worker queue recovery](../../queue-recovery.md) for the write-fault adapter,
 manual-clock race contracts, and the boundary with terminal-result delivery below.
 
@@ -389,7 +389,7 @@ manual-clock race contracts, and the boundary with terminal-result delivery belo
 
 `scenarios/handoffs.json` tests retained result delivery across terminal-write and
 receiver outages, chain discovery repair, DLQ acknowledgement loss, tenant scope,
-and encryption on all three backends. The script retains 28 suite/backend
+and encryption on all three backends. The script retains 29 suite/backend
 report/replay pairs. See [terminal handoff recovery](../../task-handoff-recovery.md)
 for destination acknowledgements, receiver fencing, and controlled race evidence.
 
@@ -399,7 +399,7 @@ for destination acknowledgements, receiver fencing, and controlled race evidence
 `scenarios/fencing.json` adds stale-writer and retention/reset races on all three
 scenario backends. The selected backend supplies both state and locks, with
 explicitly shortened test leases. See [chain state fencing](../../chain-state-fencing.md)
-for the atomic deletion contract, mutation gates, and limits. CI preserves 28
+for the atomic deletion contract, mutation gates, and limits. CI preserves 29
 suite/backend report/replay pairs under grader `portfolio-v8`.
 
 ### Chain discovery recovery
@@ -415,3 +415,10 @@ across memory, Redis, and PostgreSQL. See [chain discovery recovery](../../chain
 the linked task's terminal write, then rebuilds the gateway and replays the
 projection on memory, Redis, and PostgreSQL. The repeated reconciliation must be
 a no-op. See [chain-to-task projection recovery](../../chain-task-projection-recovery.md).
+
+### Audit retention
+
+`scenarios/audit-retention.json` uses the shared manual clock with the in-memory
+audit store to exercise retention before, at, and after an expiry boundary.
+Cleanup removes only expired records and keeps the secondary action index
+consistent. See [audit retention recovery](../../audit-retention-recovery.md).
