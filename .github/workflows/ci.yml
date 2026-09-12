@@ -84,7 +84,7 @@ jobs:
           toolchain: ${{ matrix.rust }}
       - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8 # nextest
+      - uses: taiki-e/install-action@c3ec0de9ae7f1019cea21aa96aa0a895b9552063 # nextest
         with:
           tool: cargo-nextest
       - run: cargo nextest run --locked --workspace --lib --bins --tests
