@@ -113,10 +113,7 @@ async fn run_with(report: &mut ScenarioReport, mutation: Mutation) -> Result<(),
     let before_removed = store.cleanup_expired().await.map_err(error)?;
     let before = store.get_by_id("expired").await.map_err(error)?.is_some();
 
-    let should_advance = match mutation {
-        Mutation::None => true,
-        Mutation::SkipAdvance => false,
-    };
+    let should_advance = mutation != Mutation::SkipAdvance;
     if should_advance {
         clock.advance_to(Duration::from_secs(10)).map_err(error)?;
     }
