@@ -260,11 +260,12 @@ pub async fn run(manifest: ScenarioManifest) -> Result<ScenarioReport, Simulatio
                     | Scenario::WorkerLifecycle
                     | Scenario::DurableScheduling
                     | Scenario::RecurringDispatchRecovery
+                    | Scenario::AuditRetentionRecovery
             )
         })
     {
         return Err(SimulationError::Configuration(
-            "virtual-time scenario requires the memory backend (deadline_safety, worker_lifecycle, durable_scheduling, recurring_dispatch_recovery)"
+            "virtual-time scenario requires the memory backend (deadline_safety, worker_lifecycle, durable_scheduling, recurring_dispatch_recovery, audit_retention_recovery)"
                 .into(),
         ));
     }
