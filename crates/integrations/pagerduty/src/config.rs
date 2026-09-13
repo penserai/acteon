@@ -132,15 +132,12 @@ impl PagerDutyConfig {
         master_key: &acteon_crypto::MasterKey,
     ) -> Result<Self, PagerDutyError> {
         for routing_key in self.services.values_mut() {
-            routing_key.clone_from(
-                acteon_crypto::decrypt_value(routing_key, master_key)
-                    .map_err(|e| {
-                        PagerDutyError::InvalidPayload(format!(
-                            "failed to decrypt routing key: {e}"
-                        ))
-                    })?
-                    .expose_secret(),
-            );
+            acteon_crypto::decrypt_value(routing_key, master_key)
+                .map_err(|e| {
+                    PagerDutyError::InvalidPayload(format!("failed to decrypt routing key: {e}"))
+                })?
+                .expose_secret()
+                .clone_into(routing_key);
         }
         Ok(self)
     }

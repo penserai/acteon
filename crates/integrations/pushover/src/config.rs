@@ -156,13 +156,13 @@ impl PushoverConfig {
             Some(n) => self
                 .user_keys
                 .get(n)
-                .map(|s| s.expose_secret())
+                .map(ExposeSecret::expose_secret)
                 .ok_or_else(|| PushoverError::UnknownRecipient(n.to_owned())),
             None => {
                 if let Some(default_name) = &self.default_recipient {
                     self.user_keys
                         .get(default_name.as_str())
-                        .map(|s| s.expose_secret())
+                        .map(ExposeSecret::expose_secret)
                         .ok_or_else(|| PushoverError::UnknownRecipient(default_name.clone()))
                 } else if self.user_keys.len() == 1 {
                     Ok(self.user_keys.values().next().unwrap().expose_secret())

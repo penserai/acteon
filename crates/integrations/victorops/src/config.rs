@@ -230,13 +230,13 @@ impl VictorOpsConfig {
             Some(n) => self
                 .routing_keys
                 .get(n)
-                .map(|s| s.expose_secret())
+                .map(ExposeSecret::expose_secret)
                 .ok_or_else(|| VictorOpsError::UnknownRoutingKey(n.to_owned())),
             None => {
                 if let Some(default_name) = &self.default_route_name {
                     self.routing_keys
                         .get(default_name.as_str())
-                        .map(|s| s.expose_secret())
+                        .map(ExposeSecret::expose_secret)
                         .ok_or_else(|| VictorOpsError::UnknownRoutingKey(default_name.clone()))
                 } else if self.routing_keys.len() == 1 {
                     Ok(self.routing_keys.values().next().unwrap().expose_secret())
