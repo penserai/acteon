@@ -2656,7 +2656,7 @@ fn require_decrypt(
         let mk = master_key.ok_or(
             "ACTEON_AUTH_KEY environment variable is required to decrypt ENC[...] config values",
         )?;
-        Ok(decrypt_value(value, mk)?.expose_secret().clone())
+        Ok(decrypt_value(value, mk)?.expose_secret().to_string())
     } else {
         Ok(value.to_owned())
     }

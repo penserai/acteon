@@ -97,7 +97,7 @@ impl VictorOpsConfig {
     #[must_use]
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {
-            api_key: SecretString::new(api_key.into()),
+            api_key: SecretString::new(api_key.into().into()),
             routing_keys: HashMap::new(),
             default_route_name: None,
             api_base_url: "https://alert.victorops.com".to_owned(),
@@ -117,9 +117,10 @@ impl VictorOpsConfig {
     ) -> Self {
         let route_name = route_name.into();
         let mut config = Self::new(api_key);
-        config
-            .routing_keys
-            .insert(route_name.clone(), SecretString::new(routing_key.into()));
+        config.routing_keys.insert(
+            route_name.clone(),
+            SecretString::new(routing_key.into().into()),
+        );
         config.default_route_name = Some(route_name);
         config
     }
@@ -133,8 +134,10 @@ impl VictorOpsConfig {
         route_name: impl Into<String>,
         routing_key: impl Into<String>,
     ) -> Self {
-        self.routing_keys
-            .insert(route_name.into(), SecretString::new(routing_key.into()));
+        self.routing_keys.insert(
+            route_name.into(),
+            SecretString::new(routing_key.into().into()),
+        );
         self
     }
 
@@ -227,22 +230,16 @@ impl VictorOpsConfig {
             Some(n) => self
                 .routing_keys
                 .get(n)
-                .map(|s| s.expose_secret().as_str())
+                .map(|s| s.expose_secret())
                 .ok_or_else(|| VictorOpsError::UnknownRoutingKey(n.to_owned())),
             None => {
                 if let Some(default_name) = &self.default_route_name {
                     self.routing_keys
                         .get(default_name.as_str())
-                        .map(|s| s.expose_secret().as_str())
+                        .map(|s| s.expose_secret())
                         .ok_or_else(|| VictorOpsError::UnknownRoutingKey(default_name.clone()))
                 } else if self.routing_keys.len() == 1 {
-                    Ok(self
-                        .routing_keys
-                        .values()
-                        .next()
-                        .unwrap()
-                        .expose_secret()
-                        .as_str())
+                    Ok(self.routing_keys.values().next().unwrap().expose_secret())
                 } else {
                     Err(VictorOpsError::NoDefaultRoutingKey)
                 }

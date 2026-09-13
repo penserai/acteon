@@ -173,13 +173,13 @@ fn build_test_state_with_auth_role(role: &str, grants: Vec<Grant>) -> AppState {
 
     let api_key_config = ApiKeyConfig {
         name: "test-key".to_string(),
-        key_hash: SecretString::new(hash_api_key("test-raw-key")),
+        key_hash: SecretString::new(hash_api_key("test-raw-key").into()),
         role: role.to_string(),
         grants,
     };
     let auth_config = AuthFileConfig {
         settings: AuthSettings {
-            jwt_secret: SecretString::new("test-jwt-secret-32-bytes-long!!!!".to_string()),
+            jwt_secret: SecretString::new("test-jwt-secret-32-bytes-long!!!!".to_string().into()),
             jwt_expiry_seconds: 3600,
         },
         users: vec![],
@@ -2814,7 +2814,7 @@ async fn silence_list_hides_silences_outside_caller_tenant_grants() {
 
     let admin_key = ApiKeyConfig {
         name: "admin-key".to_string(),
-        key_hash: SecretString::new(hash_api_key("admin-raw-key")),
+        key_hash: SecretString::new(hash_api_key("admin-raw-key").into()),
         role: "admin".to_string(),
         grants: vec![Grant {
             tenants: vec!["*".into()],
@@ -2826,7 +2826,7 @@ async fn silence_list_hides_silences_outside_caller_tenant_grants() {
     };
     let limited_key = ApiKeyConfig {
         name: "limited-key".to_string(),
-        key_hash: SecretString::new(hash_api_key("limited-raw-key")),
+        key_hash: SecretString::new(hash_api_key("limited-raw-key").into()),
         role: "admin".to_string(),
         grants: vec![Grant {
             tenants: vec!["tenant-a".into(), "tenant-b".into()],
@@ -2838,7 +2838,7 @@ async fn silence_list_hides_silences_outside_caller_tenant_grants() {
     };
     let auth_config = AuthFileConfig {
         settings: AuthSettings {
-            jwt_secret: SecretString::new("test-jwt-secret-32-bytes-long!!!!".to_string()),
+            jwt_secret: SecretString::new("test-jwt-secret-32-bytes-long!!!!".to_string().into()),
             jwt_expiry_seconds: 3600,
         },
         users: vec![],
@@ -3397,13 +3397,13 @@ async fn silence_create_requires_silences_manage_permission() {
     // Viewer role lacks SilencesManage.
     let api_key_config = ApiKeyConfig {
         name: "viewer-key".to_string(),
-        key_hash: SecretString::new(hash_api_key("test-raw-key")),
+        key_hash: SecretString::new(hash_api_key("test-raw-key").into()),
         role: "viewer".to_string(),
         grants: vec![default_test_grant()],
     };
     let auth_config = AuthFileConfig {
         settings: AuthSettings {
-            jwt_secret: SecretString::new("test-jwt-secret-32-bytes-long!!!!".to_string()),
+            jwt_secret: SecretString::new("test-jwt-secret-32-bytes-long!!!!".to_string().into()),
             jwt_expiry_seconds: 3600,
         },
         users: vec![],
