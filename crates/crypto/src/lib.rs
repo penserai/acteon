@@ -27,7 +27,7 @@ use thiserror::Error;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 // Re-export for consumers so they don't need a direct `secrecy` dependency.
-pub use secrecy::{ExposeSecret, Secret, SecretString};
+pub use secrecy::{ExposeSecret, SecretBox as Secret, SecretString};
 
 /// Compiled regex for parsing `ENC[AES256-GCM,...]` envelopes.
 ///
@@ -140,7 +140,7 @@ pub fn decrypt_value(value: &str, master_key: &MasterKey) -> Result<SecretString
 
     let Some(caps) = ENC_RE.captures(trimmed) else {
         // Not an ENC[...] envelope — pass through unchanged.
-        return Ok(SecretString::new(value.to_owned()));
+        return Ok(SecretString::new(value.to_owned().into()));
     };
 
     // Group 1 = kid (optional), Group 2 = data, Group 3 = iv, Group 4 = tag
@@ -182,7 +182,7 @@ pub fn decrypt_value(value: &str, master_key: &MasterKey) -> Result<SecretString
     let s = String::from_utf8(plaintext)
         .map_err(|e| CryptoError::InvalidFormat(format!("decrypted value is not UTF-8: {e}")))?;
 
-    Ok(SecretString::new(s))
+    Ok(SecretString::new(s.into()))
 }
 
 /// Encrypt a plaintext string, producing an `ENC[AES256-GCM,...]` marker.
@@ -323,7 +323,7 @@ impl PayloadEncryptor {
     ///
     /// Non-encrypted strings pass through unchanged.
     pub fn decrypt_str(&self, value: &str) -> Result<String, CryptoError> {
-        Ok(self.decrypt_raw(value)?.expose_secret().clone())
+        Ok(self.decrypt_raw(value)?.expose_secret().to_string())
     }
 
     /// Core multi-key decryption logic.
@@ -335,7 +335,7 @@ impl PayloadEncryptor {
         let trimmed = value.trim();
 
         if !ENC_RE.is_match(trimmed) {
-            return Ok(SecretString::new(value.to_owned()));
+            return Ok(SecretString::new(value.to_owned().into()));
         }
 
         // Try matching kid first for direct lookup.
