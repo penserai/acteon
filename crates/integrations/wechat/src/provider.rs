@@ -224,7 +224,7 @@ impl WeChatProvider {
         }
         let ttl = Duration::from_secs(token_response.expires_in.max(1));
         Ok(CachedToken {
-            token: SecretString::new(token_response.access_token),
+            token: SecretString::new(token_response.access_token.into()),
             expires_at: Instant::now() + ttl,
         })
     }

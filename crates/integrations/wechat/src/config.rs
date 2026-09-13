@@ -129,8 +129,8 @@ impl WeChatConfig {
     #[must_use]
     pub fn new(corp_id: impl Into<String>, corp_secret: impl Into<String>, agent_id: i64) -> Self {
         Self {
-            corp_id: SecretString::new(corp_id.into()),
-            corp_secret: SecretString::new(corp_secret.into()),
+            corp_id: SecretString::new(corp_id.into().into()),
+            corp_secret: SecretString::new(corp_secret.into().into()),
             agent_id,
             default_recipients: None,
             default_msgtype: "text".to_owned(),

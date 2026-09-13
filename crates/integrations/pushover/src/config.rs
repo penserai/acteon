@@ -64,7 +64,7 @@ impl PushoverConfig {
     #[must_use]
     pub fn new(app_token: impl Into<String>) -> Self {
         Self {
-            app_token: SecretString::new(app_token.into()),
+            app_token: SecretString::new(app_token.into().into()),
             user_keys: HashMap::new(),
             default_recipient: None,
             api_base_url: "https://api.pushover.net".to_owned(),
@@ -80,9 +80,10 @@ impl PushoverConfig {
     ) -> Self {
         let recipient_name = recipient_name.into();
         let mut config = Self::new(app_token);
-        config
-            .user_keys
-            .insert(recipient_name.clone(), SecretString::new(user_key.into()));
+        config.user_keys.insert(
+            recipient_name.clone(),
+            SecretString::new(user_key.into().into()),
+        );
         config.default_recipient = Some(recipient_name);
         config
     }
@@ -91,7 +92,7 @@ impl PushoverConfig {
     #[must_use]
     pub fn with_recipient(mut self, name: impl Into<String>, user_key: impl Into<String>) -> Self {
         self.user_keys
-            .insert(name.into(), SecretString::new(user_key.into()));
+            .insert(name.into(), SecretString::new(user_key.into().into()));
         self
     }
 
@@ -155,22 +156,16 @@ impl PushoverConfig {
             Some(n) => self
                 .user_keys
                 .get(n)
-                .map(|s| s.expose_secret().as_str())
+                .map(|s| s.expose_secret())
                 .ok_or_else(|| PushoverError::UnknownRecipient(n.to_owned())),
             None => {
                 if let Some(default_name) = &self.default_recipient {
                     self.user_keys
                         .get(default_name.as_str())
-                        .map(|s| s.expose_secret().as_str())
+                        .map(|s| s.expose_secret())
                         .ok_or_else(|| PushoverError::UnknownRecipient(default_name.clone()))
                 } else if self.user_keys.len() == 1 {
-                    Ok(self
-                        .user_keys
-                        .values()
-                        .next()
-                        .unwrap()
-                        .expose_secret()
-                        .as_str())
+                    Ok(self.user_keys.values().next().unwrap().expose_secret())
                 } else {
                     Err(PushoverError::NoDefaultRecipient)
                 }
