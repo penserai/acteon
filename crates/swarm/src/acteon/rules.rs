@@ -180,7 +180,12 @@ pub async fn install_safety_rules(config: &SwarmConfig, tenant: &str) -> Result<
 
 fn md5_short(input: &str) -> String {
     use md5::{Digest, Md5};
-    format!("{:x}", Md5::digest(input.as_bytes()))[..16].to_string()
+    let mut output = String::with_capacity(16);
+    for byte in Md5::digest(input.as_bytes()).iter().take(8) {
+        std::fmt::Write::write_fmt(&mut output, format_args!("{byte:02x}"))
+            .expect("writing to a String cannot fail");
+    }
+    output
 }
 
 #[cfg(test)]
