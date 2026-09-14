@@ -118,10 +118,26 @@ impl DynamoStateStore {
 
     /// Compute the `expires_at` epoch seconds from an optional TTL.
     fn expires_at(ttl: Option<Duration>) -> Option<i64> {
-        ttl.map(|d| {
-            let secs = i64::try_from(d.as_secs()).unwrap_or(i64::MAX);
-            Self::now_epoch().saturating_add(secs)
-        })
+        ttl.map(|duration| Self::expires_at_at(chrono::Utc::now(), duration))
+    }
+
+    /// Compute a whole-second expiry without shortening the requested TTL.
+    ///
+    /// `DynamoDB` TTL attributes have one-second precision. Rounding the current
+    /// timestamp down before adding a TTL can make a newly written item expire
+    /// almost immediately (for example, a one-second TTL written at .9s would
+    /// otherwise expire after only .1s). Round up whenever either the current
+    /// time or the requested duration has a fractional second so the item lives
+    /// for at least the requested duration.
+    fn expires_at_at(now: chrono::DateTime<chrono::Utc>, duration: Duration) -> i64 {
+        let secs = i64::try_from(duration.as_secs()).unwrap_or(i64::MAX);
+        let mut expiry = now.timestamp().saturating_add(secs);
+        if duration > Duration::ZERO
+            && (now.timestamp_subsec_nanos() > 0 || duration.subsec_nanos() > 0)
+        {
+            expiry = expiry.saturating_add(1);
+        }
+        expiry
     }
 
     /// Check if an item is expired based on its `expires_at` attribute.
@@ -873,6 +889,39 @@ pub async fn build_client(config: &DynamoConfig) -> Client {
 
     let sdk_config = aws_config.load().await;
     Client::new(&sdk_config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{TimeZone, Utc};
+
+    #[test]
+    fn ttl_expiry_rounds_up_fractional_seconds() {
+        let exact = Utc.timestamp_opt(1_700_000_000, 0).unwrap();
+        assert_eq!(
+            DynamoStateStore::expires_at_at(exact, Duration::from_secs(1)),
+            1_700_000_001
+        );
+        assert_eq!(
+            DynamoStateStore::expires_at_at(
+                Utc.timestamp_opt(1_700_000_000, 900_000_000).unwrap(),
+                Duration::from_secs(1),
+            ),
+            1_700_000_002
+        );
+        assert_eq!(
+            DynamoStateStore::expires_at_at(exact, Duration::from_millis(1)),
+            1_700_000_001
+        );
+        assert_eq!(
+            DynamoStateStore::expires_at_at(
+                Utc.timestamp_opt(1_700_000_000, 900_000_000).unwrap(),
+                Duration::ZERO,
+            ),
+            1_700_000_000
+        );
+    }
 }
 
 #[cfg(all(test, feature = "integration"))]
