@@ -1329,6 +1329,18 @@ impl Gateway {
         }
     }
 
+    /// Remove expired entries from a DLQ that has a local retention policy.
+    ///
+    /// Returns `None` when the DLQ is disabled. Custom sinks may return zero
+    /// when retention is enforced by their durable backend instead.
+    pub async fn dlq_cleanup_expired(&self) -> Option<usize> {
+        if let Some(dlq) = &self.dlq {
+            Some(dlq.cleanup_expired().await)
+        } else {
+            None
+        }
+    }
+
     /// Cumulative failed dead-letter storage/cryptographic operations.
     pub fn dlq_failure_count(&self) -> u64 {
         self.dlq.as_ref().map_or(0, |sink| sink.failure_count())

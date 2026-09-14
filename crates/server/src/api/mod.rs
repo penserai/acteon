@@ -4,6 +4,7 @@ pub mod a2a_discovery_cache;
 pub mod a2a_push;
 pub mod a2a_push_worker;
 pub mod a2a_ssrf;
+pub mod alerting;
 pub mod analytics;
 pub mod approvals;
 pub mod audit;
@@ -148,6 +149,10 @@ pub fn router(state: AppState) -> Router {
         .route("/health", get(health::health))
         .route("/metrics", get(health::metrics))
         .route("/metrics/prometheus", get(prometheus::prometheus_metrics))
+        .route(
+            "/v1/metrics/alerts/prometheus.yaml",
+            get(prometheus::prometheus_alert_rules),
+        )
         // JWKS-style discovery for action signing keys (public; only
         // exposes public key material, never private keys)
         .route(

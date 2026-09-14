@@ -121,13 +121,21 @@ The subsequent phase adds selected-backend [cancellation handoff recovery](chain
 for terminal notification transport loss and gateway reconstruction.
 The next phase adds selected-backend [chain-to-task projection recovery](chain-task-projection-recovery.md)
 for terminal task-row write interruption and gateway reconstruction.
+The subsequent hardening slice adds [DLQ retention](dlq-retention.md) for the
+built-in action queue and A2A push-delivery queue, with shared-clock boundary
+coverage for the in-memory sink.
+The observability follow-up adds generated [Prometheus alerting rules](book/features/prometheus-alerting.md)
+and configuration-backed retention TTL gauges.
+
 The next phase adds memory-only [audit retention recovery](audit-retention-recovery.md)
 with an exact expiry-boundary contract and action-index consistency evidence.
 
 ## Remaining plan
 
-1. Extend virtual time into DLQ retention and the remaining application
-   lifecycle paths. Gateway/executor/memory clocks, background workers, and task
+1. Extend virtual time into audit-store retention, DLQ retention, and the remaining
+   application lifecycle paths. DLQ retention now uses the shared in-memory clock
+   and state backend TTLs; audit retention has exact-boundary expiry and index
+   cleanup evidence. Gateway/executor/memory clocks, background workers, and task
    transitions, worker-queue leases/retries, and workflow construction are injected; explicit worker ticks and the deadline and worker
    lifecycle suites now have virtual timing. Existing product portfolio trials,
    remote database TTLs, generated UUIDs, and OS scheduling retain real time.

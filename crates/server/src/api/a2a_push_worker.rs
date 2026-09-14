@@ -180,6 +180,7 @@ pub struct PushDeliveryMetricsSnapshot {
 struct Shared {
     state: Arc<dyn StateStore>,
     http: acteon_http::GuardedClient,
+    dlq_retention: Option<Duration>,
     delivery_permits: Arc<Semaphore>,
     cache: Mutex<HashMap<CacheKey, CacheEntry>>,
     metrics: Arc<PushDeliveryMetrics>,
@@ -233,6 +234,7 @@ impl PushDeliveryWorker {
             shared: Arc::new(Shared {
                 state,
                 http,
+                dlq_retention: None,
                 delivery_permits: Arc::new(Semaphore::new(MAX_INFLIGHT_DELIVERIES)),
                 cache: Mutex::new(HashMap::new()),
                 metrics,
@@ -252,6 +254,18 @@ impl PushDeliveryWorker {
     #[must_use]
     pub fn with_ssrf_enforcement(self, enforce: bool) -> Self {
         self.shared.enforce_ssrf.store(enforce, Ordering::Relaxed);
+        self
+    }
+
+    /// Set the retention window for persisted push-delivery DLQ entries.
+    ///
+    /// The state backend evaluates this TTL in its configured clock domain;
+    /// omitting it preserves the historical indefinite-retention behavior.
+    #[must_use]
+    pub fn with_dlq_retention(mut self, retention: Duration) -> Self {
+        Arc::get_mut(&mut self.shared)
+            .expect("push worker shared state must be uniquely owned while configuring")
+            .dlq_retention = Some(retention);
         self
     }
 
@@ -587,7 +601,7 @@ impl Shared {
                 return;
             }
         };
-        match self.state.set(&key, &payload, None).await {
+        match self.state.set(&key, &payload, self.dlq_retention).await {
             Ok(()) => {
                 self.metrics.dlq_writes.fetch_add(1, Ordering::Relaxed);
                 debug!(
@@ -692,6 +706,8 @@ mod tests {
     use acteon_core::{StreamEventType, TaskState};
     use acteon_state::{StateKey, StateStore};
     use acteon_state_memory::MemoryStateStore;
+    use acteon_time::ManualClock;
+    use chrono::TimeZone;
     use std::net::SocketAddr;
     use std::sync::Arc;
     use std::sync::atomic::AtomicUsize;
@@ -824,6 +840,58 @@ mod tests {
         assert!(!is_transient_client_error(reqwest::StatusCode::NOT_FOUND));
         assert!(!is_transient_client_error(reqwest::StatusCode::CONFLICT));
         assert!(!is_transient_client_error(reqwest::StatusCode::GONE));
+    }
+
+    #[tokio::test]
+    async fn configured_dlq_retention_uses_state_ttl() {
+        let clock = Arc::new(ManualClock::new(
+            chrono::Utc.with_ymd_and_hms(2026, 9, 12, 0, 0, 0).unwrap(),
+        ));
+        let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::with_clock(
+            Arc::clone(&clock) as Arc<dyn acteon_time::Clock>
+        ));
+        let http = acteon_http::GuardedClient::new(
+            acteon_http::OutboundPolicy::default(),
+            REQUEST_TIMEOUT,
+        )
+        .unwrap();
+        let (_tx, rx) = broadcast::channel::<StreamEvent>(8);
+        let worker = PushDeliveryWorker::new(Arc::clone(&store), http, rx)
+            .with_dlq_retention(Duration::from_secs(10));
+        let config = TaskPushNotificationConfig::new(
+            "cfg-retention",
+            "task-retention",
+            "agents",
+            "demo",
+            "https://example.com/hook",
+        );
+        worker
+            .shared
+            .write_dlq_entry(
+                &config,
+                &mk_event("task-retention"),
+                DlqFailureKind::Terminal,
+                "HTTP 410",
+                1,
+            )
+            .await;
+
+        assert_eq!(
+            store
+                .scan_keys("agents", "demo", KeyKind::A2aPushDlq, None)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        clock.advance_to(Duration::from_secs(10)).unwrap();
+        assert!(
+            store
+                .scan_keys("agents", "demo", KeyKind::A2aPushDlq, None)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test(flavor = "current_thread", start_paused = false)]

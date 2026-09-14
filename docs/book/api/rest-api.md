@@ -58,6 +58,17 @@ Dispatch counters only.
 }
 ```
 
+### `GET /metrics/prometheus`
+
+Prometheus text exposition metrics, including configuration-backed audit and
+dead-letter retention TTL gauges.
+
+### `GET /v1/metrics/alerts/prometheus.yaml`
+
+Generated Prometheus alerting rules for the features enabled in the running
+configuration. The endpoint is public like the scrape endpoint and contains
+no secrets or tenant labels.
+
 ---
 
 ## Action Dispatch

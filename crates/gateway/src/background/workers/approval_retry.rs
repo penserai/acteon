@@ -94,6 +94,12 @@ impl BackgroundProcessor {
         } else {
             Ok(())
         };
+        if let Some(gateway) = &self.gateway
+            && let Some(removed) = gateway.read().await.dlq_cleanup_expired().await
+            && removed > 0
+        {
+            debug!(removed, "cleanup: expired DLQ entries removed");
+        }
 
         // Clean up resolved/notified groups that are no longer needed
         let groups = self.group_manager.list_pending_groups();

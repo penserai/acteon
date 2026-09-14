@@ -107,6 +107,10 @@ impl DeadLetterSink for EncryptingDeadLetterSink {
         readable
     }
 
+    async fn cleanup_expired(&self) -> usize {
+        self.inner.cleanup_expired().await
+    }
+
     async fn len(&self) -> usize {
         self.inner.len().await
     }

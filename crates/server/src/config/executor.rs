@@ -33,4 +33,9 @@ pub struct ExecutorConfig {
     /// Whether to enable the dead-letter queue for failed actions.
     #[serde(default)]
     pub dlq_enabled: bool,
+    /// Optional retention window for action and A2A push dead-letter entries.
+    /// When omitted, entries are retained until an operator drains or deletes
+    /// them. The built-in in-memory action DLQ and state-store-backed A2A push
+    /// DLQ enforce this window.
+    pub dlq_retention_seconds: Option<u64>,
 }

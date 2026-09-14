@@ -167,6 +167,7 @@ use acteon_core::{
         super::retention::delete_retention,
         super::provider_health::list_provider_health,
         super::prometheus::prometheus_metrics,
+        super::prometheus::prometheus_alert_rules,
         super::plugins::list_plugins,
         super::plugins::unregister_plugin,
         super::templates::create_template,

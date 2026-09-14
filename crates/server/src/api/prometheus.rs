@@ -32,6 +32,7 @@ use axum::response::IntoResponse;
 use acteon_gateway::{MetricsSnapshot, ProviderStatsSnapshot};
 
 use super::AppState;
+use super::alerting::render_alert_rules;
 
 /// Prometheus text exposition format content type.
 const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
@@ -113,10 +114,45 @@ pub async fn prometheus_metrics(State(state): State<AppState>) -> impl IntoRespo
     let provider_stats = gw.provider_metrics().snapshot();
     render_provider_metrics(&mut buf, &provider_stats);
 
+    // Configuration gauges let generated alert rules evaluate retention
+    // warnings without embedding configuration values in PromQL.
+    write_gauge(
+        &mut buf,
+        "acteon_audit_retention_ttl_seconds",
+        "Configured audit retention TTL in seconds (zero means indefinite).",
+        state.config.audit.ttl_seconds.unwrap_or(0),
+    );
+    write_gauge(
+        &mut buf,
+        "acteon_dlq_retention_ttl_seconds",
+        "Configured dead-letter retention TTL in seconds (zero means indefinite).",
+        state.config.executor.dlq_retention_seconds.unwrap_or(0),
+    );
+
     (
         StatusCode::OK,
         [(header::CONTENT_TYPE, PROMETHEUS_CONTENT_TYPE)],
         buf,
+    )
+}
+
+/// `GET /v1/metrics/alerts/prometheus.yaml` -- returns generated alerting rules.
+#[utoipa::path(
+    get,
+    path = "/v1/metrics/alerts/prometheus.yaml",
+    tag = "Health",
+    summary = "Prometheus alerting rules",
+    description = "Returns Prometheus alerting rules generated from the sanitized Acteon configuration.",
+    responses(
+        (status = 200, description = "Prometheus alerting rules", content_type = "text/yaml")
+    )
+)]
+#[allow(clippy::unused_async)]
+pub async fn prometheus_alert_rules(State(state): State<AppState>) -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "text/yaml; charset=utf-8")],
+        render_alert_rules(&state.config),
     )
 }
 

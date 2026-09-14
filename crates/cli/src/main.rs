@@ -82,6 +82,8 @@ enum Command {
     Import(commands::import::ImportArgs),
     /// Manage local Ed25519 signing keys (generate/list/rotate).
     Keys(commands::keys::KeysArgs),
+    /// Export monitoring rules and metrics artifacts.
+    Metrics(commands::metrics::MetricsArgs),
 }
 
 #[tokio::main]
@@ -121,5 +123,6 @@ async fn main() -> anyhow::Result<()> {
         Command::Silences(args) => commands::silences::run(&ops, &args, &cli.format).await,
         Command::Import(args) => commands::import::run(&args),
         Command::Keys(args) => commands::keys::run(&args),
+        Command::Metrics(args) => commands::metrics::run(&ops, &args, &cli.format).await,
     }
 }

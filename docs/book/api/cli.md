@@ -158,6 +158,18 @@ acteon-cli events manage \
   --action resolved
 ```
 
+### `metrics`
+
+Export Prometheus alerting rules generated from the running server
+configuration:
+
+```bash
+acteon-cli metrics export-alerts --output acteon-alerts.yml
+```
+
+Without `--output`, the YAML is written to stdout. The server-side source is
+also available at `GET /v1/metrics/alerts/prometheus.yaml`.
+
 ## JSON Output
 
 Use `--format json` for scripting and piping:
