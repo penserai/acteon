@@ -68,6 +68,7 @@ name = "acteon-audit-memory"
 version = "0.1.0"
 dependencies = [
  "acteon-audit",
+ "acteon-time",
  "async-trait",
  "chrono",
  "dashmap",

@@ -33,6 +33,7 @@ impl EvaluationManifest {
             Scenario::WorkerLifecycle,
             Scenario::DurableScheduling,
             Scenario::RecurringDispatchRecovery,
+            Scenario::AuditRetentionRecovery,
         ]
         .into_iter()
         .filter(|scenario| self.scenarios.contains(scenario))
@@ -62,11 +63,12 @@ impl EvaluationManifest {
                         | Scenario::WorkerLifecycle
                         | Scenario::DurableScheduling
                         | Scenario::RecurringDispatchRecovery
+                        | Scenario::AuditRetentionRecovery
                 )
             })
         {
             return Err(configuration(
-                "virtual-time scenario requires the memory backend (deadline_safety, worker_lifecycle, durable_scheduling, recurring_dispatch_recovery)",
+                "virtual-time scenario requires the memory backend (deadline_safety, worker_lifecycle, durable_scheduling, recurring_dispatch_recovery, audit_retention_recovery)",
             ));
         }
         if self.scenarios.is_empty() {
@@ -116,6 +118,7 @@ pub fn scenario_id(scenario: Scenario) -> &'static str {
         Scenario::ChainDiscoveryRecovery => "chain_discovery_recovery",
         Scenario::CancellationHandoffRecovery => "cancellation_handoff_recovery",
         Scenario::ChainTaskProjectionRecovery => "chain_task_projection_recovery",
+        Scenario::AuditRetentionRecovery => "audit_retention_recovery",
         _ => "kernel",
     }
 }
@@ -328,6 +331,11 @@ fn rubric(scenario: Scenario) -> Vec<Dimension> {
             ("terminal projection", 60, &["projection_recovered"], true),
             ("idempotent receipt", 25, &["projection_idempotent"], true),
             ("observed fault", 15, &["fault_consumed"], true),
+        ],
+        Scenario::AuditRetentionRecovery => &[
+            ("exact expiry boundary", 50, &["expiry_boundary"], true),
+            ("index consistency", 30, &["index_consistency"], true),
+            ("manual clock", 20, &["manual_clock"], true),
         ],
         Scenario::TaskHandoffRecovery => &[
             (

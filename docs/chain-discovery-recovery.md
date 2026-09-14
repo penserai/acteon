@@ -49,7 +49,7 @@ audit backend.
 Grader `portfolio-v8` rejects all five controlled mutations: skipping discovery
 recovery, retaining a terminal orphan, skipping terminal-audit recovery,
 skipping terminal-history recovery, or persisting plaintext state. CI retains 28
-report/replay pairs: twelve memory suites and eight each on Redis and PostgreSQL.
+report/replay pairs: thirteen memory suites and eight each on Redis and PostgreSQL.
 
 ## Verification
 

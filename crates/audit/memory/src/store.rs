@@ -1,5 +1,7 @@
+use std::sync::Arc;
+
+use acteon_time::{Clock, SystemClock};
 use async_trait::async_trait;
-use chrono::Utc;
 use dashmap::DashMap;
 
 use acteon_audit::cursor::{AuditCursor, CursorKind};
@@ -16,6 +18,9 @@ pub struct MemoryAuditStore {
     records: DashMap<String, AuditRecord>,
     /// Secondary index: action ID -> list of record IDs.
     action_index: DashMap<String, Vec<String>>,
+    /// Clock used for expiry decisions. Production defaults to wall time;
+    /// tests can share an explicit manual clock with the rest of the system.
+    clock: Arc<dyn Clock>,
 }
 
 impl MemoryAuditStore {
@@ -24,6 +29,19 @@ impl MemoryAuditStore {
         Self {
             records: DashMap::new(),
             action_index: DashMap::new(),
+            clock: Arc::new(SystemClock::default()),
+        }
+    }
+
+    /// Create an in-memory audit store using an explicit clock domain.
+    ///
+    /// This is useful for deterministic retention tests and for embeddings
+    /// that already provide a shared [`Clock`] to gateway state.
+    pub fn with_clock(clock: Arc<dyn Clock>) -> Self {
+        Self {
+            records: DashMap::new(),
+            action_index: DashMap::new(),
+            clock,
         }
     }
 }
@@ -222,7 +240,7 @@ impl AuditStore for MemoryAuditStore {
     }
 
     async fn cleanup_expired(&self) -> Result<u64, AuditError> {
-        let now = Utc::now();
+        let now = self.clock.now();
         let mut removed = 0u64;
 
         // Collect IDs to remove (cannot mutate while iterating DashMap).

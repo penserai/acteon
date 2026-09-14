@@ -28,7 +28,7 @@ for backend in "${@:-memory}"; do
     rehabilitation portfolio queues handoffs fencing chain-recovery
     cancellation-handoff chain-task-projection
   )
-  if [[ "$backend" == "memory" ]]; then suites+=(deadlines workers scheduling recurring-dispatch); fi
+  if [[ "$backend" == "memory" ]]; then suites+=(deadlines workers scheduling recurring-dispatch audit-retention); fi
   for suite in "${suites[@]}"; do
     directory="scenario-results/$backend/$suite"
     mkdir -p "$directory"

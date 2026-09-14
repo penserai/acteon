@@ -28,6 +28,8 @@ The subsequent phase adds selected-backend [cancellation handoff recovery](chain
 for provider transport loss and stable downstream delivery identity.
 The next phase adds selected-backend [chain-to-task projection recovery](chain-task-projection-recovery.md)
 for a terminal chain write that outlives an interrupted linked-task projection.
+The next phase adds memory-only [audit retention recovery](audit-retention-recovery.md)
+for deterministic expiry and secondary-index cleanup at the exact retention boundary.
 
 ## Implemented behavior
 
