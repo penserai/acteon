@@ -118,7 +118,7 @@ impl OpsGenieConfig {
     #[must_use]
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {
-            api_key: SecretString::new(api_key.into()),
+            api_key: SecretString::new(api_key.into().into()),
             region: OpsGenieRegion::Us,
             api_base_url_override: None,
             default_team: None,

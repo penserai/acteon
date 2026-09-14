@@ -135,8 +135,10 @@ polling, worker decisions (including state retention), task transitions, human
 pauses, and task bridge retry waits. It exposes explicit worker ticks and adds a
 replayable lifecycle suite.
 
-DLQ/audit-store retention, external providers, remote database TTLs, and
-process/network scheduling still have independent clocks or timers. Core
+DLQ retention, external providers, remote database TTLs, and process/network
+scheduling still have independent clocks or timers. The in-memory audit store
+now accepts the shared clock and has exact-boundary retention evidence; remote
+audit backends retain their server clocks. Core
 convenience constructors and generated UUIDs retain default timestamps unless a
 caller uses an explicit-time API. These suites do not certify whole-system
 virtual-time replay or durable audit behavior.

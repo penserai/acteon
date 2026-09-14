@@ -32,6 +32,8 @@ The subsequent hardening slice adds [DLQ retention](dlq-retention.md) across
 the built-in action queue and A2A push-delivery queue.
 The observability follow-up adds generated [Prometheus alerting rules](book/features/prometheus-alerting.md),
 including configuration-backed retention TTL gauges and a CLI export command.
+The next phase adds memory-only [audit retention recovery](audit-retention-recovery.md)
+for deterministic expiry and secondary-index cleanup at the exact retention boundary.
 
 ## Implemented behavior
 

@@ -77,7 +77,7 @@ impl TelegramConfig {
     #[must_use]
     pub fn new(bot_token: impl Into<String>) -> Self {
         Self {
-            bot_token: SecretString::new(bot_token.into()),
+            bot_token: SecretString::new(bot_token.into().into()),
             chats: HashMap::new(),
             default_chat_name: None,
             api_base_url: "https://api.telegram.org".to_owned(),

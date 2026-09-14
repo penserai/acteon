@@ -23,7 +23,7 @@ pub fn build_api_key_table(configs: &[ApiKeyConfig]) -> HashMap<String, ApiKeyEn
     for cfg in configs {
         let role = Role::from_str_loose(&cfg.role).unwrap_or(Role::Viewer);
         map.insert(
-            cfg.key_hash.expose_secret().clone(),
+            cfg.key_hash.expose_secret().to_string(),
             ApiKeyEntry {
                 name: cfg.name.clone(),
                 role,

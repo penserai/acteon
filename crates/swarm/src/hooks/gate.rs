@@ -213,7 +213,12 @@ fn normalized_path(raw: &str) -> String {
 
 fn md5_hex(input: &str) -> String {
     let result = Md5::digest(input.as_bytes());
-    format!("{result:x}")
+    let mut output = String::with_capacity(32);
+    for byte in &result {
+        std::fmt::Write::write_fmt(&mut output, format_args!("{byte:02x}"))
+            .expect("writing to a String cannot fail");
+    }
+    output
 }
 
 #[cfg(test)]
