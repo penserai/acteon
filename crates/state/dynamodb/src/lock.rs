@@ -64,6 +64,21 @@ impl DynamoDistributedLock {
     fn now_epoch() -> i64 {
         chrono::Utc::now().timestamp()
     }
+
+    /// Compute a whole-second expiry without shortening the requested TTL.
+    /// `DynamoDB` TTL attributes have one-second precision, so fractional current
+    /// time or duration must round up to preserve the requested lifetime.
+    fn expires_at(duration: Duration) -> i64 {
+        let now = chrono::Utc::now();
+        let secs = i64::try_from(duration.as_secs()).unwrap_or(i64::MAX);
+        let mut expiry = now.timestamp().saturating_add(secs);
+        if duration > Duration::ZERO
+            && (now.timestamp_subsec_nanos() > 0 || duration.subsec_nanos() > 0)
+        {
+            expiry = expiry.saturating_add(1);
+        }
+        expiry
+    }
 }
 
 #[async_trait]
@@ -76,8 +91,7 @@ impl DistributedLock for DynamoDistributedLock {
         let pk = self.lock_pk();
         let sk = build_lock_sk(name);
         let owner = uuid::Uuid::new_v4().to_string();
-        let expires_at_secs =
-            Self::now_epoch().saturating_add(i64::try_from(ttl.as_secs()).unwrap_or(i64::MAX));
+        let expires_at_secs = Self::expires_at(ttl);
 
         // Conditional put: only succeed if the item does not exist or is expired.
         let result = self
@@ -88,7 +102,7 @@ impl DistributedLock for DynamoDistributedLock {
             .item("sk", AttributeValue::S(sk.clone()))
             .item("owner", AttributeValue::S(owner.clone()))
             .item("expires_at", AttributeValue::N(expires_at_secs.to_string()))
-            .condition_expression("attribute_not_exists(pk) OR expires_at < :now")
+            .condition_expression("attribute_not_exists(pk) OR expires_at <= :now")
             .expression_attribute_values(":now", AttributeValue::N(Self::now_epoch().to_string()))
             .send()
             .await;
@@ -153,8 +167,7 @@ pub struct DynamoLockGuard {
 #[async_trait]
 impl LockGuard for DynamoLockGuard {
     async fn extend(&self, duration: Duration) -> Result<(), StateError> {
-        let new_expires = DynamoDistributedLock::now_epoch()
-            .saturating_add(i64::try_from(duration.as_secs()).unwrap_or(i64::MAX));
+        let new_expires = DynamoDistributedLock::expires_at(duration);
 
         let result = self
             .client

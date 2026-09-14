@@ -7,6 +7,12 @@ use crate::key::{KeyKind, StateKey};
 use crate::lock::DistributedLock;
 use crate::store::{CasResult, StateStore};
 
+// DynamoDB persists TTL attributes at whole-second precision. Keep the short
+// TTL tests deterministic across backends by allowing one extra second for
+// the rounded deadline to pass.
+const SHORT_TTL: Duration = Duration::from_secs(1);
+const SHORT_TTL_WAIT: Duration = Duration::from_millis(2300);
+
 fn test_key(kind: KeyKind, id: &str) -> StateKey {
     StateKey::new("test-ns", "test-tenant", kind, id)
 }
@@ -69,9 +75,7 @@ async fn test_compare_and_delete(store: &dyn StateStore) -> Result<(), StateErro
         KeyKind::State,
         "conditional-delete-expiry",
     );
-    store
-        .set(&expiring, "ephemeral", Some(Duration::from_secs(1)))
-        .await?;
+    store.set(&expiring, "ephemeral", Some(SHORT_TTL)).await?;
     store.set(&other, "isolated", None).await?;
     let (_, version) = store
         .get_versioned(&expiring)
@@ -79,7 +83,7 @@ async fn test_compare_and_delete(store: &dyn StateStore) -> Result<(), StateErro
         .expect("expiring record");
     assert!(!store.compare_and_delete(&expiring, version + 1).await?);
     // A conflict must not extend the record's lifetime.
-    tokio::time::sleep(Duration::from_millis(1300)).await;
+    tokio::time::sleep(SHORT_TTL_WAIT).await;
     assert!(!store.compare_and_delete(&expiring, version).await?);
     assert!(store.get(&expiring).await?.is_none());
     assert_eq!(store.get(&other).await?.as_deref(), Some("isolated"));
@@ -111,13 +115,11 @@ async fn test_scan_by_kind_includes_check_and_set(
 /// vanish when the original TTL elapsed — diverging from memory/Postgres.
 async fn test_set_clears_ttl_on_overwrite(store: &dyn StateStore) -> Result<(), StateError> {
     let key = test_key(KeyKind::State, "ttl-clear-on-overwrite");
-    store
-        .set(&key, "ephemeral", Some(Duration::from_secs(1)))
-        .await?;
+    store.set(&key, "ephemeral", Some(SHORT_TTL)).await?;
     // Overwrite without a TTL — this must clear the expiry set above.
     store.set(&key, "permanent", None).await?;
     // Wait past the original TTL; if it wasn't cleared the key is now gone.
-    tokio::time::sleep(Duration::from_millis(1300)).await;
+    tokio::time::sleep(SHORT_TTL_WAIT).await;
     let val = store.get(&key).await?;
     assert_eq!(
         val.as_deref(),
@@ -132,9 +134,7 @@ async fn test_cas_replaces_ttl(store: &dyn StateStore) -> Result<(), StateError>
     let permanent = test_key(KeyKind::State, "cas-clear-ttl");
     let expires = test_key(KeyKind::State, "cas-retain-ttl-on-conflict");
     for key in [&permanent, &expires] {
-        store
-            .set(key, "ephemeral", Some(Duration::from_secs(1)))
-            .await?;
+        store.set(key, "ephemeral", Some(SHORT_TTL)).await?;
     }
     let (_, version) = store
         .get_versioned(&permanent)
@@ -153,7 +153,7 @@ async fn test_cas_replaces_ttl(store: &dyn StateStore) -> Result<(), StateError>
             .await?,
         CasResult::Conflict { .. }
     ));
-    tokio::time::sleep(Duration::from_millis(1300)).await;
+    tokio::time::sleep(SHORT_TTL_WAIT).await;
     assert_eq!(
         store.get(&permanent).await?.as_deref(),
         Some("permanent"),
@@ -300,7 +300,7 @@ async fn test_create_then_cas_expiry(store: &dyn StateStore) -> Result<(), State
     assert!(store.check_and_set(&terminal, "initial", None).await?);
     assert!(
         store
-            .check_and_set(&expired, "initial", Some(Duration::from_secs(1)))
+            .check_and_set(&expired, "initial", Some(SHORT_TTL))
             .await?
     );
     let (_, version) = store.get_versioned(&terminal).await?.expect("created");
@@ -308,7 +308,7 @@ async fn test_create_then_cas_expiry(store: &dyn StateStore) -> Result<(), State
     let (_, old_version) = store.get_versioned(&expired).await?.expect("created");
     assert_eq!(
         store
-            .compare_and_swap(&terminal, version, "done", Some(Duration::from_secs(1)))
+            .compare_and_swap(&terminal, version, "done", Some(SHORT_TTL))
             .await?,
         CasResult::Ok
     );
@@ -318,7 +318,7 @@ async fn test_create_then_cas_expiry(store: &dyn StateStore) -> Result<(), State
             .await?,
         CasResult::Conflict { .. }
     ));
-    tokio::time::sleep(Duration::from_millis(1300)).await;
+    tokio::time::sleep(SHORT_TTL_WAIT).await;
     assert!(
         store.get(&terminal).await?.is_none(),
         "initial representation must not reappear after completion expires"
