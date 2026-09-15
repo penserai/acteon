@@ -199,6 +199,7 @@ impl From<TaskEngineError> for A2aError {
             // detail server-side and return an opaque message so it
             // never reaches the caller (CWE-209).
             other @ (TaskEngineError::State(_)
+            | TaskEngineError::Audit(_)
             | TaskEngineError::Serde(_)
             | TaskEngineError::ApprovalConflict(_)) => {
                 tracing::error!(error = %other, "a2a task-engine internal error");
