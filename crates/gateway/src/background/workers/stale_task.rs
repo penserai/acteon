@@ -9,6 +9,23 @@ use super::super::BackgroundProcessor;
 use crate::task_engine::{TaskEngine, TaskScope};
 
 impl BackgroundProcessor {
+    /// Replay terminal A2A task audits that were missed while the audit store
+    /// was unavailable. Task rows hold the authoritative terminal state; the
+    /// task engine derives a stable audit receipt from that state.
+    pub(crate) async fn reconcile_task_terminal_audits(
+        &self,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let Some(audit) = &self.audit else {
+            return Ok(());
+        };
+        TaskEngine::new(self.state.clone())
+            .with_clock(self.clock.clone())
+            .with_audit(Arc::clone(audit))
+            .reconcile_terminal_audits()
+            .await?;
+        Ok(())
+    }
+
     /// Run the stale-task reaper.
     ///
     /// Scans every A2A task row and transitions each **stale** task —

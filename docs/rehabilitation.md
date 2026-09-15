@@ -34,6 +34,8 @@ The observability follow-up adds generated [Prometheus alerting rules](book/feat
 including configuration-backed retention TTL gauges and a CLI export command.
 The next phase adds memory-only [audit retention recovery](audit-retention-recovery.md)
 for deterministic expiry and secondary-index cleanup at the exact retention boundary.
+The subsequent hardening slice adds [terminal A2A task-audit recovery](terminal-task-audit-recovery.md)
+for audit outages after a task's final state commits.
 
 ## Implemented behavior
 

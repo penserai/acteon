@@ -40,8 +40,9 @@
 //! The record rides the same [`AuditStore`] the gateway uses, so it
 //! inherits hash-chaining and compliance decorators automatically. An
 //! audit write failure is logged but never fails the mutation: the
-//! task transition is the source of truth, the audit record a
-//! best-effort projection of it.
+//! task transition is the source of truth. Terminal transitions use a
+//! stable receipt ID and are reconciled after an audit-store outage;
+//! non-terminal projections remain best-effort.
 //!
 //! ## Human-in-the-loop pauses
 //!
@@ -68,7 +69,7 @@ use chrono::{DateTime, Utc};
 use futures::stream::{self, StreamExt, TryStreamExt};
 use tracing::{debug, warn};
 
-use acteon_audit::store::AuditStore;
+use acteon_audit::{AuditError, store::AuditStore};
 use acteon_core::{
     Artifact, BusApproval, BusApprovalValidationError, DEFAULT_APPROVAL_TTL_MS,
     MAX_APPROVAL_TTL_MS, MAX_REFERENCE_DEPTH, PauseKind, Task, TaskArtifactUpdateEvent,
@@ -76,7 +77,9 @@ use acteon_core::{
 };
 use acteon_state::{CasResult, KeyKind, StateError, StateKey, StateStore};
 
-use crate::audit_helpers::build_task_audit_record;
+use crate::audit_helpers::{
+    build_task_audit_record, build_task_terminal_audit_record, task_terminal_audit_id,
+};
 
 /// Max number of CAS retry attempts before declaring contention
 /// exhausted. Matches the bus's
@@ -260,21 +263,110 @@ impl TaskEngine {
         }
     }
 
-    /// Emit a best-effort A2A task-transition audit record. A write
-    /// failure is logged, never propagated — the persisted task is the
-    /// source of truth and must not be rolled back over an audit miss.
+    /// Emit an A2A task-transition audit record. A write failure is logged,
+    /// never propagated — the persisted task is the source of truth and must
+    /// not be rolled back over an audit miss. Terminal transitions use a
+    /// stable receipt so reconciliation can finish a missed audit later.
     async fn emit_audit(&self, task: &Task, operation: &str, from_state: Option<TaskState>) {
         let Some(audit) = &self.audit else {
             return;
         };
-        let record = build_task_audit_record(task, operation, from_state, self.clock.now(), None);
-        if let Err(e) = audit.record(record).await {
-            warn!(
-                error = %e,
-                task_id = %task.id,
+        let terminal_transition =
+            from_state.is_some_and(|from| !from.is_terminal() && task.status.state.is_terminal());
+        if terminal_transition {
+            let record = build_task_terminal_audit_record(
+                task,
                 operation,
-                "A2A task audit write failed"
+                from_state,
+                task.status.timestamp,
             );
+            match audit.get_by_id(&record.id).await {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    if let Err(error) = audit.record(record).await {
+                        warn!(
+                            %error,
+                            task_id = %task.id,
+                            operation,
+                            "terminal A2A task audit retained for recovery"
+                        );
+                    }
+                }
+                Err(error) => {
+                    warn!(
+                        %error,
+                        task_id = %task.id,
+                        operation,
+                        "terminal A2A task audit receipt check failed"
+                    );
+                }
+            }
+        } else {
+            let record =
+                build_task_audit_record(task, operation, from_state, self.clock.now(), None);
+            if let Err(error) = audit.record(record).await {
+                warn!(
+                    %error,
+                    task_id = %task.id,
+                    operation,
+                    "A2A task audit write failed"
+                );
+            }
+        }
+    }
+
+    /// Replay terminal task audits whose stable receipt is absent.
+    ///
+    /// The task row is authoritative: once a task has reached a terminal
+    /// state, its status timestamp and final state are sufficient to recreate
+    /// the audit record after an unavailable audit backend or restart. A
+    /// successful receipt is never duplicated because the audit ID is stable.
+    pub(crate) async fn reconcile_terminal_audits(&self) -> Result<usize, TaskEngineError> {
+        let Some(audit) = &self.audit else {
+            return Ok(0);
+        };
+
+        let entries = self.state.scan_keys_by_kind(KeyKind::A2aTask).await?;
+        let mut replayed = 0;
+        let mut first_error = None;
+        for (_, raw) in entries {
+            let task: Task = match serde_json::from_str(&raw) {
+                Ok(task) => task,
+                Err(error) => {
+                    warn!(%error, "skipping malformed task row during terminal audit recovery");
+                    continue;
+                }
+            };
+            if !task.status.state.is_terminal() {
+                continue;
+            }
+
+            let receipt_id = task_terminal_audit_id(&task);
+            match audit.get_by_id(&receipt_id).await {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    let record = build_task_terminal_audit_record(
+                        &task,
+                        "terminal_recovery",
+                        None,
+                        task.status.timestamp,
+                    );
+                    match audit.record(record).await {
+                        Ok(()) => replayed += 1,
+                        Err(error) => {
+                            first_error.get_or_insert(error);
+                        }
+                    }
+                }
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                }
+            }
+        }
+
+        match first_error {
+            Some(error) => Err(TaskEngineError::Audit(error)),
+            None => Ok(replayed),
         }
     }
 
@@ -1043,6 +1135,8 @@ pub enum TaskEngineError {
     NotFound(String),
     #[error("state error: {0}")]
     State(#[from] StateError),
+    #[error("audit error: {0}")]
+    Audit(#[from] AuditError),
     #[error("validation error: {0}")]
     Validation(#[from] TaskValidationError),
     #[error("serde error: {0}")]
@@ -1181,6 +1275,14 @@ impl ScopedTaskEngine {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        collections::HashMap,
+        sync::{
+            Mutex,
+            atomic::{AtomicBool, Ordering},
+        },
+    };
+
     use super::*;
     use acteon_core::{Artifact, TaskPart as Part, TaskRole as Role};
     use acteon_state_memory::MemoryStateStore;
@@ -1928,6 +2030,74 @@ mod tests {
         }
     }
 
+    /// An audit backend that can be unavailable for a committed task
+    /// transition, then restored for recovery.
+    struct ToggleAudit {
+        unavailable: AtomicBool,
+        records: Mutex<HashMap<String, AuditRecord>>,
+    }
+
+    impl ToggleAudit {
+        fn new() -> Self {
+            Self {
+                unavailable: AtomicBool::new(false),
+                records: Mutex::new(HashMap::new()),
+            }
+        }
+
+        fn set_unavailable(&self, unavailable: bool) {
+            self.unavailable.store(unavailable, Ordering::SeqCst);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl AuditStore for ToggleAudit {
+        async fn record(&self, entry: AuditRecord) -> Result<(), AuditError> {
+            if self.unavailable.load(Ordering::SeqCst) {
+                return Err(AuditError::Storage("synthetic audit outage".into()));
+            }
+            self.records.lock().unwrap().insert(entry.id.clone(), entry);
+            Ok(())
+        }
+
+        async fn get_by_action_id(
+            &self,
+            action_id: &str,
+        ) -> Result<Option<AuditRecord>, AuditError> {
+            if self.unavailable.load(Ordering::SeqCst) {
+                return Err(AuditError::Storage("synthetic audit outage".into()));
+            }
+            Ok(self
+                .records
+                .lock()
+                .unwrap()
+                .values()
+                .find(|record| record.action_id == action_id)
+                .cloned())
+        }
+
+        async fn get_by_id(&self, id: &str) -> Result<Option<AuditRecord>, AuditError> {
+            if self.unavailable.load(Ordering::SeqCst) {
+                return Err(AuditError::Storage("synthetic audit outage".into()));
+            }
+            Ok(self.records.lock().unwrap().get(id).cloned())
+        }
+
+        async fn query(&self, _: &AuditQuery) -> Result<AuditPage, AuditError> {
+            Ok(AuditPage {
+                records: Vec::new(),
+                total: Some(0),
+                limit: 0,
+                offset: 0,
+                next_cursor: None,
+            })
+        }
+
+        async fn cleanup_expired(&self) -> Result<u64, AuditError> {
+            Ok(0)
+        }
+    }
+
     /// An audit store that always fails to record — proves an audit
     /// write failure never fails the underlying mutation.
     struct FailingAudit;
@@ -1995,6 +2165,18 @@ mod tests {
         assert_eq!(t.outcome_details["from_state"], "submitted");
         assert_eq!(t.outcome_details["to_state"], "working");
         assert_eq!(t.outcome, "working");
+
+        let terminal = e
+            .transition_task(&scope(), "t1", TaskState::Canceled, None)
+            .await
+            .unwrap();
+        let records = audit.records();
+        assert_eq!(records.len(), 3);
+        let receipt = &records[2];
+        assert_eq!(receipt.id, task_terminal_audit_id(&terminal));
+        assert_eq!(receipt.outcome_details["from_state"], "working");
+        assert_eq!(receipt.outcome_details["to_state"], "canceled");
+        assert_eq!(receipt.outcome, "canceled");
     }
 
     #[tokio::test]
@@ -2066,6 +2248,43 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(updated.status.state, TaskState::Working);
+    }
+
+    #[tokio::test]
+    async fn terminal_task_audit_replays_after_outage_with_one_stable_receipt() {
+        let state = Arc::new(MemoryStateStore::new());
+        let audit = Arc::new(ToggleAudit::new());
+        let engine =
+            TaskEngine::new(state.clone()).with_audit(Arc::clone(&audit) as Arc<dyn AuditStore>);
+        engine.create_task(sample_task("t1")).await.unwrap();
+        engine
+            .transition_task(&scope(), "t1", TaskState::Working, None)
+            .await
+            .unwrap();
+
+        audit.set_unavailable(true);
+        let terminal = engine
+            .transition_task(&scope(), "t1", TaskState::Canceled, None)
+            .await
+            .unwrap();
+        assert_eq!(terminal.status.state, TaskState::Canceled);
+        let receipt_id = task_terminal_audit_id(&terminal);
+
+        audit.set_unavailable(false);
+        let recovered = TaskEngine::new(state)
+            .with_audit(Arc::clone(&audit) as Arc<dyn AuditStore>)
+            .reconcile_terminal_audits()
+            .await
+            .unwrap();
+        assert_eq!(recovered, 1);
+        let record = audit
+            .get_by_id(&receipt_id)
+            .await
+            .unwrap()
+            .expect("recovery writes the terminal task receipt");
+        assert_eq!(record.outcome, "canceled");
+        assert_eq!(record.outcome_details["operation"], "terminal_recovery");
+        assert_eq!(engine.reconcile_terminal_audits().await.unwrap(), 0);
     }
 
     #[tokio::test]
