@@ -171,7 +171,8 @@ PostgreSQL, and DynamoDB.
 4. Add frozen-corpus research consensus and model capability trials separately,
    with model/prompt provenance, repeated-trial statistics, and calibrated graders.
 5. Continue the audit's release-hardening work: audit-store conformance now
-   covers memory, PostgreSQL, and DynamoDB; bus conformance covers memory and
-   a disposable Kafka broker. Add documentation/quick-start verification,
-   container scanning, SBOM/provenance, concurrency exploration, fuzzing, and
-   performance budgets.
+   covers memory, PostgreSQL, and DynamoDB; bus conformance covers memory.
+   Repair Kafka consumer transport before promoting its integration suite to
+   required CI, then add documentation/quick-start verification, container
+   scanning, SBOM/provenance, concurrency exploration, fuzzing, and performance
+   budgets.

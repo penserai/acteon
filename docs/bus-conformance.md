@@ -11,10 +11,9 @@ topic and verify the behavior that callers share across transports:
 - consumer lag reports the last committed offset and remaining records; and
 - a created topic can be deleted.
 
-The in-memory backend runs the contract in its unit suite. Kafka runs it against
-a disposable broker when `ACTEON_KAFKA_BOOTSTRAP` is set; the stable integration
-job starts that broker and executes the conformance test. Run the broader Kafka
-integration suite locally with:
+The in-memory backend runs the contract in its unit suite. Kafka has an
+opt-in integration suite when `ACTEON_KAFKA_BOOTSTRAP` is set. Run it locally
+with:
 
 ```sh
 docker compose --profile kafka up -d kafka
@@ -25,3 +24,5 @@ ACTEON_KAFKA_BOOTSTRAP=localhost:9092 \\
 The contract intentionally uses one partition. Multi-partition placement and
 consumer-group rebalance behavior are Kafka-specific concerns exercised by the
 backend's own tests rather than promises every backend must emulate.
+The Kafka consumer integration path needs a dedicated transport repair before
+it becomes a required CI gate.

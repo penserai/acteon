@@ -38,8 +38,8 @@ The subsequent hardening slice adds [terminal A2A task-audit recovery](terminal-
 for audit outages after a task's final state commits.
 The next release-hardening slice adds [audit-store conformance](audit-store-conformance.md)
 for portable audit query and cursor behavior across memory, PostgreSQL, and DynamoDB.
-It also adds [bus conformance](bus-conformance.md) across memory and a disposable
-Kafka broker in the stable integration job.
+It also adds [bus conformance](bus-conformance.md) for the memory backend; the
+Kafka integration suite remains opt-in while its consumer transport is repaired.
 
 ## Implemented behavior
 
