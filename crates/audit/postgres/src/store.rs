@@ -52,6 +52,31 @@ fn build_audit_connect_options(
     Ok(options)
 }
 
+#[cfg(all(test, feature = "integration"))]
+mod integration_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn audit_store_conformance() {
+        let url = std::env::var("DATABASE_URL")
+            .expect("DATABASE_URL must be set for PostgreSQL audit integration tests");
+        let prefix = format!(
+            "audit_contract_{}_",
+            chrono::Utc::now()
+                .timestamp_nanos_opt()
+                .expect("current timestamp must fit in nanoseconds")
+        );
+        let config = PostgresAuditConfig::new(url).with_prefix(prefix.clone());
+        let store = PostgresAuditStore::new(&config)
+            .await
+            .expect("PostgreSQL audit store should initialize");
+
+        acteon_audit::testing::run_audit_store_conformance_tests(&store, &prefix)
+            .await
+            .expect("PostgreSQL audit store must satisfy the shared contract");
+    }
+}
+
 /// Postgres-backed audit store using `sqlx`.
 pub struct PostgresAuditStore {
     pool: PgPool,
@@ -572,8 +597,10 @@ mod tests {
 
     #[test]
     fn non_empty_scope_produces_or_group() {
-        let mut query = AuditQuery::default();
-        query.tenant_scope = vec!["acme".to_string(), "globex.eu".to_string()];
+        let query = AuditQuery {
+            tenant_scope: vec!["acme".to_string(), "globex.eu".to_string()],
+            ..AuditQuery::default()
+        };
 
         let (where_clause, binds, from_idx, to_idx, bind_idx) = build_where_clause(&query);
 
@@ -600,11 +627,13 @@ mod tests {
     #[test]
     fn scope_anded_with_exact_tenant_and_time_range() {
         let now = chrono::Utc::now();
-        let mut query = AuditQuery::default();
-        query.tenant = Some("acme.team".to_string());
-        query.tenant_scope = vec!["acme".to_string()];
-        query.from = Some(now);
-        query.to = Some(now);
+        let query = AuditQuery {
+            tenant: Some("acme.team".to_string()),
+            tenant_scope: vec!["acme".to_string()],
+            from: Some(now),
+            to: Some(now),
+            ..AuditQuery::default()
+        };
 
         let (where_clause, binds, from_idx, to_idx, bind_idx) = build_where_clause(&query);
 

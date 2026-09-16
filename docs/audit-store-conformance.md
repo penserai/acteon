@@ -4,7 +4,8 @@
 `acteon_audit::testing::run_audit_store_conformance_tests`. Backend tests can
 run it with an isolated record prefix, so a shared integration database can
 exercise the same contract without observing or overwriting records from
-another test. The memory backend is its first adopter.
+another test. The memory and PostgreSQL backends run it. PostgreSQL uses a
+fresh table prefix against the disposable CI database.
 
 The contract verifies missing reads, ID round trips, newest-record lookup for an
 action, exact namespace/tenant filtering, caller identity filtering,
