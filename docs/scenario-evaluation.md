@@ -129,6 +129,8 @@ and configuration-backed retention TTL gauges.
 
 The next phase adds memory-only [audit retention recovery](audit-retention-recovery.md)
 with an exact expiry-boundary contract and action-index consistency evidence.
+The subsequent hardening slice adds [terminal A2A task-audit recovery](terminal-task-audit-recovery.md)
+using a stable receipt and background reconciliation after an audit outage.
 
 ## Remaining plan
 
@@ -156,6 +158,8 @@ with an exact expiry-boundary contract and action-index consistency evidence.
    clock for exact-boundary retention and has a replayable expiry scenario.
    Terminal execution history now has a durable
    receipt and replay; other chain side effects still need durable recovery.
+   Terminal A2A task audits now recover from their authoritative final task
+   state; non-terminal task audit projections remain best-effort.
    No test here establishes exactly-once effects across a crash between external
    execution and durable completion persistence.
 3. Expand the injection portfolio to transport-level redirect/rebinding and

@@ -94,6 +94,7 @@ impl BackgroundProcessor {
         } else {
             Ok(())
         };
+        let task_terminal_audits = self.reconcile_task_terminal_audits().await;
         if let Some(gateway) = &self.gateway
             && let Some(removed) = gateway.read().await.dlq_cleanup_expired().await
             && removed > 0
@@ -121,6 +122,7 @@ impl BackgroundProcessor {
         task_projections?;
         terminal_audits?;
         terminal_histories?;
+        task_terminal_audits?;
         Ok(())
     }
 

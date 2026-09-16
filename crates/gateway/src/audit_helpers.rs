@@ -171,6 +171,31 @@ pub(crate) fn build_task_audit_record(
     }
 }
 
+/// Stable audit-record ID for an A2A task's terminal lifecycle transition.
+///
+/// Task IDs are scoped to a namespace and tenant, while audit IDs are global.
+/// A version-5 UUID keeps the receipt both globally unique and reproducible
+/// after an audit-store outage or process restart.
+pub(crate) fn task_terminal_audit_id(task: &Task) -> String {
+    let identity = format!("{}\0{}\0{}", task.namespace, task.tenant, task.id);
+    format!(
+        "a2a-task-terminal-{}",
+        uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, identity.as_bytes())
+    )
+}
+
+/// Build the durable audit receipt for a terminal A2A task transition.
+pub(crate) fn build_task_terminal_audit_record(
+    task: &Task,
+    operation: &str,
+    from_state: Option<TaskState>,
+    occurred_at: chrono::DateTime<chrono::Utc>,
+) -> AuditRecord {
+    let mut record = build_task_audit_record(task, operation, from_state, occurred_at, None);
+    record.id = task_terminal_audit_id(task);
+    record
+}
+
 /// Build an `AuditRecord` from the dispatch context.
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub(crate) fn build_audit_record(
