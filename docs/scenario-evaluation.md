@@ -131,6 +131,8 @@ The next phase adds memory-only [audit retention recovery](audit-retention-recov
 with an exact expiry-boundary contract and action-index consistency evidence.
 The subsequent hardening slice adds [terminal A2A task-audit recovery](terminal-task-audit-recovery.md)
 using a stable receipt and background reconciliation after an audit outage.
+The next release-hardening slice adds [audit-store conformance](audit-store-conformance.md)
+for portable query filtering, tenant scope, and cursor behavior in memory.
 
 ## Remaining plan
 
@@ -167,6 +169,7 @@ using a stable receipt and background reconciliation after an audit outage.
    destinations; it uses no model or browser and does not grade model resistance.
 4. Add frozen-corpus research consensus and model capability trials separately,
    with model/prompt provenance, repeated-trial statistics, and calibrated graders.
-5. Continue the audit's release-hardening work: broader audit/bus conformance,
+5. Continue the audit's release-hardening work: broaden the new audit-store
+   conformance beyond the memory backend and add bus conformance,
    documentation/quick-start verification, container scanning, SBOM/provenance,
    concurrency exploration, fuzzing, and performance budgets.

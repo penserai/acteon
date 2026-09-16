@@ -36,6 +36,8 @@ The next phase adds memory-only [audit retention recovery](audit-retention-recov
 for deterministic expiry and secondary-index cleanup at the exact retention boundary.
 The subsequent hardening slice adds [terminal A2A task-audit recovery](terminal-task-audit-recovery.md)
 for audit outages after a task's final state commits.
+The next release-hardening slice adds [audit-store conformance](audit-store-conformance.md)
+for portable audit query and cursor behavior, beginning with memory.
 
 ## Implemented behavior
 
