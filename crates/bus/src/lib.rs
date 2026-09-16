@@ -22,6 +22,8 @@ pub mod kafka;
 pub mod memory;
 pub mod message;
 pub mod schema;
+#[doc(hidden)]
+pub mod testing;
 
 pub use backend::{BusBackend, ScanFrom, ScanWatermarks, SharedBackend, SubscribeStream};
 pub use config::{BusConfig, KafkaBusConfig};

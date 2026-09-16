@@ -248,6 +248,14 @@ mod tests {
     use futures::StreamExt;
 
     #[tokio::test]
+    async fn shared_backend_conformance() {
+        let backend = MemoryBackend::new();
+        let mut topic = Topic::new("bus-contract", "testing", "memory");
+        topic.partitions = 1;
+        crate::testing::run_bus_backend_conformance_tests(backend.as_ref(), topic).await;
+    }
+
+    #[tokio::test]
     async fn produce_and_subscribe_earliest() {
         let backend = MemoryBackend::new();
         let topic = Topic::new("t1", "ns", "tn");
