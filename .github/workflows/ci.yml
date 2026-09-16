@@ -212,6 +212,13 @@ jobs:
           AWS_ACCESS_KEY_ID: acteonlocaltest
           AWS_SECRET_ACCESS_KEY: acteon-local-test
           AWS_EC2_METADATA_DISABLED: 'true'
+      - name: DynamoDB audit-store conformance
+        run: cargo test --locked -p acteon-audit-dynamodb --features integration --lib
+        env:
+          DYNAMODB_ENDPOINT: http://127.0.0.1:8000
+          AWS_ACCESS_KEY_ID: acteonlocaltest
+          AWS_SECRET_ACCESS_KEY: acteon-local-test
+          AWS_EC2_METADATA_DISABLED: 'true'
       - run: cargo test --locked -p acteon-simulation --features swarm,redis,postgres --lib
       - name: Scenario CLI contracts
         run: cargo test --locked -p acteon-simulation --features swarm,redis,postgres --test scenario_cli

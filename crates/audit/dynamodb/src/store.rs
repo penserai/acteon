@@ -229,7 +229,7 @@ impl DynamoDbAuditStore {
             let exact = format!(":scope{i}");
             let prefix = format!(":scope{i}_dot");
             terms.push(format!(
-                "(#tenant = {exact} OR begins_with(#tenant, {prefix}))"
+                "#tenant = {exact} OR begins_with(#tenant, {prefix})"
             ));
             values.insert(exact, AttributeValue::S(p.clone()));
             values.insert(prefix, AttributeValue::S(format!("{p}.")));
@@ -627,10 +627,9 @@ impl AuditStore for DynamoDbAuditStore {
                         s = s.set_exclusive_start_key(Some(key));
                     }
 
-                    let resp = s
-                        .send()
-                        .await
-                        .map_err(|e| AuditError::Storage(e.to_string()))?;
+                    let resp = s.send().await.map_err(|error| {
+                        AuditError::Storage(format!("DynamoDB audit scan failed: {error:?}"))
+                    })?;
                     items.extend(resp.items().iter().cloned());
                     page_start = resp.last_evaluated_key().cloned();
 
@@ -973,6 +972,43 @@ pub async fn build_client(config: &DynamoDbAuditConfig) -> Client {
     Client::new(&sdk_config)
 }
 
+#[cfg(all(test, feature = "integration"))]
+mod integration_tests {
+    use super::*;
+    use crate::table::create_audit_table;
+
+    fn test_config() -> DynamoDbAuditConfig {
+        let prefix = format!(
+            "audit_contract_{}",
+            chrono::Utc::now()
+                .timestamp_nanos_opt()
+                .expect("current timestamp must fit in nanoseconds")
+        );
+        DynamoDbAuditConfig {
+            table_name: prefix.clone(),
+            endpoint_url: Some(
+                std::env::var("DYNAMODB_ENDPOINT")
+                    .expect("DYNAMODB_ENDPOINT must be set for audit integration tests"),
+            ),
+            key_prefix: prefix,
+            ..DynamoDbAuditConfig::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn audit_store_conformance() {
+        let config = test_config();
+        let store = DynamoDbAuditStore::new(&config).await;
+        create_audit_table(&store.client, &store.table_name)
+            .await
+            .expect("DynamoDB audit table should initialize");
+
+        acteon_audit::testing::run_audit_store_conformance_tests(&store, &config.key_prefix)
+            .await
+            .expect("DynamoDB audit store must satisfy the shared contract");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1214,7 +1250,7 @@ mod tests {
         // One OR-group with the exact + begins_with(prefix) predicate.
         assert_eq!(
             group.as_deref(),
-            Some("((#tenant = :scope0 OR begins_with(#tenant, :scope0_dot)))")
+            Some("(#tenant = :scope0 OR begins_with(#tenant, :scope0_dot))")
         );
         // Two bound values: the exact pattern and the dot-prefix.
         assert_eq!(values.len(), 2);
@@ -1239,8 +1275,8 @@ mod tests {
         assert_eq!(
             group.as_deref(),
             Some(
-                "((#tenant = :scope0 OR begins_with(#tenant, :scope0_dot)) \
-                 OR (#tenant = :scope1 OR begins_with(#tenant, :scope1_dot)))"
+                "(#tenant = :scope0 OR begins_with(#tenant, :scope0_dot) \
+                 OR #tenant = :scope1 OR begins_with(#tenant, :scope1_dot))"
             )
         );
         // Two patterns -> four bound values.
