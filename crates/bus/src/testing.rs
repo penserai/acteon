@@ -146,6 +146,9 @@ where
         matches!(duplicate, BusError::TopicAlreadyExists(ref name) if name == &topic_name),
         "duplicate topic create must return TopicAlreadyExists for {topic_name}, got {duplicate:?}"
     );
+    // The rejected request still reaches Kafka's controller. Wait for its
+    // metadata update before creating a consumer that resolves the topic.
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
     let first = BusMessage::new(topic_name.clone(), serde_json::json!({ "sequence": 0 }))
         .with_key("conformance-ordering-key")
