@@ -13,8 +13,8 @@ topic and verify the behavior that callers share across transports:
 
 The in-memory backend runs the contract in its unit suite. Kafka runs it against
 a disposable broker when `ACTEON_KAFKA_BOOTSTRAP` is set; the stable integration
-job starts a single-listener broker and executes the same tests. Run it locally
-with:
+job starts that broker and executes the conformance test. Run the broader Kafka
+integration suite locally with:
 
 ```sh
 docker compose --profile kafka up -d kafka
