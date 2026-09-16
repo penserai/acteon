@@ -138,18 +138,6 @@ where
     // race. This is a no-op from the caller's perspective and keeps the same
     // contract usable against a shared single-node development broker.
     tokio::time::sleep(Duration::from_millis(500)).await;
-    let duplicate = backend
-        .create_topic(&topic)
-        .await
-        .expect_err("duplicate topic create must fail");
-    assert!(
-        matches!(duplicate, BusError::TopicAlreadyExists(ref name) if name == &topic_name),
-        "duplicate topic create must return TopicAlreadyExists for {topic_name}, got {duplicate:?}"
-    );
-    // The rejected request still reaches Kafka's controller. Wait for its
-    // metadata update before creating a consumer that resolves the topic.
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
     let first = BusMessage::new(topic_name.clone(), serde_json::json!({ "sequence": 0 }))
         .with_key("conformance-ordering-key")
         .with_header("x-conformance", "first");
@@ -170,6 +158,18 @@ where
     assert_replay(backend, &topic_name).await;
     assert_scan(backend, &topic_name).await;
     assert_lag(backend, &topic_name).await;
+
+    // A duplicate-create request is a controller metadata update in Kafka.
+    // Check its typed error after consumers have finished so the portable
+    // error assertion cannot interrupt their short-lived broker connections.
+    let duplicate = backend
+        .create_topic(&topic)
+        .await
+        .expect_err("duplicate topic create must fail");
+    assert!(
+        matches!(duplicate, BusError::TopicAlreadyExists(ref name) if name == &topic_name),
+        "duplicate topic create must return TopicAlreadyExists for {topic_name}, got {duplicate:?}"
+    );
 
     backend
         .delete_topic(&topic_name)
