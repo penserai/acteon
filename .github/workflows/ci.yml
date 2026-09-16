@@ -243,7 +243,7 @@ jobs:
           /opt/kafka/bin/kafka-cluster.sh cluster-id --bootstrap-server localhost:9092;
           do sleep 2; done'
       - name: Kafka bus conformance
-        run: cargo test --locked -p acteon-bus --test kafka_integration
+        run: cargo test --locked -p acteon-bus --test kafka_integration -- --test-threads=1
         env:
           ACTEON_KAFKA_BOOTSTRAP: localhost:9092
       - run: cargo test --locked -p acteon-simulation --features swarm,redis,postgres --lib

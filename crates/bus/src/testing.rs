@@ -132,6 +132,12 @@ where
         .create_topic(&topic)
         .await
         .expect("create conformance topic");
+    // Kafka's topic controller acknowledges creation before every broker has
+    // refreshed metadata. Give the fresh topic a brief chance to propagate so
+    // the portable assertions exercise bus semantics rather than that startup
+    // race. This is a no-op from the caller's perspective and keeps the same
+    // contract usable against a shared single-node development broker.
+    tokio::time::sleep(Duration::from_millis(500)).await;
     let duplicate = backend
         .create_topic(&topic)
         .await
