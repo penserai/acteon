@@ -6,6 +6,7 @@ pub mod error;
 pub mod record;
 pub mod redact;
 pub mod store;
+pub mod testing;
 
 pub use analytics::{AnalyticsStore, InMemoryAnalytics};
 pub use compliance::{ComplianceAuditStore, HashChainAuditStore};

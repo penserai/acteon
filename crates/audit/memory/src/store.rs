@@ -122,6 +122,9 @@ impl AuditStore for MemoryAuditStore {
                 if !matches_filter(query.verdict.as_ref(), &rec.verdict) {
                     return None;
                 }
+                if !matches_filter(query.caller_id.as_ref(), &rec.caller_id) {
+                    return None;
+                }
                 if let Some(ref rule) = query.matched_rule
                     && rec.matched_rule.as_deref() != Some(rule.as_str())
                 {
@@ -316,6 +319,7 @@ mod tests {
 
     use acteon_audit::record::{AuditQuery, AuditRecord};
     use acteon_audit::store::AuditStore;
+    use acteon_audit::testing::run_audit_store_conformance_tests;
 
     use super::MemoryAuditStore;
 
@@ -362,6 +366,14 @@ mod tests {
         let found = store.get_by_id("r1").await.unwrap();
         assert!(found.is_some());
         assert_eq!(found.unwrap().action_id, "a1");
+    }
+
+    #[tokio::test]
+    async fn audit_store_conformance() {
+        let store = MemoryAuditStore::new();
+        run_audit_store_conformance_tests(&store, "memory")
+            .await
+            .expect("memory audit store must satisfy the shared contract");
     }
 
     #[tokio::test]
