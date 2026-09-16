@@ -229,7 +229,7 @@ impl DynamoDbAuditStore {
             let exact = format!(":scope{i}");
             let prefix = format!(":scope{i}_dot");
             terms.push(format!(
-                "(#tenant = {exact} OR begins_with(#tenant, {prefix}))"
+                "#tenant = {exact} OR begins_with(#tenant, {prefix})"
             ));
             values.insert(exact, AttributeValue::S(p.clone()));
             values.insert(prefix, AttributeValue::S(format!("{p}.")));
@@ -1250,7 +1250,7 @@ mod tests {
         // One OR-group with the exact + begins_with(prefix) predicate.
         assert_eq!(
             group.as_deref(),
-            Some("((#tenant = :scope0 OR begins_with(#tenant, :scope0_dot)))")
+            Some("(#tenant = :scope0 OR begins_with(#tenant, :scope0_dot))")
         );
         // Two bound values: the exact pattern and the dot-prefix.
         assert_eq!(values.len(), 2);
@@ -1275,8 +1275,8 @@ mod tests {
         assert_eq!(
             group.as_deref(),
             Some(
-                "((#tenant = :scope0 OR begins_with(#tenant, :scope0_dot)) \
-                 OR (#tenant = :scope1 OR begins_with(#tenant, :scope1_dot)))"
+                "(#tenant = :scope0 OR begins_with(#tenant, :scope0_dot) \
+                 OR #tenant = :scope1 OR begins_with(#tenant, :scope1_dot))"
             )
         );
         // Two patterns -> four bound values.
