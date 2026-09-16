@@ -121,6 +121,13 @@ impl SchemaValidator {
     pub fn len(&self) -> usize {
         self.inner.read().len()
     }
+
+    /// Test helper: whether the validator cache is empty.
+    #[cfg(test)]
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.inner.read().is_empty()
+    }
 }
 
 /// Detail of a single JSON-Schema violation, surfaced to the caller.

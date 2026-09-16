@@ -219,6 +219,33 @@ jobs:
           AWS_ACCESS_KEY_ID: acteonlocaltest
           AWS_SECRET_ACCESS_KEY: acteon-local-test
           AWS_EC2_METADATA_DISABLED: 'true'
+      - name: Start disposable Kafka
+        run: >-
+          docker run -d --name acteon-ci-kafka -p 127.0.0.1:9092:9092
+          -e KAFKA_NODE_ID=1
+          -e KAFKA_PROCESS_ROLES=broker,controller
+          -e KAFKA_LISTENERS=PLAINTEXT://:29092,CONTROLLER://:9093,HOST://:9092
+          -e KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://localhost:29092,HOST://localhost:9092
+          -e KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,HOST:PLAINTEXT
+          -e KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER
+          -e KAFKA_CONTROLLER_QUORUM_VOTERS=1@localhost:9093
+          -e KAFKA_INTER_BROKER_LISTENER_NAME=PLAINTEXT
+          -e KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+          -e KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
+          -e KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1
+          -e KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0
+          -e KAFKA_AUTO_CREATE_TOPICS_ENABLE=false
+          -e CLUSTER_ID=5L6g3nShT-eMCtK--X86sw
+          apache/kafka:3.7.0
+      - name: Wait for Kafka
+        run: >-
+          timeout 60 bash -c 'until docker exec acteon-ci-kafka
+          /opt/kafka/bin/kafka-cluster.sh cluster-id --bootstrap-server localhost:9092;
+          do sleep 2; done'
+      - name: Kafka bus conformance
+        run: cargo test --locked -p acteon-bus --test kafka_integration
+        env:
+          ACTEON_KAFKA_BOOTSTRAP: localhost:9092
       - run: cargo test --locked -p acteon-simulation --features swarm,redis,postgres --lib
       - name: Scenario CLI contracts
         run: cargo test --locked -p acteon-simulation --features swarm,redis,postgres --test scenario_cli

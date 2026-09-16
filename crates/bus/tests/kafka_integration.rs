@@ -8,7 +8,9 @@ use std::time::Duration;
 
 use futures::StreamExt;
 
-use acteon_bus::{BusBackend, BusMessage, KafkaBackend, KafkaBusConfig, StartOffset};
+use acteon_bus::{
+    BusBackend, BusMessage, KafkaBackend, KafkaBusConfig, OffsetPosition, StartOffset,
+};
 use acteon_core::Topic;
 
 fn brokers() -> Option<String> {
@@ -31,6 +33,17 @@ fn unique_topic(suffix: &str) -> Topic {
     t.partitions = 1;
     t.replication_factor = 1;
     t
+}
+
+#[tokio::test]
+async fn shared_backend_conformance() {
+    let Some(_) = brokers() else {
+        eprintln!("skipping: ACTEON_KAFKA_BOOTSTRAP not set");
+        return;
+    };
+    let backend = make_backend("acteon-bus-it-contract");
+    let topic = unique_topic("contract");
+    acteon_bus::testing::run_bus_backend_conformance_tests(backend.as_ref(), topic).await;
 }
 
 #[tokio::test]
@@ -87,7 +100,6 @@ async fn commit_and_lag_survive_reconnect() {
         eprintln!("skipping: ACTEON_KAFKA_BOOTSTRAP not set");
         return;
     };
-    use acteon_bus::{BusBackend, BusMessage, OffsetPosition, StartOffset};
     let backend = make_backend("acteon-bus-it-commit");
     let topic = unique_topic("commit");
     backend.create_topic(&topic).await.unwrap();
