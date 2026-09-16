@@ -35,14 +35,16 @@ pub async fn run_audit_store_conformance_tests(
     assert!(
         store
             .get_by_id(&format!("missing-{prefix}"))
-            .await?
+            .await
+            .map_err(|error| AuditError::Storage(format!("missing ID lookup: {error}")))?
             .is_none(),
         "missing audit IDs must return None"
     );
     assert!(
         store
             .get_by_action_id(&format!("missing-action-{prefix}"))
-            .await?
+            .await
+            .map_err(|error| AuditError::Storage(format!("missing action lookup: {error}")))?
             .is_none(),
         "missing action IDs must return None"
     );
@@ -88,19 +90,24 @@ pub async fn run_audit_store_conformance_tests(
     child.outcome = String::from("suppressed");
 
     for entry in [&first, &latest, &caller, &same_timestamp, &child] {
-        store.record(entry.clone()).await?;
+        store
+            .record(entry.clone())
+            .await
+            .map_err(|error| AuditError::Storage(format!("record {}: {error}", entry.id)))?;
     }
 
     let round_trip = store
         .get_by_id(&caller.id)
-        .await?
+        .await
+        .map_err(|error| AuditError::Storage(format!("ID round trip: {error}")))?
         .expect("recorded audit ID must be retrievable");
     assert_eq!(round_trip.action_id, caller.action_id);
     assert_eq!(round_trip.caller_id, caller.caller_id);
 
     let newest = store
         .get_by_action_id(&action_id)
-        .await?
+        .await
+        .map_err(|error| AuditError::Storage(format!("newest action lookup: {error}")))?
         .expect("recorded action ID must be retrievable");
     assert_eq!(
         newest.id, latest.id,
@@ -113,7 +120,10 @@ pub async fn run_audit_store_conformance_tests(
         limit: Some(10),
         ..AuditQuery::default()
     };
-    let exact_page = store.query(&exact).await?;
+    let exact_page = store
+        .query(&exact)
+        .await
+        .map_err(|error| AuditError::Storage(format!("exact tenant query: {error}")))?;
     let exact_ids: HashSet<&str> = exact_page
         .records
         .iter()
@@ -140,7 +150,8 @@ pub async fn run_audit_store_conformance_tests(
             limit: Some(10),
             ..AuditQuery::default()
         })
-        .await?;
+        .await
+        .map_err(|error| AuditError::Storage(format!("caller ID query: {error}")))?;
     assert_eq!(
         caller_page
             .records
@@ -158,7 +169,8 @@ pub async fn run_audit_store_conformance_tests(
             limit: Some(10),
             ..AuditQuery::default()
         })
-        .await?;
+        .await
+        .map_err(|error| AuditError::Storage(format!("tenant scope query: {error}")))?;
     let scoped_ids: HashSet<&str> = scoped_page
         .records
         .iter()
@@ -184,7 +196,8 @@ pub async fn run_audit_store_conformance_tests(
                 cursor: cursor.clone(),
                 ..AuditQuery::default()
             })
-            .await?;
+            .await
+            .map_err(|error| AuditError::Storage(format!("cursor query page {pages}: {error}")))?;
         assert!(
             page.records.len() <= 2,
             "cursor page must honor its requested limit"
