@@ -973,6 +973,43 @@ pub async fn build_client(config: &DynamoDbAuditConfig) -> Client {
     Client::new(&sdk_config)
 }
 
+#[cfg(all(test, feature = "integration"))]
+mod integration_tests {
+    use super::*;
+    use crate::table::create_audit_table;
+
+    fn test_config() -> DynamoDbAuditConfig {
+        let prefix = format!(
+            "audit_contract_{}",
+            chrono::Utc::now()
+                .timestamp_nanos_opt()
+                .expect("current timestamp must fit in nanoseconds")
+        );
+        DynamoDbAuditConfig {
+            table_name: prefix.clone(),
+            endpoint_url: Some(
+                std::env::var("DYNAMODB_ENDPOINT")
+                    .expect("DYNAMODB_ENDPOINT must be set for audit integration tests"),
+            ),
+            key_prefix: prefix,
+            ..DynamoDbAuditConfig::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn audit_store_conformance() {
+        let config = test_config();
+        let store = DynamoDbAuditStore::new(&config).await;
+        create_audit_table(&store.client, &store.table_name)
+            .await
+            .expect("DynamoDB audit table should initialize");
+
+        acteon_audit::testing::run_audit_store_conformance_tests(&store, &config.key_prefix)
+            .await
+            .expect("DynamoDB audit store must satisfy the shared contract");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
