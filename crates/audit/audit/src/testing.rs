@@ -1,4 +1,4 @@
-//! Executable conformance checks for [`AuditStore`](crate::store::AuditStore).
+//! Executable conformance checks for [`AuditStore`].
 //!
 //! Backend tests can call [`run_audit_store_conformance_tests`] with a fresh store (or
 //! a unique prefix when using a shared integration database). The contract
