@@ -627,10 +627,9 @@ impl AuditStore for DynamoDbAuditStore {
                         s = s.set_exclusive_start_key(Some(key));
                     }
 
-                    let resp = s
-                        .send()
-                        .await
-                        .map_err(|e| AuditError::Storage(e.to_string()))?;
+                    let resp = s.send().await.map_err(|error| {
+                        AuditError::Storage(format!("DynamoDB audit scan failed: {error:?}"))
+                    })?;
                     items.extend(resp.items().iter().cloned());
                     page_start = resp.last_evaluated_key().cloned();
 
