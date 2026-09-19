@@ -64,14 +64,14 @@ cargo build -p acteon-server --features aws-all
 ### Running the Server
 
 ```bash
-# Quick start with in-memory backend (no dependencies)
-cargo run -p acteon-server
+# Quick start from the repository root (in-memory, log provider)
+cargo run --locked -p acteon-server -- -c examples/quickstart/acteon.toml
 
 # With a config file
 cargo run -p acteon-server -- -c acteon.toml
 
 # Custom host and port
-cargo run -p acteon-server -- --host 0.0.0.0 --port 3000
+cargo run -p acteon-server -- -c examples/quickstart/acteon.toml --host 127.0.0.1 --port 3000
 ```
 
 ## Docker
@@ -80,8 +80,15 @@ Build and run with Docker:
 
 ```bash
 docker build -t acteon .
-docker run -p 8080:8080 acteon
+docker run --rm -p 127.0.0.1:8080:8080 \
+  -v "$PWD/examples/quickstart:/app/examples/quickstart:ro" \
+  acteon -c examples/quickstart/acteon.toml \
+  --host 0.0.0.0 --allow-unauthenticated-remote
 ```
+
+The container must listen on all interfaces internally; the published host port
+is limited to loopback. The development flag permits this unauthenticated
+listener. Configure authentication before exposing a deployment remotely.
 
 ## Setting Up Backends with Docker Compose
 

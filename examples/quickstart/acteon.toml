@@ -1,0 +1,14 @@
+# Run from the repository root. This provider only logs; no email is sent.
+[server]
+host = "127.0.0.1"
+port = 8080
+
+[state]
+backend = "memory"
+
+[rules]
+directory = "examples/quickstart/rules"
+
+[[providers]]
+name = "email"
+type = "log"

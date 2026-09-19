@@ -88,6 +88,11 @@ jobs:
         with:
           tool: cargo-nextest
       - run: cargo nextest run --locked --workspace --lib --bins --tests
+      - name: Verify documented quick start
+        if: matrix.rust == 'stable'
+        run: |
+          cargo build --locked -p acteon-server
+          python3 scripts/ci/quickstart.py --server target/debug/acteon-server
       - name: Test AWS providers
         run: cargo nextest run --locked -p acteon-aws --features full --lib --tests
       - name: Test Azure providers
@@ -109,6 +114,17 @@ jobs:
           toolchain: stable
           components: rustfmt
       - run: cargo fmt --all -- --check
+
+  documentation:
+    name: Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - run: pip install -r docs/requirements.txt
+      - run: mkdocs build --strict
 
   frontend:
     name: Frontend
@@ -161,6 +177,54 @@ jobs:
           java-version: 17
       - name: Model-check concurrency specs with TLC
         run: ./specs/tla/ci/run-tlc.sh
+
+  kafka:
+    name: Kafka conformance (stable)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      kafka:
+        image: apache/kafka:3.7.0
+        ports:
+          - 9092:9092
+        env:
+          KAFKA_NODE_ID: 1
+          KAFKA_PROCESS_ROLES: broker,controller
+          KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+          KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+          KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+          KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+          KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+          KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+          KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+          KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+          KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+          KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+          KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'false'
+          CLUSTER_ID: 5L6g3nShT-eMCtK--X86sw
+        options: >-
+          --health-cmd "/opt/kafka/bin/kafka-cluster.sh cluster-id --bootstrap-server localhost:9092"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      ACTEON_KAFKA_BOOTSTRAP: localhost:9092
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install librdkafka build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # stable
+        with:
+          toolchain: stable
+      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Run real-broker and transport recovery tests
+        run: |
+          test -n "$ACTEON_KAFKA_BOOTSTRAP"
+          cargo test --locked -p acteon-bus --lib --tests
+      - name: Kafka broker logs
+        if: always()
+        run: docker logs "${{ job.services.kafka.id }}"
 
   integration:
     name: Integration (stable)

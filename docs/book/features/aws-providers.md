@@ -1186,7 +1186,7 @@ Future enhancements:
 - Optional WASM network grants for trusted plugins
 - Additional `ResourceLookup` implementations for GCP, Azure
 
-See the [AWS Cost Optimizer example](../../examples/aws-cost-optimizer/) for a runnable demo of static guardrails with the `capacity_verified` attestation pattern.
+See the [AWS Cost Optimizer example](https://github.com/penserai/acteon/tree/main/examples/aws-cost-optimizer) for a runnable demo of static guardrails with the `capacity_verified` attestation pattern.
 
 ## LocalStack Development
 

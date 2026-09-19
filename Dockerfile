@@ -6,30 +6,21 @@ RUN npm ci
 COPY ui/ .
 RUN npm run build
 
-# Stage 2: Chef - dependency caching
-FROM rust:1.88-bookworm AS chef
-RUN cargo install cargo-chef
+# Stage 2: Build the server with the repository's lockfile.
+FROM rust:1.88-bookworm AS builder
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    cmake pkg-config libssl-dev libcurl4-openssl-dev \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-
-# Stage 3: Planner - generate recipe
-FROM chef AS planner
 COPY . .
-RUN cargo chef prepare --recipe-path recipe.json
+RUN cargo build --locked --release -p acteon-server
 
-# Stage 4: Builder - build dependencies and application
-FROM chef AS builder
-COPY --from=planner /app/recipe.json recipe.json
-RUN cargo chef cook --release --recipe-path recipe.json
-COPY . .
-RUN cargo build --release -p acteon-server
-
-# Stage 5: Runtime - minimal image
-FROM debian:bookworm-slim AS runtime
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
-RUN useradd -r -s /bin/false acteon
+# Stage 3: Runtime - glibc, OpenSSL, C++ runtime, and CA roots without a shell.
+# Keep the distro explicit and update this digest with container scan validation.
+FROM gcr.io/distroless/cc-debian13:nonroot@sha256:54df941ed0d06a1bd95ef5e0ce391fd8d9f94b64782dc9a60062727849ee3f97 AS runtime
 WORKDIR /app
 COPY --from=builder /app/target/release/acteon-server /usr/local/bin/acteon-server
 COPY --from=ui-builder /ui/dist /app/ui/dist
-USER acteon
+USER 65532:65532
 EXPOSE 8080
-ENTRYPOINT ["acteon-server"]
+ENTRYPOINT ["/usr/local/bin/acteon-server"]

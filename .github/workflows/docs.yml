@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - 'docs/book/**'
+      - 'docs/requirements.txt'
       - 'mkdocs.yml'
       - '.github/workflows/docs.yml'
   workflow_dispatch:
@@ -33,7 +34,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install mkdocs-material mkdocs-minify-plugin
+          pip install -r docs/requirements.txt
 
       - name: Build documentation
         run: mkdocs build --strict

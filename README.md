@@ -137,15 +137,20 @@ All crates are organized under `crates/` with logical groupings:
 - Rust 1.88+
 - Cargo
 
-### Quick start (in-memory, no config file needed)
+### Quick start (in-memory, no external services)
 
 ```sh
-cargo run -p acteon-server
+cargo run --locked -p acteon-server -- -c examples/quickstart/acteon.toml
 ```
 
-The server starts on `http://127.0.0.1:8080` with the in-memory state backend and no rules loaded. You can then:
+Run from the repository root. This config starts `http://127.0.0.1:8080` with
+in-memory state, suppression/deduplication rules, and a log provider named `email`
+that sends no real email. Follow the [verified quick start](docs/book/getting-started/quickstart.md)
+for complete dispatch requests and expected responses. Omitting `-c` loads the
+repository's separate `acteon.toml` demo if present; it does not force defaults.
+You can then:
 
-- Open the **Admin UI** at [http://127.0.0.1:8080/](http://127.0.0.1:8080/)
+- Open the **Admin UI** at [http://127.0.0.1:8080/](http://127.0.0.1:8080/) after building it with `cd ui && npm ci && npm run build`
 - Open **Swagger UI** at [http://127.0.0.1:8080/swagger-ui/](http://127.0.0.1:8080/swagger-ui/)
 - Fetch the **OpenAPI spec** at [http://127.0.0.1:8080/api-doc/openapi.json](http://127.0.0.1:8080/api-doc/openapi.json)
 - Hit the **health endpoint**: `curl http://127.0.0.1:8080/health`
@@ -489,7 +494,7 @@ cargo run -p acteon-simulation --example mixed_backends_simulation \
   --features "redis,postgres" -- redis-postgres
 ```
 
-See the [acteon-simulation README](acteon-simulation/README.md) for full documentation.
+See the [acteon-simulation README](crates/simulation/README.md) for full documentation.
 
 ## Client Libraries
 
@@ -497,7 +502,7 @@ Official client libraries are available for multiple languages:
 
 | Language | Package | Documentation |
 |----------|---------|---------------|
-| Rust | `acteon-client` | [README](acteon-client/README.md) |
+| Rust | `acteon-client` | [README](crates/client/README.md) |
 | Python | `acteon-client` | [README](clients/python/README.md) |
 | Node.js/TypeScript | `@acteon/client` | [README](clients/nodejs/README.md) |
 | Go | `github.com/penserai/acteon/clients/go/acteon` | [README](clients/go/README.md) |

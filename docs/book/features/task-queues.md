@@ -130,7 +130,7 @@ Scaling is horizontal: add more workers polling the same queue.
   not expire; the normal terminal TTL starts after delivery finishes. External
   handlers and DLQ sinks need downstream idempotency where repeats are unacceptable.
 
-See [worker queue recovery](../../queue-recovery.md) for migration details,
+See [worker queue recovery](https://github.com/penserai/acteon/blob/main/docs/queue-recovery.md) for migration details,
 validation rules, scan costs, and fault-injection evidence.
-See [terminal handoff recovery](../../task-handoff-recovery.md) for acknowledgement,
+See [terminal handoff recovery](https://github.com/penserai/acteon/blob/main/docs/task-handoff-recovery.md) for acknowledgement,
 recipient repair, and DLQ durability requirements.

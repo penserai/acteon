@@ -4,3 +4,16 @@ target/
 .github/
 .vscode/
 .idea/
+**/node_modules/
+ui/dist/
+ui/test-results/
+ui/playwright-report/
+dependency-evidence/
+scenario-results/
+test-results/
+container-evidence/
+.env
+.env.*
+auth.toml
+acteon.toml
+!examples/quickstart/acteon.toml

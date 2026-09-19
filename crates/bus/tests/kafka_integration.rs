@@ -1,8 +1,8 @@
 //! Integration test against a real Kafka broker.
 //!
 //! Runs only when `ACTEON_KAFKA_BOOTSTRAP` is set (e.g. to
-//! `localhost:9092` for the docker-compose `kafka` profile). CI and
-//! laptop-without-docker users simply skip it.
+//! `localhost:9092` for the docker-compose `kafka` profile). The Kafka
+//! conformance CI job sets it; local runs without a broker skip this suite.
 
 use std::time::Duration;
 

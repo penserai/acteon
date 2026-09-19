@@ -167,6 +167,36 @@ fn map_kafka_error(err: KafkaError) -> BusError {
     }
 }
 
+// librdkafka reconnects internally after these connection notifications. Ending
+// the stream would destroy that consumer before it can recover. Keep this list
+// narrow: authentication, authorization, missing topics, and fatal errors must
+// still reach the caller.
+fn is_recoverable_consumer_error(error: &KafkaError) -> bool {
+    matches!(
+        error,
+        KafkaError::MessageConsumption(
+            RDKafkaErrorCode::BrokerTransportFailure | RDKafkaErrorCode::AllBrokersDown
+        )
+    )
+}
+
+fn consumer_messages<S, T>(stream: S) -> impl futures::Stream<Item = Result<T, KafkaError>>
+where
+    S: futures::Stream<Item = Result<T, KafkaError>>,
+{
+    stream.filter(|result| {
+        let reconnecting = result.as_ref().err().is_some_and(|error| {
+            if is_recoverable_consumer_error(error) {
+                tracing::warn!(%error, "Kafka consumer reconnecting");
+                true
+            } else {
+                false
+            }
+        });
+        futures::future::ready(!reconnecting)
+    })
+}
+
 #[async_trait]
 impl BusBackend for KafkaBackend {
     async fn create_topic(&self, topic: &Topic) -> Result<(), BusError> {
@@ -335,7 +365,7 @@ impl BusBackend for KafkaBackend {
 
         let topic_owned = kafka_topic.to_string();
         let stream = async_stream::stream! {
-            let mut stream = consumer.stream();
+            let mut stream = consumer_messages(consumer.stream());
             while let Some(res) = stream.next().await {
                 match res {
                     Ok(msg) => {
@@ -561,7 +591,7 @@ impl BusBackend for KafkaBackend {
 
         let topic_owned = kafka_topic.to_string();
         let stream = async_stream::stream! {
-            let mut stream = consumer.stream();
+            let mut stream = consumer_messages(consumer.stream());
             while let Some(res) = stream.next().await {
                 match res {
                     Ok(msg) => {
@@ -633,5 +663,67 @@ impl BusBackend for KafkaBackend {
             high_water_marks.insert(p.id(), high);
         }
         Ok(ScanWatermarks { high_water_marks })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn consumer_stream_continues_past_connection_notifications() {
+        let input = futures::stream::iter([
+            Err(KafkaError::MessageConsumption(
+                RDKafkaErrorCode::BrokerTransportFailure,
+            )),
+            Ok(1),
+            Err(KafkaError::MessageConsumption(
+                RDKafkaErrorCode::AllBrokersDown,
+            )),
+            Ok(2),
+            Err(KafkaError::MessageConsumption(
+                RDKafkaErrorCode::TopicAuthorizationFailed,
+            )),
+            Err(KafkaError::MessageConsumptionFatal(RDKafkaErrorCode::Fatal)),
+        ]);
+        let observed: Vec<_> = consumer_messages(input).collect().await;
+        assert_eq!(observed.len(), 4);
+        assert_eq!(observed[0], Ok(1));
+        assert_eq!(observed[1], Ok(2));
+        assert!(matches!(
+            observed[2],
+            Err(KafkaError::MessageConsumption(
+                RDKafkaErrorCode::TopicAuthorizationFailed
+            ))
+        ));
+        assert!(matches!(
+            observed[3],
+            Err(KafkaError::MessageConsumptionFatal(_))
+        ));
+    }
+
+    #[test]
+    fn only_connection_notifications_are_recoverable() {
+        for code in [
+            RDKafkaErrorCode::BrokerTransportFailure,
+            RDKafkaErrorCode::AllBrokersDown,
+        ] {
+            assert!(is_recoverable_consumer_error(
+                &KafkaError::MessageConsumption(code)
+            ));
+            assert!(!is_recoverable_consumer_error(
+                &KafkaError::MessageConsumptionFatal(code)
+            ));
+        }
+        for code in [
+            RDKafkaErrorCode::Authentication,
+            RDKafkaErrorCode::TopicAuthorizationFailed,
+            RDKafkaErrorCode::GroupAuthorizationFailed,
+            RDKafkaErrorCode::UnknownTopicOrPartition,
+        ] {
+            assert!(!is_recoverable_consumer_error(
+                &KafkaError::MessageConsumption(code)
+            ));
+        }
     }
 }
