@@ -38,8 +38,13 @@ The subsequent hardening slice adds [terminal A2A task-audit recovery](terminal-
 for audit outages after a task's final state commits.
 The next release-hardening slice adds [audit-store conformance](audit-store-conformance.md)
 for portable audit query and cursor behavior across memory, PostgreSQL, and DynamoDB.
-It also adds [bus conformance](bus-conformance.md) for the memory backend; the
-Kafka integration suite remains opt-in while its consumer transport is repaired.
+It also adds [bus conformance](bus-conformance.md) for memory and Kafka.
+Transient connection notifications now allow reconnect, with injected-error and
+socket-based mock-broker recovery coverage. Live integration passed against Kafka
+3.7.0 and 4.1.2; a dedicated Kafka 3.7.0 CI job now runs the full bus suite.
+The next slice adds [documentation and quick-start verification](quickstart-verification.md),
+with executable HTTP examples, an explicit log-provider configuration, corrected
+documentation links, and a strict documentation build in PR CI.
 
 ## Implemented behavior
 

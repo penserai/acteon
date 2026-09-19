@@ -1,169 +1,88 @@
 # Quick Start
 
-This guide walks you through running Acteon and dispatching your first action in under five minutes.
+Run these commands from the repository root after [building from source](installation.md).
+You need Rust 1.88+, Cargo, and curl. The first build can take several minutes.
 
 ## 1. Start the Server
 
-No external dependencies needed — the in-memory backend is the default:
+Use the included configuration to select in-memory state, two example rules,
+and a **log provider** named `email`. It records successful dispatches in the
+server log without sending email or contacting an external service.
 
 ```bash
-cargo run -p acteon-server
+cargo run --locked -p acteon-server -- -c examples/quickstart/acteon.toml
 ```
 
-You'll see:
+Keep the server running, and use a second terminal for the requests below.
+The explicit config avoids loading the repository's separate `acteon.toml` demo.
+The server listens on `127.0.0.1:8080`; no authentication is configured for this
+local walkthrough. Stop it with Ctrl-C when finished.
 
-```
-INFO acteon_server: Starting Acteon server on 127.0.0.1:8080
-INFO acteon_server: State backend: memory
-INFO acteon_server: Swagger UI available at http://127.0.0.1:8080/swagger-ui/
-```
+The included rules suppress recipients ending in `@test.example.com` before
+deduplicating `send_email` actions for 300 seconds. See
+`examples/quickstart/rules/basic.yaml` to edit them, then restart the server.
+In-memory state and deduplication history are cleared on restart.
 
 ## 2. Check Health
 
+<!-- quickstart-check: health -->
 ```bash
-curl http://localhost:8080/health
+curl --fail-with-body --silent --show-error "${ACTEON_URL:-http://127.0.0.1:8080}/health"
 ```
 
-```json
-{
-  "status": "ok",
-  "metrics": {
-    "dispatched": 0,
-    "executed": 0,
-    "deduplicated": 0,
-    "suppressed": 0,
-    "rerouted": 0,
-    "throttled": 0,
-    "failed": 0
-  }
-}
-```
+The JSON response has `"status": "ok"` and a `metrics` object.
+`ACTEON_URL` is optional; set it if you start the server on a different port.
 
 ## 3. Dispatch an Action
 
-Without any rules loaded, all actions are executed directly:
+Raw HTTP actions require an `id` and `created_at` in addition to namespace,
+tenant, provider, action type, and payload. SDK constructors supply these fields
+for you. This example uses a fixed ID and timestamp for reproducibility; use a
+fresh UUID and current UTC timestamp for new actions in your application.
 
+<!-- quickstart-check: dispatch -->
 ```bash
-curl -X POST http://localhost:8080/v1/dispatch \
-  -H "Content-Type: application/json" \
+curl --fail-with-body --silent --show-error "${ACTEON_URL:-http://127.0.0.1:8080}/v1/dispatch" \
+  -H 'Content-Type: application/json' \
   -d '{
+    "id": "550e8400-e29b-41d4-a716-446655440001",
+    "created_at": "2026-01-01T00:00:00Z",
     "namespace": "notifications",
     "tenant": "tenant-1",
     "provider": "email",
     "action_type": "send_email",
-    "payload": {
-      "to": "user@example.com",
-      "subject": "Hello from Acteon!",
-      "body": "Your first action was dispatched successfully."
-    }
+    "payload": {"to": "user@example.com"},
+    "dedup_key": "welcome-user@example.com"
   }'
 ```
 
 Response:
 
 ```json
-{
-  "outcome": "executed",
-  "response": {
-    "status": "success",
-    "body": {}
-  }
-}
+{"Executed":{"status":"success","body":{"provider":"email","logged":true},"headers":{}}}
 ```
 
-!!! note
-    Without a registered email provider, the server uses a no-op default provider. To connect real providers, configure them in your server setup code or use the built-in integrations (Email, Slack).
+There is no automatic fallback provider: `email` works here because the example
+configuration explicitly registers it as a log provider. Configure a real
+integration before using Acteon to send notifications.
 
-## 4. Add Rules
+## 4. Test Deduplication
 
-Create a rules directory and add your first rule file:
-
-```bash
-mkdir -p rules
-```
-
-```yaml title="rules/basic.yaml"
-rules:
-  - name: dedup-emails
-    priority: 10
-    description: "Deduplicate email sends within 5 minutes"
-    condition:
-      all:
-        - field: action.action_type
-          eq: "send_email"
-        - field: action.payload.to
-          contains: "@"
-    action:
-      type: deduplicate
-      ttl_seconds: 300
-
-  - name: block-test-emails
-    priority: 1
-    description: "Block emails to test addresses"
-    condition:
-      field: action.payload.to
-      ends_with: "@test.example.com"
-    action:
-      type: suppress
-```
-
-Now start the server with rules:
-
-```bash
-cargo run -p acteon-server -- -c acteon.toml
-```
-
-With the config:
-
-```toml title="acteon.toml"
-[rules]
-directory = "./rules"
-```
-
-## 5. Test Deduplication
-
-Send the same action twice:
-
-```bash
-# First dispatch — executes
-curl -X POST http://localhost:8080/v1/dispatch \
-  -H "Content-Type: application/json" \
-  -d '{
-    "namespace": "notifications",
-    "tenant": "tenant-1",
-    "provider": "email",
-    "action_type": "send_email",
-    "payload": {"to": "user@example.com"},
-    "dedup_key": "welcome-user@example.com"
-  }'
-
-# Second dispatch — deduplicated!
-curl -X POST http://localhost:8080/v1/dispatch \
-  -H "Content-Type: application/json" \
-  -d '{
-    "namespace": "notifications",
-    "tenant": "tenant-1",
-    "provider": "email",
-    "action_type": "send_email",
-    "payload": {"to": "user@example.com"},
-    "dedup_key": "welcome-user@example.com"
-  }'
-```
-
-The second request returns:
+Run the same dispatch command again within 300 seconds. It returns the JSON string:
 
 ```json
-{
-  "outcome": "deduplicated"
-}
+"Deduplicated"
 ```
 
-## 6. Test Suppression
+## 5. Test Suppression
 
+<!-- quickstart-check: suppression -->
 ```bash
-curl -X POST http://localhost:8080/v1/dispatch \
-  -H "Content-Type: application/json" \
+curl --fail-with-body --silent --show-error "${ACTEON_URL:-http://127.0.0.1:8080}/v1/dispatch" \
+  -H 'Content-Type: application/json' \
   -d '{
+    "id": "550e8400-e29b-41d4-a716-446655440002",
+    "created_at": "2026-01-01T00:00:00Z",
     "namespace": "notifications",
     "tenant": "tenant-1",
     "provider": "email",
@@ -175,63 +94,75 @@ curl -X POST http://localhost:8080/v1/dispatch \
 Response:
 
 ```json
-{
-  "outcome": "suppressed",
-  "rule": "block-test-emails"
-}
+{"Suppressed":{"rule":"block-test-emails"}}
 ```
 
-## 7. Check Metrics
+## 6. Check Metrics
+
+<!-- quickstart-check: metrics -->
+```bash
+curl --fail-with-body --silent --show-error "${ACTEON_URL:-http://127.0.0.1:8080}/metrics"
+```
+
+After exactly the three dispatches above, `dispatched` is 3, `executed` is 1,
+`deduplicated` is 1, and `suppressed` is 1. Other counters are also included.
+
+## 7. Explore the API
+
+Open [Swagger UI](http://127.0.0.1:8080/swagger-ui/) in your browser, or fetch
+the OpenAPI document:
+
+<!-- quickstart-check: openapi -->
+```bash
+curl --fail-with-body --silent --show-error "${ACTEON_URL:-http://127.0.0.1:8080}/api-doc/openapi.json"
+```
+
+## 8. Batch Dispatch
+
+The batch endpoint accepts a JSON **array**, with a complete action in each entry.
+
+<!-- quickstart-check: batch -->
+```bash
+curl --fail-with-body --silent --show-error "${ACTEON_URL:-http://127.0.0.1:8080}/v1/dispatch/batch" \
+  -H 'Content-Type: application/json' \
+  -d '[
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440003",
+      "created_at": "2026-01-01T00:00:00Z",
+      "namespace": "notifications",
+      "tenant": "tenant-1",
+      "provider": "email",
+      "action_type": "send_email",
+      "payload": {"to": "alice@example.com"},
+      "dedup_key": "welcome-alice@example.com"
+    },
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440004",
+      "created_at": "2026-01-01T00:00:00Z",
+      "namespace": "notifications",
+      "tenant": "tenant-1",
+      "provider": "email",
+      "action_type": "send_email",
+      "payload": {"to": "bob@example.com"},
+      "dedup_key": "welcome-bob@example.com"
+    }
+  ]'
+```
+
+The response is an array containing two `Executed` results.
+
+## Verify This Walkthrough
+
+CI executes the marked curl blocks above against a fresh server, repeats the
+dispatch for deduplication, and asserts outcomes and metrics. Run the same check:
 
 ```bash
-curl http://localhost:8080/metrics
-```
-
-```json
-{
-  "dispatched": 3,
-  "executed": 1,
-  "deduplicated": 1,
-  "suppressed": 1,
-  "rerouted": 0,
-  "throttled": 0,
-  "failed": 0
-}
-```
-
-## 8. Explore the Swagger UI
-
-Open [http://localhost:8080/swagger-ui/](http://localhost:8080/swagger-ui/) in your browser to interactively explore all API endpoints with full request/response schemas.
-
-## 9. Batch Dispatch
-
-Send multiple actions at once:
-
-```bash
-curl -X POST http://localhost:8080/v1/dispatch/batch \
-  -H "Content-Type: application/json" \
-  -d '{
-    "actions": [
-      {
-        "namespace": "notifications",
-        "tenant": "tenant-1",
-        "provider": "email",
-        "action_type": "send_email",
-        "payload": {"to": "alice@example.com"}
-      },
-      {
-        "namespace": "notifications",
-        "tenant": "tenant-1",
-        "provider": "email",
-        "action_type": "send_email",
-        "payload": {"to": "bob@example.com"}
-      }
-    ]
-  }'
+cargo build --locked -p acteon-server
+python3 scripts/ci/quickstart.py --server target/debug/acteon-server
 ```
 
 ## What's Next?
 
-- [Configuration Reference](configuration.md) — all TOML config options
+- [Configuration Reference](configuration.md) — TOML config options
 - [Architecture](../concepts/architecture.md) — how Acteon works internally
-- [Features](../features/index.md) — explore every feature in detail
+- [Features](../features/index.md) — explore features in detail

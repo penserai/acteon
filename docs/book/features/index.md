@@ -169,7 +169,7 @@ Multi-agent swarm with parallel execution, 5 built-in roles, AI-powered plan ref
 </div>
 
 <div class="card" markdown>
-### [Adversarial Loop & Eval Harness](agent-swarm.md#adversarial-loop-with-eval-harness-autoresearch-pattern)
+### [Adversarial Loop & Eval Harness](agent-swarm.md#adversarial-review-and-independently-verified-recovery)
 Karpathy-style autoresearch: adversarial critique across engines, code-writing recovery agents, SWE-bench binary assertions, program.md constraints, fitness-gated git keep/revert, polyglot support for 12 languages.
 </div>
 

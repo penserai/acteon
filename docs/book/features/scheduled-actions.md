@@ -212,7 +212,7 @@ An external effect can succeed before outcome persistence fails. Use downstream
 idempotency to prevent duplicate effects in that window. Stop old scheduled
 consumers before deploying the new lease protocol; custom consumers must call
 `Gateway::dispatch_scheduled_action` with the leased receipt. See
-[durable scheduling](../../durable-scheduling.md) for upgrade and recovery details.
+[durable scheduling](https://github.com/penserai/acteon/blob/main/docs/durable-scheduling.md) for upgrade and recovery details.
 
 ## Limitations
 

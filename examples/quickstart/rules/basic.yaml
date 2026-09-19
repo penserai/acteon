@@ -1,0 +1,17 @@
+rules:
+  - name: block-test-emails
+    priority: 1
+    condition:
+      field: action.payload.to
+      ends_with: "@test.example.com"
+    action:
+      type: suppress
+
+  - name: dedup-emails
+    priority: 10
+    condition:
+      field: action.action_type
+      eq: "send_email"
+    action:
+      type: deduplicate
+      ttl_seconds: 300

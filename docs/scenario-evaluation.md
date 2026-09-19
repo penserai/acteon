@@ -171,8 +171,13 @@ PostgreSQL, and DynamoDB.
 4. Add frozen-corpus research consensus and model capability trials separately,
    with model/prompt provenance, repeated-trial statistics, and calibrated graders.
 5. Continue the audit's release-hardening work: audit-store conformance now
-   covers memory, PostgreSQL, and DynamoDB; bus conformance covers memory.
-   Repair Kafka consumer transport before promoting its integration suite to
-   required CI, then add documentation/quick-start verification, container
-   scanning, SBOM/provenance, concurrency exploration, fuzzing, and performance
+   covers memory, PostgreSQL, and DynamoDB; bus conformance covers memory and Kafka.
+   Kafka consumer streams now preserve their consumer across transient transport
+   notifications, with injected-error and mock-broker disconnect coverage.
+   Live conformance passed against Kafka 3.7.0 and 4.1.2, and a dedicated Kafka
+   3.7.0 CI job is configured (hosted execution remains to be observed).
+   [Documentation/quick-start verification](quickstart-verification.md) now runs
+   the documented HTTP requests against a fresh server and adds strict MkDocs
+   building to PR CI. Next, add container scanning, SBOM/provenance,
+   concurrency exploration, fuzzing, and performance
    budgets.

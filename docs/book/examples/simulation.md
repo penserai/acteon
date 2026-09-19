@@ -373,7 +373,7 @@ remain outside this clock domain. See [the worker lifecycle contract](https://gi
 workflow-timer evidence, plus scheduled-action redelivery after a failed outcome
 write. It checks discovery repair, stale ownership, downstream idempotency, and
 tenant quota isolation. Run it with the same `acteon-scenario --manifest` and
-`--replay` commands above. See [the recovery contract](../../durable-scheduling.md)
+`--replay` commands above. See [the recovery contract](https://github.com/penserai/acteon/blob/main/docs/durable-scheduling.md)
 for receipt consumption, upgrade requirements, and untested crash windows.
 
 ### Worker queue recovery
@@ -382,7 +382,7 @@ for receipt consumption, upgrade requirements, and untested crash windows.
 loss, ownership and tenant isolation, terminal cleanup, and encrypted records on
 memory, Redis, and PostgreSQL. The same manifest/replay commands apply. The CI
 script runs 29 suite/backend pairs and preserves their executable. See
-[worker queue recovery](../../queue-recovery.md) for the write-fault adapter,
+[worker queue recovery](https://github.com/penserai/acteon/blob/main/docs/queue-recovery.md) for the write-fault adapter,
 manual-clock race contracts, and the boundary with terminal-result delivery below.
 
 ### Terminal worker-result handoffs
@@ -390,7 +390,7 @@ manual-clock race contracts, and the boundary with terminal-result delivery belo
 `scenarios/handoffs.json` tests retained result delivery across terminal-write and
 receiver outages, chain discovery repair, DLQ acknowledgement loss, tenant scope,
 and encryption on all three backends. The script retains 29 suite/backend
-report/replay pairs. See [terminal handoff recovery](../../task-handoff-recovery.md)
+report/replay pairs. See [terminal handoff recovery](https://github.com/penserai/acteon/blob/main/docs/task-handoff-recovery.md)
 for destination acknowledgements, receiver fencing, and controlled race evidence.
 
 
@@ -398,7 +398,7 @@ for destination acknowledgements, receiver fencing, and controlled race evidence
 
 `scenarios/fencing.json` adds stale-writer and retention/reset races on all three
 scenario backends. The selected backend supplies both state and locks, with
-explicitly shortened test leases. See [chain state fencing](../../chain-state-fencing.md)
+explicitly shortened test leases. See [chain state fencing](https://github.com/penserai/acteon/blob/main/docs/chain-state-fencing.md)
 for the atomic deletion contract, mutation gates, and limits. CI preserves 29
 suite/backend report/replay pairs under grader `portfolio-v8`.
 
@@ -407,18 +407,18 @@ suite/backend report/replay pairs under grader `portfolio-v8`.
 `scenarios/chain-recovery.json` proves recovery of pending/ready entries after an
 interrupted create or buffered signal delivery, prunes terminal orphans, and
 replays terminal audit outages and history receipts after lost acknowledgements
-across memory, Redis, and PostgreSQL. See [chain discovery recovery](../../chain-discovery-recovery.md).
+across memory, Redis, and PostgreSQL. See [chain discovery recovery](https://github.com/penserai/acteon/blob/main/docs/chain-discovery-recovery.md).
 
 ### Chain-to-task projection recovery
 
 `scenarios/chain-task-projection.json` commits a terminal chain state, interrupts
 the linked task's terminal write, then rebuilds the gateway and replays the
 projection on memory, Redis, and PostgreSQL. The repeated reconciliation must be
-a no-op. See [chain-to-task projection recovery](../../chain-task-projection-recovery.md).
+a no-op. See [chain-to-task projection recovery](https://github.com/penserai/acteon/blob/main/docs/chain-task-projection-recovery.md).
 
 ### Audit retention
 
 `scenarios/audit-retention.json` uses the shared manual clock with the in-memory
 audit store to exercise retention before, at, and after an expiry boundary.
 Cleanup removes only expired records and keeps the secondary action index
-consistent. See [audit retention recovery](../../audit-retention-recovery.md).
+consistent. See [audit retention recovery](https://github.com/penserai/acteon/blob/main/docs/audit-retention-recovery.md).

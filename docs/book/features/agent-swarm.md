@@ -1100,5 +1100,5 @@ Three challenges were filtered out (severity below 0.5): two Low-severity style 
 - [Throttling](throttling.md) -- per-agent and swarm-wide rate limiting
 - [Tenant Usage Quotas](tenant-quotas.md) -- per-run quota budgets
 - [WASM Rule Plugins](wasm-plugins.md) -- custom safety rules
-- [Adversarial Loop with Eval Harness](#adversarial-loop-with-eval-harness-autoresearch-pattern) -- cross-engine critique and recovery
+- [Adversarial Loop with Eval Harness](#adversarial-review-and-independently-verified-recovery) -- cross-engine critique and recovery
 - [Karpathy's autoresearch](https://github.com/karpathy/autoresearch) -- the pattern that inspired the eval harness

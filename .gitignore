@@ -44,6 +44,7 @@ test-results/
 examples/agent-swarm-coordination/swarm/workspaces/
 posit-clone/
 acteon.toml
+!examples/quickstart/acteon.toml
 
 # Reproducible test artifacts
 playwright-report/
