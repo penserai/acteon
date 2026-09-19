@@ -297,7 +297,7 @@ rmcp = { version = "1.4.0", features = ["server", "transport-io"] }
 schemars = "1"
 
 # TLS
-rustls = { version = "0.23", features = ["ring"] }
+rustls = { version = "0.23.45", features = ["ring"] }
 rustls-pemfile = "2"
 webpki-roots = "0.26"
 tokio-rustls = "0.26"
