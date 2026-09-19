@@ -175,9 +175,10 @@ PostgreSQL, and DynamoDB.
    Kafka consumer streams now preserve their consumer across transient transport
    notifications, with injected-error and mock-broker disconnect coverage.
    Live conformance passed against Kafka 3.7.0 and 4.1.2, and a dedicated Kafka
-   3.7.0 CI job is configured (hosted execution remains to be observed).
+   3.7.0 CI job passed on PR #338, along with the documentation and quick-start checks.
    [Documentation/quick-start verification](quickstart-verification.md) now runs
    the documented HTTP requests against a fresh server and adds strict MkDocs
-   building to PR CI. Next, add container scanning, SBOM/provenance,
-   concurrency exploration, fuzzing, and performance
+   building to PR CI. [Container scanning and SBOM/provenance](container-evidence.md)
+   now have a dedicated Linux workflow and evidence validator; end-to-end CI
+   validation remains pending. Next, add concurrency exploration, fuzzing, and performance
    budgets.

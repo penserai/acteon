@@ -1,0 +1,87 @@
+name: Container evidence
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  container:
+    # BuildKit and container execution require a Linux Docker host.
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Test evidence validation
+        run: python3 -m unittest discover -s scripts/ci -p 'test_container_evidence.py'
+      - name: Create evidence directory
+        run: mkdir -p container-evidence
+      - name: Build image and attestations
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64
+          tags: acteon:ci
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          outputs: type=oci,dest=container-evidence/image.oci.tar
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=container
+          cache-to: type=gha,mode=max,scope=container
+      - name: Convert runnable image for scanning
+        run: |
+          sudo apt-get update && sudo apt-get install -y skopeo
+          skopeo copy --override-os linux --override-arch amd64 \
+            oci-archive:container-evidence/image.oci.tar \
+            docker-archive:container-evidence/image.docker.tar:acteon:ci
+      - name: Verify SBOM, provenance, and scanned image identity
+        run: |
+          python3 scripts/ci/container_evidence.py \
+            --oci container-evidence/image.oci.tar \
+            --docker container-evidence/image.docker.tar \
+            --output container-evidence
+          sha256sum container-evidence/*.tar > container-evidence/SHA256SUMS
+      - name: Smoke-test packaged server and UI
+        run: |
+          docker load -i container-evidence/image.docker.tar
+          docker run -d --name acteon-container-check -p 127.0.0.1:18080:8080 \
+            -v "$PWD/examples/quickstart:/app/examples/quickstart:ro" \
+            acteon:ci -c examples/quickstart/acteon.toml \
+            --host 0.0.0.0 --allow-unauthenticated-remote
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18080/health; then break; fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:18080/health | python3 -c 'import json,sys; assert json.load(sys.stdin)["status"] == "ok"'
+          curl -fsS http://127.0.0.1:18080/ | grep -q '<!doctype html>'
+          test "$(docker inspect --format '{{.Config.User}}' acteon-container-check)" = acteon
+      - name: Scan runtime image
+        uses: aquasecurity/trivy-action@d2a0b60797ff03db6132bd4e2b293f9b37081297
+        with:
+          version: v0.74.0
+          input: container-evidence/image.docker.tar
+          scanners: vuln
+          format: json
+          output: container-evidence/vulnerabilities.json
+          severity: HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: '1'
+          timeout: 10m
+      - name: Container logs and cleanup
+        if: always()
+        run: |
+          if docker inspect acteon-container-check >/dev/null 2>&1; then
+            docker logs acteon-container-check
+            docker rm -f acteon-container-check
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: container-evidence
+          path: container-evidence
+          retention-days: 7
