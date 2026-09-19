@@ -267,7 +267,7 @@ clap = { version = "4", features = ["derive"] }
 
 # Auth
 jsonwebtoken = "9"
-argon2 = "0.5"
+argon2 = "0.6"
 sha2 = "0.10"
 ed25519-dalek = { version = "2", features = ["serde", "zeroize", "rand_core"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
