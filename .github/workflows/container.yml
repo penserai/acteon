@@ -59,7 +59,14 @@ jobs:
           done
           curl -fsS http://127.0.0.1:18080/health | python3 -c 'import json,sys; assert json.load(sys.stdin)["status"] == "ok"'
           curl -fsS http://127.0.0.1:18080/ | grep -q '<!doctype html>'
-          test "$(docker inspect --format '{{.Config.User}}' acteon-container-check)" = acteon
+          test "$(docker inspect --format '{{.Config.User}}' acteon-container-check)" = 65532:65532
+          # These programs must not be shipped in the production runtime.
+          for executable in /bin/sh /bin/bash /usr/bin/apt /usr/bin/dpkg /usr/bin/perl; do
+            if docker cp "acteon-container-check:$executable" - >/dev/null 2>&1; then
+              echo "Unexpected runtime executable: $executable" >&2
+              exit 1
+            fi
+          done
       - name: Scan runtime image
         uses: aquasecurity/trivy-action@d2a0b60797ff03db6132bd4e2b293f9b37081297
         with:

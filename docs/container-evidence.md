@@ -15,7 +15,8 @@ and hashes the Docker archive's uncompressed layers against the attested
 config's `rootfs.diff_ids`. Missing or mismatched evidence fails the job.
 
 The packaged image must start, serve health and the bundled UI, and run as the
-`acteon` user. Trivy scans the runtime archive for OS/library vulnerabilities
+nonroot UID/GID `65532:65532`. It must not include shells, apt/dpkg, or Perl.
+Trivy scans the runtime archive for OS/library vulnerabilities
 and fails on HIGH or CRITICAL findings, including those without fixes. Findings
 are retained in JSON; there is no new vulnerability exception or fail-open gate.
 
@@ -38,10 +39,40 @@ The Dockerfile builds only the server package using `--locked` and installs its
 native build requirements. It no longer installs an unpinned cargo-chef release
 or prebuilds the entire workspace. BuildKit layer caching remains enabled; source
 changes can require a full server rebuild. Build context excludes local dependency
-caches, credentials, and generated evidence. Base image tags remain mutable;
-provenance records the resolved build inputs rather than promising bit-for-bit
+caches, credentials, and generated evidence. Build-stage base tags remain mutable;
+the runtime base is pinned by digest. Provenance records the resolved build inputs rather than promising bit-for-bit
 reproducibility. Runtime SBOM coverage does not replace Cargo/Node lockfile audits
 for statically linked or bundled dependencies.
+
+## Runtime image and compatibility
+
+The runtime uses `gcr.io/distroless/cc-debian13:nonroot`, pinned by digest.
+It supplies glibc, OpenSSL, the C/C++ runtime libraries, and CA certificates;
+the server is still compiled with Rust 1.88 on Debian 12. Linux CI exercises
+the resulting binary in the newer runtime to catch missing shared libraries.
+The server, UI location, port, and CLI arguments are unchanged. The entrypoint
+is an absolute executable path because the runtime has no shell.
+
+The previous Debian 12 slim runtime produced 56 HIGH/CRITICAL package findings
+(18 distinct CVEs) in run `35422891743`, none with a fixed version listed by
+Trivy. Replacing unused distribution tools reduces the shipped attack surface;
+it is not a vulnerability waiver. The same severity gate, including unfixed
+findings, applies to the replacement image.
+
+Deployment changes:
+
+- The former `acteon` account is replaced by Distroless's `nonroot` account,
+  explicitly UID/GID `65532:65532`. Make writable bind mounts accessible to this
+  identity; existing volumes owned by the old UID may need an ownership change.
+- Shell-based health checks and `docker exec ... sh` are not supported. Probe
+  `/health` from the orchestrator, as the CI smoke test does. Use a separate
+  debugging container when inspecting a deployment.
+- Do not install packages at container startup. Add deliberate runtime
+  dependencies at build time and rerun the scan and smoke tests.
+- Refresh the pinned runtime digest regularly; a tag update alone will not
+  pull security fixes into an already pinned build.
+
+See the upstream [Distroless image documentation](https://github.com/GoogleContainerTools/distroless).
 
 ## Validation
 
