@@ -179,6 +179,8 @@ PostgreSQL, and DynamoDB.
    [Documentation/quick-start verification](quickstart-verification.md) now runs
    the documented HTTP requests against a fresh server and adds strict MkDocs
    building to PR CI. [Container scanning and SBOM/provenance](container-evidence.md)
-   now have a dedicated Linux workflow and evidence validator; end-to-end CI
-   validation remains pending. Next, add concurrency exploration, fuzzing, and performance
-   budgets.
+   passed end-to-end in PR #338, including the pinned Distroless runtime scan.
+   [Memory-lock concurrency exploration](lock-concurrency-exploration.md) now
+   covers 120 external event orderings and 64 stale-owner race trials, with
+   a verified owner-check mutation. Internal scheduler exploration, fuzzing,
+   and performance budgets remain follow-up work.
