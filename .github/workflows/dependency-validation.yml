@@ -1,0 +1,61 @@
+name: Build dependency validation
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  node-client:
+    if: github.head_ref == 'codex/consolidated-build-deps'
+    name: Node client dependencies
+    runs-on: [self-hosted, macOS, X64]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+      - run: npm ci
+        working-directory: clients/nodejs
+      - run: npm run lint && npm run typecheck && npm test && npm run build && npm run package:check
+        working-directory: clients/nodejs
+      - run: npm audit --audit-level=high
+        working-directory: clients/nodejs
+
+  node-compatibility:
+    if: github.head_ref == 'codex/consolidated-build-deps'
+    name: Node ${{ matrix.node }} compatibility
+    runs-on: [self-hosted, macOS, X64]
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '24']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm ci && npm test
+        working-directory: clients/nodejs
+
+  java-client:
+    if: github.head_ref == 'codex/consolidated-build-deps'
+    name: Java client dependencies
+    runs-on: [self-hosted, macOS, X64]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        with:
+          gradle-version: '9.5.1'
+      - run: gradle test build --no-daemon
+        working-directory: clients/java
