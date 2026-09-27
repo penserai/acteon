@@ -199,7 +199,7 @@ pub fn render_profile<S: ::std::hash::BuildHasher>(
         let rendered = match field {
             TemplateProfileField::Inline(literal) => {
                 // Add the inline literal as a named template so we can use
-                // render_to_write for streaming size enforcement.
+                // render_captured_to for streaming size enforcement.
                 let inline_name = format!("__inline__{field_name}");
                 env.add_template_owned(inline_name.clone(), literal.clone())
                     .map_err(|e| {
@@ -214,7 +214,7 @@ pub fn render_profile<S: ::std::hash::BuildHasher>(
                     ))
                 })?;
                 let mut writer = SizeLimitedWriter::new(MAX_RENDERED_BYTES);
-                tmpl.render_to_write(&ctx, &mut writer).map_err(|e| {
+                tmpl.render_captured_to(&ctx, &mut writer).map_err(|e| {
                     GatewayError::TemplateRender(format!(
                         "error rendering inline field '{field_name}' in profile '{}': {e}",
                         profile.name
@@ -229,7 +229,7 @@ pub fn render_profile<S: ::std::hash::BuildHasher>(
                     ))
                 })?;
                 let mut writer = SizeLimitedWriter::new(MAX_RENDERED_BYTES);
-                tmpl.render_to_write(&ctx, &mut writer).map_err(|e| {
+                tmpl.render_captured_to(&ctx, &mut writer).map_err(|e| {
                     GatewayError::TemplateRender(format!(
                         "error rendering template '{template_ref}' for field '{field_name}' in profile '{}': {e}",
                         profile.name
@@ -571,7 +571,7 @@ mod tests {
 
     #[test]
     fn render_inline_via_named_template() {
-        // Verify inline templates go through the named-template + render_to_write path.
+        // Verify inline templates go through the named-template + render_captured_to path.
         let mut fields = HashMap::new();
         fields.insert(
             "greeting".to_string(),
