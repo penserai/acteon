@@ -3,15 +3,30 @@ updates:
   - package-ecosystem: github-actions
     directory: /
     schedule: {interval: weekly}
+    groups:
+      actions:
+        patterns: ["*"]
   - package-ecosystem: cargo
     directory: /
     schedule: {interval: weekly}
+    groups:
+      cargo-compatible:
+        patterns: ["*"]
+        update-types: [minor, patch]
   - package-ecosystem: npm
     directory: /ui
     schedule: {interval: weekly}
+    groups:
+      ui-compatible:
+        patterns: ["*"]
+        update-types: [minor, patch]
   - package-ecosystem: npm
     directory: /clients/nodejs
     schedule: {interval: weekly}
+    groups:
+      nodejs-compatible:
+        patterns: ["*"]
+        update-types: [minor, patch]
   - package-ecosystem: pip
     directory: /clients/python
     schedule: {interval: weekly}
@@ -21,3 +36,7 @@ updates:
   - package-ecosystem: gradle
     directory: /clients/java
     schedule: {interval: weekly}
+    groups:
+      java-compatible:
+        patterns: ["*"]
+        update-types: [minor, patch]

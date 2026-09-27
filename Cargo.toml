@@ -240,7 +240,7 @@ serde_urlencoded = "0.7"
 regex = "1"
 
 # JSON patching
-json-patch = "3"
+json-patch = "4"
 
 # Templating
 minijinja = { version = "2", features = ["fuel", "loader"] }

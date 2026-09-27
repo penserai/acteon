@@ -1,0 +1,186 @@
+name: Build dependency validation
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    if: github.head_ref == 'codex/consolidated-build-deps'
+    name: Rust dependencies
+    runs-on: [self-hosted, macOS, X64]
+    strategy:
+      fail-fast: false
+      matrix:
+        rust: [stable, '1.88']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        with:
+          toolchain: ${{ matrix.rust }}
+          components: clippy, rustfmt
+      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      - uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2.87.13
+        with:
+          tool: cargo-nextest
+      - run: cargo fmt --all -- --check
+      - run: cargo check --locked --workspace --all-targets
+      - run: cargo clippy --locked --workspace --no-deps -- -D warnings
+      - run: cargo nextest run --locked --workspace --lib --bins --tests
+      - name: Verify documented quick start
+        if: matrix.rust == 'stable'
+        run: |
+          cargo build --locked -p acteon-server
+          python3 scripts/ci/quickstart.py --server target/debug/acteon-server
+      - run: cargo nextest run --locked -p acteon-aws --features full --lib --tests
+      - run: cargo nextest run --locked -p acteon-azure --features full --lib --tests
+      - run: cargo nextest run --locked -p acteon-gcp --features full --lib --tests
+      - run: cargo check --locked -p acteon-server --features extras-alerting
+      - run: cargo test --locked --workspace --doc
+      - run: cargo doc --locked --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  node-client:
+    if: github.head_ref == 'codex/consolidated-build-deps'
+    name: Node client dependencies
+    runs-on: [self-hosted, macOS, X64]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+      - run: npm ci
+        working-directory: clients/nodejs
+      - run: npm run lint && npm run typecheck && npm test && npm run build && npm run package:check
+        working-directory: clients/nodejs
+      - run: npm audit --audit-level=high
+        working-directory: clients/nodejs
+
+  node-compatibility:
+    if: github.head_ref == 'codex/consolidated-build-deps'
+    name: Node ${{ matrix.node }} compatibility
+    runs-on: [self-hosted, macOS, X64]
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '24']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm ci && npm test
+        working-directory: clients/nodejs
+
+  ui:
+    if: github.head_ref == 'codex/consolidated-build-deps'
+    name: UI dependencies
+    runs-on: [self-hosted, macOS, X64]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+      - run: npm ci
+        working-directory: ui
+      - run: npm run lint && npm run build
+        working-directory: ui
+      - run: npm audit --audit-level=high
+        working-directory: ui
+      - run: npx playwright install chromium && npm run test:smoke
+        working-directory: ui
+
+  python-client:
+    if: github.head_ref == 'codex/consolidated-build-deps'
+    name: Python ${{ matrix.python }} client
+    runs-on: [self-hosted, macOS, X64]
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12', '3.13', '3.14']
+    defaults:
+      run:
+        working-directory: clients/python
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -e '.[dev]' build
+      - run: ruff check . && ruff format --check . && mypy acteon_client
+      - run: pytest -q
+      - run: python -m build
+      - name: Install the wheel into an isolated environment
+        run: |
+          python -m venv /tmp/acteon-wheel
+          /tmp/acteon-wheel/bin/pip install dist/*.whl
+          cd /tmp
+          /tmp/acteon-wheel/bin/python -c 'from acteon_client import ActeonClient'
+
+  go-client:
+    if: github.head_ref == 'codex/consolidated-build-deps'
+    name: Go client
+    runs-on: [self-hosted, macOS, X64]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: clients/go/go.mod
+          cache-dependency-path: clients/go/go.sum
+      - run: go test -race ./... && go vet ./...
+        working-directory: clients/go
+
+  java-client:
+    if: github.head_ref == 'codex/consolidated-build-deps'
+    name: Java client dependencies
+    runs-on: [self-hosted, macOS, X64]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        with:
+          gradle-version: '9.5.1'
+      - run: gradle test build --no-daemon
+        working-directory: clients/java
+
+  documentation:
+    if: github.head_ref == 'codex/consolidated-build-deps'
+    name: Documentation build
+    runs-on: [self-hosted, macOS, X64]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - run: pip install -r docs/requirements.txt && mkdocs build --strict
+
+  tla-specs:
+    if: github.head_ref == 'codex/consolidated-build-deps'
+    name: TLA+ specifications
+    runs-on: [self-hosted, macOS, X64]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '17'
+      - run: ./specs/tla/ci/run-tlc.sh
+
+  validation-artifact:
+    if: github.head_ref == 'codex/consolidated-build-deps'
+    name: Validation artifact action
+    runs-on: [self-hosted, macOS, X64]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: mkdir -p "$RUNNER_TEMP/dependency-validation" && printf '%s\n' 'Consolidated build-dependency validation' > "$RUNNER_TEMP/dependency-validation/result.txt"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dependency-validation
+          path: ${{ runner.temp }}/dependency-validation/result.txt
