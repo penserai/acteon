@@ -306,7 +306,7 @@ tokio-rustls = "0.26"
 wasmtime = { version = "36.0.7", default-features = false, features = ["runtime", "cranelift", "wat", "std"] }
 
 # Benchmarking
-criterion = { version = "0.5", features = ["async_tokio"] }
+criterion = { version = "0.8", features = ["async_tokio"] }
 
 # Testing
 axum-test = "16"
