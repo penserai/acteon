@@ -21,11 +21,13 @@ env:
 # fails on runners that don't have libcurl headers. Every Rust job
 # that compiles the workspace needs them.
 
+# The consolidated dependency PR runs the required non-Docker checks on the
+# self-hosted Mac so their branch-protection contexts remain present without
+# using hosted runner minutes.
 jobs:
   check:
-    if: github.head_ref != 'codex/consolidated-build-deps'
     name: "Check (${{ matrix.rust }})"
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.head_ref == 'codex/consolidated-build-deps' && fromJSON('["self-hosted","macOS","X64"]') || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
@@ -33,6 +35,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install librdkafka build deps
+        if: github.head_ref != 'codex/consolidated-build-deps'
         run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
         with:
@@ -42,9 +45,8 @@ jobs:
       - run: cargo check --locked --workspace --all-targets
 
   clippy:
-    if: github.head_ref != 'codex/consolidated-build-deps'
     name: "Clippy (${{ matrix.rust }})"
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.head_ref == 'codex/consolidated-build-deps' && fromJSON('["self-hosted","macOS","X64"]') || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
@@ -52,6 +54,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install librdkafka build deps
+        if: github.head_ref != 'codex/consolidated-build-deps'
         run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
         with:
@@ -62,9 +65,8 @@ jobs:
       - run: cargo clippy --locked --workspace --no-deps -- -D warnings
 
   test:
-    if: github.head_ref != 'codex/consolidated-build-deps'
     name: "Test (${{ matrix.rust }})"
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.head_ref == 'codex/consolidated-build-deps' && fromJSON('["self-hosted","macOS","X64"]') || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
@@ -76,11 +78,13 @@ jobs:
       # longer enough and the linker dies with SIGBUS at 0 MB free.
       # Reclaim ~25 GB by dropping preinstalled toolchains we never use.
       - name: Free disk space
+        if: github.head_ref != 'codex/consolidated-build-deps'
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
             /opt/hostedtoolcache/CodeQL /usr/local/share/boost
           df -h /
       - name: Install librdkafka build deps
+        if: github.head_ref != 'codex/consolidated-build-deps'
         run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
         with:
@@ -108,9 +112,8 @@ jobs:
         run: cargo test --locked --workspace --doc
 
   fmt:
-    if: github.head_ref != 'codex/consolidated-build-deps'
     name: Format
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.head_ref == 'codex/consolidated-build-deps' && fromJSON('["self-hosted","macOS","X64"]') || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # stable
@@ -132,9 +135,8 @@ jobs:
       - run: mkdocs build --strict
 
   frontend:
-    if: github.head_ref != 'codex/consolidated-build-deps'
     name: Frontend
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.head_ref == 'codex/consolidated-build-deps' && fromJSON('["self-hosted","macOS","X64"]') || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -147,6 +149,9 @@ jobs:
       - run: cd ui && npm run build
       - run: cd ui && npm audit --audit-level=high
       - run: cd ui && npx playwright install --with-deps chromium
+        if: github.head_ref != 'codex/consolidated-build-deps'
+      - run: cd ui && npx playwright install chromium
+        if: github.head_ref == 'codex/consolidated-build-deps'
       - run: cd ui && npm run test:smoke
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
@@ -157,12 +162,12 @@ jobs:
             ui/test-results
 
   doc:
-    if: github.head_ref != 'codex/consolidated-build-deps'
     name: Doc
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.head_ref == 'codex/consolidated-build-deps' && fromJSON('["self-hosted","macOS","X64"]') || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install librdkafka build deps
+        if: github.head_ref != 'codex/consolidated-build-deps'
         run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # stable
         with:
