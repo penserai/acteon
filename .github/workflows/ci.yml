@@ -42,6 +42,7 @@ jobs:
           toolchain: ${{ matrix.rust }}
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        if: github.head_ref != 'codex/consolidated-build-deps'
       - run: cargo check --locked --workspace --all-targets
 
   clippy:
@@ -62,6 +63,7 @@ jobs:
           components: clippy
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        if: github.head_ref != 'codex/consolidated-build-deps'
       - run: cargo clippy --locked --workspace --no-deps -- -D warnings
 
   test:
@@ -91,6 +93,7 @@ jobs:
           toolchain: ${{ matrix.rust }}
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        if: github.head_ref != 'codex/consolidated-build-deps'
       - uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # nextest
         with:
           tool: cargo-nextest
@@ -174,6 +177,7 @@ jobs:
           toolchain: stable
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        if: github.head_ref != 'codex/consolidated-build-deps'
       - run: cargo doc --workspace --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
@@ -232,6 +236,7 @@ jobs:
           toolchain: stable
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        if: github.head_ref != 'codex/consolidated-build-deps'
       - name: Run real-broker and transport recovery tests
         run: |
           test -n "$ACTEON_KAFKA_BOOTSTRAP"
@@ -279,6 +284,7 @@ jobs:
           toolchain: stable
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        if: github.head_ref != 'codex/consolidated-build-deps'
       - run: cargo test --locked -p acteon-state-redis -p acteon-state-postgres --features integration --lib
       - name: PostgreSQL audit-store conformance
         run: cargo test --locked -p acteon-audit-postgres --features integration --lib
