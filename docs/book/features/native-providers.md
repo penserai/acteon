@@ -1,19 +1,23 @@
 # Native Providers
 
-Acteon ships with built-in provider integrations for **Twilio** (SMS), **Microsoft Teams**, and **Discord**, alongside the existing Webhook, Email, Slack, and PagerDuty providers. Native providers are first-class citizens -- they implement the same `Provider` trait, participate in circuit breaking, health checks, and per-provider metrics, and require no external plugins.
+Acteon ships with built-in provider integrations for **Email**, **Slack**, **PagerDuty**, **Webhook**, **Twilio** (SMS), **Microsoft Teams**, and **Discord**. Native providers are first-class citizens -- they implement the same `Provider` trait, participate in circuit breaking, health checks, per-provider metrics, and tenant quotas, and require no external plugins.
 
-!!! note "Discord is opt-in"
-    Twilio, Microsoft Teams, Email, Slack, PagerDuty, and Webhook are part of the default `acteon-server` build. Discord is compiled only when the `discord` feature flag is enabled (`cargo build -p acteon-server --features discord`) or as part of the `extras-alerting` feature group. See [Providers](../concepts/providers.md#messaging-and-on-call) for the full list of default vs opt-in messaging providers.
+!!! note "Default vs Opt-In Providers"
+    Email, Slack, PagerDuty, Webhook, Twilio, and Microsoft Teams are part of the default `acteon-server` build. Discord is compiled when the `discord` feature flag is enabled (`cargo build -p acteon-server --features discord`) or as part of the `extras-alerting` feature group. See [Providers](../concepts/providers.md#messaging-and-on-call) for the complete provider matrix.
 
 ## Overview
 
 | Provider | Transport | Auth Mechanism | Payload Format |
 |----------|-----------|----------------|----------------|
+| Email | SMTP / AWS SES | SMTP auth (user/pass) or AWS IAM | `application/json` (RFC 5322 MIME) |
+| Slack | Slack Web API / Webhook | Bot Token (`xoxb-...`) or Webhook URL | `application/json` (Blocks / Text) |
+| PagerDuty | Events API v2 | Routing Key | `application/json` (Trigger/Ack/Resolve) |
+| Webhook | HTTP (REST / Webhook) | Bearer, Basic, API Key, HMAC-SHA256 | `application/json` |
 | Twilio | REST API (form-encoded) | HTTP Basic Auth (Account SID + Auth Token) | `application/x-www-form-urlencoded` |
 | Teams | Incoming Webhook | Webhook URL (URL is the credential) | `application/json` (MessageCard or Adaptive Card) |
-| Discord | Webhook | Webhook URL (URL is the credential) | `application/json` |
+| Discord | Webhook | Webhook URL (URL is the credential) | `application/json` (Content / Embeds) |
 
-All three providers:
+All native providers:
 
 - Support `ENC[...]` encrypted secrets in TOML configuration
 - Propagate W3C Trace Context (`traceparent`/`tracestate` headers) to downstream APIs
@@ -22,6 +26,94 @@ All three providers:
 - Use a 30-second HTTP client timeout by default
 
 ## TOML Configuration
+
+### Email (SMTP & AWS SES)
+
+```toml
+# SMTP backend
+[[providers]]
+name = "corp-email"
+type = "email"
+email_backend = "smtp"              # "smtp" (default) or "ses"
+smtp_host = "smtp.mailgun.org"
+smtp_port = 587
+username = "postmaster@example.com"
+password = "ENC[AES256_GCM,data:...]"
+from_address = "alerts@example.com"
+tls = true
+
+# AWS SES backend
+[[providers]]
+name = "ses-email"
+type = "email"
+email_backend = "ses"
+aws_region = "us-east-1"
+from_address = "notifications@example.com"
+ses_configuration_set = "production-alerts"
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | Yes | Unique provider name used in action dispatch |
+| `type` | Yes | Must be `"email"` |
+| `email_backend` | No | `"smtp"` (default) or `"ses"` |
+| `from_address` | Yes | Default sender email address |
+| `smtp_host` | For SMTP | SMTP server hostname |
+| `smtp_port` | No | SMTP port (default: 587 for submission, 465 for TLS) |
+| `username` | No | SMTP authentication username |
+| `password` | No | SMTP authentication password (supports `ENC[...]`) |
+| `tls` | No | Whether to require TLS/STARTTLS (default: `true`) |
+| `aws_region` | For SES | AWS region for SES API calls |
+| `ses_configuration_set` | No | Optional SES configuration set name |
+
+### Slack
+
+```toml
+[[providers]]
+name = "slack-ops"
+type = "slack"
+webhook_url = "https://hooks.slack.com/services/T00/B00/XXXX"
+default_channel = "#alerts"
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | Yes | Unique provider name used in action dispatch |
+| `type` | Yes | Must be `"slack"` |
+| `webhook_url` | Yes | Slack incoming webhook URL or Bot token (`xoxb-...`) |
+| `default_channel` | No | Default target channel (can be overridden in payload) |
+
+### PagerDuty
+
+```toml
+[[providers]]
+name = "pagerduty-alerts"
+type = "pagerduty"
+routing_key = "ENC[AES256_GCM,data:...]"
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | Yes | Unique provider name used in action dispatch |
+| `type` | Yes | Must be `"pagerduty"` |
+| `routing_key` | Yes | PagerDuty Events API v2 32-character integration routing key (supports `ENC[...]`) |
+
+### Webhook
+
+```toml
+[[providers]]
+name = "custom-webhook"
+type = "webhook"
+url = "https://api.example.com/alerts"
+headers = { "X-Source" = "acteon", "Authorization" = "Bearer ENC[...]" }
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | Yes | Unique provider name used in action dispatch |
+| `type` | Yes | Must be `"webhook"` |
+| `url` | Yes | Target endpoint URL |
+| `headers` | No | Map of custom HTTP headers sent with each request |
 
 ### Twilio
 
@@ -82,6 +174,115 @@ DiscordConfig::new("https://discord.com/api/webhooks/123/abc")
 ```
 
 ## Payload Format
+
+### Email
+
+Send an email notification via SMTP or AWS SES:
+
+```json
+{
+  "to": "ops@example.com",
+  "cc": ["lead@example.com"],
+  "bcc": ["audit@example.com"],
+  "subject": "Critical Alert: Database latency elevated",
+  "body": "p99 database latency exceeded 500ms on shard 3.",
+  "from": "alerts@example.com"
+}
+```
+
+| Field | Required | Type | Description |
+|-------|----------|------|-------------|
+| `to` | Yes | string | Destination email address (or array of addresses) |
+| `subject` | Yes | string | Email subject line |
+| `body` | Yes | string | Email body text (plain text or HTML) |
+| `from` | No | string | Sender address (falls back to configured `from_address`) |
+| `cc` | No | array | List of CC recipient email addresses |
+| `bcc` | No | array | List of BCC recipient email addresses |
+| `attachments` | No | array | Optional file attachments (see [Attachments](attachments.md)) |
+
+### Slack
+
+Send a notification to a Slack channel using plain text or Block Kit:
+
+```json
+{
+  "channel": "#infrastructure-alerts",
+  "text": "Disk space low on node worker-42",
+  "blocks": [
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*Alert:* Disk usage at *92%* on `worker-42` (/var/lib/data)"
+      }
+    }
+  ]
+}
+```
+
+| Field | Required | Type | Description |
+|-------|----------|------|-------------|
+| `text` | One of `text` or `blocks` | string | Fallback notification text |
+| `blocks` | One of `text` or `blocks` | array | Slack Block Kit UI components |
+| `channel` | No | string | Override target channel (e.g. `"#alerts"`, `"C12345678"`) |
+
+### PagerDuty
+
+Manage incident lifecycles via the PagerDuty Events API v2:
+
+```json
+{
+  "event_action": "trigger",
+  "summary": "Redis master node unresponsive",
+  "severity": "critical",
+  "source": "health-check",
+  "dedup_key": "redis-cluster-master-down",
+  "custom_details": {
+    "node_id": "redis-01",
+    "consecutive_timeouts": 5
+  },
+  "links": [
+    { "href": "https://wiki.internal/runbooks/redis", "text": "Runbook" }
+  ]
+}
+```
+
+| Field | Required | Type | Description |
+|-------|----------|------|-------------|
+| `event_action` | Yes | string | `"trigger"`, `"acknowledge"`, or `"resolve"` |
+| `summary` | For `trigger` | string | Brief description of the incident |
+| `severity` | No | string | `"critical"`, `"error"`, `"warning"`, or `"info"` |
+| `dedup_key` | For `acknowledge`/`resolve` | string | Deduplication key correlating lifecycle events |
+| `source` | No | string | Originating service or system hostname |
+| `custom_details` | No | object | Arbitrary key-value context for responders |
+| `links` | No | array | Array of `{href, text}` links attached to incident |
+| `images` | No | array | Array of `{src, alt}` graph images attached to incident |
+
+### Webhook
+
+Send an HTTP request with arbitrary payload, headers, and method:
+
+```json
+{
+  "url": "https://api.example.com/v1/incidents",
+  "method": "POST",
+  "body": {
+    "service": "billing",
+    "status": "degraded",
+    "error_rate": 0.08
+  },
+  "headers": {
+    "X-Source": "monitoring-gateway"
+  }
+}
+```
+
+| Field | Required | Type | Description |
+|-------|----------|------|-------------|
+| `body` | Yes | object/string | JSON payload delivered in the request body |
+| `url` | No | string | Override endpoint URL (falls back to provider `url`) |
+| `method` | No | string | HTTP method: `"POST"` (default), `"PUT"`, `"PATCH"` |
+| `headers` | No | object | Additional request headers |
 
 ### Twilio SMS
 
@@ -299,22 +500,24 @@ Discord returns the webhook object (name, channel, guild) on GET requests withou
 
 ## Error Handling
 
-All three providers map their internal errors to the standard `ProviderError` enum:
+All native providers map their internal errors to the standard `ProviderError` enum:
 
 | Internal Error | ProviderError Variant | Retryable |
 |----------------|----------------------|-----------|
-| HTTP transport failure | `Connection` | Yes |
-| API error response | `ExecutionFailed` | No |
-| Invalid/missing payload fields | `Serialization` | No |
+| HTTP transport / connection failure | `Connection` | Yes |
+| Upstream timeout | `Timeout` | Yes |
+| API rejection / HTTP 4xx (except 429) | `ExecutionFailed` | No |
+| Invalid / unparseable payload fields | `Serialization` | No |
 | HTTP 429 Too Many Requests | `RateLimited` | Yes |
+| Invalid credentials / host config | `Configuration` | No |
 
-Retryable errors participate in the circuit breaker and retry infrastructure. Non-retryable errors (invalid payloads, API rejections) fail immediately without retry.
+Retryable errors participate in circuit breaker trips and retry policies. Non-retryable errors immediately fail the action.
 
 ## Example: Dispatching via the API
 
 ```bash
 # Send SMS via Twilio
-curl -X POST http://localhost:8080/v1/actions \
+curl -X POST http://localhost:8080/v1/dispatch \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{
@@ -329,7 +532,7 @@ curl -X POST http://localhost:8080/v1/actions \
   }'
 
 # Send Teams notification
-curl -X POST http://localhost:8080/v1/actions \
+curl -X POST http://localhost:8080/v1/dispatch \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{
@@ -345,7 +548,7 @@ curl -X POST http://localhost:8080/v1/actions \
   }'
 
 # Send Discord notification with embed
-curl -X POST http://localhost:8080/v1/actions \
+curl -X POST http://localhost:8080/v1/dispatch \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{
@@ -362,38 +565,59 @@ curl -X POST http://localhost:8080/v1/actions \
       }]
     }
   }'
+
+# Send Email notification
+curl -X POST http://localhost:8080/v1/dispatch \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "namespace": "alerts",
+    "tenant": "acme-corp",
+    "provider": "corp-email",
+    "action_type": "send_email",
+    "payload": {
+      "to": "oncall@example.com",
+      "subject": "Critical: Shard Failover",
+      "body": "Database shard 4 failed over to replica."
+    }
+  }'
 ```
 
 ## Example: Rust Client
 
 ```rust
-use acteon_client::ActeonClient;
+use acteon_client::ActeonClientBuilder;
+use acteon_core::Action;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let client = ActeonClient::new("http://localhost:8080", "your-api-token")?;
+    let client = ActeonClientBuilder::new("http://localhost:8080")
+        .api_key("your-api-token")
+        .build()?;
 
     // Send SMS
-    client.dispatch_action(
+    let sms_action = Action::new(
         "alerts", "acme-corp", "sms", "send_sms",
         serde_json::json!({
             "to": "+15559876543",
             "body": "Server alert!"
         }),
-    ).await?;
+    );
+    client.dispatch(&sms_action).await?;
 
     // Send Teams message
-    client.dispatch_action(
+    let teams_action = Action::new(
         "alerts", "acme-corp", "teams-alerts", "notify",
         serde_json::json!({
             "text": "Deployment complete",
             "title": "CI/CD",
             "theme_color": "00FF00"
         }),
-    ).await?;
+    );
+    client.dispatch(&teams_action).await?;
 
     // Send Discord message
-    client.dispatch_action(
+    let discord_action = Action::new(
         "alerts", "acme-corp", "discord-alerts", "notify",
         serde_json::json!({
             "content": "Build passed!",
@@ -403,7 +627,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "color": 65280
             }]
         }),
-    ).await?;
+    );
+    client.dispatch(&discord_action).await?;
+
+    // Send Email
+    let email_action = Action::new(
+        "alerts", "acme-corp", "corp-email", "send_email",
+        serde_json::json!({
+            "to": "ops@example.com",
+            "subject": "Production Notice",
+            "body": "Deployment completed successfully."
+        }),
+    );
+    client.dispatch(&email_action).await?;
 
     Ok(())
 }

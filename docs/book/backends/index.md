@@ -25,6 +25,7 @@ Audit backends store the searchable history of every action and its outcome.
 | [PostgreSQL](postgres-audit.md) | Production | ACID, indexed queries, TTL |
 | [ClickHouse](clickhouse-audit.md) | Analytics | Columnar, fast aggregations |
 | [Elasticsearch](elasticsearch-audit.md) | Search | Full-text search, ILM |
+| [DynamoDB](dynamodb-audit.md) | AWS-native / Compliance | Fully managed, GSIs, native TTL, hash chain CAS |
 
 ## Recommended Combinations
 
@@ -35,7 +36,7 @@ Audit backends store the searchable history of every action and its outcome.
 | **Production (strict)** | PostgreSQL | PostgreSQL | ACID everywhere |
 | **Analytics-heavy** | Redis | ClickHouse | Fast state + analytics |
 | **Search-heavy** | Redis | Elasticsearch | Fast state + full-text search |
-| **AWS-native** | DynamoDB | PostgreSQL | Managed services |
+| **AWS-native** | DynamoDB | DynamoDB or PostgreSQL | Fully managed AWS infrastructure |
 
 ## Mixing Backends
 

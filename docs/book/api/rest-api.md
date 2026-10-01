@@ -681,39 +681,290 @@ Revoke the current JWT token.
 
 ---
 
+## Task Chains & Definitions
+
+### `GET /v1/chains`
+
+List active and completed chains. Filters by `namespace`, `tenant`, and `status`.
+
+### `GET /v1/chains/{chain_id}`
+
+Get chain execution details including step results and current step.
+
+### `POST /v1/chains/{chain_id}/cancel`
+
+Cancel an in-flight chain execution.
+
+### `GET /v1/chains/{chain_id}/dag`
+
+Return the directed acyclic graph (DAG) representation of the chain.
+
+### `GET /v1/chains/definitions`
+
+List reusable chain definitions.
+
+### `PUT /v1/chains/definitions/{name}`
+
+Create or update a chain definition template.
+
+---
+
+## Task Queues & Workers
+
+### `POST /v1/queues/{queue}/tasks`
+
+Enqueue a task for distributed worker execution.
+
+### `POST /v1/queues/{queue}/poll`
+
+Poll for available tasks with lease acquisition.
+
+### `POST /v1/queues/tasks/{task_id}/heartbeat`
+
+Renew a task lease during long-running execution.
+
+### `POST /v1/queues/tasks/{task_id}/complete`
+
+Mark a leased worker task as successfully completed.
+
+### `POST /v1/queues/tasks/{task_id}/fail`
+
+Mark a leased worker task as failed with optional retry.
+
+---
+
+## Workflows as Code & Executions
+
+### `POST /v1/workflows/start`
+
+Start a durable workflow execution from code (Python / TypeScript SDK).
+
+### `GET /v1/workflows/executions`
+
+List durable workflow executions.
+
+### `GET /v1/executions/{execution_id}/history`
+
+Retrieve append-only execution event history log.
+
+### `POST /v1/executions/{execution_id}/signal/{signal_name}`
+
+Deliver an asynchronous external signal to a waiting execution.
+
+---
+
+## Agent Interop (A2A Protocol v1.0)
+
+### `POST /a2a/{namespace}/{tenant}`
+
+A2A JSON-RPC 2.0 endpoint supporting `message/send`, `tasks/get`, `tasks/cancel`, and push notification configuration.
+
+### `POST /a2a/{namespace}/{tenant}/v1/message:send`
+
+A2A REST binding for submitting agent messages and tasks.
+
+### `GET /a2a/{namespace}/{tenant}/v1/tasks/{id}`
+
+Retrieve task lifecycle status, output artifacts, and sub-task graphs.
+
+### `GET /a2a/{namespace}/{tenant}/v1/tasks/{id}/events`
+
+Server-Sent Events (SSE) stream of real-time task lifecycle transitions.
+
+### `GET /a2a/{namespace}/{tenant}/.well-known/agent.json`
+
+Public unauthenticated discovery endpoint returning the agent card or tenant-aggregated catalog.
+
+---
+
+## Agentic Message Bus
+
+### `GET /v1/bus/topics` & `POST /v1/bus/topics`
+
+List and create Kafka-backed topics.
+
+### `POST /v1/bus/publish`
+
+Publish an event to a topic with JSON schema validation.
+
+### `GET /v1/bus/subscriptions` & `POST /v1/bus/subscriptions`
+
+Manage durable subscriptions with offset tracking.
+
+### `POST /v1/bus/subscriptions/{ns}/{tenant}/{id}/ack`
+
+Acknowledge processed message offset.
+
+### `GET /v1/bus/agents` & `POST /v1/bus/agents`
+
+List and register autonomous agents with heartbeat monitoring.
+
+### `GET /v1/bus/conversations` & `POST /v1/bus/conversations`
+
+List and create multi-agent conversation threads.
+
+---
+
+## Tenant Quotas & Governance
+
+### `GET /v1/quotas` & `POST /v1/quotas`
+
+List and configure per-tenant quota policies.
+
+### `GET /v1/quotas/{id}/usage`
+
+Inspect real-time quota consumption and remaining allowance.
+
+### `POST /v1/quotas/reload`
+
+Trigger manual reload of static quota manifests.
+
+### `GET /v1/silences` & `POST /v1/silences`
+
+List and create Alertmanager-compatible alert silences.
+
+### `GET /v1/time-intervals`
+
+List and manage temporal routing windows.
+
+### `GET /v1/retention` & `POST /v1/retention`
+
+List and configure audit and DLQ data retention policies.
+
+---
+
+## Resilience & Dead-Letter Queue
+
+### `GET /v1/dlq/stats`
+
+Dead-letter queue message count and failure breakdown.
+
+### `POST /v1/dlq/drain`
+
+Drain dead-letter queue records for redelivery.
+
+### `GET /v1/providers/health`
+
+Real-time provider latency, error count, and circuit breaker status.
+
+---
+
+## Templates & Plugins
+
+### `GET /v1/templates` & `POST /v1/templates`
+
+List and create MiniJinja payload templates.
+
+### `POST /v1/templates/render`
+
+Preview rendered template output with sample context.
+
+### `GET /v1/plugins`
+
+List loaded WebAssembly (WASM) rule plugins.
+
+---
+
+## Compliance & Cryptographic Proofs
+
+### `GET /v1/compliance/status`
+
+Check active SOC2 / HIPAA compliance enforcement settings.
+
+### `POST /v1/audit/verify`
+
+Verify the SHA-256 tamper-evident audit log hash chain.
+
+### `GET /v1/actions/{id}/verify`
+
+Cryptographically verify an inbound action's Ed25519 signature.
+
+### `GET /.well-known/acteon-signing-keys`
+
+JWKS-style discovery endpoint for public signing keys.
+
+---
+
+## Swarm Orchestration
+
+### `GET /v1/swarm/runs`
+
+List autonomous agent swarm runs and execution progress.
+
+### `POST /v1/swarm/runs/{run_id}/cancel`
+
+Cancel an active swarm execution run.
+
+---
+
 ## Endpoint Summary
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/health` | Health check with metrics |
+| **System & Monitoring** |||
+| `GET` | `/health` | Health check with metrics snapshot |
 | `GET` | `/metrics` | Dispatch counters |
-| `POST` | `/v1/dispatch` | Dispatch single action |
-| `POST` | `/v1/dispatch/batch` | Dispatch multiple actions |
-| `GET` | `/v1/rules` | List rules |
-| `POST` | `/v1/rules/reload` | Reload rules |
+| `GET` | `/metrics/prometheus` | Prometheus metrics scrape endpoint |
+| `GET` | `/v1/metrics/alerts/prometheus.yaml` | Generated Prometheus alerting rules |
+| **Action Dispatch** |||
+| `POST` | `/v1/dispatch` | Dispatch single action (supports `?dry_run=true`) |
+| `POST` | `/v1/dispatch/batch` | Dispatch multiple actions atomically |
+| `GET` | `/v1/stream` | Real-time SSE event stream |
+| **Rules & Evaluation** |||
+| `GET` | `/v1/rules` | List loaded rules |
+| `POST` | `/v1/rules/reload` | Reload rules from directory |
 | `PUT` | `/v1/rules/{name}/enabled` | Toggle rule |
-| `GET` | `/v1/audit` | Query audit |
+| `POST` | `/v1/rules/evaluate` | Dry-run trace evaluation |
+| `GET` | `/v1/rules/coverage` | Rule condition test coverage report |
+| **Audit & Replay** |||
+| `GET` | `/v1/audit` | Query audit records |
 | `GET` | `/v1/audit/{action_id}` | Get audit record |
+| `POST` | `/v1/audit/replay` | Replay actions from audit trail |
+| `POST` | `/v1/audit/verify` | Verify cryptographic SHA-256 audit hash chain |
+| `GET` | `/v1/actions/{id}/verify` | Verify Ed25519 signature of an action |
+| **Stateful Events & Groups** |||
 | `GET` | `/v1/events` | List events |
-| `GET` | `/v1/events/{fingerprint}` | Get event |
-| `PUT` | `/v1/events/{fingerprint}/transition` | Transition event |
-| `GET` | `/v1/approvals` | List approvals |
-| `POST` | `/v1/approvals/{ns}/{tenant}/{id}/approve` | Approve action |
-| `POST` | `/v1/approvals/{ns}/{tenant}/{id}/reject` | Reject action |
-| `GET` | `/v1/groups` | List groups |
-| `GET` | `/v1/groups/{group_key}` | Get group |
-| `DELETE` | `/v1/groups/{group_key}` | Flush group |
-| `POST` | `/v1/embeddings/similarity` | Compute embedding similarity |
+| `GET` | `/v1/events/{fingerprint}` | Get event lifecycle state |
+| `PUT` | `/v1/events/{fingerprint}/transition` | Transition event state |
+| `GET` | `/v1/groups` | List active notification groups |
+| `GET` | `/v1/groups/{group_key}` | Get group details |
+| `DELETE` | `/v1/groups/{group_key}` | Force flush group |
+| **Chains & Workflows** |||
+| `GET` | `/v1/chains` | List chains |
+| `GET` | `/v1/chains/{chain_id}` | Get chain status |
+| `POST` | `/v1/chains/{chain_id}/cancel` | Cancel chain execution |
+| `GET` | `/v1/chains/{chain_id}/dag` | Chain execution DAG |
+| `GET` | `/v1/chains/definitions` | List chain definitions |
+| `POST` | `/v1/workflows/start` | Start code-based durable workflow |
+| `GET` | `/v1/executions` | List durable executions |
+| `GET` | `/v1/executions/{id}/history` | Execution event history |
+| `POST` | `/v1/queues/{queue}/poll` | Worker queue poll with lease |
+| `POST` | `/v1/queues/tasks/{id}/complete` | Complete worker task |
+| **A2A Protocol & Bus** |||
+| `POST` | `/a2a/{ns}/{tenant}` | A2A JSON-RPC 2.0 endpoint |
+| `POST` | `/a2a/{ns}/{tenant}/v1/message:send` | A2A REST message/task submit |
+| `GET` | `/a2a/{ns}/{tenant}/v1/tasks/{id}` | A2A task details |
+| `GET` | `/a2a/{ns}/{tenant}/.well-known/agent.json` | Public A2A agent card discovery |
+| `GET` | `/v1/bus/topics` | List bus topics |
+| `POST` | `/v1/bus/publish` | Publish message to bus topic |
+| `GET` | `/v1/bus/subscriptions` | List durable subscriptions |
+| `GET` | `/v1/bus/agents` | List registered bus agents |
+| `GET` | `/v1/bus/conversations` | List conversation threads |
+| **Governance & Resilience** |||
+| `GET` | `/v1/quotas` | List tenant quotas |
+| `GET` | `/v1/silences` | List alert silences |
+| `GET` | `/v1/time-intervals` | List time intervals |
+| `GET` | `/v1/retention` | List retention policies |
+| `GET` | `/v1/providers/health` | Provider health metrics & circuit breakers |
 | `GET` | `/admin/circuit-breakers` | List circuit breakers |
 | `POST` | `/admin/circuit-breakers/{provider}/trip` | Force-open circuit breaker |
 | `POST` | `/admin/circuit-breakers/{provider}/reset` | Force-close circuit breaker |
+| `GET` | `/v1/dlq/stats` | DLQ statistics |
+| `POST` | `/v1/dlq/drain` | Drain DLQ entries |
+| `GET` | `/v1/approvals` | List approvals |
+| `POST` | `/v1/approvals/{ns}/{tenant}/{id}/approve` | Approve action |
+| `POST` | `/v1/approvals/{ns}/{tenant}/{id}/reject` | Reject action |
 | `POST` | `/v1/recurring` | Create recurring action |
 | `GET` | `/v1/recurring` | List recurring actions |
-| `GET` | `/v1/recurring/{id}` | Get recurring action |
-| `PUT` | `/v1/recurring/{id}` | Update recurring action |
-| `DELETE` | `/v1/recurring/{id}` | Delete recurring action |
-| `POST` | `/v1/recurring/{id}/pause` | Pause recurring action |
-| `POST` | `/v1/recurring/{id}/resume` | Resume recurring action |
-| `GET` | `/v1/stream` | SSE event stream |
 | `POST` | `/v1/auth/login` | Login |
 | `POST` | `/v1/auth/logout` | Logout |

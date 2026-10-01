@@ -79,96 +79,97 @@ The server reads JSON-RPC messages from stdin and writes responses to stdout. Al
 
 ## Tools
 
-The MCP server exposes the following tools to connected agents:
+The MCP server exposes 46 specialized tools to connected agents, organized across seven operational domains:
 
-### `dispatch`
+### Core Action Dispatch & Rules
 
-Send a new action through the Acteon gateway. Supports dry-run mode to preview rule evaluation without side effects.
+| Tool | Parameters | Description |
+|------|------------|-------------|
+| `dispatch` | `namespace`, `tenant`, `provider`, `action_type`, `payload`, `metadata?`, `dry_run?` | Dispatch action through gateway with optional dry-run preview |
+| `list_rules` | _(none)_ | List loaded routing and filtering rules |
+| `evaluate_rules` | `namespace`, `tenant`, `provider`, `action_type`, `payload`, `include_disabled?` | Dry-run trace showing matched, skipped, and errored rules |
+| `set_rule_enabled` | `rule_name`, `enabled` | Dynamically enable or disable a rule |
+| `check_health` | _(none)_ | Gateway health check and provider status |
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `namespace` | string | yes | Namespace for the action |
-| `tenant` | string | yes | Tenant identifier |
-| `provider` | string | yes | Target provider (e.g. `slack`, `email`) |
-| `action_type` | string | yes | Action type discriminator |
-| `payload` | object | yes | JSON payload for the provider |
-| `metadata` | object | no | Key-value metadata labels |
-| `dry_run` | boolean | no | Preview without executing |
+### Audit Trail & Analytics
 
-### `query_audit`
+| Tool | Parameters | Description |
+|------|------------|-------------|
+| `query_audit` | `tenant?`, `namespace?`, `provider?`, `action_type?`, `outcome?`, `limit?` | Filter historical dispatch records |
+| `replay_audit` | `tenant`, `namespace`, `action_id` | Reconstruct and re-dispatch action from audit trail |
+| `analytics_volume` | `tenant`, `namespace`, `window_hours?` | Query total action throughput volume |
+| `analytics_latency` | `tenant`, `namespace`, `window_hours?` | Query execution latency percentiles (p50, p90, p99) |
+| `analytics_error_rate` | `tenant`, `namespace`, `window_hours?` | Query failure and error rates |
+| `analytics_outcomes` | `tenant`, `namespace`, `window_hours?` | Query breakdown by outcome (`executed`, `suppressed`, `deduplicated`) |
+| `analytics_top_actions` | `tenant`, `namespace`, `limit?` | Query top action types by frequency |
 
-Search the audit trail for historical dispatch records.
+### Event Lifecycle & Grouping
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `tenant` | string | no | Filter by tenant |
-| `namespace` | string | no | Filter by namespace |
-| `provider` | string | no | Filter by provider |
-| `action_type` | string | no | Filter by action type |
-| `outcome` | string | no | Filter by outcome (`executed`, `suppressed`, `failed`) |
-| `limit` | integer | no | Max records (default 20) |
+| Tool | Parameters | Description |
+|------|------------|-------------|
+| `list_events` | `namespace`, `tenant`, `status?`, `limit?` | List stateful events (open, acknowledged, resolved) |
+| `manage_event` | `fingerprint`, `namespace`, `tenant`, `action` | Transition event to new state (`acknowledged`, `resolved`, `investigating`) |
+| `list_groups` | `namespace`, `tenant` | List active consolidated notification batches |
+| `flush_group` | `group_key` | Force flush/close an active notification group |
 
-### `list_rules`
+### Task Chains & Definitions
 
-List all active routing and filtering rules loaded in the gateway. Returns rule name, priority, enabled status, and description.
+| Tool | Parameters | Description |
+|------|------------|-------------|
+| `list_chains` | `namespace`, `tenant`, `status?` | List multi-step workflow chain runs |
+| `get_chain` | `chain_id` | Retrieve chain state and step progress |
+| `cancel_chain` | `chain_id` | Cancel an in-flight task chain |
+| `get_chain_dag` | `chain_id` | Inspect chain execution Directed Acyclic Graph (DAG) |
+| `list_chain_definitions` | `namespace`, `tenant` | List reusable chain definition templates |
 
-### `evaluate_rules`
+### Agentic Message Bus
 
-Run a test action through the rule engine without side effects. Returns a detailed per-rule evaluation trace showing which rules matched, were skipped, or errored.
+| Tool | Parameters | Description |
+|------|------------|-------------|
+| `bus_list_topics` | _(none)_ | List Kafka-backed message bus topics |
+| `bus_create_topic` | `name`, `partitions?`, `replication_factor?` | Create new bus topic |
+| `bus_publish` | `topic`, `payload`, `key?`, `headers?` | Publish message with schema validation |
+| `bus_subscribe_url` | `subscription_id` | Get SSE subscription URL for stream consumption |
+| `bus_list_subscriptions` | `namespace`, `tenant` | List durable consumer subscriptions |
+| `bus_ack_subscription` | `namespace`, `tenant`, `id`, `offset` | Acknowledge processed messages up to offset |
+| `bus_subscription_lag` | `namespace`, `tenant`, `id` | Query subscription consumer lag |
+| `bus_deadletter_subscription`| `namespace`, `tenant`, `id`, `reason` | Dead-letter unprocessable message |
+| `bus_list_schemas` | `namespace`, `tenant` | List registered JSON schemas |
+| `bus_create_schema` | `namespace`, `tenant`, `subject`, `schema` | Register new schema version |
+| `bus_bind_schema` | `namespace`, `tenant`, `topic`, `subject` | Bind topic to schema subject for publish validation |
+| `bus_list_agents` | `namespace`, `tenant` | List registered autonomous agents and liveness |
+| `bus_register_agent` | `namespace`, `tenant`, `agent_id`, `name`, `role` | Register agent in bus registry |
+| `bus_heartbeat_agent` | `namespace`, `tenant`, `agent_id` | Record agent liveness heartbeat |
+| `bus_send_to_agent` | `namespace`, `tenant`, `agent_id`, `message` | Route message to an agent's inbox |
+| `bus_list_conversations` | `namespace`, `tenant` | List multi-agent conversation threads |
+| `bus_conversation_messages`| `namespace`, `tenant`, `conversation_id` | Replay conversation message history |
+| `bus_post_tool_call` | `namespace`, `tenant`, `conversation_id`, `tool_name`, `args` | Post tool-call envelope to thread |
+| `bus_lookup_tool_result` | `namespace`, `tenant`, `call_id` | Retrieve execution result for tool call |
+| `bus_post_stream_chunk` | `namespace`, `tenant`, `conversation_id`, `stream_id`, `seq`, `content` | Stream token or audio chunk |
+| `bus_post_stream_end` | `namespace`, `tenant`, `conversation_id`, `stream_id` | Finalize streaming response |
+| `bus_list_approvals` | `namespace`, `tenant` | List pending HITL tool-call approvals |
+| `bus_approve` | `namespace`, `tenant`, `approval_id` | Approve pending tool execution |
+| `bus_reject` | `namespace`, `tenant`, `approval_id`, `reason?` | Reject pending tool execution |
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `namespace` | string | yes | Namespace |
-| `tenant` | string | yes | Tenant |
-| `provider` | string | yes | Provider |
-| `action_type` | string | yes | Action type |
-| `payload` | object | yes | Test payload |
-| `include_disabled` | boolean | no | Include disabled rules in trace |
+### Operations, Governance & Resilience
 
-### `manage_event`
-
-Transition a stateful event to a new state (acknowledge, resolve, investigate).
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `fingerprint` | string | yes | Event fingerprint |
-| `namespace` | string | yes | Namespace |
-| `tenant` | string | yes | Tenant |
-| `action` | string | yes | Target state (`acknowledged`, `resolved`, `investigating`) |
-
-### `list_events`
-
-List stateful events (open incidents, acknowledged alerts) for a namespace and tenant.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `namespace` | string | yes | Namespace |
-| `tenant` | string | yes | Tenant |
-| `status` | string | no | Filter by state |
-| `limit` | integer | no | Max events to return |
-
-### `list_chains`
-
-List action chains (multi-step workflows) for a tenant.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `namespace` | string | yes | Namespace |
-| `tenant` | string | yes | Tenant |
-| `status` | string | no | Filter by status (`running`, `completed`) |
-
-### `set_rule_enabled`
-
-Enable or disable a routing rule by name.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `rule_name` | string | yes | Rule name |
-| `enabled` | boolean | yes | `true` to enable, `false` to disable |
-
-### `check_health`
-
-Check if the Acteon gateway is healthy and responding. Takes no parameters.
+| Tool | Parameters | Description |
+|------|------------|-------------|
+| `list_recurring` | `namespace`, `tenant` | List cron-scheduled recurring actions |
+| `pause_recurring` | `id` | Pause recurring action schedule |
+| `resume_recurring` | `id` | Resume recurring action schedule |
+| `list_quotas` | `namespace`, `tenant` | List tenant quota policies |
+| `get_quota_usage` | `quota_id` | Inspect real-time quota usage and remaining units |
+| `list_silences` | `namespace`, `tenant` | List active alert silences |
+| `create_silence` | `namespace`, `tenant`, `matchers`, `starts_at`, `ends_at`, `comment` | Create time-bounded alert silence |
+| `delete_silence` | `id` | Expire or remove an alert silence |
+| `dlq_stats` | _(none)_ | Dead-letter queue statistics and unhandled error counts |
+| `dlq_drain` | `limit?` | Drain DLQ entries for reprocessing |
+| `list_circuit_breakers` | _(none)_ | Check circuit breaker status across all providers |
+| `trip_circuit_breaker` | `provider` | Administratively trip provider circuit breaker |
+| `reset_circuit_breaker` | `provider` | Reset provider circuit breaker to Closed |
+| `compliance_status` | _(none)_ | Check active compliance mode (SOC2/HIPAA) |
+| `verify_compliance` | `namespace`, `tenant` | Cryptographically verify SHA-256 audit log hash chain |
 
 ## Resources
 

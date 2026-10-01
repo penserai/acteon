@@ -214,6 +214,69 @@ recovery_timeout_seconds = 60        # Seconds before probing
 # [telemetry.resource_attributes]
 # "deployment.environment" = "production"
 # "service.instance.id" = "acteon-01"
+
+# ─── Payload Encryption at Rest ──────────────────────────
+[encryption]
+# enabled = false                    # Enable AES-256-GCM payload encryption
+
+# ─── Tenant Quota Enforcement ────────────────────────────
+[quotas]
+# enabled = true                     # Enable tenant quota limits
+# default_window = "daily"          # Default quota window
+# default_overage_behavior = "block" # "block" | "drop" | "warn"
+# policies_file = "quotas.toml"     # Static quota policies manifest
+# watch = true                       # Hot-reload quotas file on changes
+
+# ─── Payload Templates & Profiles ────────────────────────
+[templates]
+# manifest_file = "templates.toml"  # TOML template/profile manifest
+# watch = true                       # Hot-reload templates on changes
+
+# ─── Compliance Mode ─────────────────────────────────────
+[compliance]
+# mode = "soc2"                      # "none" | "soc2" | "hipaa"
+# sync_audit_writes = true           # Force synchronous audit writes
+# immutable_audit = false            # Prevent audit record mutation
+# hash_chain = true                  # Cryptographic SHA-256 chain verification
+
+# ─── WASM Plugin Runtime ─────────────────────────────────
+[wasm]
+# enabled = false                    # Enable WASM plugin execution
+# plugin_dir = "./plugins"           # Directory containing .wasm files
+# default_memory_limit_bytes = 16777216  # 16 MB limit per plugin
+# default_timeout_ms = 100           # Per-execution timeout
+
+# ─── TLS / Mutual TLS (mTLS) ─────────────────────────────
+[tls]
+# enabled = false
+# cert_path = "certs/server.crt"
+# key_path = "certs/server.key"
+# client_ca_path = "certs/ca.crt"   # Enable mTLS client verification
+# require_client_cert = false
+
+# ─── Action Signing & Verification ───────────────────────
+[signing]
+# enabled = false                    # Validate Ed25519 action signatures
+# key_dir = "./keys"                 # Directory with public keys for verification
+
+# ─── Attachments ─────────────────────────────────────────
+[attachments]
+# max_inline_bytes = 5242880         # 5 MB max per attachment
+# max_attachments_per_action = 10    # Max attachments per action
+
+# ─── Rate Limiting ───────────────────────────────────────
+[rate_limit]
+# enabled = false                    # Enable per-tenant sliding window rate limits
+# config_path = "ratelimit.toml"    # Path to rate limit rules
+
+# ─── Agentic Message Bus ─────────────────────────────────
+[bus]
+# enabled = false                    # Enable Kafka-backed agentic message bus
+# [bus.kafka]
+# bootstrap_servers = "localhost:9092"
+# client_id = "acteon-bus"
+# produce_timeout_ms = 5000
+# transactional_id = "acteon-node-1" # Optional transactional producer
 ```
 
 ## Section Details
@@ -392,18 +455,31 @@ Provider configuration. Multiple providers can be defined.
 | Type | Description | Extra Fields |
 |------|-------------|-------------|
 | `"log"` | Logs actions (no external calls) | — |
-| `"webhook"` | HTTP webhook | `url` |
-| `"slack"` | Slack webhook | `webhook_url` |
-| `"email"` | Email (SMTP or SES) | `backend`, `from_address`, `smtp_host`, `aws_region`, ... |
-| `"twilio"` | Twilio SMS | `account_sid`, `auth_token`, `from_number` |
+| `"webhook"` | HTTP webhook | `url`, `headers` |
+| `"slack"` | Slack Web API / Webhook | `webhook_url`, `default_channel` |
+| `"email"` | Email (SMTP or AWS SES) | `email_backend`, `from_address`, `smtp_host`, `smtp_port`, `username`, `password`, `tls`, `aws_region`, `ses_configuration_set` |
+| `"twilio"` | Twilio SMS / MMS | `account_sid`, `auth_token`, `from_number` |
 | `"teams"` | Microsoft Teams | `webhook_url` |
-| `"discord"` | Discord webhook | `webhook_url` |
-| `"pagerduty"` | PagerDuty events | `routing_key` |
-| `"aws-sns"` | AWS SNS | `aws_region`, `topic_arn` |
-| `"aws-lambda"` | AWS Lambda | `aws_region`, `function_name` |
-| `"aws-eventbridge"` | AWS EventBridge | `aws_region`, `event_bus_name` |
-| `"aws-sqs"` | AWS SQS | `aws_region`, `queue_url` |
-| `"aws-s3"` | AWS S3 | `aws_region`, `bucket_name`, `object_prefix` |
+| `"discord"` | Discord Webhook | `webhook_url` |
+| `"pagerduty"` | PagerDuty Events API v2 | `routing_key` |
+| `"opsgenie"` | OpsGenie Alerts API | `opsgenie.api_key`, `opsgenie.region`, `opsgenie.default_team` |
+| `"victorops"` | VictorOps / Splunk On-Call | `victorops.api_key`, `victorops.default_route`, `victorops.routes` |
+| `"pushover"` | Pushover push notifications | `pushover.app_token`, `pushover.default_recipient`, `pushover.recipients` |
+| `"telegram"` | Telegram Bot | `telegram.bot_token`, `telegram.default_chat`, `telegram.chats` |
+| `"wechat"` | WeChat Work (企业微信) | `wechat.corp_id`, `wechat.corp_secret`, `wechat.agent_id`, `wechat.default_touser` |
+| `"aws-sns"` | AWS Simple Notification Service | `aws_region`, `topic_arn` |
+| `"aws-lambda"` | AWS Lambda function invocation | `aws_region`, `function_name`, `qualifier` |
+| `"aws-eventbridge"` | AWS EventBridge custom bus | `aws_region`, `event_bus_name` |
+| `"aws-sqs"` | AWS Simple Queue Service | `aws_region`, `queue_url` |
+| `"aws-s3"` | AWS S3 object storage | `aws_region`, `bucket_name`, `object_prefix` |
+| `"aws-ses"` | AWS Simple Email Service | `aws_region`, `from_address`, `ses_configuration_set` |
+| `"aws-ec2"` | AWS EC2 lifecycle actions | `aws_region`, `default_security_group_ids`, `default_subnet_id`, `default_key_name` |
+| `"aws-autoscaling"` | AWS Auto Scaling actions | `aws_region` |
+| `"azure-blob"` | Azure Blob Storage | `azure_account_name`, `azure_container_name`, `azure_blob_prefix` |
+| `"azure-eventhubs"` | Azure Event Hubs | `azure_namespace`, `azure_event_hub_name` |
+| `"gcp-storage"` | Google Cloud Storage | `gcp_project_id`, `gcp_bucket`, `gcp_object_prefix` |
+| `"gcp-pubsub"` | Google Cloud Pub/Sub | `gcp_project_id`, `gcp_topic` |
+| `"swarm"` | Ambient agent swarm orchestrator | `swarm.config_path`, `swarm.hooks_binary`, `swarm.max_concurrent_runs` |
 
 **Common AWS fields** (all optional, shared across all `aws-*` types and `email` with `backend = "ses"`):
 
@@ -416,6 +492,105 @@ Provider configuration. Multiple providers can be defined.
 | `aws_external_id` | string | External ID for cross-account trust policies |
 
 See [AWS Providers](../features/aws-providers.md) and [Native Providers](../features/native-providers.md) for full payload format documentation.
+
+### `[encryption]`
+
+Payload encryption at rest using AES-256-GCM. Requires `ACTEON_PAYLOAD_KEY` to be set to a 32-byte key (hex or base64 encoded).
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable payload encryption for state and audit backends |
+
+### `[quotas]`
+
+Tenant quota policy enforcement.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `true` | Enable quota enforcement |
+| `default_window` | string | `"daily"` | Default reset window (`"hourly"`, `"daily"`, `"monthly"`) |
+| `default_overage_behavior` | string | `"block"` | Overage behavior (`"block"`, `"drop"`, `"warn"`) |
+| `policies_file` | string | — | Path to static TOML quota policies file |
+| `watch` | bool | `true` | Hot-reload policies file on changes |
+
+### `[templates]`
+
+MiniJinja payload templates and mapping profiles.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `manifest_file` | string | — | Path to TOML template/profile manifest file |
+| `watch` | bool | `true` | Hot-reload template manifest on file changes |
+
+### `[compliance]`
+
+Compliance mode presets and cryptographically chained audit logging for SOC2 / HIPAA.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `mode` | string | `"none"` | Compliance preset: `"none"`, `"soc2"`, or `"hipaa"` |
+| `sync_audit_writes` | bool | preset | Require synchronous audit writes before dispatch completion |
+| `immutable_audit` | bool | preset | Disallow record deletion / updates |
+| `hash_chain` | bool | preset | Enable SHA-256 hash chaining of audit records |
+
+### `[wasm]`
+
+WASM plugin runtime for sandboxed custom rule evaluations and transformations.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable WASM runtime |
+| `plugin_dir` | string | — | Directory to scan for `.wasm` plugins |
+| `default_memory_limit_bytes` | u64 | `16777216` | Memory limit per plugin (16 MB) |
+| `default_timeout_ms` | u64 | `100` | Per-execution timeout in milliseconds |
+
+### `[tls]`
+
+TLS termination for inbound HTTP and mutual TLS (mTLS) client certificate verification.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable TLS |
+| `cert_path` | string | — | Path to server X.509 certificate PEM |
+| `key_path` | string | — | Path to server private key PEM |
+| `client_ca_path` | string | — | Path to client CA certificate PEM for mTLS |
+| `require_client_cert` | bool | `false` | Reject connections without valid client certificate |
+
+### `[signing]`
+
+Ed25519 cryptographic action signing and verification.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enforce signature verification on inbound actions |
+| `key_dir` | string | — | Directory containing authorized public key files |
+
+### `[attachments]`
+
+Controls constraints on action payload attachments.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `max_inline_bytes` | u64 | `5242880` | Maximum size in bytes per attachment (5 MB) |
+| `max_attachments_per_action` | usize | `10` | Maximum attachments allowed per action |
+
+### `[bus]`
+
+Agentic message bus backed by Apache Kafka. Requires compiling with `--features bus`.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable the message bus subsystem |
+
+#### `[bus.kafka]`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `bootstrap_servers` | string | `"localhost:9092"` | Kafka broker bootstrap list |
+| `client_id` | string | `"acteon-bus"` | Client ID for Kafka connections |
+| `produce_timeout_ms` | u64 | `5000` | Produce timeout in milliseconds |
+| `transactional_id` | string | — | Optional transactional ID for exactly-once producing |
+| `transaction_timeout_ms` | u64 | `60000` | Transaction timeout in milliseconds |
 
 ## Environment Variables
 
