@@ -7,7 +7,7 @@ Technical Design Document
 
 Version 1.0
 
-**Penserai**
+**Renzo C. Sanchez-Silva**
 
 github.com/penserai/acteon
 

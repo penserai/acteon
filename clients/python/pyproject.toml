@@ -10,7 +10,7 @@ readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.11"
 authors = [
-    { name = "Penserai", email = "dev@penserai.com" },
+    { name = "Renzo C. Sanchez-Silva", email = "renzo@tesserai.io" },
 ]
 classifiers = [
     "Development Status :: 4 - Beta",

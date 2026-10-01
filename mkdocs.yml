@@ -96,7 +96,7 @@ extra:
 extra_css:
   - stylesheets/extra.css
 
-copyright: Copyright &copy; 2026 Penserai Inc. — Apache 2.0 License
+copyright: Copyright &copy; 2026 Renzo C. Sanchez-Silva — Apache 2.0 License
 
 nav:
   - Home: index.md

@@ -469,4 +469,4 @@ cargo bench -p acteon-simulation --bench latency
 
 ## License
 
-Copyright 2026 Penserai Inc. Licensed under Apache-2.0.
+Copyright 2026 Renzo C. Sanchez-Silva. Licensed under Apache-2.0.

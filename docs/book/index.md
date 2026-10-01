@@ -311,4 +311,4 @@ graph TB
 
 ## License
 
-Copyright 2026 Penserai Inc. Licensed under the [Apache License 2.0](https://github.com/penserai/acteon/blob/main/LICENSE).
+Copyright 2026 Renzo C. Sanchez-Silva. Licensed under the [Apache License 2.0](https://github.com/penserai/acteon/blob/main/LICENSE).
