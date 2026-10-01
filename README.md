@@ -623,6 +623,6 @@ cargo fmt --all -- --check
 
 ## License
 
-Copyright 2026 Penserai Inc.
+Copyright 2026 Renzo C. Sanchez-Silva
 
 Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.
