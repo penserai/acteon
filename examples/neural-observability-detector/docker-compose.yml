@@ -1,0 +1,41 @@
+services:
+  laya:
+    build:
+      context: ./laya
+      args:
+        LAYA_VERSION: "0.3.23"
+        TORCH_VERSION: "2.14.0"
+    environment:
+      LAYA_API_KEY: "${LAYA_API_KEY:-acteon-laya-demo}"
+      LAYA_DEVICE: cpu
+      LAYA_MODELS: typed-decisions
+      LAYA_DEFAULT_MODEL: typed-decisions
+      LAYA_PRELOAD: "1"
+      LAYA_MAX_LOADED: "1"
+      LAYA_MAX_CONCURRENT: "4"
+      LAYA_MAX_TOKEN_BUDGET: "1024"
+      LAYA_REVISION: 55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851
+      LAYA_THREADS: "4"
+      OMP_NUM_THREADS: "4"
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - laya-model-cache:/home/laya/.cache/huggingface
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"
+      interval: 10s
+      timeout: 3s
+      retries: 60
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 8G
+
+volumes:
+  laya-model-cache:

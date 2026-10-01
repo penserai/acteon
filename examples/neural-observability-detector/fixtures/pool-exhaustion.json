@@ -1,0 +1,30 @@
+{
+  "name": "pool-exhaustion",
+  "window_id": "checkout-api:prod:2026-10-01T19:42Z",
+  "expected_route": "incident",
+  "metrics": {
+    "summary": "checkout-api has severe user impact. Database pool utilization is saturated, latency is ten times baseline, and errors are high.",
+    "latency_p95_ms": 1800,
+    "latency_baseline_ms": 180,
+    "error_rate": 0.084,
+    "request_rate_per_second": 126,
+    "request_rate_baseline": 120,
+    "db_pool_utilization": 0.96,
+    "evidence_refs": ["metrics:4:8821"]
+  },
+  "traces": {
+    "summary": "Seventy-three percent of slow requests spend most of their time waiting in the database checkout.reserve span.",
+    "slow_request_fraction": 0.81,
+    "database_wait_fraction": 0.73,
+    "dominant_span": "db.checkout.reserve",
+    "evidence_refs": ["traces:2:1904"]
+  },
+  "logs": {
+    "summary": "Forty-one repeated pool_timeout errors say requests timed out waiting for a database connection.",
+    "error_count": 46,
+    "pool_timeout_count": 41,
+    "warning_count": 8,
+    "top_template": "pool_timeout waiting_for_connection",
+    "evidence_refs": ["logs:7:4420"]
+  }
+}

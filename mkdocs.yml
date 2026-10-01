@@ -222,6 +222,7 @@ nav:
     - Phase 9 (Docs, migration, demo, benchmarks): features/bus-phase-9.md
   - Guides:
     - guides/index.md
+    - Cascaded Neural Observability Detector: guides/neural-observability-detector.md
     - A2A & Agent Registry — End-to-End Tutorial: guides/a2a-agent-registry-tutorial.md
     - AI Agent Swarm Coordination: guides/agent-swarm-coordination.md
     - AWS Event-Driven Pipeline: guides/aws-event-pipeline.md

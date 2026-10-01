@@ -1,0 +1,35 @@
+rules:
+  - name: investigate-ambiguous-impact
+    priority: 1
+    description: "Send ambiguous, user-impacting verdicts to the bounded investigator"
+    condition:
+      all:
+        - field: action.action_type
+          eq: "detector.verdict"
+        - field: action.payload.policy_band
+          eq: "investigate"
+    action:
+      type: reroute
+      target_provider: "investigator"
+
+  - name: start-known-incident-chain
+    priority: 2
+    description: "Start the procedural response for corroborated incidents"
+    condition:
+      all:
+        - field: action.action_type
+          eq: "detector.verdict"
+        - field: action.payload.policy_band
+          eq: "incident"
+    action:
+      type: chain
+      chain: "observability-incident"
+
+  - name: suppress-observability-noise
+    priority: 3
+    description: "Retain healthy or isolated-noise verdicts without a provider side effect"
+    condition:
+      field: action.action_type
+      eq: "detector.verdict"
+    action:
+      type: suppress

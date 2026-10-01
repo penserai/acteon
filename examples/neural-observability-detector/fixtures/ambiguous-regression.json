@@ -1,0 +1,28 @@
+{
+  "name": "ambiguous-regression",
+  "window_id": "checkout-api:prod:2026-10-01T19:43Z",
+  "expected_route": "investigate",
+  "metrics": {
+    "summary": "checkout-api latency and errors are high after a deployment, while database pool utilization remains moderate.",
+    "latency_p95_ms": 1250,
+    "latency_baseline_ms": 180,
+    "error_rate": 0.061,
+    "request_rate_per_second": 118,
+    "request_rate_baseline": 120,
+    "db_pool_utilization": 0.61,
+    "deployment_age_seconds": 180,
+    "evidence_refs": ["metrics:4:8831"]
+  },
+  "traces": {
+    "summary": "Slow traces disagree: some wait in application code and some wait on the payments downstream service. No database span dominates.",
+    "slow_request_fraction": 0.59,
+    "database_wait_fraction": 0.12,
+    "dominant_span": "mixed:checkout.calculate,payments.authorize",
+    "evidence_refs": ["traces:2:1914"]
+  },
+  "logs": {
+    "available": false,
+    "summary": "The log signal is missing for this window.",
+    "evidence_refs": []
+  }
+}

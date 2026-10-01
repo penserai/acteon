@@ -1,0 +1,29 @@
+{
+  "name": "healthy-baseline",
+  "window_id": "checkout-api:prod:2026-10-01T19:40Z",
+  "expected_route": "suppress",
+  "metrics": {
+    "summary": "checkout-api is healthy. Latency, errors, traffic, and database pool usage are all normal.",
+    "latency_p95_ms": 182,
+    "latency_baseline_ms": 180,
+    "error_rate": 0.001,
+    "request_rate_per_second": 121,
+    "request_rate_baseline": 120,
+    "db_pool_utilization": 0.31,
+    "evidence_refs": ["metrics:4:8801"]
+  },
+  "traces": {
+    "summary": "Trace latency is normal. Database spans are fast and no downstream dependency dominates requests.",
+    "slow_request_fraction": 0.002,
+    "database_wait_fraction": 0.04,
+    "dominant_span": "checkout.validate",
+    "evidence_refs": ["traces:2:1884"]
+  },
+  "logs": {
+    "summary": "Routine startup and request-complete messages. No errors and no database pool timeouts.",
+    "error_count": 0,
+    "pool_timeout_count": 0,
+    "warning_count": 1,
+    "evidence_refs": ["logs:7:4400"]
+  }
+}
