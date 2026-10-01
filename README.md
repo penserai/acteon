@@ -86,49 +86,79 @@ All crates are organized under `crates/` with logical groupings:
 
 | Crate | Description |
 |-------|-------------|
-| `crates/core` | Shared types (`Action`, `ActionOutcome`, newtypes) |
+| `crates/core` | Shared domain models (`Action`, `ActionOutcome`, keys, attachments, DAGs) |
 | [`crates/client`](crates/client/README.md) | Native Rust HTTP client for the Acteon API |
-| `crates/server` | HTTP server (Axum) with Swagger UI |
-| `crates/gateway` | Orchestrates lock, rules, execution, grouping, and state machines |
-| [`crates/simulation`](crates/simulation/README.md) | Testing framework with mock providers and failure injection |
-| `crates/executor` | Action execution with retries and concurrency |
-| `crates/provider` | Provider trait and registry |
+| `crates/server` | HTTP server (Axum) with OpenAPI documentation and Swagger UI |
+| `crates/gateway` | Gateway pipeline: locking, rules, execution, grouping, state machines, A2A engine |
+| `crates/executor` | Action execution engine with retries, timeouts, and dead-lettering |
+| `crates/provider` | Core Provider trait, provider registry, and built-in log provider |
+| `crates/http` | Outbound HTTP transport client abstraction with SSRF protection |
+| `crates/time` | Time abstraction supporting deterministic and manual virtual time |
+| `crates/crypto` | Cryptographic utilities: AES-256-GCM encryption, Ed25519 signing, TLS |
+| [`crates/simulation`](crates/simulation/README.md) | Testing framework with mock providers, cluster harness, and failure injection |
+| `crates/wasm-runtime` | Sandboxed WASM plugin runtime (Wasmtime) for custom rule evaluations |
+| `crates/llm` | LLM guardrail client for AI-assisted safety and content evaluation |
+| `crates/embedding` | Vector embedding generation and cosine similarity for semantic routing |
+| `crates/ops` | Shared operations client library powering CLI, MCP server, and tests |
+| `crates/mcp-server` | Model Context Protocol (MCP) server exposing tools to LLMs and agents |
+| `crates/cli` | Complete terminal CLI (`acteon`) for administration and operations |
+| `crates/swarm` | Autonomous agent swarm orchestrator with adversarial critique and recovery |
+| `crates/swarm-provider` | Ambient Swarm provider turning multi-agent goals into Acteon actions |
+| `crates/bus` | Agentic message bus (Kafka-backed) for agent discovery, threads, and tool-calls |
 
 ### State Backends
 
 | Crate | Description |
 |-------|-------------|
 | `crates/state/state` | Abstract state store / distributed lock trait |
-| `crates/state/memory` | In-memory state backend |
-| `crates/state/redis` | Redis state backend |
-| `crates/state/postgres` | PostgreSQL state backend |
-| `crates/state/dynamodb` | DynamoDB state backend |
+| `crates/state/memory` | In-memory state backend (zero dependencies) |
+| `crates/state/redis` | Redis state backend (high-throughput distributed locks) |
+| `crates/state/postgres` | PostgreSQL state backend (ACID consistency) |
+| `crates/state/dynamodb` | DynamoDB state backend (AWS-native serverless) |
 
 ### Audit Backends
 
 | Crate | Description |
 |-------|-------------|
-| `crates/audit/audit` | Abstract audit trail trait |
+| `crates/audit/audit` | Abstract audit trail trait and compliance verification |
 | `crates/audit/memory` | In-memory audit backend |
-| `crates/audit/postgres` | PostgreSQL audit backend |
-| `crates/audit/clickhouse` | ClickHouse audit backend |
-| `crates/audit/elasticsearch` | Elasticsearch audit backend |
+| `crates/audit/postgres` | PostgreSQL audit backend (ACID, indexed queries, TTL) |
+| `crates/audit/clickhouse` | ClickHouse audit backend (columnar analytics) |
+| `crates/audit/elasticsearch` | Elasticsearch audit backend (search and ILM) |
+| `crates/audit/dynamodb` | DynamoDB audit backend (AWS-native, native TTL, hash chain CAS) |
 
 ### Rules Frontends
 
 | Crate | Description |
 |-------|-------------|
-| `crates/rules/rules` | Rule engine IR and evaluation |
-| `crates/rules/yaml` | YAML rule file parser |
-| `crates/rules/cel` | CEL expression support |
+| `crates/rules/rules` | Rule engine IR, evaluation engine, and matching predicates |
+| `crates/rules/yaml` | YAML rule file parser and schema validator |
+| `crates/rules/cel` | Common Expression Language (CEL) frontend |
+
+### Cloud Providers
+
+| Crate | Description |
+|-------|-------------|
+| `crates/aws` | AWS providers: SNS, SQS, Lambda, EventBridge, SES v2, S3, EC2, AutoScaling |
+| `crates/azure` | Azure providers: Blob Storage, Event Hubs |
+| `crates/gcp` | GCP providers: Cloud Storage, Cloud Pub/Sub |
 
 ### Integrations
 
 | Crate | Description |
 |-------|-------------|
-| `crates/integrations/email` | Email/SMTP provider |
-| `crates/integrations/slack` | Slack provider |
-| `crates/integrations/pagerduty` | PagerDuty Events API v2 provider |
+| `crates/integrations/webhook` | Generic HTTP webhook dispatcher (Bearer, Basic, HMAC, API key) |
+| `crates/integrations/email` | Email provider (SMTP via Lettre, AWS SES v2) |
+| `crates/integrations/slack` | Slack Web API / Webhook messaging |
+| `crates/integrations/pagerduty` | PagerDuty Events API v2 incident management |
+| `crates/integrations/opsgenie` | Atlassian OpsGenie Alert API v2 |
+| `crates/integrations/victorops` | VictorOps / Splunk On-Call REST integration |
+| `crates/integrations/pushover` | Pushover mobile push notification delivery |
+| `crates/integrations/telegram` | Telegram Bot messaging |
+| `crates/integrations/wechat` | WeChat Work (企业微信) notification provider |
+| `crates/integrations/twilio` | Twilio SMS and MMS provider |
+| `crates/integrations/teams` | Microsoft Teams Incoming Webhook (MessageCard & Adaptive Card) |
+| `crates/integrations/discord` | Discord Webhook provider with embeds and avatars |
 
 ## Running locally
 
@@ -326,23 +356,54 @@ cargo run -p acteon-server -- -c acteon.toml
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/health` | Health check with metrics snapshot |
+| **System & Metrics** |||
+| GET | `/health` | Health check with provider status and metrics snapshot |
 | GET | `/metrics` | Dispatch counters |
-| POST | `/v1/dispatch` | Dispatch a single action |
-| POST | `/v1/dispatch/batch` | Dispatch multiple actions |
-| GET | `/v1/rules` | List loaded rules |
-| POST | `/v1/rules/reload` | Reload rules from a directory |
-| PUT | `/v1/rules/{name}/enabled` | Enable or disable a rule |
-| GET | `/v1/audit` | Query audit records with filters |
-| GET | `/v1/audit/{action_id}` | Get audit record by action ID |
-| GET | `/v1/events` | List events filtered by status |
-| GET | `/v1/events/{fingerprint}` | Get event lifecycle state |
-| PUT | `/v1/events/{fingerprint}/transition` | Transition event to new state |
-| GET | `/v1/groups` | List active event groups |
-| GET | `/v1/groups/{group_key}` | Get group details |
-| DELETE | `/v1/groups/{group_key}` | Force flush/close a group |
+| GET | `/metrics/prometheus` | Prometheus exposition endpoint with retention gauges |
+| GET | `/v1/metrics/alerts/prometheus.yaml` | Generated Prometheus alerting rules for active configuration |
+| **Dispatch & Streams** |||
+| POST | `/v1/dispatch` | Dispatch a single action (supports `?dry_run=true`) |
+| POST | `/v1/dispatch/batch` | Dispatch multiple actions atomically |
+| GET | `/v1/stream` | Server-Sent Events (SSE) real-time stream of action outcomes |
+| **Rules & Governance** |||
+| GET | `/v1/rules` | List loaded routing rules |
+| POST | `/v1/rules/reload` | Reload rules from configured directory |
+| PUT | `/v1/rules/{name}/enabled` | Enable or disable a rule dynamically |
+| POST | `/v1/rules/evaluate` | Dry-run evaluate action with detailed rule trace |
+| GET | `/v1/rules/coverage` | Rule condition test coverage report |
+| GET | `/v1/quotas` | List tenant quota policies and current usage |
+| GET | `/v1/silences` | List and create Alertmanager-compatible silences |
+| GET | `/v1/time-intervals` | List and manage temporal routing windows |
+| **Durable Execution & Workflows** |||
+| GET | `/v1/chains` | List task chains and execution state |
+| GET | `/v1/chains/{chain_id}/dag` | Chain execution Directed Acyclic Graph (DAG) |
+| GET | `/v1/chains/definitions` | List and manage reusable chain definitions |
+| POST | `/v1/queues/{queue}/poll` | Worker queue polling with lease acquisition |
+| POST | `/v1/queues/tasks/{id}/complete` | Mark leased worker task as complete |
+| POST | `/v1/workflows/start` | Start code-based durable workflow execution |
+| GET | `/v1/executions` | List executions with state, timers, and signals |
+| **A2A Protocol & Swarm** |||
+| POST | `/a2a/{ns}/{tenant}` | A2A JSON-RPC 2.0 protocol endpoint |
+| POST | `/a2a/{ns}/{tenant}/v1/message:send` | A2A REST task submission |
+| GET | `/a2a/{ns}/{tenant}/v1/tasks/{id}` | A2A task status and artifact inspect |
+| GET | `/a2a/{ns}/{tenant}/.well-known/agent.json` | Public A2A agent discovery card |
+| GET | `/v1/swarm/runs` | List autonomous agent swarm runs |
+| **Agentic Message Bus** |||
+| GET | `/v1/bus/topics` | List and create Kafka-backed bus topics |
+| POST | `/v1/bus/publish` | Publish message with schema validation |
+| GET | `/v1/bus/subscriptions` | Durable consumer subscriptions, lag, and offsets |
+| GET | `/v1/bus/agents` | Agent registry with liveness and heartbeat |
+| GET | `/v1/bus/conversations` | Multi-agent conversation threads and message replay |
+| **Audit & Resilience** |||
+| GET | `/v1/audit` | Query audit records with multi-dimensional filters |
+| POST | `/v1/audit/replay` | Bulk replay actions from audit records |
+| POST | `/v1/audit/verify` | Verify cryptographic SHA-256 compliance hash chain |
+| GET | `/v1/actions/{id}/verify` | Cryptographic verification of Ed25519 action signature |
+| GET | `/v1/providers/health` | Provider health metrics, latencies, and circuit states |
+| POST | `/admin/circuit-breakers/{provider}/trip` | Administratively trip a provider circuit breaker |
+| POST | `/v1/dlq/drain` | Drain dead-letter queue records for reprocessing |
 
-Full request/response schemas are available in the Swagger UI.
+Full OpenAPI 3.0 schemas and interactive testing are available in the Swagger UI (`/swagger-ui/`).
 
 ## Event Grouping & State Machines
 

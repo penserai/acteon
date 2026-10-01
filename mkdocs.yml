@@ -119,6 +119,10 @@ nav:
     - Throttling: features/throttling.md
     - Rerouting: features/rerouting.md
     - Payload Modification: features/modification.md
+    - Scheduled Actions: features/scheduled-actions.md
+    - Time-Based Rules: features/time-based-rules.md
+    - Payload Templates: features/payload-templates.md
+    - Attachments: features/attachments.md
     - Event Grouping: features/event-grouping.md
     - State Machines: features/state-machines.md
     - Human Approvals: features/approvals.md
@@ -126,20 +130,32 @@ nav:
     - Operator Lifecycle (Active/Suspended/Banned): features/operator-lifecycle.md
     - Task Chains: features/chains.md
     - Sub-Chains: features/sub-chains.md
+    - Chain Step Retry: features/chain-retry.md
+    - Parallel Steps: features/parallel-steps.md
     - Durable Executions: features/durable-executions.md
     - Task Queues & Workers: features/task-queues.md
     - Workflows as Code: features/workflows.md
     - LLM Guardrails: features/llm-guardrails.md
     - Semantic Routing: features/semantic-routing.md
     - Audit Trail: features/audit-trail.md
+    - Analytics & Aggregations: features/analytics.md
+    - Action Replay: features/action-replay.md
+    - Action Signing & Verification: features/action-signing.md
+    - Compliance Mode: features/compliance-mode.md
+    - Payload Encryption: features/payload-encryption.md
     - Circuit Breaker: features/circuit-breaker.md
     - Recurring Actions: features/recurring-actions.md
     - Tenant Quotas: features/tenant-quotas.md
     - Data Retention: features/data-retention.md
     - Dead-letter Retention: features/dlq-retention.md
+    - Event Streaming (SSE): features/event-streaming.md
+    - Distributed Tracing: features/distributed-tracing.md
+    - Mutual TLS (mTLS): features/mtls.md
     - Prometheus Alerting Rules: features/prometheus-alerting.md
     - Rule Playground: features/rule-playground.md
     - Rule Coverage: features/rule-coverage.md
+    - Rule Testing CLI: features/rule-testing-cli.md
+    - Dry-Run Mode: features/dry-run.md
     - Silences: features/silences.md
     - Time Intervals: features/time-intervals.md
     - API Key Scoping: features/api-key-scoping.md
@@ -166,6 +182,7 @@ nav:
     - PostgreSQL Audit: backends/postgres-audit.md
     - ClickHouse Audit: backends/clickhouse-audit.md
     - Elasticsearch Audit: backends/elasticsearch-audit.md
+    - DynamoDB Audit: backends/dynamodb-audit.md
   - API Reference:
     - api/index.md
     - REST API: api/rest-api.md
@@ -179,6 +196,7 @@ nav:
     - admin-ui/index.md
     - Dashboard: admin-ui/dashboard.md
     - Operations: admin-ui/operations.md
+    - Templates & Profiles: admin-ui/templates.md
     - Settings: admin-ui/settings.md
   - Examples:
     - examples/index.md
@@ -218,6 +236,7 @@ nav:
     - Error Handling: reference/errors.md
     - ClickHouse State Migration: reference/migration-clickhouse-state.md
     - Performance Guide: reference/performance.md
+    - Build Optimization: reference/build-optimization.md
     - Deployment: reference/deployment.md
     - Bus Benchmarks: reference/bus-benchmarks.md
     - Roadmap: reference/roadmap.md
