@@ -303,7 +303,7 @@ webpki-roots = "0.26"
 tokio-rustls = "0.26"
 
 # WASM
-wasmtime = { version = "36.0.7", default-features = false, features = ["runtime", "cranelift", "wat", "std"] }
+wasmtime = { version = "36.0.16", default-features = false, features = ["runtime", "cranelift", "wat", "std"] }
 
 # Benchmarking
 criterion = { version = "0.5", features = ["async_tokio"] }
