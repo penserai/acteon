@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "runtime": {
+    "laya": "0.3.23",
+    "torch": "2.14.0+cpu",
+    "transformers": "5.18.0",
+    "huggingface_hub": "1.33.0",
+    "safetensors": "0.8.0",
+    "numpy": "2.5.3"
+  },
+  "checkpoint": {
+    "repository": "convaiinnovations/laya",
+    "name": "typed-decisions",
+    "revision": "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851"
+  },
+  "question_sets": {
+    "fusion.json": "sha256:059b334d03ef642a835017e197e57b959bb81b4ff84f597bc89b027da10fe865",
+    "logs.json": "sha256:3b2876d57b840193e6a56b9fcdb56b30e2c45e779339748367f6429114e0f598",
+    "metrics.json": "sha256:6a148a25042155f1f161222edd09f8934330c8d93782135a6bb8abc106e8d775",
+    "traces.json": "sha256:28f3010f1af3fdf1c03060367ae5222861cf84395bd12801cb2f799481165c46"
+  }
+}

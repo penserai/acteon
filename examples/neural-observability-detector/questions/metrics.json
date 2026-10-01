@@ -1,0 +1,21 @@
+{
+  "pool_exhausted": {
+    "type": "noul",
+    "instructions": "Is database connection-pool exhaustion occurring?"
+  },
+  "condition": {
+    "type": "choice",
+    "instructions": "Choose the primary operational condition in this metrics window.",
+    "criteria": {
+      "healthy": "All service and dependency measurements are within their normal ranges.",
+      "db_pool_pressure": "Database connection-pool usage is saturated and requests wait for connections.",
+      "traffic_spike": "Request volume increased without evidence of database pool saturation.",
+      "application_errors": "Application failures increased without a saturated dependency resource."
+    }
+  },
+  "impact": {
+    "type": "score",
+    "instructions": "Score the operational impact of this metrics window.",
+    "criteria": ["none", "low", "moderate", "high", "critical"]
+  }
+}

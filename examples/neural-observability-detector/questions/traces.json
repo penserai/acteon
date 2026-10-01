@@ -1,0 +1,21 @@
+{
+  "dependency_bottleneck": {
+    "type": "noul",
+    "instructions": "Do the traces show a database dependency bottleneck?"
+  },
+  "condition": {
+    "type": "choice",
+    "instructions": "Choose the primary operational condition in this trace window.",
+    "criteria": {
+      "healthy": "Request spans have normal latency and no dependency dominates slow traces.",
+      "database_wait": "Slow requests spend most of their duration waiting on a database operation.",
+      "downstream_timeout": "A non-database downstream service dominates failures or latency.",
+      "application_work": "Latency is primarily inside application code rather than a dependency."
+    }
+  },
+  "impact": {
+    "type": "score",
+    "instructions": "Score the operational impact shown by these traces.",
+    "criteria": ["none", "low", "moderate", "high", "critical"]
+  }
+}

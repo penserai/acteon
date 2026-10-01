@@ -1,0 +1,21 @@
+{
+  "pool_timeout_present": {
+    "type": "noul",
+    "instructions": "Do these log-template counts indicate database connection-pool timeouts?"
+  },
+  "condition": {
+    "type": "choice",
+    "instructions": "Choose the primary operational condition in this log window.",
+    "criteria": {
+      "healthy": "Only routine informational messages and low-rate background warnings appear.",
+      "pool_timeout": "Repeated errors say requests timed out while waiting for a database connection.",
+      "downstream_error": "Repeated errors identify a non-database downstream service.",
+      "unrelated_noise": "Warnings increased but do not identify a user-impacting failure."
+    }
+  },
+  "impact": {
+    "type": "score",
+    "instructions": "Score the operational impact indicated by these logs.",
+    "criteria": ["none", "low", "moderate", "high", "critical"]
+  }
+}

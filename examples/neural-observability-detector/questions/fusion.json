@@ -1,0 +1,22 @@
+{
+  "correlated_incident": {
+    "type": "noul",
+    "instructions": "Do the available signal decisions describe one correlated production incident?"
+  },
+  "incident_kind": {
+    "type": "choice",
+    "instructions": "Choose the incident that best explains all available signal decisions.",
+    "criteria": {
+      "healthy": "The available signals are normal or isolated noise without user impact.",
+      "db_pool_exhaustion": "Metrics show pool saturation, traces show database waiting, and logs show pool timeouts.",
+      "downstream_timeout": "A non-database dependency consistently dominates errors and latency.",
+      "deploy_regression": "A recent deployment causes application failures without dependency saturation.",
+      "insufficient_evidence": "Signals are missing or contradict each other too strongly to select an incident."
+    }
+  },
+  "impact": {
+    "type": "score",
+    "instructions": "Score the fused operational impact.",
+    "criteria": ["none", "low", "moderate", "high", "critical"]
+  }
+}

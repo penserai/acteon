@@ -5,6 +5,11 @@ In-depth guides that show how to combine Acteon's features to solve real-world p
 <div class="grid" markdown>
 
 <div class="card" markdown>
+### [Cascaded Neural Observability Detector](neural-observability-detector.md)
+Correlate metrics, traces, and logs with fast non-autoregressive detectors, typed Kafka contracts, deterministic routing, action chains, and a bounded agent escalation path. Includes a production plan and a small simulation design.
+</div>
+
+<div class="card" markdown>
 ### [AI Agent Swarm Coordination](agent-swarm-coordination.md)
 Use Acteon as a safety and orchestration layer for multi-agent AI swarms. Covers the autoresearch-style eval harness, adversarial challenge-recovery loop with cross-engine critique, code-writing recovery agents, program.md constraints, identity, permissions, rate limiting, and approval workflows.
 </div>
