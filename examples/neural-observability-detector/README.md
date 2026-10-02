@@ -46,17 +46,19 @@ The script:
 1. builds and starts the local Laya 0.3.23 service;
 2. starts Kafka and publishes the fixed telemetry envelopes to separate
    metrics, traces, and logs topics;
-3. consumes and correlates the records by event time, including one deliberate
-   redelivery that must be rejected;
-4. waits until the reviewed `typed-decisions` checkpoint is resident and runs
+3. consumes and correlates the records by event time and writes an atomic
+   checkpoint containing active state, ready outputs, and source offsets;
+4. injects a crash before the Kafka commit, restores the checkpoint, rejects
+   the uncommitted redeliveries, then checkpoints before committing offsets;
+5. waits until the reviewed `typed-decisions` checkpoint is resident and runs
    the Rust simulation against `POST /v1/systemone`;
-5. validates question IDs, answer types, labels, probability ranges and sums,
+6. validates question IDs, answer types, labels, probability ranges and sums,
    routing identity, and zero output tokens;
-6. executes Acteon suppression, reroute, and chain paths with recording
+7. executes Acteon suppression, reroute, and chain paths with recording
    providers;
-7. replays the incident key and verifies that the runner ledger prevents a
+8. replays the incident key and verifies that the runner ledger prevents a
    second dispatch; and
-8. writes `results/latest.json` and `results/latest.md`.
+9. writes `results/latest.json` and `results/latest.md`.
 
 Set `KEEP_LAYA=1` to leave the container running after the script exits. The
 named model-cache volume persists between runs.
@@ -88,6 +90,10 @@ defaults to `127.0.0.1:19092`.
   event-time correlator rejects duplicate event IDs, retains broker positions,
   closes complete windows immediately, and closes incomplete windows after the
   15-second allowed-lateness watermark.
+- Recovery uses a versioned atomic file checkpoint. The simulation restores
+  after a crash before offset commit, keeps ready windows in the checkpoint as
+  an outbox, deduplicates the replayed prefix, and verifies zero Kafka lag only
+  after the final checkpoint-before-commit sequence.
 
 The results are an integration demonstration. The shipped checkpoint reports
 uncalibrated confidence for part of this question shape, and these four fixtures
@@ -108,3 +114,5 @@ results/                  Measured JSON and Markdown reports
 
 The event-time state machine and its replay, lateness, and missing-source tests
 live beside the Rust example in `crates/simulation/examples/neural_observability/windowing.rs`.
+The atomic store, recovery envelope, and checkpoint-before-commit tests live in
+`crates/simulation/examples/neural_observability/checkpoint.rs`.

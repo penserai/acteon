@@ -14,7 +14,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use acteon_bus::{BusBackend, BusMessage, KafkaBackend, KafkaBusConfig, StartOffset};
+use acteon_bus::{
+    BusBackend, BusMessage, KafkaBackend, KafkaBusConfig, OffsetPosition, StartOffset,
+};
 use acteon_core::chain::{ChainConfig, ChainStatus, ChainStepConfig};
 use acteon_core::{Action, ActionOutcome, Topic};
 use acteon_gateway::{Gateway, GatewayBuilder};
@@ -31,6 +33,10 @@ use serde_json::{Map, Value, json};
 #[path = "neural_observability/windowing.rs"]
 mod windowing;
 
+#[path = "neural_observability/checkpoint.rs"]
+mod checkpoint;
+
+use checkpoint::{AtomicCheckpointStore, RecoveryCheckpoint, persist_then_commit};
 use windowing::{
     CorrelatedWindow, EventTimeCorrelator, IngestDisposition, SCHEMA_VERSION, SignalSource,
     SourcePosition, TelemetryEvent, WindowingStats,
@@ -120,11 +126,22 @@ struct AggregateReport {
 }
 
 #[derive(Debug, Serialize)]
+struct RecoveryReport {
+    checkpoint_writes: usize,
+    restored_generation: u64,
+    pre_crash_records: usize,
+    replayed_records_deduplicated: usize,
+    committed_offsets: BTreeMap<String, SourcePosition>,
+    final_consumer_lag: BTreeMap<String, i64>,
+}
+
+#[derive(Debug, Serialize)]
 struct SimulationReport {
     generated_at: String,
     model: String,
     health: HealthIdentity,
     windowing: WindowingStats,
+    recovery: RecoveryReport,
     trials: Vec<TrialReport>,
     aggregate: AggregateReport,
 }
@@ -132,6 +149,7 @@ struct SimulationReport {
 struct StreamReplay {
     windows: Vec<CorrelatedWindow>,
     stats: WindowingStats,
+    recovery: RecoveryReport,
 }
 
 struct LayaClient {
@@ -715,7 +733,7 @@ fn markdown(report: &SimulationReport) -> String {
     output.push_str("# Neural observability simulation results\n\n");
     let _ = write!(
         output,
-        "Laya `{}` ran on `{}` at revision `{}`. Kafka supplied {} accepted source records across {} event-time windows and the correlator rejected {} redelivery. All {} neural calls were real HTTP inference requests; Acteon used in-memory state and recording providers for controlled side effects.\n\n",
+        "Laya `{}` ran on `{}` at revision `{}`. Kafka supplied {} accepted source records across {} event-time windows and the correlator rejected {} duplicates or recovery redeliveries. The runner restored checkpoint generation {} after an injected pre-commit crash. All {} neural calls were real HTTP inference requests; Acteon used in-memory state and recording providers for controlled side effects.\n\n",
         report.model,
         report.health.device,
         report
@@ -726,6 +744,7 @@ fn markdown(report: &SimulationReport) -> String {
         report.windowing.accepted_records,
         report.windowing.complete_windows + report.windowing.incomplete_windows,
         report.windowing.duplicate_records,
+        report.recovery.restored_generation,
         report.aggregate.model_calls
     );
     output.push_str(
@@ -765,9 +784,12 @@ fn markdown(report: &SimulationReport) -> String {
     output.push_str("\n## Aggregate\n\n");
     let _ = write!(
         output,
-        "- Kafka source records accepted: **{}**\n- Kafka redeliveries rejected: **{}**\n- Event-time windows completed: **{}**\n- Model calls: **{}**\n- Total model inference: **{:.0} ms**\n- Per-call p50 / p95: **{:.0} ms / {:.0} ms**\n- Incident chains: **{}** diagnostics capture and **{}** on-call notification\n- Bounded investigations: **{}**\n- Duplicate incident dispatches prevented by the runner ledger: **{}**\n\n",
+        "- Kafka source records accepted: **{}**\n- Kafka duplicates and redeliveries rejected: **{}**\n- Recovery redeliveries deduplicated after restart: **{}**\n- Atomic checkpoint generations written: **{}**\n- Final Kafka consumer lag: **{}**\n- Event-time windows completed: **{}**\n- Model calls: **{}**\n- Total model inference: **{:.0} ms**\n- Per-call p50 / p95: **{:.0} ms / {:.0} ms**\n- Incident chains: **{}** diagnostics capture and **{}** on-call notification\n- Bounded investigations: **{}**\n- Duplicate incident dispatches prevented by the runner ledger: **{}**\n\n",
         report.windowing.accepted_records,
         report.windowing.duplicate_records,
+        report.recovery.replayed_records_deduplicated,
+        report.recovery.checkpoint_writes,
+        report.recovery.final_consumer_lag.values().sum::<i64>(),
         report.windowing.complete_windows,
         report.aggregate.model_calls,
         report.aggregate.total_inference_ms,
@@ -888,6 +910,36 @@ fn telemetry_event(fixture: &Fixture, source: SignalSource) -> TelemetryEvent {
     }
 }
 
+fn remember_source_position(
+    message: &BusMessage,
+    offsets: &mut BTreeMap<SignalSource, SourcePosition>,
+) -> Result<(SignalSource, SourcePosition), AnyError> {
+    let source = serde_json::from_value::<TelemetryEvent>(message.payload.clone())?.source;
+    let position = SourcePosition {
+        topic: message.topic.clone(),
+        partition: message
+            .partition
+            .ok_or_else(|| error("Kafka record omitted its partition"))?,
+        offset: message
+            .offset
+            .ok_or_else(|| error("Kafka record omitted its offset"))?,
+    };
+    if let Some(previous) = offsets.get(&source) {
+        if previous.topic != position.topic || previous.partition != position.partition {
+            return Err(error(format!(
+                "{} source moved between Kafka partitions during the simulation",
+                source.as_str()
+            )));
+        }
+        if previous.offset >= position.offset {
+            return Ok((source, position));
+        }
+    }
+    offsets.insert(source, position.clone());
+    Ok((source, position))
+}
+
+#[allow(clippy::too_many_lines)]
 async fn kafka_stream_replay(fixtures: &[Fixture]) -> Result<StreamReplay, AnyError> {
     let bootstrap =
         std::env::var("ACTEON_KAFKA_BOOTSTRAP").unwrap_or_else(|_| "127.0.0.1:19092".to_owned());
@@ -913,6 +965,19 @@ async fn kafka_stream_replay(fixtures: &[Fixture]) -> Result<StreamReplay, AnyEr
         backend.create_topic(topic).await?;
     }
     tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let consumer_groups = SignalSource::ALL
+        .into_iter()
+        .map(|source| {
+            (
+                source,
+                format!("neural-detector-{}-{run_id}", source.as_str()),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let checkpoint_path =
+        std::env::temp_dir().join(format!("acteon-neural-observability-{run_id}.json"));
+    let checkpoint_store = AtomicCheckpointStore::new(&checkpoint_path);
 
     let replay = async {
         for source in SignalSource::ALL {
@@ -943,50 +1008,188 @@ async fn kafka_stream_replay(fixtures: &[Fixture]) -> Result<StreamReplay, AnyEr
             )
             .await?;
 
-        let mut streams = Vec::new();
-        for source in SignalSource::ALL {
-            let group_id = format!("neural-detector-{}-{run_id}", source.as_str());
-            streams.push(
-                backend
-                    .subscribe(
-                        &topics[&source].kafka_topic_name(),
-                        &group_id,
-                        StartOffset::Earliest,
-                    )
-                    .await?,
-            );
-        }
-        let mut messages = futures::stream::select_all(streams);
         let expected_records = fixtures.len() * SignalSource::ALL.len() + 1;
-        let mut correlator =
-            EventTimeCorrelator::new(ChronoDuration::minutes(1), ChronoDuration::seconds(15))?;
-        let mut windows = Vec::new();
-        for _ in 0..expected_records {
-            let next = tokio::time::timeout(Duration::from_secs(20), messages.next())
-                .await
-                .map_err(|_| error("timed out consuming observability Kafka records"))?
-                .ok_or_else(|| error("observability Kafka stream ended early"))??;
-            let result = correlator.ingest(next)?;
-            if result.disposition == IngestDisposition::Late {
-                return Err(error("fixture stream unexpectedly produced a late record"));
+        let pre_crash_records = 5;
+
+        // Phase 1 persists all correlator state and ready outputs, then exits
+        // without acknowledging Kafka. This is the injected crash boundary.
+        {
+            let mut streams = Vec::new();
+            for source in SignalSource::ALL {
+                streams.push(
+                    backend
+                        .subscribe(
+                            &topics[&source].kafka_topic_name(),
+                            &consumer_groups[&source],
+                            StartOffset::Earliest,
+                        )
+                        .await?,
+                );
             }
-            windows.extend(result.emitted);
+            let mut messages = futures::stream::select_all(streams);
+            let mut correlator = EventTimeCorrelator::new(
+                ChronoDuration::minutes(1),
+                ChronoDuration::seconds(15),
+            )?;
+            let mut ready_windows = Vec::new();
+            let mut source_offsets = BTreeMap::new();
+            for _ in 0..pre_crash_records {
+                let next = tokio::time::timeout(Duration::from_secs(20), messages.next())
+                    .await
+                    .map_err(|_| error("timed out before the injected Kafka restart"))?
+                    .ok_or_else(|| error("observability Kafka stream ended before restart"))??;
+                remember_source_position(&next, &mut source_offsets)?;
+                let result = correlator.ingest(next)?;
+                if result.disposition == IngestDisposition::Late {
+                    return Err(error("fixture stream unexpectedly produced a late record"));
+                }
+                ready_windows.extend(result.emitted);
+            }
+            checkpoint_store.save(&RecoveryCheckpoint::new(
+                1,
+                correlator.snapshot(),
+                ready_windows,
+                source_offsets,
+            ))?;
         }
+
+        // The old consumers disappear without a commit. A replacement process
+        // restores generation 1 and receives the uncommitted prefix again.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let restored = checkpoint_store.load()?;
+        let restored_generation = restored.generation;
+        let crash_offsets = restored.source_offsets.clone();
+        let mut correlator = EventTimeCorrelator::restore(restored.correlator)?;
+        let mut windows = restored.ready_windows;
+        let mut source_offsets = restored.source_offsets;
+        let mut recovery_redeliveries = 0;
+        {
+            let mut streams = Vec::new();
+            for source in SignalSource::ALL {
+                streams.push(
+                    backend
+                        .subscribe(
+                            &topics[&source].kafka_topic_name(),
+                            &consumer_groups[&source],
+                            StartOffset::Earliest,
+                        )
+                        .await?,
+                );
+            }
+            let mut messages = futures::stream::select_all(streams);
+            for _ in 0..expected_records {
+                let next = tokio::time::timeout(Duration::from_secs(20), messages.next())
+                    .await
+                    .map_err(|_| error("timed out consuming observability Kafka records"))?
+                    .ok_or_else(|| error("observability Kafka stream ended early"))??;
+                let (source, position) = remember_source_position(&next, &mut source_offsets)?;
+                let is_recovery_redelivery = crash_offsets.get(&source).is_some_and(|checkpoint| {
+                    checkpoint.topic == position.topic
+                        && checkpoint.partition == position.partition
+                        && position.offset <= checkpoint.offset
+                });
+                let result = correlator.ingest(next)?;
+                if result.disposition == IngestDisposition::Late {
+                    return Err(error("fixture stream unexpectedly produced a late record"));
+                }
+                if is_recovery_redelivery {
+                    if result.disposition != IngestDisposition::Duplicate {
+                        return Err(error("restored correlator admitted a Kafka redelivery"));
+                    }
+                    recovery_redeliveries += 1;
+                }
+                windows.extend(result.emitted);
+            }
+        }
+
         windows.extend(correlator.finish());
         windows.sort_by_key(|window| window.starts_at);
         let stats = correlator.stats().clone();
         if stats.accepted_records != fixtures.len() * SignalSource::ALL.len()
-            || stats.duplicate_records != 1
+            || stats.duplicate_records != 1 + pre_crash_records
             || stats.late_records != 0
             || stats.complete_windows != fixtures.len()
             || stats.incomplete_windows != 0
         {
             return Err(error(format!("unexpected windowing stats: {stats:?}")));
         }
-        Ok(StreamReplay { windows, stats })
+        if recovery_redeliveries != pre_crash_records {
+            return Err(error(format!(
+                "expected {pre_crash_records} recovery redeliveries, observed {recovery_redeliveries}"
+            )));
+        }
+
+        // The stream is dropped before the out-of-band batch commit. Generation
+        // 2 is fsynced first; only then does each source offset advance.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let final_checkpoint = RecoveryCheckpoint::new(
+            2,
+            correlator.snapshot(),
+            windows.clone(),
+            source_offsets,
+        );
+        let commit_backend = Arc::clone(&backend);
+        let committed = persist_then_commit(
+            &checkpoint_store,
+            &final_checkpoint,
+            &consumer_groups,
+            move |_, group, position| {
+                let backend = Arc::clone(&commit_backend);
+                async move {
+                    backend
+                        .commit_offset(
+                            &position.topic,
+                            &group,
+                            OffsetPosition {
+                                partition: position.partition,
+                                offset: position.offset,
+                            },
+                        )
+                        .await
+                        .map_err(|error| error.to_string())
+                }
+            },
+        )
+        .await?;
+
+        let mut final_consumer_lag = BTreeMap::new();
+        for source in SignalSource::ALL {
+            let lag = backend
+                .consumer_lag(
+                    &topics[&source].kafka_topic_name(),
+                    &consumer_groups[&source],
+                )
+                .await?
+                .into_iter()
+                .map(|partition| partition.lag)
+                .sum::<i64>();
+            final_consumer_lag.insert(source.as_str().to_owned(), lag);
+        }
+        if final_consumer_lag.values().any(|lag| *lag != 0) {
+            return Err(error(format!(
+                "Kafka consumer lag remained after final checkpoint: {final_consumer_lag:?}"
+            )));
+        }
+
+        Ok(StreamReplay {
+            windows,
+            stats,
+            recovery: RecoveryReport {
+                checkpoint_writes: 2,
+                restored_generation,
+                pre_crash_records,
+                replayed_records_deduplicated: recovery_redeliveries,
+                committed_offsets: committed
+                    .into_iter()
+                    .map(|(source, position)| (source.as_str().to_owned(), position))
+                    .collect(),
+                final_consumer_lag,
+            },
+        })
     }
     .await;
 
+    let _ = fs::remove_file(checkpoint_store.path());
     for topic in topics.values() {
         let _ = backend.delete_topic(&topic.kafka_topic_name()).await;
     }
@@ -1031,10 +1234,20 @@ async fn main() -> Result<(), AnyError> {
     println!("\nACTEON + LAYA NEURAL OBSERVABILITY SIMULATION");
     println!("checkpoint: {MODEL} @ {revision} ({})\n", health.device);
     println!(
-        "kafka: {} accepted records, {} duplicate, {} event-time windows\n",
+        "kafka: {} accepted records, {} duplicates/redeliveries, {} event-time windows",
         stream_replay.stats.accepted_records,
         stream_replay.stats.duplicate_records,
         stream_replay.windows.len()
+    );
+    println!(
+        "recovery: restored generation {}, deduplicated {} replayed records, final lag {}\n",
+        stream_replay.recovery.restored_generation,
+        stream_replay.recovery.replayed_records_deduplicated,
+        stream_replay
+            .recovery
+            .final_consumer_lag
+            .values()
+            .sum::<i64>()
     );
 
     for window in &stream_replay.windows {
@@ -1195,6 +1408,7 @@ async fn main() -> Result<(), AnyError> {
         model: MODEL.to_owned(),
         health,
         windowing: stream_replay.stats,
+        recovery: stream_replay.recovery,
         aggregate: AggregateReport {
             model_calls: latencies.len(),
             total_inference_ms: latencies.iter().sum(),

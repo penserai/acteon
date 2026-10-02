@@ -195,8 +195,9 @@ The runner must define these cases explicitly:
 - overloaded service: apply backpressure and expose consumer lag.
 
 A stream processor such as Kafka Streams or Flink is appropriate at large
-volume. The vertical slice can use a small Rust or Python service with an
-in-memory window map and committed Kafka offsets.
+volume. The vertical slice uses a small Rust service with a versioned atomic
+checkpoint for the window map, ready-output outbox, deduplication ledger,
+watermarks, and Kafka offsets.
 
 ### 4. Implement the fast detector cascade
 
@@ -424,8 +425,8 @@ examples/neural-observability-detector/scripts/run.sh
 
 The script starts Kafka, builds the CPU-only Laya service, downloads the pinned
 checkpoint on the first run, performs 16 real model calls across four trials,
-exercises Acteon's rules and incident chain, and writes JSON and Markdown
-reports.
+injects a detector crash before its Kafka commit, exercises Acteon's rules and
+incident chain, and writes JSON and Markdown reports.
 
 ```text
 examples/neural-observability-detector/
@@ -467,12 +468,18 @@ replaceable inference container behind its typed HTTP API.
 The fixtures use fixed timestamps and IDs. The runner publishes their source
 features to separate metrics, traces, and logs topics, consumes the resulting
 broker positions, and joins them into 60-second event-time windows with 15
-seconds of allowed lateness. One metrics record is deliberately redelivered to
-verify event-ID deduplication. `model.lock.json` records the checkpoint,
-revision, runtime versions, and question-set digests. The runner also keeps an
-idempotency ledger for admitted verdicts. That makes the simulation an
-integration test of real transport, inference, contracts, and policy rather
-than a misleading benchmark of production model quality.
+seconds of allowed lateness. It atomically checkpoints active windows,
+finalized-window keys, event IDs, source watermarks, ready outputs, and source
+offsets. The simulation then terminates its consumers before committing,
+restores the checkpoint, and proves that Kafka redelivery neither reopens a
+window nor loses an output. A final checkpoint is fsynced and renamed before
+the source offsets are committed; the run must end with zero consumer lag.
+One additional metrics record is deliberately duplicated independently of the
+restart. `model.lock.json` records the checkpoint, revision, runtime versions,
+and question-set digests. The runner also keeps an idempotency ledger for
+admitted verdicts. That makes the simulation an integration test of real
+transport, recovery, inference, contracts, and policy rather than a misleading
+benchmark of production model quality.
 
 ### Measured result
 
@@ -487,11 +494,14 @@ and admitted an incident only when all three typed signal decisions agreed.
 |---|---:|
 | Expected policy outcomes | 4 / 4 |
 | Kafka source records accepted | 12 |
-| Kafka redeliveries rejected | 1 |
+| Kafka duplicates and redeliveries rejected | 6 |
+| Restart redeliveries deduplicated | 5 |
+| Atomic checkpoint generations | 2 |
+| Final Kafka consumer lag | 0 |
 | Event-time windows | 4 |
 | Real Laya calls | 16 |
-| Total inference | 43,946 ms |
-| Per-call p50 / p95 | 1,376 ms / 7,547 ms |
+| Total inference | 43,179 ms |
+| Per-call p50 / p95 | 1,336 ms / 7,449 ms |
 | Incident chains | 1 |
 | Bounded investigator calls | 1 |
 | Duplicate incident dispatches prevented | 1 |
