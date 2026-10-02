@@ -139,6 +139,8 @@ name = "acteon-bus"
 version = "0.1.0"
 dependencies = [
  "acteon-core",
+ "acteon-state",
+ "acteon-state-memory",
  "async-stream",
  "async-trait",
  "bytes",
