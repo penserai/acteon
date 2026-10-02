@@ -12,7 +12,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use acteon_bus::{
     BusBackend, BusMessage, KafkaBackend, KafkaBusConfig, OffsetPosition, StartOffset,
@@ -20,7 +20,7 @@ use acteon_bus::{
 use acteon_core::chain::{ChainConfig, ChainStatus, ChainStepConfig};
 use acteon_core::{Action, ActionOutcome, Topic};
 use acteon_gateway::{Gateway, GatewayBuilder};
-use acteon_llm::VerifiedModelLock;
+use acteon_llm::{JsonResponseContract, TypedJsonModelClient, VerifiedModelLock};
 use acteon_rules::Rule;
 use acteon_rules_yaml::YamlFrontend;
 use acteon_simulation::{ActionOutcomeExt, RecordingProvider};
@@ -72,6 +72,24 @@ struct LayaCall {
     response: Value,
     inference_ms: f64,
     wall_ms: f64,
+}
+
+#[derive(Debug, Deserialize)]
+struct LayaEnvelope {
+    answers: BTreeMap<String, Value>,
+    model: String,
+    routing: LayaRouting,
+    usage: LayaUsage,
+}
+
+#[derive(Debug, Deserialize)]
+struct LayaRouting {
+    model: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct LayaUsage {
+    output_tokens: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -155,9 +173,11 @@ struct StreamReplay {
 }
 
 struct LayaClient {
-    http: reqwest::Client,
+    health_http: reqwest::Client,
     base_url: String,
     api_key: String,
+    model: TypedJsonModelClient,
+    response_contract: JsonResponseContract<LayaEnvelope>,
 }
 
 impl LayaClient {
@@ -166,19 +186,23 @@ impl LayaClient {
             std::env::var("LAYA_URL").unwrap_or_else(|_| "http://127.0.0.1:8000".to_owned());
         let api_key =
             std::env::var("LAYA_API_KEY").unwrap_or_else(|_| "acteon-laya-demo".to_owned());
-        let http = reqwest::Client::builder()
-            .timeout(Duration::from_secs(90))
-            .build()?;
+        let model =
+            TypedJsonModelClient::new(format!("{base_url}/v1/systemone"), Duration::from_secs(90))?
+                .with_bearer_token(api_key.clone());
         Ok(Self {
-            http,
+            health_http: reqwest::Client::builder()
+                .timeout(Duration::from_secs(90))
+                .build()?,
             base_url,
             api_key,
+            model,
+            response_contract: JsonResponseContract::new(&laya_response_schema())?,
         })
     }
 
     async fn health(&self) -> Result<HealthIdentity, AnyError> {
         let value: Value = self
-            .http
+            .health_http
             .get(format!("{}/health", self.base_url))
             .bearer_auth(&self.api_key)
             .send()
@@ -213,28 +237,70 @@ impl LayaClient {
     }
 
     async fn evaluate(&self, state: Value, questions: &Value) -> Result<LayaCall, AnyError> {
-        let started = Instant::now();
         let response = self
-            .http
-            .post(format!("{}/v1/systemone", self.base_url))
-            .bearer_auth(&self.api_key)
-            .json(&json!({
+            .model
+            .invoke(
+                &json!({
                 "state": state,
                 "questions": questions,
                 "model": MODEL
-            }))
-            .send()
-            .await?
-            .error_for_status()?;
-        let inference_ms = inference_time(response.headers())?;
-        let value: Value = response.json().await?;
-        validate_laya_response(&value, questions)?;
+                }),
+                &self.response_contract,
+            )
+            .await?;
+        let inference_ms = inference_time(&response.headers)?;
+        if response.output.routing.model != MODEL
+            || response.output.usage.output_tokens != 0
+            || response.output.answers.len()
+                != questions.as_object().map_or(0, serde_json::Map::len)
+            || response.output.model.is_empty()
+        {
+            return Err(error("typed Laya response identity or usage check failed"));
+        }
+        validate_laya_response(&response.raw, questions)?;
         Ok(LayaCall {
-            response: value,
+            response: response.raw,
             inference_ms,
-            wall_ms: started.elapsed().as_secs_f64() * 1_000.0,
+            wall_ms: response.elapsed.as_secs_f64() * 1_000.0,
         })
     }
+}
+
+fn laya_response_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["answers", "model", "routing", "usage"],
+        "properties": {
+            "answers": {"type": "object", "minProperties": 1},
+            "model": {"type": "string", "minLength": 1},
+            "routing": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["detection", "model", "reason", "repo", "workflow"],
+                "properties": {
+                    "detection": {"type": ["string", "null"]},
+                    "model": {"type": "string", "minLength": 1},
+                    "reason": {"type": "string"},
+                    "repo": {"type": "string", "minLength": 1},
+                    "workflow": {"type": ["string", "null"]}
+                }
+            },
+            "usage": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["input_tokens", "output_tokens", "state_tokens", "state_tokens_dropped", "truncated", "truncated_questions"],
+                "properties": {
+                    "input_tokens": {"type": "integer", "minimum": 0},
+                    "output_tokens": {"type": "integer", "minimum": 0},
+                    "state_tokens": {"type": "integer", "minimum": 0},
+                    "state_tokens_dropped": {"type": "integer", "minimum": 0},
+                    "truncated": {"type": "boolean"},
+                    "truncated_questions": {"type": "array", "items": {"type": "string"}}
+                }
+            }
+        }
+    })
 }
 
 fn error(message: impl Into<String>) -> AnyError {

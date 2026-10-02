@@ -4,10 +4,10 @@ Laya `typed-decisions` ran on `cpu` at revision `55cf4c4ebb4ebe31b2550e8bdf3bd21
 
 | Trial | Signal decisions | Raw fusion | Acteon outcome | Laya inference | Result |
 |---|---|---|---|---:|---|
-| healthy-baseline | metrics: healthy (0.52)<br>traces: healthy (0.40)<br>logs: healthy (0.41) | downstream_timeout (0.27) | suppressed by suppress-observability-noise | 10621 ms | PASS |
-| log-only-noise | metrics: healthy (0.54)<br>traces: healthy (0.45)<br>logs: healthy (0.35) | downstream_timeout (0.28) | suppressed by suppress-observability-noise | 11133 ms | PASS |
-| pool-exhaustion | metrics: db_pool_pressure (0.52)<br>traces: database_wait (0.48)<br>logs: pool_timeout (0.58) | db_pool_exhaustion (0.27) | completed observability-incident chain | 11525 ms | PASS |
-| ambiguous-regression | metrics: application_errors (0.39)<br>traces: application_work (0.31)<br>logs: downstream_error (0.31) | downstream_timeout (0.25) | rerouted to investigator | 11225 ms | PASS |
+| healthy-baseline | metrics: healthy (0.52)<br>traces: healthy (0.40)<br>logs: healthy (0.41) | downstream_timeout (0.27) | suppressed by suppress-observability-noise | 12518 ms | PASS |
+| log-only-noise | metrics: healthy (0.54)<br>traces: healthy (0.45)<br>logs: healthy (0.35) | downstream_timeout (0.28) | suppressed by suppress-observability-noise | 16231 ms | PASS |
+| pool-exhaustion | metrics: db_pool_pressure (0.52)<br>traces: database_wait (0.48)<br>logs: pool_timeout (0.58) | db_pool_exhaustion (0.27) | completed observability-incident chain | 17227 ms | PASS |
+| ambiguous-regression | metrics: application_errors (0.39)<br>traces: application_work (0.31)<br>logs: downstream_error (0.31) | downstream_timeout (0.25) | rerouted to investigator | 13122 ms | PASS |
 
 ## Aggregate
 
@@ -19,8 +19,8 @@ Laya `typed-decisions` ran on `cpu` at revision `55cf4c4ebb4ebe31b2550e8bdf3bd21
 - Final Kafka consumer lag: **0**
 - Event-time windows completed: **4**
 - Model calls: **16**
-- Total model inference: **44504 ms**
-- Per-call p50 / p95: **1403 ms / 7634 ms**
+- Total model inference: **59097 ms**
+- Per-call p50 / p95: **1704 ms / 12533 ms**
 - Incident chains: **1** diagnostics capture and **1** on-call notification
 - Bounded investigations: **1**
 - Duplicate incident dispatches prevented by the runner ledger: **1**
