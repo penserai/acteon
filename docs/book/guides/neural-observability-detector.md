@@ -185,7 +185,9 @@ normalizes records into 60-second tumbling windows with a small allowed-lateness
 period, such as 15 seconds. It joins by tenant, environment, service, region,
 and deployment revision.
 
-The runner must define these cases explicitly:
+The runner normalizes each envelope into `acteon_bus::WindowRecord` and feeds
+Acteon's [event-time window operator](../features/event-time-windows.md). The
+operator handles these cases consistently for any multi-source workflow:
 
 - missing signal: emit a mask rather than a fabricated value;
 - late signal: update the window only within the allowed-lateness period;
@@ -194,10 +196,12 @@ The runner must define these cases explicitly:
 - skewed clocks: prefer producer event time, while tracking ingest delay;
 - overloaded service: apply backpressure and expose consumer lag.
 
-A stream processor such as Kafka Streams or Flink is appropriate at large
-volume. The vertical slice uses a small Rust service with a versioned atomic
-checkpoint for the window map, ready-output outbox, deduplication ledger,
-watermarks, and Kafka offsets.
+A stream processor such as Kafka Streams or Flink remains appropriate at large
+volume. The vertical slice uses the reusable Rust operator with a versioned
+atomic checkpoint for the window state, ready-output outbox, deduplication
+ledger, watermarks, and Kafka offsets. The same operator also exposes hard
+limits for open windows, records per window, and tracked event IDs, plus manual
+watermark advancement for an idle source.
 
 ### 4. Implement the fast detector cascade
 
@@ -823,6 +827,8 @@ false-positive and agent-escalation budgets.
 
 - [Agentic Bus](../concepts/agentic-bus.md) — Kafka-backed topics,
   subscriptions, schemas, and typed envelopes
+- [Event-Time Windows](../features/event-time-windows.md) — multi-source
+  correlation, watermarks, replay deduplication, and recovery snapshots
 - [Task Chains](../features/chains.md) — multi-step response workflows
 - [Parallel Steps](../features/parallel-steps.md) — fan-out/fan-in for model or
   provider calls

@@ -1,6 +1,6 @@
 [package]
 name = "acteon-bus"
-description = "Kafka-backed agentic message bus transport for Acteon (Phase 1)"
+description = "Message bus transport, schemas, and event-time stream windows for Acteon"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

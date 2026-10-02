@@ -34,7 +34,7 @@ That's a message bus, not an RPC dispatcher. Acteon ships the
 bus alongside dispatch. Both flow through rules, quotas, and
 audit; only dispatch reaches the executor.
 
-## The seven primitives
+## Core primitives
 
 ```
 Topic ──┐
@@ -46,6 +46,7 @@ Topic ──┐
         │       └── BusApproval (parked tool-call) (Phase 6c)
         │
         ├── Subscription ── (consumer group, ack-mode, lag, DLQ)
+        ├── Event-time window ── (correlation, watermark, durable snapshot)
         └── Schema ── (publish-edge JSON Schema validation)
 ```
 
@@ -54,6 +55,7 @@ Topic ──┐
 | **Topic** | Kafka topic + Acteon metadata (name, partitions, retention, schema binding). | Long-lived event channels. Created once per workload. |
 | **Schema** | A versioned JSON Schema bound to a topic. Validates every payload at publish time. | Hard contracts between producers and consumers. |
 | **Subscription** | A consumer group with first-class identity (id, ack-mode, dead-letter-topic, lag reporting). | A consumer that needs operator-visible state. |
+| **Event-time window** | A transport-independent state machine with multi-source watermarks, replay deduplication, broker positions, capacity limits, and versioned snapshots. | Joining related events from several topics before rules, chains, models, or agents run. |
 | **Agent** | Stable identity for a long-running process. Inbox topic + heartbeat + capabilities + operator lifecycle state. | Anything that needs to be *addressed* on the bus. |
 | **Conversation** | State-machine-bounded thread. Participant ACL, optional custom events topic. Per-conversation Kafka partitioning so ordering is FIFO within a thread. | Multi-turn sessions, planning loops, tool-using agents. |
 | **Tool envelopes** | `ToolCall` / `ToolResult` typed records on the conversation events topic. Server stamps `acteon.envelope.kind` / `acteon.tool.call_id` / `acteon.correlation_id` headers. | Request/response between agents. |

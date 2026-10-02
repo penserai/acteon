@@ -118,8 +118,11 @@ model.lock.json           Runtime, model artifact, and question-set identity
 results/                  Measured JSON and Markdown reports
 ```
 
-The event-time state machine and its replay, lateness, and missing-source tests
-live beside the Rust example in `crates/simulation/examples/neural_observability/windowing.rs`.
+The reusable event-time state machine and its replay, lateness, missing-source,
+idle-source, snapshot, and capacity tests live in
+`crates/bus/src/windowing.rs`. The simulation-specific telemetry adapter lives
+beside the Rust example in
+`crates/simulation/examples/neural_observability/windowing.rs`.
 The atomic store, recovery envelope, and checkpoint-before-commit tests live in
 `crates/simulation/examples/neural_observability/checkpoint.rs`.
 The reusable lock parser, runtime and artifact verification, contract digest
