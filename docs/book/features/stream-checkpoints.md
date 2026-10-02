@@ -116,6 +116,11 @@ Positions and outputs are sorted deterministically in the snapshot.
 
 ## Deliver and acknowledge the outbox
 
+Use [Managed Stream Outbox](managed-stream-outbox.md) for leased workers,
+durable retries, dead letters, and metrics. Once a dispatcher is attached,
+manual acknowledgements are rejected; completion must use its lease protocol.
+The manual API below applies to checkpoints without a managed dispatcher.
+
 Read `pending_outputs()` from the persisted plan or snapshot and deliver each
 entry with its idempotency key. After successful delivery, remove the entries
 in one new checkpoint generation:

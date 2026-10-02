@@ -141,6 +141,11 @@ Persist processor state, source offsets, and idempotent outputs in one CAS recor
 </div>
 
 <div class="card" markdown>
+### [Managed Stream Outbox](managed-stream-outbox.md)
+Deliver checkpoint outputs with leases, durable retries, dead-letter replay, and metrics.
+</div>
+
+<div class="card" markdown>
 ### [Semantic Routing](semantic-routing.md)
 Route actions by meaning using vector embeddings and cosine similarity.
 </div>

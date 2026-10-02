@@ -497,7 +497,11 @@ the source offsets are committed; the run must end with zero consumer lag.
 Deployed runners can use Acteon's
 [`StreamCheckpointCoordinator`](../features/stream-checkpoints.md) to persist
 the same window snapshot, offsets, and ready-output outbox through any Acteon
-state backend with stale-writer protection.
+state backend with stale-writer protection. Attach a
+[`StreamOutboxDispatcher`](../features/managed-stream-outbox.md) for leased
+delivery, durable retries, dead-letter replay, and backlog metrics. Carry each
+window's stable idempotency key into Acteon dispatch or the downstream bus
+consumer so recovery can safely redeliver.
 One additional metrics record is deliberately duplicated independently of the
 restart. `model.lock.json` records the model identity, revision, runtime
 versions, artifact manifest, and named contract digests. The runner also keeps
@@ -835,6 +839,8 @@ false-positive and agent-escalation budgets.
   correlation, watermarks, replay deduplication, and recovery snapshots
 - [Stream Checkpoints and Outbox](../features/stream-checkpoints.md) — atomic
   processor state, source positions, and idempotent ready outputs
+- [Managed Stream Outbox](../features/managed-stream-outbox.md) — leased delivery,
+  retries, dead-letter replay, and durable delivery metrics
 - [Task Chains](../features/chains.md) — multi-step response workflows
 - [Parallel Steps](../features/parallel-steps.md) — fan-out/fan-in for model or
   provider calls
