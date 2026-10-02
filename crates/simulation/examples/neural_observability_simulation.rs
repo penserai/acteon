@@ -1154,9 +1154,7 @@ async fn main() -> Result<(), AnyError> {
             source_positions: window
                 .signals
                 .iter()
-                .map(|(source, record)| {
-                    (source.as_str().to_owned(), record.position.clone())
-                })
+                .map(|(source, record)| (source.as_str().to_owned(), record.position.clone()))
                 .collect(),
             signals,
             fusion,
