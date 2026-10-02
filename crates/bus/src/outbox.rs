@@ -368,7 +368,7 @@ where
         &mut self,
         delivery: &D,
     ) -> Result<StreamOutboxDispatchResult, StreamOutboxError> {
-        match self.claim(Utc::now()).await? {
+        match self.claim(Utc::now).await? {
             Claimed::Idle => Ok(StreamOutboxDispatchResult::Idle),
             Claimed::DeadLettered(idempotency_key) => {
                 Ok(StreamOutboxDispatchResult::DeadLettered { idempotency_key })
@@ -385,7 +385,7 @@ where
                 .unwrap_or_else(|_| {
                     Err(StreamDeliveryError::Retryable("delivery timed out".into()))
                 });
-                self.complete(&claim, result, Utc::now()).await
+                self.complete(&claim, result, Utc::now).await
             }
         }
     }
@@ -469,9 +469,13 @@ where
             .expect("dispatcher initialized managed state")
     }
 
-    async fn claim(&mut self, now: DateTime<Utc>) -> Result<Claimed<O>, StreamOutboxError> {
+    async fn claim(
+        &mut self,
+        clock: impl Fn() -> DateTime<Utc>,
+    ) -> Result<Claimed<O>, StreamOutboxError> {
         for _ in 0..CAS_RETRIES {
             self.reload().await?;
+            let now = clock();
             let mut next = self.coordinator.snapshot.clone();
             let managed = next.managed.as_mut().expect("managed state persisted");
             let selected = next
@@ -545,10 +549,11 @@ where
         &mut self,
         claim: &Claim<O>,
         result: Result<(), StreamDeliveryError>,
-        now: DateTime<Utc>,
+        clock: impl Fn() -> DateTime<Utc>,
     ) -> Result<StreamOutboxDispatchResult, StreamOutboxError> {
         for _ in 0..CAS_RETRIES {
             self.reload().await?;
+            let now = clock();
             let mut next = self.coordinator.snapshot.clone();
             let managed = next.managed.as_mut().expect("managed state persisted");
             let key = &claim.entry.idempotency_key;
@@ -821,21 +826,24 @@ mod tests {
         seed(store.clone(), &["one"]).await;
         let mut first = worker(store.clone(), "first", StreamOutboxConfig::default()).await;
         let mut second = worker(store.clone(), "second", StreamOutboxConfig::default()).await;
-        let (a, b) = tokio::join!(first.claim(now()), second.claim(now()));
+        let (a, b) = tokio::join!(first.claim(now), second.claim(now));
         let (old, owner, other) = match (a.unwrap(), b.unwrap()) {
             (Claimed::Deliver(c), Claimed::Idle) => (c, &mut first, &mut second),
             (Claimed::Idle, Claimed::Deliver(c)) => (c, &mut second, &mut first),
             _ => panic!("exactly one live owner expected"),
         };
         let later = add_ms(now(), 30_001).unwrap();
-        let replacement = claim(other.claim(later).await.unwrap());
+        let replacement = claim(other.claim(|| later).await.unwrap());
         assert_ne!(old.token, replacement.token);
         assert!(matches!(
-            owner.complete(&old, Ok(()), later).await,
+            owner.complete(&old, Ok(()), || later).await,
             Err(StreamOutboxError::LeaseLost)
         ));
         assert_eq!(other.coordinator.snapshot.pending_outputs().len(), 1);
-        other.complete(&replacement, Ok(()), later).await.unwrap();
+        other
+            .complete(&replacement, Ok(()), || later)
+            .await
+            .unwrap();
         let metrics = other.metrics_at(later);
         assert_eq!(metrics.pending, 0);
         assert_eq!(metrics.counters.attempts, 2);
@@ -848,13 +856,13 @@ mod tests {
         let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
         seed(store.clone(), &["a", "b"]).await;
         let mut first = worker(store.clone(), "first", StreamOutboxConfig::default()).await;
-        let a = claim(first.claim(now()).await.unwrap());
+        let a = claim(first.claim(now).await.unwrap());
         assert_eq!(a.entry.idempotency_key, "a");
         let result = first
             .complete(
                 &a,
                 Err(StreamDeliveryError::Retryable("unavailable".into())),
-                now(),
+                now,
             )
             .await
             .unwrap();
@@ -867,16 +875,19 @@ mod tests {
         );
         drop(first);
         let mut recovered = worker(store, "replacement", StreamOutboxConfig::default()).await;
-        let b = claim(recovered.claim(now()).await.unwrap());
+        let b = claim(recovered.claim(now).await.unwrap());
         assert_eq!(b.entry.idempotency_key, "b");
-        recovered.complete(&b, Ok(()), now()).await.unwrap();
+        recovered.complete(&b, Ok(()), now).await.unwrap();
         assert!(matches!(
-            recovered.claim(add_ms(now(), 999).unwrap()).await.unwrap(),
+            recovered
+                .claim(|| add_ms(now(), 999).unwrap())
+                .await
+                .unwrap(),
             Claimed::Idle
         ));
         let retry = claim(
             recovered
-                .claim(add_ms(now(), 1_000).unwrap())
+                .claim(|| add_ms(now(), 1_000).unwrap())
                 .await
                 .unwrap(),
         );
@@ -892,12 +903,12 @@ mod tests {
         let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
         seed(store.clone(), &["one"]).await;
         let mut dispatcher = worker(store.clone(), "worker", StreamOutboxConfig::default()).await;
-        let output = claim(dispatcher.claim(now()).await.unwrap());
+        let output = claim(dispatcher.claim(now).await.unwrap());
         dispatcher
             .complete(
                 &output,
                 Err(StreamDeliveryError::Permanent("invalid".into())),
-                now(),
+                now,
             )
             .await
             .unwrap();
@@ -908,7 +919,7 @@ mod tests {
         assert_eq!(dispatcher.dead_letters()[0].attempts, 1);
         dispatcher.replay_dead_letter("one").await.unwrap();
         assert_eq!(dispatcher.dead_letters(), []);
-        let replay = claim(dispatcher.claim(now()).await.unwrap());
+        let replay = claim(dispatcher.claim(now).await.unwrap());
         assert_eq!(replay.entry, output.entry);
         assert_eq!(dispatcher.managed().deliveries["one"].attempts, 1);
         assert_eq!(dispatcher.managed().counters.replayed, 1);
@@ -923,12 +934,12 @@ mod tests {
             ..Default::default()
         };
         let mut dispatcher = worker(store.clone(), "worker", config.clone()).await;
-        let _abandoned = claim(dispatcher.claim(now()).await.unwrap());
+        let _abandoned = claim(dispatcher.claim(now).await.unwrap());
         drop(dispatcher);
         let mut recovered = worker(store, "restart", config).await;
         let later = add_ms(now(), 30_000).unwrap();
         assert!(matches!(
-            recovered.claim(later).await.unwrap(),
+            recovered.claim(|| later).await.unwrap(),
             Claimed::DeadLettered(_)
         ));
         assert_eq!(recovered.dead_letters()[0].attempts, 1);
@@ -944,35 +955,27 @@ mod tests {
             ..Default::default()
         };
         let mut dispatcher = worker(store.clone(), "worker", config.clone()).await;
-        let a = claim(dispatcher.claim(now()).await.unwrap());
+        let a = claim(dispatcher.claim(now).await.unwrap());
         dispatcher
-            .complete(
-                &a,
-                Err(StreamDeliveryError::Permanent("a bad".into())),
-                now(),
-            )
+            .complete(&a, Err(StreamDeliveryError::Permanent("a bad".into())), now)
             .await
             .unwrap();
-        let b = claim(dispatcher.claim(now()).await.unwrap());
+        let b = claim(dispatcher.claim(now).await.unwrap());
         assert!(matches!(
             dispatcher
-                .complete(
-                    &b,
-                    Err(StreamDeliveryError::Permanent("b bad".into())),
-                    now()
-                )
+                .complete(&b, Err(StreamDeliveryError::Permanent("b bad".into())), now)
                 .await,
             Err(StreamOutboxError::DeadLetterCapacity)
         ));
         drop(dispatcher);
         let mut recovered = worker(store, "restart", config).await;
         assert!(matches!(
-            recovered.claim(now()).await,
+            recovered.claim(now).await,
             Err(StreamOutboxError::DeadLetterCapacity)
         ));
         recovered.discard_dead_letter("a").await.unwrap();
         assert!(
-            matches!(recovered.claim(now()).await.unwrap(), Claimed::DeadLettered(key) if key == "b")
+            matches!(recovered.claim(now).await.unwrap(), Claimed::DeadLettered(key) if key == "b")
         );
         assert_eq!(recovered.dead_letters()[0].last_error, "b bad");
         assert_eq!(recovered.managed().counters.attempts, 2);
@@ -991,14 +994,14 @@ mod tests {
         )
         .await
         .unwrap();
-        let output = claim(dispatcher.claim(now()).await.unwrap());
+        let output = claim(dispatcher.claim(now).await.unwrap());
         assert!(matches!(
             processor.checkpoint(json!(3), [], []).await,
             Err(StreamCheckpointError::Conflict { .. })
         ));
         processor.reload().await.unwrap();
         processor.checkpoint(json!(3), [], []).await.unwrap();
-        dispatcher.complete(&output, Ok(()), now()).await.unwrap();
+        dispatcher.complete(&output, Ok(()), now).await.unwrap();
         assert_eq!(dispatcher.coordinator.snapshot.state(), &json!(3));
         assert_eq!(dispatcher.coordinator.snapshot.pending_outputs().len(), 0);
     }
@@ -1012,12 +1015,12 @@ mod tests {
             dispatcher.coordinator.acknowledge_outputs(["one"]).await,
             Err(StreamCheckpointError::ManagedOutput)
         ));
-        let output = claim(dispatcher.claim(now()).await.unwrap());
+        let output = claim(dispatcher.claim(now).await.unwrap());
         dispatcher
             .complete(
                 &output,
                 Err(StreamDeliveryError::Permanent("bad".into())),
-                now(),
+                now,
             )
             .await
             .unwrap();
@@ -1040,7 +1043,7 @@ mod tests {
         old["schema_version"] = json!(1);
         store.set(&key, &old.to_string(), None).await.unwrap();
         let mut dispatcher = worker(store.clone(), "worker", StreamOutboxConfig::default()).await;
-        let output = claim(dispatcher.claim(now()).await.unwrap());
+        let output = claim(dispatcher.claim(now).await.unwrap());
         let mut encoded: Value =
             serde_json::from_str(&store.get(&key).await.unwrap().unwrap()).unwrap();
         assert_eq!(encoded["schema_version"], json!(2));
@@ -1048,7 +1051,7 @@ mod tests {
             encoded["managed"]["deliveries"]["one"].clone();
         store.set(&key, &encoded.to_string(), None).await.unwrap();
         assert!(matches!(
-            dispatcher.complete(&output, Ok(()), now()).await,
+            dispatcher.complete(&output, Ok(()), now).await,
             Err(StreamOutboxError::Checkpoint(
                 StreamCheckpointError::InvalidManagedOutbox(_)
             ))
@@ -1088,8 +1091,11 @@ mod tests {
             dispatcher.reload().await.unwrap();
             assert_eq!(dispatcher.metrics_at(Utc::now()).pending, 1);
             let later = add_ms(Utc::now(), 30_001).unwrap();
-            let output = claim(dispatcher.claim(later).await.unwrap());
-            dispatcher.complete(&output, Ok(()), later).await.unwrap();
+            let output = claim(dispatcher.claim(|| later).await.unwrap());
+            dispatcher
+                .complete(&output, Ok(()), || later)
+                .await
+                .unwrap();
         }
     }
 
@@ -1118,7 +1124,7 @@ mod tests {
                 assert_eq!(metrics.pending, 1);
                 let output = claim(
                     dispatcher
-                        .claim(add_ms(Utc::now(), 30_001).unwrap())
+                        .claim(|| add_ms(Utc::now(), 30_001).unwrap())
                         .await
                         .unwrap(),
                 );
@@ -1174,9 +1180,9 @@ mod tests {
         assert_eq!(metrics.leased, 1);
         assert_eq!(metrics.counters.attempts, 1);
         let later = add_ms(Utc::now(), 30_001).unwrap();
-        let recovered = claim(dispatcher.claim(later).await.unwrap());
+        let recovered = claim(dispatcher.claim(|| later).await.unwrap());
         dispatcher
-            .complete(&recovered, Ok(()), later)
+            .complete(&recovered, Ok(()), || later)
             .await
             .unwrap();
         assert_eq!(dispatcher.metrics_at(later).pending, 0);
@@ -1234,10 +1240,10 @@ mod tests {
             ..Default::default()
         };
         let mut dispatcher = worker(store, "worker", config).await;
-        let first = claim(dispatcher.claim(now()).await.unwrap());
+        let first = claim(dispatcher.claim(now).await.unwrap());
         assert!(matches!(
             dispatcher
-                .complete(&first, Ok(()), add_ms(now(), 30_000).unwrap())
+                .complete(&first, Ok(()), || add_ms(now(), 30_000).unwrap())
                 .await,
             Err(StreamOutboxError::LeaseLost)
         ));
@@ -1245,18 +1251,18 @@ mod tests {
             .complete(
                 &first,
                 Err(StreamDeliveryError::Retryable("try later".into())),
-                now(),
+                now,
             )
             .await
             .unwrap();
         let later = add_ms(now(), 1_000).unwrap();
-        let second = claim(dispatcher.claim(later).await.unwrap());
+        let second = claim(dispatcher.claim(|| later).await.unwrap());
         assert!(matches!(
             dispatcher
                 .complete(
                     &second,
                     Err(StreamDeliveryError::Retryable("still unavailable".into())),
-                    later
+                    || later
                 )
                 .await
                 .unwrap(),
@@ -1274,11 +1280,11 @@ mod tests {
         seed(store.clone(), &["a", "b"]).await;
         let mut first = worker(store.clone(), "first", StreamOutboxConfig::default()).await;
         let mut second = worker(store, "second", StreamOutboxConfig::default()).await;
-        let a = claim(first.claim(now()).await.unwrap());
-        let b = claim(second.claim(now()).await.unwrap());
+        let a = claim(first.claim(now).await.unwrap());
+        let b = claim(second.claim(now).await.unwrap());
         let (left, right) = tokio::join!(
-            first.complete(&a, Ok(()), now()),
-            second.complete(&b, Ok(()), now())
+            first.complete(&a, Ok(()), now),
+            second.complete(&b, Ok(()), now)
         );
         left.unwrap();
         right.unwrap();
@@ -1294,12 +1300,12 @@ mod tests {
         let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
         seed(store.clone(), &["a"]).await;
         let mut dispatcher = worker(store, "worker", StreamOutboxConfig::default()).await;
-        let output = claim(dispatcher.claim(now()).await.unwrap());
+        let output = claim(dispatcher.claim(now).await.unwrap());
         dispatcher
             .complete(
                 &output,
                 Err(StreamDeliveryError::Permanent("bad".into())),
-                now(),
+                now,
             )
             .await
             .unwrap();
@@ -1367,7 +1373,7 @@ mod tests {
         let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
         seed(store.clone(), &["one"]).await;
         let mut dispatcher = worker(store.clone(), "worker", StreamOutboxConfig::default()).await;
-        let _output = claim(dispatcher.claim(now()).await.unwrap());
+        let _output = claim(dispatcher.claim(now).await.unwrap());
         let key = stream_checkpoint_key("test", "tenant", "processor");
         let mut encoded: Value =
             serde_json::from_str(&store.get(&key).await.unwrap().unwrap()).unwrap();
@@ -1386,5 +1392,64 @@ mod tests {
             Err(StreamOutboxError::MissingManagedState)
         ));
         assert_eq!(dispatcher.dead_letters(), []);
+    }
+
+    #[tokio::test]
+    async fn completion_rechecks_time_after_storage_conflict_and_rejects_expiry() {
+        use std::sync::atomic::AtomicBool;
+        let fault = Arc::new(FaultStore::new(Arc::new(MemoryStateStore::new())));
+        seed(fault.clone(), &["one"]).await;
+        let mut dispatcher = worker(fault.clone(), "worker", StreamOutboxConfig::default()).await;
+        let output = claim(dispatcher.claim(now).await.unwrap());
+        let key = stream_checkpoint_key("test", "tenant", "processor");
+        let mut producer = StreamCheckpointCoordinator::<Value, Value>::initialize(
+            fault.clone(),
+            key.clone(),
+            Value::Null,
+            StreamCheckpointConfig::default(),
+        )
+        .await
+        .unwrap();
+        let release = fault
+            .pause_next(
+                key.kind,
+                WriteOperation::CompareAndSwap,
+                FaultTiming::Before,
+            )
+            .unwrap();
+        let expired = AtomicBool::new(false);
+        let later = add_ms(now(), 30_001).unwrap();
+        let finish = dispatcher.complete(&output, Ok(()), || {
+            if expired.load(Ordering::SeqCst) {
+                later
+            } else {
+                now()
+            }
+        });
+        let concurrent_update = async {
+            while fault.consumed() == 0 {
+                tokio::task::yield_now().await;
+            }
+            producer
+                .checkpoint(json!({"count": 3}), [], [])
+                .await
+                .unwrap();
+            expired.store(true, Ordering::SeqCst);
+            release.send(()).unwrap();
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(finish, concurrent_update)
+        })
+        .await
+        .unwrap();
+        assert!(matches!(result, Err(StreamOutboxError::LeaseLost)));
+        dispatcher.reload().await.unwrap();
+        assert_eq!(
+            dispatcher.coordinator.snapshot.state(),
+            &json!({"count": 3})
+        );
+        let metrics = dispatcher.metrics_at(later);
+        assert_eq!(metrics.pending, 1);
+        assert_eq!(metrics.counters.delivered, 0);
     }
 }

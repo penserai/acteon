@@ -136,6 +136,10 @@ retrying. Never retry by replacing the record with a stale snapshot. Managed
 workers reload before each transition and retry CAS conflicts a bounded number
 of times while preserving concurrent processor state and positions.
 
+Each transition rewrites one checkpoint record. Keep processor state and queued
+payloads within the backend's item-size limit, and shard processor keys when
+throughput or contention requires it.
+
 Version-one checkpoints remain readable and upgrade to version two when a
 managed dispatcher is attached. Unmanaged checkpoints continue using version one. Upgrade all checkpoint-writing binaries before enabling this feature:
 older readers reject version-two records. Version-two snapshots validate delivery
