@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 use acteon_bus::BusMessage;
 use chrono::{DateTime, Duration, TimeZone, Utc};
@@ -54,14 +54,14 @@ impl TelemetryEvent {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourcePosition {
     pub topic: String,
     pub partition: i32,
     pub offset: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SourceRecord {
     pub event_id: String,
     pub observed_at: DateTime<Utc>,
@@ -71,7 +71,7 @@ pub struct SourceRecord {
     pub position: SourcePosition,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CorrelatedWindow {
     pub window_id: String,
     pub tenant: String,
@@ -119,7 +119,7 @@ pub struct IngestResult {
     pub emitted: Vec<CorrelatedWindow>,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WindowingStats {
     pub accepted_records: usize,
     pub duplicate_records: usize,
@@ -152,9 +152,15 @@ pub enum WindowingError {
     },
     #[error("event time is outside chrono's supported range")]
     EventTimeOutOfRange,
+    #[error("unsupported correlator snapshot version {0}")]
+    UnsupportedSnapshotVersion(u16),
+    #[error("correlator snapshot has an invalid {field}: {value}")]
+    InvalidSnapshotDuration { field: &'static str, value: i64 },
+    #[error("correlator snapshot contains duplicate {collection} entry")]
+    DuplicateSnapshotEntry { collection: &'static str },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 struct WindowKey {
     tenant: String,
     environment: String,
@@ -163,6 +169,7 @@ struct WindowKey {
     starts_at_ms: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct WindowState {
     window_id: String,
     tenant: String,
@@ -194,7 +201,24 @@ pub struct EventTimeCorrelator {
     allowed_lateness: Duration,
     windows: BTreeMap<WindowKey, WindowState>,
     finalized: BTreeSet<WindowKey>,
-    seen_event_ids: HashSet<String>,
+    seen_event_ids: BTreeSet<String>,
+    source_high_water: BTreeMap<SignalSource, DateTime<Utc>>,
+    stats: WindowingStats,
+}
+
+const SNAPSHOT_VERSION: u16 = 1;
+
+/// Versioned, deterministic representation of all event-time state required
+/// to resume after a process restart.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CorrelatorSnapshot {
+    schema_version: u16,
+    window_size_ms: i64,
+    allowed_lateness_ms: i64,
+    windows: Vec<(WindowKey, WindowState)>,
+    finalized: Vec<WindowKey>,
+    seen_event_ids: Vec<String>,
     source_high_water: BTreeMap<SignalSource, DateTime<Utc>>,
     stats: WindowingStats,
 }
@@ -209,7 +233,7 @@ impl EventTimeCorrelator {
             allowed_lateness,
             windows: BTreeMap::new(),
             finalized: BTreeSet::new(),
-            seen_event_ids: HashSet::new(),
+            seen_event_ids: BTreeSet::new(),
             source_high_water: BTreeMap::new(),
             stats: WindowingStats::default(),
         })
@@ -317,6 +341,75 @@ impl EventTimeCorrelator {
 
     pub fn stats(&self) -> &WindowingStats {
         &self.stats
+    }
+
+    pub fn snapshot(&self) -> CorrelatorSnapshot {
+        CorrelatorSnapshot {
+            schema_version: SNAPSHOT_VERSION,
+            window_size_ms: self.window_size.num_milliseconds(),
+            allowed_lateness_ms: self.allowed_lateness.num_milliseconds(),
+            windows: self
+                .windows
+                .iter()
+                .map(|(key, state)| (key.clone(), state.clone()))
+                .collect(),
+            finalized: self.finalized.iter().cloned().collect(),
+            seen_event_ids: self.seen_event_ids.iter().cloned().collect(),
+            source_high_water: self.source_high_water.clone(),
+            stats: self.stats.clone(),
+        }
+    }
+
+    pub fn restore(snapshot: CorrelatorSnapshot) -> Result<Self, WindowingError> {
+        if snapshot.schema_version != SNAPSHOT_VERSION {
+            return Err(WindowingError::UnsupportedSnapshotVersion(
+                snapshot.schema_version,
+            ));
+        }
+        if snapshot.window_size_ms <= 0 {
+            return Err(WindowingError::InvalidSnapshotDuration {
+                field: "window_size_ms",
+                value: snapshot.window_size_ms,
+            });
+        }
+        if snapshot.allowed_lateness_ms < 0 {
+            return Err(WindowingError::InvalidSnapshotDuration {
+                field: "allowed_lateness_ms",
+                value: snapshot.allowed_lateness_ms,
+            });
+        }
+
+        let window_count = snapshot.windows.len();
+        let windows = snapshot.windows.into_iter().collect::<BTreeMap<_, _>>();
+        if windows.len() != window_count {
+            return Err(WindowingError::DuplicateSnapshotEntry {
+                collection: "window",
+            });
+        }
+        let finalized_count = snapshot.finalized.len();
+        let finalized = snapshot.finalized.into_iter().collect::<BTreeSet<_>>();
+        if finalized.len() != finalized_count {
+            return Err(WindowingError::DuplicateSnapshotEntry {
+                collection: "finalized window",
+            });
+        }
+        let seen_count = snapshot.seen_event_ids.len();
+        let seen_event_ids = snapshot.seen_event_ids.into_iter().collect::<BTreeSet<_>>();
+        if seen_event_ids.len() != seen_count {
+            return Err(WindowingError::DuplicateSnapshotEntry {
+                collection: "event ID",
+            });
+        }
+
+        Ok(Self {
+            window_size: Duration::milliseconds(snapshot.window_size_ms),
+            allowed_lateness: Duration::milliseconds(snapshot.allowed_lateness_ms),
+            windows,
+            finalized,
+            seen_event_ids,
+            source_high_water: snapshot.source_high_water,
+            stats: snapshot.stats,
+        })
     }
 
     pub fn watermark(&self) -> Option<DateTime<Utc>> {
@@ -583,5 +676,41 @@ mod tests {
             .unwrap();
         assert_eq!(old.missing_sources(), vec![SignalSource::Logs]);
         assert_eq!(correlator.stats().incomplete_windows, 1);
+    }
+
+    #[test]
+    fn snapshot_restores_partial_windows_and_deduplication_state() {
+        let mut before_restart = correlator();
+        let metrics = message(
+            SignalSource::Metrics,
+            "metrics-1",
+            "2026-10-01T19:42:10Z",
+            3,
+        );
+        let traces = message(SignalSource::Traces, "traces-1", "2026-10-01T19:42:20Z", 4);
+        before_restart.ingest(metrics.clone()).unwrap();
+        before_restart.ingest(traces).unwrap();
+
+        let encoded = serde_json::to_vec(&before_restart.snapshot()).unwrap();
+        let snapshot = serde_json::from_slice(&encoded).unwrap();
+        let mut after_restart = EventTimeCorrelator::restore(snapshot).unwrap();
+
+        assert_eq!(
+            after_restart.ingest(metrics).unwrap().disposition,
+            IngestDisposition::Duplicate
+        );
+        let result = after_restart
+            .ingest(message(
+                SignalSource::Logs,
+                "logs-1",
+                "2026-10-01T19:42:30Z",
+                5,
+            ))
+            .unwrap();
+        assert_eq!(result.emitted.len(), 1);
+        assert!(result.emitted[0].has_all_source_records());
+        assert_eq!(after_restart.stats().accepted_records, 3);
+        assert_eq!(after_restart.stats().duplicate_records, 1);
+        assert_eq!(after_restart.stats().complete_windows, 1);
     }
 }

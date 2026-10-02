@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-02T02:20:50.445854+00:00",
+  "generated_at": "2026-10-02T03:00:38.864960+00:00",
   "model": "typed-decisions",
   "health": {
     "loaded": [
@@ -12,10 +12,38 @@
   },
   "windowing": {
     "accepted_records": 12,
-    "duplicate_records": 1,
+    "duplicate_records": 6,
     "late_records": 0,
     "complete_windows": 4,
     "incomplete_windows": 0
+  },
+  "recovery": {
+    "checkpoint_writes": 2,
+    "restored_generation": 1,
+    "pre_crash_records": 5,
+    "replayed_records_deduplicated": 5,
+    "committed_offsets": {
+      "logs": {
+        "topic": "observability.acme.logs-fed0995605ef4283b1b5cce41a8cddc8",
+        "partition": 0,
+        "offset": 3
+      },
+      "metrics": {
+        "topic": "observability.acme.metrics-fed0995605ef4283b1b5cce41a8cddc8",
+        "partition": 0,
+        "offset": 4
+      },
+      "traces": {
+        "topic": "observability.acme.traces-fed0995605ef4283b1b5cce41a8cddc8",
+        "partition": 0,
+        "offset": 3
+      }
+    },
+    "final_consumer_lag": {
+      "logs": 0,
+      "metrics": 0,
+      "traces": 0
+    }
   },
   "trials": [
     {
@@ -27,17 +55,17 @@
       "uncertainty": 0.7349,
       "source_positions": {
         "logs": {
-          "topic": "observability.acme.logs-61f7659384944feba2f8da053dbcfabc",
+          "topic": "observability.acme.logs-fed0995605ef4283b1b5cce41a8cddc8",
           "partition": 0,
           "offset": 0
         },
         "metrics": {
-          "topic": "observability.acme.metrics-61f7659384944feba2f8da053dbcfabc",
+          "topic": "observability.acme.metrics-fed0995605ef4283b1b5cce41a8cddc8",
           "partition": 0,
           "offset": 0
         },
         "traces": {
-          "topic": "observability.acme.traces-61f7659384944feba2f8da053dbcfabc",
+          "topic": "observability.acme.traces-fed0995605ef4283b1b5cce41a8cddc8",
           "partition": 0,
           "offset": 0
         }
@@ -50,8 +78,8 @@
           "evidence_probability": 0.2128,
           "impact_score": 1.4031,
           "available": true,
-          "inference_ms": 1375.85,
-          "wall_ms": 1377.956959,
+          "inference_ms": 1336.2,
+          "wall_ms": 1338.6960829999998,
           "raw_response": {
             "answers": {
               "condition": {
@@ -127,8 +155,8 @@
           "evidence_probability": 0.3264,
           "impact_score": 1.3027,
           "available": true,
-          "inference_ms": 1050.26,
-          "wall_ms": 2427.940375,
+          "inference_ms": 1031.99,
+          "wall_ms": 2370.684791,
           "raw_response": {
             "answers": {
               "condition": {
@@ -204,8 +232,8 @@
           "evidence_probability": 0.3057,
           "impact_score": 1.1232,
           "available": true,
-          "inference_ms": 1006.37,
-          "wall_ms": 3434.2481660000003,
+          "inference_ms": 993.23,
+          "wall_ms": 3364.034792,
           "raw_response": {
             "answers": {
               "condition": {
@@ -287,8 +315,8 @@
         },
         "correlated_probability": 0.4515,
         "impact_score": 2.0883,
-        "inference_ms": 6903.16,
-        "wall_ms": 6906.041,
+        "inference_ms": 6795.21,
+        "wall_ms": 6797.805125,
         "raw_response": {
           "answers": {
             "correlated_incident": {
@@ -370,17 +398,17 @@
       "uncertainty": 0.7208,
       "source_positions": {
         "logs": {
-          "topic": "observability.acme.logs-61f7659384944feba2f8da053dbcfabc",
+          "topic": "observability.acme.logs-fed0995605ef4283b1b5cce41a8cddc8",
           "partition": 0,
           "offset": 1
         },
         "metrics": {
-          "topic": "observability.acme.metrics-61f7659384944feba2f8da053dbcfabc",
+          "topic": "observability.acme.metrics-fed0995605ef4283b1b5cce41a8cddc8",
           "partition": 0,
           "offset": 1
         },
         "traces": {
-          "topic": "observability.acme.traces-61f7659384944feba2f8da053dbcfabc",
+          "topic": "observability.acme.traces-fed0995605ef4283b1b5cce41a8cddc8",
           "partition": 0,
           "offset": 1
         }
@@ -393,8 +421,8 @@
           "evidence_probability": 0.2181,
           "impact_score": 1.2921,
           "available": true,
-          "inference_ms": 1470.5,
-          "wall_ms": 1472.3105,
+          "inference_ms": 1375.15,
+          "wall_ms": 1376.820958,
           "raw_response": {
             "answers": {
               "condition": {
@@ -470,8 +498,8 @@
           "evidence_probability": 0.2692,
           "impact_score": 1.2185,
           "available": true,
-          "inference_ms": 1042.51,
-          "wall_ms": 2514.576166,
+          "inference_ms": 1050.09,
+          "wall_ms": 2427.002667,
           "raw_response": {
             "answers": {
               "condition": {
@@ -547,8 +575,8 @@
           "evidence_probability": 0.2518,
           "impact_score": 1.2714,
           "available": true,
-          "inference_ms": 1192.09,
-          "wall_ms": 3706.866667,
+          "inference_ms": 1191.73,
+          "wall_ms": 3618.4707080000003,
           "raw_response": {
             "answers": {
               "condition": {
@@ -630,8 +658,8 @@
         },
         "correlated_probability": 0.475,
         "impact_score": 1.996,
-        "inference_ms": 7254.74,
-        "wall_ms": 7256.419916999999,
+        "inference_ms": 7101.45,
+        "wall_ms": 7103.934209,
         "raw_response": {
           "answers": {
             "correlated_incident": {
@@ -713,17 +741,17 @@
       "uncertainty": 0.7281,
       "source_positions": {
         "logs": {
-          "topic": "observability.acme.logs-61f7659384944feba2f8da053dbcfabc",
+          "topic": "observability.acme.logs-fed0995605ef4283b1b5cce41a8cddc8",
           "partition": 0,
           "offset": 2
         },
         "metrics": {
-          "topic": "observability.acme.metrics-61f7659384944feba2f8da053dbcfabc",
+          "topic": "observability.acme.metrics-fed0995605ef4283b1b5cce41a8cddc8",
           "partition": 0,
           "offset": 2
         },
         "traces": {
-          "topic": "observability.acme.traces-61f7659384944feba2f8da053dbcfabc",
+          "topic": "observability.acme.traces-fed0995605ef4283b1b5cce41a8cddc8",
           "partition": 0,
           "offset": 2
         }
@@ -736,8 +764,8 @@
           "evidence_probability": 0.6586,
           "impact_score": 2.9302,
           "available": true,
-          "inference_ms": 1527.97,
-          "wall_ms": 1529.9356670000002,
+          "inference_ms": 1473.37,
+          "wall_ms": 1475.1080000000002,
           "raw_response": {
             "answers": {
               "condition": {
@@ -813,8 +841,8 @@
           "evidence_probability": 0.512,
           "impact_score": 1.7298,
           "available": true,
-          "inference_ms": 1213.99,
-          "wall_ms": 2743.600791,
+          "inference_ms": 1196.66,
+          "wall_ms": 2671.896292,
           "raw_response": {
             "answers": {
               "condition": {
@@ -890,8 +918,8 @@
           "evidence_probability": 0.6171,
           "impact_score": 2.853,
           "available": true,
-          "inference_ms": 1233.74,
-          "wall_ms": 3977.376417,
+          "inference_ms": 1227.09,
+          "wall_ms": 3898.786,
           "raw_response": {
             "answers": {
               "condition": {
@@ -973,8 +1001,8 @@
         },
         "correlated_probability": 0.4539,
         "impact_score": 2.0426,
-        "inference_ms": 7540.65,
-        "wall_ms": 7543.040917,
+        "inference_ms": 7391.84,
+        "wall_ms": 7393.707625,
         "raw_response": {
           "answers": {
             "correlated_incident": {
@@ -1056,17 +1084,17 @@
       "uncertainty": 0.75,
       "source_positions": {
         "logs": {
-          "topic": "observability.acme.logs-61f7659384944feba2f8da053dbcfabc",
+          "topic": "observability.acme.logs-fed0995605ef4283b1b5cce41a8cddc8",
           "partition": 0,
           "offset": 3
         },
         "metrics": {
-          "topic": "observability.acme.metrics-61f7659384944feba2f8da053dbcfabc",
+          "topic": "observability.acme.metrics-fed0995605ef4283b1b5cce41a8cddc8",
           "partition": 0,
           "offset": 3
         },
         "traces": {
-          "topic": "observability.acme.traces-61f7659384944feba2f8da053dbcfabc",
+          "topic": "observability.acme.traces-fed0995605ef4283b1b5cce41a8cddc8",
           "partition": 0,
           "offset": 3
         }
@@ -1079,8 +1107,8 @@
           "evidence_probability": 0.4844,
           "impact_score": 2.4798,
           "available": true,
-          "inference_ms": 1590.85,
-          "wall_ms": 1592.6509170000002,
+          "inference_ms": 1576.45,
+          "wall_ms": 1578.171709,
           "raw_response": {
             "answers": {
               "condition": {
@@ -1156,8 +1184,8 @@
           "evidence_probability": 0.3641,
           "impact_score": 1.5303,
           "available": true,
-          "inference_ms": 1250.17,
-          "wall_ms": 2842.6524170000002,
+          "inference_ms": 1241.36,
+          "wall_ms": 2819.444125,
           "raw_response": {
             "answers": {
               "condition": {
@@ -1233,8 +1261,8 @@
           "evidence_probability": 0.4468,
           "impact_score": 1.2477,
           "available": false,
-          "inference_ms": 745.86,
-          "wall_ms": 3588.307625,
+          "inference_ms": 748.32,
+          "wall_ms": 3567.780875,
           "raw_response": {
             "answers": {
               "condition": {
@@ -1316,8 +1344,8 @@
         },
         "correlated_probability": 0.5235,
         "impact_score": 2.0435,
-        "inference_ms": 7546.96,
-        "wall_ms": 7549.046292,
+        "inference_ms": 7448.96,
+        "wall_ms": 7450.774375,
         "raw_response": {
           "answers": {
             "correlated_incident": {
@@ -1393,9 +1421,9 @@
   ],
   "aggregate": {
     "model_calls": 16,
-    "total_inference_ms": 43945.67,
-    "p50_inference_ms": 1375.85,
-    "p95_inference_ms": 7546.96,
+    "total_inference_ms": 43179.1,
+    "p50_inference_ms": 1336.2,
+    "p95_inference_ms": 7448.96,
     "diagnostic_calls": 1,
     "on_call_notifications": 1,
     "investigator_calls": 1,
