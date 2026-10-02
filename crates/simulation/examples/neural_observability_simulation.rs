@@ -308,12 +308,16 @@ fn error(message: impl Into<String>) -> AnyError {
 }
 
 fn inference_time(headers: &HeaderMap) -> Result<f64, AnyError> {
-    headers
+    let milliseconds = headers
         .get("x-inference-time-ms")
         .ok_or_else(|| error("Laya response omitted X-Inference-Time-Ms"))?
         .to_str()?
         .parse::<f64>()
-        .map_err(Into::into)
+        .map_err(AnyError::from)?;
+    if !milliseconds.is_finite() || milliseconds < 0.0 {
+        return Err(error("Laya returned an invalid inference time"));
+    }
+    Ok(milliseconds)
 }
 
 fn object_at<'a>(value: &'a Value, path: &[&str]) -> Result<&'a Map<String, Value>, AnyError> {

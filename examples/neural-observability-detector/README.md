@@ -128,4 +128,5 @@ simulation consumes that public Acteon API; the Laya startup adapter enforces
 the same lock before serving traffic.
 Model HTTP calls use `acteon-llm::TypedJsonModelClient`; it validates the raw
 body against a compiled JSON Schema before producing a typed response and
-preserves the original body, headers, and elapsed time as inference evidence.
+preserves the bounded original bytes, parsed JSON, headers, and elapsed time as
+inference evidence.

@@ -276,8 +276,9 @@ The same API can govern another inference engine, model registry, artifact
 layout, or set of named contracts; the Laya startup script is the runtime
 adapter for this deployment. Calls use Acteon's `TypedJsonModelClient`, which
 checks the raw response against a compiled JSON Schema before deserializing it
-to the declared Rust output type. The detector then applies its Laya-specific
-semantic checks for question IDs, probabilities, and labels. Load only the
+to the declared Rust output type. It caps response bytes and rejects redirects
+before validation. The detector then applies its Laya-specific semantic checks
+for question IDs, probabilities, and labels. Load only the
 `typed-decisions` checkpoint to bound resident memory. Laya also supports ONNX
 and per-channel INT8 export for a later compact CPU deployment, but the first
 simulation uses the upstream server path. A future native Acteon provider can

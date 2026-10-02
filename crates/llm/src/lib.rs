@@ -14,4 +14,7 @@ pub use governance::{
 };
 pub use http::HttpLlmEvaluator;
 pub use mock::{CapturingLlmEvaluator, FailingLlmEvaluator, MockLlmEvaluator};
-pub use typed::{JsonResponseContract, TypedJsonModelClient, TypedModelError, TypedModelResponse};
+pub use typed::{
+    DEFAULT_MAX_RESPONSE_BYTES, JsonResponseContract, TypedJsonModelClient, TypedModelError,
+    TypedModelResponse,
+};
