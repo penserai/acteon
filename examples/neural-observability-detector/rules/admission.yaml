@@ -1,0 +1,10 @@
+rules:
+  - name: deduplicate-delivery
+    priority: 0
+    description: "Deduplicate completed-delivery retries before forwarding to verdict routing"
+    condition:
+      field: action.action_type
+      eq: "detector.deliver"
+    action:
+      type: deduplicate
+      ttl_seconds: 3600

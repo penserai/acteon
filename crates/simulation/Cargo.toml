@@ -125,7 +125,7 @@ name = "branch_chain_simulation"
 
 [[example]]
 name = "neural_observability_simulation"
-required-features = ["bus"]
+required-features = ["bus", "redis"]
 
 [[example]]
 name = "scheduled_actions_simulation"
