@@ -20,6 +20,7 @@ use acteon_bus::{
 use acteon_core::chain::{ChainConfig, ChainStatus, ChainStepConfig};
 use acteon_core::{Action, ActionOutcome, Topic};
 use acteon_gateway::{Gateway, GatewayBuilder};
+use acteon_llm::VerifiedModelLock;
 use acteon_rules::Rule;
 use acteon_rules_yaml::YamlFrontend;
 use acteon_simulation::{ActionOutcomeExt, RecordingProvider};
@@ -140,6 +141,7 @@ struct SimulationReport {
     generated_at: String,
     model: String,
     health: HealthIdentity,
+    governance: VerifiedModelLock,
     windowing: WindowingStats,
     recovery: RecoveryReport,
     trials: Vec<TrialReport>,
@@ -196,11 +198,6 @@ impl LayaClient {
                     .ok_or_else(|| error("Laya health loaded entry is not a string"))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        if loaded != [MODEL] {
-            return Err(error(format!(
-                "expected only {MODEL} to be loaded, got {loaded:?}"
-            )));
-        }
         let revisions = serde_json::from_value(
             value
                 .get("revisions")
@@ -450,10 +447,6 @@ fn validate_distribution<'a>(
     Ok(())
 }
 
-fn load_json(path: &Path) -> Result<Value, AnyError> {
-    Ok(serde_json::from_str(&fs::read_to_string(path)?)?)
-}
-
 fn load_fixture(path: &Path) -> Result<Fixture, AnyError> {
     Ok(serde_json::from_str(&fs::read_to_string(path)?)?)
 }
@@ -692,7 +685,7 @@ fn outcome_action(
     evidence_strength: f64,
     uncertainty: f64,
     fusion: &FusionSummary,
-    revision: &str,
+    governance: &VerifiedModelLock,
 ) -> Action {
     Action::new(
         NAMESPACE,
@@ -710,9 +703,10 @@ fn outcome_action(
             "uncertainty": uncertainty,
             "evidence_refs": evidence_refs(fixture),
             "model": {
-                "repository": "convaiinnovations/laya",
-                "revision": revision,
-                "checkpoint": MODEL,
+                "repository": governance.policy.model.repository,
+                "revision": governance.policy.model.revision,
+                "checkpoint": governance.policy.model.name,
+                "lock_digest": governance.lock_digest,
                 "question_set": "fusion@1"
             }
         }),
@@ -733,7 +727,7 @@ fn markdown(report: &SimulationReport) -> String {
     output.push_str("# Neural observability simulation results\n\n");
     let _ = write!(
         output,
-        "Laya `{}` ran on `{}` at revision `{}`. Kafka supplied {} accepted source records across {} event-time windows and the correlator rejected {} duplicates or recovery redeliveries. The runner restored checkpoint generation {} after an injected pre-commit crash. All {} neural calls were real HTTP inference requests; Acteon used in-memory state and recording providers for controlled side effects.\n\n",
+        "Laya `{}` ran on `{}` at revision `{}`. Governance lock `{}` approved six runtime packages, five checkpoint artifacts, and four question sets before inference. Kafka supplied {} accepted source records across {} event-time windows and the correlator rejected {} duplicates or recovery redeliveries. The runner restored checkpoint generation {} after an injected pre-commit crash. All {} neural calls were real HTTP inference requests; Acteon used in-memory state and recording providers for controlled side effects.\n\n",
         report.model,
         report.health.device,
         report
@@ -741,6 +735,7 @@ fn markdown(report: &SimulationReport) -> String {
             .revisions
             .get(MODEL)
             .map_or("unknown", String::as_str),
+        report.governance.lock_digest,
         report.windowing.accepted_records,
         report.windowing.complete_windows + report.windowing.incomplete_windows,
         report.windowing.duplicate_records,
@@ -784,7 +779,10 @@ fn markdown(report: &SimulationReport) -> String {
     output.push_str("\n## Aggregate\n\n");
     let _ = write!(
         output,
-        "- Kafka source records accepted: **{}**\n- Kafka duplicates and redeliveries rejected: **{}**\n- Recovery redeliveries deduplicated after restart: **{}**\n- Atomic checkpoint generations written: **{}**\n- Final Kafka consumer lag: **{}**\n- Event-time windows completed: **{}**\n- Model calls: **{}**\n- Total model inference: **{:.0} ms**\n- Per-call p50 / p95: **{:.0} ms / {:.0} ms**\n- Incident chains: **{}** diagnostics capture and **{}** on-call notification\n- Bounded investigations: **{}**\n- Duplicate incident dispatches prevented by the runner ledger: **{}**\n\n",
+        "- Governed runtime packages / model artifacts / question sets: **{} / {} / {}**\n- Kafka source records accepted: **{}**\n- Kafka duplicates and redeliveries rejected: **{}**\n- Recovery redeliveries deduplicated after restart: **{}**\n- Atomic checkpoint generations written: **{}**\n- Final Kafka consumer lag: **{}**\n- Event-time windows completed: **{}**\n- Model calls: **{}**\n- Total model inference: **{:.0} ms**\n- Per-call p50 / p95: **{:.0} ms / {:.0} ms**\n- Incident chains: **{}** diagnostics capture and **{}** on-call notification\n- Bounded investigations: **{}**\n- Duplicate incident dispatches prevented by the runner ledger: **{}**\n\n",
+        report.governance.policy.runtime.len(),
+        report.governance.policy.artifacts.len(),
+        report.governance.policy.contracts.len(),
         report.windowing.accepted_records,
         report.windowing.duplicate_records,
         report.recovery.replayed_records_deduplicated,
@@ -1201,12 +1199,13 @@ async fn kafka_stream_replay(fixtures: &[Fixture]) -> Result<StreamReplay, AnyEr
 async fn main() -> Result<(), AnyError> {
     let root = example_root();
     let write_results = std::env::args().any(|argument| argument == "--write-results");
-    let questions = BTreeMap::from([
-        ("metrics", load_json(&root.join("questions/metrics.json"))?),
-        ("traces", load_json(&root.join("questions/traces.json"))?),
-        ("logs", load_json(&root.join("questions/logs.json"))?),
-        ("fusion", load_json(&root.join("questions/fusion.json"))?),
-    ]);
+    let governance = VerifiedModelLock::load(root.join("model.lock.json"))?;
+    governance.verify_model(MODEL)?;
+    let questions = governance
+        .load_contracts(&root)?
+        .into_iter()
+        .map(|(name, bytes)| Ok((name, serde_json::from_slice(&bytes)?)))
+        .collect::<Result<BTreeMap<String, Value>, serde_json::Error>>()?;
     let fixture_names = [
         "baseline.json",
         "log-noise.json",
@@ -1222,17 +1221,15 @@ async fn main() -> Result<(), AnyError> {
     let acteon = ActeonSimulation::build(&rules)?;
     let laya = LayaClient::new()?;
     let health = laya.health().await?;
-    let revision = health
-        .revisions
-        .get(MODEL)
-        .cloned()
-        .ok_or_else(|| error("health response omitted the typed-decisions revision"))?;
+    governance.verify_served_identity(&health.loaded, &health.revisions)?;
+    let revision = governance.policy.model.revision.clone();
     let mut reports = Vec::new();
     let mut latencies = Vec::new();
     let mut idempotency_ledger = HashSet::new();
 
     println!("\nACTEON + LAYA NEURAL OBSERVABILITY SIMULATION");
     println!("checkpoint: {MODEL} @ {revision} ({})\n", health.device);
+    println!("governance: {} verified\n", governance.lock_digest);
     println!(
         "kafka: {} accepted records, {} duplicates/redeliveries, {} event-time windows",
         stream_replay.stats.accepted_records,
@@ -1341,7 +1338,7 @@ async fn main() -> Result<(), AnyError> {
             evidence_strength,
             uncertainty,
             &fusion,
-            &revision,
+            &governance,
         );
         let acteon_outcome = Box::pin(acteon.dispatch(verdict_action)).await?;
         let passed = route == fixture.expected_route;
@@ -1407,6 +1404,7 @@ async fn main() -> Result<(), AnyError> {
         generated_at: chrono::Utc::now().to_rfc3339(),
         model: MODEL.to_owned(),
         health,
+        governance,
         windowing: stream_replay.stats,
         recovery: stream_replay.recovery,
         aggregate: AggregateReport {

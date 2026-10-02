@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-02T03:00:38.864960+00:00",
+  "generated_at": "2026-10-02T04:03:45.194899+00:00",
   "model": "typed-decisions",
   "health": {
     "loaded": [
@@ -9,6 +9,48 @@
       "typed-decisions": "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851"
     },
     "device": "cpu"
+  },
+  "governance": {
+    "lock_digest": "sha256:2b074d7100d42d8443af8a1dc0c08ac6e42cb440725359d7b7e3380795fd87ba",
+    "schema_version": 1,
+    "runtime": {
+      "huggingface_hub": "1.33.0",
+      "laya": "0.3.23",
+      "numpy": "2.5.3",
+      "safetensors": "0.8.0",
+      "torch": "2.14.0+cpu",
+      "transformers": "5.18.0"
+    },
+    "model": {
+      "repository": "convaiinnovations/laya",
+      "name": "typed-decisions",
+      "revision": "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851"
+    },
+    "artifacts": {
+      "encoder/config.json": "sha256:5268d24ad3b77c8151de5dcb0762ba4391619aad9ab0bda33e36fb083cfeae6d",
+      "model.safetensors": "sha256:4fa56de72383a9d3efa9cfa78955733c81b9fc8067a587ca4beb82c78107a24e",
+      "rl_agent_config.json": "sha256:ebf0cd524d92342a6be5e48e9fca3d7c2babfb5a56ccd79d2171ef5d8c7f7be8",
+      "tokenizer/tokenizer.json": "sha256:6c8aaa9a542084f2457eab775d4eeb51f92a70c0fd9de28d5edb0ddec3c08d30",
+      "tokenizer/tokenizer_config.json": "sha256:08d4cf3ac4dca381759441b85b91a6d40e688471dcd33d15d6649eb0a9a854d1"
+    },
+    "contracts": {
+      "fusion": {
+        "path": "questions/fusion.json",
+        "digest": "sha256:059b334d03ef642a835017e197e57b959bb81b4ff84f597bc89b027da10fe865"
+      },
+      "logs": {
+        "path": "questions/logs.json",
+        "digest": "sha256:3b2876d57b840193e6a56b9fcdb56b30e2c45e779339748367f6429114e0f598"
+      },
+      "metrics": {
+        "path": "questions/metrics.json",
+        "digest": "sha256:6a148a25042155f1f161222edd09f8934330c8d93782135a6bb8abc106e8d775"
+      },
+      "traces": {
+        "path": "questions/traces.json",
+        "digest": "sha256:28f3010f1af3fdf1c03060367ae5222861cf84395bd12801cb2f799481165c46"
+      }
+    }
   },
   "windowing": {
     "accepted_records": 12,
@@ -24,17 +66,17 @@
     "replayed_records_deduplicated": 5,
     "committed_offsets": {
       "logs": {
-        "topic": "observability.acme.logs-fed0995605ef4283b1b5cce41a8cddc8",
+        "topic": "observability.acme.logs-1cc70396002447a7a35b069969bfb101",
         "partition": 0,
         "offset": 3
       },
       "metrics": {
-        "topic": "observability.acme.metrics-fed0995605ef4283b1b5cce41a8cddc8",
+        "topic": "observability.acme.metrics-1cc70396002447a7a35b069969bfb101",
         "partition": 0,
         "offset": 4
       },
       "traces": {
-        "topic": "observability.acme.traces-fed0995605ef4283b1b5cce41a8cddc8",
+        "topic": "observability.acme.traces-1cc70396002447a7a35b069969bfb101",
         "partition": 0,
         "offset": 3
       }
@@ -55,17 +97,17 @@
       "uncertainty": 0.7349,
       "source_positions": {
         "logs": {
-          "topic": "observability.acme.logs-fed0995605ef4283b1b5cce41a8cddc8",
+          "topic": "observability.acme.logs-1cc70396002447a7a35b069969bfb101",
           "partition": 0,
           "offset": 0
         },
         "metrics": {
-          "topic": "observability.acme.metrics-fed0995605ef4283b1b5cce41a8cddc8",
+          "topic": "observability.acme.metrics-1cc70396002447a7a35b069969bfb101",
           "partition": 0,
           "offset": 0
         },
         "traces": {
-          "topic": "observability.acme.traces-fed0995605ef4283b1b5cce41a8cddc8",
+          "topic": "observability.acme.traces-1cc70396002447a7a35b069969bfb101",
           "partition": 0,
           "offset": 0
         }
@@ -78,8 +120,8 @@
           "evidence_probability": 0.2128,
           "impact_score": 1.4031,
           "available": true,
-          "inference_ms": 1336.2,
-          "wall_ms": 1338.6960829999998,
+          "inference_ms": 1403.46,
+          "wall_ms": 1407.0917920000002,
           "raw_response": {
             "answers": {
               "condition": {
@@ -155,8 +197,8 @@
           "evidence_probability": 0.3264,
           "impact_score": 1.3027,
           "available": true,
-          "inference_ms": 1031.99,
-          "wall_ms": 2370.684791,
+          "inference_ms": 1063.17,
+          "wall_ms": 2470.111958,
           "raw_response": {
             "answers": {
               "condition": {
@@ -232,8 +274,8 @@
           "evidence_probability": 0.3057,
           "impact_score": 1.1232,
           "available": true,
-          "inference_ms": 993.23,
-          "wall_ms": 3364.034792,
+          "inference_ms": 1024.96,
+          "wall_ms": 3495.118375,
           "raw_response": {
             "answers": {
               "condition": {
@@ -315,8 +357,8 @@
         },
         "correlated_probability": 0.4515,
         "impact_score": 2.0883,
-        "inference_ms": 6795.21,
-        "wall_ms": 6797.805125,
+        "inference_ms": 7129.18,
+        "wall_ms": 7131.272042,
         "raw_response": {
           "answers": {
             "correlated_incident": {
@@ -398,17 +440,17 @@
       "uncertainty": 0.7208,
       "source_positions": {
         "logs": {
-          "topic": "observability.acme.logs-fed0995605ef4283b1b5cce41a8cddc8",
+          "topic": "observability.acme.logs-1cc70396002447a7a35b069969bfb101",
           "partition": 0,
           "offset": 1
         },
         "metrics": {
-          "topic": "observability.acme.metrics-fed0995605ef4283b1b5cce41a8cddc8",
+          "topic": "observability.acme.metrics-1cc70396002447a7a35b069969bfb101",
           "partition": 0,
           "offset": 1
         },
         "traces": {
-          "topic": "observability.acme.traces-fed0995605ef4283b1b5cce41a8cddc8",
+          "topic": "observability.acme.traces-1cc70396002447a7a35b069969bfb101",
           "partition": 0,
           "offset": 1
         }
@@ -421,8 +463,8 @@
           "evidence_probability": 0.2181,
           "impact_score": 1.2921,
           "available": true,
-          "inference_ms": 1375.15,
-          "wall_ms": 1376.820958,
+          "inference_ms": 1443.67,
+          "wall_ms": 1445.230458,
           "raw_response": {
             "answers": {
               "condition": {
@@ -498,8 +540,8 @@
           "evidence_probability": 0.2692,
           "impact_score": 1.2185,
           "available": true,
-          "inference_ms": 1050.09,
-          "wall_ms": 2427.002667,
+          "inference_ms": 1102.91,
+          "wall_ms": 2548.2407089999997,
           "raw_response": {
             "answers": {
               "condition": {
@@ -575,8 +617,8 @@
           "evidence_probability": 0.2518,
           "impact_score": 1.2714,
           "available": true,
-          "inference_ms": 1191.73,
-          "wall_ms": 3618.4707080000003,
+          "inference_ms": 1244.72,
+          "wall_ms": 3793.1939999999995,
           "raw_response": {
             "answers": {
               "condition": {
@@ -658,8 +700,8 @@
         },
         "correlated_probability": 0.475,
         "impact_score": 1.996,
-        "inference_ms": 7101.45,
-        "wall_ms": 7103.934209,
+        "inference_ms": 7341.81,
+        "wall_ms": 7343.984542,
         "raw_response": {
           "answers": {
             "correlated_incident": {
@@ -741,17 +783,17 @@
       "uncertainty": 0.7281,
       "source_positions": {
         "logs": {
-          "topic": "observability.acme.logs-fed0995605ef4283b1b5cce41a8cddc8",
+          "topic": "observability.acme.logs-1cc70396002447a7a35b069969bfb101",
           "partition": 0,
           "offset": 2
         },
         "metrics": {
-          "topic": "observability.acme.metrics-fed0995605ef4283b1b5cce41a8cddc8",
+          "topic": "observability.acme.metrics-1cc70396002447a7a35b069969bfb101",
           "partition": 0,
           "offset": 2
         },
         "traces": {
-          "topic": "observability.acme.traces-fed0995605ef4283b1b5cce41a8cddc8",
+          "topic": "observability.acme.traces-1cc70396002447a7a35b069969bfb101",
           "partition": 0,
           "offset": 2
         }
@@ -764,8 +806,8 @@
           "evidence_probability": 0.6586,
           "impact_score": 2.9302,
           "available": true,
-          "inference_ms": 1473.37,
-          "wall_ms": 1475.1080000000002,
+          "inference_ms": 1520.73,
+          "wall_ms": 1522.3719999999998,
           "raw_response": {
             "answers": {
               "condition": {
@@ -841,8 +883,8 @@
           "evidence_probability": 0.512,
           "impact_score": 1.7298,
           "available": true,
-          "inference_ms": 1196.66,
-          "wall_ms": 2671.896292,
+          "inference_ms": 1219.78,
+          "wall_ms": 2742.1522080000004,
           "raw_response": {
             "answers": {
               "condition": {
@@ -918,8 +960,8 @@
           "evidence_probability": 0.6171,
           "impact_score": 2.853,
           "available": true,
-          "inference_ms": 1227.09,
-          "wall_ms": 3898.786,
+          "inference_ms": 1264.31,
+          "wall_ms": 4006.348333,
           "raw_response": {
             "answers": {
               "condition": {
@@ -1001,8 +1043,8 @@
         },
         "correlated_probability": 0.4539,
         "impact_score": 2.0426,
-        "inference_ms": 7391.84,
-        "wall_ms": 7393.707625,
+        "inference_ms": 7520.46,
+        "wall_ms": 7522.420417,
         "raw_response": {
           "answers": {
             "correlated_incident": {
@@ -1084,17 +1126,17 @@
       "uncertainty": 0.75,
       "source_positions": {
         "logs": {
-          "topic": "observability.acme.logs-fed0995605ef4283b1b5cce41a8cddc8",
+          "topic": "observability.acme.logs-1cc70396002447a7a35b069969bfb101",
           "partition": 0,
           "offset": 3
         },
         "metrics": {
-          "topic": "observability.acme.metrics-fed0995605ef4283b1b5cce41a8cddc8",
+          "topic": "observability.acme.metrics-1cc70396002447a7a35b069969bfb101",
           "partition": 0,
           "offset": 3
         },
         "traces": {
-          "topic": "observability.acme.traces-fed0995605ef4283b1b5cce41a8cddc8",
+          "topic": "observability.acme.traces-1cc70396002447a7a35b069969bfb101",
           "partition": 0,
           "offset": 3
         }
@@ -1107,8 +1149,8 @@
           "evidence_probability": 0.4844,
           "impact_score": 2.4798,
           "available": true,
-          "inference_ms": 1576.45,
-          "wall_ms": 1578.171709,
+          "inference_ms": 1586.61,
+          "wall_ms": 1588.306333,
           "raw_response": {
             "answers": {
               "condition": {
@@ -1184,8 +1226,8 @@
           "evidence_probability": 0.3641,
           "impact_score": 1.5303,
           "available": true,
-          "inference_ms": 1241.36,
-          "wall_ms": 2819.444125,
+          "inference_ms": 1262.1,
+          "wall_ms": 2850.4025,
           "raw_response": {
             "answers": {
               "condition": {
@@ -1261,8 +1303,8 @@
           "evidence_probability": 0.4468,
           "impact_score": 1.2477,
           "available": false,
-          "inference_ms": 748.32,
-          "wall_ms": 3567.780875,
+          "inference_ms": 741.64,
+          "wall_ms": 3592.0660829999997,
           "raw_response": {
             "answers": {
               "condition": {
@@ -1344,8 +1386,8 @@
         },
         "correlated_probability": 0.5235,
         "impact_score": 2.0435,
-        "inference_ms": 7448.96,
-        "wall_ms": 7450.774375,
+        "inference_ms": 7634.38,
+        "wall_ms": 7636.446708,
         "raw_response": {
           "answers": {
             "correlated_incident": {
@@ -1421,9 +1463,9 @@
   ],
   "aggregate": {
     "model_calls": 16,
-    "total_inference_ms": 43179.1,
-    "p50_inference_ms": 1336.2,
-    "p95_inference_ms": 7448.96,
+    "total_inference_ms": 44503.89,
+    "p50_inference_ms": 1403.46,
+    "p95_inference_ms": 7634.38,
     "diagnostic_calls": 1,
     "on_call_notifications": 1,
     "investigator_calls": 1,

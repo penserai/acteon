@@ -37,6 +37,7 @@ services:
     environment:
       LAYA_API_KEY: "${LAYA_API_KEY:-acteon-laya-demo}"
       LAYA_DEVICE: cpu
+      LAYA_REPOSITORY: convaiinnovations/laya
       LAYA_MODELS: typed-decisions
       LAYA_DEFAULT_MODEL: typed-decisions
       LAYA_PRELOAD: "1"
@@ -50,6 +51,7 @@ services:
       - "127.0.0.1:8000:8000"
     volumes:
       - laya-model-cache:/root/.cache/huggingface
+      - ./model.lock.json:/opt/acteon/model.lock.json:ro
     healthcheck:
       test:
         - CMD
