@@ -405,9 +405,10 @@ only later consider reversible remediation.
 
 ## Simulation: a convincing vertical slice
 
-The smallest useful demonstration should prove correlation, real neural
-inference, routing, agent containment, and repeatability. It invokes a pinned
-Laya checkpoint locally. The telemetry is synthetic, while all four Laya
+The smallest useful demonstration should prove transport, event-time
+correlation, real neural inference, routing, agent containment, and
+repeatability. It publishes synthetic telemetry through three Kafka topics and
+invokes a pinned Laya checkpoint locally. The broker traffic and all four Laya
 forward passes are real. Results demonstrate the integration and do not claim
 production detector quality.
 
@@ -421,9 +422,10 @@ Run it from the repository root:
 examples/neural-observability-detector/scripts/run.sh
 ```
 
-The script builds the CPU-only Laya service, downloads the pinned checkpoint on
-the first run, performs 16 real model calls across four trials, exercises
-Acteon's rules and incident chain, and writes JSON and Markdown reports.
+The script starts Kafka, builds the CPU-only Laya service, downloads the pinned
+checkpoint on the first run, performs 16 real model calls across four trials,
+exercises Acteon's rules and incident chain, and writes JSON and Markdown
+reports.
 
 ```text
 examples/neural-observability-detector/
@@ -462,31 +464,37 @@ replaceable inference container behind its typed HTTP API.
 | Pool exhaustion | the three correlated signals from the scenario | one incident chain, even when the window is replayed |
 | Ambiguous regression | high latency, conflicting trace and log labels, one missing source | one bounded investigation-agent run; no remediation |
 
-The fixtures use fixed timestamps, IDs, Kafka coordinates, and model revision.
-`model.lock.json` records the checkpoint, revision, runtime versions, and
-question-set digests. The runner also keeps an idempotency ledger for admitted
-verdicts. That makes the simulation an integration test of real inference,
-contracts, and policy rather than a misleading benchmark of production model
-quality.
+The fixtures use fixed timestamps and IDs. The runner publishes their source
+features to separate metrics, traces, and logs topics, consumes the resulting
+broker positions, and joins them into 60-second event-time windows with 15
+seconds of allowed lateness. One metrics record is deliberately redelivered to
+verify event-ID deduplication. `model.lock.json` records the checkpoint,
+revision, runtime versions, and question-set digests. The runner also keeps an
+idempotency ledger for admitted verdicts. That makes the simulation an
+integration test of real transport, inference, contracts, and policy rather
+than a misleading benchmark of production model quality.
 
 ### Measured result
 
 The recorded CPU run passed all four expected policy outcomes. Laya correctly
 separated the first-stage signal conditions. Its raw fusion choice selected
-`db_pool_exhaustion` for all four fixtures at low confidence, including the two
-healthy/noise cases. The deterministic corroboration gate suppressed those raw
-false positives and admitted an incident only when all three typed signal
-decisions agreed.
+`downstream_timeout` for the healthy, noise, and ambiguous fixtures and
+`db_pool_exhaustion` for the correlated incident, all at low confidence. The
+deterministic corroboration gate suppressed the healthy/noise false positives
+and admitted an incident only when all three typed signal decisions agreed.
 
 | Measure | Result |
 |---|---:|
 | Expected policy outcomes | 4 / 4 |
+| Kafka source records accepted | 12 |
+| Kafka redeliveries rejected | 1 |
+| Event-time windows | 4 |
 | Real Laya calls | 16 |
-| Total inference | 48,919 ms |
-| Per-call p50 / p95 | 1,324 ms / 12,650 ms |
+| Total inference | 43,946 ms |
+| Per-call p50 / p95 | 1,376 ms / 7,547 ms |
 | Incident chains | 1 |
 | Bounded investigator calls | 1 |
-| Duplicate incident dispatches | 0 |
+| Duplicate incident dispatches prevented | 1 |
 
 See the
 [`latest.md`](https://github.com/penserai/acteon/blob/main/examples/neural-observability-detector/results/latest.md)
@@ -579,16 +587,16 @@ example, `questions/metrics.json` produces this request:
 
 ```json
 {
-  "state": {
-    "summary": "checkout-api has severe user impact. Database pool utilization is saturated, latency is ten times baseline, and errors are high.",
-    "latency_p95_ms": 1800,
-    "latency_baseline_ms": 180,
-    "error_rate": 0.084,
-    "request_rate_per_second": 126,
-    "request_rate_baseline": 120,
-    "db_pool_utilization": 0.96,
-    "evidence_refs": ["metrics:4:8821"]
-  },
+  "state": [
+    {"field": "context", "value": "checkout-api has severe user impact. Database pool utilization is saturated, latency is ten times baseline, and errors are high."},
+    {"field": "latency_p95_ms", "value": 1800},
+    {"field": "latency_baseline_ms", "value": 180},
+    {"field": "error_rate", "value": 0.084},
+    {"field": "request_rate_per_second", "value": 126},
+    {"field": "request_rate_baseline", "value": 120},
+    {"field": "db_pool_utilization", "value": 0.96},
+    {"field": "evidence_refs", "value": ["metrics:4:8821"]}
+  ],
   "questions": {
     "pool_exhausted": {
       "type": "noul",
@@ -604,15 +612,20 @@ example, `questions/metrics.json` produces this request:
         "application_errors": "Application failures increased without a saturated dependency resource."
       }
     },
-    "severity": {
+    "impact": {
       "type": "score",
-      "instructions": "Score the operational impact.",
+      "instructions": "Score the operational impact of this metrics window.",
       "criteria": ["none", "low", "moderate", "high", "critical"]
     }
   },
   "model": "typed-decisions"
 }
 ```
+
+The runner renders each typed feature object into this schema-ordered array
+before inference. JSON object key order is not semantic and serializers may
+change it; the explicit array prevents serialization order from changing the
+model input.
 
 Laya returns a selected choice and its probability distribution, an expected
 score with per-level probabilities, and `noul` as the probability of yes. It
@@ -662,7 +675,7 @@ the container is performing inference:
 jq -n \
   --slurpfile fixture fixtures/pool-exhaustion.json \
   --slurpfile questions questions/metrics.json \
-  '{state: $fixture[0].metrics, questions: $questions[0], model: "typed-decisions"}' \
+  '{state: ($fixture[0].metrics | to_entries | map({field: .key, value: .value})), questions: $questions[0], model: "typed-decisions"}' \
 | curl --fail-with-body --silent \
   --header "Authorization: Bearer ${LAYA_API_KEY}" \
   --header "Content-Type: application/json" \
@@ -706,18 +719,20 @@ the runtime versions, pinned revision, and question-set digests.
 
 1. Start the pinned Laya service and confirm the checkpoint revision and device
    through its authenticated health response.
-2. Read one fixed telemetry window from the metrics, traces, and logs fixture
-   fields.
-3. Invoke the three signal question sets concurrently over HTTP.
-4. Validate the response IDs, types, labels, numeric ranges, probability sums,
+2. Publish the fixed telemetry envelopes to separate Kafka topics, including
+   one deliberate duplicate event ID.
+3. Consume the three streams and correlate them into 60-second event-time
+   windows, preserving broker positions and availability masks.
+4. Invoke the three signal question sets concurrently over HTTP.
+5. Validate the response IDs, types, labels, numeric ranges, probability sums,
    routing identity, and zero output-token count.
-5. Send only the three typed results and availability mask to the fusion
+6. Send only the three typed results and availability mask to the fusion
    question set.
-6. Apply the corroboration policy and dispatch `detector.verdict` through the
+7. Apply the corroboration policy and dispatch `detector.verdict` through the
    real Acteon gateway and rules.
-7. Verify suppression, the completed incident chain, or the investigator
+8. Verify suppression, the completed incident chain, or the investigator
    recording provider, then replay the incident key.
-8. Generate JSON and Markdown reports with actual and expected outcomes.
+9. Generate JSON and Markdown reports with actual and expected outcomes.
 
 ### Assertions
 

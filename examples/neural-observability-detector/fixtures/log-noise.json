@@ -1,9 +1,10 @@
 {
   "name": "log-only-noise",
   "window_id": "checkout-api:prod:2026-10-01T19:41Z",
+  "window_start": "2026-10-01T19:41:00Z",
   "expected_route": "suppress",
   "metrics": {
-    "summary": "checkout-api metrics are healthy. Latency, errors, and database pool usage remain normal.",
+    "context": "checkout-api metrics are healthy. Latency, errors, and database pool usage remain normal.",
     "latency_p95_ms": 185,
     "latency_baseline_ms": 180,
     "error_rate": 0.001,
@@ -13,14 +14,14 @@
     "evidence_refs": ["metrics:4:8811"]
   },
   "traces": {
-    "summary": "Trace latency is normal and all dependencies respond successfully.",
+    "context": "Trace latency is normal and all dependencies respond successfully.",
     "slow_request_fraction": 0.003,
     "database_wait_fraction": 0.05,
     "dominant_span": "checkout.validate",
     "evidence_refs": ["traces:2:1894"]
   },
   "logs": {
-    "summary": "A noisy deprecated-feature warning repeats, but there are no errors, no pool timeouts, and no user impact.",
+    "context": "A noisy deprecated-feature warning repeats, but there are no errors, no pool timeouts, and no user impact.",
     "error_count": 0,
     "pool_timeout_count": 0,
     "warning_count": 84,

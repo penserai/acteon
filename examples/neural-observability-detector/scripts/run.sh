@@ -17,4 +17,4 @@ docker compose --project-directory "$EXAMPLE_DIR" \
 
 cd "$REPO_DIR"
 cargo run -p acteon-simulation \
-  --example neural_observability_simulation -- --write-results
+  --features bus --example neural_observability_simulation -- --write-results
