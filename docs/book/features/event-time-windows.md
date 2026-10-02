@@ -122,7 +122,8 @@ accepts another record. It rejects duplicate entries, invalid boundaries,
 unknown sources, records outside their assigned window, inconsistent dedup
 state, capacity violations, and windows that should already have emitted.
 
-For crash-safe Kafka processing, use this order:
+For crash-safe Kafka processing, use
+[`StreamCheckpointCoordinator`](stream-checkpoints.md) to enforce this order:
 
 1. Ingest source records and collect emitted windows.
 2. Persist the operator snapshot and ready-window outbox atomically.
@@ -130,9 +131,9 @@ For crash-safe Kafka processing, use this order:
 4. Deliver ready windows with an idempotent output key.
 5. Remove delivered outbox entries in the next checkpoint generation.
 
-The snapshot is a state-machine boundary rather than a storage backend. Store
-it in Acteon state, a transactional database, or an atomic file according to
-the deployment's durability and throughput requirements.
+The window snapshot is a state-machine boundary. The checkpoint coordinator
+stores it with offsets and ready outputs through any Acteon state backend and
+uses compare-and-swap to reject stale writers.
 
 ## Observability
 

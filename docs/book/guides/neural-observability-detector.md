@@ -494,6 +494,10 @@ offsets. The simulation then terminates its consumers before committing,
 restores the checkpoint, and proves that Kafka redelivery neither reopens a
 window nor loses an output. A final checkpoint is fsynced and renamed before
 the source offsets are committed; the run must end with zero consumer lag.
+Deployed runners can use Acteon's
+[`StreamCheckpointCoordinator`](../features/stream-checkpoints.md) to persist
+the same window snapshot, offsets, and ready-output outbox through any Acteon
+state backend with stale-writer protection.
 One additional metrics record is deliberately duplicated independently of the
 restart. `model.lock.json` records the model identity, revision, runtime
 versions, artifact manifest, and named contract digests. The runner also keeps
@@ -829,6 +833,8 @@ false-positive and agent-escalation budgets.
   subscriptions, schemas, and typed envelopes
 - [Event-Time Windows](../features/event-time-windows.md) — multi-source
   correlation, watermarks, replay deduplication, and recovery snapshots
+- [Stream Checkpoints and Outbox](../features/stream-checkpoints.md) — atomic
+  processor state, source positions, and idempotent ready outputs
 - [Task Chains](../features/chains.md) — multi-step response workflows
 - [Parallel Steps](../features/parallel-steps.md) — fan-out/fan-in for model or
   provider calls

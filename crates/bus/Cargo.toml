@@ -1,6 +1,6 @@
 [package]
 name = "acteon-bus"
-description = "Message bus transport, schemas, and event-time stream windows for Acteon"
+description = "Message bus transport, stream windows, and durable checkpoints for Acteon"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,6 +9,7 @@ rust-version.workspace = true
 
 [dependencies]
 acteon-core = { workspace = true }
+acteon-state = { workspace = true }
 
 async-stream = "0.3"
 async-trait = { workspace = true }
@@ -27,6 +28,7 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+acteon-state-memory = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util", "time"] }
 
 [lints]
