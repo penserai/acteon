@@ -373,6 +373,9 @@ version = "0.1.0"
 dependencies = [
  "acteon-core",
  "async-trait",
+ "axum 0.8.9",
+ "futures",
+ "jsonschema",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
