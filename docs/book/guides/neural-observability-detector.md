@@ -269,11 +269,14 @@ The runtime is the upstream `laya-serve` HTTP service in a CPU container. The
 example enforces its lock twice. The container verifies six installed package
 versions, the configured repository and revision, the exact five-file
 checkpoint manifest, and every artifact SHA-256 before it starts the server.
-The Rust runner separately verifies the lock schema, all four question-set
-digests, and the health-reported loaded checkpoint and revision before its
-first inference call. Load only the `typed-decisions` checkpoint to bound
-resident memory. Laya also supports ONNX and per-channel INT8 export for a
-later compact CPU deployment, but the first simulation uses the upstream
+The Rust runner uses Acteon's reusable `acteon_llm::VerifiedModelLock` API to
+parse the strict lock schema, load content-addressed inference contracts, and
+verify the health-reported model and revision before its first inference call.
+The same API can govern another inference engine, model registry, artifact
+layout, or set of named contracts; the Laya startup script is the runtime
+adapter for this deployment. Load only the `typed-decisions` checkpoint to
+bound resident memory. Laya also supports ONNX and per-channel INT8 export for
+a later compact CPU deployment, but the first simulation uses the upstream
 server path. A future native Acteon provider can remove the HTTP hop without
 changing the contracts.
 
@@ -479,11 +482,11 @@ restores the checkpoint, and proves that Kafka redelivery neither reopens a
 window nor loses an output. A final checkpoint is fsynced and renamed before
 the source offsets are committed; the run must end with zero consumer lag.
 One additional metrics record is deliberately duplicated independently of the
-restart. `model.lock.json` records the checkpoint, revision, runtime versions,
-and question-set digests. The runner also keeps an idempotency ledger for
-admitted verdicts. That makes the simulation an integration test of real
-transport, recovery, inference, contracts, and policy rather than a misleading
-benchmark of production model quality.
+restart. `model.lock.json` records the model identity, revision, runtime
+versions, artifact manifest, and named contract digests. The runner also keeps
+an idempotency ledger for admitted verdicts. That makes the simulation an
+integration test of real transport, recovery, inference, contracts, and policy
+rather than a misleading benchmark of production model quality.
 
 ### Measured result
 
@@ -732,7 +735,8 @@ overlaps client and HTTP work but does not make the model execute three passes
 simultaneously. The JSON report embeds every raw response, including usage,
 typed answers, confidence, and routing decisions, along with measured inference
 latency and the server's model identity. `model.lock.json` separately records
-the runtime versions, pinned revision, and question-set digests.
+the runtime versions, pinned revision, artifact manifest, and named contract
+digests.
 
 ### Simulation sequence
 

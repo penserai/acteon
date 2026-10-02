@@ -122,5 +122,7 @@ The event-time state machine and its replay, lateness, and missing-source tests
 live beside the Rust example in `crates/simulation/examples/neural_observability/windowing.rs`.
 The atomic store, recovery envelope, and checkpoint-before-commit tests live in
 `crates/simulation/examples/neural_observability/checkpoint.rs`.
-The strict lock parser, question digest checks, and Laya health allowlist live
-in `crates/simulation/examples/neural_observability/governance.rs`.
+The reusable lock parser, runtime and artifact verification, contract digest
+checks, and served-model allowlist live in `acteon-llm::governance`. The
+simulation consumes that public Acteon API; the Laya startup adapter enforces
+the same lock before serving traffic.

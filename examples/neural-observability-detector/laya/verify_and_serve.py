@@ -24,9 +24,9 @@ RUNTIME_DISTRIBUTIONS = {
 ROOT_FIELDS = {
     "schema_version",
     "runtime",
-    "checkpoint",
+    "model",
     "artifacts",
-    "question_sets",
+    "contracts",
 }
 
 
@@ -55,7 +55,7 @@ def main() -> None:
         if actual != runtime[name]:
             fail(f"{name} version {actual} differs from locked {runtime[name]}")
 
-    checkpoint = lock["checkpoint"]
+    checkpoint = lock["model"]
     repository = os.environ.get("LAYA_REPOSITORY", "")
     model = os.environ.get("LAYA_MODELS", "")
     revision = os.environ.get("LAYA_REVISION", "")

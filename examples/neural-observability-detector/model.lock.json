@@ -8,7 +8,7 @@
     "safetensors": "0.8.0",
     "numpy": "2.5.3"
   },
-  "checkpoint": {
+  "model": {
     "repository": "convaiinnovations/laya",
     "name": "typed-decisions",
     "revision": "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851"
@@ -20,10 +20,22 @@
     "tokenizer/tokenizer.json": "sha256:6c8aaa9a542084f2457eab775d4eeb51f92a70c0fd9de28d5edb0ddec3c08d30",
     "tokenizer/tokenizer_config.json": "sha256:08d4cf3ac4dca381759441b85b91a6d40e688471dcd33d15d6649eb0a9a854d1"
   },
-  "question_sets": {
-    "fusion.json": "sha256:059b334d03ef642a835017e197e57b959bb81b4ff84f597bc89b027da10fe865",
-    "logs.json": "sha256:3b2876d57b840193e6a56b9fcdb56b30e2c45e779339748367f6429114e0f598",
-    "metrics.json": "sha256:6a148a25042155f1f161222edd09f8934330c8d93782135a6bb8abc106e8d775",
-    "traces.json": "sha256:28f3010f1af3fdf1c03060367ae5222861cf84395bd12801cb2f799481165c46"
+  "contracts": {
+    "fusion": {
+      "path": "questions/fusion.json",
+      "digest": "sha256:059b334d03ef642a835017e197e57b959bb81b4ff84f597bc89b027da10fe865"
+    },
+    "logs": {
+      "path": "questions/logs.json",
+      "digest": "sha256:3b2876d57b840193e6a56b9fcdb56b30e2c45e779339748367f6429114e0f598"
+    },
+    "metrics": {
+      "path": "questions/metrics.json",
+      "digest": "sha256:6a148a25042155f1f161222edd09f8934330c8d93782135a6bb8abc106e8d775"
+    },
+    "traces": {
+      "path": "questions/traces.json",
+      "digest": "sha256:28f3010f1af3fdf1c03060367ae5222861cf84395bd12801cb2f799481165c46"
+    }
   }
 }

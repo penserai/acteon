@@ -20,6 +20,7 @@ use acteon_bus::{
 use acteon_core::chain::{ChainConfig, ChainStatus, ChainStepConfig};
 use acteon_core::{Action, ActionOutcome, Topic};
 use acteon_gateway::{Gateway, GatewayBuilder};
+use acteon_llm::VerifiedModelLock;
 use acteon_rules::Rule;
 use acteon_rules_yaml::YamlFrontend;
 use acteon_simulation::{ActionOutcomeExt, RecordingProvider};
@@ -36,11 +37,7 @@ mod windowing;
 #[path = "neural_observability/checkpoint.rs"]
 mod checkpoint;
 
-#[path = "neural_observability/governance.rs"]
-mod governance;
-
 use checkpoint::{AtomicCheckpointStore, RecoveryCheckpoint, persist_then_commit};
-use governance::{ModelGovernance, load_governed_questions};
 use windowing::{
     CorrelatedWindow, EventTimeCorrelator, IngestDisposition, SCHEMA_VERSION, SignalSource,
     SourcePosition, TelemetryEvent, WindowingStats,
@@ -144,7 +141,7 @@ struct SimulationReport {
     generated_at: String,
     model: String,
     health: HealthIdentity,
-    governance: ModelGovernance,
+    governance: VerifiedModelLock,
     windowing: WindowingStats,
     recovery: RecoveryReport,
     trials: Vec<TrialReport>,
@@ -688,7 +685,7 @@ fn outcome_action(
     evidence_strength: f64,
     uncertainty: f64,
     fusion: &FusionSummary,
-    governance: &ModelGovernance,
+    governance: &VerifiedModelLock,
 ) -> Action {
     Action::new(
         NAMESPACE,
@@ -706,9 +703,9 @@ fn outcome_action(
             "uncertainty": uncertainty,
             "evidence_refs": evidence_refs(fixture),
             "model": {
-                "repository": governance.repository,
-                "revision": governance.approved_revision,
-                "checkpoint": governance.checkpoint,
+                "repository": governance.policy.model.repository,
+                "revision": governance.policy.model.revision,
+                "checkpoint": governance.policy.model.name,
                 "lock_digest": governance.lock_digest,
                 "question_set": "fusion@1"
             }
@@ -783,9 +780,9 @@ fn markdown(report: &SimulationReport) -> String {
     let _ = write!(
         output,
         "- Governed runtime packages / model artifacts / question sets: **{} / {} / {}**\n- Kafka source records accepted: **{}**\n- Kafka duplicates and redeliveries rejected: **{}**\n- Recovery redeliveries deduplicated after restart: **{}**\n- Atomic checkpoint generations written: **{}**\n- Final Kafka consumer lag: **{}**\n- Event-time windows completed: **{}**\n- Model calls: **{}**\n- Total model inference: **{:.0} ms**\n- Per-call p50 / p95: **{:.0} ms / {:.0} ms**\n- Incident chains: **{}** diagnostics capture and **{}** on-call notification\n- Bounded investigations: **{}**\n- Duplicate incident dispatches prevented by the runner ledger: **{}**\n\n",
-        report.governance.runtime.len(),
-        report.governance.artifacts.len(),
-        report.governance.question_sets.len(),
+        report.governance.policy.runtime.len(),
+        report.governance.policy.artifacts.len(),
+        report.governance.policy.contracts.len(),
         report.windowing.accepted_records,
         report.windowing.duplicate_records,
         report.recovery.replayed_records_deduplicated,
@@ -1202,9 +1199,13 @@ async fn kafka_stream_replay(fixtures: &[Fixture]) -> Result<StreamReplay, AnyEr
 async fn main() -> Result<(), AnyError> {
     let root = example_root();
     let write_results = std::env::args().any(|argument| argument == "--write-results");
-    let governed = load_governed_questions(&root, MODEL)?;
-    let questions = governed.questions;
-    let governance = governed.governance;
+    let governance = VerifiedModelLock::load(root.join("model.lock.json"))?;
+    governance.verify_model(MODEL)?;
+    let questions = governance
+        .load_contracts(&root)?
+        .into_iter()
+        .map(|(name, bytes)| Ok((name, serde_json::from_slice(&bytes)?)))
+        .collect::<Result<BTreeMap<String, Value>, serde_json::Error>>()?;
     let fixture_names = [
         "baseline.json",
         "log-noise.json",
@@ -1220,8 +1221,8 @@ async fn main() -> Result<(), AnyError> {
     let acteon = ActeonSimulation::build(&rules)?;
     let laya = LayaClient::new()?;
     let health = laya.health().await?;
-    governance.verify_health(&health.loaded, &health.revisions)?;
-    let revision = governance.approved_revision.clone();
+    governance.verify_served_identity(&health.loaded, &health.revisions)?;
+    let revision = governance.policy.model.revision.clone();
     let mut reports = Vec::new();
     let mut latencies = Vec::new();
     let mut idempotency_ledger = HashSet::new();

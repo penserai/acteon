@@ -1,11 +1,15 @@
 pub mod config;
 pub mod error;
 pub mod evaluator;
+pub mod governance;
 pub mod http;
 pub mod mock;
 
 pub use config::LlmGuardrailConfig;
 pub use error::LlmEvaluatorError;
 pub use evaluator::{LlmEvaluator, LlmGuardrailResponse};
+pub use governance::{
+    LockedContract, ModelGovernanceError, ModelIdentity, ModelLock, VerifiedModelLock,
+};
 pub use http::HttpLlmEvaluator;
 pub use mock::{CapturingLlmEvaluator, FailingLlmEvaluator, MockLlmEvaluator};
