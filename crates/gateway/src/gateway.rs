@@ -3850,7 +3850,9 @@ impl Gateway {
             if config.inherit_metadata {
                 step_action.metadata = chain_state.origin_action.metadata.clone();
             }
-            step_action.trace_context = chain_state.origin_action.trace_context.clone();
+            step_action
+                .trace_context
+                .clone_from(&chain_state.origin_action.trace_context);
             if let Some(ancestry) = chain_state
                 .origin_action
                 .metadata
