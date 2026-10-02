@@ -246,6 +246,29 @@ pub struct WorkerStepConfig {
     pub max_attempts: Option<u32>,
 }
 
+/// Configuration for a chain step that emits a new action through the full
+/// Acteon dispatch pipeline.
+///
+/// Unlike a provider step, a dispatch step re-evaluates rules, quotas,
+/// deduplication, approvals, routing, and audit for the emitted action.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DispatchStepConfig {
+    /// Initial provider placed on the emitted action. Rules may reroute it.
+    pub provider: String,
+    /// Action type placed on the emitted action.
+    pub action_type: String,
+    /// Optional template for the emitted action's deduplication key.
+    #[serde(default)]
+    pub dedup_key: Option<String>,
+    /// Copy metadata labels from the chain's origin action.
+    #[serde(default = "default_true")]
+    pub inherit_metadata: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
 /// The kind of work a chain step performs — a borrowed, tagged view over
 /// the mutually-exclusive step-kind fields of [`ChainStepConfig`].
 ///
@@ -270,6 +293,8 @@ pub enum StepKind<'a> {
     Signal(&'a SignalStepConfig),
     /// Execute on an external worker queue.
     Worker(&'a WorkerStepConfig),
+    /// Emit a new action through the full gateway dispatch pipeline.
+    Dispatch(&'a DispatchStepConfig),
 }
 
 impl StepKind<'_> {
@@ -284,6 +309,7 @@ impl StepKind<'_> {
             Self::Timer(_) => "timer",
             Self::Signal(_) => "wait_for_signal",
             Self::Worker(_) => "worker",
+            Self::Dispatch(_) => "dispatch",
         }
     }
 }
@@ -550,6 +576,10 @@ pub struct ChainStepConfig {
     /// provider. Mutually exclusive with the other step kinds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker: Option<WorkerStepConfig>,
+    /// Optional full-pipeline action dispatch. Mutually exclusive with every
+    /// other step kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch: Option<DispatchStepConfig>,
 }
 
 impl ChainStepConfig {
@@ -576,6 +606,7 @@ impl ChainStepConfig {
             timer: None,
             wait_for_signal: None,
             worker: None,
+            dispatch: None,
         }
     }
 
@@ -597,6 +628,7 @@ impl ChainStepConfig {
             timer: None,
             wait_for_signal: None,
             worker: None,
+            dispatch: None,
         }
     }
 
@@ -618,6 +650,7 @@ impl ChainStepConfig {
             timer: None,
             wait_for_signal: None,
             worker: None,
+            dispatch: None,
         }
     }
 
@@ -660,13 +693,25 @@ impl ChainStepConfig {
         step
     }
 
+    /// Create a step that emits a new action through the full gateway pipeline.
+    #[must_use]
+    pub fn new_dispatch(
+        name: impl Into<String>,
+        dispatch: DispatchStepConfig,
+        payload_template: serde_json::Value,
+    ) -> Self {
+        let mut step = Self::new(name, "", "", payload_template);
+        step.dispatch = Some(dispatch);
+        step
+    }
+
     /// The canonical kind of this step, for engine dispatch.
     ///
     /// A valid step sets at most one kind ([`ChainConfig::validate`] rejects
     /// combinations). For defense in depth against an invalid config that
     /// slipped past validation, the precedence here mirrors the engine's
-    /// historical dispatch order: timer, wait-for-signal, worker, sub-chain,
-    /// parallel, then provider.
+    /// historical dispatch order: timer, wait-for-signal, worker, dispatch,
+    /// sub-chain, parallel, then provider.
     #[must_use]
     pub fn kind(&self) -> StepKind<'_> {
         if let Some(ref timer) = self.timer {
@@ -675,6 +720,8 @@ impl ChainStepConfig {
             StepKind::Signal(signal)
         } else if let Some(ref worker) = self.worker {
             StepKind::Worker(worker)
+        } else if let Some(ref dispatch) = self.dispatch {
+            StepKind::Dispatch(dispatch)
         } else if let Some(ref sub_chain) = self.sub_chain {
             StepKind::SubChain(sub_chain)
         } else if let Some(ref parallel) = self.parallel {
@@ -716,6 +763,12 @@ impl ChainStepConfig {
     #[must_use]
     pub fn is_worker(&self) -> bool {
         self.worker.is_some()
+    }
+
+    /// Returns `true` if this step emits an action through the gateway.
+    #[must_use]
+    pub fn is_dispatch(&self) -> bool {
+        self.dispatch.is_some()
     }
 
     /// Set the parallel step group.
@@ -954,6 +1007,12 @@ impl ChainConfig {
                             sub_step.name, step.name
                         ));
                     }
+                    if sub_step.dispatch.is_some() {
+                        errors.push(format!(
+                            "dispatch steps not allowed inside parallel groups: sub-step `{}` in parallel step `{}`",
+                            sub_step.name, step.name
+                        ));
+                    }
                     // Reject branches on individual sub-steps.
                     if sub_step.has_branches() {
                         errors.push(format!(
@@ -988,7 +1047,7 @@ impl ChainConfig {
             }
         }
 
-        // Validate timer / signal / worker steps: mutual exclusivity with
+        // Validate special steps: mutual exclusivity with
         // every other step kind, and internal consistency.
         for step in &self.steps {
             let kinds = [
@@ -998,18 +1057,19 @@ impl ChainConfig {
                 (step.is_timer(), "timer"),
                 (step.is_wait_for_signal(), "wait_for_signal"),
                 (step.is_worker(), "worker"),
+                (step.is_dispatch(), "dispatch"),
             ];
             let set: Vec<&str> = kinds
                 .iter()
                 .filter_map(|(on, name)| on.then_some(*name))
                 .collect();
             // Pairs among provider/sub_chain/parallel are reported by the
-            // dedicated checks above; only flag combinations involving the
-            // wait/worker step kinds here.
+            // dedicated checks above; flag combinations involving newer
+            // special step kinds here.
             if set.len() > 1
                 && set
                     .iter()
-                    .any(|k| matches!(*k, "timer" | "wait_for_signal" | "worker"))
+                    .any(|k| matches!(*k, "timer" | "wait_for_signal" | "worker" | "dispatch"))
             {
                 errors.push(format!(
                     "step `{}` sets multiple step kinds ({}); they are mutually exclusive",
@@ -1077,10 +1137,34 @@ impl ChainConfig {
                     ));
                 }
             }
+            if let Some(ref dispatch) = step.dispatch {
+                if dispatch.provider.trim().is_empty() {
+                    errors.push(format!(
+                        "dispatch step `{}` must set a non-empty `provider`",
+                        step.name
+                    ));
+                }
+                if dispatch.action_type.trim().is_empty() {
+                    errors.push(format!(
+                        "dispatch step `{}` must set a non-empty `action_type`",
+                        step.name
+                    ));
+                }
+                if dispatch
+                    .dedup_key
+                    .as_ref()
+                    .is_some_and(|key| key.trim().is_empty())
+                {
+                    errors.push(format!(
+                        "dispatch step `{}` must not set an empty `dedup_key`",
+                        step.name
+                    ));
+                }
+            }
         }
 
         // Retry is only meaningful where the engine re-executes the work
-        // itself: provider and worker steps.
+        // itself: provider, worker, and full-pipeline dispatch steps.
         for step in &self.steps {
             if step.retry.is_none() {
                 continue;
@@ -1098,7 +1182,7 @@ impl ChainConfig {
                     "step `{}` has a retry policy on a parallel step; retry is only supported on provider steps",
                     step.name
                 )),
-                StepKind::Provider | StepKind::Worker(_) => {}
+                StepKind::Provider | StepKind::Worker(_) | StepKind::Dispatch(_) => {}
             }
         }
 
@@ -2533,6 +2617,21 @@ mod tests {
             worker.kind(),
             StepKind::Worker(w) if w.queue == "builds"
         ));
+
+        let dispatch = ChainStepConfig::new_dispatch(
+            "g",
+            DispatchStepConfig {
+                provider: "router".into(),
+                action_type: "detector.verdict".into(),
+                dedup_key: Some("{{chain_id}}".into()),
+                inherit_metadata: true,
+            },
+            serde_json::json!({}),
+        );
+        assert!(matches!(
+            dispatch.kind(),
+            StepKind::Dispatch(d) if d.provider == "router"
+        ));
     }
 
     #[test]
@@ -2586,12 +2685,70 @@ mod tests {
             timeout_seconds: None,
             max_attempts: None,
         };
+        let dispatch = DispatchStepConfig {
+            provider: "p".into(),
+            action_type: "a".into(),
+            dedup_key: None,
+            inherit_metadata: true,
+        };
         assert_eq!(StepKind::Provider.label(), "provider");
         assert_eq!(StepKind::SubChain("c").label(), "sub_chain");
         assert_eq!(StepKind::Parallel(&group).label(), "parallel");
         assert_eq!(StepKind::Timer(&timer).label(), "timer");
         assert_eq!(StepKind::Signal(&signal).label(), "wait_for_signal");
         assert_eq!(StepKind::Worker(&worker).label(), "worker");
+        assert_eq!(StepKind::Dispatch(&dispatch).label(), "dispatch");
+    }
+
+    #[test]
+    fn dispatch_step_validates_target_and_exclusivity() {
+        let valid = ChainStepConfig::new_dispatch(
+            "route",
+            DispatchStepConfig {
+                provider: "router".into(),
+                action_type: "detector.verdict".into(),
+                dedup_key: Some("{{origin.dedup_key}}:policy-v2".into()),
+                inherit_metadata: true,
+            },
+            serde_json::json!({"verdict": "{{prev.body}}"}),
+        );
+        assert_eq!(
+            ChainConfig::new("valid").with_step(valid).validate(),
+            Vec::<String>::new()
+        );
+
+        let mut invalid = ChainStepConfig::new_dispatch(
+            "route",
+            DispatchStepConfig {
+                provider: String::new(),
+                action_type: String::new(),
+                dedup_key: Some(String::new()),
+                inherit_metadata: false,
+            },
+            serde_json::json!({}),
+        );
+        invalid.provider = "direct-provider".into();
+        let errors = ChainConfig::new("invalid").with_step(invalid).validate();
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("multiple step kinds"))
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("non-empty `provider`"))
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("non-empty `action_type`"))
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("empty `dedup_key`"))
+        );
     }
 
     #[test]

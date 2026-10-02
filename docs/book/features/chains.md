@@ -68,11 +68,12 @@ rules:
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `name` | string | Yes | Step identifier |
-| `provider` | string | Yes | Target provider for this step |
-| `action_type` | string | Yes | Action type for this step |
+| `provider` | string | Provider steps | Target provider for a direct provider step |
+| `action_type` | string | Provider steps | Action type for a direct provider step |
 | `payload_template` | object | No | Payload template with variable substitution |
 | `on_failure` | string | No | Per-step failure policy: `"abort"`, `"skip"`, `"dlq"` |
 | `delay_seconds` | u64 | No | Delay before executing this step |
+| `dispatch` | object | No | Emit a new Action through the full Acteon policy pipeline; contains its own required `provider` and `action_type` |
 
 ## Payload Templates
 
@@ -118,6 +119,60 @@ payload_template = '''
 | `abort` | Stop the entire chain |
 | `skip` | Skip this step, continue to next |
 | `dlq` | Send failed step to DLQ, continue chain |
+
+## Full-pipeline dispatch steps
+
+A provider step calls its configured provider directly after applying the
+chain executor's quota, retry, circuit-breaker, and audit controls. Use a
+`dispatch` step when the result must become a new Action and pass through
+Acteon's complete rule pipeline again:
+
+```toml title="acteon.toml"
+[[chains.definitions]]
+name = "admit-and-route"
+
+[[chains.definitions.steps]]
+name = "route-verdict"
+payload_template = { verdict = "{{origin.payload.verdict}}" }
+
+[chains.definitions.steps.dispatch]
+provider = "incident-router"
+action_type = "detector.verdict"
+dedup_key = "{{chain_id}}:detector.verdict"
+inherit_metadata = true
+```
+
+The emitted Action is evaluated by rules, deduplication, throttling, quotas,
+silences, approvals, schedules, chains, and provider routing. The step result
+has a stable envelope that can be used by later templates and branches:
+
+```json
+{
+  "outcome": "executed",
+  "action_id": "chain-dispatch-...",
+  "body": {"incident_id": "inc-123"}
+}
+```
+
+Policy-terminal results such as `suppressed`, `deduplicated`,
+`pending_approval`, `scheduled`, and `chain_started` complete the step and are
+reported in `outcome`. Provider failures, throttling, open circuits, and
+blocking quota results follow the step's retry and failure policy.
+
+Acteon assigns a deterministic Action ID and, when `dedup_key` is omitted, a
+stable key scoped to the chain execution, step, and attempt. An explicit
+`dedup_key` template can keep the same key across retries when the downstream
+operation provides stronger idempotency. Its template must resolve to a
+non-empty string or the step fails before dispatch. Acteon deduplication still
+requires a matching deduplication rule. Trace context and chain causality are
+always propagated. Origin metadata is copied by default and can be disabled with
+`inherit_metadata = false`. The `acteon.chain.*` causality labels are owned by
+the gateway; values supplied on an external Action are discarded.
+
+Dispatch steps may start other chains. Acteon links the child execution to its
+parent and rejects repeated ancestry or more than eight chained dispatches.
+Dispatch steps inside parallel groups are currently rejected; use top-level
+dispatch steps or a sub-chain when a policy handoff follows parallel work.
 
 ## Chain Lifecycle
 
