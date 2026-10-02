@@ -10,6 +10,7 @@ flowchart LR
     R --> M[Messaging & on-call]
     R --> C[Cloud services]
     R --> GEN[Generic HTTP]
+    R --> AI[Governed JSON models]
     R --> CUST[Custom provider]
     M --> M1[Slack / Teams / Discord]
     M --> M2[PagerDuty / OpsGenie / VictorOps]
@@ -19,6 +20,7 @@ flowchart LR
     C --> C2[Azure: Blob Storage, Event Hubs]
     C --> C3[GCP: Cloud Storage, Pub/Sub]
     GEN --> GEN1[Webhook]
+    AI --> AI1[System One classifiers / scorers]
 ```
 
 The gateway looks up the provider by the action's `provider` field and dispatches accordingly. All providers — whether built-in or user-written — implement the same `Provider` trait and participate uniformly in circuit breaking, health checks, per-provider metrics, and tenant quotas.
@@ -138,6 +140,11 @@ let gateway = GatewayBuilder::new()
 
 Actions are routed to providers by matching the action's `provider` field to the provider's `name()`. Most real deployments register providers declaratively from TOML via `[[providers]]` blocks rather than building them in Rust — see [Configuration](../getting-started/configuration.md) for the TOML schema.
 
+The built-in [`governed-model` provider](../features/governed-model-provider.md)
+turns a content-addressed typed JSON model into an ordinary provider. This lets
+rules and chains invoke bounded classifiers and scorers with runtime identity
+checks and response-schema validation.
+
 !!! note "Cloud providers are feature-gated"
     AWS, Azure, and GCP providers live in the `acteon-aws`, `acteon-azure`, and `acteon-gcp` crates and are gated behind individual Cargo feature flags on `acteon-server` (e.g. `aws-sns`, `azure-blob`, `gcp-pubsub`). The default `cargo build` does not compile any of them. Pick the flags you need, or use the `aws-all` / `azure-all` / `gcp-all` group flags. See the [AWS](../features/aws-providers.md), [Azure](../features/azure-providers.md), and [GCP](../features/gcp-providers.md) feature pages for the full flag table and IAM / auth setup.
 
@@ -194,6 +201,7 @@ AWS providers are gated behind individual Cargo feature flags on `acteon-server`
 
 | Provider | Crate | `type` | Purpose |
 |---|---|---|---|
+| Governed model | `acteon-llm` | `governed-model` | Typed JSON inference with locked contracts, model/revision checks, and bounded response validation. See [Governed Model Provider](../features/governed-model-provider.md). |
 | Webhook | `acteon-webhook` | `webhook` | Generic HTTP dispatcher — Bearer / Basic / API key / HMAC-SHA256 auth, custom headers, configurable method, payload modes |
 | Log | `acteon-provider` (built-in) | `log` | Writes the dispatched action to the tracing log at INFO. Ships with every Acteon binary and is the default target in most example configs. Ideal for local dev, tests, and dry runs. |
 | Recording | `acteon-simulation` | — | Test-only in-memory provider that captures every dispatched action for assertions. Used by the simulation harness — see [Simulation & Testing](../examples/simulation.md). |

@@ -372,6 +372,7 @@ name = "acteon-llm"
 version = "0.1.0"
 dependencies = [
  "acteon-core",
+ "acteon-provider",
  "async-trait",
  "axum 0.8.9",
  "futures",
@@ -380,6 +381,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "tracing",

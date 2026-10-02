@@ -281,8 +281,11 @@ before validation. The detector then applies its Laya-specific semantic checks
 for question IDs, probabilities, and labels. Load only the
 `typed-decisions` checkpoint to bound resident memory. Laya also supports ONNX
 and per-channel INT8 export for a later compact CPU deployment, but the first
-simulation uses the upstream server path. A future native Acteon provider can
-remove the HTTP hop without changing the contracts.
+simulation uses the upstream server path. In a deployed topology, add the Laya
+response schema to the lock as another named contract, then register each
+question set with Acteon's [governed model provider](../features/governed-model-provider.md)
+to put these same HTTP calls behind provider health, circuit breaking, locked
+request material, response-schema validation, and model-revision evidence.
 
 ### 5. Calibrate uncertainty and disagreement
 

@@ -27,7 +27,8 @@ pub struct ProviderConfig {
     /// `"email"`, `"opsgenie"`, `"victorops"`, `"pushover"`, `"telegram"`,
     /// `"wechat"`, `"aws-sns"`, `"aws-lambda"`, `"aws-eventbridge"`,
     /// `"aws-sqs"`, `"aws-s3"`, `"aws-ec2"`, `"aws-autoscaling"`,
-    /// `"azure-blob"`, `"azure-eventhubs"`, `"gcp-pubsub"`, or `"gcp-storage"`.
+    /// `"azure-blob"`, `"azure-eventhubs"`, `"gcp-pubsub"`, `"gcp-storage"`,
+    /// or `"governed-model"`.
     #[serde(rename = "type")]
     pub provider_type: String,
     /// Target URL (required for `"webhook"` type).
@@ -245,6 +246,40 @@ pub struct ProviderConfig {
     /// ```
     #[serde(default)]
     pub swarm: SwarmProviderConfig,
+
+    /// Nested configuration for the `"governed-model"` provider type.
+    #[serde(default)]
+    pub model: GovernedModelProviderConfig,
+}
+
+/// Nested configuration for a governed typed-JSON model provider.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct GovernedModelProviderConfig {
+    /// HTTP endpoint that accepts inference requests.
+    pub endpoint: Option<String>,
+    /// HTTP endpoint returning `loaded` and `revisions` model identity fields.
+    pub health_endpoint: Option<String>,
+    /// Path to the strict model governance lock file.
+    pub lock_file: Option<String>,
+    /// Root used to resolve contract paths in the model lock.
+    pub contracts_root: Option<String>,
+    /// Locked contract containing the JSON Schema for model responses.
+    pub response_contract: Option<String>,
+    /// Optional locked JSON request contract injected on every call.
+    pub request_contract: Option<String>,
+    /// Top-level request field receiving the locked request contract.
+    pub request_contract_field: Option<String>,
+    /// Top-level request field receiving the locked model name.
+    pub model_field: Option<String>,
+    /// Optional bearer credential. Supports `ENC[...]`.
+    pub bearer_token: Option<String>,
+    /// End-to-end request timeout in seconds. Defaults to 30.
+    pub timeout_seconds: Option<u64>,
+    /// Maximum decompressed response size. Defaults to one MiB.
+    pub max_response_bytes: Option<usize>,
+    /// Recheck served model identity before every call. Defaults to true.
+    pub verify_identity_each_call: Option<bool>,
 }
 
 /// Nested configuration block for the `OpsGenie` provider.

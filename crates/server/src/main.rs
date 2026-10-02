@@ -719,6 +719,80 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::sync::Arc::new(wp)
             }
             "log" => std::sync::Arc::new(acteon_provider::LogProvider::new(&provider_cfg.name)),
+            "governed-model" => {
+                let model = &provider_cfg.model;
+                let endpoint = required_model_field(
+                    &provider_cfg.name,
+                    "model.endpoint",
+                    model.endpoint.as_deref(),
+                )?;
+                let health_endpoint = required_model_field(
+                    &provider_cfg.name,
+                    "model.health_endpoint",
+                    model.health_endpoint.as_deref(),
+                )?;
+                let lock_file = required_model_field(
+                    &provider_cfg.name,
+                    "model.lock_file",
+                    model.lock_file.as_deref(),
+                )?;
+                let response_contract = required_model_field(
+                    &provider_cfg.name,
+                    "model.response_contract",
+                    model.response_contract.as_deref(),
+                )?;
+                let lock_path = std::path::PathBuf::from(lock_file);
+                let contracts_root = model.contracts_root.as_ref().map_or_else(
+                    || {
+                        lock_path
+                            .parent()
+                            .unwrap_or_else(|| Path::new("."))
+                            .to_owned()
+                    },
+                    std::path::PathBuf::from,
+                );
+                let max_response_bytes = std::num::NonZeroUsize::new(
+                    model
+                        .max_response_bytes
+                        .unwrap_or(acteon_llm::DEFAULT_MAX_RESPONSE_BYTES),
+                )
+                .ok_or_else(|| {
+                    format!(
+                        "provider '{}': model.max_response_bytes must be greater than zero",
+                        provider_cfg.name
+                    )
+                })?;
+                let bearer_token = model
+                    .bearer_token
+                    .as_deref()
+                    .map(|token| require_decrypt(token, master_key.as_ref()))
+                    .transpose()?;
+                let governed = acteon_llm::GovernedModelProvider::new(
+                    acteon_llm::GovernedModelProviderConfig {
+                        name: provider_cfg.name.clone(),
+                        endpoint: endpoint.to_owned(),
+                        health_endpoint: health_endpoint.to_owned(),
+                        lock_file: lock_path,
+                        contracts_root,
+                        response_contract: response_contract.to_owned(),
+                        request_contract: model.request_contract.clone(),
+                        request_contract_field: model.request_contract_field.clone(),
+                        model_field: model.model_field.clone(),
+                        bearer_token,
+                        timeout: Duration::from_secs(model.timeout_seconds.unwrap_or(30)),
+                        max_response_bytes,
+                        verify_identity_each_call: model.verify_identity_each_call.unwrap_or(true),
+                    },
+                )
+                .map_err(|error| format!("provider '{}': {error}", provider_cfg.name))?;
+                governed.verify_runtime_identity().await.map_err(|error| {
+                    format!(
+                        "provider '{}': startup model identity verification failed: {error}",
+                        provider_cfg.name
+                    )
+                })?;
+                std::sync::Arc::new(governed)
+            }
             "twilio" => {
                 let account_sid = provider_cfg.account_sid.as_deref().ok_or_else(|| {
                     format!(
@@ -2686,6 +2760,18 @@ fn validate_provider_url(provider_name: &str, url: &str) -> Result<(), String> {
         .validate_url(url)
         .map(|_| ())
         .map_err(|error| format!("provider '{provider_name}': {error}"))
+}
+
+fn required_model_field<'a>(
+    provider_name: &str,
+    field: &str,
+    value: Option<&'a str>,
+) -> Result<&'a str, String> {
+    value
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            format!("provider '{provider_name}': governed-model type requires '{field}'")
+        })
 }
 
 /// Decrypt a config value, requiring `ACTEON_AUTH_KEY` if the value is encrypted.

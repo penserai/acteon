@@ -117,8 +117,8 @@ pub struct ActeonConfig {
     /// Provider definitions.
     ///
     /// Each entry registers a named provider that actions can be routed to.
-    /// Supported types: `"webhook"` (HTTP POST) and `"log"` (logs and returns
-    /// success).
+    /// Includes built-in messaging, cloud, webhook, log, and
+    /// `"governed-model"` typed inference providers.
     #[serde(default)]
     pub providers: Vec<ProviderConfig>,
     /// Agentic message bus configuration. Requires the `bus` Cargo

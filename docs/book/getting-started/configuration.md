@@ -480,6 +480,7 @@ Provider configuration. Multiple providers can be defined.
 | `"gcp-storage"` | Google Cloud Storage | `gcp_project_id`, `gcp_bucket`, `gcp_object_prefix` |
 | `"gcp-pubsub"` | Google Cloud Pub/Sub | `gcp_project_id`, `gcp_topic` |
 | `"swarm"` | Ambient agent swarm orchestrator | `swarm.config_path`, `swarm.hooks_binary`, `swarm.max_concurrent_runs` |
+| `"governed-model"` | Content-addressed typed JSON inference | `model.endpoint`, `model.health_endpoint`, `model.lock_file`, `model.response_contract` |
 
 **Common AWS fields** (all optional, shared across all `aws-*` types and `email` with `backend = "ses"`):
 
@@ -491,7 +492,7 @@ Provider configuration. Multiple providers can be defined.
 | `aws_session_name` | string | STS session name (default: `"acteon-aws-provider"`) |
 | `aws_external_id` | string | External ID for cross-account trust policies |
 
-See [AWS Providers](../features/aws-providers.md) and [Native Providers](../features/native-providers.md) for full payload format documentation.
+See [AWS Providers](../features/aws-providers.md), [Native Providers](../features/native-providers.md), and [Governed Model Provider](../features/governed-model-provider.md) for full payload format documentation.
 
 ### `[encryption]`
 
