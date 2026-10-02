@@ -18,7 +18,7 @@ use thiserror::Error;
 
 use crate::{BusBackend, OffsetPosition};
 
-const SNAPSHOT_VERSION: u16 = 1;
+const SNAPSHOT_VERSION: u16 = 2;
 const STATE_KIND: &str = "bus_stream_checkpoint";
 const DEFAULT_MAX_POSITIONS: usize = 10_000;
 const DEFAULT_MAX_PENDING_OUTPUTS: usize = 100_000;
@@ -101,15 +101,20 @@ impl StreamCheckpointConfig {
 
 /// Versioned recovery record stored atomically through [`StateStore`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(
+    deny_unknown_fields,
+    bound(deserialize = "S: Deserialize<'de>, O: Deserialize<'de>")
+)]
 pub struct StreamCheckpointSnapshot<S, O> {
     schema_version: u16,
     processor_id: String,
-    generation: u64,
+    pub(crate) generation: u64,
     config: StreamCheckpointConfig,
     state: S,
     positions: Vec<StreamPosition>,
-    outbox: Vec<StreamOutboxEntry<O>>,
+    pub(crate) outbox: Vec<StreamOutboxEntry<O>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) managed: Option<crate::outbox::ManagedOutboxState<O>>,
 }
 
 impl<S, O> StreamCheckpointSnapshot<S, O> {
@@ -213,6 +218,10 @@ pub enum StreamCheckpointError {
         stored: i64,
         proposed: i64,
     },
+    #[error("managed output must be completed through its dispatcher lease")]
+    ManagedOutput,
+    #[error("invalid managed outbox snapshot: {0}")]
+    InvalidManagedOutbox(String),
     #[error("outbox entry '{0}' is not pending")]
     UnknownOutput(String),
     #[error("checkpoint write conflicted: expected state version {expected}, found {actual}")]
@@ -235,7 +244,7 @@ pub struct StreamCheckpointCoordinator<S, O> {
     store: Arc<dyn StateStore>,
     key: StateKey,
     store_version: u64,
-    snapshot: StreamCheckpointSnapshot<S, O>,
+    pub(crate) snapshot: StreamCheckpointSnapshot<S, O>,
 }
 
 impl<S, O> StreamCheckpointCoordinator<S, O>
@@ -257,13 +266,14 @@ where
         }
 
         let snapshot = StreamCheckpointSnapshot {
-            schema_version: SNAPSHOT_VERSION,
+            schema_version: 1,
             processor_id: key.id.clone(),
             generation: 0,
             config,
             state: initial_state,
             positions: Vec::new(),
             outbox: Vec::new(),
+            managed: None,
         };
         let encoded = serde_json::to_string(&snapshot)?;
         if store.check_and_set(&key, &encoded, None).await? {
@@ -422,6 +432,9 @@ where
         if delivered.is_empty() {
             return Ok(self.persisted_view());
         }
+        if self.snapshot.managed.is_some() {
+            return Err(StreamCheckpointError::ManagedOutput);
+        }
         let pending = self
             .snapshot
             .outbox
@@ -490,7 +503,13 @@ where
             .collect::<BTreeMap<_, _>>();
         for entry in outputs {
             validate_output(&entry)?;
-            if outbox.contains_key(&entry.idempotency_key) {
+            if outbox.contains_key(&entry.idempotency_key)
+                || self
+                    .snapshot
+                    .managed
+                    .as_ref()
+                    .is_some_and(|managed| managed.contains_dead_letter(&entry.idempotency_key))
+            {
                 return Err(StreamCheckpointError::DuplicateOutput(
                     entry.idempotency_key,
                 ));
@@ -504,7 +523,7 @@ where
         }
 
         Ok(StreamCheckpointSnapshot {
-            schema_version: SNAPSHOT_VERSION,
+            schema_version: self.snapshot.schema_version,
             processor_id: self.snapshot.processor_id.clone(),
             generation: self
                 .snapshot
@@ -518,13 +537,20 @@ where
                 .map(|(lane, offset)| StreamPosition { lane, offset })
                 .collect(),
             outbox: outbox.into_values().collect(),
+            managed: self.snapshot.managed.clone(),
         })
     }
 
-    async fn persist(
+    pub(crate) async fn persist(
         &mut self,
-        next: StreamCheckpointSnapshot<S, O>,
+        mut next: StreamCheckpointSnapshot<S, O>,
     ) -> Result<(), StreamCheckpointError> {
+        next.schema_version = if next.managed.is_some() {
+            SNAPSHOT_VERSION
+        } else {
+            1
+        };
+        validate_snapshot(&next, &self.key.id)?;
         let next_store_version = self
             .store_version
             .checked_add(1)
@@ -572,7 +598,7 @@ fn validate_snapshot<S, O>(
     snapshot: &StreamCheckpointSnapshot<S, O>,
     expected_processor_id: &str,
 ) -> Result<(), StreamCheckpointError> {
-    if snapshot.schema_version != SNAPSHOT_VERSION {
+    if snapshot.schema_version != 1 && snapshot.schema_version != SNAPSHOT_VERSION {
         return Err(StreamCheckpointError::UnsupportedSnapshotVersion(
             snapshot.schema_version,
         ));
@@ -589,6 +615,11 @@ fn validate_snapshot<S, O>(
             limit: snapshot.config.max_positions,
         });
     }
+    if snapshot.schema_version == 1 && snapshot.managed.is_some() {
+        return Err(StreamCheckpointError::InvalidManagedOutbox(
+            "managed state requires version 2".into(),
+        ));
+    }
     positions_to_map(&snapshot.positions)?;
     if snapshot.outbox.len() > snapshot.config.max_pending_outputs {
         return Err(StreamCheckpointError::OutboxCapacity {
@@ -603,6 +634,11 @@ fn validate_snapshot<S, O>(
                 collection: "outbox",
             });
         }
+    }
+    if let Some(managed) = &snapshot.managed {
+        managed
+            .validate(&output_keys)
+            .map_err(StreamCheckpointError::InvalidManagedOutbox)?;
     }
     Ok(())
 }

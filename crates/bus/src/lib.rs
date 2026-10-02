@@ -7,7 +7,7 @@
 //!
 //! The crate also provides publish-edge JSON Schema validation, a durable
 //! event-time window state machine, and CAS-protected stream checkpoints with
-//! an idempotent output outbox.
+//! an idempotent output outbox with managed delivery workers.
 
 pub mod backend;
 pub mod checkpoint;
@@ -16,6 +16,7 @@ pub mod error;
 pub mod kafka;
 pub mod memory;
 pub mod message;
+pub mod outbox;
 pub mod schema;
 #[doc(hidden)]
 pub mod testing;
@@ -32,6 +33,11 @@ pub use error::BusError;
 pub use kafka::KafkaBackend;
 pub use memory::MemoryBackend;
 pub use message::{BusMessage, DeliveryReceipt, OffsetPosition, StartOffset};
+pub use outbox::{
+    BusOutboxDelivery, StreamDeadLetter, StreamDeliveryError, StreamOutboxConfig,
+    StreamOutboxCounters, StreamOutboxDelivery, StreamOutboxDispatchResult, StreamOutboxDispatcher,
+    StreamOutboxError, StreamOutboxMetrics,
+};
 pub use schema::{SchemaValidator, SchemaValidatorError, ValidationIssue};
 pub use windowing::{
     EventTimeWindow, EventTimeWindowAggregator, EventTimeWindowConfig, EventTimeWindowError,
