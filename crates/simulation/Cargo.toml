@@ -125,7 +125,7 @@ name = "branch_chain_simulation"
 
 [[example]]
 name = "neural_observability_simulation"
-# No required-features - uses in-memory Acteon backends and a local Laya server
+required-features = ["bus"]
 
 [[example]]
 name = "scheduled_actions_simulation"

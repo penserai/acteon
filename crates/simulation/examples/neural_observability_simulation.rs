@@ -14,16 +14,27 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use acteon_bus::{BusBackend, BusMessage, KafkaBackend, KafkaBusConfig, StartOffset};
 use acteon_core::chain::{ChainConfig, ChainStatus, ChainStepConfig};
-use acteon_core::{Action, ActionOutcome};
+use acteon_core::{Action, ActionOutcome, Topic};
 use acteon_gateway::{Gateway, GatewayBuilder};
 use acteon_rules::Rule;
 use acteon_rules_yaml::YamlFrontend;
 use acteon_simulation::{ActionOutcomeExt, RecordingProvider};
 use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
+use futures::StreamExt;
 use reqwest::header::HeaderMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+
+#[path = "neural_observability/windowing.rs"]
+mod windowing;
+
+use windowing::{
+    CorrelatedWindow, EventTimeCorrelator, IngestDisposition, SCHEMA_VERSION, SignalSource,
+    SourcePosition, TelemetryEvent, WindowingStats,
+};
 
 type AnyError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -31,10 +42,11 @@ const MODEL: &str = "typed-decisions";
 const NAMESPACE: &str = "observability";
 const TENANT: &str = "acme";
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct Fixture {
     name: String,
     window_id: String,
+    window_start: DateTime<Utc>,
     expected_route: String,
     metrics: Value,
     traces: Value,
@@ -88,6 +100,7 @@ struct TrialReport {
     admitted_route: String,
     evidence_strength: f64,
     uncertainty: f64,
+    source_positions: BTreeMap<String, SourcePosition>,
     signals: Vec<SignalSummary>,
     fusion: FusionSummary,
     acteon_outcome: String,
@@ -111,8 +124,14 @@ struct SimulationReport {
     generated_at: String,
     model: String,
     health: HealthIdentity,
+    windowing: WindowingStats,
     trials: Vec<TrialReport>,
     aggregate: AggregateReport,
+}
+
+struct StreamReplay {
+    windows: Vec<CorrelatedWindow>,
+    stats: WindowingStats,
 }
 
 struct LayaClient {
@@ -639,10 +658,6 @@ fn fusion_state(fixture: &Fixture, signals: &[SignalSummary]) -> Value {
     })
 }
 
-fn source_state(_fixture: &Fixture, _source: &str, state: &Value) -> Value {
-    state.clone()
-}
-
 fn evidence_refs(fixture: &Fixture) -> Vec<String> {
     [&fixture.metrics, &fixture.traces, &fixture.logs]
         .iter()
@@ -700,7 +715,7 @@ fn markdown(report: &SimulationReport) -> String {
     output.push_str("# Neural observability simulation results\n\n");
     let _ = write!(
         output,
-        "Laya `{}` ran on `{}` at revision `{}`. All {} neural calls were real HTTP inference requests; Acteon used in-memory state and recording providers for controlled side effects.\n\n",
+        "Laya `{}` ran on `{}` at revision `{}`. Kafka supplied {} accepted source records across {} event-time windows and the correlator rejected {} redelivery. All {} neural calls were real HTTP inference requests; Acteon used in-memory state and recording providers for controlled side effects.\n\n",
         report.model,
         report.health.device,
         report
@@ -708,6 +723,9 @@ fn markdown(report: &SimulationReport) -> String {
             .revisions
             .get(MODEL)
             .map_or("unknown", String::as_str),
+        report.windowing.accepted_records,
+        report.windowing.complete_windows + report.windowing.incomplete_windows,
+        report.windowing.duplicate_records,
         report.aggregate.model_calls
     );
     output.push_str(
@@ -747,7 +765,10 @@ fn markdown(report: &SimulationReport) -> String {
     output.push_str("\n## Aggregate\n\n");
     let _ = write!(
         output,
-        "- Model calls: **{}**\n- Total model inference: **{:.0} ms**\n- Per-call p50 / p95: **{:.0} ms / {:.0} ms**\n- Incident chains: **{}** diagnostics capture and **{}** on-call notification\n- Bounded investigations: **{}**\n- Duplicate incident dispatches prevented by the runner ledger: **{}**\n\n",
+        "- Kafka source records accepted: **{}**\n- Kafka redeliveries rejected: **{}**\n- Event-time windows completed: **{}**\n- Model calls: **{}**\n- Total model inference: **{:.0} ms**\n- Per-call p50 / p95: **{:.0} ms / {:.0} ms**\n- Incident chains: **{}** diagnostics capture and **{}** on-call notification\n- Bounded investigations: **{}**\n- Duplicate incident dispatches prevented by the runner ledger: **{}**\n\n",
+        report.windowing.accepted_records,
+        report.windowing.duplicate_records,
+        report.windowing.complete_windows,
         report.aggregate.model_calls,
         report.aggregate.total_inference_ms,
         report.aggregate.p50_inference_ms,
@@ -758,12 +779,218 @@ fn markdown(report: &SimulationReport) -> String {
         report.aggregate.duplicate_dispatches_prevented
     );
     output.push_str("## Interpretation\n\n");
-    output.push_str("Laya separated the first-stage signals, including the log-only noise case. Its raw fusion choice also selected `db_pool_exhaustion` for healthy inputs at low confidence. The deterministic corroboration gate prevented those raw false positives from reaching a provider. This is the intended safety property: neural decisions contribute bounded evidence, while Acteon policy controls side effects. These fixture results are integration evidence, not a detector-quality benchmark or a calibration claim.\n");
+    output.push_str("Laya separated the first-stage signals, including the log-only noise case. Its low-confidence raw fusion choice still selected a non-healthy incident for healthy inputs. The deterministic corroboration gate prevented those raw false positives from reaching a provider. This is the intended safety property: neural decisions contribute bounded evidence, while Acteon policy controls side effects. These fixture results are integration evidence, not a detector-quality benchmark or a calibration claim.\n");
     output
 }
 
 fn example_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/neural-observability-detector")
+}
+
+fn source_features(fixture: &Fixture, source: SignalSource) -> &Value {
+    match source {
+        SignalSource::Metrics => &fixture.metrics,
+        SignalSource::Traces => &fixture.traces,
+        SignalSource::Logs => &fixture.logs,
+    }
+}
+
+fn canonical_model_state(source: SignalSource, features: &Value) -> Result<Value, AnyError> {
+    let object = features
+        .as_object()
+        .ok_or_else(|| error(format!("{} features are not an object", source.as_str())))?;
+    let field_order: &[&str] = match source {
+        SignalSource::Metrics => &[
+            "context",
+            "latency_p95_ms",
+            "latency_baseline_ms",
+            "error_rate",
+            "request_rate_per_second",
+            "request_rate_baseline",
+            "db_pool_utilization",
+            "deployment_age_seconds",
+            "evidence_refs",
+        ],
+        SignalSource::Traces => &[
+            "context",
+            "slow_request_fraction",
+            "database_wait_fraction",
+            "dominant_span",
+            "evidence_refs",
+        ],
+        SignalSource::Logs => &[
+            "context",
+            "error_count",
+            "pool_timeout_count",
+            "warning_count",
+            "top_template",
+            "evidence_refs",
+        ],
+    };
+    let allowed = field_order
+        .iter()
+        .copied()
+        .chain(["available"])
+        .collect::<BTreeSet<_>>();
+    let unknown = object
+        .keys()
+        .map(String::as_str)
+        .filter(|field| !allowed.contains(field))
+        .collect::<Vec<_>>();
+    if !unknown.is_empty() {
+        return Err(error(format!(
+            "{} features contain unknown fields: {unknown:?}",
+            source.as_str()
+        )));
+    }
+    if !object.contains_key("context") || !object.contains_key("evidence_refs") {
+        return Err(error(format!(
+            "{} features require context and evidence_refs",
+            source.as_str()
+        )));
+    }
+    Ok(Value::Array(
+        field_order
+            .iter()
+            .filter_map(|field| {
+                object
+                    .get(*field)
+                    .map(|value| json!({"field": field, "value": value}))
+            })
+            .collect(),
+    ))
+}
+
+fn telemetry_event(fixture: &Fixture, source: SignalSource) -> TelemetryEvent {
+    let source_delay = match source {
+        SignalSource::Metrics => 10,
+        SignalSource::Traces => 20,
+        SignalSource::Logs => 30,
+    };
+    let observed_at = fixture.window_start + ChronoDuration::seconds(source_delay);
+    let features = source_features(fixture, source).clone();
+    TelemetryEvent {
+        schema_version: SCHEMA_VERSION,
+        event_id: format!("{}:{}", fixture.name, source.as_str()),
+        observed_at,
+        ingested_at: observed_at + ChronoDuration::seconds(1),
+        window_id: fixture.window_id.clone(),
+        tenant: TENANT.to_owned(),
+        environment: "prod".to_owned(),
+        service: "checkout-api".to_owned(),
+        deployment_revision: "checkout-v42".to_owned(),
+        source,
+        available: features
+            .get("available")
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
+        features,
+    }
+}
+
+async fn kafka_stream_replay(fixtures: &[Fixture]) -> Result<StreamReplay, AnyError> {
+    let bootstrap =
+        std::env::var("ACTEON_KAFKA_BOOTSTRAP").unwrap_or_else(|_| "127.0.0.1:19092".to_owned());
+    let config = KafkaBusConfig {
+        bootstrap_servers: bootstrap,
+        client_id: "neural-observability-simulation".to_owned(),
+        produce_timeout_ms: 8_000,
+        ..KafkaBusConfig::default()
+    };
+    let backend: Arc<dyn BusBackend> = KafkaBackend::new(&config)?;
+    let run_id = uuid::Uuid::new_v4().simple().to_string();
+    let topics = SignalSource::ALL
+        .into_iter()
+        .map(|source| {
+            let mut topic = Topic::new(format!("{}-{run_id}", source.as_str()), NAMESPACE, TENANT);
+            topic.partitions = 1;
+            topic.replication_factor = 1;
+            (source, topic)
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    for topic in topics.values() {
+        backend.create_topic(topic).await?;
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let replay = async {
+        for source in SignalSource::ALL {
+            let topic = topics[&source].kafka_topic_name();
+            for fixture in fixtures {
+                let event = telemetry_event(fixture, source);
+                backend
+                    .produce(
+                        BusMessage::new(topic.clone(), serde_json::to_value(&event)?)
+                            .with_key(event.correlation_key())
+                            .with_header("schema", "observability.telemetry.v1"),
+                    )
+                    .await?;
+            }
+        }
+
+        // Exercise transport-level redelivery explicitly. The correlator must
+        // consume the second Kafka record without evaluating the window twice.
+        let duplicate = telemetry_event(&fixtures[0], SignalSource::Metrics);
+        backend
+            .produce(
+                BusMessage::new(
+                    topics[&SignalSource::Metrics].kafka_topic_name(),
+                    serde_json::to_value(&duplicate)?,
+                )
+                .with_key(duplicate.correlation_key())
+                .with_header("schema", "observability.telemetry.v1"),
+            )
+            .await?;
+
+        let mut streams = Vec::new();
+        for source in SignalSource::ALL {
+            let group_id = format!("neural-detector-{}-{run_id}", source.as_str());
+            streams.push(
+                backend
+                    .subscribe(
+                        &topics[&source].kafka_topic_name(),
+                        &group_id,
+                        StartOffset::Earliest,
+                    )
+                    .await?,
+            );
+        }
+        let mut messages = futures::stream::select_all(streams);
+        let expected_records = fixtures.len() * SignalSource::ALL.len() + 1;
+        let mut correlator =
+            EventTimeCorrelator::new(ChronoDuration::minutes(1), ChronoDuration::seconds(15))?;
+        let mut windows = Vec::new();
+        for _ in 0..expected_records {
+            let next = tokio::time::timeout(Duration::from_secs(20), messages.next())
+                .await
+                .map_err(|_| error("timed out consuming observability Kafka records"))?
+                .ok_or_else(|| error("observability Kafka stream ended early"))??;
+            let result = correlator.ingest(next)?;
+            if result.disposition == IngestDisposition::Late {
+                return Err(error("fixture stream unexpectedly produced a late record"));
+            }
+            windows.extend(result.emitted);
+        }
+        windows.extend(correlator.finish());
+        windows.sort_by_key(|window| window.starts_at);
+        let stats = correlator.stats().clone();
+        if stats.accepted_records != fixtures.len() * SignalSource::ALL.len()
+            || stats.duplicate_records != 1
+            || stats.late_records != 0
+            || stats.complete_windows != fixtures.len()
+            || stats.incomplete_windows != 0
+        {
+            return Err(error(format!("unexpected windowing stats: {stats:?}")));
+        }
+        Ok(StreamReplay { windows, stats })
+    }
+    .await;
+
+    for topic in topics.values() {
+        let _ = backend.delete_topic(&topic.kafka_topic_name()).await;
+    }
+    replay
 }
 
 #[tokio::main]
@@ -787,6 +1014,7 @@ async fn main() -> Result<(), AnyError> {
         .iter()
         .map(|name| load_fixture(&root.join("fixtures").join(name)))
         .collect::<Result<Vec<_>, _>>()?;
+    let stream_replay = kafka_stream_replay(&fixtures).await?;
     let rules = fs::read_to_string(root.join("rules/verdict-routing.yaml"))?;
     let acteon = ActeonSimulation::build(&rules)?;
     let laya = LayaClient::new()?;
@@ -802,28 +1030,84 @@ async fn main() -> Result<(), AnyError> {
 
     println!("\nACTEON + LAYA NEURAL OBSERVABILITY SIMULATION");
     println!("checkpoint: {MODEL} @ {revision} ({})\n", health.device);
+    println!(
+        "kafka: {} accepted records, {} duplicate, {} event-time windows\n",
+        stream_replay.stats.accepted_records,
+        stream_replay.stats.duplicate_records,
+        stream_replay.windows.len()
+    );
 
-    for fixture in &fixtures {
-        let metrics_state = source_state(fixture, "metrics", &fixture.metrics);
-        let traces_state = source_state(fixture, "traces", &fixture.traces);
-        let logs_state = source_state(fixture, "logs", &fixture.logs);
+    for window in &stream_replay.windows {
+        if !window.has_all_source_records() {
+            return Err(error(format!(
+                "window {} closed without all source records",
+                window.window_id
+            )));
+        }
+        let missing_sources = window.missing_sources();
+        if !missing_sources.is_empty() {
+            println!(
+                "{} availability mask: {:?}",
+                window.window_id, missing_sources
+            );
+        }
+        let fixture = fixtures
+            .iter()
+            .find(|fixture| fixture.window_id == window.window_id)
+            .ok_or_else(|| error(format!("no fixture metadata for {}", window.window_id)))?;
+        let metrics_record = window
+            .signal(SignalSource::Metrics)
+            .ok_or_else(|| error("correlated window omitted metrics"))?;
+        let traces_record = window
+            .signal(SignalSource::Traces)
+            .ok_or_else(|| error("correlated window omitted traces"))?;
+        let logs_record = window
+            .signal(SignalSource::Logs)
+            .ok_or_else(|| error("correlated window omitted logs"))?;
+        for (source, actual, expected) in [
+            ("metrics", &metrics_record.features, &fixture.metrics),
+            ("traces", &traces_record.features, &fixture.traces),
+            ("logs", &logs_record.features, &fixture.logs),
+        ] {
+            if actual != expected {
+                return Err(error(format!(
+                    "Kafka window {} attached the wrong {source} features",
+                    window.window_id
+                )));
+            }
+        }
         let (metrics_call, traces_call, logs_call) = tokio::try_join!(
-            laya.evaluate(metrics_state, &questions["metrics"]),
-            laya.evaluate(traces_state, &questions["traces"]),
-            laya.evaluate(logs_state, &questions["logs"]),
+            laya.evaluate(
+                canonical_model_state(SignalSource::Metrics, &metrics_record.features)?,
+                &questions["metrics"]
+            ),
+            laya.evaluate(
+                canonical_model_state(SignalSource::Traces, &traces_record.features)?,
+                &questions["traces"]
+            ),
+            laya.evaluate(
+                canonical_model_state(SignalSource::Logs, &logs_record.features)?,
+                &questions["logs"]
+            ),
         )?;
         let signals = vec![
-            signal_summary("metrics", metrics_call, "pool_exhausted", true)?,
-            signal_summary("traces", traces_call, "dependency_bottleneck", true)?,
+            signal_summary(
+                "metrics",
+                metrics_call,
+                "pool_exhausted",
+                metrics_record.available,
+            )?,
+            signal_summary(
+                "traces",
+                traces_call,
+                "dependency_bottleneck",
+                traces_record.available,
+            )?,
             signal_summary(
                 "logs",
                 logs_call,
                 "pool_timeout_present",
-                fixture
-                    .logs
-                    .get("available")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(true),
+                logs_record.available,
             )?,
         ];
         let fusion_call = laya
@@ -867,6 +1151,13 @@ async fn main() -> Result<(), AnyError> {
             admitted_route: route.to_owned(),
             evidence_strength,
             uncertainty,
+            source_positions: window
+                .signals
+                .iter()
+                .map(|(source, record)| {
+                    (source.as_str().to_owned(), record.position.clone())
+                })
+                .collect(),
             signals,
             fusion,
             acteon_outcome,
@@ -885,11 +1176,19 @@ async fn main() -> Result<(), AnyError> {
             "runner idempotency ledger admitted an incident replay",
         ));
     }
-    acteon.diagnostics.assert_called(1);
-    acteon.on_call.assert_called(1);
-    acteon.investigator.assert_called(1);
     if reports.iter().any(|trial| !trial.passed) {
         return Err(error("one or more trials failed their expected route"));
+    }
+    for (provider, actual) in [
+        ("diagnostics", acteon.diagnostics.call_count()),
+        ("on-call", acteon.on_call.call_count()),
+        ("investigator", acteon.investigator.call_count()),
+    ] {
+        if actual != 1 {
+            return Err(error(format!(
+                "expected one {provider} call, observed {actual}"
+            )));
+        }
     }
 
     latencies.sort_by(f64::total_cmp);
@@ -897,6 +1196,7 @@ async fn main() -> Result<(), AnyError> {
         generated_at: chrono::Utc::now().to_rfc3339(),
         model: MODEL.to_owned(),
         health,
+        windowing: stream_replay.stats,
         aggregate: AggregateReport {
             model_calls: latencies.len(),
             total_inference_ms: latencies.iter().sum(),
@@ -1007,6 +1307,35 @@ mod tests {
         for (signals, fusion, expected) in cases {
             assert_eq!(choose_policy(&signals, &fusion).0, expected);
         }
+    }
+
+    #[test]
+    fn model_state_has_schema_order_independent_of_object_order() -> Result<(), AnyError> {
+        let state = canonical_model_state(
+            SignalSource::Metrics,
+            &json!({
+                "evidence_refs": ["metrics:0:1"],
+                "db_pool_utilization": 0.96,
+                "context": "Database pool saturation",
+                "error_rate": 0.08
+            }),
+        )?;
+        let fields = state
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| string_at(entry, &["field"]))
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(
+            fields,
+            [
+                "context",
+                "error_rate",
+                "db_pool_utilization",
+                "evidence_refs"
+            ]
+        );
+        Ok(())
     }
 
     #[tokio::test]

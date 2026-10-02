@@ -1,0 +1,1404 @@
+{
+  "generated_at": "2026-10-02T02:20:50.445854+00:00",
+  "model": "typed-decisions",
+  "health": {
+    "loaded": [
+      "typed-decisions"
+    ],
+    "revisions": {
+      "typed-decisions": "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851"
+    },
+    "device": "cpu"
+  },
+  "windowing": {
+    "accepted_records": 12,
+    "duplicate_records": 1,
+    "late_records": 0,
+    "complete_windows": 4,
+    "incomplete_windows": 0
+  },
+  "trials": [
+    {
+      "name": "healthy-baseline",
+      "window_id": "checkout-api:prod:2026-10-01T19:40Z",
+      "expected_route": "suppress",
+      "admitted_route": "suppress",
+      "evidence_strength": 0.3241,
+      "uncertainty": 0.7349,
+      "source_positions": {
+        "logs": {
+          "topic": "observability.acme.logs-61f7659384944feba2f8da053dbcfabc",
+          "partition": 0,
+          "offset": 0
+        },
+        "metrics": {
+          "topic": "observability.acme.metrics-61f7659384944feba2f8da053dbcfabc",
+          "partition": 0,
+          "offset": 0
+        },
+        "traces": {
+          "topic": "observability.acme.traces-61f7659384944feba2f8da053dbcfabc",
+          "partition": 0,
+          "offset": 0
+        }
+      },
+      "signals": [
+        {
+          "source": "metrics",
+          "condition": "healthy",
+          "condition_confidence": 0.5164,
+          "evidence_probability": 0.2128,
+          "impact_score": 1.4031,
+          "available": true,
+          "inference_ms": 1375.85,
+          "wall_ms": 1377.956959,
+          "raw_response": {
+            "answers": {
+              "condition": {
+                "action": {
+                  "act_probability": 1.0
+                },
+                "answer_confidence": 0.5164,
+                "choice": "healthy",
+                "confidence": 0.1187,
+                "probabilities": {
+                  "application_errors": 0.1476,
+                  "db_pool_pressure": 0.153,
+                  "healthy": 0.5164,
+                  "traffic_spike": 0.183
+                },
+                "type": "choice"
+              },
+              "impact": {
+                "action": {
+                  "act_probability": 1.0
+                },
+                "answer_confidence": 0.3443,
+                "confidence": 0.1293,
+                "legend": {
+                  "0": "none",
+                  "1": "low",
+                  "2": "moderate",
+                  "3": "high",
+                  "4": "critical"
+                },
+                "probabilities": {
+                  "0": 0.2271,
+                  "1": 0.306,
+                  "2": 0.3443,
+                  "3": 0.082,
+                  "4": 0.0407
+                },
+                "score": 1.4031,
+                "type": "score"
+              },
+              "pool_exhausted": {
+                "action": {
+                  "act_probability": 1.0
+                },
+                "answer_confidence": 0.7872,
+                "confidence": 0.7872,
+                "noul": 0.2128,
+                "type": "noul"
+              }
+            },
+            "model": "laya-rl-agent",
+            "routing": {
+              "detection": null,
+              "model": "typed-decisions",
+              "reason": "explicit model='typed-decisions'",
+              "repo": "convaiinnovations/laya/typed-decisions",
+              "workflow": null
+            },
+            "usage": {
+              "input_tokens": 612,
+              "output_tokens": 0,
+              "state_tokens": 152,
+              "state_tokens_dropped": 0,
+              "truncated": false,
+              "truncated_questions": []
+            }
+          }
+        },
+        {
+          "source": "traces",
+          "condition": "healthy",
+          "condition_confidence": 0.3971,
+          "evidence_probability": 0.3264,
+          "impact_score": 1.3027,
+          "available": true,
+          "inference_ms": 1050.26,
+          "wall_ms": 2427.940375,
+          "raw_response": {
+            "answers": {
+              "condition": {
+                "action": {
+                  "act_probability": 1.0
+                },
+                "answer_confidence": 0.3971,
+                "choice": "healthy",
+                "confidence": 0.0553,
+                "probabilities": {
+                  "application_work": 0.1915,
+                  "database_wait": 0.2755,
+                  "downstream_timeout": 0.1359,
+                  "healthy": 0.3971
+                },
+                "type": "choice"
+              },
+              "dependency_bottleneck": {
+                "action": {
+                  "act_probability": 1.0
+                },
+                "answer_confidence": 0.6736,
+                "confidence": 0.6736,
+                "noul": 0.3264,
+                "type": "noul"
+              },
+              "impact": {
+                "action": {
+                  "act_probability": 1.0
+                },
+                "answer_confidence": 0.3521,
+                "confidence": 0.1679,
+                "legend": {
+                  "0": "none",
+                  "1": "low",
+                  "2": "moderate",
+                  "3": "high",
+                  "4": "critical"
+                },
+                "probabilities": {
+                  "0": 0.2463,
+                  "1": 0.3172,
+                  "2": 0.3521,
+                  "3": 0.0566,
+                  "4": 0.0279
+                },
+                "score": 1.3027,
+                "type": "score"
+              }
+            },
+            "model": "laya-rl-agent",
+            "routing": {
+              "detection": null,
+              "model": "typed-decisions",
+              "reason": "explicit model='typed-decisions'",
+              "repo": "convaiinnovations/laya/typed-decisions",
+              "workflow": null
+            },
+            "usage": {
+              "input_tokens": 463,
+              "output_tokens": 0,
+              "state_tokens": 101,
+              "state_tokens_dropped": 0,
+              "truncated": false,
+              "truncated_questions": []
+            }
+          }
+        },
+        {
+          "source": "logs",
+          "condition": "healthy",
+          "condition_confidence": 0.4094,
+          "evidence_probability": 0.3057,
+          "impact_score": 1.1232,
+          "available": true,
+          "inference_ms": 1006.37,
+          "wall_ms": 3434.2481660000003,
+          "raw_response": {
+            "answers": {
+              "condition": {
+                "action": {
+                  "act_probability": 1.0
+                },
+                "answer_confidence": 0.4094,
+                "choice": "healthy",
+                "confidence": 0.044,
+                "probabilities": {
+                  "downstream_error": 0.1932,
+                  "healthy": 0.4094,
+                  "pool_timeout": 0.1928,
+                  "unrelated_noise": 0.2046
+                },
+                "type": "choice"
+              },
+              "impact": {
+                "action": {
+                  "act_probability": 1.0
+                },
+                "answer_confidence": 0.3407,
+                "confidence": 0.1857,
+                "legend": {
+                  "0": "none",
+                  "1": "low",
+                  "2": "moderate",
+                  "3": "high",
+                  "4": "critical"
+                },
+                "probabilities": {
+                  "0": 0.3133,
+                  "1": 0.3407,
+                  "2": 0.2795,
+                  "3": 0.0428,
+                  "4": 0.0238
+                },
+                "score": 1.1232,
+                "type": "score"
+              },
+              "pool_timeout_present": {
+                "action": {
+                  "act_probability": 1.0
+                },
+                "answer_confidence": 0.6943,
+                "confidence": 0.6943,
+                "noul": 0.3057,
+                "type": "noul"
+              }
+            },
+            "model": "laya-rl-agent",
+            "routing": {
+              "detection": null,
+              "model": "typed-decisions",
+              "reason": "explicit model='typed-decisions'",
+              "repo": "convaiinnovations/laya/typed-decisions",
+              "workflow": null
+            },
+            "usage": {
+              "input_tokens": 440,
+              "output_tokens": 0,
+              "state_tokens": 91,
+              "state_tokens_dropped": 0,
+              "truncated": false,
+              "truncated_questions": []
+            }
+          }
+        }
+      ],
+      "fusion": {
+        "incident_kind": "downstream_timeout",
+        "answer_confidence": 0.2651,
+        "probabilities": {
+          "db_pool_exhaustion": 0.1901,
+          "deploy_regression": 0.1861,
+          "downstream_timeout": 0.2651,
+          "healthy": 0.1993,
+          "insufficient_evidence": 0.1594
+        },
+        "correlated_probability": 0.4515,
+        "impact_score": 2.0883,
+        "inference_ms": 6903.16,
+        "wall_ms": 6906.041,
+        "raw_response": {
+          "answers": {
+            "correlated_incident": {
+              "action": {
+                "act_probability": 1.0
+              },
+              "answer_confidence": 0.5485,
+              "confidence": 0.5485,
+              "noul": 0.4515,
+              "type": "noul"
+            },
+            "impact": {
+              "action": {
+                "act_probability": 1.0
+              },
+              "answer_confidence": 0.2283,
+              "confidence": 0.0062,
+              "legend": {
+                "0": "none",
+                "1": "low",
+                "2": "moderate",
+                "3": "high",
+                "4": "critical"
+              },
+              "probabilities": {
+                "0": 0.1497,
+                "1": 0.2139,
+                "2": 0.2283,
+                "3": 0.2148,
+                "4": 0.1934
+              },
+              "score": 2.0883,
+              "type": "score"
+            },
+            "incident_kind": {
+              "action": {
+                "act_probability": 1.0
+              },
+              "answer_confidence": 0.2651,
+              "choice": "downstream_timeout",
+              "confidence": 0.0092,
+              "probabilities": {
+                "db_pool_exhaustion": 0.1901,
+                "deploy_regression": 0.1861,
+                "downstream_timeout": 0.2651,
+                "healthy": 0.1993,
+                "insufficient_evidence": 0.1594
+              },
+              "type": "choice"
+            }
+          },
+          "model": "laya-rl-agent",
+          "routing": {
+            "detection": null,
+            "model": "typed-decisions",
+            "reason": "explicit model='typed-decisions'",
+            "repo": "convaiinnovations/laya/typed-decisions",
+            "workflow": null
+          },
+          "usage": {
+            "input_tokens": 2773,
+            "output_tokens": 0,
+            "state_tokens": 862,
+            "state_tokens_dropped": 0,
+            "truncated": false,
+            "truncated_questions": []
+          }
+        }
+      },
+      "acteon_outcome": "suppressed by suppress-observability-noise",
+      "passed": true
+    },
+    {
+      "name": "log-only-noise",
+      "window_id": "checkout-api:prod:2026-10-01T19:41Z",
+      "expected_route": "suppress",
+      "admitted_route": "suppress",
+      "evidence_strength": 0.303525,
+      "uncertainty": 0.7208,
+      "source_positions": {
+        "logs": {
+          "topic": "observability.acme.logs-61f7659384944feba2f8da053dbcfabc",
+          "partition": 0,
+          "offset": 1
+        },
+        "metrics": {
+          "topic": "observability.acme.metrics-61f7659384944feba2f8da053dbcfabc",
+          "partition": 0,
+          "offset": 1
+        },
+        "traces": {
+          "topic": "observability.acme.traces-61f7659384944feba2f8da053dbcfabc",
+          "partition": 0,
+          "offset": 1
+        }
+      },
+      "signals": [
+        {
+          "source": "metrics",
+          "condition": "healthy",
+          "condition_confidence": 0.54,
+          "evidence_probability": 0.2181,
+          "impact_score": 1.2921,
+          "available": true,
+          "inference_ms": 1470.5,
+          "wall_ms": 1472.3105,
+          "raw_response": {
+            "answers": {
+              "condition": {
+                "action": {
+                  "act_probability": 1.0
+                },
+                "answer_confidence": 0.54,
+                "choice": "healthy",
+                "confidence": 0.1382,
+                "probabilities": {
+                  "application_errors": 0.1433,
+                  "db_pool_pressure": 0.1552,
+                  "healthy": 0.54,
+                  "traffic_spike": 0.1616
+                },
+                "type": "choice"
+              },
+              "impact": {
+                "action": {
+                  "act_probability": 1.0
+                },
+                "answer_confidence": 0.341,
+                "confidence": 0.1561,
+                "legend": {
+                  "0": "none",
+                  "1": "low",
+                  "2": "moderate",
+                  "3": "high",
+                  "4": "critical"
+                },
+                "probabilities": {
+                  "0": 0.247,
+                  "1": 0.341,
+                  "2": 0.3194,
+                  "3": 0.058,
+                  "4": 0.0346
+                },
+                "score": 1.2921,
+                "type": "score"
+              },
+              "pool_exhausted": {
+                "action": {
+                  "act_probability": 1.0
+                },
+                "answer_confidence": 0.7819,
+                "confidence": 0.7819,
+                "noul": 0.2181,
+                "type": "noul"
+              }
+            },
+            "model": "laya-rl-agent",
+            "routing": {
+              "detection": null,
+              "model": "typed-decisions",
+              "reason": "explicit model='typed-decisions'",
+              "repo": "convaiinnovations/laya/typed-decisions",
+              "workflow": null
+            },
+            "usage": {
+              "input_tokens": 606,
+              "output_tokens": 0,
+              "state_tokens": 150,
+              "state_tokens_dropped": 0,
+              "truncated": false,
+              "truncated_questions": []
+            }
+          }
+        },
+        {
+          "source": "traces",
+          "condition": "healthy",
+          "condition_confidence": 0.4495,
+          "evidence_probability": 0.2692,
+          "impact_score": 1.2185,
+          "available": true,
+          "inference_ms": 1042.51,
+          "wall_ms": 2514.576166,
+          "raw_response": {
+            "answers": {
+              "condition": {
+                "action": {
+                  "act_probability": 1.0
+                },
+                "answer_confidence": 0.4495,
+                "choice": "healthy",
+                "confidence": 0.0718,
+                "probabilities": {
+                  "application_work": 0.2135,
+                  "database_wait": 0.1885,
+                  "downstream_timeout": 0.1484,
+                  "healthy": 0.4495
+                },
+                "type": "choice"
+              },
+              "dependency_bottleneck": {
+                "action": {
+                  "act_probability": 1.0
+                },
+                "answer_confidence": 0.7308,
+                "confidence": 0.7308,
+                "noul": 0.2692,
+                "type": "noul"
+              },
+              "impact": {
+                "action": {
+                  "act_probability": 1.0
+                },
+                "answer_confidence": 0.3156,
+                "confidence": 0.1657,
+                "legend": {
+                  "0": "none",
+                  "1": "low",
+                  "2": "moderate",
+                  "3": "high",
+                  "4": "critical"
+                },
+                "probabilities": {
+                  "0": 0.2876,
+                  "1": 0.3125,
+                  "2": 0.3156,
+                  "3": 0.062,
+                  "4": 0.0222
+                },
+                "score": 1.2185,
+                "type": "score"
+              }
+            },
+            "model": "laya-rl-agent",
+            "routing": {
+              "detection": null,
+              "model": "typed-decisions",
+              "reason": "explicit model='typed-decisions'",
+              "repo": "convaiinnovations/laya/typed-decisions",
+              "workflow": null
+            },
+            "usage": {
+              "input_tokens": 445,
+              "output_tokens": 0,
+              "state_tokens": 95,
+              "state_tokens_dropped": 0,
+              "truncated": false,
+              "truncated_questions": []
+            }
+          }
+        },
+        {
+          "source": "logs",
+          "condition": "healthy",
+          "condition_confidence": 0.3543,
+          "evidence_probability": 0.2518,
+          "impact_score": 1.2714,
+          "available": true,
+          "inference_ms": 1192.09,
+          "wall_ms": 3706.866667,
+          "raw_response": {
+            "answers": {
+              "condition": {
+                "action": {
+                  "act_probability": 1.0
+                },
+                "answer_confidence": 0.3543,
+                "choice": "healthy",
+                "confidence": 0.0385,
+                "probabilities": {
+                  "downstream_error": 0.1958,
+                  "healthy": 0.3543,
+                  "pool_timeout": 0.1504,
+                  "unrelated_noise": 0.2995
+                },
+                "type": "choice"
+              },
+              "impact": {
+                "action": {
+                  "act_probability": 1.0
+                },
+                "answer_confidence": 0.3312,
+                "confidence": 0.1446,
+                "legend": {
+                  "0": "none",
+                  "1": "low",
+                  "2": "moderate",
+                  "3": "high",
+                  "4": "critical"
+                },
+                "probabilities": {
+                  "0": 0.2668,
+                  "1": 0.3312,
+                  "2": 0.301,
+                  "3": 0.0658,
+                  "4": 0.0352
+                },
+                "score": 1.2714,
+                "type": "score"
+              },
+              "pool_timeout_present": {
+                "action": {
+                  "act_probability": 1.0
+                },
+                "answer_confidence": 0.7482,
+                "confidence": 0.7482,
+                "noul": 0.2518,
+                "type": "noul"
+              }
+            },
+            "model": "laya-rl-agent",
+            "routing": {
+              "detection": null,
+              "model": "typed-decisions",
+              "reason": "explicit model='typed-decisions'",
+              "repo": "convaiinnovations/laya/typed-decisions",
+              "workflow": null
+            },
+            "usage": {
+              "input_tokens": 515,
+              "output_tokens": 0,
+              "state_tokens": 116,
+              "state_tokens_dropped": 0,
+              "truncated": false,
+              "truncated_questions": []
+            }
+          }
+        }
+      ],
+      "fusion": {
+        "incident_kind": "downstream_timeout",
+        "answer_confidence": 0.2792,
+        "probabilities": {
+          "db_pool_exhaustion": 0.2035,
+          "deploy_regression": 0.2038,
+          "downstream_timeout": 0.2792,
+          "healthy": 0.1673,
+          "insufficient_evidence": 0.1462
+        },
+        "correlated_probability": 0.475,
+        "impact_score": 1.996,
+        "inference_ms": 7254.74,
+        "wall_ms": 7256.419916999999,
+        "raw_response": {
+          "answers": {
+            "correlated_incident": {
+              "action": {
+                "act_probability": 1.0
+              },
+              "answer_confidence": 0.525,
+              "confidence": 0.525,
+              "noul": 0.475,
+              "type": "noul"
+            },
+            "impact": {
+              "action": {
+                "act_probability": 1.0
+              },
+              "answer_confidence": 0.2264,
+              "confidence": 0.0041,
+              "legend": {
+                "0": "none",
+                "1": "low",
+                "2": "moderate",
+                "3": "high",
+                "4": "critical"
+              },
+              "probabilities": {
+                "0": 0.1691,
+                "1": 0.2264,
+                "2": 0.2242,
+                "3": 0.1999,
+                "4": 0.1804
+              },
+              "score": 1.996,
+              "type": "score"
+            },
+            "incident_kind": {
+              "action": {
+                "act_probability": 1.0
+              },
+              "answer_confidence": 0.2792,
+              "choice": "downstream_timeout",
+              "confidence": 0.0154,
+              "probabilities": {
+                "db_pool_exhaustion": 0.2035,
+                "deploy_regression": 0.2038,
+                "downstream_timeout": 0.2792,
+                "healthy": 0.1673,
+                "insufficient_evidence": 0.1462
+              },
+              "type": "choice"
+            }
+          },
+          "model": "laya-rl-agent",
+          "routing": {
+            "detection": null,
+            "model": "typed-decisions",
+            "reason": "explicit model='typed-decisions'",
+            "repo": "convaiinnovations/laya/typed-decisions",
+            "workflow": null
+          },
+          "usage": {
+            "input_tokens": 2770,
+            "output_tokens": 0,
+            "state_tokens": 861,
+            "state_tokens_dropped": 0,
+            "truncated": false,
+            "truncated_questions": []
+          }
+        }
+      },
+      "acteon_outcome": "suppressed by suppress-observability-noise",
+      "passed": true
+    },
+    {
+      "name": "pool-exhaustion",
+      "window_id": "checkout-api:prod:2026-10-01T19:42Z",
+      "expected_route": "incident",
+      "admitted_route": "incident",
+      "evidence_strength": 0.5604,
+      "uncertainty": 0.7281,
+      "source_positions": {
+        "logs": {
+          "topic": "observability.acme.logs-61f7659384944feba2f8da053dbcfabc",
+          "partition": 0,
+          "offset": 2
+        },
+        "metrics": {
+          "topic": "observability.acme.metrics-61f7659384944feba2f8da053dbcfabc",
+          "partition": 0,
+          "offset": 2
+        },
+        "traces": {
+          "topic": "observability.acme.traces-61f7659384944feba2f8da053dbcfabc",
+          "partition": 0,
+          "offset": 2
+        }
+      },
+      "signals": [
+        {
+          "source": "metrics",
+          "condition": "db_pool_pressure",
+          "condition_confidence": 0.5194,
+          "evidence_probability": 0.6586,
+          "impact_score": 2.9302,
+          "available": true,
+          "inference_ms": 1527.97,
+          "wall_ms": 1529.9356670000002,
+          "raw_response": {
+            "answers": {
+              "condition": {
+                "action": {
+                  "act_probability": 1.0
+                },
+                "answer_confidence": 0.5194,
+                "choice": "db_pool_pressure",
+                "confidence": 0.1463,
+                "probabilities": {
+                  "application_errors": 0.2396,
+                  "db_pool_pressure": 0.5194,
+                  "healthy": 0.0877,
+                  "traffic_spike": 0.1534
+                },
+                "type": "choice"
+              },
+              "impact": {
+                "action": {
+                  "act_probability": 1.0
+                },
+                "answer_confidence": 0.4113,
+                "confidence": 0.177,
+                "legend": {
+                  "0": "none",
+                  "1": "low",
+                  "2": "moderate",
+                  "3": "high",
+                  "4": "critical"
+                },
+                "probabilities": {
+                  "0": 0.0341,
+                  "1": 0.0765,
+                  "2": 0.1462,
+                  "3": 0.4113,
+                  "4": 0.3318
+                },
+                "score": 2.9302,
+                "type": "score"
+              },
+              "pool_exhausted": {
+                "action": {
+                  "act_probability": 1.0
+                },
+                "answer_confidence": 0.6586,
+                "confidence": 0.6586,
+                "noul": 0.6586,
+                "type": "noul"
+              }
+            },
+            "model": "laya-rl-agent",
+            "routing": {
+              "detection": null,
+              "model": "typed-decisions",
+              "reason": "explicit model='typed-decisions'",
+              "repo": "convaiinnovations/laya/typed-decisions",
+              "workflow": null
+            },
+            "usage": {
+              "input_tokens": 624,
+              "output_tokens": 0,
+              "state_tokens": 156,
+              "state_tokens_dropped": 0,
+              "truncated": false,
+              "truncated_questions": []
+            }
+          }
+        },
+        {
+          "source": "traces",
+          "condition": "database_wait",
+          "condition_confidence": 0.4771,
+          "evidence_probability": 0.512,
+          "impact_score": 1.7298,
+          "available": true,
+          "inference_ms": 1213.99,
+          "wall_ms": 2743.600791,
+          "raw_response": {
+            "answers": {
+              "condition": {
+                "action": {
+                  "act_probability": 1.0
+                },
+                "answer_confidence": 0.4771,
+                "choice": "database_wait",
+                "confidence": 0.101,
+                "probabilities": {
+                  "application_work": 0.2258,
+                  "database_wait": 0.4771,
+                  "downstream_timeout": 0.1114,
+                  "healthy": 0.1857
+                },
+                "type": "choice"
+              },
+              "dependency_bottleneck": {
+                "action": {
+                  "act_probability": 1.0
+                },
+                "answer_confidence": 0.512,
+                "confidence": 0.512,
+                "noul": 0.512,
+                "type": "noul"
+              },
+              "impact": {
+                "action": {
+                  "act_probability": 1.0
+                },
+                "answer_confidence": 0.4278,
+                "confidence": 0.1516,
+                "legend": {
+                  "0": "none",
+                  "1": "low",
+                  "2": "moderate",
+                  "3": "high",
+                  "4": "critical"
+                },
+                "probabilities": {
+                  "0": 0.1004,
+                  "1": 0.2957,
+                  "2": 0.4278,
+                  "3": 0.1255,
+                  "4": 0.0504
+                },
+                "score": 1.7298,
+                "type": "score"
+              }
+            },
+            "model": "laya-rl-agent",
+            "routing": {
+              "detection": null,
+              "model": "typed-decisions",
+              "reason": "explicit model='typed-decisions'",
+              "repo": "convaiinnovations/laya/typed-decisions",
+              "workflow": null
+            },
+            "usage": {
+              "input_tokens": 496,
+              "output_tokens": 0,
+              "state_tokens": 112,
+              "state_tokens_dropped": 0,
+              "truncated": false,
+              "truncated_questions": []
+            }
+          }
+        },
+        {
+          "source": "logs",
+          "condition": "pool_timeout",
+          "condition_confidence": 0.5843,
+          "evidence_probability": 0.6171,
+          "impact_score": 2.853,
+          "available": true,
+          "inference_ms": 1233.74,
+          "wall_ms": 3977.376417,
+          "raw_response": {
+            "answers": {
+              "condition": {
+                "action": {
+                  "act_probability": 1.0
+                },
+                "answer_confidence": 0.5843,
+                "choice": "pool_timeout",
+                "confidence": 0.1847,
+                "probabilities": {
+                  "downstream_error": 0.1698,
+                  "healthy": 0.1278,
+                  "pool_timeout": 0.5843,
+                  "unrelated_noise": 0.1181
+                },
+                "type": "choice"
+              },
+              "impact": {
+                "action": {
+                  "act_probability": 1.0
+                },
+                "answer_confidence": 0.3447,
+                "confidence": 0.1325,
+                "legend": {
+                  "0": "none",
+                  "1": "low",
+                  "2": "moderate",
+                  "3": "high",
+                  "4": "critical"
+                },
+                "probabilities": {
+                  "0": 0.0424,
+                  "1": 0.0893,
+                  "2": 0.1857,
+                  "3": 0.3379,
+                  "4": 0.3447
+                },
+                "score": 2.853,
+                "type": "score"
+              },
+              "pool_timeout_present": {
+                "action": {
+                  "act_probability": 1.0
+                },
+                "answer_confidence": 0.6171,
+                "confidence": 0.6171,
+                "noul": 0.6171,
+                "type": "noul"
+              }
+            },
+            "model": "laya-rl-agent",
+            "routing": {
+              "detection": null,
+              "model": "typed-decisions",
+              "reason": "explicit model='typed-decisions'",
+              "repo": "convaiinnovations/laya/typed-decisions",
+              "workflow": null
+            },
+            "usage": {
+              "input_tokens": 506,
+              "output_tokens": 0,
+              "state_tokens": 113,
+              "state_tokens_dropped": 0,
+              "truncated": false,
+              "truncated_questions": []
+            }
+          }
+        }
+      ],
+      "fusion": {
+        "incident_kind": "db_pool_exhaustion",
+        "answer_confidence": 0.2719,
+        "probabilities": {
+          "db_pool_exhaustion": 0.2719,
+          "deploy_regression": 0.1757,
+          "downstream_timeout": 0.245,
+          "healthy": 0.152,
+          "insufficient_evidence": 0.1555
+        },
+        "correlated_probability": 0.4539,
+        "impact_score": 2.0426,
+        "inference_ms": 7540.65,
+        "wall_ms": 7543.040917,
+        "raw_response": {
+          "answers": {
+            "correlated_incident": {
+              "action": {
+                "act_probability": 1.0
+              },
+              "answer_confidence": 0.5461,
+              "confidence": 0.5461,
+              "noul": 0.4539,
+              "type": "noul"
+            },
+            "impact": {
+              "action": {
+                "act_probability": 1.0
+              },
+              "answer_confidence": 0.2606,
+              "confidence": 0.0139,
+              "legend": {
+                "0": "none",
+                "1": "low",
+                "2": "moderate",
+                "3": "high",
+                "4": "critical"
+              },
+              "probabilities": {
+                "0": 0.1407,
+                "1": 0.2209,
+                "2": 0.2606,
+                "3": 0.2104,
+                "4": 0.1673
+              },
+              "score": 2.0426,
+              "type": "score"
+            },
+            "incident_kind": {
+              "action": {
+                "act_probability": 1.0
+              },
+              "answer_confidence": 0.2719,
+              "choice": "db_pool_exhaustion",
+              "confidence": 0.0183,
+              "probabilities": {
+                "db_pool_exhaustion": 0.2719,
+                "deploy_regression": 0.1757,
+                "downstream_timeout": 0.245,
+                "healthy": 0.152,
+                "insufficient_evidence": 0.1555
+              },
+              "type": "choice"
+            }
+          },
+          "model": "laya-rl-agent",
+          "routing": {
+            "detection": null,
+            "model": "typed-decisions",
+            "reason": "explicit model='typed-decisions'",
+            "repo": "convaiinnovations/laya/typed-decisions",
+            "workflow": null
+          },
+          "usage": {
+            "input_tokens": 2800,
+            "output_tokens": 0,
+            "state_tokens": 871,
+            "state_tokens_dropped": 0,
+            "truncated": false,
+            "truncated_questions": []
+          }
+        }
+      },
+      "acteon_outcome": "completed observability-incident chain",
+      "passed": true
+    },
+    {
+      "name": "ambiguous-regression",
+      "window_id": "checkout-api:prod:2026-10-01T19:43Z",
+      "expected_route": "investigate",
+      "admitted_route": "investigate",
+      "evidence_strength": 0.4547,
+      "uncertainty": 0.75,
+      "source_positions": {
+        "logs": {
+          "topic": "observability.acme.logs-61f7659384944feba2f8da053dbcfabc",
+          "partition": 0,
+          "offset": 3
+        },
+        "metrics": {
+          "topic": "observability.acme.metrics-61f7659384944feba2f8da053dbcfabc",
+          "partition": 0,
+          "offset": 3
+        },
+        "traces": {
+          "topic": "observability.acme.traces-61f7659384944feba2f8da053dbcfabc",
+          "partition": 0,
+          "offset": 3
+        }
+      },
+      "signals": [
+        {
+          "source": "metrics",
+          "condition": "application_errors",
+          "condition_confidence": 0.387,
+          "evidence_probability": 0.4844,
+          "impact_score": 2.4798,
+          "available": true,
+          "inference_ms": 1590.85,
+          "wall_ms": 1592.6509170000002,
+          "raw_response": {
+            "answers": {
+              "condition": {
+                "action": {
+                  "act_probability": 1.0
+                },
+                "answer_confidence": 0.387,
+                "choice": "application_errors",
+                "confidence": 0.0373,
+                "probabilities": {
+                  "application_errors": 0.387,
+                  "db_pool_pressure": 0.2353,
+                  "healthy": 0.1657,
+                  "traffic_spike": 0.212
+                },
+                "type": "choice"
+              },
+              "impact": {
+                "action": {
+                  "act_probability": 1.0
+                },
+                "answer_confidence": 0.4335,
+                "confidence": 0.1329,
+                "legend": {
+                  "0": "none",
+                  "1": "low",
+                  "2": "moderate",
+                  "3": "high",
+                  "4": "critical"
+                },
+                "probabilities": {
+                  "0": 0.0577,
+                  "1": 0.1128,
+                  "2": 0.2586,
+                  "3": 0.4335,
+                  "4": 0.1373
+                },
+                "score": 2.4798,
+                "type": "score"
+              },
+              "pool_exhausted": {
+                "action": {
+                  "act_probability": 1.0
+                },
+                "answer_confidence": 0.5156,
+                "confidence": 0.5156,
+                "noul": 0.4844,
+                "type": "noul"
+              }
+            },
+            "model": "laya-rl-agent",
+            "routing": {
+              "detection": null,
+              "model": "typed-decisions",
+              "reason": "explicit model='typed-decisions'",
+              "repo": "convaiinnovations/laya/typed-decisions",
+              "workflow": null
+            },
+            "usage": {
+              "input_tokens": 657,
+              "output_tokens": 0,
+              "state_tokens": 167,
+              "state_tokens_dropped": 0,
+              "truncated": false,
+              "truncated_questions": []
+            }
+          }
+        },
+        {
+          "source": "traces",
+          "condition": "application_work",
+          "condition_confidence": 0.3117,
+          "evidence_probability": 0.3641,
+          "impact_score": 1.5303,
+          "available": true,
+          "inference_ms": 1250.17,
+          "wall_ms": 2842.6524170000002,
+          "raw_response": {
+            "answers": {
+              "condition": {
+                "action": {
+                  "act_probability": 1.0
+                },
+                "answer_confidence": 0.3117,
+                "choice": "application_work",
+                "confidence": 0.0094,
+                "probabilities": {
+                  "application_work": 0.3117,
+                  "database_wait": 0.2427,
+                  "downstream_timeout": 0.2474,
+                  "healthy": 0.1982
+                },
+                "type": "choice"
+              },
+              "dependency_bottleneck": {
+                "action": {
+                  "act_probability": 1.0
+                },
+                "answer_confidence": 0.6359,
+                "confidence": 0.6359,
+                "noul": 0.3641,
+                "type": "noul"
+              },
+              "impact": {
+                "action": {
+                  "act_probability": 1.0
+                },
+                "answer_confidence": 0.409,
+                "confidence": 0.1519,
+                "legend": {
+                  "0": "none",
+                  "1": "low",
+                  "2": "moderate",
+                  "3": "high",
+                  "4": "critical"
+                },
+                "probabilities": {
+                  "0": 0.169,
+                  "1": 0.2964,
+                  "2": 0.409,
+                  "3": 0.0866,
+                  "4": 0.039
+                },
+                "score": 1.5303,
+                "type": "score"
+              }
+            },
+            "model": "laya-rl-agent",
+            "routing": {
+              "detection": null,
+              "model": "typed-decisions",
+              "reason": "explicit model='typed-decisions'",
+              "repo": "convaiinnovations/laya/typed-decisions",
+              "workflow": null
+            },
+            "usage": {
+              "input_tokens": 508,
+              "output_tokens": 0,
+              "state_tokens": 116,
+              "state_tokens_dropped": 0,
+              "truncated": false,
+              "truncated_questions": []
+            }
+          }
+        },
+        {
+          "source": "logs",
+          "condition": "downstream_error",
+          "condition_confidence": 0.3121,
+          "evidence_probability": 0.4468,
+          "impact_score": 1.2477,
+          "available": false,
+          "inference_ms": 745.86,
+          "wall_ms": 3588.307625,
+          "raw_response": {
+            "answers": {
+              "condition": {
+                "action": {
+                  "act_probability": 1.0
+                },
+                "answer_confidence": 0.3121,
+                "choice": "downstream_error",
+                "confidence": 0.0076,
+                "probabilities": {
+                  "downstream_error": 0.3121,
+                  "healthy": 0.2386,
+                  "pool_timeout": 0.2145,
+                  "unrelated_noise": 0.2348
+                },
+                "type": "choice"
+              },
+              "impact": {
+                "action": {
+                  "act_probability": 1.0
+                },
+                "answer_confidence": 0.3178,
+                "confidence": 0.1102,
+                "legend": {
+                  "0": "none",
+                  "1": "low",
+                  "2": "moderate",
+                  "3": "high",
+                  "4": "critical"
+                },
+                "probabilities": {
+                  "0": 0.3178,
+                  "1": 0.3043,
+                  "2": 0.2402,
+                  "3": 0.0879,
+                  "4": 0.0499
+                },
+                "score": 1.2477,
+                "type": "score"
+              },
+              "pool_timeout_present": {
+                "action": {
+                  "act_probability": 1.0
+                },
+                "answer_confidence": 0.5532,
+                "confidence": 0.5532,
+                "noul": 0.4468,
+                "type": "noul"
+              }
+            },
+            "model": "laya-rl-agent",
+            "routing": {
+              "detection": null,
+              "model": "typed-decisions",
+              "reason": "explicit model='typed-decisions'",
+              "repo": "convaiinnovations/laya/typed-decisions",
+              "workflow": null
+            },
+            "usage": {
+              "input_tokens": 269,
+              "output_tokens": 0,
+              "state_tokens": 34,
+              "state_tokens_dropped": 0,
+              "truncated": false,
+              "truncated_questions": []
+            }
+          }
+        }
+      ],
+      "fusion": {
+        "incident_kind": "downstream_timeout",
+        "answer_confidence": 0.2464,
+        "probabilities": {
+          "db_pool_exhaustion": 0.1904,
+          "deploy_regression": 0.2306,
+          "downstream_timeout": 0.2464,
+          "healthy": 0.1648,
+          "insufficient_evidence": 0.1677
+        },
+        "correlated_probability": 0.5235,
+        "impact_score": 2.0435,
+        "inference_ms": 7546.96,
+        "wall_ms": 7549.046292,
+        "raw_response": {
+          "answers": {
+            "correlated_incident": {
+              "action": {
+                "act_probability": 1.0
+              },
+              "answer_confidence": 0.5235,
+              "confidence": 0.5235,
+              "noul": 0.5235,
+              "type": "noul"
+            },
+            "impact": {
+              "action": {
+                "act_probability": 1.0
+              },
+              "answer_confidence": 0.2371,
+              "confidence": 0.0097,
+              "legend": {
+                "0": "none",
+                "1": "low",
+                "2": "moderate",
+                "3": "high",
+                "4": "critical"
+              },
+              "probabilities": {
+                "0": 0.1497,
+                "1": 0.2188,
+                "2": 0.2371,
+                "3": 0.2272,
+                "4": 0.1672
+              },
+              "score": 2.0435,
+              "type": "score"
+            },
+            "incident_kind": {
+              "action": {
+                "act_probability": 1.0
+              },
+              "answer_confidence": 0.2464,
+              "choice": "downstream_timeout",
+              "confidence": 0.0084,
+              "probabilities": {
+                "db_pool_exhaustion": 0.1904,
+                "deploy_regression": 0.2306,
+                "downstream_timeout": 0.2464,
+                "healthy": 0.1648,
+                "insufficient_evidence": 0.1677
+              },
+              "type": "choice"
+            }
+          },
+          "model": "laya-rl-agent",
+          "routing": {
+            "detection": null,
+            "model": "typed-decisions",
+            "reason": "explicit model='typed-decisions'",
+            "repo": "convaiinnovations/laya/typed-decisions",
+            "workflow": null
+          },
+          "usage": {
+            "input_tokens": 2794,
+            "output_tokens": 0,
+            "state_tokens": 869,
+            "state_tokens_dropped": 0,
+            "truncated": false,
+            "truncated_questions": []
+          }
+        }
+      },
+      "acteon_outcome": "rerouted to investigator",
+      "passed": true
+    }
+  ],
+  "aggregate": {
+    "model_calls": 16,
+    "total_inference_ms": 43945.67,
+    "p50_inference_ms": 1375.85,
+    "p95_inference_ms": 7546.96,
+    "diagnostic_calls": 1,
+    "on_call_notifications": 1,
+    "investigator_calls": 1,
+    "duplicate_dispatches_prevented": 1
+  }
+}
