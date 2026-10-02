@@ -1,4 +1,14 @@
 rules:
+  - name: route-chain-notification-through-policy
+    priority: 0
+    description: "Re-evaluate the chain's emitted notification through gateway rules"
+    condition:
+      field: action.action_type
+      eq: "incident.notify"
+    action:
+      type: reroute
+      target_provider: "on-call"
+
   - name: investigate-ambiguous-impact
     priority: 1
     description: "Send ambiguous, user-impacting verdicts to the bounded investigator"

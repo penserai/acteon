@@ -5,29 +5,40 @@
 //!   docker compose up -d --build --wait
 //!
 //! Run from the repository root:
-//!   cargo run -p acteon-simulation --example `neural_observability_simulation` -- --write-results
+//!   cargo run -p acteon-simulation --features bus,redis --example `neural_observability_simulation` -- --write-results
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+};
 use std::time::Duration;
 
 use acteon_bus::{
-    BusBackend, BusMessage, KafkaBackend, KafkaBusConfig, OffsetPosition, StartOffset,
+    BusBackend, BusMessage, KafkaBackend, KafkaBusConfig, StartOffset, StreamCheckpointConfig,
+    StreamCheckpointCoordinator, StreamDeliveryError, StreamOutboxConfig, StreamOutboxDelivery,
+    StreamOutboxDispatchResult, StreamOutboxDispatcher, StreamOutboxEntry, StreamOutboxMetrics,
+    stream_checkpoint_key,
 };
-use acteon_core::chain::{ChainConfig, ChainStatus, ChainStepConfig};
-use acteon_core::{Action, ActionOutcome, Topic};
+use acteon_core::chain::{ChainConfig, ChainStatus, ChainStepConfig, DispatchStepConfig};
+use acteon_core::{Action, ActionOutcome, ProviderResponse, Topic};
+use acteon_executor::ExecutorConfig;
 use acteon_gateway::{Gateway, GatewayBuilder};
-use acteon_llm::{JsonResponseContract, TypedJsonModelClient, VerifiedModelLock};
+use acteon_llm::{GovernedModelProvider, GovernedModelProviderConfig, VerifiedModelLock};
+use acteon_provider::{Provider, ProviderError};
 use acteon_rules::Rule;
 use acteon_rules_yaml::YamlFrontend;
 use acteon_simulation::{ActionOutcomeExt, RecordingProvider};
+use acteon_state::StateStore;
 use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
+use acteon_state_redis::{RedisConfig, RedisStateStore};
+use async_trait::async_trait;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use futures::StreamExt;
-use reqwest::header::HeaderMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
@@ -37,7 +48,10 @@ mod windowing;
 #[path = "neural_observability/checkpoint.rs"]
 mod checkpoint;
 
-use checkpoint::{AtomicCheckpointStore, RecoveryCheckpoint, persist_then_commit};
+use checkpoint::{
+    WindowCheckpoint, is_recovery_record, open_windows, source_positions, stream_positions,
+    window_key, window_outputs,
+};
 use windowing::{
     CorrelatedWindow, EventTimeCorrelator, IngestDisposition, SCHEMA_VERSION, SignalSource,
     SourcePosition, TelemetryEvent, WindowingStats,
@@ -70,7 +84,8 @@ struct HealthIdentity {
 #[derive(Debug)]
 struct LayaCall {
     response: Value,
-    inference_ms: f64,
+    provider_evidence: BTreeMap<String, String>,
+    model_request_ms: f64,
     wall_ms: f64,
 }
 
@@ -92,7 +107,7 @@ struct LayaUsage {
     output_tokens: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct SignalSummary {
     source: String,
     condition: String,
@@ -100,24 +115,26 @@ struct SignalSummary {
     evidence_probability: f64,
     impact_score: f64,
     available: bool,
-    inference_ms: f64,
+    model_request_ms: f64,
     wall_ms: f64,
     raw_response: Value,
+    provider_evidence: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct FusionSummary {
     incident_kind: String,
     answer_confidence: f64,
     probabilities: BTreeMap<String, f64>,
     correlated_probability: f64,
     impact_score: f64,
-    inference_ms: f64,
+    model_request_ms: f64,
     wall_ms: f64,
     raw_response: Value,
+    provider_evidence: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct TrialReport {
     name: String,
     window_id: String,
@@ -135,9 +152,9 @@ struct TrialReport {
 #[derive(Debug, Serialize)]
 struct AggregateReport {
     model_calls: usize,
-    total_inference_ms: f64,
-    p50_inference_ms: f64,
-    p95_inference_ms: f64,
+    total_model_request_ms: f64,
+    p50_model_request_ms: f64,
+    p95_model_request_ms: f64,
     diagnostic_calls: usize,
     on_call_notifications: usize,
     investigator_calls: usize,
@@ -164,39 +181,67 @@ struct SimulationReport {
     recovery: RecoveryReport,
     trials: Vec<TrialReport>,
     aggregate: AggregateReport,
+    delivery: DeliveryReport,
 }
 
 struct StreamReplay {
     windows: Vec<CorrelatedWindow>,
     stats: WindowingStats,
     recovery: RecoveryReport,
+    checkpoints: WindowCheckpoint,
 }
 
 struct LayaClient {
     health_http: reqwest::Client,
     base_url: String,
     api_key: String,
-    model: TypedJsonModelClient,
-    response_contract: JsonResponseContract<LayaEnvelope>,
+    gateway: Gateway,
+    governance: VerifiedModelLock,
+    calls: AtomicUsize,
 }
 
 impl LayaClient {
-    fn new() -> Result<Self, AnyError> {
+    fn new(root: &Path, governance: VerifiedModelLock) -> Result<Self, AnyError> {
         let base_url =
             std::env::var("LAYA_URL").unwrap_or_else(|_| "http://127.0.0.1:8000".to_owned());
         let api_key =
             std::env::var("LAYA_API_KEY").unwrap_or_else(|_| "acteon-laya-demo".to_owned());
-        let model =
-            TypedJsonModelClient::new(format!("{base_url}/v1/systemone"), Duration::from_secs(90))?
-                .with_bearer_token(api_key.clone());
+        let mut builder = GatewayBuilder::new()
+            .executor_config(ExecutorConfig {
+                max_retries: 0,
+                execution_timeout: Duration::from_secs(90),
+                ..Default::default()
+            })
+            .state(Arc::new(MemoryStateStore::new()))
+            .lock(Arc::new(MemoryDistributedLock::new()));
+        for name in ["metrics", "traces", "logs", "fusion"] {
+            builder = builder.provider(Arc::new(GovernedModelProvider::new(
+                GovernedModelProviderConfig {
+                    name: format!("laya-{name}"),
+                    endpoint: format!("{base_url}/v1/systemone"),
+                    health_endpoint: format!("{base_url}/health"),
+                    lock_file: root.join("model.lock.json"),
+                    contracts_root: root.to_path_buf(),
+                    response_contract: "response_schema".into(),
+                    request_contract: Some(name.into()),
+                    request_contract_field: Some("questions".into()),
+                    model_field: Some("model".into()),
+                    bearer_token: Some(api_key.clone()),
+                    timeout: Duration::from_secs(90),
+                    max_response_bytes: NonZeroUsize::new(1024 * 1024).unwrap(),
+                    verify_identity_each_call: true,
+                },
+            )?));
+        }
         Ok(Self {
             health_http: reqwest::Client::builder()
                 .timeout(Duration::from_secs(90))
                 .build()?,
             base_url,
             api_key,
-            model,
-            response_contract: JsonResponseContract::new(&laya_response_schema())?,
+            gateway: builder.build()?,
+            governance,
+            calls: AtomicUsize::new(0),
         })
     }
 
@@ -236,88 +281,76 @@ impl LayaClient {
         })
     }
 
-    async fn evaluate(&self, state: Value, questions: &Value) -> Result<LayaCall, AnyError> {
-        let response = self
-            .model
-            .invoke(
-                &json!({
-                "state": state,
-                "questions": questions,
-                "model": MODEL
-                }),
-                &self.response_contract,
+    async fn evaluate(
+        &self,
+        name: &str,
+        state: Value,
+        questions: &Value,
+    ) -> Result<LayaCall, AnyError> {
+        let started = std::time::Instant::now();
+        let outcome = self
+            .gateway
+            .dispatch(
+                Action::new(
+                    NAMESPACE,
+                    TENANT,
+                    format!("laya-{name}"),
+                    "model.evaluate",
+                    json!({"state": state}),
+                ),
+                None,
             )
             .await?;
-        let inference_ms = inference_time(&response.headers)?;
-        if response.output.routing.model != MODEL
-            || response.output.usage.output_tokens != 0
-            || response.output.answers.len()
-                != questions.as_object().map_or(0, serde_json::Map::len)
-            || response.output.model.is_empty()
+        let ActionOutcome::Executed(response) = outcome else {
+            return Err(error(format!(
+                "governed inference was not executed: {outcome:?}"
+            )));
+        };
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        for (header, expected) in [
+            (
+                "acteon-model-lock-digest",
+                self.governance.lock_digest.as_str(),
+            ),
+            (
+                "acteon-model-revision",
+                self.governance.policy.model.revision.as_str(),
+            ),
+            ("acteon-model-request-contract", name),
+            ("acteon-model-response-contract", "response_schema"),
+        ] {
+            if response.headers.get(header).map(String::as_str) != Some(expected) {
+                return Err(error(format!(
+                    "governed inference evidence mismatch: {header}"
+                )));
+            }
+        }
+        let elapsed = response
+            .headers
+            .get("acteon-model-elapsed-ms")
+            .ok_or_else(|| error("provider omitted request timing"))?
+            .parse::<f64>()?;
+        let envelope: LayaEnvelope = serde_json::from_value(response.body.clone())?;
+        if envelope.routing.model != MODEL
+            || envelope.usage.output_tokens != 0
+            || envelope.answers.len() != questions.as_object().map_or(0, serde_json::Map::len)
+            || envelope.model.is_empty()
         {
             return Err(error("typed Laya response identity or usage check failed"));
         }
-        validate_laya_response(&response.raw, questions)?;
+        validate_laya_response(&response.body, questions)?;
         Ok(LayaCall {
-            response: response.raw,
-            inference_ms,
-            wall_ms: response.elapsed.as_secs_f64() * 1_000.0,
+            response: response.body,
+            model_request_ms: elapsed,
+            // Whole milliseconds remain exact across checkpoint JSON round trips.
+            wall_ms: (started.elapsed().as_secs_f64() * 1000.0).round(),
+            provider_evidence: response.headers.into_iter().collect(),
         })
     }
 }
 
-fn laya_response_schema() -> Value {
-    json!({
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["answers", "model", "routing", "usage"],
-        "properties": {
-            "answers": {"type": "object", "minProperties": 1},
-            "model": {"type": "string", "minLength": 1},
-            "routing": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": ["detection", "model", "reason", "repo", "workflow"],
-                "properties": {
-                    "detection": {"type": ["string", "null"]},
-                    "model": {"type": "string", "minLength": 1},
-                    "reason": {"type": "string"},
-                    "repo": {"type": "string", "minLength": 1},
-                    "workflow": {"type": ["string", "null"]}
-                }
-            },
-            "usage": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": ["input_tokens", "output_tokens", "state_tokens", "state_tokens_dropped", "truncated", "truncated_questions"],
-                "properties": {
-                    "input_tokens": {"type": "integer", "minimum": 0},
-                    "output_tokens": {"type": "integer", "minimum": 0},
-                    "state_tokens": {"type": "integer", "minimum": 0},
-                    "state_tokens_dropped": {"type": "integer", "minimum": 0},
-                    "truncated": {"type": "boolean"},
-                    "truncated_questions": {"type": "array", "items": {"type": "string"}}
-                }
-            }
-        }
-    })
-}
-
 fn error(message: impl Into<String>) -> AnyError {
     std::io::Error::other(message.into()).into()
-}
-
-fn inference_time(headers: &HeaderMap) -> Result<f64, AnyError> {
-    let milliseconds = headers
-        .get("x-inference-time-ms")
-        .ok_or_else(|| error("Laya response omitted X-Inference-Time-Ms"))?
-        .to_str()?
-        .parse::<f64>()
-        .map_err(AnyError::from)?;
-    if !milliseconds.is_finite() || milliseconds < 0.0 {
-        return Err(error("Laya returned an invalid inference time"));
-    }
-    Ok(milliseconds)
 }
 
 fn object_at<'a>(value: &'a Value, path: &[&str]) -> Result<&'a Map<String, Value>, AnyError> {
@@ -528,16 +561,24 @@ fn parse_rules(yaml: &str) -> Result<Vec<Rule>, AnyError> {
 
 struct ActeonSimulation {
     gateway: Gateway,
+    routing_gateway: Arc<Gateway>,
     diagnostics: Arc<RecordingProvider>,
     on_call: Arc<RecordingProvider>,
     investigator: Arc<RecordingProvider>,
+    notification_intake: Arc<RecordingProvider>,
 }
 
 impl ActeonSimulation {
+    #[cfg(test)]
     fn build(rule_yaml: &str) -> Result<Self, AnyError> {
+        Self::build_with_store(rule_yaml, Arc::new(MemoryStateStore::new()))
+    }
+
+    fn build_with_store(rule_yaml: &str, store: Arc<dyn StateStore>) -> Result<Self, AnyError> {
         let diagnostics = Arc::new(RecordingProvider::new("diagnostics"));
         let on_call = Arc::new(RecordingProvider::new("on-call"));
         let investigator = Arc::new(RecordingProvider::new("investigator"));
+        let notification_intake = Arc::new(RecordingProvider::new("notification-intake"));
         let verdict_audit = Arc::new(RecordingProvider::new("verdict-audit"));
         let chain = ChainConfig::new("observability-incident")
             .with_step(ChainStepConfig::new(
@@ -549,10 +590,14 @@ impl ActeonSimulation {
                     "evidence": "{{origin.payload.evidence_refs}}"
                 }),
             ))
-            .with_step(ChainStepConfig::new(
+            .with_step(ChainStepConfig::new_dispatch(
                 "notify-on-call",
-                "on-call",
-                "notify",
+                DispatchStepConfig {
+                    provider: "notification-intake".into(),
+                    action_type: "incident.notify".into(),
+                    dedup_key: Some("{{origin.payload.incident_key}}:notify".into()),
+                    inherit_metadata: true,
+                },
                 json!({
                     "incident_key": "{{origin.payload.incident_key}}",
                     "kind": "{{origin.payload.kind}}"
@@ -564,6 +609,7 @@ impl ActeonSimulation {
             Arc::clone(&on_call) as Arc<dyn acteon_provider::DynProvider>,
             Arc::clone(&investigator) as Arc<dyn acteon_provider::DynProvider>,
             verdict_audit as Arc<dyn acteon_provider::DynProvider>,
+            Arc::clone(&notification_intake) as Arc<dyn acteon_provider::DynProvider>,
         ];
         let mut builder = GatewayBuilder::new()
             .state(Arc::new(MemoryStateStore::new()))
@@ -574,54 +620,112 @@ impl ActeonSimulation {
         for provider in providers {
             builder = builder.provider(provider);
         }
+        let routing_gateway = Arc::new(builder.build()?);
+        let admission_rule = fs::read_to_string(example_root().join("rules/admission.yaml"))?;
+        let admission_gateway = GatewayBuilder::new()
+            .executor_config(ExecutorConfig {
+                max_retries: 0,
+                ..Default::default()
+            })
+            .state(store)
+            .lock(Arc::new(MemoryDistributedLock::new()))
+            .rules(parse_rules(&admission_rule)?)
+            .provider(Arc::new(VerdictDispatchProvider {
+                gateway: Arc::clone(&routing_gateway),
+            }))
+            .build()?;
         Ok(Self {
-            gateway: builder.build()?,
+            gateway: admission_gateway,
+            routing_gateway,
             diagnostics,
             on_call,
             investigator,
+            notification_intake,
         })
     }
 
     async fn dispatch(&self, action: Action) -> Result<String, AnyError> {
-        let outcome = self.gateway.dispatch(action, None).await?;
-        match &outcome {
-            ActionOutcome::Suppressed { rule } => {
-                outcome.assert_suppressed();
-                Ok(format!("suppressed by {rule}"))
-            }
-            ActionOutcome::Rerouted { new_provider, .. } => {
-                if new_provider != "investigator" {
-                    return Err(error(format!(
-                        "expected investigator reroute, got {new_provider}"
-                    )));
-                }
-                Ok(format!("rerouted to {new_provider}"))
-            }
-            ActionOutcome::ChainStarted {
-                chain_id,
-                chain_name,
-                ..
-            } => {
-                if chain_name != "observability-incident" {
-                    return Err(error(format!("unexpected chain {chain_name}")));
-                }
-                Box::pin(self.gateway.advance_chain(NAMESPACE, TENANT, chain_id)).await?;
-                Box::pin(self.gateway.advance_chain(NAMESPACE, TENANT, chain_id)).await?;
-                let state = self
-                    .gateway
-                    .get_chain_status(NAMESPACE, TENANT, chain_id)
-                    .await?
-                    .ok_or_else(|| error("incident chain state disappeared"))?;
-                if state.status != ChainStatus::Completed {
-                    return Err(error(format!(
-                        "incident chain did not complete: {:?}",
-                        state.status
-                    )));
-                }
-                Ok("completed observability-incident chain".to_owned())
-            }
-            other => Err(error(format!("unexpected Acteon outcome: {other:?}"))),
+        let key = action
+            .dedup_key
+            .clone()
+            .ok_or_else(|| error("verdict has no stable deduplication key"))?;
+        let delivery = Action::new(
+            NAMESPACE,
+            TENANT,
+            "verdict-dispatch",
+            "detector.deliver",
+            serde_json::to_value(action)?,
+        )
+        .with_dedup_key(key);
+        match self.gateway.dispatch(delivery, None).await? {
+            ActionOutcome::Executed(response) => string_at(&response.body, &["acteon_outcome"]),
+            ActionOutcome::Deduplicated => Ok("deduplicated by Acteon".into()),
+            outcome => Err(error(format!("verdict admission failed: {outcome:?}"))),
         }
+    }
+}
+
+struct VerdictDispatchProvider {
+    gateway: Arc<Gateway>,
+}
+impl Provider for VerdictDispatchProvider {
+    fn name(&self) -> &'static str {
+        "verdict-dispatch"
+    }
+    async fn execute(&self, action: &Action) -> Result<ProviderResponse, ProviderError> {
+        let verdict = serde_json::from_value(action.payload.clone())
+            .map_err(|err| ProviderError::Serialization(err.to_string()))?;
+        let outcome = Box::pin(dispatch_verdict(&self.gateway, verdict))
+            .await
+            .map_err(|err| ProviderError::ExecutionFailed(err.to_string()))?;
+        Ok(ProviderResponse::success(
+            json!({"acteon_outcome": outcome}),
+        ))
+    }
+    fn health_check(&self) -> impl std::future::Future<Output = Result<(), ProviderError>> + Send {
+        std::future::ready(Ok(()))
+    }
+}
+
+async fn dispatch_verdict(gateway: &Gateway, action: Action) -> Result<String, AnyError> {
+    let outcome = gateway.dispatch(action, None).await?;
+    match &outcome {
+        ActionOutcome::Deduplicated => Ok("deduplicated by Acteon".into()),
+        ActionOutcome::Suppressed { rule } => {
+            outcome.assert_suppressed();
+            Ok(format!("suppressed by {rule}"))
+        }
+        ActionOutcome::Rerouted { new_provider, .. } => {
+            if new_provider != "investigator" {
+                return Err(error(format!(
+                    "expected investigator reroute, got {new_provider}"
+                )));
+            }
+            Ok(format!("rerouted to {new_provider}"))
+        }
+        ActionOutcome::ChainStarted {
+            chain_id,
+            chain_name,
+            ..
+        } => {
+            if chain_name != "observability-incident" {
+                return Err(error(format!("unexpected chain {chain_name}")));
+            }
+            Box::pin(gateway.advance_chain(NAMESPACE, TENANT, chain_id)).await?;
+            Box::pin(gateway.advance_chain(NAMESPACE, TENANT, chain_id)).await?;
+            let state = gateway
+                .get_chain_status(NAMESPACE, TENANT, chain_id)
+                .await?
+                .ok_or_else(|| error("incident chain state disappeared"))?;
+            if state.status != ChainStatus::Completed {
+                return Err(error(format!(
+                    "incident chain did not complete: {:?}",
+                    state.status
+                )));
+            }
+            Ok("completed observability-incident chain".to_owned())
+        }
+        other => Err(error(format!("unexpected Acteon outcome: {other:?}"))),
     }
 }
 
@@ -641,9 +745,10 @@ fn signal_summary(
         evidence_probability: number_at(&call.response, &["answers", evidence_question, "noul"])?,
         impact_score: number_at(&call.response, &["answers", "impact", "score"])?,
         available,
-        inference_ms: call.inference_ms,
+        model_request_ms: call.model_request_ms,
         wall_ms: call.wall_ms,
         raw_response: call.response,
+        provider_evidence: call.provider_evidence,
     })
 }
 
@@ -666,9 +771,10 @@ fn fusion_summary(call: LayaCall) -> Result<FusionSummary, AnyError> {
             &["answers", "correlated_incident", "noul"],
         )?,
         impact_score: number_at(&call.response, &["answers", "impact", "score"])?,
-        inference_ms: call.inference_ms,
+        model_request_ms: call.model_request_ms,
         wall_ms: call.wall_ms,
         raw_response: call.response,
+        provider_evidence: call.provider_evidence,
     })
 }
 
@@ -784,6 +890,233 @@ fn outcome_action(
     .with_dedup_key(fixture.window_id.clone())
 }
 
+#[derive(Debug, Serialize)]
+struct DeliveryReport {
+    state_backend: String,
+    attempts: u64,
+    accepted_outputs: u64,
+    retries_scheduled: u64,
+    worker_restarts: usize,
+    deduplicated_redeliveries: usize,
+    pending_outputs: usize,
+    retained_dead_letters: usize,
+    dead_letter_reason: String,
+    model_calls_repeated_on_retry: usize,
+    pending_window_outputs: usize,
+    recovered_decisions: usize,
+}
+
+struct GatewayDelivery {
+    acteon: Arc<ActeonSimulation>,
+    outcomes: Arc<Mutex<BTreeMap<String, String>>>,
+    lose_incident_ack: AtomicBool,
+    deduplicated: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl StreamOutboxDelivery<Action> for GatewayDelivery {
+    async fn deliver(&self, entry: &StreamOutboxEntry<Action>) -> Result<(), StreamDeliveryError> {
+        let action = &entry.payload;
+        if action.namespace.as_str() != NAMESPACE
+            || action.tenant.as_str() != TENANT
+            || action.provider.as_str() != "verdict-audit"
+            || action.action_type.as_str() != "detector.verdict"
+            || action.payload.get("schema_version") != Some(&json!(1))
+            || action.dedup_key.as_deref() != Some(entry.idempotency_key.as_str())
+            || !matches!(
+                action.payload.get("policy_band").and_then(Value::as_str),
+                Some("suppress" | "incident" | "investigate")
+            )
+        {
+            return Err(StreamDeliveryError::Permanent(
+                "invalid verdict envelope or idempotency key".into(),
+            ));
+        }
+        let outcome = Box::pin(self.acteon.dispatch(action.clone()))
+            .await
+            .map_err(|err| StreamDeliveryError::Retryable(err.to_string()))?;
+        if outcome == "deduplicated by Acteon" {
+            self.deduplicated.fetch_add(1, Ordering::SeqCst);
+        } else {
+            self.outcomes
+                .lock()
+                .expect("observer results")
+                .insert(entry.idempotency_key.clone(), outcome);
+        }
+        if action.payload["policy_band"] == "incident"
+            && self.lose_incident_ack.swap(false, Ordering::SeqCst)
+        {
+            // The receiver has completed the chain; lose only its acknowledgement.
+            return Err(StreamDeliveryError::Retryable(
+                "injected acknowledgement loss after accepted incident".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+async fn open_verdicts(
+    redis: &RedisConfig,
+    key: acteon_state::StateKey,
+) -> Result<StreamCheckpointCoordinator<Vec<TrialReport>, Action>, AnyError> {
+    Ok(StreamCheckpointCoordinator::initialize(
+        Arc::new(RedisStateStore::new(redis)?),
+        key,
+        Vec::new(),
+        StreamCheckpointConfig::default(),
+    )
+    .await?)
+}
+
+#[allow(clippy::too_many_lines)]
+async fn deliver_verdicts(
+    redis: &RedisConfig,
+    key: acteon_state::StateKey,
+    acteon: Arc<ActeonSimulation>,
+    reports: &mut [TrialReport],
+) -> Result<DeliveryReport, AnyError> {
+    let config = StreamOutboxConfig {
+        initial_backoff_ms: 100,
+        max_backoff_ms: 100,
+        ..Default::default()
+    };
+    let outcomes = Arc::new(Mutex::new(BTreeMap::new()));
+    let deduplicated = Arc::new(AtomicUsize::new(0));
+    let mut producer = open_verdicts(redis, key.clone()).await?;
+    producer
+        .checkpoint(
+            producer.snapshot().state().clone(),
+            [],
+            [StreamOutboxEntry {
+                idempotency_key: "invalid-verdict".into(),
+                created_at: Utc::now(),
+                payload: Action::new(
+                    NAMESPACE,
+                    TENANT,
+                    "verdict-audit",
+                    "detector.verdict",
+                    json!({}),
+                )
+                .with_dedup_key("invalid-verdict"),
+            }],
+        )
+        .await?;
+    drop(producer);
+    let receiver = GatewayDelivery {
+        acteon: Arc::clone(&acteon),
+        outcomes: Arc::clone(&outcomes),
+        lose_incident_ack: AtomicBool::new(true),
+        deduplicated: Arc::clone(&deduplicated),
+    };
+    let mut dispatcher = StreamOutboxDispatcher::initialize(
+        open_verdicts(redis, key.clone()).await?,
+        "delivery-before-restart",
+        config.clone(),
+    )
+    .await?;
+    let retry_at = loop {
+        match dispatcher.dispatch_once(&receiver).await? {
+            StreamOutboxDispatchResult::RetryScheduled {
+                next_attempt_at, ..
+            } => break next_attempt_at,
+            StreamOutboxDispatchResult::Idle => {
+                return Err(error("expected acknowledgement-loss retry before idle"));
+            }
+            _ => {}
+        }
+    };
+    println!("outbox: accepted incident, lost acknowledgement, persisted retry; replacing worker");
+    drop(dispatcher);
+    drop(receiver);
+    // New pool, coordinator, dispatcher, and delivery adapter; only the receiver
+    // gateway and external observer survive, as in a remote service deployment.
+    let recovered = open_verdicts(redis, key).await?;
+    if serde_json::to_value(recovered.snapshot().state())? != serde_json::to_value(&*reports)? {
+        return Err(error("replacement worker lost cached decisions"));
+    }
+    let mut dispatcher =
+        StreamOutboxDispatcher::initialize(recovered, "delivery-after-restart", config).await?;
+    let restored = dispatcher.metrics().await?;
+    if restored.counters.retries_scheduled != 1 || restored.pending == 0 {
+        return Err(error(
+            "replacement worker failed to recover the pending retry",
+        ));
+    }
+    let receiver = GatewayDelivery {
+        acteon,
+        outcomes: Arc::clone(&outcomes),
+        lose_incident_ack: AtomicBool::new(false),
+        deduplicated: Arc::clone(&deduplicated),
+    };
+    let wait = retry_at
+        .signed_duration_since(Utc::now())
+        .to_std()
+        .unwrap_or_default();
+    tokio::time::sleep(wait + Duration::from_millis(10)).await;
+    for _ in 0..reports.len() + 2 {
+        if dispatcher.dispatch_once(&receiver).await? == StreamOutboxDispatchResult::Idle {
+            break;
+        }
+    }
+    let metrics = dispatcher.metrics().await?;
+    if metrics.pending != 0
+        || metrics.counters.delivered != 4
+        || metrics.counters.attempts != 6
+        || metrics.counters.retries_scheduled != 1
+        || metrics.dead_letters != 1
+    {
+        return Err(error(format!(
+            "unexpected managed delivery metrics: {metrics:?}"
+        )));
+    }
+    let letter = &dispatcher.dead_letters()[0];
+    if letter.entry.idempotency_key != "invalid-verdict" {
+        return Err(error("unexpected dead letter"));
+    }
+    let reason = letter.last_error.clone();
+    for report in reports {
+        report.acteon_outcome = outcomes
+            .lock()
+            .expect("observer results")
+            .get(&report.window_id)
+            .cloned()
+            .ok_or_else(|| error("delivered verdict missing from receiver observer"))?;
+    }
+    let result = delivery_report(&metrics, deduplicated.load(Ordering::SeqCst), reason);
+    dispatcher.discard_dead_letter("invalid-verdict").await?;
+    println!(
+        "outbox: {} attempts, {} accepted, {} retry, {} deduplicated redelivery, {} inspected dead letter, {} pending",
+        result.attempts,
+        result.accepted_outputs,
+        result.retries_scheduled,
+        result.deduplicated_redeliveries,
+        result.retained_dead_letters,
+        result.pending_outputs
+    );
+    Ok(result)
+}
+
+fn delivery_report(
+    metrics: &StreamOutboxMetrics,
+    duplicates: usize,
+    reason: String,
+) -> DeliveryReport {
+    DeliveryReport {
+        state_backend: "redis".into(),
+        attempts: metrics.counters.attempts,
+        accepted_outputs: metrics.counters.delivered,
+        retries_scheduled: metrics.counters.retries_scheduled,
+        worker_restarts: 1,
+        deduplicated_redeliveries: duplicates,
+        pending_outputs: metrics.pending,
+        retained_dead_letters: metrics.dead_letters,
+        dead_letter_reason: reason,
+        model_calls_repeated_on_retry: 0,
+        pending_window_outputs: 0,
+        recovered_decisions: 4,
+    }
+}
+
 fn percentile(sorted: &[f64], numerator: usize, denominator: usize) -> f64 {
     if sorted.is_empty() {
         return 0.0;
@@ -797,7 +1130,7 @@ fn markdown(report: &SimulationReport) -> String {
     output.push_str("# Neural observability simulation results\n\n");
     let _ = write!(
         output,
-        "Laya `{}` ran on `{}` at revision `{}`. Governance lock `{}` approved six runtime packages, five checkpoint artifacts, and four question sets before inference. Kafka supplied {} accepted source records across {} event-time windows and the correlator rejected {} duplicates or recovery redeliveries. The runner restored checkpoint generation {} after an injected pre-commit crash. All {} neural calls were real HTTP inference requests; Acteon used in-memory state and recording providers for controlled side effects.\n\n",
+        "Laya `{}` ran on `{}` at revision `{}`. Governance lock `{}` approved six runtime packages, five checkpoint artifacts, four question sets, and a response schema. Kafka supplied {} accepted source records across {} event-time windows and the pipeline rejected {} duplicates or recovery redeliveries. The runner restored checkpoint generation {} after an injected pre-commit crash. All {} neural calls went through governed providers and real HTTP inference. Redis persisted checkpoints, delivery state, and admission deduplication; the routing gateway used memory for chain state and recording providers for controlled side effects.\n\n",
         report.model,
         report.health.device,
         report
@@ -808,12 +1141,12 @@ fn markdown(report: &SimulationReport) -> String {
         report.governance.lock_digest,
         report.windowing.accepted_records,
         report.windowing.complete_windows + report.windowing.incomplete_windows,
-        report.windowing.duplicate_records,
+        report.windowing.duplicate_records + report.recovery.replayed_records_deduplicated,
         report.recovery.restored_generation,
         report.aggregate.model_calls
     );
     output.push_str(
-        "| Trial | Signal decisions | Raw fusion | Acteon outcome | Laya inference | Result |\n",
+        "| Trial | Signal decisions | Raw fusion | Acteon outcome | Model HTTP elapsed | Result |\n",
     );
     output.push_str("|---|---|---|---|---:|---|\n");
     for trial in &report.trials {
@@ -831,9 +1164,9 @@ fn markdown(report: &SimulationReport) -> String {
         let inference = trial
             .signals
             .iter()
-            .map(|signal| signal.inference_ms)
+            .map(|signal| signal.model_request_ms)
             .sum::<f64>()
-            + trial.fusion.inference_ms;
+            + trial.fusion.model_request_ms;
         let _ = writeln!(
             output,
             "| {} | {} | {} ({:.2}) | {} | {:.0} ms | {} |",
@@ -849,26 +1182,44 @@ fn markdown(report: &SimulationReport) -> String {
     output.push_str("\n## Aggregate\n\n");
     let _ = write!(
         output,
-        "- Governed runtime packages / model artifacts / question sets: **{} / {} / {}**\n- Kafka source records accepted: **{}**\n- Kafka duplicates and redeliveries rejected: **{}**\n- Recovery redeliveries deduplicated after restart: **{}**\n- Atomic checkpoint generations written: **{}**\n- Final Kafka consumer lag: **{}**\n- Event-time windows completed: **{}**\n- Model calls: **{}**\n- Total model inference: **{:.0} ms**\n- Per-call p50 / p95: **{:.0} ms / {:.0} ms**\n- Incident chains: **{}** diagnostics capture and **{}** on-call notification\n- Bounded investigations: **{}**\n- Duplicate incident dispatches prevented by the runner ledger: **{}**\n\n",
+        "- Governed runtime packages / model artifacts / locked contracts: **{} / {} / {}**\n- Kafka source records accepted: **{}**\n- Kafka duplicates and redeliveries rejected: **{}**\n- Recovery redeliveries deduplicated after restart: **{}**\n- Window checkpoints persisted before offset commits: **{}**\n- Final Kafka consumer lag: **{}**\n- Event-time windows completed: **{}**\n- Model calls: **{}**\n- Total model HTTP elapsed: **{:.0} ms**\n- Per-call p50 / p95: **{:.0} ms / {:.0} ms**\n- Incident chains: **{}** diagnostics capture and **{}** on-call notification\n- Bounded investigations: **{}**\n- Duplicate incident dispatches prevented by Acteon admission: **{}**\n\n",
         report.governance.policy.runtime.len(),
         report.governance.policy.artifacts.len(),
         report.governance.policy.contracts.len(),
         report.windowing.accepted_records,
-        report.windowing.duplicate_records,
+        report.windowing.duplicate_records + report.recovery.replayed_records_deduplicated,
         report.recovery.replayed_records_deduplicated,
         report.recovery.checkpoint_writes,
         report.recovery.final_consumer_lag.values().sum::<i64>(),
         report.windowing.complete_windows,
         report.aggregate.model_calls,
-        report.aggregate.total_inference_ms,
-        report.aggregate.p50_inference_ms,
-        report.aggregate.p95_inference_ms,
+        report.aggregate.total_model_request_ms,
+        report.aggregate.p50_model_request_ms,
+        report.aggregate.p95_model_request_ms,
         report.aggregate.diagnostic_calls,
         report.aggregate.on_call_notifications,
         report.aggregate.investigator_calls,
         report.aggregate.duplicate_dispatches_prevented
     );
+    output.push_str("## Managed delivery recovery\n\n");
+    let _ = write!(
+        output,
+        "| Observation | Result |\n|---|---:|\n| State backend | {} |\n| Cached decisions recovered | {} |\n| Delivery attempts | {} |\n| Accepted verdicts | {} |\n| Persisted retries | {} |\n| Replaced delivery workers | {} |\n| Redeliveries deduplicated by Acteon | {} |\n| Invalid verdicts retained for inspection | {} |\n| Pending window / verdict outputs | {} / {} |\n| Model calls repeated during retry | {} |\n\nDead-letter diagnostic: `{}`. The probe is inspected and explicitly discarded after measurement.\n\nTimings measure model HTTP request and response validation through the governed provider. They are not the server-only inference timings used in the previous report. Full wall times also include gateway dispatch and runtime identity checks.\n\n",
+        report.delivery.state_backend,
+        report.delivery.recovered_decisions,
+        report.delivery.attempts,
+        report.delivery.accepted_outputs,
+        report.delivery.retries_scheduled,
+        report.delivery.worker_restarts,
+        report.delivery.deduplicated_redeliveries,
+        report.delivery.retained_dead_letters,
+        report.delivery.pending_window_outputs,
+        report.delivery.pending_outputs,
+        report.delivery.model_calls_repeated_on_retry,
+        report.delivery.dead_letter_reason,
+    );
     output.push_str("## Interpretation\n\n");
+    output.push_str("The retry fault occurs after the receiver completes dispatch. A deduplicating admission rule precedes the verdict-routing gateway; the notification chain step re-enters gateway rules. This verifies post-acceptance acknowledgement loss, not an arbitrary receiver crash during execution. Acteon's deduplication rule claims its key before executing its provider, so an interrupted or failed nested dispatch requires separate operational reconciliation.\n\n");
     output.push_str("Laya separated the first-stage signals, including the log-only noise case. Its low-confidence raw fusion choice still selected a non-healthy incident for healthy inputs. The deterministic corroboration gate prevented those raw false positives from reaching a provider. This is the intended safety property: neural decisions contribute bounded evidence, while Acteon policy controls side effects. These fixture results are integration evidence, not a detector-quality benchmark or a calibration claim.\n");
     output
 }
@@ -1008,7 +1359,10 @@ fn remember_source_position(
 }
 
 #[allow(clippy::too_many_lines)]
-async fn kafka_stream_replay(fixtures: &[Fixture]) -> Result<StreamReplay, AnyError> {
+async fn kafka_stream_replay(
+    fixtures: &[Fixture],
+    redis: &RedisConfig,
+) -> Result<StreamReplay, AnyError> {
     let bootstrap =
         std::env::var("ACTEON_KAFKA_BOOTSTRAP").unwrap_or_else(|_| "127.0.0.1:19092".to_owned());
     let config = KafkaBusConfig {
@@ -1043,9 +1397,6 @@ async fn kafka_stream_replay(fixtures: &[Fixture]) -> Result<StreamReplay, AnyEr
             )
         })
         .collect::<BTreeMap<_, _>>();
-    let checkpoint_path =
-        std::env::temp_dir().join(format!("acteon-neural-observability-{run_id}.json"));
-    let checkpoint_store = AtomicCheckpointStore::new(&checkpoint_path);
 
     let replay = async {
         for source in SignalSource::ALL {
@@ -1059,22 +1410,14 @@ async fn kafka_stream_replay(fixtures: &[Fixture]) -> Result<StreamReplay, AnyEr
                             .with_header("schema", "observability.telemetry.v1"),
                     )
                     .await?;
+                // Test event-ID deduplication before its retention watermark can
+                // prune the original ID. Kafka preserves this per-partition order.
+                if source == SignalSource::Metrics && fixture.window_id == fixtures[0].window_id {
+                    backend.produce(BusMessage::new(topic.clone(), serde_json::to_value(&event)?)
+                        .with_key(event.correlation_key()).with_header("schema", "observability.telemetry.v1")).await?;
+                }
             }
         }
-
-        // Exercise transport-level redelivery explicitly. The correlator must
-        // consume the second Kafka record without evaluating the window twice.
-        let duplicate = telemetry_event(&fixtures[0], SignalSource::Metrics);
-        backend
-            .produce(
-                BusMessage::new(
-                    topics[&SignalSource::Metrics].kafka_topic_name(),
-                    serde_json::to_value(&duplicate)?,
-                )
-                .with_key(duplicate.correlation_key())
-                .with_header("schema", "observability.telemetry.v1"),
-            )
-            .await?;
 
         let expected_records = fixtures.len() * SignalSource::ALL.len() + 1;
         let pre_crash_records = 5;
@@ -1113,23 +1456,23 @@ async fn kafka_stream_replay(fixtures: &[Fixture]) -> Result<StreamReplay, AnyEr
                 }
                 ready_windows.extend(result.emitted);
             }
-            checkpoint_store.save(&RecoveryCheckpoint::new(
-                1,
-                correlator.snapshot(),
-                ready_windows,
-                source_offsets,
-            ))?;
+            let mut checkpoints = open_windows(redis, correlator.snapshot()).await?;
+            checkpoints.checkpoint(correlator.snapshot(), stream_positions(&source_offsets, &consumer_groups), window_outputs(ready_windows)).await?;
+            // Drop the entire Redis pool and coordinator before opening a replacement.
+
         }
 
         // The old consumers disappear without a commit. A replacement process
         // restores generation 1 and receives the uncommitted prefix again.
         tokio::time::sleep(Duration::from_millis(500)).await;
-        let restored = checkpoint_store.load()?;
-        let restored_generation = restored.generation;
-        let crash_offsets = restored.source_offsets.clone();
-        let mut correlator = EventTimeCorrelator::restore(restored.correlator)?;
-        let mut windows = restored.ready_windows;
-        let mut source_offsets = restored.source_offsets;
+        let empty = EventTimeCorrelator::new(ChronoDuration::minutes(1), ChronoDuration::seconds(15))?;
+        let mut checkpoints = open_windows(redis, empty.snapshot()).await?;
+        let restored_generation = checkpoints.snapshot().generation();
+        let crash_offsets = source_positions(checkpoints.snapshot().positions())?;
+        let mut correlator = EventTimeCorrelator::restore(checkpoints.snapshot().state().clone())?;
+        let mut windows = checkpoints.snapshot().pending_outputs().iter().map(|entry| entry.payload.clone()).collect::<Vec<_>>();
+        let existing_window_keys = checkpoints.snapshot().pending_outputs().iter().map(|entry| entry.idempotency_key.clone()).collect::<BTreeSet<_>>();
+        let mut source_offsets = crash_offsets.clone();
         let mut recovery_redeliveries = 0;
         {
             let mut streams = Vec::new();
@@ -1151,20 +1494,16 @@ async fn kafka_stream_replay(fixtures: &[Fixture]) -> Result<StreamReplay, AnyEr
                     .map_err(|_| error("timed out consuming observability Kafka records"))?
                     .ok_or_else(|| error("observability Kafka stream ended early"))??;
                 let (source, position) = remember_source_position(&next, &mut source_offsets)?;
-                let is_recovery_redelivery = crash_offsets.get(&source).is_some_and(|checkpoint| {
-                    checkpoint.topic == position.topic
-                        && checkpoint.partition == position.partition
-                        && position.offset <= checkpoint.offset
-                });
+                let is_recovery_redelivery = is_recovery_record(source, &position, &crash_offsets);
+                if is_recovery_redelivery {
+                    // The durable checkpoint already represents this broker
+                    // position, even if event-ID retention has since advanced.
+                    recovery_redeliveries += 1;
+                    continue;
+                }
                 let result = correlator.ingest(next)?;
                 if result.disposition == IngestDisposition::Late {
                     return Err(error("fixture stream unexpectedly produced a late record"));
-                }
-                if is_recovery_redelivery {
-                    if result.disposition != IngestDisposition::Duplicate {
-                        return Err(error("restored correlator admitted a Kafka redelivery"));
-                    }
-                    recovery_redeliveries += 1;
                 }
                 windows.extend(result.emitted);
             }
@@ -1174,7 +1513,7 @@ async fn kafka_stream_replay(fixtures: &[Fixture]) -> Result<StreamReplay, AnyEr
         windows.sort_by_key(|window| window.starts_at);
         let stats = correlator.stats().clone();
         if stats.accepted_records != fixtures.len() * SignalSource::ALL.len()
-            || stats.duplicate_records != 1 + pre_crash_records
+            || stats.duplicate_records != 1
             || stats.late_records != 0
             || stats.complete_windows != fixtures.len()
             || stats.incomplete_windows != 0
@@ -1188,37 +1527,13 @@ async fn kafka_stream_replay(fixtures: &[Fixture]) -> Result<StreamReplay, AnyEr
         }
 
         // The stream is dropped before the out-of-band batch commit. Generation
-        // 2 is fsynced first; only then does each source offset advance.
+        // 2 is persisted in Redis first; only then does each source offset advance.
         tokio::time::sleep(Duration::from_millis(500)).await;
-        let final_checkpoint = RecoveryCheckpoint::new(
-            2,
-            correlator.snapshot(),
-            windows.clone(),
-            source_offsets,
-        );
-        let commit_backend = Arc::clone(&backend);
-        let committed = persist_then_commit(
-            &checkpoint_store,
-            &final_checkpoint,
-            &consumer_groups,
-            move |_, group, position| {
-                let backend = Arc::clone(&commit_backend);
-                async move {
-                    backend
-                        .commit_offset(
-                            &position.topic,
-                            &group,
-                            OffsetPosition {
-                                partition: position.partition,
-                                offset: position.offset,
-                            },
-                        )
-                        .await
-                        .map_err(|error| error.to_string())
-                }
-            },
-        )
-        .await?;
+        let committed = checkpoints.checkpoint_then_commit_bus(
+            correlator.snapshot(), stream_positions(&source_offsets, &consumer_groups),
+            window_outputs(windows.iter().filter(|window| !existing_window_keys.contains(&window_key(window))).cloned()),
+            backend.as_ref(),
+        ).await?;
 
         let mut final_consumer_lag = BTreeMap::new();
         for source in SignalSource::ALL {
@@ -1247,17 +1562,15 @@ async fn kafka_stream_replay(fixtures: &[Fixture]) -> Result<StreamReplay, AnyEr
                 restored_generation,
                 pre_crash_records,
                 replayed_records_deduplicated: recovery_redeliveries,
-                committed_offsets: committed
-                    .into_iter()
-                    .map(|(source, position)| (source.as_str().to_owned(), position))
-                    .collect(),
+                committed_offsets: source_positions(committed.positions())?.into_iter()
+                    .map(|(source, position)| (source.as_str().to_owned(), position)).collect(),
                 final_consumer_lag,
             },
+            checkpoints,
         })
     }
     .await;
 
-    let _ = fs::remove_file(checkpoint_store.path());
     for topic in topics.values() {
         let _ = backend.delete_topic(&topic.kafka_topic_name()).await;
     }
@@ -1286,16 +1599,32 @@ async fn main() -> Result<(), AnyError> {
         .iter()
         .map(|name| load_fixture(&root.join("fixtures").join(name)))
         .collect::<Result<Vec<_>, _>>()?;
-    let stream_replay = kafka_stream_replay(&fixtures).await?;
+    let redis = RedisConfig {
+        url: std::env::var("ACTEON_CHECKPOINT_REDIS_URL")
+            .unwrap_or_else(|_| "redis://127.0.0.1:16379".into()),
+        prefix: format!("neural-simulation:{}", uuid::Uuid::new_v4()),
+        ..RedisConfig::default()
+    };
+    let mut stream_replay = kafka_stream_replay(&fixtures, &redis).await?;
     let rules = fs::read_to_string(root.join("rules/verdict-routing.yaml"))?;
-    let acteon = ActeonSimulation::build(&rules)?;
-    let laya = LayaClient::new()?;
+    let acteon = Arc::new(ActeonSimulation::build_with_store(
+        &rules,
+        Arc::new(RedisStateStore::new(&redis)?),
+    )?);
+    let laya = LayaClient::new(&root, governance.clone())?;
     let health = laya.health().await?;
     governance.verify_served_identity(&health.loaded, &health.revisions)?;
     let revision = governance.policy.model.revision.clone();
     let mut reports = Vec::new();
     let mut latencies = Vec::new();
-    let mut idempotency_ledger = HashSet::new();
+    let verdict_key = stream_checkpoint_key(NAMESPACE, TENANT, "verdicts");
+    let mut verdicts = StreamCheckpointCoordinator::<Vec<TrialReport>, Action>::initialize(
+        Arc::new(RedisStateStore::new(&redis)?),
+        verdict_key.clone(),
+        Vec::new(),
+        StreamCheckpointConfig::default(),
+    )
+    .await?;
 
     println!("\nACTEON + LAYA NEURAL OBSERVABILITY SIMULATION");
     println!("checkpoint: {MODEL} @ {revision} ({})\n", health.device);
@@ -1303,7 +1632,8 @@ async fn main() -> Result<(), AnyError> {
     println!(
         "kafka: {} accepted records, {} duplicates/redeliveries, {} event-time windows",
         stream_replay.stats.accepted_records,
-        stream_replay.stats.duplicate_records,
+        stream_replay.stats.duplicate_records
+            + stream_replay.recovery.replayed_records_deduplicated,
         stream_replay.windows.len()
     );
     println!(
@@ -1358,14 +1688,17 @@ async fn main() -> Result<(), AnyError> {
         }
         let (metrics_call, traces_call, logs_call) = tokio::try_join!(
             laya.evaluate(
+                "metrics",
                 canonical_model_state(SignalSource::Metrics, &metrics_record.features)?,
                 &questions["metrics"]
             ),
             laya.evaluate(
+                "traces",
                 canonical_model_state(SignalSource::Traces, &traces_record.features)?,
                 &questions["traces"]
             ),
             laya.evaluate(
+                "logs",
                 canonical_model_state(SignalSource::Logs, &logs_record.features)?,
                 &questions["logs"]
             ),
@@ -1391,17 +1724,18 @@ async fn main() -> Result<(), AnyError> {
             )?,
         ];
         let fusion_call = laya
-            .evaluate(fusion_state(fixture, &signals), &questions["fusion"])
+            .evaluate(
+                "fusion",
+                fusion_state(fixture, &signals),
+                &questions["fusion"],
+            )
             .await?;
         let fusion = fusion_summary(fusion_call)?;
         for signal in &signals {
-            latencies.push(signal.inference_ms);
+            latencies.push(signal.model_request_ms);
         }
-        latencies.push(fusion.inference_ms);
+        latencies.push(fusion.model_request_ms);
         let (route, evidence_strength, uncertainty) = choose_policy(&signals, &fusion);
-        if !idempotency_ledger.insert(fixture.window_id.clone()) {
-            return Err(error("fixture incident key unexpectedly duplicated"));
-        }
         let verdict_action = outcome_action(
             fixture,
             route,
@@ -1410,7 +1744,7 @@ async fn main() -> Result<(), AnyError> {
             &fusion,
             &governance,
         );
-        let acteon_outcome = Box::pin(acteon.dispatch(verdict_action)).await?;
+        let acteon_outcome = "pending durable delivery".to_owned();
         let passed = route == fixture.expected_route;
         println!(
             "{:<22} signals=[{}, {}, {}] fusion={} ({:.2}) route={} -> {} [{}]",
@@ -1441,19 +1775,52 @@ async fn main() -> Result<(), AnyError> {
             acteon_outcome,
             passed,
         });
+        verdicts
+            .checkpoint(
+                reports.clone(),
+                [],
+                [StreamOutboxEntry {
+                    idempotency_key: fixture.window_id.clone(),
+                    created_at: Utc::now(),
+                    payload: verdict_action,
+                }],
+            )
+            .await?;
+        // The decision is durable before the corresponding input window is acknowledged.
+        stream_replay
+            .checkpoints
+            .acknowledge_outputs([window_key(window)])
+            .await?;
     }
 
-    let incident = fixtures
-        .iter()
-        .find(|fixture| fixture.expected_route == "incident")
-        .ok_or_else(|| error("no incident fixture found"))?;
-    let duplicate_dispatches_prevented =
-        usize::from(!idempotency_ledger.insert(incident.window_id.clone()));
-    if duplicate_dispatches_prevented != 1 {
+    let calls_before_delivery = laya.calls.load(Ordering::SeqCst);
+    let mut delivery = deliver_verdicts(
+        &redis,
+        verdict_key.clone(),
+        Arc::clone(&acteon),
+        &mut reports,
+    )
+    .await?;
+    delivery.model_calls_repeated_on_retry =
+        laya.calls.load(Ordering::SeqCst) - calls_before_delivery;
+    delivery.pending_window_outputs = stream_replay.checkpoints.snapshot().pending_outputs().len();
+    let duplicate_dispatches_prevented = delivery.deduplicated_redeliveries;
+    if duplicate_dispatches_prevented != 1 || laya.calls.load(Ordering::SeqCst) != 16 {
         return Err(error(
-            "runner idempotency ledger admitted an incident replay",
+            "delivery retry must deduplicate once and must not repeat inference",
         ));
     }
+    verdicts.reload().await?;
+    verdicts.checkpoint(reports.clone(), [], []).await?;
+    for report in &reports {
+        println!(
+            "{} -> {} [{}]",
+            report.name,
+            report.acteon_outcome,
+            if report.passed { "PASS" } else { "FAIL" }
+        );
+    }
+    acteon.notification_intake.assert_called(0);
     if reports.iter().any(|trial| !trial.passed) {
         return Err(error("one or more trials failed their expected route"));
     }
@@ -1479,22 +1846,23 @@ async fn main() -> Result<(), AnyError> {
         recovery: stream_replay.recovery,
         aggregate: AggregateReport {
             model_calls: latencies.len(),
-            total_inference_ms: latencies.iter().sum(),
-            p50_inference_ms: percentile(&latencies, 50, 100),
-            p95_inference_ms: percentile(&latencies, 95, 100),
+            total_model_request_ms: latencies.iter().sum(),
+            p50_model_request_ms: percentile(&latencies, 50, 100),
+            p95_model_request_ms: percentile(&latencies, 95, 100),
             diagnostic_calls: acteon.diagnostics.call_count(),
             on_call_notifications: acteon.on_call.call_count(),
             investigator_calls: acteon.investigator.call_count(),
             duplicate_dispatches_prevented,
         },
         trials: reports,
+        delivery,
     };
     println!(
-        "\n{} calls, {:.0} ms inference, p50 {:.0} ms, p95 {:.0} ms",
+        "\n{} calls, {:.0} ms model HTTP elapsed, p50 {:.0} ms, p95 {:.0} ms",
         report.aggregate.model_calls,
-        report.aggregate.total_inference_ms,
-        report.aggregate.p50_inference_ms,
-        report.aggregate.p95_inference_ms
+        report.aggregate.total_model_request_ms,
+        report.aggregate.p50_model_request_ms,
+        report.aggregate.p95_model_request_ms
     );
     println!("all four trials passed; incident replay produced no second side effect\n");
 
@@ -1508,6 +1876,13 @@ async fn main() -> Result<(), AnyError> {
         fs::write(results.join("latest.md"), markdown(&report))?;
         println!("wrote {}", results.join("latest.md").display());
     }
+    let store = RedisStateStore::new(&redis)?;
+    store
+        .delete(&stream_checkpoint_key(NAMESPACE, TENANT, "windows"))
+        .await?;
+    store.delete(&verdict_key).await?;
+    laya.gateway.shutdown().await;
+    acteon.routing_gateway.shutdown().await;
     acteon.gateway.shutdown().await;
     Ok(())
 }
@@ -1524,9 +1899,10 @@ mod tests {
             evidence_probability: 0.5,
             impact_score: 2.0,
             available,
-            inference_ms: 1.0,
+            model_request_ms: 1.0,
             wall_ms: 1.0,
             raw_response: json!({}),
+            provider_evidence: BTreeMap::new(),
         }
     }
 
@@ -1537,9 +1913,10 @@ mod tests {
             probabilities: BTreeMap::new(),
             correlated_probability: 0.5,
             impact_score: 2.0,
-            inference_ms: 1.0,
+            model_request_ms: 1.0,
             wall_ms: 1.0,
             raw_response: json!({}),
+            provider_evidence: BTreeMap::new(),
         }
     }
 
@@ -1590,6 +1967,21 @@ mod tests {
     }
 
     #[test]
+    fn cached_reports_survive_json_round_trip() -> Result<(), AnyError> {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../examples/neural-observability-detector/results/latest.json"
+        ))?;
+        let reports: Vec<TrialReport> = serde_json::from_value(fixture["trials"].clone())?;
+        let encoded = serde_json::to_string(&reports)?;
+        let decoded: Vec<TrialReport> = serde_json::from_str(&encoded)?;
+        assert_eq!(
+            serde_json::to_value(&reports)?,
+            serde_json::to_value(&decoded)?
+        );
+        Ok(())
+    }
+
+    #[test]
     fn model_state_has_schema_order_independent_of_object_order() -> Result<(), AnyError> {
         let state = canonical_model_state(
             SignalSource::Metrics,
@@ -1622,8 +2014,7 @@ mod tests {
     async fn acteon_executes_the_three_policy_paths_once() -> Result<(), AnyError> {
         let root = example_root();
         let rules = fs::read_to_string(root.join("rules/verdict-routing.yaml"))?;
-        let acteon = ActeonSimulation::build(&rules)?;
-        let mut ledger = HashSet::new();
+        let acteon = Arc::new(ActeonSimulation::build(&rules)?);
 
         for (key, band, expected) in [
             ("healthy", "suppress", "suppressed"),
@@ -1631,19 +2022,21 @@ mod tests {
             ("pool", "incident", "completed"),
             ("ambiguous", "investigate", "rerouted"),
         ] {
-            assert!(ledger.insert(key));
             let outcome = acteon
-                .dispatch(Action::new(
-                    NAMESPACE,
-                    TENANT,
-                    "verdict-audit",
-                    "detector.verdict",
-                    json!({
-                        "incident_key": key,
-                        "policy_band": band,
-                        "evidence_refs": []
-                    }),
-                ))
+                .dispatch(
+                    Action::new(
+                        NAMESPACE,
+                        TENANT,
+                        "verdict-audit",
+                        "detector.verdict",
+                        json!({
+                            "incident_key": key,
+                            "policy_band": band,
+                            "evidence_refs": []
+                        }),
+                    )
+                    .with_dedup_key(key),
+                )
                 .await?;
             assert!(
                 outcome.starts_with(expected),
@@ -1651,11 +2044,151 @@ mod tests {
             );
         }
 
-        assert!(!ledger.insert("pool"));
+        let duplicate = acteon
+            .dispatch(
+                Action::new(
+                    NAMESPACE,
+                    TENANT,
+                    "verdict-audit",
+                    "detector.verdict",
+                    json!({"incident_key": "pool", "policy_band": "incident", "evidence_refs": []}),
+                )
+                .with_dedup_key("pool"),
+            )
+            .await?;
+        assert_eq!(duplicate, "deduplicated by Acteon");
+        acteon.notification_intake.assert_called(0);
         acteon.diagnostics.assert_called(1);
         acteon.on_call.assert_called(1);
         acteon.investigator.assert_called(1);
         acteon.gateway.shutdown().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn receiver_rejects_a_cross_tenant_verdict_before_gateway_dispatch()
+    -> Result<(), AnyError> {
+        let rules = fs::read_to_string(example_root().join("rules/verdict-routing.yaml"))?;
+        let acteon = Arc::new(ActeonSimulation::build(&rules)?);
+        let delivery = GatewayDelivery {
+            acteon: Arc::clone(&acteon),
+            outcomes: Arc::new(Mutex::new(BTreeMap::new())),
+            lose_incident_ack: AtomicBool::new(false),
+            deduplicated: Arc::new(AtomicUsize::new(0)),
+        };
+        let entry = StreamOutboxEntry {
+            idempotency_key: "foreign".into(),
+            created_at: Utc::now(),
+            payload: Action::new(
+                NAMESPACE,
+                "other-tenant",
+                "verdict-audit",
+                "detector.verdict",
+                json!({"schema_version": 1, "policy_band": "incident"}),
+            )
+            .with_dedup_key("foreign"),
+        };
+        assert!(matches!(
+            delivery.deliver(&entry).await,
+            Err(StreamDeliveryError::Permanent(_))
+        ));
+        acteon.diagnostics.assert_called(0);
+        acteon.on_call.assert_called(0);
+        acteon.investigator.assert_called(0);
+        acteon.routing_gateway.shutdown().await;
+        acteon.gateway.shutdown().await;
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_recovery_is_independent_of_cross_topic_delivery_order() -> Result<(), AnyError> {
+        let fixtures = [
+            "baseline.json",
+            "log-noise.json",
+            "pool-exhaustion.json",
+            "ambiguous-regression.json",
+        ]
+        .iter()
+        .map(|name| load_fixture(&example_root().join("fixtures").join(name)))
+        .collect::<Result<Vec<_>, _>>()?;
+        let mut lanes = BTreeMap::new();
+        for source in SignalSource::ALL {
+            let mut records = Vec::new();
+            for (index, fixture) in fixtures.iter().enumerate() {
+                let event = telemetry_event(fixture, source);
+                let mut message = BusMessage::new(source.as_str(), serde_json::to_value(&event)?)
+                    .with_key(event.correlation_key());
+                message.partition = Some(0);
+                message.offset = Some(i64::try_from(records.len())?);
+                records.push(message.clone());
+                if source == SignalSource::Metrics && index == 0 {
+                    message.offset = Some(i64::try_from(records.len())?);
+                    records.push(message);
+                }
+            }
+            lanes.insert(source, records);
+        }
+        let sources = SignalSource::ALL;
+        let mut schedules = Vec::new();
+        for a in 0..3 {
+            for b in 0..3 {
+                if a != b {
+                    let c = 3 - a - b;
+                    schedules.push(
+                        [sources[a], sources[b], sources[c]]
+                            .iter()
+                            .flat_map(|source| lanes[source].clone())
+                            .collect::<Vec<_>>(),
+                    );
+                }
+            }
+        }
+        let mut round_robin = Vec::new();
+        for index in 0..5 {
+            for source in sources {
+                if let Some(message) = lanes[&source].get(index) {
+                    round_robin.push(message.clone());
+                }
+            }
+        }
+        schedules.push(round_robin);
+        let groups = sources
+            .map(|source| (source, source.as_str().to_owned()))
+            .into_iter()
+            .collect();
+        for before in &schedules {
+            for after in &schedules {
+                let mut correlator = EventTimeCorrelator::new(
+                    ChronoDuration::minutes(1),
+                    ChronoDuration::seconds(15),
+                )?;
+                let mut offsets = BTreeMap::new();
+                let mut windows = Vec::new();
+                for message in before.iter().take(5) {
+                    remember_source_position(message, &mut offsets)?;
+                    windows.extend(correlator.ingest(message.clone())?.emitted);
+                }
+                let saved_positions = source_positions(&stream_positions(&offsets, &groups))?;
+                let mut restored = EventTimeCorrelator::restore(correlator.snapshot())?;
+                let mut skipped = 0;
+                for message in after {
+                    let (source, position) = remember_source_position(message, &mut offsets)?;
+                    if is_recovery_record(source, &position, &saved_positions) {
+                        skipped += 1;
+                        continue;
+                    }
+                    let result = restored.ingest(message.clone())?;
+                    assert_ne!(result.disposition, IngestDisposition::Late);
+                    windows.extend(result.emitted);
+                }
+                windows.extend(restored.finish()?);
+                assert_eq!(skipped, 5);
+                assert_eq!(windows.len(), 4);
+                assert_eq!(restored.stats().accepted_records, 12);
+                assert_eq!(restored.stats().duplicate_records, 1);
+                assert_eq!(restored.stats().late_records, 0);
+            }
+        }
         Ok(())
     }
 }

@@ -20,9 +20,10 @@ cost, or hallucination risk of an LLM on every event.
 
 !!! important "Integration boundary"
     This example places a small **detector runner** between Kafka and Acteon.
-    It owns telemetry correlation, feature extraction, Laya calls, response
-    validation, and the final `detector.verdict` dispatch. Acteon owns policy,
-    audit, chains, approvals, and agent invocation.
+    It supplies telemetry contracts, feature extraction, question sets, and
+    scenario policy. It composes Acteon's event-time windows, durable checkpoints,
+    governed model providers, typed response validation, and managed outbox
+    delivery. Acteon's gateways apply rules and execute chains and agent calls.
 
 ---
 
@@ -36,6 +37,10 @@ signal is conclusive:
 | Metrics | p95 latency rises from 180 ms to 1.8 s, errors reach 8.4%, DB pool utilization reaches 96% | `resource_saturation`, score `0.94` |
 | Traces | 73% of slow requests spend most of their time in `db.checkout.reserve` | `downstream_dependency`, score `0.88` |
 | Logs | 41 `pool_timeout` events appear, mixed with unrelated warnings | `db_pool_exhaustion`, score `0.91` |
+
+The following is an illustrative target contract with hypothetical calibrated
+scores. The runnable simulation later in this guide reports the actual Laya
+answers, whose confidence is substantially lower.
 
 The fusion evaluation returns a typed verdict:
 
@@ -78,8 +83,8 @@ flowchart LR
     L[(logs topic)]
 
     subgraph Runner[Detector runner]
-        N[Normalize and window]
-        V[Validate typed verdict]
+        N[Normalize with Acteon windows and checkpoints]
+        V[Acteon governed response validation and outbox]
     end
 
     subgraph Models[Self-hosted Laya service]
@@ -98,7 +103,7 @@ flowchart LR
     end
 
     M & T & L --> N
-    N -->|typed HTTP calls| MD & TD & LD
+    N -->|governed provider HTTP calls| MD & TD & LD
     MD & TD & LD --> F
     F -->|typed HTTP response| V
     V -->|detector.verdict| R
@@ -111,8 +116,8 @@ flowchart LR
 
 The boundary between detection and orchestration is deliberate:
 
-- Kafka and the detector runner own high-volume data movement, event-time
-  semantics, late arrivals, windows, and model inference.
+- Kafka transports telemetry. The detector runner supplies domain features and
+  composes Acteon's generic windowing, checkpoint, inference, and outbox APIs.
 - Acteon owns policy, deduplication, throttling, audit, response chains,
   approvals, and agent governance.
 - Agents receive a compact evidence bundle and references to source data. They
@@ -285,11 +290,13 @@ before validation. The detector then applies its Laya-specific semantic checks
 for question IDs, probabilities, and labels. Load only the
 `typed-decisions` checkpoint to bound resident memory. Laya also supports ONNX
 and per-channel INT8 export for a later compact CPU deployment, but the first
-simulation uses the upstream server path. In a deployed topology, add the Laya
-response schema to the lock as another named contract, then register each
-question set with Acteon's [governed model provider](../features/governed-model-provider.md)
-to put these same HTTP calls behind provider health, circuit breaking, locked
-request material, response-schema validation, and model-revision evidence.
+simulation uses the upstream server path. It registers four
+[governed model providers](../features/governed-model-provider.md), one for each
+question set. Gateway Actions carry only the canonical state; each provider
+injects the locked questions and model name, verifies the live revision before
+every call, and validates the response against the locked `response_schema`
+contract. Model evidence includes lock digest, revision, request/response
+contract names, and HTTP elapsed time.
 
 ### 5. Calibrate uncertainty and disagreement
 
@@ -349,16 +356,23 @@ Use rule priorities to separate the policy bands:
 | Investigate | high impact and `uncertainty > 0.20` | invoke bounded agent |
 | Remediate | chain or agent proposes a risky mutation | require approval |
 
-Acteon's rules stop at the first matching rule, so order specific safety and
-escalation rules before broad allow or suppress rules. One dispatch cannot both
-match a deduplication rule and start a chain. The runnable vertical slice below
-keeps an idempotency ledger in the detector runner so its crash-recovery behavior
-is visible in isolation. For a deployed topology, split admission and routing
-into two Actions with a [full-pipeline dispatch step](../features/chains.md#full-pipeline-dispatch-steps):
-the admission rule starts a chain, and its dispatch step emits the admitted
-verdict with `(incident_key, policy_version)` as the deduplication key. The new
-Action re-enters rules, allowing Acteon's deduplication policy to run before
-incident routing.
+Acteon's rules stop at the first matching rule. One Action cannot both match
+a deduplication rule and start a chain. The simulation therefore composes two
+gateways: a `detector.deliver` Action matches a deduplication rule, and its
+receiver provider forwards the embedded `detector.verdict` to the routing
+gateway. The receiver's admission state is in Redis; no runner ledger controls
+alert delivery. A lost acknowledgement after completed dispatch causes a retry
+that Acteon deduplicates.
+
+This tests post-acceptance acknowledgement loss. The deduplication rule claims
+its key before provider execution, so a receiver crash or failure during nested dispatch
+requires separate reconciliation. Do not interpret this fixture as an
+exactly-once execution guarantee. The demo admission TTL is one hour.
+
+The incident chain's notification uses a
+[full-pipeline dispatch step](../features/chains.md#full-pipeline-dispatch-steps)
+with its own stable key. A gateway rule reroutes that emitted Action from
+`notification-intake` to `on-call`, proving that chain handoff re-evaluates policy.
 
 ### 8. Use an action chain for the known response
 
@@ -443,15 +457,17 @@ Run it from the repository root:
 examples/neural-observability-detector/scripts/run.sh
 ```
 
-The script starts Kafka, builds the CPU-only Laya service, downloads the pinned
-checkpoint on the first run, performs 16 real model calls across four trials,
-injects a detector crash before its Kafka commit, exercises Acteon's rules and
-incident chain, and writes JSON and Markdown reports.
+The script starts Kafka and Redis, builds the CPU-only Laya service, downloads
+the pinned checkpoint on the first run, and performs 16 governed model calls
+across four trials. It replaces the detector before its Kafka commit and the
+outbox worker after a lost acknowledgement, exercises gateway rules and the
+incident chain, inspects a dead letter, and writes JSON and Markdown reports.
 
 ```text
 examples/neural-observability-detector/
 ├── README.md
 ├── docker-compose.yml
+├── contracts/laya-response.schema.json
 ├── model.lock.json
 ├── laya/
 │   └── Dockerfile
@@ -461,6 +477,7 @@ examples/neural-observability-detector/
 │   ├── logs.json
 │   └── fusion.json
 ├── rules/
+│   ├── admission.yaml
 │   └── verdict-routing.yaml
 ├── fixtures/
 │   ├── baseline.json
@@ -492,22 +509,28 @@ seconds of allowed lateness. It atomically checkpoints active windows,
 finalized-window keys, event IDs, source watermarks, ready outputs, and source
 offsets. The simulation then terminates its consumers before committing,
 restores the checkpoint, and proves that Kafka redelivery neither reopens a
-window nor loses an output. A final checkpoint is fsynced and renamed before
-the source offsets are committed; the run must end with zero consumer lag.
-Deployed runners can use Acteon's
+window nor loses an output. The runner uses Redis-backed
 [`StreamCheckpointCoordinator`](../features/stream-checkpoints.md) to persist
-the same window snapshot, offsets, and ready-output outbox through any Acteon
-state backend with stale-writer protection. Attach a
-[`StreamOutboxDispatcher`](../features/managed-stream-outbox.md) for leased
-delivery, durable retries, dead-letter replay, and backlog metrics. Carry each
-window's stable idempotency key into Acteon dispatch or the downstream bus
-consumer so recovery can safely redeliver.
-One additional metrics record is deliberately duplicated independently of the
-restart. `model.lock.json` records the model identity, revision, runtime
-versions, artifact manifest, and named contract digests. The runner also keeps
-an idempotency ledger for admitted verdicts. That makes the simulation an
-integration test of real transport, recovery, inference, contracts, and policy
-rather than a misleading benchmark of production model quality.
+window state, ready-window outputs, and source offsets atomically before Kafka
+commits. Redis uses a persisted volume and AOF with `appendfsync always`.
+
+Each completed decision, raw parsed model responses, and provider evidence are
+persisted in a separate verdict checkpoint before its input window is
+acknowledged. A [`StreamOutboxDispatcher`](../features/managed-stream-outbox.md)
+delivers those verdicts. The simulation loses an acknowledgement after the
+incident is accepted, drops the worker and its connection pool, and restores the
+persisted retry through a fresh worker. Acteon admission deduplicates the retry;
+it does not repeat the 16 Laya calls or the incident side effects.
+
+A malformed-verdict probe bypasses inference and enters retained dead-letter
+storage before gateway dispatch. The runner inspects and explicitly discards
+it. Both input-window and verdict outboxes finish empty, and Kafka lag is zero.
+One metrics record is also duplicated beside its original record, before event-ID
+retention advances. Restart redeliveries are rejected using the checkpoint's
+persisted broker positions before entering the window operator; they do not rely
+on indefinitely retained event IDs.
+`model.lock.json` now pins four question sets and the response schema alongside
+runtime versions and model artifacts.
 
 ### Measured result
 
@@ -524,16 +547,28 @@ and admitted an incident only when all three typed signal decisions agreed.
 | Kafka source records accepted | 12 |
 | Kafka duplicates and redeliveries rejected | 6 |
 | Restart redeliveries deduplicated | 5 |
-| Atomic checkpoint generations | 2 |
+| Input window checkpoints | 2 |
 | Final Kafka consumer lag | 0 |
-| Governed runtime packages / artifacts / question sets | 6 / 5 / 4 |
+| Governed runtime packages / artifacts / question sets / response schemas | 6 / 5 / 4 / 1 |
 | Event-time windows | 4 |
 | Real Laya calls | 16 |
-| Total inference | 44,006 ms |
-| Per-call p50 / p95 | 1,420 ms / 7,534 ms |
+| Sum of model HTTP request times | 73,256 ms |
+| Per-call HTTP p50 / p95 | 3,645 ms / 9,047 ms |
 | Incident chains | 1 |
 | Bounded investigator calls | 1 |
-| Duplicate incident dispatches prevented | 1 |
+| Delivery attempts / accepted verdicts | 6 / 4 |
+| Persisted retries / replaced delivery workers | 1 / 1 |
+| Duplicate incident dispatches prevented by Acteon | 1 |
+| Invalid verdicts inspected in dead-letter storage | 1 |
+| Pending window / verdict outputs | 0 / 0 |
+| Model calls repeated during delivery retry | 0 |
+
+Timings now measure model HTTP elapsed time through the governed provider,
+including response validation; the earlier report measured server-only
+inference time. These totals are not directly comparable. Full wall times also
+include the provider's identity check and gateway dispatch. The two checkpoint
+counts describe input-state saves; delivery and acknowledgements advance
+additional generations.
 
 See the
 [`latest.md`](https://github.com/penserai/acteon/blob/main/examples/neural-observability-detector/results/latest.md)
@@ -569,6 +604,9 @@ COPY verify_and_serve.py /opt/acteon/verify_and_serve.py
 
 ENTRYPOINT ["python", "/opt/acteon/verify_and_serve.py"]
 ```
+
+The full example Compose file also starts Kafka and Redis with AOF persistence
+for checkpoint and delivery recovery. Redis listens on loopback port 16379.
 
 The explicit dependencies preserve the tested environment and the PyTorch CPU
 index prevents a Linux build from pulling CUDA packages. The Compose service
@@ -754,29 +792,42 @@ submitted signal decisions followed by one fusion decision. A single CPU Laya
 server executes its synchronous forward passes one at a time, so concurrency
 overlaps client and HTTP work but does not make the model execute three passes
 simultaneously. The JSON report embeds every raw response, including usage,
-typed answers, confidence, and routing decisions, along with measured inference
-latency and the server's model identity. `model.lock.json` separately records
+typed answers, confidence, and routing decisions, along with governed model HTTP
+elapsed times, contract attestations, and the server's model identity. `model.lock.json` separately records
 the runtime versions, pinned revision, artifact manifest, and named contract
 digests.
 
 ### Simulation sequence
 
-1. Start the pinned Laya service and confirm the checkpoint revision and device
-   through its authenticated health response.
-2. Publish the fixed telemetry envelopes to separate Kafka topics, including
-   one deliberate duplicate event ID.
-3. Consume the three streams and correlate them into 60-second event-time
-   windows, preserving broker positions and availability masks.
-4. Invoke the three signal question sets concurrently over HTTP.
-5. Validate the response IDs, types, labels, numeric ranges, probability sums,
-   routing identity, and zero output-token count.
-6. Send only the three typed results and availability mask to the fusion
-   question set.
-7. Apply the corroboration policy and dispatch `detector.verdict` through the
-   real Acteon gateway and rules.
-8. Verify suppression, the completed incident chain, or the investigator
-   recording provider, then replay the incident key.
-9. Generate JSON and Markdown reports with actual and expected outcomes.
+1. Start Kafka, Redis AOF storage, and the pinned Laya service.
+2. Publish metrics, traces, and logs, including one duplicate event ID.
+3. Persist window state and ready outputs, replace the uncommitted consumer,
+   restore from Redis, reject redeliveries, and checkpoint before offset commits.
+4. Invoke the three signal question sets concurrently through governed providers.
+5. Verify runtime identity, locked response shape, IDs, labels, numeric ranges,
+   probability sums, and zero output tokens.
+6. Invoke the fusion provider with typed signal results and availability masks.
+7. Persist decisions and their evidence before acknowledging input windows.
+8. Deliver verdicts with the managed outbox. Verify suppression, the incident
+   chain's full-pipeline notification, and the investigator recording provider.
+9. Lose the accepted incident's acknowledgement, replace the worker, restore the
+   retry, and verify receiver deduplication with no repeated inference.
+10. Inspect the invalid-verdict dead letter and generate measured reports.
+
+```mermaid
+flowchart LR
+    K[Three Kafka sources] --> W[Platform event-time windows]
+    W --> WC[(Redis window checkpoint)]
+    WC --> M[Four governed model providers]
+    M --> VC[(Redis decisions and verdict outbox)]
+    VC --> D[Managed delivery worker]
+    D --> A[Deduplicating admission gateway]
+    A --> R[Verdict-routing gateway]
+    R --> C[Incident chain]
+    C --> N[Full-pipeline notification dispatch]
+    R --> I[Bounded investigator]
+    VC -. recover persisted retry .-> D
+```
 
 ### Assertions
 
@@ -790,7 +841,10 @@ The simulation passes only if it can show:
 - log-only noise does not create an incident;
 - correlated pool exhaustion starts exactly one response chain;
 - the ambiguous case reaches exactly one bounded investigator provider;
-- replay produces the same verdict and no duplicate side effect;
+- delivery retry survives worker replacement without repeating model calls;
+- Acteon deduplicates the accepted incident's redelivery with no second side effect;
+- an invalid verdict reaches dead-letter storage before gateway dispatch;
+- both platform outboxes drain and all source consumer lag reaches zero;
 - every side effect can be traced to source offsets and a model version;
 - no low-confidence or invalid result reaches PagerDuty, Slack, or remediation.
 

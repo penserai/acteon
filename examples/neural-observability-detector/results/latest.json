@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-02T10:00:16.713320+00:00",
+  "generated_at": "2026-10-02T22:51:41.226233+00:00",
   "model": "typed-decisions",
   "health": {
     "loaded": [
@@ -11,7 +11,7 @@
     "device": "cpu"
   },
   "governance": {
-    "lock_digest": "sha256:2b074d7100d42d8443af8a1dc0c08ac6e42cb440725359d7b7e3380795fd87ba",
+    "lock_digest": "sha256:38eb82188ec4f7c9e635c5f00e1243d537a557983348ba9c28e866c81393bb69",
     "schema_version": 1,
     "runtime": {
       "huggingface_hub": "1.33.0",
@@ -46,6 +46,10 @@
         "path": "questions/metrics.json",
         "digest": "sha256:6a148a25042155f1f161222edd09f8934330c8d93782135a6bb8abc106e8d775"
       },
+      "response_schema": {
+        "path": "contracts/laya-response.schema.json",
+        "digest": "sha256:b9c70d5c915515adcb637f44a09e4c80f9ac51c0cac33c91039f6302c0bec6b8"
+      },
       "traces": {
         "path": "questions/traces.json",
         "digest": "sha256:28f3010f1af3fdf1c03060367ae5222861cf84395bd12801cb2f799481165c46"
@@ -54,7 +58,7 @@
   },
   "windowing": {
     "accepted_records": 12,
-    "duplicate_records": 6,
+    "duplicate_records": 1,
     "late_records": 0,
     "complete_windows": 4,
     "incomplete_windows": 0
@@ -66,17 +70,17 @@
     "replayed_records_deduplicated": 5,
     "committed_offsets": {
       "logs": {
-        "topic": "observability.acme.logs-41b1fb2d6a954fdab6db431dce9b735c",
+        "topic": "observability.acme.logs-a2b65d68f6664b3081150682f6a4f0e0",
         "partition": 0,
         "offset": 3
       },
       "metrics": {
-        "topic": "observability.acme.metrics-41b1fb2d6a954fdab6db431dce9b735c",
+        "topic": "observability.acme.metrics-a2b65d68f6664b3081150682f6a4f0e0",
         "partition": 0,
         "offset": 4
       },
       "traces": {
-        "topic": "observability.acme.traces-41b1fb2d6a954fdab6db431dce9b735c",
+        "topic": "observability.acme.traces-a2b65d68f6664b3081150682f6a4f0e0",
         "partition": 0,
         "offset": 3
       }
@@ -97,17 +101,17 @@
       "uncertainty": 0.7349,
       "source_positions": {
         "logs": {
-          "topic": "observability.acme.logs-41b1fb2d6a954fdab6db431dce9b735c",
+          "topic": "observability.acme.logs-a2b65d68f6664b3081150682f6a4f0e0",
           "partition": 0,
           "offset": 0
         },
         "metrics": {
-          "topic": "observability.acme.metrics-41b1fb2d6a954fdab6db431dce9b735c",
+          "topic": "observability.acme.metrics-a2b65d68f6664b3081150682f6a4f0e0",
           "partition": 0,
           "offset": 0
         },
         "traces": {
-          "topic": "observability.acme.traces-41b1fb2d6a954fdab6db431dce9b735c",
+          "topic": "observability.acme.traces-a2b65d68f6664b3081150682f6a4f0e0",
           "partition": 0,
           "offset": 0
         }
@@ -120,8 +124,8 @@
           "evidence_probability": 0.2128,
           "impact_score": 1.4031,
           "available": true,
-          "inference_ms": 1767.48,
-          "wall_ms": 2829.776,
+          "model_request_ms": 1495.0,
+          "wall_ms": 1500.0,
           "raw_response": {
             "answers": {
               "condition": {
@@ -188,6 +192,15 @@
               "truncated": false,
               "truncated_questions": []
             }
+          },
+          "provider_evidence": {
+            "acteon-model-elapsed-ms": "1495",
+            "acteon-model-lock-digest": "sha256:38eb82188ec4f7c9e635c5f00e1243d537a557983348ba9c28e866c81393bb69",
+            "acteon-model-name": "typed-decisions",
+            "acteon-model-repository": "convaiinnovations/laya",
+            "acteon-model-request-contract": "metrics",
+            "acteon-model-response-contract": "response_schema",
+            "acteon-model-revision": "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851"
           }
         },
         {
@@ -197,8 +210,8 @@
           "evidence_probability": 0.3264,
           "impact_score": 1.3027,
           "available": true,
-          "inference_ms": 1378.08,
-          "wall_ms": 4208.0244999999995,
+          "model_request_ms": 3618.0,
+          "wall_ms": 3624.0,
           "raw_response": {
             "answers": {
               "condition": {
@@ -265,6 +278,15 @@
               "truncated": false,
               "truncated_questions": []
             }
+          },
+          "provider_evidence": {
+            "acteon-model-elapsed-ms": "3618",
+            "acteon-model-lock-digest": "sha256:38eb82188ec4f7c9e635c5f00e1243d537a557983348ba9c28e866c81393bb69",
+            "acteon-model-name": "typed-decisions",
+            "acteon-model-repository": "convaiinnovations/laya",
+            "acteon-model-request-contract": "traces",
+            "acteon-model-response-contract": "response_schema",
+            "acteon-model-revision": "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851"
           }
         },
         {
@@ -274,8 +296,8 @@
           "evidence_probability": 0.3057,
           "impact_score": 1.1232,
           "available": true,
-          "inference_ms": 1058.04,
-          "wall_ms": 1061.854709,
+          "model_request_ms": 2533.0,
+          "wall_ms": 2538.0,
           "raw_response": {
             "answers": {
               "condition": {
@@ -342,6 +364,15 @@
               "truncated": false,
               "truncated_questions": []
             }
+          },
+          "provider_evidence": {
+            "acteon-model-elapsed-ms": "2533",
+            "acteon-model-lock-digest": "sha256:38eb82188ec4f7c9e635c5f00e1243d537a557983348ba9c28e866c81393bb69",
+            "acteon-model-name": "typed-decisions",
+            "acteon-model-repository": "convaiinnovations/laya",
+            "acteon-model-request-contract": "logs",
+            "acteon-model-response-contract": "response_schema",
+            "acteon-model-revision": "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851"
           }
         }
       ],
@@ -357,8 +388,8 @@
         },
         "correlated_probability": 0.4515,
         "impact_score": 2.0883,
-        "inference_ms": 8086.05,
-        "wall_ms": 8087.933042,
+        "model_request_ms": 8561.0,
+        "wall_ms": 8564.0,
         "raw_response": {
           "answers": {
             "correlated_incident": {
@@ -426,6 +457,15 @@
             "truncated": false,
             "truncated_questions": []
           }
+        },
+        "provider_evidence": {
+          "acteon-model-elapsed-ms": "8561",
+          "acteon-model-lock-digest": "sha256:38eb82188ec4f7c9e635c5f00e1243d537a557983348ba9c28e866c81393bb69",
+          "acteon-model-name": "typed-decisions",
+          "acteon-model-repository": "convaiinnovations/laya",
+          "acteon-model-request-contract": "fusion",
+          "acteon-model-response-contract": "response_schema",
+          "acteon-model-revision": "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851"
         }
       },
       "acteon_outcome": "suppressed by suppress-observability-noise",
@@ -440,17 +480,17 @@
       "uncertainty": 0.7208,
       "source_positions": {
         "logs": {
-          "topic": "observability.acme.logs-41b1fb2d6a954fdab6db431dce9b735c",
+          "topic": "observability.acme.logs-a2b65d68f6664b3081150682f6a4f0e0",
           "partition": 0,
           "offset": 1
         },
         "metrics": {
-          "topic": "observability.acme.metrics-41b1fb2d6a954fdab6db431dce9b735c",
+          "topic": "observability.acme.metrics-a2b65d68f6664b3081150682f6a4f0e0",
           "partition": 0,
-          "offset": 1
+          "offset": 2
         },
         "traces": {
-          "topic": "observability.acme.traces-41b1fb2d6a954fdab6db431dce9b735c",
+          "topic": "observability.acme.traces-a2b65d68f6664b3081150682f6a4f0e0",
           "partition": 0,
           "offset": 1
         }
@@ -463,8 +503,8 @@
           "evidence_probability": 0.2181,
           "impact_score": 1.2921,
           "available": true,
-          "inference_ms": 1820.07,
-          "wall_ms": 1821.715167,
+          "model_request_ms": 3339.0,
+          "wall_ms": 3344.0,
           "raw_response": {
             "answers": {
               "condition": {
@@ -531,6 +571,15 @@
               "truncated": false,
               "truncated_questions": []
             }
+          },
+          "provider_evidence": {
+            "acteon-model-elapsed-ms": "3339",
+            "acteon-model-lock-digest": "sha256:38eb82188ec4f7c9e635c5f00e1243d537a557983348ba9c28e866c81393bb69",
+            "acteon-model-name": "typed-decisions",
+            "acteon-model-repository": "convaiinnovations/laya",
+            "acteon-model-request-contract": "metrics",
+            "acteon-model-response-contract": "response_schema",
+            "acteon-model-revision": "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851"
           }
         },
         {
@@ -540,8 +589,8 @@
           "evidence_probability": 0.2692,
           "impact_score": 1.2185,
           "available": true,
-          "inference_ms": 1926.65,
-          "wall_ms": 3750.061542,
+          "model_request_ms": 1416.0,
+          "wall_ms": 1419.0,
           "raw_response": {
             "answers": {
               "condition": {
@@ -608,6 +657,15 @@
               "truncated": false,
               "truncated_questions": []
             }
+          },
+          "provider_evidence": {
+            "acteon-model-elapsed-ms": "1416",
+            "acteon-model-lock-digest": "sha256:38eb82188ec4f7c9e635c5f00e1243d537a557983348ba9c28e866c81393bb69",
+            "acteon-model-name": "typed-decisions",
+            "acteon-model-repository": "convaiinnovations/laya",
+            "acteon-model-request-contract": "traces",
+            "acteon-model-response-contract": "response_schema",
+            "acteon-model-revision": "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851"
           }
         },
         {
@@ -617,8 +675,8 @@
           "evidence_probability": 0.2518,
           "impact_score": 1.2714,
           "available": true,
-          "inference_ms": 4452.71,
-          "wall_ms": 8201.413917,
+          "model_request_ms": 5005.0,
+          "wall_ms": 5009.0,
           "raw_response": {
             "answers": {
               "condition": {
@@ -685,6 +743,15 @@
               "truncated": false,
               "truncated_questions": []
             }
+          },
+          "provider_evidence": {
+            "acteon-model-elapsed-ms": "5005",
+            "acteon-model-lock-digest": "sha256:38eb82188ec4f7c9e635c5f00e1243d537a557983348ba9c28e866c81393bb69",
+            "acteon-model-name": "typed-decisions",
+            "acteon-model-repository": "convaiinnovations/laya",
+            "acteon-model-request-contract": "logs",
+            "acteon-model-response-contract": "response_schema",
+            "acteon-model-revision": "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851"
           }
         }
       ],
@@ -700,8 +767,8 @@
         },
         "correlated_probability": 0.475,
         "impact_score": 1.996,
-        "inference_ms": 8180.73,
-        "wall_ms": 8182.137125,
+        "model_request_ms": 8911.0,
+        "wall_ms": 8914.0,
         "raw_response": {
           "answers": {
             "correlated_incident": {
@@ -769,6 +836,15 @@
             "truncated": false,
             "truncated_questions": []
           }
+        },
+        "provider_evidence": {
+          "acteon-model-elapsed-ms": "8911",
+          "acteon-model-lock-digest": "sha256:38eb82188ec4f7c9e635c5f00e1243d537a557983348ba9c28e866c81393bb69",
+          "acteon-model-name": "typed-decisions",
+          "acteon-model-repository": "convaiinnovations/laya",
+          "acteon-model-request-contract": "fusion",
+          "acteon-model-response-contract": "response_schema",
+          "acteon-model-revision": "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851"
         }
       },
       "acteon_outcome": "suppressed by suppress-observability-noise",
@@ -783,17 +859,17 @@
       "uncertainty": 0.7281,
       "source_positions": {
         "logs": {
-          "topic": "observability.acme.logs-41b1fb2d6a954fdab6db431dce9b735c",
+          "topic": "observability.acme.logs-a2b65d68f6664b3081150682f6a4f0e0",
           "partition": 0,
           "offset": 2
         },
         "metrics": {
-          "topic": "observability.acme.metrics-41b1fb2d6a954fdab6db431dce9b735c",
+          "topic": "observability.acme.metrics-a2b65d68f6664b3081150682f6a4f0e0",
           "partition": 0,
-          "offset": 2
+          "offset": 3
         },
         "traces": {
-          "topic": "observability.acme.traces-41b1fb2d6a954fdab6db431dce9b735c",
+          "topic": "observability.acme.traces-a2b65d68f6664b3081150682f6a4f0e0",
           "partition": 0,
           "offset": 2
         }
@@ -806,8 +882,8 @@
           "evidence_probability": 0.6586,
           "impact_score": 2.9302,
           "available": true,
-          "inference_ms": 1904.48,
-          "wall_ms": 1905.925625,
+          "model_request_ms": 3621.0,
+          "wall_ms": 3625.0,
           "raw_response": {
             "answers": {
               "condition": {
@@ -874,6 +950,15 @@
               "truncated": false,
               "truncated_questions": []
             }
+          },
+          "provider_evidence": {
+            "acteon-model-elapsed-ms": "3621",
+            "acteon-model-lock-digest": "sha256:38eb82188ec4f7c9e635c5f00e1243d537a557983348ba9c28e866c81393bb69",
+            "acteon-model-name": "typed-decisions",
+            "acteon-model-repository": "convaiinnovations/laya",
+            "acteon-model-request-contract": "metrics",
+            "acteon-model-response-contract": "response_schema",
+            "acteon-model-revision": "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851"
           }
         },
         {
@@ -883,8 +968,8 @@
           "evidence_probability": 0.512,
           "impact_score": 1.7298,
           "available": true,
-          "inference_ms": 1423.46,
-          "wall_ms": 3329.376542,
+          "model_request_ms": 1709.0,
+          "wall_ms": 1713.0,
           "raw_response": {
             "answers": {
               "condition": {
@@ -951,6 +1036,15 @@
               "truncated": false,
               "truncated_questions": []
             }
+          },
+          "provider_evidence": {
+            "acteon-model-elapsed-ms": "1709",
+            "acteon-model-lock-digest": "sha256:38eb82188ec4f7c9e635c5f00e1243d537a557983348ba9c28e866c81393bb69",
+            "acteon-model-name": "typed-decisions",
+            "acteon-model-repository": "convaiinnovations/laya",
+            "acteon-model-request-contract": "traces",
+            "acteon-model-response-contract": "response_schema",
+            "acteon-model-revision": "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851"
           }
         },
         {
@@ -960,8 +1054,8 @@
           "evidence_probability": 0.6171,
           "impact_score": 2.853,
           "available": true,
-          "inference_ms": 1475.78,
-          "wall_ms": 4805.187042,
+          "model_request_ms": 5149.0,
+          "wall_ms": 5153.0,
           "raw_response": {
             "answers": {
               "condition": {
@@ -1028,6 +1122,15 @@
               "truncated": false,
               "truncated_questions": []
             }
+          },
+          "provider_evidence": {
+            "acteon-model-elapsed-ms": "5149",
+            "acteon-model-lock-digest": "sha256:38eb82188ec4f7c9e635c5f00e1243d537a557983348ba9c28e866c81393bb69",
+            "acteon-model-name": "typed-decisions",
+            "acteon-model-repository": "convaiinnovations/laya",
+            "acteon-model-request-contract": "logs",
+            "acteon-model-response-contract": "response_schema",
+            "acteon-model-revision": "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851"
           }
         }
       ],
@@ -1043,8 +1146,8 @@
         },
         "correlated_probability": 0.4539,
         "impact_score": 2.0426,
-        "inference_ms": 12561.27,
-        "wall_ms": 12563.282459,
+        "model_request_ms": 9000.0,
+        "wall_ms": 9001.0,
         "raw_response": {
           "answers": {
             "correlated_incident": {
@@ -1112,6 +1215,15 @@
             "truncated": false,
             "truncated_questions": []
           }
+        },
+        "provider_evidence": {
+          "acteon-model-elapsed-ms": "9000",
+          "acteon-model-lock-digest": "sha256:38eb82188ec4f7c9e635c5f00e1243d537a557983348ba9c28e866c81393bb69",
+          "acteon-model-name": "typed-decisions",
+          "acteon-model-repository": "convaiinnovations/laya",
+          "acteon-model-request-contract": "fusion",
+          "acteon-model-response-contract": "response_schema",
+          "acteon-model-revision": "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851"
         }
       },
       "acteon_outcome": "completed observability-incident chain",
@@ -1126,17 +1238,17 @@
       "uncertainty": 0.75,
       "source_positions": {
         "logs": {
-          "topic": "observability.acme.logs-41b1fb2d6a954fdab6db431dce9b735c",
+          "topic": "observability.acme.logs-a2b65d68f6664b3081150682f6a4f0e0",
           "partition": 0,
           "offset": 3
         },
         "metrics": {
-          "topic": "observability.acme.metrics-41b1fb2d6a954fdab6db431dce9b735c",
+          "topic": "observability.acme.metrics-a2b65d68f6664b3081150682f6a4f0e0",
           "partition": 0,
-          "offset": 3
+          "offset": 4
         },
         "traces": {
-          "topic": "observability.acme.traces-41b1fb2d6a954fdab6db431dce9b735c",
+          "topic": "observability.acme.traces-a2b65d68f6664b3081150682f6a4f0e0",
           "partition": 0,
           "offset": 3
         }
@@ -1149,8 +1261,8 @@
           "evidence_probability": 0.4844,
           "impact_score": 2.4798,
           "available": true,
-          "inference_ms": 1990.9,
-          "wall_ms": 1992.456958,
+          "model_request_ms": 3645.0,
+          "wall_ms": 3648.0,
           "raw_response": {
             "answers": {
               "condition": {
@@ -1217,6 +1329,15 @@
               "truncated": false,
               "truncated_questions": []
             }
+          },
+          "provider_evidence": {
+            "acteon-model-elapsed-ms": "3645",
+            "acteon-model-lock-digest": "sha256:38eb82188ec4f7c9e635c5f00e1243d537a557983348ba9c28e866c81393bb69",
+            "acteon-model-name": "typed-decisions",
+            "acteon-model-repository": "convaiinnovations/laya",
+            "acteon-model-request-contract": "metrics",
+            "acteon-model-response-contract": "response_schema",
+            "acteon-model-revision": "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851"
           }
         },
         {
@@ -1226,8 +1347,8 @@
           "evidence_probability": 0.3641,
           "impact_score": 1.5303,
           "available": true,
-          "inference_ms": 1547.88,
-          "wall_ms": 3540.370958,
+          "model_request_ms": 1586.0,
+          "wall_ms": 1588.0,
           "raw_response": {
             "answers": {
               "condition": {
@@ -1294,6 +1415,15 @@
               "truncated": false,
               "truncated_questions": []
             }
+          },
+          "provider_evidence": {
+            "acteon-model-elapsed-ms": "1586",
+            "acteon-model-lock-digest": "sha256:38eb82188ec4f7c9e635c5f00e1243d537a557983348ba9c28e866c81393bb69",
+            "acteon-model-name": "typed-decisions",
+            "acteon-model-repository": "convaiinnovations/laya",
+            "acteon-model-request-contract": "traces",
+            "acteon-model-response-contract": "response_schema",
+            "acteon-model-revision": "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851"
           }
         },
         {
@@ -1303,8 +1433,8 @@
           "evidence_probability": 0.4468,
           "impact_score": 1.2477,
           "available": false,
-          "inference_ms": 919.27,
-          "wall_ms": 4459.621041,
+          "model_request_ms": 4621.0,
+          "wall_ms": 4624.0,
           "raw_response": {
             "answers": {
               "condition": {
@@ -1371,6 +1501,15 @@
               "truncated": false,
               "truncated_questions": []
             }
+          },
+          "provider_evidence": {
+            "acteon-model-elapsed-ms": "4621",
+            "acteon-model-lock-digest": "sha256:38eb82188ec4f7c9e635c5f00e1243d537a557983348ba9c28e866c81393bb69",
+            "acteon-model-name": "typed-decisions",
+            "acteon-model-repository": "convaiinnovations/laya",
+            "acteon-model-request-contract": "logs",
+            "acteon-model-response-contract": "response_schema",
+            "acteon-model-revision": "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851"
           }
         }
       ],
@@ -1386,8 +1525,8 @@
         },
         "correlated_probability": 0.5235,
         "impact_score": 2.0435,
-        "inference_ms": 8897.63,
-        "wall_ms": 8899.523208999999,
+        "model_request_ms": 9047.0,
+        "wall_ms": 9050.0,
         "raw_response": {
           "answers": {
             "correlated_incident": {
@@ -1455,6 +1594,15 @@
             "truncated": false,
             "truncated_questions": []
           }
+        },
+        "provider_evidence": {
+          "acteon-model-elapsed-ms": "9047",
+          "acteon-model-lock-digest": "sha256:38eb82188ec4f7c9e635c5f00e1243d537a557983348ba9c28e866c81393bb69",
+          "acteon-model-name": "typed-decisions",
+          "acteon-model-repository": "convaiinnovations/laya",
+          "acteon-model-request-contract": "fusion",
+          "acteon-model-response-contract": "response_schema",
+          "acteon-model-revision": "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851"
         }
       },
       "acteon_outcome": "rerouted to investigator",
@@ -1463,12 +1611,26 @@
   ],
   "aggregate": {
     "model_calls": 16,
-    "total_inference_ms": 59390.479999999996,
-    "p50_inference_ms": 1904.48,
-    "p95_inference_ms": 12561.27,
+    "total_model_request_ms": 73256.0,
+    "p50_model_request_ms": 3645.0,
+    "p95_model_request_ms": 9047.0,
     "diagnostic_calls": 1,
     "on_call_notifications": 1,
     "investigator_calls": 1,
     "duplicate_dispatches_prevented": 1
+  },
+  "delivery": {
+    "state_backend": "redis",
+    "attempts": 6,
+    "accepted_outputs": 4,
+    "retries_scheduled": 1,
+    "worker_restarts": 1,
+    "deduplicated_redeliveries": 1,
+    "pending_outputs": 0,
+    "retained_dead_letters": 1,
+    "dead_letter_reason": "invalid verdict envelope or idempotency key",
+    "model_calls_repeated_on_retry": 0,
+    "pending_window_outputs": 0,
+    "recovered_decisions": 4
   }
 }

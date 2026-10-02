@@ -27,7 +27,7 @@ causing side effects.
 - Docker with Compose v2
 - Rust 1.88 or newer
 - 8 GB of memory and 10 GB of free disk for Laya's CPU quickstart
-- ports 8000 and 19092 available on loopback
+- ports 8000, 16379, and 19092 available on loopback
 
 The image explicitly installs PyTorch from its CPU wheel index. A plain
 `pip install` on Linux can otherwise select CUDA dependencies even for a
@@ -43,23 +43,24 @@ examples/neural-observability-detector/scripts/run.sh
 
 The script:
 
-1. builds the local Laya service, verifies all six runtime versions and five
-   downloaded checkpoint artifacts against `model.lock.json`, then starts it;
-2. starts Kafka and publishes the fixed telemetry envelopes to separate
-   metrics, traces, and logs topics;
-3. consumes and correlates the records by event time and writes an atomic
-   checkpoint containing active state, ready outputs, and source offsets;
-4. injects a crash before the Kafka commit, restores the checkpoint, rejects
-   the uncommitted redeliveries, then checkpoints before committing offsets;
-5. verifies all four question-set SHA-256 digests and the live Laya revision,
-   then runs the Rust simulation against `POST /v1/systemone`;
-6. validates question IDs, answer types, labels, probability ranges and sums,
-   routing identity, and zero output tokens;
-7. executes Acteon suppression, reroute, and chain paths with recording
-   providers;
-8. replays the incident key and verifies that the runner ledger prevents a
-   second dispatch; and
-9. writes `results/latest.json` and `results/latest.md`.
+1. builds the pinned CPU Laya service and verifies runtime and model artifacts;
+2. starts Kafka and Redis with AOF persistence, then publishes three telemetry streams;
+3. uses `EventTimeWindowAggregator` and Redis-backed `StreamCheckpointCoordinator`
+   to persist window state, ready outputs, and source positions;
+4. replaces the consumer/coordinator before committing Kafka offsets, restores
+   from a fresh Redis connection pool, and rejects five replayed broker positions;
+5. invokes four locked question sets through `GovernedModelProvider` and the
+   real gateway, validating a content-addressed response schema and served
+   model revision on every call;
+6. persists each completed verdict and its inference evidence before acknowledging
+   the corresponding input window;
+7. dispatches verdicts through `StreamOutboxDispatcher`, with an Acteon
+   deduplication admission rule before verdict routing;
+8. loses one acknowledgement after the incident chain completes, replaces the
+   delivery worker, and proves the retry repeats neither inference nor side effects;
+9. retains a malformed verdict in dead-letter storage, inspects and discards it,
+   and verifies zero pending outputs; and
+10. writes measured JSON and Markdown reports.
 
 Set `KEEP_LAYA=1` to leave the container running after the script exits. The
 named model-cache volume persists between runs.
@@ -72,33 +73,51 @@ docker compose up -d --build --wait
 
 cd ../..
 cargo run -p acteon-simulation \
-  --features bus --example neural_observability_simulation -- --write-results
+  --features bus,redis --example neural_observability_simulation -- --write-results
 ```
 
 `LAYA_URL` defaults to `http://127.0.0.1:8000`, and `LAYA_API_KEY` defaults to
 the loopback-only demo key in `docker-compose.yml`. `ACTEON_KAFKA_BOOTSTRAP`
-defaults to `127.0.0.1:19092`.
+defaults to `127.0.0.1:19092`. `ACTEON_CHECKPOINT_REDIS_URL` defaults to
+`redis://127.0.0.1:16379`. Each run uses an isolated Redis key prefix.
 
 ## What is real
 
 - Every detector and fusion answer comes from the local Laya checkpoint.
 - The container refuses to serve when a runtime version, configured revision,
   checkpoint file set, or artifact SHA-256 differs from `model.lock.json`. The
-  Rust runner independently verifies the lock schema, question files, loaded
-  checkpoint, and health-reported revision before its first inference call.
+  Rust runner verifies all four question sets and the response-schema digest.
+  The governed providers recheck the health-reported revision before every call.
 - The response validator consumes the unedited Laya JSON response.
-- Acteon's real rule engine, gateway, chain executor, memory state, and locks
-  process the admitted verdict.
+- Acteon's real rules, gateways, chain executor, and Redis admission state
+  process verdicts. The notification chain step uses full-pipeline dispatch;
+  a reroute rule sends it to on-call, leaving its initial intake provider unused.
 - Recording providers stand in for diagnostics, on-call, and the investigation
   agent, so the example produces no external operational side effects.
 - Fixed JSON fixtures are published through the real Kafka backend. The
   event-time correlator rejects duplicate event IDs, retains broker positions,
   closes complete windows immediately, and closes incomplete windows after the
-  15-second allowed-lateness watermark.
-- Recovery uses a versioned atomic file checkpoint. The simulation restores
-  after a crash before offset commit, keeps ready windows in the checkpoint as
-  an outbox, deduplicates the replayed prefix, and verifies zero Kafka lag only
-  after the final checkpoint-before-commit sequence.
+  15-second allowed-lateness watermark. The deliberate duplicate is published
+  beside its original event before its event-ID retention watermark advances.
+  Restart redeliveries are skipped using persisted source offsets before ingestion.
+- Recovery and output delivery use platform checkpoint/outbox APIs backed by
+  Redis. Window checkpoints precede Kafka commits. Delivery policy, attempts,
+  retry deadlines, and dead letters survive replacement of the worker and its
+  Redis connection pool. Four cached decisions survive, and final source lag,
+  pending-window outputs, and pending-verdict outputs are zero.
+
+The acknowledgement-loss fault happens **after completed dispatch**. A
+`deduplicate` rule admits a delivery Action whose provider forwards the verdict
+to a separate routing gateway. This composes existing platform rules without a
+runner ledger. Deduplication claims its key before provider execution, so this
+example does not establish recovery from a receiver crash or failure during nested dispatch.
+The admission TTL is one hour; deployed receivers must cover their retry horizon.
+
+Model timings are now governed model HTTP elapsed times, including response
+validation. Full wall times also include runtime identity checks and gateway
+handling. Automatic model and admission-provider retries are disabled; model
+failures stop the run, while the managed outbox owns delivery retries. They are
+not comparable to the previous server-only inference timings.
 
 The results are an integration demonstration. The shipped checkpoint reports
 uncalibrated confidence for part of this question shape, and these four fixtures
@@ -107,11 +126,12 @@ are not evidence of production precision or recall.
 ## Layout
 
 ```text
-docker-compose.yml       Local Kafka broker and CPU Laya service
+docker-compose.yml       Kafka, Redis AOF storage, and CPU Laya service
 laya/Dockerfile          CPU-only PyTorch and pinned Laya package
 laya/verify_and_serve.py Fail-closed runtime and artifact verifier
 fixtures/                Four fixed telemetry windows
 questions/               Metrics, traces, logs, and fusion question sets
+contracts/               Content-addressed Laya response schema
 rules/                   Deterministic Acteon routing
 scripts/run.sh            One-command simulation
 model.lock.json           Runtime, model artifact, and question-set identity
@@ -123,13 +143,12 @@ idle-source, snapshot, and capacity tests live in
 `crates/bus/src/windowing.rs`. The simulation-specific telemetry adapter lives
 beside the Rust example in
 `crates/simulation/examples/neural_observability/windowing.rs`.
-The atomic store, recovery envelope, and checkpoint-before-commit tests live in
-`crates/simulation/examples/neural_observability/checkpoint.rs`.
-The reusable lock parser, runtime and artifact verification, contract digest
-checks, and served-model allowlist live in `acteon-llm::governance`. The
-simulation consumes that public Acteon API; the Laya startup adapter enforces
-the same lock before serving traffic.
-Model HTTP calls use `acteon-llm::TypedJsonModelClient`; it validates the raw
-body against a compiled JSON Schema before producing a typed response and
-preserves the bounded original bytes, parsed JSON, headers, and elapsed time as
-inference evidence.
+The checkpoint module beside the example now only converts telemetry envelopes
+and broker positions. Storage, CAS, leases, retries, and dead letters come from
+`acteon-bus::StreamCheckpointCoordinator` and `StreamOutboxDispatcher`.
+
+All 16 model requests go through four `acteon-llm::GovernedModelProvider`
+instances registered with a gateway. Each provider injects its locked questions
+and model name, verifies runtime identity, and uses `TypedJsonModelClient` for
+response-schema validation. The report preserves parsed Laya responses, model
+request and response contract names, lock digests, revisions, and elapsed times.

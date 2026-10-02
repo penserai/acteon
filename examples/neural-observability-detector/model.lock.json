@@ -36,6 +36,10 @@
     "traces": {
       "path": "questions/traces.json",
       "digest": "sha256:28f3010f1af3fdf1c03060367ae5222861cf84395bd12801cb2f799481165c46"
+    },
+    "response_schema": {
+      "path": "contracts/laya-response.schema.json",
+      "digest": "sha256:b9c70d5c915515adcb637f44a09e4c80f9ac51c0cac33c91039f6302c0bec6b8"
     }
   }
 }

@@ -184,7 +184,7 @@ pub struct EventTimeCorrelator {
 impl EventTimeCorrelator {
     pub fn new(window_size: Duration, allowed_lateness: Duration) -> Result<Self, WindowingError> {
         let mut config = EventTimeWindowConfig::new(
-            SignalSource::ALL.map(|source| source.as_str()),
+            SignalSource::ALL.map(SignalSource::as_str),
             window_size,
             allowed_lateness,
         )?;

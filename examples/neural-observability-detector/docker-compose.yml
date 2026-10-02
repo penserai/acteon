@@ -28,6 +28,19 @@ services:
       timeout: 5s
       retries: 20
 
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "always"]
+    ports:
+      - "127.0.0.1:16379:6379"
+    volumes:
+      - checkpoint-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   laya:
     build:
       context: ./laya
@@ -70,4 +83,5 @@ services:
 
 volumes:
   kafka-data:
+  checkpoint-data:
   laya-model-cache:
