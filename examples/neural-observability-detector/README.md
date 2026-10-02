@@ -43,15 +43,16 @@ examples/neural-observability-detector/scripts/run.sh
 
 The script:
 
-1. builds and starts the local Laya 0.3.23 service;
+1. builds the local Laya service, verifies all six runtime versions and five
+   downloaded checkpoint artifacts against `model.lock.json`, then starts it;
 2. starts Kafka and publishes the fixed telemetry envelopes to separate
    metrics, traces, and logs topics;
 3. consumes and correlates the records by event time and writes an atomic
    checkpoint containing active state, ready outputs, and source offsets;
 4. injects a crash before the Kafka commit, restores the checkpoint, rejects
    the uncommitted redeliveries, then checkpoints before committing offsets;
-5. waits until the reviewed `typed-decisions` checkpoint is resident and runs
-   the Rust simulation against `POST /v1/systemone`;
+5. verifies all four question-set SHA-256 digests and the live Laya revision,
+   then runs the Rust simulation against `POST /v1/systemone`;
 6. validates question IDs, answer types, labels, probability ranges and sums,
    routing identity, and zero output tokens;
 7. executes Acteon suppression, reroute, and chain paths with recording
@@ -81,6 +82,10 @@ defaults to `127.0.0.1:19092`.
 ## What is real
 
 - Every detector and fusion answer comes from the local Laya checkpoint.
+- The container refuses to serve when a runtime version, configured revision,
+  checkpoint file set, or artifact SHA-256 differs from `model.lock.json`. The
+  Rust runner independently verifies the lock schema, question files, loaded
+  checkpoint, and health-reported revision before its first inference call.
 - The response validator consumes the unedited Laya JSON response.
 - Acteon's real rule engine, gateway, chain executor, memory state, and locks
   process the admitted verdict.
@@ -104,11 +109,12 @@ are not evidence of production precision or recall.
 ```text
 docker-compose.yml       Local Kafka broker and CPU Laya service
 laya/Dockerfile          CPU-only PyTorch and pinned Laya package
+laya/verify_and_serve.py Fail-closed runtime and artifact verifier
 fixtures/                Four fixed telemetry windows
 questions/               Metrics, traces, logs, and fusion question sets
 rules/                   Deterministic Acteon routing
 scripts/run.sh            One-command simulation
-model.lock.json           Model, runtime, and question-set identity
+model.lock.json           Runtime, model artifact, and question-set identity
 results/                  Measured JSON and Markdown reports
 ```
 
@@ -116,3 +122,5 @@ The event-time state machine and its replay, lateness, and missing-source tests
 live beside the Rust example in `crates/simulation/examples/neural_observability/windowing.rs`.
 The atomic store, recovery envelope, and checkpoint-before-commit tests live in
 `crates/simulation/examples/neural_observability/checkpoint.rs`.
+The strict lock parser, question digest checks, and Laya health allowlist live
+in `crates/simulation/examples/neural_observability/governance.rs`.

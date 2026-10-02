@@ -12,6 +12,8 @@ RUN pip install --no-cache-dir "torch==${TORCH_VERSION}" \
       "numpy==2.5.3" \
     && pip install --no-cache-dir "laya[serve]==${LAYA_VERSION}"
 
+COPY verify_and_serve.py /opt/acteon/verify_and_serve.py
+
 EXPOSE 8000
 
-ENTRYPOINT ["laya-serve"]
+ENTRYPOINT ["python", "/opt/acteon/verify_and_serve.py"]

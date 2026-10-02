@@ -13,6 +13,13 @@
     "name": "typed-decisions",
     "revision": "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851"
   },
+  "artifacts": {
+    "encoder/config.json": "sha256:5268d24ad3b77c8151de5dcb0762ba4391619aad9ab0bda33e36fb083cfeae6d",
+    "model.safetensors": "sha256:4fa56de72383a9d3efa9cfa78955733c81b9fc8067a587ca4beb82c78107a24e",
+    "rl_agent_config.json": "sha256:ebf0cd524d92342a6be5e48e9fca3d7c2babfb5a56ccd79d2171ef5d8c7f7be8",
+    "tokenizer/tokenizer.json": "sha256:6c8aaa9a542084f2457eab775d4eeb51f92a70c0fd9de28d5edb0ddec3c08d30",
+    "tokenizer/tokenizer_config.json": "sha256:08d4cf3ac4dca381759441b85b91a6d40e688471dcd33d15d6649eb0a9a854d1"
+  },
   "question_sets": {
     "fusion.json": "sha256:059b334d03ef642a835017e197e57b959bb81b4ff84f597bc89b027da10fe865",
     "logs.json": "sha256:3b2876d57b840193e6a56b9fcdb56b30e2c45e779339748367f6429114e0f598",

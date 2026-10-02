@@ -265,13 +265,17 @@ Use smart constructors or explicit validation to enforce `score` and
 `uncertainty` in `0.0..=1.0`, maximum evidence counts, allowed enum values, and
 model-version allowlists. Serde types alone do not enforce numeric ranges.
 
-The runtime is the upstream `laya-serve` HTTP service in a CPU container. Pin
-the Laya package, checkpoint revision, question-set digests, and downloaded
-artifact digests. Load only the `typed-decisions` checkpoint to bound resident
-memory. Laya also supports ONNX and per-channel INT8 export for a later compact
-CPU deployment, but the first simulation uses the upstream server path. A
-future native Acteon provider can remove the HTTP hop without changing the
-contracts.
+The runtime is the upstream `laya-serve` HTTP service in a CPU container. The
+example enforces its lock twice. The container verifies six installed package
+versions, the configured repository and revision, the exact five-file
+checkpoint manifest, and every artifact SHA-256 before it starts the server.
+The Rust runner separately verifies the lock schema, all four question-set
+digests, and the health-reported loaded checkpoint and revision before its
+first inference call. Load only the `typed-decisions` checkpoint to bound
+resident memory. Laya also supports ONNX and per-channel INT8 export for a
+later compact CPU deployment, but the first simulation uses the upstream
+server path. A future native Acteon provider can remove the HTTP hop without
+changing the contracts.
 
 ### 5. Calibrate uncertainty and disagreement
 
@@ -498,10 +502,11 @@ and admitted an incident only when all three typed signal decisions agreed.
 | Restart redeliveries deduplicated | 5 |
 | Atomic checkpoint generations | 2 |
 | Final Kafka consumer lag | 0 |
+| Governed runtime packages / artifacts / question sets | 6 / 5 / 4 |
 | Event-time windows | 4 |
 | Real Laya calls | 16 |
-| Total inference | 43,179 ms |
-| Per-call p50 / p95 | 1,336 ms / 7,449 ms |
+| Total inference | 44,006 ms |
+| Per-call p50 / p95 | 1,420 ms / 7,534 ms |
 | Incident chains | 1 |
 | Bounded investigator calls | 1 |
 | Duplicate incident dispatches prevented | 1 |
@@ -536,7 +541,9 @@ RUN pip install --no-cache-dir "torch==${TORCH_VERSION}" \
       "numpy==2.5.3" \
     && pip install --no-cache-dir "laya[serve]==${LAYA_VERSION}"
 
-ENTRYPOINT ["laya-serve"]
+COPY verify_and_serve.py /opt/acteon/verify_and_serve.py
+
+ENTRYPOINT ["python", "/opt/acteon/verify_and_serve.py"]
 ```
 
 The explicit dependencies preserve the tested environment and the PyTorch CPU
@@ -552,6 +559,7 @@ services:
         LAYA_VERSION: "<pinned-version>"
     environment:
       LAYA_DEVICE: cpu
+      LAYA_REPOSITORY: convaiinnovations/laya
       LAYA_MODELS: typed-decisions
       LAYA_DEFAULT_MODEL: typed-decisions
       LAYA_PRELOAD: "1"
@@ -565,7 +573,8 @@ services:
     ports:
       - "127.0.0.1:8000:8000"
     volumes:
-      - laya-model-cache:/home/laya/.cache/huggingface
+      - laya-model-cache:/root/.cache/huggingface
+      - ./model.lock.json:/opt/acteon/model.lock.json:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 10s
