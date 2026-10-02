@@ -88,10 +88,10 @@ pub use bus_topic::{Topic, TopicValidationError};
 pub use caller::Caller;
 pub use chain::{
     BranchCondition, BranchOperator, ChainConfig, ChainFailurePolicy, ChainNotificationTarget,
-    ChainState, ChainStatus, ChainStepConfig, ParallelExecutionState, ParallelFailurePolicy,
-    ParallelJoinPolicy, ParallelStepGroup, ParallelSubStepStatus, SignalStepConfig,
-    StepFailurePolicy, StepKind, StepResult, TimerStepConfig, WaitState, WorkerStepConfig,
-    validate_chain_graph,
+    ChainState, ChainStatus, ChainStepConfig, DispatchStepConfig, ParallelExecutionState,
+    ParallelFailurePolicy, ParallelJoinPolicy, ParallelStepGroup, ParallelSubStepStatus,
+    SignalStepConfig, StepFailurePolicy, StepKind, StepResult, TimerStepConfig, WaitState,
+    WorkerStepConfig, validate_chain_graph,
 };
 pub use chain_dag::{DagEdge, DagNode, DagResponse};
 pub use circuit_breaker::{

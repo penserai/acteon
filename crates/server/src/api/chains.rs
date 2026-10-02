@@ -618,6 +618,7 @@ fn build_dag_from_state(state: &acteon_core::ChainState) -> DagResponse {
 
 /// Summary of a chain definition for list responses.
 #[derive(Debug, Serialize, ToSchema)]
+#[allow(clippy::struct_excessive_bools)] // Independent capabilities in the API summary.
 pub struct ChainDefinitionSummary {
     /// Chain name.
     pub name: String,
@@ -629,6 +630,8 @@ pub struct ChainDefinitionSummary {
     pub has_parallel: bool,
     /// Whether any step invokes a sub-chain.
     pub has_sub_chains: bool,
+    /// Whether any step emits an Action through the full dispatch pipeline.
+    pub has_dispatch: bool,
     /// Chain-level failure policy.
     pub on_failure: String,
     /// Optional timeout in seconds.
@@ -693,6 +696,10 @@ pub async fn list_definitions(State(state): State<AppState>) -> impl IntoRespons
                 .steps
                 .iter()
                 .any(|s| matches!(s.kind(), StepKind::SubChain(_))),
+            has_dispatch: config
+                .steps
+                .iter()
+                .any(|s| matches!(s.kind(), StepKind::Dispatch(_))),
             on_failure: format_failure_policy(&config.on_failure),
             timeout_seconds: config.timeout_seconds,
         })

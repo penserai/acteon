@@ -548,6 +548,32 @@ fn chain_step_backward_compat_no_sub_chain() {
 }
 
 #[test]
+fn chain_dispatch_step_parses_from_toml() {
+    let toml = r#"
+        [[chains.definitions]]
+        name = "detect-and-route"
+
+        [[chains.definitions.steps]]
+        name = "route-verdict"
+        payload_template = { verdict = "{{prev.body}}" }
+
+        [chains.definitions.steps.dispatch]
+        provider = "incident-router"
+        action_type = "detector.verdict"
+        dedup_key = "{{chain_id}}:verdict"
+    "#;
+
+    let config: ActeonConfig = toml::from_str(toml).unwrap();
+    let step = &config.chains.definitions[0].steps[0];
+    let dispatch = step.dispatch.as_ref().unwrap();
+    assert_eq!(dispatch.provider, "incident-router");
+    assert_eq!(dispatch.action_type, "detector.verdict");
+    assert_eq!(dispatch.dedup_key.as_deref(), Some("{{chain_id}}:verdict"));
+    assert!(dispatch.inherit_metadata);
+    assert!(step.provider.is_none());
+}
+
+#[test]
 fn enrichment_config_parses_with_defaults() {
     let toml = r#"
         [[enrichments]]

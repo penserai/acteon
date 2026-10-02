@@ -100,6 +100,29 @@ pub struct ChainStepConfigToml {
     /// Optional retry policy for this step.
     #[serde(default)]
     pub retry: Option<RetryPolicyToml>,
+    /// Emit a new action through the full gateway pipeline.
+    /// Mutually exclusive with `provider`, `sub_chain`, and other step kinds.
+    #[serde(default)]
+    pub dispatch: Option<DispatchStepConfigToml>,
+}
+
+/// Full-pipeline action dispatch loaded from TOML.
+#[derive(Debug, Deserialize)]
+pub struct DispatchStepConfigToml {
+    /// Initial provider placed on the emitted action.
+    pub provider: String,
+    /// Action type placed on the emitted action.
+    pub action_type: String,
+    /// Optional template for the emitted action's deduplication key.
+    #[serde(default)]
+    pub dedup_key: Option<String>,
+    /// Copy metadata labels from the chain's origin action.
+    #[serde(default = "default_true")]
+    pub inherit_metadata: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Per-step retry policy loaded from TOML.

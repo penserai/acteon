@@ -8,7 +8,8 @@ use tracing::{info, warn};
 
 use acteon_core::{
     Action, BranchCondition, BranchOperator, ChainConfig, ChainFailurePolicy,
-    ChainNotificationTarget, ChainStepConfig, StepFailurePolicy, StreamEvent, StreamEventType,
+    ChainNotificationTarget, ChainStepConfig, DispatchStepConfig, StepFailurePolicy, StreamEvent,
+    StreamEventType,
 };
 use acteon_executor::ExecutorConfig;
 use acteon_gateway::GatewayBuilder;
@@ -528,7 +529,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
         }
         for step_toml in &chain_toml.steps {
-            let mut step = if let Some(ref sub_chain_name) = step_toml.sub_chain {
+            if step_toml.dispatch.is_some() {
+                let mut conflicts = Vec::new();
+                if step_toml.provider.is_some() {
+                    conflicts.push("provider");
+                }
+                if step_toml.action_type.is_some() {
+                    conflicts.push("action_type");
+                }
+                if step_toml.sub_chain.is_some() {
+                    conflicts.push("sub_chain");
+                }
+                if step_toml.parallel.is_some() {
+                    conflicts.push("parallel");
+                }
+                if !conflicts.is_empty() {
+                    return Err(format!(
+                        "chain '{}' step '{}' sets dispatch with {}; step kinds are mutually exclusive",
+                        chain_toml.name,
+                        step_toml.name,
+                        conflicts.join(", ")
+                    )
+                    .into());
+                }
+            }
+            let mut step = if let Some(ref dispatch) = step_toml.dispatch {
+                ChainStepConfig::new_dispatch(
+                    &step_toml.name,
+                    DispatchStepConfig {
+                        provider: dispatch.provider.clone(),
+                        action_type: dispatch.action_type.clone(),
+                        dedup_key: dispatch.dedup_key.clone(),
+                        inherit_metadata: dispatch.inherit_metadata,
+                    },
+                    step_toml.payload_template.clone(),
+                )
+            } else if let Some(ref sub_chain_name) = step_toml.sub_chain {
                 ChainStepConfig::new_sub_chain(&step_toml.name, sub_chain_name)
             } else {
                 ChainStepConfig::new(

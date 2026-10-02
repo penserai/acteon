@@ -12,9 +12,10 @@ use acteon_audit::AuditRecord;
 use acteon_audit::store::AuditStore;
 use acteon_core::chain::WaitState;
 use acteon_core::{
-    Action, ActionOutcome, Caller, ChainConfig, ChainState, ChainStatus, ChainStepConfig,
-    ExecutionEventType, StateMachineConfig, StepKind, StepResult, StreamEvent, StreamEventType,
-    compute_fingerprint, sanitize_outcome,
+    Action, ActionError, ActionId, ActionOutcome, Caller, ChainConfig, ChainState, ChainStatus,
+    ChainStepConfig, ExecutionEventType, ProviderResponse, StateMachineConfig, StepKind,
+    StepResult, StreamEvent, StreamEventType, compute_fingerprint, outcome_category,
+    sanitize_outcome,
 };
 use acteon_executor::{ActionExecutor, DeadLetterEntry, DeadLetterSink};
 use acteon_provider::ProviderRegistry;
@@ -121,8 +122,98 @@ pub struct ApprovalRecord {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DispatchOrigin {
     External,
+    Chain,
     Precounted,
     Scheduled,
+}
+
+const CHAIN_ANCESTRY_LABEL: &str = "acteon.chain.ancestry";
+const CHAIN_PARENT_ID_LABEL: &str = "acteon.chain.parent_id";
+const CHAIN_PARENT_STEP_LABEL: &str = "acteon.chain.parent_step";
+const CHAIN_ROOT_ACTION_LABEL: &str = "acteon.chain.root_action_id";
+const MAX_CHAIN_DISPATCH_DEPTH: usize = 8;
+
+fn chain_ancestry(action: &Action) -> Vec<String> {
+    action
+        .metadata
+        .labels
+        .get(CHAIN_ANCESTRY_LABEL)
+        .and_then(|value| serde_json::from_str::<Vec<String>>(value).ok())
+        .unwrap_or_default()
+}
+
+fn chain_dispatch_failure(code: &str, message: String, retryable: bool) -> ActionOutcome {
+    ActionOutcome::Failed(ActionError {
+        code: code.to_owned(),
+        message,
+        retryable,
+        attempts: 1,
+    })
+}
+
+fn gateway_error_is_retryable(error: &GatewayError) -> bool {
+    matches!(
+        error,
+        GatewayError::State(_)
+            | GatewayError::Rule(_)
+            | GatewayError::Provider(_)
+            | GatewayError::LockFailed(_)
+            | GatewayError::AuditWriteFailed(_)
+    )
+}
+
+fn normalize_chain_dispatch_outcome(action_id: &str, outcome: ActionOutcome) -> ActionOutcome {
+    match outcome {
+        ActionOutcome::Failed(error) => ActionOutcome::Failed(error),
+        ActionOutcome::CircuitOpen { provider, .. } => chain_dispatch_failure(
+            "circuit_open",
+            format!("dispatch circuit is open for provider {provider}"),
+            true,
+        ),
+        ActionOutcome::Throttled { retry_after } => chain_dispatch_failure(
+            "throttled",
+            format!("dispatch throttled for {} ms", retry_after.as_millis()),
+            true,
+        ),
+        ActionOutcome::QuotaExceeded { .. } => chain_dispatch_failure(
+            "quota_exceeded",
+            "dispatch blocked by quota policy".to_owned(),
+            false,
+        ),
+        ActionOutcome::Executed(response) => {
+            ActionOutcome::Executed(ProviderResponse::success(serde_json::json!({
+                "outcome": "executed",
+                "action_id": action_id,
+                "body": response.body,
+            })))
+        }
+        ActionOutcome::Rerouted {
+            original_provider,
+            new_provider,
+            response,
+        } => ActionOutcome::Executed(ProviderResponse::success(serde_json::json!({
+            "outcome": "rerouted",
+            "action_id": action_id,
+            "original_provider": original_provider,
+            "provider": new_provider,
+            "body": response.body,
+        }))),
+        other => {
+            let category = outcome_category(&other);
+            ActionOutcome::Executed(ProviderResponse::success(serde_json::json!({
+                "outcome": category,
+                "action_id": action_id,
+                "details": sanitize_outcome(&other),
+            })))
+        }
+    }
+}
+
+fn chain_step_action_type(step: &ChainStepConfig) -> String {
+    match step.kind() {
+        StepKind::Dispatch(dispatch) => dispatch.action_type.clone(),
+        _ => step.action_type.clone(),
+    }
 }
 
 /// Public-facing approval status (does not expose the original action payload).
@@ -554,11 +645,26 @@ impl Gateway {
     )]
     pub(crate) async fn dispatch_inner(
         &self,
-        action: Action,
+        mut action: Action,
         caller: Option<&Caller>,
         dry_run: bool,
         origin: DispatchOrigin,
     ) -> Result<ActionOutcome, GatewayError> {
+        // Chain causality labels are gateway-owned. Strip caller-supplied
+        // values at the public boundary so an action cannot forge a parent
+        // relationship or bypass ancestry/depth checks. Trusted redispatches
+        // (chain and scheduled actions) retain the labels stamped internally.
+        if origin == DispatchOrigin::External {
+            for key in [
+                CHAIN_ANCESTRY_LABEL,
+                CHAIN_PARENT_ID_LABEL,
+                CHAIN_PARENT_STEP_LABEL,
+                CHAIN_ROOT_ACTION_LABEL,
+            ] {
+                action.metadata.labels.remove(key);
+            }
+        }
+
         self.metrics.increment_dispatched();
         let start = self.clock.monotonic();
         let dispatched_at = self.clock.now();
@@ -598,8 +704,7 @@ impl Gateway {
         // without ever sending the message. The hop limit caps
         // how many fallbacks a single dispatch can traverse so
         // a misconfigured chain of degrade policies cannot loop.
-        let mut action = action;
-        if !dry_run && origin == DispatchOrigin::External {
+        if !dry_run && matches!(origin, DispatchOrigin::External | DispatchOrigin::Chain) {
             const MAX_QUOTA_DEGRADE_HOPS: usize = 3;
             let mut hops = 0usize;
             let mut terminal: Option<ActionOutcome> = None;
@@ -2521,6 +2626,37 @@ impl Gateway {
         chain_name: &str,
         caller: Option<&Caller>,
     ) -> Result<ActionOutcome, GatewayError> {
+        let mut ancestry = chain_ancestry(action);
+        if ancestry.iter().any(|ancestor| ancestor == chain_name) {
+            return Err(GatewayError::ChainError(format!(
+                "chain dispatch cycle detected: {} -> {chain_name}",
+                ancestry.join(" -> ")
+            )));
+        }
+        if ancestry.len() >= MAX_CHAIN_DISPATCH_DEPTH {
+            return Err(GatewayError::ChainError(format!(
+                "chain dispatch depth exceeds maximum of {MAX_CHAIN_DISPATCH_DEPTH}"
+            )));
+        }
+        ancestry.push(chain_name.to_owned());
+
+        let parent_chain_id = action.metadata.labels.get(CHAIN_PARENT_ID_LABEL).cloned();
+        let parent_step_index = action
+            .metadata
+            .labels
+            .get(CHAIN_PARENT_STEP_LABEL)
+            .and_then(|value| value.parse::<usize>().ok());
+        let mut origin_action = action.clone();
+        origin_action.metadata.labels.insert(
+            CHAIN_ANCESTRY_LABEL.to_owned(),
+            serde_json::to_string(&ancestry).expect("a string vector always serializes"),
+        );
+        origin_action
+            .metadata
+            .labels
+            .entry(CHAIN_ROOT_ACTION_LABEL.to_owned())
+            .or_insert_with(|| action.id.to_string());
+
         let chain_config = self.chains.read().get(chain_name).cloned().ok_or_else(|| {
             GatewayError::ChainError(format!("chain configuration not found: {chain_name}"))
         })?;
@@ -2557,7 +2693,7 @@ impl Gateway {
             state_version: None,
             chain_id: chain_id.clone(),
             chain_name: chain_name.to_owned(),
-            origin_action: action.clone(),
+            origin_action,
             current_step: 0,
             total_steps,
             status: ChainStatus::Running,
@@ -2572,8 +2708,8 @@ impl Gateway {
             cancelled_by: None,
             cancellation_handoff: None,
             execution_path: vec![first_step.clone()],
-            parent_chain_id: None,
-            parent_step_index: None,
+            parent_chain_id,
+            parent_step_index,
             child_chain_ids: Vec::new(),
             task_id: None,
             parallel_state: None,
@@ -3658,9 +3794,15 @@ impl Gateway {
                     .await;
             }
 
-            // Provider steps fall through to the dispatch below.
-            StepKind::Provider => {}
+            // Provider and full-pipeline dispatch steps fall through to the
+            // action construction below.
+            StepKind::Provider | StepKind::Dispatch(_) => {}
         }
+
+        let dispatch_config = match step_config.kind() {
+            StepKind::Dispatch(config) => Some(config),
+            _ => None,
+        };
 
         // Resolve the payload template.
         let payload = crate::chain::resolve_template(
@@ -3674,23 +3816,111 @@ impl Gateway {
             &chain_state.parallel_sub_results,
         );
 
-        // Build and execute the synthetic action.
-        let mut step_action = Action::new(
-            namespace,
-            tenant,
-            step_config.provider.as_str(),
-            &step_config.action_type,
-            payload,
-        );
-
-        // Idempotency: ensure this step is not executed twice.
-        // Use step name + attempt number in the dedup key to handle both
+        // Use step name + attempt number in the claim key to handle both
         // branching chains and retries.
         let next_attempt = if step_idx < chain_state.step_attempts.len() {
             chain_state.step_attempts[step_idx] + 1
         } else {
             1
         };
+
+        // Build the synthetic action. A provider step executes it directly;
+        // a dispatch step sends it back through the full gateway pipeline.
+        let (provider, action_type) = dispatch_config.map_or_else(
+            || {
+                (
+                    step_config.provider.as_str(),
+                    step_config.action_type.as_str(),
+                )
+            },
+            |config| (config.provider.as_str(), config.action_type.as_str()),
+        );
+        let mut step_action = Action::new(namespace, tenant, provider, action_type, payload);
+        let mut dispatch_preflight_error = None;
+
+        if let Some(config) = dispatch_config {
+            let stable_identity = format!(
+                "{namespace}\0{tenant}\0{chain_id}\0{}\0{next_attempt}",
+                step_config.name
+            );
+            step_action.id = ActionId::new(format!(
+                "chain-dispatch-{}",
+                uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, stable_identity.as_bytes())
+            ));
+            if config.inherit_metadata {
+                step_action.metadata = chain_state.origin_action.metadata.clone();
+            }
+            step_action
+                .trace_context
+                .clone_from(&chain_state.origin_action.trace_context);
+            if let Some(ancestry) = chain_state
+                .origin_action
+                .metadata
+                .labels
+                .get(CHAIN_ANCESTRY_LABEL)
+            {
+                step_action
+                    .metadata
+                    .labels
+                    .insert(CHAIN_ANCESTRY_LABEL.to_owned(), ancestry.clone());
+            }
+            if let Some(root_action_id) = chain_state
+                .origin_action
+                .metadata
+                .labels
+                .get(CHAIN_ROOT_ACTION_LABEL)
+            {
+                step_action
+                    .metadata
+                    .labels
+                    .insert(CHAIN_ROOT_ACTION_LABEL.to_owned(), root_action_id.clone());
+            }
+            step_action
+                .metadata
+                .labels
+                .insert(CHAIN_PARENT_ID_LABEL.to_owned(), chain_id.to_owned());
+            step_action
+                .metadata
+                .labels
+                .insert(CHAIN_PARENT_STEP_LABEL.to_owned(), step_idx.to_string());
+            step_action
+                .metadata
+                .labels
+                .entry(CHAIN_ROOT_ACTION_LABEL.to_owned())
+                .or_insert_with(|| chain_state.origin_action.id.to_string());
+
+            step_action.dedup_key = if let Some(template) = &config.dedup_key {
+                let resolved = crate::chain::resolve_template(
+                    &serde_json::Value::String(template.clone()),
+                    &chain_state.origin_action,
+                    &chain_state.step_results,
+                    &chain_config.steps,
+                    chain_id,
+                    step_idx,
+                    &chain_state.execution_path,
+                    &chain_state.parallel_sub_results,
+                );
+                match resolved {
+                    serde_json::Value::String(value) if !value.trim().is_empty() => Some(value),
+                    _ => {
+                        dispatch_preflight_error = Some(chain_dispatch_failure(
+                            "invalid_dedup_key",
+                            "dispatch dedup_key template must resolve to a non-empty string"
+                                .to_owned(),
+                            false,
+                        ));
+                        None
+                    }
+                }
+            } else {
+                Some(format!(
+                    "chain-dispatch:{chain_id}:{}:a{next_attempt}",
+                    step_config.name
+                ))
+            };
+        }
+
+        // Idempotency: ensure this step is not executed twice.
         let step_dedup_key = StateKey::new(
             namespace,
             tenant,
@@ -3779,13 +4009,14 @@ impl Gateway {
             return Ok(());
         }
 
-        // Enforce tenant quota for each chain step so chains cannot
-        // bypass limits. Degrade outcomes swap the provider and
+        // Enforce tenant quota for direct provider steps so chains cannot
+        // bypass limits. Full-pipeline dispatch steps perform this inside
+        // `dispatch_inner`. Degrade outcomes swap the provider and
         // re-check so the fallback provider's own budget is also
         // enforced (matching the semantics in `dispatch_inner`).
         // The hop limit prevents a misconfigured chain of degrade
         // policies from looping indefinitely.
-        {
+        if dispatch_config.is_none() {
             const MAX_QUOTA_DEGRADE_HOPS: usize = 3;
             let mut hops = 0usize;
             let mut blocked: Option<ActionOutcome> = None;
@@ -3904,9 +4135,10 @@ impl Gateway {
         // index — so without this the chain would be orphaned), release the
         // lock, and return. Nothing has executed, so a transient audit outage
         // is simply retried on a later tick.
-        if let Err(e) = self
-            .write_step_intent(&step_action, chain_id, chain_state.caller.as_ref())
-            .await
+        if dispatch_config.is_none()
+            && let Err(e) = self
+                .write_step_intent(&step_action, chain_id, chain_state.caller.as_ref())
+                .await
         {
             warn!(
                 error = %e,
@@ -3925,7 +4157,49 @@ impl Gateway {
         }
 
         let step_start = self.clock.monotonic();
-        let outcome = self.execute_action(&step_action).await;
+        let outcome = if let Some(error) = dispatch_preflight_error {
+            error
+        } else if dispatch_config.is_some() {
+            let action_id = step_action.id.to_string();
+            let caller = chain_state.caller.clone();
+            match Box::pin(self.dispatch_inner(
+                step_action.clone(),
+                caller.as_ref(),
+                false,
+                DispatchOrigin::Chain,
+            ))
+            .await
+            {
+                Ok(dispatched) => {
+                    if let ActionOutcome::ChainStarted {
+                        chain_id: child_chain_id,
+                        ..
+                    } = &dispatched
+                    {
+                        chain_state.child_chain_ids.push(child_chain_id.clone());
+                    }
+                    normalize_chain_dispatch_outcome(&action_id, dispatched)
+                }
+                Err(error) => {
+                    warn!(
+                        chain_id = %chain_id,
+                        step = %step_config.name,
+                        error = %error,
+                        "chain dispatch step failed before producing an outcome"
+                    );
+                    let retryable = gateway_error_is_retryable(&error);
+                    let message = match &error {
+                        GatewayError::ChainError(_) => {
+                            "chain dispatch rejected by ancestry or depth policy".to_owned()
+                        }
+                        _ => error.public_message(),
+                    };
+                    chain_dispatch_failure("dispatch_error", message, retryable)
+                }
+            }
+        } else {
+            self.execute_action(&step_action).await
+        };
         let step_duration = self.clock.monotonic().saturating_sub(step_start);
         let now = self.clock.now();
 
@@ -4001,7 +4275,7 @@ impl Gateway {
                         },
                         namespace: namespace.to_string(),
                         tenant: tenant.to_string(),
-                        action_type: Some(step_config.action_type.clone()),
+                        action_type: Some(chain_step_action_type(step_config)),
                         action_id: Some(chain_state.origin_action.id.to_string()),
                     });
                 } else {
@@ -4042,7 +4316,7 @@ impl Gateway {
                         },
                         namespace: namespace.to_string(),
                         tenant: tenant.to_string(),
-                        action_type: Some(step_config.action_type.clone()),
+                        action_type: Some(chain_step_action_type(step_config)),
                         action_id: Some(chain_state.origin_action.id.to_string()),
                     });
                     self.emit_stream_event(StreamEvent {
@@ -4197,7 +4471,7 @@ impl Gateway {
                             },
                             namespace: namespace.to_string(),
                             tenant: tenant.to_string(),
-                            action_type: Some(step_config.action_type.clone()),
+                            action_type: Some(chain_step_action_type(step_config)),
                             action_id: Some(chain_state.origin_action.id.to_string()),
                         });
                         self.emit_stream_event(StreamEvent {
@@ -4268,7 +4542,7 @@ impl Gateway {
                                 },
                                 namespace: namespace.to_string(),
                                 tenant: tenant.to_string(),
-                                action_type: Some(step_config.action_type.clone()),
+                                action_type: Some(chain_step_action_type(step_config)),
                                 action_id: Some(chain_state.origin_action.id.to_string()),
                             });
                         } else {
@@ -4308,7 +4582,7 @@ impl Gateway {
                                 },
                                 namespace: namespace.to_string(),
                                 tenant: tenant.to_string(),
-                                action_type: Some(step_config.action_type.clone()),
+                                action_type: Some(chain_step_action_type(step_config)),
                                 action_id: Some(chain_state.origin_action.id.to_string()),
                             });
                             self.emit_stream_event(StreamEvent {
@@ -4376,7 +4650,7 @@ impl Gateway {
                                 },
                                 namespace: namespace.to_string(),
                                 tenant: tenant.to_string(),
-                                action_type: Some(step_config.action_type.clone()),
+                                action_type: Some(chain_step_action_type(step_config)),
                                 action_id: Some(chain_state.origin_action.id.to_string()),
                             });
                         }
@@ -4441,7 +4715,7 @@ impl Gateway {
                     },
                     namespace: namespace.to_string(),
                     tenant: tenant.to_string(),
-                    action_type: Some(step_config.action_type.clone()),
+                    action_type: Some(chain_step_action_type(step_config)),
                     action_id: Some(chain_state.origin_action.id.to_string()),
                 });
                 self.emit_stream_event(StreamEvent {
@@ -4604,7 +4878,7 @@ impl Gateway {
                 },
                 namespace: namespace.to_string(),
                 tenant: tenant.to_string(),
-                action_type: Some(step_config.action_type.clone()),
+                action_type: Some(chain_step_action_type(step_config)),
                 action_id: Some(chain_state.origin_action.id.to_string()),
             });
         } else {
@@ -4639,7 +4913,7 @@ impl Gateway {
                 },
                 namespace: namespace.to_string(),
                 tenant: tenant.to_string(),
-                action_type: Some(step_config.action_type.clone()),
+                action_type: Some(chain_step_action_type(step_config)),
                 action_id: Some(chain_state.origin_action.id.to_string()),
             });
             self.emit_stream_event(StreamEvent {
@@ -4737,7 +5011,7 @@ impl Gateway {
             },
             namespace: namespace.to_string(),
             tenant: tenant.to_string(),
-            action_type: Some(step_config.action_type.clone()),
+            action_type: Some(chain_step_action_type(step_config)),
             action_id: Some(chain_state.origin_action.id.to_string()),
         });
         self.emit_stream_event(StreamEvent {
@@ -5141,7 +5415,7 @@ impl Gateway {
                 },
                 namespace: namespace.to_string(),
                 tenant: tenant.to_string(),
-                action_type: Some(step_config.action_type.clone()),
+                action_type: Some(chain_step_action_type(step_config)),
                 action_id: Some(chain_state.origin_action.id.to_string()),
             });
             self.emit_stream_event(StreamEvent {
@@ -5332,7 +5606,7 @@ impl Gateway {
                     },
                     namespace: namespace.to_string(),
                     tenant: tenant.to_string(),
-                    action_type: Some(step_config.action_type.clone()),
+                    action_type: Some(chain_step_action_type(step_config)),
                     action_id: Some(chain_state.origin_action.id.to_string()),
                 });
             } else {
@@ -5369,7 +5643,7 @@ impl Gateway {
                     },
                     namespace: namespace.to_string(),
                     tenant: tenant.to_string(),
-                    action_type: Some(step_config.action_type.clone()),
+                    action_type: Some(chain_step_action_type(step_config)),
                     action_id: Some(chain_state.origin_action.id.to_string()),
                 });
                 self.emit_stream_event(StreamEvent {
@@ -5428,7 +5702,7 @@ impl Gateway {
                         },
                         namespace: namespace.to_string(),
                         tenant: tenant.to_string(),
-                        action_type: Some(step_config.action_type.clone()),
+                        action_type: Some(chain_step_action_type(step_config)),
                         action_id: Some(chain_state.origin_action.id.to_string()),
                     });
                     self.emit_stream_event(StreamEvent {
@@ -5493,7 +5767,7 @@ impl Gateway {
                             },
                             namespace: namespace.to_string(),
                             tenant: tenant.to_string(),
-                            action_type: Some(step_config.action_type.clone()),
+                            action_type: Some(chain_step_action_type(step_config)),
                             action_id: Some(chain_state.origin_action.id.to_string()),
                         });
                     } else {
@@ -5529,7 +5803,7 @@ impl Gateway {
                             },
                             namespace: namespace.to_string(),
                             tenant: tenant.to_string(),
-                            action_type: Some(step_config.action_type.clone()),
+                            action_type: Some(chain_step_action_type(step_config)),
                             action_id: Some(chain_state.origin_action.id.to_string()),
                         });
                         self.emit_stream_event(StreamEvent {
@@ -5606,7 +5880,7 @@ impl Gateway {
                         },
                         namespace: namespace.to_string(),
                         tenant: tenant.to_string(),
-                        action_type: Some(step_config.action_type.clone()),
+                        action_type: Some(chain_step_action_type(step_config)),
                         action_id: Some(chain_state.origin_action.id.to_string()),
                     });
                     self.emit_stream_event(StreamEvent {
@@ -6069,15 +6343,15 @@ impl Gateway {
                 nodes.push(acteon_core::DagNode {
                     name: step.name.clone(),
                     node_type,
-                    provider: if step.provider.is_empty() {
-                        None
-                    } else {
-                        Some(step.provider.clone())
+                    provider: match step.kind() {
+                        StepKind::Dispatch(dispatch) => Some(dispatch.provider.clone()),
+                        _ if step.provider.is_empty() => None,
+                        _ => Some(step.provider.clone()),
                     },
-                    action_type: if step.action_type.is_empty() {
-                        None
-                    } else {
-                        Some(step.action_type.clone())
+                    action_type: match step.kind() {
+                        StepKind::Dispatch(dispatch) => Some(dispatch.action_type.clone()),
+                        _ if step.action_type.is_empty() => None,
+                        _ => Some(step.action_type.clone()),
                     },
                     sub_chain_name,
                     status: step_status,
@@ -6372,38 +6646,45 @@ impl Gateway {
             // --- Gap 2, 4, 5: Parallel parent step identification ---
             // Use "parallel" as provider and step name as action_type, include
             // the join policy, and embed per-sub-step result summary.
-            let (provider, action_type) = if let StepKind::Parallel(group) = step_config.kind() {
-                outcome_details["is_parallel_step"] = serde_json::Value::Bool(true);
-                let policy_str = match group.join {
-                    acteon_core::chain::ParallelJoinPolicy::All => "all",
-                    acteon_core::chain::ParallelJoinPolicy::Any => "any",
-                };
-                outcome_details["parallel_join_policy"] =
-                    serde_json::Value::String(policy_str.to_owned());
+            let (provider, action_type) = match step_config.kind() {
+                StepKind::Parallel(group) => {
+                    outcome_details["is_parallel_step"] = serde_json::Value::Bool(true);
+                    let policy_str = match group.join {
+                        acteon_core::chain::ParallelJoinPolicy::All => "all",
+                        acteon_core::chain::ParallelJoinPolicy::Any => "any",
+                    };
+                    outcome_details["parallel_join_policy"] =
+                        serde_json::Value::String(policy_str.to_owned());
 
-                // Embed sub-step result summary for self-contained auditing.
-                let sub_results: serde_json::Value = chain_state
-                    .parallel_sub_results
-                    .iter()
-                    .map(|(name, sr)| {
-                        let mut v = serde_json::json!({
-                            "step_name": name,
-                            "success": sr.success,
-                            "completed_at": sr.completed_at.to_rfc3339(),
-                        });
-                        if let Some(ref err) = sr.error {
-                            v["error"] = serde_json::Value::String(err.clone());
-                        }
-                        v
-                    })
-                    .collect();
-                outcome_details["parallel_sub_step_results"] = sub_results;
-                ("parallel".to_owned(), step_config.name.clone())
-            } else {
-                (
+                    // Embed sub-step result summary for self-contained auditing.
+                    let sub_results: serde_json::Value = chain_state
+                        .parallel_sub_results
+                        .iter()
+                        .map(|(name, sr)| {
+                            let mut v = serde_json::json!({
+                                "step_name": name,
+                                "success": sr.success,
+                                "completed_at": sr.completed_at.to_rfc3339(),
+                            });
+                            if let Some(ref err) = sr.error {
+                                v["error"] = serde_json::Value::String(err.clone());
+                            }
+                            v
+                        })
+                        .collect();
+                    outcome_details["parallel_sub_step_results"] = sub_results;
+                    ("parallel".to_owned(), step_config.name.clone())
+                }
+                StepKind::Dispatch(dispatch) => {
+                    outcome_details["is_dispatch_step"] = serde_json::Value::Bool(true);
+                    outcome_details["dispatch_provider"] =
+                        serde_json::Value::String(dispatch.provider.clone());
+                    ("dispatch".to_owned(), dispatch.action_type.clone())
+                }
+                _ => (
                     step_config.provider.clone(),
                     step_config.action_type.clone(),
-                )
+                ),
             };
 
             #[allow(clippy::cast_possible_truncation)]

@@ -344,12 +344,14 @@ Use rule priorities to separate the policy bands:
 
 Acteon's rules stop at the first matching rule, so order specific safety and
 escalation rules before broad allow or suppress rules. One dispatch cannot both
-match a deduplication rule and start a chain. For the vertical slice, the runner
-must persist an idempotency record keyed by `(incident_key, policy_version)`
-before it dispatches the verdict. A later implementation can split admission
-and routing into two Actions through a chain-to-dispatch handoff. The
-`dedup_key` remains useful metadata, but it does not by itself deduplicate an
-Action handled by a `chain` rule.
+match a deduplication rule and start a chain. The runnable vertical slice below
+keeps an idempotency ledger in the detector runner so its crash-recovery behavior
+is visible in isolation. For a deployed topology, split admission and routing
+into two Actions with a [full-pipeline dispatch step](../features/chains.md#full-pipeline-dispatch-steps):
+the admission rule starts a chain, and its dispatch step emits the admitted
+verdict with `(incident_key, policy_version)` as the deduplication key. The new
+Action re-enters rules, allowing Acteon's deduplication policy to run before
+incident routing.
 
 ### 8. Use an action chain for the known response
 
