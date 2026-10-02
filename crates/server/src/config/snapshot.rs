@@ -721,6 +721,12 @@ pub struct ProviderSnapshot {
     pub email_backend: Option<String>,
     /// AWS region (if configured).
     pub aws_region: Option<String>,
+    /// Governed model inference endpoint (if configured).
+    pub model_endpoint: Option<String>,
+    /// Governed model lock path (if configured).
+    pub model_lock_file: Option<String>,
+    /// Governed model response contract (if configured).
+    pub model_response_contract: Option<String>,
 }
 
 impl From<&ProviderConfig> for ProviderSnapshot {
@@ -735,6 +741,9 @@ impl From<&ProviderConfig> for ProviderSnapshot {
             has_webhook_url: cfg.webhook_url.is_some(),
             email_backend: cfg.email_backend.clone(),
             aws_region: cfg.aws_region.clone(),
+            model_endpoint: cfg.model.endpoint.clone(),
+            model_lock_file: cfg.model.lock_file.clone(),
+            model_response_contract: cfg.model.response_contract.clone(),
         }
     }
 }

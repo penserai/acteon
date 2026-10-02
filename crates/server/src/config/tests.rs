@@ -159,6 +159,55 @@ fn providers_parsed_from_toml() {
 }
 
 #[test]
+fn governed_model_provider_parsed_from_toml() {
+    let config: ActeonConfig = toml::from_str(
+        r#"
+        [[providers]]
+        name = "metrics-detector"
+        type = "governed-model"
+        model.endpoint = "http://laya:8000/v1/systemone"
+        model.health_endpoint = "http://laya:8000/health"
+        model.lock_file = "/etc/acteon/model.lock.json"
+        model.contracts_root = "/etc/acteon"
+        model.response_contract = "laya-response"
+        model.request_contract = "metrics"
+        model.request_contract_field = "questions"
+        model.model_field = "model"
+        model.bearer_token = "ENC[secret]"
+        model.timeout_seconds = 10
+        model.max_response_bytes = 65536
+        model.verify_identity_each_call = false
+        "#,
+    )
+    .unwrap();
+
+    let provider = &config.providers[0];
+    assert_eq!(provider.provider_type, "governed-model");
+    assert_eq!(
+        provider.model.endpoint.as_deref(),
+        Some("http://laya:8000/v1/systemone")
+    );
+    assert_eq!(
+        provider.model.response_contract.as_deref(),
+        Some("laya-response")
+    );
+    assert_eq!(provider.model.request_contract.as_deref(), Some("metrics"));
+    assert_eq!(provider.model.max_response_bytes, Some(65_536));
+    assert_eq!(provider.model.verify_identity_each_call, Some(false));
+
+    let snapshot = ConfigSnapshot::from(&config);
+    assert_eq!(
+        snapshot.providers[0].model_response_contract.as_deref(),
+        Some("laya-response")
+    );
+    assert!(
+        !serde_json::to_string(&snapshot)
+            .unwrap()
+            .contains("ENC[secret]")
+    );
+}
+
+#[test]
 fn config_snapshot_masks_secrets() {
     let toml = r#"
         [server]

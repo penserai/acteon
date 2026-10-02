@@ -126,6 +126,11 @@ AI-powered content evaluation and action gating.
 </div>
 
 <div class="card" markdown>
+### [Governed Model Provider](governed-model-provider.md)
+Invoke content-addressed typed JSON models through ordinary rules and chains.
+</div>
+
+<div class="card" markdown>
 ### [Semantic Routing](semantic-routing.md)
 Route actions by meaning using vector embeddings and cosine similarity.
 </div>
