@@ -1170,7 +1170,7 @@ async fn kafka_stream_replay(fixtures: &[Fixture]) -> Result<StreamReplay, AnyEr
             }
         }
 
-        windows.extend(correlator.finish());
+        windows.extend(correlator.finish()?);
         windows.sort_by_key(|window| window.starts_at);
         let stats = correlator.stats().clone();
         if stats.accepted_records != fixtures.len() * SignalSource::ALL.len()

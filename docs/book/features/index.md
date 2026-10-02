@@ -131,6 +131,11 @@ Invoke content-addressed typed JSON models through ordinary rules and chains.
 </div>
 
 <div class="card" markdown>
+### [Event-Time Windows](event-time-windows.md)
+Correlate replay-safe multi-source streams with watermarks and durable snapshots.
+</div>
+
+<div class="card" markdown>
 ### [Semantic Routing](semantic-routing.md)
 Route actions by meaning using vector embeddings and cosine similarity.
 </div>
