@@ -4053,3 +4053,354 @@ async fn durable_dispatch_requires_grants_explicit_key_and_execution_mode() {
         StatusCode::OK
     );
 }
+
+// The checked inventory is exercised through the production router, not just
+// the permission evaluator. Invalid JSON proves rejection precedes extraction.
+#[tokio::test]
+async fn executor_and_viewer_cannot_reach_any_control_plane_mutation() {
+    for role in ["executor", "viewer"] {
+        let app = build_app(build_test_state_with_auth_role(
+            role,
+            vec![wildcard_admin_grant()],
+        ));
+        for route in acteon_server::auth::route_permissions::ROUTES
+            .iter()
+            .filter(|r| {
+                r.permission == Some(acteon_server::auth::role::Permission::OperationsManage)
+            })
+        {
+            let mut path = route.path.clone();
+            while let Some(start) = path.find('{') {
+                let end = path[start..].find('}').unwrap() + start;
+                path.replace_range(start..=end, "test");
+            }
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(route.method.as_str())
+                        .uri(&path)
+                        .header("Authorization", "Bearer test-raw-key")
+                        .header("Content-Type", "application/json")
+                        .body(Body::from("not-json"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::FORBIDDEN,
+                "{role}: {}",
+                route.name
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn executor_dispatch_keeps_all_four_grant_dimensions() {
+    let app = build_app(build_test_state_with_auth_role(
+        "executor",
+        vec![default_test_grant()],
+    ));
+    assert_eq!(
+        dispatch_with_key(app.clone(), &test_action()).await,
+        StatusCode::OK
+    );
+    for action in [
+        action_for("other", "tenant-1", "email", "send_email"),
+        action_for("notifications", "other", "email", "send_email"),
+        action_for("notifications", "tenant-1", "other", "send_email"),
+        action_for("notifications", "tenant-1", "email", "other"),
+    ] {
+        assert_eq!(
+            dispatch_with_key(app.clone(), &action).await,
+            StatusCode::FORBIDDEN
+        );
+    }
+}
+
+#[tokio::test]
+async fn executor_rpc_cannot_bypass_rest_push_configuration_permissions() {
+    let state = build_test_state_with_auth_role("executor", vec![a2a_grant(None)]);
+    let app = build_app(state.clone());
+    for method in [
+        "tasks/pushNotificationConfig/set",
+        "tasks/pushNotificationConfig/delete",
+    ] {
+        // A permitted submission preceding a forbidden notification must not run.
+        let body = serde_json::json!([
+            {"jsonrpc":"2.0", "id":1, "method":"message/send", "params":{"message":{
+                "messageId":"test", "role":"user", "parts":[{"kind":"text", "text":"must not be submitted"}]
+            }}},
+            {"jsonrpc":"2.0", "method":method, "params":{}},
+        ]);
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/a2a/agents/acme")
+                    .header("Authorization", "Bearer test-raw-key")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(String::from_utf8_lossy(&bytes).contains("OperationsManage"));
+        assert!(
+            state
+                .gateway
+                .read()
+                .await
+                .state_store()
+                .scan_keys_by_kind(acteon_state::KeyKind::A2aTask)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+#[tokio::test]
+async fn existing_jwt_uses_reloaded_role_and_grants_and_rejects_removed_user() {
+    use acteon_server::auth::config::UserConfig;
+    use argon2::password_hash::{PasswordHasher, SaltString};
+    let mut config = AuthFileConfig {
+        settings: AuthSettings {
+            jwt_secret: SecretString::new("test-jwt-secret-32-bytes-long!!!!".to_string().into()),
+            jwt_expiry_seconds: 3600,
+        },
+        users: vec![UserConfig {
+            username: "human".into(),
+            password_hash: SecretString::new(
+                argon2::Argon2::default()
+                    .hash_password(
+                        b"password",
+                        &SaltString::encode_b64(b"test-salt-for-role").unwrap(),
+                    )
+                    .unwrap()
+                    .to_string()
+                    .into(),
+            ),
+            role: "operator".into(),
+            grants: vec![wildcard_admin_grant()],
+        }],
+        api_keys: vec![],
+    };
+    let state = build_test_state(vec![]);
+    let auth = AuthProvider::new(&config, Arc::new(MemoryStateStore::new())).unwrap();
+    let (token, _) = auth.login("human", "password").await.unwrap();
+    assert_eq!(
+        auth.validate_jwt(&token).await.unwrap().role,
+        acteon_server::auth::role::Role::Operator
+    );
+    config.users[0].role = "executor".into();
+    config.users[0].grants = vec![default_test_grant()];
+    auth.reload(&config).await.unwrap();
+    let identity = auth.validate_jwt(&token).await.unwrap();
+    assert_eq!(identity.role, acteon_server::auth::role::Role::Executor);
+    assert!(!identity.is_authorized("other", "notifications", "email", "send_email"));
+    let mut state = state;
+    state.auth = Some(Arc::new(auth));
+    let app = build_app(state.clone());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/quotas")
+                .header("Authorization", format!("Bearer {token}"))
+                .header("Content-Type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    config.users.clear();
+    state.auth.as_ref().unwrap().reload(&config).await.unwrap();
+    assert!(
+        state
+            .auth
+            .as_ref()
+            .unwrap()
+            .validate_jwt(&token)
+            .await
+            .is_err()
+    );
+}
+
+#[cfg(feature = "bus")]
+#[tokio::test]
+async fn executor_can_heartbeat_self_and_message_peer_without_registry_authority() {
+    let mut grant = wildcard_admin_grant();
+    grant.agent_id = Some("runtime".into());
+    let mut state = build_test_state_with_auth_role("admin", vec![grant.clone()]);
+    let backend = acteon_bus::MemoryBackend::new();
+    state.bus_backend = Some(backend.clone());
+    let app = build_app(state.clone());
+    async fn call(
+        app: axum::Router,
+        method: &str,
+        path: &str,
+        body: serde_json::Value,
+    ) -> StatusCode {
+        app.oneshot(
+            Request::builder()
+                .method(method)
+                .uri(path)
+                .header("Authorization", "Bearer test-raw-key")
+                .header("Content-Type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status()
+    }
+    for agent in ["runtime", "peer"] {
+        let status = call(
+            app.clone(),
+            "POST",
+            "/v1/bus/agents",
+            serde_json::json!({
+                "agent_id":agent,"namespace":"operations","tenant":"acme",
+                "capabilities":["diagnose"]
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+    }
+    state
+        .auth
+        .as_ref()
+        .unwrap()
+        .reload(&AuthFileConfig {
+            settings: AuthSettings {
+                jwt_secret: SecretString::new("unchanged-secret".to_string().into()),
+                jwt_expiry_seconds: 3600,
+            },
+            users: vec![],
+            api_keys: vec![ApiKeyConfig {
+                name: "test-key".into(),
+                key_hash: SecretString::new(hash_api_key("test-raw-key").into()),
+                role: "executor".into(),
+                grants: vec![grant],
+            }],
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        call(
+            app.clone(),
+            "POST",
+            "/v1/bus/agents/operations/acme/runtime/heartbeat",
+            serde_json::json!({})
+        )
+        .await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(
+            app.clone(),
+            "POST",
+            "/v1/bus/agents/operations/acme/peer/heartbeat",
+            serde_json::json!({})
+        )
+        .await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call(
+            app.clone(),
+            "POST",
+            "/v1/bus/agents/operations/acme/peer/send",
+            serde_json::json!({"payload":{"request":"diagnose"}})
+        )
+        .await,
+        StatusCode::OK
+    );
+    assert_eq!(backend.log_len("operations.acme.agents-inbox"), 1);
+    assert_eq!(
+        call(
+            app.clone(),
+            "PUT",
+            "/v1/bus/agents/operations/acme/peer/admin-state",
+            serde_json::json!({"admin_state":"active"})
+        )
+        .await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call(
+            app,
+            "PUT",
+            "/v1/bus/agents/operations/acme/peer",
+            serde_json::json!({"capabilities":["unrestricted"]})
+        )
+        .await,
+        StatusCode::FORBIDDEN
+    );
+    let raw = state
+        .gateway
+        .read()
+        .await
+        .state_store()
+        .get(&acteon_state::StateKey::new(
+            "operations",
+            "acme",
+            acteon_state::KeyKind::BusAgent,
+            "peer",
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    let peer: acteon_core::Agent = serde_json::from_str(&raw).unwrap();
+    assert_eq!(peer.capabilities, vec!["diagnose"]);
+    assert!(peer.last_heartbeat_at.is_none());
+}
+
+#[tokio::test]
+async fn executor_a2a_submission_creates_a_real_durable_task() {
+    let state = build_test_state_with_auth_role("executor", vec![a2a_grant(None)]);
+    let app = build_app(state.clone());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/a2a/agents/acme/v1/message:send")
+                .header("Authorization", "Bearer test-raw-key")
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"message":{
+                        "messageId":"executor-message", "role":"user", "parts":[{"kind":"text", "text":"diagnose"}]
+                    }})
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let task: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(task["status"]["state"], "submitted");
+    let engine = acteon_gateway::TaskEngine::new(state.gateway.read().await.state_store().clone());
+    assert!(
+        engine
+            .get_task(
+                &acteon_gateway::TaskScope::new("agents", "acme"),
+                task["id"].as_str().unwrap()
+            )
+            .await
+            .unwrap()
+            .is_some()
+    );
+}

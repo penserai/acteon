@@ -1,0 +1,1160 @@
+[
+  {
+    "name": "a2a_a2a_rest_message_send",
+    "method": "POST",
+    "path": "/a2a/{namespace}/{tenant}/v1/message:send",
+    "permission": "Dispatch"
+  },
+  {
+    "name": "a2a_a2a_rest_task_cancel",
+    "method": "POST",
+    "path": "/a2a/{namespace}/{tenant}/v1/tasks/{id}",
+    "permission": "Dispatch"
+  },
+  {
+    "name": "a2a_a2a_rest_task_get",
+    "method": "GET",
+    "path": "/a2a/{namespace}/{tenant}/v1/tasks/{id}",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "a2a_a2a_rpc",
+    "method": "POST",
+    "path": "/a2a/{namespace}/{tenant}",
+    "permission": "Dispatch"
+  },
+  {
+    "name": "a2a_a2a_task_events",
+    "method": "GET",
+    "path": "/a2a/{namespace}/{tenant}/v1/tasks/{id}/events",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "a2a_discovery_delete_agent_card",
+    "method": "DELETE",
+    "path": "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/card",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "a2a_discovery_discover_agent",
+    "method": "GET",
+    "path": "/a2a/{namespace}/{tenant}/.well-known/agent.json",
+    "permission": null
+  },
+  {
+    "name": "a2a_discovery_get_agent_card",
+    "method": "GET",
+    "path": "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/card",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "a2a_discovery_put_agent_card",
+    "method": "PUT",
+    "path": "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/card",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "a2a_push_rest_delete_push_config",
+    "method": "DELETE",
+    "path": "/a2a/{namespace}/{tenant}/v1/tasks/{id}/pushNotificationConfigs/{cfgId}",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "a2a_push_rest_delete_push_dlq",
+    "method": "DELETE",
+    "path": "/v1/a2a/{namespace}/{tenant}/push-dlq/{entryId}",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "a2a_push_rest_get_push_config",
+    "method": "GET",
+    "path": "/a2a/{namespace}/{tenant}/v1/tasks/{id}/pushNotificationConfigs/{cfgId}",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "a2a_push_rest_get_push_dlq",
+    "method": "GET",
+    "path": "/v1/a2a/{namespace}/{tenant}/push-dlq/{entryId}",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "a2a_push_rest_list_push_configs",
+    "method": "GET",
+    "path": "/a2a/{namespace}/{tenant}/v1/tasks/{id}/pushNotificationConfigs",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "a2a_push_rest_list_push_dlq",
+    "method": "GET",
+    "path": "/v1/a2a/{namespace}/{tenant}/push-dlq",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "a2a_push_rest_set_push_config",
+    "method": "POST",
+    "path": "/a2a/{namespace}/{tenant}/v1/tasks/{id}/pushNotificationConfigs",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "analytics_query_analytics",
+    "method": "GET",
+    "path": "/v1/analytics",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "approvals_approve",
+    "method": "POST",
+    "path": "/v1/approvals/{namespace}/{tenant}/{id}/approve",
+    "permission": null
+  },
+  {
+    "name": "approvals_get_approval",
+    "method": "GET",
+    "path": "/v1/approvals/{namespace}/{tenant}/{id}",
+    "permission": null
+  },
+  {
+    "name": "approvals_list_approvals",
+    "method": "GET",
+    "path": "/v1/approvals",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "approvals_reject",
+    "method": "POST",
+    "path": "/v1/approvals/{namespace}/{tenant}/{id}/reject",
+    "permission": null
+  },
+  {
+    "name": "audit_get_audit_by_action",
+    "method": "GET",
+    "path": "/v1/audit/{action_id}",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "audit_query_audit",
+    "method": "GET",
+    "path": "/v1/audit",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "auth_login",
+    "method": "POST",
+    "path": "/v1/auth/login",
+    "permission": null
+  },
+  {
+    "name": "auth_logout",
+    "method": "POST",
+    "path": "/v1/auth/logout",
+    "permission": "Session"
+  },
+  {
+    "name": "bus_ack_subscription",
+    "method": "POST",
+    "path": "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/ack",
+    "permission": "StreamSubscribe"
+  },
+  {
+    "name": "bus_append_conversation_message",
+    "method": "POST",
+    "path": "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/messages",
+    "permission": "Dispatch"
+  },
+  {
+    "name": "bus_approve_bus_approval",
+    "method": "POST",
+    "path": "/v1/bus/approvals/{namespace}/{tenant}/{approval_id}/approve",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "bus_bind_topic_schema",
+    "method": "PUT",
+    "path": "/v1/bus/topics/{namespace}/{tenant}/{name}/schema",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "bus_consume_stream",
+    "method": "GET",
+    "path": "/v1/bus/streams/{namespace}/{tenant}/{conversation_id}/{stream_id}",
+    "permission": "StreamSubscribe"
+  },
+  {
+    "name": "bus_create_schema",
+    "method": "POST",
+    "path": "/v1/bus/schemas",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "bus_create_subscription",
+    "method": "POST",
+    "path": "/v1/bus/subscriptions",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "bus_create_topic",
+    "method": "POST",
+    "path": "/v1/bus/topics",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "bus_deadletter_subscription",
+    "method": "POST",
+    "path": "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/deadletter",
+    "permission": "StreamSubscribe"
+  },
+  {
+    "name": "bus_delete_agent",
+    "method": "DELETE",
+    "path": "/v1/bus/agents/{namespace}/{tenant}/{agent_id}",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "bus_delete_conversation",
+    "method": "DELETE",
+    "path": "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "bus_delete_schema_version",
+    "method": "DELETE",
+    "path": "/v1/bus/schemas/{namespace}/{tenant}/{subject}/{version}",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "bus_delete_subscription",
+    "method": "DELETE",
+    "path": "/v1/bus/subscriptions/{namespace}/{tenant}/{id}",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "bus_delete_topic",
+    "method": "DELETE",
+    "path": "/v1/bus/topics/{kafka_name}",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "bus_get_agent",
+    "method": "GET",
+    "path": "/v1/bus/agents/{namespace}/{tenant}/{agent_id}",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "bus_get_bus_approval",
+    "method": "GET",
+    "path": "/v1/bus/approvals/{namespace}/{tenant}/{approval_id}",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "bus_get_conversation",
+    "method": "GET",
+    "path": "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "bus_get_schema_version",
+    "method": "GET",
+    "path": "/v1/bus/schemas/{namespace}/{tenant}/{subject}/{version}",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "bus_get_subject_versions",
+    "method": "GET",
+    "path": "/v1/bus/schemas/{namespace}/{tenant}/{subject}",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "bus_heartbeat_agent",
+    "method": "POST",
+    "path": "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/heartbeat",
+    "permission": "Dispatch"
+  },
+  {
+    "name": "bus_list_agents",
+    "method": "GET",
+    "path": "/v1/bus/agents",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "bus_list_bus_approvals",
+    "method": "GET",
+    "path": "/v1/bus/approvals/{namespace}/{tenant}",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "bus_list_conversations",
+    "method": "GET",
+    "path": "/v1/bus/conversations",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "bus_list_schemas",
+    "method": "GET",
+    "path": "/v1/bus/schemas",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "bus_list_subscriptions",
+    "method": "GET",
+    "path": "/v1/bus/subscriptions",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "bus_list_topics",
+    "method": "GET",
+    "path": "/v1/bus/topics",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "bus_lookup_tool_result",
+    "method": "GET",
+    "path": "/v1/bus/tool-calls/{namespace}/{tenant}/{call_id}/result",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "bus_post_stream_chunk",
+    "method": "POST",
+    "path": "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/stream-chunks",
+    "permission": "Dispatch"
+  },
+  {
+    "name": "bus_post_stream_end",
+    "method": "POST",
+    "path": "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/stream-end",
+    "permission": "Dispatch"
+  },
+  {
+    "name": "bus_post_tool_call",
+    "method": "POST",
+    "path": "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/tool-calls",
+    "permission": "Dispatch"
+  },
+  {
+    "name": "bus_post_tool_result",
+    "method": "POST",
+    "path": "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/tool-results",
+    "permission": "Dispatch"
+  },
+  {
+    "name": "bus_publish",
+    "method": "POST",
+    "path": "/v1/bus/publish",
+    "permission": "Dispatch"
+  },
+  {
+    "name": "bus_register_agent",
+    "method": "POST",
+    "path": "/v1/bus/agents",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "bus_register_conversation",
+    "method": "POST",
+    "path": "/v1/bus/conversations",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "bus_reject_bus_approval",
+    "method": "POST",
+    "path": "/v1/bus/approvals/{namespace}/{tenant}/{approval_id}/reject",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "bus_replay_conversation_messages",
+    "method": "GET",
+    "path": "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/messages",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "bus_send_to_agent",
+    "method": "POST",
+    "path": "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/send",
+    "permission": "Dispatch"
+  },
+  {
+    "name": "bus_sessions_ack",
+    "method": "POST",
+    "path": "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/sessions/{session}/ack",
+    "permission": "StreamSubscribe"
+  },
+  {
+    "name": "bus_sessions_close",
+    "method": "DELETE",
+    "path": "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/sessions/{session}",
+    "permission": "StreamSubscribe"
+  },
+  {
+    "name": "bus_sessions_get",
+    "method": "GET",
+    "path": "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/sessions/{session}",
+    "permission": "StreamSubscribe"
+  },
+  {
+    "name": "bus_sessions_open",
+    "method": "POST",
+    "path": "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/sessions",
+    "permission": "StreamSubscribe"
+  },
+  {
+    "name": "bus_sessions_receive",
+    "method": "POST",
+    "path": "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/sessions/{session}/receive",
+    "permission": "StreamSubscribe"
+  },
+  {
+    "name": "bus_sessions_validate",
+    "method": "POST",
+    "path": "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/sessions/{session}/validate",
+    "permission": "StreamSubscribe"
+  },
+  {
+    "name": "bus_set_agent_admin_state",
+    "method": "PUT",
+    "path": "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/admin-state",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "bus_stages_control",
+    "method": "POST",
+    "path": "/v1/bus/stages/{namespace}/{tenant}/{id}/control",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "bus_stages_control_audit",
+    "method": "GET",
+    "path": "/v1/bus/stages/{namespace}/{tenant}/{id}/controls/{request}",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "bus_stages_discard",
+    "method": "DELETE",
+    "path": "/v1/bus/stages/{namespace}/{tenant}/{id}/quarantine/{entry}",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "bus_stages_get",
+    "method": "GET",
+    "path": "/v1/bus/stages/{namespace}/{tenant}/{id}/quarantine/{entry}",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "bus_stages_list",
+    "method": "GET",
+    "path": "/v1/bus/stages/{namespace}/{tenant}/{id}/quarantine",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "bus_stages_replay",
+    "method": "POST",
+    "path": "/v1/bus/stages/{namespace}/{tenant}/{id}/quarantine/{entry}/replay",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "bus_stages_replay_audit",
+    "method": "GET",
+    "path": "/v1/bus/stages/{namespace}/{tenant}/{id}/replays/{request}",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "bus_stages_status",
+    "method": "GET",
+    "path": "/v1/bus/stages/{namespace}/{tenant}/{id}",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "bus_subscribe",
+    "method": "GET",
+    "path": "/v1/bus/subscribe/{subscription_id}",
+    "permission": "StreamSubscribe"
+  },
+  {
+    "name": "bus_subscription_lag",
+    "method": "GET",
+    "path": "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/lag",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "bus_transition_conversation",
+    "method": "POST",
+    "path": "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/transition",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "bus_unbind_topic_schema",
+    "method": "DELETE",
+    "path": "/v1/bus/topics/{namespace}/{tenant}/{name}/schema",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "bus_update_agent",
+    "method": "PUT",
+    "path": "/v1/bus/agents/{namespace}/{tenant}/{agent_id}",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "bus_update_conversation",
+    "method": "PUT",
+    "path": "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "chains_cancel_chain",
+    "method": "POST",
+    "path": "/v1/chains/{chain_id}/cancel",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "chains_delete_definition",
+    "method": "DELETE",
+    "path": "/v1/chains/definitions/{name}",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "chains_get_chain",
+    "method": "GET",
+    "path": "/v1/chains/{chain_id}",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "chains_get_chain_dag",
+    "method": "GET",
+    "path": "/v1/chains/{chain_id}/dag",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "chains_get_chain_definition_dag",
+    "method": "GET",
+    "path": "/v1/chains/definitions/{name}/dag",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "chains_get_chain_history",
+    "method": "GET",
+    "path": "/v1/chains/{chain_id}/history",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "chains_get_definition",
+    "method": "GET",
+    "path": "/v1/chains/definitions/{name}",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "chains_list_chains",
+    "method": "GET",
+    "path": "/v1/chains",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "chains_list_definitions",
+    "method": "GET",
+    "path": "/v1/chains/definitions",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "chains_put_definition",
+    "method": "PUT",
+    "path": "/v1/chains/definitions/{name}",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "circuit_breakers_list_circuit_breakers",
+    "method": "GET",
+    "path": "/admin/circuit-breakers",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "circuit_breakers_reset_circuit_breaker",
+    "method": "POST",
+    "path": "/admin/circuit-breakers/{provider}/reset",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "circuit_breakers_trip_circuit_breaker",
+    "method": "POST",
+    "path": "/admin/circuit-breakers/{provider}/trip",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "compliance_get_compliance_status",
+    "method": "GET",
+    "path": "/v1/compliance/status",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "compliance_verify_audit_chain",
+    "method": "POST",
+    "path": "/v1/audit/verify",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "config_get_config",
+    "method": "GET",
+    "path": "/admin/config",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "dispatch_dispatch",
+    "method": "POST",
+    "path": "/v1/dispatch",
+    "permission": "Dispatch"
+  },
+  {
+    "name": "dispatch_dispatch_batch",
+    "method": "POST",
+    "path": "/v1/dispatch/batch",
+    "permission": "Dispatch"
+  },
+  {
+    "name": "dlq_dlq_drain",
+    "method": "POST",
+    "path": "/v1/dlq/drain",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "dlq_dlq_stats",
+    "method": "GET",
+    "path": "/v1/dlq/stats",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "embeddings_similarity",
+    "method": "POST",
+    "path": "/v1/embeddings/similarity",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "events_get_event",
+    "method": "GET",
+    "path": "/v1/events/{fingerprint}",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "events_list_events",
+    "method": "GET",
+    "path": "/v1/events",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "events_transition_event",
+    "method": "PUT",
+    "path": "/v1/events/{fingerprint}/transition",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "executions_get_execution",
+    "method": "GET",
+    "path": "/v1/executions/{execution_id}",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "executions_get_execution_history",
+    "method": "GET",
+    "path": "/v1/executions/{execution_id}/history",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "executions_list_executions",
+    "method": "GET",
+    "path": "/v1/executions",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "executions_reset_execution",
+    "method": "POST",
+    "path": "/v1/executions/{execution_id}/reset",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "executions_signal_execution",
+    "method": "POST",
+    "path": "/v1/executions/{execution_id}/signal/{signal_name}",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "executions_upsert_execution_attributes",
+    "method": "PUT",
+    "path": "/v1/executions/{execution_id}/attributes",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "groups_flush_group",
+    "method": "DELETE",
+    "path": "/v1/groups/{group_key}",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "groups_get_group",
+    "method": "GET",
+    "path": "/v1/groups/{group_key}",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "groups_list_groups",
+    "method": "GET",
+    "path": "/v1/groups",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "health_health",
+    "method": "GET",
+    "path": "/health",
+    "permission": null
+  },
+  {
+    "name": "health_metrics",
+    "method": "GET",
+    "path": "/metrics",
+    "permission": null
+  },
+  {
+    "name": "plugins_list_plugins",
+    "method": "GET",
+    "path": "/v1/plugins",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "plugins_unregister_plugin",
+    "method": "DELETE",
+    "path": "/v1/plugins/{name}",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "prometheus_prometheus_alert_rules",
+    "method": "GET",
+    "path": "/v1/metrics/alerts/prometheus.yaml",
+    "permission": null
+  },
+  {
+    "name": "prometheus_prometheus_metrics",
+    "method": "GET",
+    "path": "/metrics/prometheus",
+    "permission": null
+  },
+  {
+    "name": "provider_health_list_provider_health",
+    "method": "GET",
+    "path": "/v1/providers/health",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "queues_complete_task",
+    "method": "POST",
+    "path": "/v1/queues/tasks/{task_id}/complete",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "queues_enqueue_task",
+    "method": "POST",
+    "path": "/v1/queues/{queue}/tasks",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "queues_fail_task",
+    "method": "POST",
+    "path": "/v1/queues/tasks/{task_id}/fail",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "queues_get_task",
+    "method": "GET",
+    "path": "/v1/queues/tasks/{task_id}",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "queues_heartbeat_task",
+    "method": "POST",
+    "path": "/v1/queues/tasks/{task_id}/heartbeat",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "queues_list_tasks",
+    "method": "GET",
+    "path": "/v1/queues/{queue}/tasks",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "queues_poll_queue",
+    "method": "POST",
+    "path": "/v1/queues/{queue}/poll",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "quotas_create_quota",
+    "method": "POST",
+    "path": "/v1/quotas",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "quotas_delete_quota",
+    "method": "DELETE",
+    "path": "/v1/quotas/{id}",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "quotas_get_quota",
+    "method": "GET",
+    "path": "/v1/quotas/{id}",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "quotas_get_quota_usage",
+    "method": "GET",
+    "path": "/v1/quotas/{id}/usage",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "quotas_list_quotas",
+    "method": "GET",
+    "path": "/v1/quotas",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "quotas_reload_static_quotas",
+    "method": "POST",
+    "path": "/v1/quotas/reload",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "quotas_update_quota",
+    "method": "PUT",
+    "path": "/v1/quotas/{id}",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "recurring_backfill_recurring",
+    "method": "POST",
+    "path": "/v1/recurring/{id}/backfill",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "recurring_create_recurring",
+    "method": "POST",
+    "path": "/v1/recurring",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "recurring_delete_recurring",
+    "method": "DELETE",
+    "path": "/v1/recurring/{id}",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "recurring_get_recurring",
+    "method": "GET",
+    "path": "/v1/recurring/{id}",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "recurring_list_recurring",
+    "method": "GET",
+    "path": "/v1/recurring",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "recurring_pause_recurring",
+    "method": "POST",
+    "path": "/v1/recurring/{id}/pause",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "recurring_resume_recurring",
+    "method": "POST",
+    "path": "/v1/recurring/{id}/resume",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "recurring_update_recurring",
+    "method": "PUT",
+    "path": "/v1/recurring/{id}",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "replay_replay_action",
+    "method": "POST",
+    "path": "/v1/audit/{action_id}/replay",
+    "permission": "Dispatch"
+  },
+  {
+    "name": "replay_replay_audit",
+    "method": "POST",
+    "path": "/v1/audit/replay",
+    "permission": "Dispatch"
+  },
+  {
+    "name": "retention_create_retention",
+    "method": "POST",
+    "path": "/v1/retention",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "retention_delete_retention",
+    "method": "DELETE",
+    "path": "/v1/retention/{id}",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "retention_get_retention",
+    "method": "GET",
+    "path": "/v1/retention/{id}",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "retention_list_retention",
+    "method": "GET",
+    "path": "/v1/retention",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "retention_update_retention",
+    "method": "PUT",
+    "path": "/v1/retention/{id}",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "rules_evaluate_rules",
+    "method": "POST",
+    "path": "/v1/rules/evaluate",
+    "permission": "RulesTest"
+  },
+  {
+    "name": "rules_list_rules",
+    "method": "GET",
+    "path": "/v1/rules",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "rules_reload_rules",
+    "method": "POST",
+    "path": "/v1/rules/reload",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "rules_rule_coverage",
+    "method": "GET",
+    "path": "/v1/rules/coverage",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "rules_set_rule_enabled",
+    "method": "PUT",
+    "path": "/v1/rules/{name}/enabled",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "signing_keys_discover_signing_keys",
+    "method": "GET",
+    "path": "/.well-known/acteon-signing-keys",
+    "permission": null
+  },
+  {
+    "name": "silences_create_silence",
+    "method": "POST",
+    "path": "/v1/silences",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "silences_delete_silence",
+    "method": "DELETE",
+    "path": "/v1/silences/{id}",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "silences_get_silence",
+    "method": "GET",
+    "path": "/v1/silences/{id}",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "silences_list_silences",
+    "method": "GET",
+    "path": "/v1/silences",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "silences_update_silence",
+    "method": "PUT",
+    "path": "/v1/silences/{id}",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "stream_stream",
+    "method": "GET",
+    "path": "/v1/stream",
+    "permission": "StreamSubscribe"
+  },
+  {
+    "name": "subscribe_subscribe",
+    "method": "GET",
+    "path": "/v1/subscribe/{entity_type}/{entity_id}",
+    "permission": "StreamSubscribe"
+  },
+  {
+    "name": "swarm_cancel_swarm_run",
+    "method": "POST",
+    "path": "/v1/swarm/runs/{run_id}/cancel",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "swarm_get_swarm_run",
+    "method": "GET",
+    "path": "/v1/swarm/runs/{run_id}",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "swarm_list_swarm_runs",
+    "method": "GET",
+    "path": "/v1/swarm/runs",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "templates_create_profile",
+    "method": "POST",
+    "path": "/v1/templates/profiles",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "templates_create_template",
+    "method": "POST",
+    "path": "/v1/templates",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "templates_delete_profile",
+    "method": "DELETE",
+    "path": "/v1/templates/profiles/{id}",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "templates_delete_template",
+    "method": "DELETE",
+    "path": "/v1/templates/{id}",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "templates_get_profile",
+    "method": "GET",
+    "path": "/v1/templates/profiles/{id}",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "templates_get_template",
+    "method": "GET",
+    "path": "/v1/templates/{id}",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "templates_list_profiles",
+    "method": "GET",
+    "path": "/v1/templates/profiles",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "templates_list_templates",
+    "method": "GET",
+    "path": "/v1/templates",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "templates_reload_static_templates",
+    "method": "POST",
+    "path": "/v1/templates/reload",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "templates_render_preview",
+    "method": "POST",
+    "path": "/v1/templates/render",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "templates_update_profile",
+    "method": "PUT",
+    "path": "/v1/templates/profiles/{id}",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "templates_update_template",
+    "method": "PUT",
+    "path": "/v1/templates/{id}",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "time_intervals_create_time_interval",
+    "method": "POST",
+    "path": "/v1/time-intervals",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "time_intervals_delete_time_interval",
+    "method": "DELETE",
+    "path": "/v1/time-intervals/{namespace}/{tenant}/{name}",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "time_intervals_get_time_interval",
+    "method": "GET",
+    "path": "/v1/time-intervals/{namespace}/{tenant}/{name}",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "time_intervals_list_time_intervals",
+    "method": "GET",
+    "path": "/v1/time-intervals",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "time_intervals_update_time_interval",
+    "method": "PUT",
+    "path": "/v1/time-intervals/{namespace}/{tenant}/{name}",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "verify_verify_action",
+    "method": "GET",
+    "path": "/v1/actions/{id}/verify",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "workflows_cancel_workflow",
+    "method": "POST",
+    "path": "/v1/workflows/executions/{execution_id}/cancel",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "workflows_get_workflow",
+    "method": "GET",
+    "path": "/v1/workflows/executions/{execution_id}",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "workflows_list_workflows",
+    "method": "GET",
+    "path": "/v1/workflows/executions",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "workflows_record_checkpoint",
+    "method": "POST",
+    "path": "/v1/workflows/executions/{execution_id}/checkpoints",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "workflows_signal_workflow",
+    "method": "POST",
+    "path": "/v1/workflows/executions/{execution_id}/signal/{signal_name}",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "workflows_start_child_workflow",
+    "method": "POST",
+    "path": "/v1/workflows/executions/{execution_id}/children",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "workflows_start_workflow",
+    "method": "POST",
+    "path": "/v1/workflows/start",
+    "permission": "OperationsManage"
+  }
+]

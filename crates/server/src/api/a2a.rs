@@ -545,7 +545,8 @@ fn authorize(
         return Err((
             StatusCode::FORBIDDEN,
             Json(ErrorResponse {
-                error: "a2a requires the dispatch permission (admin or operator role)".into(),
+                error: "a2a requires the dispatch permission (admin, operator, or executor role)"
+                    .into(),
             }),
         ));
     }
@@ -959,6 +960,21 @@ pub async fn a2a_rpc(
             return rpc_single_error(&A2aError::new(PARSE_ERROR, format!("parse error: {e}")));
         }
     };
+    // The RPC endpoint multiplexes read, execution and administration verbs.
+    // Match the REST role ceiling before processing *any* batch member, including
+    // notifications, so a mixed batch cannot partially mutate state.
+    if !identity.role.has_permission(Permission::OperationsManage)
+        && payload_requires_management(&parsed)
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            version_header(),
+            Json(ErrorResponse {
+                error: "A2A method requires OperationsManage permission".into(),
+            }),
+        )
+            .into_response();
+    }
     // Operator lifecycle: block a Suspended/Banned caller agent from any
     // request that drives or mutates tasks. Read-only payloads (tasks/get)
     // stay open, so the gate runs only when a write method is present.
@@ -975,6 +991,29 @@ pub async fn a2a_rpc(
         RpcReply::Batch(resps) => (StatusCode::OK, version_header(), Json(resps)).into_response(),
         // Notification(s) only — JSON-RPC 2.0 says answer with no body.
         RpcReply::Empty => (StatusCode::NO_CONTENT, version_header()).into_response(),
+    }
+}
+
+fn payload_requires_management(value: &Value) -> bool {
+    match value {
+        Value::Array(items) => items.iter().any(payload_requires_management),
+        // Explicit allowlist: a newly implemented RPC method cannot inherit
+        // execution permission just because it shares this HTTP endpoint.
+        Value::Object(obj) => obj
+            .get("method")
+            .and_then(Value::as_str)
+            .is_some_and(|method| {
+                !matches!(
+                    method,
+                    "message/send"
+                        | "tasks/get"
+                        | "tasks/cancel"
+                        | "agent/getAuthenticatedExtendedCard"
+                        | "tasks/pushNotificationConfig/get"
+                        | "tasks/pushNotificationConfig/list"
+                )
+            }),
+        _ => false,
     }
 }
 

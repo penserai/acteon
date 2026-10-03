@@ -36,7 +36,7 @@ pub struct UserConfig {
     ///
     /// Wrapped in [`SecretString`] so it is redacted in logs.
     pub password_hash: SecretString,
-    /// Role: `"admin"`, `"operator"`, or `"viewer"`.
+    /// Role: `"admin"`, `"operator"`, `"executor"`, or `"viewer"`.
     pub role: String,
     #[serde(default)]
     pub grants: Vec<Grant>,
@@ -235,7 +235,7 @@ pub struct ApiKeyConfig {
     ///
     /// Wrapped in [`SecretString`] so it is redacted in logs.
     pub key_hash: SecretString,
-    /// Role: `"admin"`, `"operator"`, or `"viewer"`.
+    /// Role: `"admin"`, `"operator"`, `"executor"`, or `"viewer"`.
     pub role: String,
     #[serde(default)]
     pub grants: Vec<Grant>,

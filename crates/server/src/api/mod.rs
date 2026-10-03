@@ -684,6 +684,11 @@ pub fn router(state: AppState) -> Router {
         )
         // Logout (requires auth)
         .route("/v1/auth/logout", post(auth::logout))
+        // A checked role ceiling protects every registered endpoint, including
+        // handlers whose local checks only constrain tenant/namespace scope.
+        .route_layer(middleware::from_fn(
+            crate::auth::route_permissions::authorize_route,
+        ))
         // Rate limiting runs after auth (so CallerIdentity is available)
         .layer(RateLimitLayer::new(state.rate_limiter.clone()))
         .layer(AuthLayer::new(state.auth.clone()));
