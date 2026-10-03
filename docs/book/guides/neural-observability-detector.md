@@ -510,7 +510,7 @@ quarantines it before window processing or inference and saves its full envelope
 position, failure class, and contract digest atomically with source progress. The
 quarantine restores before receipt replay and remains one entry afterward.
 
- The runner publishes their source
+The runner publishes their source
 features to separate metrics, traces, and logs topics, consumes the resulting
 broker positions, and joins them into 60-second event-time windows with 15
 seconds of allowed lateness. It atomically checkpoints active windows,
