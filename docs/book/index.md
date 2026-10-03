@@ -10,6 +10,8 @@ hide:
 
 <div class="platform-hero" markdown>
 
+<div class="platform-hero-copy" markdown>
+
 # Turn intent into accountable action.
 
 **Execution and governance for AI agents and deterministic operations.**
@@ -27,12 +29,29 @@ controls work together in one platform—built in Rust and deployed on your infr
 
 </div>
 
+<div class="platform-brand">
+  <img class="platform-logo" src="assets/logo.svg" alt="Acteon — Actions forged in Rust" width="180" height="266">
+</div>
+
+</div>
+
 <dl class="execution-path" aria-label="From intent to evidence">
   <div><dt>Intent</dt><dd>Agent decisions, service requests, events</dd></div>
   <div><dt>Policy</dt><dd>Identity, rules, quotas, approvals</dd></div>
   <div><dt>Execution</dt><dd>Providers, chains, workers, workflows</dd></div>
   <div><dt>Evidence</dt><dd>Outcomes, histories, audit, recovery</dd></div>
 </dl>
+
+## A name rooted in transformation
+
+In Greek mythology, **Actaeon** was a hunter transformed by Artemis into a stag—the
+very creature he pursued. That idea of transformation gives Acteon its name and
+its stag emblem.
+
+Acteon brings that spirit to automation: raw intent takes shape through policy
+and execution. An agent's proposal, a service request, or a burst of events can
+be filtered, reshaped, routed, and carried through a durable workflow. **Actions
+forged in Rust**, with controls that you define and outcomes you can inspect.
 
 ## Build automation you can operate
 

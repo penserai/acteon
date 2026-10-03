@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/logo.svg" alt="Acteon" width="200">
+  <img src="docs/logo.svg" alt="Acteon — Actions forged in Rust" width="200">
 </p>
 
 <p align="center">
@@ -26,6 +26,17 @@ credentials, worker code, and optional agent or Kafka capabilities as needed.
 **[Run the quick start](https://penserai.github.io/acteon/getting-started/quickstart/)** ·
 [Explore the platform](https://penserai.github.io/acteon/concepts/) ·
 [Choose an execution model](https://penserai.github.io/acteon/concepts/execution-model/)
+
+## A name rooted in transformation
+
+In Greek mythology, **Actaeon** was a hunter transformed by Artemis into a stag—the
+very creature he pursued. That idea of transformation gives Acteon its name and
+its stag emblem.
+
+Acteon brings that spirit to automation: raw intent takes shape through policy
+and execution. An agent's proposal, a service request, or a burst of events can
+be filtered, reshaped, routed, and carried through a durable workflow. **Actions
+forged in Rust**, with controls that you define and outcomes you can inspect.
 
 ## Build a complete flow
 
