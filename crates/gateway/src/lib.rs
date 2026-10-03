@@ -1,3 +1,4 @@
+pub mod admission;
 pub(crate) mod audit_helpers;
 pub mod background;
 pub mod builder;
@@ -51,3 +52,8 @@ pub use task_engine::{
 pub use time_interval_management::{TimeIntervalDecision, time_interval_cache_id};
 pub use watcher::RuleWatcher;
 pub use workflow::WorkflowFilter;
+
+pub use admission::{
+    DispatchAdmissionConfig, DispatchAdmissionError, DispatchReceipt, DispatchReceiptStatus,
+    DispatchResolution, DurableDispatchResult,
+};

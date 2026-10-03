@@ -26,7 +26,7 @@ chrono-tz = { workspace = true }
 croner = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 json-patch = { workspace = true }
 notify = { workspace = true }
 regex = { workspace = true }

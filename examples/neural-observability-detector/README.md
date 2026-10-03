@@ -54,10 +54,11 @@ The script:
    model revision on every call;
 6. persists each completed verdict and its inference evidence before acknowledging
    the corresponding input window;
-7. dispatches verdicts through `StreamOutboxDispatcher`, with an Acteon
-   deduplication admission rule before verdict routing;
+7. dispatches verdicts through `StreamOutboxDispatcher` and `dispatch_durable`,
+   combining durable receipts and verdict routing in one gateway;
 8. loses one acknowledgement after the incident chain completes, replaces the
-   delivery worker, and proves the retry repeats neither inference nor side effects;
+   delivery worker and receiver gateway, and proves that receipt recovery repeats
+   neither inference nor side effects;
 9. retains a malformed verdict in dead-letter storage, inspects and discards it,
    and verifies zero pending outputs; and
 10. writes measured JSON and Markdown reports.
@@ -89,7 +90,7 @@ defaults to `127.0.0.1:19092`. `ACTEON_CHECKPOINT_REDIS_URL` defaults to
   Rust runner verifies all four question sets and the response-schema digest.
   The governed providers recheck the health-reported revision before every call.
 - The response validator consumes the unedited Laya JSON response.
-- Acteon's real rules, gateways, chain executor, and Redis admission state
+- Acteon's real rules, gateway, chain executor, and Redis dispatch receipts
   process verdicts. The notification chain step uses full-pipeline dispatch;
   a reroute rule sends it to on-call, leaving its initial intake provider unused.
 - Recording providers stand in for diagnostics, on-call, and the investigation
@@ -106,16 +107,20 @@ defaults to `127.0.0.1:19092`. `ACTEON_CHECKPOINT_REDIS_URL` defaults to
   Redis connection pool. Four cached decisions survive, and final source lag,
   pending-window outputs, and pending-verdict outputs are zero.
 
-The acknowledgement-loss fault happens **after completed dispatch**. A
-`deduplicate` rule admits a delivery Action whose provider forwards the verdict
-to a separate routing gateway. This composes existing platform rules without a
-runner ledger. Deduplication claims its key before provider execution, so this
-example does not establish recovery from a receiver crash or failure during nested dispatch.
-The admission TTL is one hour; deployed receivers must cover their retry horizon.
+The acknowledgement-loss fault happens **after completed dispatch**. The retry
+recovers the original durable dispatch receipt and chain ID through a replacement
+receiver gateway with a fresh Redis pool. Recording providers survive as external
+observers. Gateway tests additionally cover interruption before chain creation
+and after chain completion but before receipt completion, concurrent retries,
+changed payload/caller conflicts, and expired-attempt fencing.
+
+Interrupted external provider calls require explicit reconciliation. Admission
+cannot undo their effects. Receipts and admitted chain state have no automatic
+TTL; plan storage maintenance for deployed receivers.
 
 Model timings are now governed model HTTP elapsed times, including response
 validation. Full wall times also include runtime identity checks and gateway
-handling. Automatic model and admission-provider retries are disabled; model
+handling. Automatic model and verdict-provider retries are disabled; model
 failures stop the run, while the managed outbox owns delivery retries. They are
 not comparable to the previous server-only inference timings.
 

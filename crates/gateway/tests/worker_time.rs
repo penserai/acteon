@@ -240,11 +240,15 @@ async fn retention_cutoff_preserves_active_records_and_compliance_holds() {
                 .await
                 .unwrap();
         }
-        for (id, status) in [("done", "completed"), ("active", "running")] {
+        for (id, status) in [
+            ("done", "completed"),
+            ("active", "running"),
+            ("admitted", "completed"),
+        ] {
             store
                 .set(
                     &StateKey::new("ns", tenant, KeyKind::Chain, id),
-                    &json!({"status":status,"started_at":clock.now()}).to_string(),
+                    &json!({"status":status,"started_at":clock.now(),"dispatch_receipt_id": (id == "admitted").then_some("receipt")}).to_string(),
                     None,
                 )
                 .await
@@ -262,6 +266,13 @@ async fn retention_cutoff_preserves_active_records_and_compliance_holds() {
         advance(&clock, ms);
         worker.tick(BackgroundJob::Retention).await.unwrap();
         for tenant in ["normal", "held"] {
+            assert!(
+                store
+                    .get(&StateKey::new("ns", tenant, KeyKind::Chain, "admitted"))
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
             for kind in [KeyKind::Chain, KeyKind::EventState] {
                 assert_eq!(
                     store

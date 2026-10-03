@@ -48,7 +48,7 @@ const CANCELLATION_HANDOFF_LEASE_SECONDS: i64 = 60;
 const MAX_CANCELLATION_HANDOFF_CAS_ATTEMPTS: usize = 5;
 
 #[derive(serde::Serialize, serde::Deserialize)]
-struct TerminalHistoryReceipt {
+struct HistoryEventReceipt {
     event: acteon_core::ExecutionEvent,
 }
 
@@ -843,10 +843,57 @@ impl Gateway {
         let revision = chain_state.state_version.ok_or_else(|| {
             GatewayError::ChainError("terminal chain state has no version".to_owned())
         })?;
+        self.append_chain_history_once(
+            chain_state,
+            event,
+            ttl,
+            EXEC_HISTORY_TERMINAL_KIND,
+            revision,
+            self.clock.now(),
+        )
+        .await
+    }
+
+    /// Receipt-backed start event for a prepared durable admission. The stable
+    /// revision is one even when recovery discovers an already advanced chain.
+    pub(crate) async fn append_admitted_chain_start_history(
+        &self,
+        state: &ChainState,
+    ) -> Result<bool, GatewayError> {
+        self.append_chain_history_once(
+            state,
+            ExecutionEventType::ExecutionStarted {
+                name: state.chain_name.clone(),
+                version: state.chain_version,
+                input: state.origin_action.payload.clone(),
+            },
+            None,
+            "exec_history_admission",
+            1,
+            state.started_at,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_lines, clippy::single_match_else)]
+    async fn append_chain_history_once(
+        &self,
+        chain_state: &ChainState,
+        event: ExecutionEventType,
+        ttl: Option<Duration>,
+        receipt_kind: &str,
+        revision: u64,
+        event_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool, GatewayError> {
+        let ttl = if chain_state.dispatch_receipt_id.is_some() {
+            None
+        } else {
+            ttl
+        };
         let receipt_key = StateKey::new(
             chain_state.namespace.as_str(),
             chain_state.tenant.as_str(),
-            KeyKind::Custom(EXEC_HISTORY_TERMINAL_KIND.into()),
+            KeyKind::Custom(receipt_kind.into()),
             format!("{}:{revision}", chain_state.chain_id),
         );
         let receipt = match self.state.get(&receipt_key).await? {
@@ -854,7 +901,7 @@ impl Gateway {
                 let json = self.decrypt_state_value(&raw)?;
                 serde_json::from_str(&json).map_err(|error| {
                     GatewayError::ChainError(format!(
-                        "failed to deserialize terminal history receipt: {error}"
+                        "failed to deserialize chain history receipt: {error}"
                     ))
                 })?
             }
@@ -868,16 +915,16 @@ impl Gateway {
                 let sequence = self.state.increment(&counter_key, 1, None).await?;
                 #[allow(clippy::cast_sign_loss)]
                 let event_id = sequence.max(1) as u64;
-                let receipt = TerminalHistoryReceipt {
+                let receipt = HistoryEventReceipt {
                     event: acteon_core::ExecutionEvent {
                         event_id,
-                        timestamp: self.clock.now(),
+                        timestamp: event_at,
                         event,
                     },
                 };
                 let json = serde_json::to_string(&receipt).map_err(|error| {
                     GatewayError::ChainError(format!(
-                        "failed to serialize terminal history receipt: {error}"
+                        "failed to serialize chain history receipt: {error}"
                     ))
                 })?;
                 let stored = self.encrypt_state_value(&json)?;
@@ -886,13 +933,13 @@ impl Gateway {
                 } else {
                     let raw = self.state.get(&receipt_key).await?.ok_or_else(|| {
                         GatewayError::ChainError(
-                            "terminal history receipt disappeared during append".to_owned(),
+                            "chain history receipt disappeared during append".to_owned(),
                         )
                     })?;
                     let json = self.decrypt_state_value(&raw)?;
                     serde_json::from_str(&json).map_err(|error| {
                         GatewayError::ChainError(format!(
-                            "failed to deserialize terminal history receipt: {error}"
+                            "failed to deserialize chain history receipt: {error}"
                         ))
                     })?
                 }

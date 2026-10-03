@@ -72,6 +72,11 @@ honor it. Invalid topic names and serialization errors are permanent failures;
 other bus errors are retryable, including missing topics that may be provisioned
 later.
 
+For Acteon action receivers, use [Durable Dispatch Admission](durable-dispatch.md)
+to compose receipt replay with rules and chains. Return delivery success only
+for a completed dispatch receipt; an in-progress or ambiguous receipt does not
+establish acceptance of its operational effects.
+
 For HTTP receivers or Acteon action dispatch, implement
 `StreamOutboxDelivery<O>::deliver`. Forward the stable key, classify failures as
 `StreamDeliveryError::Retryable` or `Permanent`, and return success only once the

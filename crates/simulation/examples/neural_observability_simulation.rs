@@ -25,11 +25,11 @@ use acteon_bus::{
     stream_checkpoint_key,
 };
 use acteon_core::chain::{ChainConfig, ChainStatus, ChainStepConfig, DispatchStepConfig};
-use acteon_core::{Action, ActionOutcome, ProviderResponse, Topic};
+use acteon_core::{Action, ActionOutcome, Topic};
 use acteon_executor::ExecutorConfig;
 use acteon_gateway::{Gateway, GatewayBuilder};
 use acteon_llm::{GovernedModelProvider, GovernedModelProviderConfig, VerifiedModelLock};
-use acteon_provider::{Provider, ProviderError};
+
 use acteon_rules::Rule;
 use acteon_rules_yaml::YamlFrontend;
 use acteon_simulation::{ActionOutcomeExt, RecordingProvider};
@@ -561,7 +561,6 @@ fn parse_rules(yaml: &str) -> Result<Vec<Rule>, AnyError> {
 
 struct ActeonSimulation {
     gateway: Gateway,
-    routing_gateway: Arc<Gateway>,
     diagnostics: Arc<RecordingProvider>,
     on_call: Arc<RecordingProvider>,
     investigator: Arc<RecordingProvider>,
@@ -575,10 +574,30 @@ impl ActeonSimulation {
     }
 
     fn build_with_store(rule_yaml: &str, store: Arc<dyn StateStore>) -> Result<Self, AnyError> {
-        let diagnostics = Arc::new(RecordingProvider::new("diagnostics"));
-        let on_call = Arc::new(RecordingProvider::new("on-call"));
-        let investigator = Arc::new(RecordingProvider::new("investigator"));
-        let notification_intake = Arc::new(RecordingProvider::new("notification-intake"));
+        Self::build_with_recorders(rule_yaml, store, None)
+    }
+
+    fn build_with_recorders(
+        rule_yaml: &str,
+        store: Arc<dyn StateStore>,
+        previous: Option<&Self>,
+    ) -> Result<Self, AnyError> {
+        let diagnostics = previous.map_or_else(
+            || Arc::new(RecordingProvider::new("diagnostics")),
+            |prior| Arc::clone(&prior.diagnostics),
+        );
+        let on_call = previous.map_or_else(
+            || Arc::new(RecordingProvider::new("on-call")),
+            |prior| Arc::clone(&prior.on_call),
+        );
+        let investigator = previous.map_or_else(
+            || Arc::new(RecordingProvider::new("investigator")),
+            |prior| Arc::clone(&prior.investigator),
+        );
+        let notification_intake = previous.map_or_else(
+            || Arc::new(RecordingProvider::new("notification-intake")),
+            |prior| Arc::clone(&prior.notification_intake),
+        );
         let verdict_audit = Arc::new(RecordingProvider::new("verdict-audit"));
         let chain = ChainConfig::new("observability-incident")
             .with_step(ChainStepConfig::new(
@@ -612,7 +631,11 @@ impl ActeonSimulation {
             Arc::clone(&notification_intake) as Arc<dyn acteon_provider::DynProvider>,
         ];
         let mut builder = GatewayBuilder::new()
-            .state(Arc::new(MemoryStateStore::new()))
+            .executor_config(ExecutorConfig {
+                max_retries: 0,
+                ..Default::default()
+            })
+            .state(store)
             .lock(Arc::new(MemoryDistributedLock::new()))
             .rules(parse_rules(rule_yaml)?)
             .chain(chain)
@@ -620,23 +643,8 @@ impl ActeonSimulation {
         for provider in providers {
             builder = builder.provider(provider);
         }
-        let routing_gateway = Arc::new(builder.build()?);
-        let admission_rule = fs::read_to_string(example_root().join("rules/admission.yaml"))?;
-        let admission_gateway = GatewayBuilder::new()
-            .executor_config(ExecutorConfig {
-                max_retries: 0,
-                ..Default::default()
-            })
-            .state(store)
-            .lock(Arc::new(MemoryDistributedLock::new()))
-            .rules(parse_rules(&admission_rule)?)
-            .provider(Arc::new(VerdictDispatchProvider {
-                gateway: Arc::clone(&routing_gateway),
-            }))
-            .build()?;
         Ok(Self {
-            gateway: admission_gateway,
-            routing_gateway,
+            gateway: builder.build()?,
             diagnostics,
             on_call,
             investigator,
@@ -645,52 +653,42 @@ impl ActeonSimulation {
     }
 
     async fn dispatch(&self, action: Action) -> Result<String, AnyError> {
-        let key = action
-            .dedup_key
-            .clone()
-            .ok_or_else(|| error("verdict has no stable deduplication key"))?;
-        let delivery = Action::new(
-            NAMESPACE,
-            TENANT,
-            "verdict-dispatch",
-            "detector.deliver",
-            serde_json::to_value(action)?,
-        )
-        .with_dedup_key(key);
-        match self.gateway.dispatch(delivery, None).await? {
-            ActionOutcome::Executed(response) => string_at(&response.body, &["acteon_outcome"]),
-            ActionOutcome::Deduplicated => Ok("deduplicated by Acteon".into()),
-            outcome => Err(error(format!("verdict admission failed: {outcome:?}"))),
+        let result = self
+            .gateway
+            .dispatch_durable(
+                action,
+                None,
+                acteon_gateway::DispatchAdmissionConfig::default(),
+            )
+            .await?;
+        let outcome = result.receipt.outcome().ok_or_else(|| {
+            error(format!(
+                "durable admission requires attention: {:?}",
+                result.receipt.status
+            ))
+        })?;
+        if result.replayed {
+            if let ActionOutcome::ChainStarted { chain_id, .. } = outcome {
+                let state = self
+                    .gateway
+                    .get_chain_status(NAMESPACE, TENANT, chain_id)
+                    .await?
+                    .ok_or_else(|| error("admitted chain state disappeared"))?;
+                if state.status != ChainStatus::Completed {
+                    interpret_verdict_outcome(&self.gateway, outcome).await?;
+                }
+            }
+            return Ok("replayed durable dispatch receipt".into());
         }
+        interpret_verdict_outcome(&self.gateway, outcome).await
     }
 }
 
-struct VerdictDispatchProvider {
-    gateway: Arc<Gateway>,
-}
-impl Provider for VerdictDispatchProvider {
-    fn name(&self) -> &'static str {
-        "verdict-dispatch"
-    }
-    async fn execute(&self, action: &Action) -> Result<ProviderResponse, ProviderError> {
-        let verdict = serde_json::from_value(action.payload.clone())
-            .map_err(|err| ProviderError::Serialization(err.to_string()))?;
-        let outcome = Box::pin(dispatch_verdict(&self.gateway, verdict))
-            .await
-            .map_err(|err| ProviderError::ExecutionFailed(err.to_string()))?;
-        Ok(ProviderResponse::success(
-            json!({"acteon_outcome": outcome}),
-        ))
-    }
-    fn health_check(&self) -> impl std::future::Future<Output = Result<(), ProviderError>> + Send {
-        std::future::ready(Ok(()))
-    }
-}
-
-async fn dispatch_verdict(gateway: &Gateway, action: Action) -> Result<String, AnyError> {
-    let outcome = gateway.dispatch(action, None).await?;
-    match &outcome {
-        ActionOutcome::Deduplicated => Ok("deduplicated by Acteon".into()),
+async fn interpret_verdict_outcome(
+    gateway: &Gateway,
+    outcome: &ActionOutcome,
+) -> Result<String, AnyError> {
+    match outcome {
         ActionOutcome::Suppressed { rule } => {
             outcome.assert_suppressed();
             Ok(format!("suppressed by {rule}"))
@@ -897,6 +895,10 @@ struct DeliveryReport {
     accepted_outputs: u64,
     retries_scheduled: u64,
     worker_restarts: usize,
+    receiver_restarts: usize,
+    incident_action_id: String,
+    incident_chain_id: String,
+    receipt_identity_preserved: bool,
     deduplicated_redeliveries: usize,
     pending_outputs: usize,
     retained_dead_letters: usize,
@@ -935,7 +937,7 @@ impl StreamOutboxDelivery<Action> for GatewayDelivery {
         let outcome = Box::pin(self.acteon.dispatch(action.clone()))
             .await
             .map_err(|err| StreamDeliveryError::Retryable(err.to_string()))?;
-        if outcome == "deduplicated by Acteon" {
+        if outcome == "replayed durable dispatch receipt" {
             self.deduplicated.fetch_add(1, Ordering::SeqCst);
         } else {
             self.outcomes
@@ -1026,10 +1028,26 @@ async fn deliver_verdicts(
         }
     };
     println!("outbox: accepted incident, lost acknowledgement, persisted retry; replacing worker");
+    let incident_key = reports
+        .iter()
+        .find(|report| report.admitted_route == "incident")
+        .ok_or_else(|| error("missing incident report"))?
+        .window_id
+        .clone();
+    let original_receipt = acteon
+        .gateway
+        .get_dispatch_receipt(NAMESPACE, TENANT, &incident_key)
+        .await?
+        .ok_or_else(|| error("incident receipt missing before restart"))?;
+    let incident_chain_id = original_receipt
+        .chain_id()
+        .ok_or_else(|| error("incident receipt has no chain linkage"))?
+        .to_owned();
+    let incident_action_id = original_receipt.action.id.to_string();
     drop(dispatcher);
     drop(receiver);
-    // New pool, coordinator, dispatcher, and delivery adapter; only the receiver
-    // gateway and external observer survive, as in a remote service deployment.
+    // Recover the outbox through a fresh pool; below, replace the receiver
+    // gateway too. Only recording providers survive as external observers.
     let recovered = open_verdicts(redis, key).await?;
     if serde_json::to_value(recovered.snapshot().state())? != serde_json::to_value(&*reports)? {
         return Err(error("replacement worker lost cached decisions"));
@@ -1042,6 +1060,13 @@ async fn deliver_verdicts(
             "replacement worker failed to recover the pending retry",
         ));
     }
+    acteon.gateway.shutdown().await;
+    let rules = fs::read_to_string(example_root().join("rules/verdict-routing.yaml"))?;
+    let acteon = Arc::new(ActeonSimulation::build_with_recorders(
+        &rules,
+        Arc::new(RedisStateStore::new(redis)?),
+        Some(&acteon),
+    )?);
     let receiver = GatewayDelivery {
         acteon,
         outcomes: Arc::clone(&outcomes),
@@ -1082,8 +1107,30 @@ async fn deliver_verdicts(
             .cloned()
             .ok_or_else(|| error("delivered verdict missing from receiver observer"))?;
     }
-    let result = delivery_report(&metrics, deduplicated.load(Ordering::SeqCst), reason);
+    let recovered_receipt = receiver
+        .acteon
+        .gateway
+        .get_dispatch_receipt(NAMESPACE, TENANT, &incident_key)
+        .await?
+        .ok_or_else(|| error("incident receipt missing after receiver replacement"))?;
+    if recovered_receipt.action.id != original_receipt.action.id
+        || recovered_receipt.chain_id() != original_receipt.chain_id()
+        || serde_json::to_value(recovered_receipt.outcome())?
+            != serde_json::to_value(original_receipt.outcome())?
+    {
+        return Err(error(
+            "receiver replacement changed the accepted incident's identity or outcome",
+        ));
+    }
+    let result = delivery_report(
+        &metrics,
+        deduplicated.load(Ordering::SeqCst),
+        reason,
+        incident_action_id,
+        incident_chain_id,
+    );
     dispatcher.discard_dead_letter("invalid-verdict").await?;
+    receiver.acteon.gateway.shutdown().await;
     println!(
         "outbox: {} attempts, {} accepted, {} retry, {} deduplicated redelivery, {} inspected dead letter, {} pending",
         result.attempts,
@@ -1100,6 +1147,8 @@ fn delivery_report(
     metrics: &StreamOutboxMetrics,
     duplicates: usize,
     reason: String,
+    incident_action_id: String,
+    incident_chain_id: String,
 ) -> DeliveryReport {
     DeliveryReport {
         state_backend: "redis".into(),
@@ -1107,6 +1156,10 @@ fn delivery_report(
         accepted_outputs: metrics.counters.delivered,
         retries_scheduled: metrics.counters.retries_scheduled,
         worker_restarts: 1,
+        receiver_restarts: 1,
+        incident_action_id,
+        incident_chain_id,
+        receipt_identity_preserved: true,
         deduplicated_redeliveries: duplicates,
         pending_outputs: metrics.pending,
         retained_dead_letters: metrics.dead_letters,
@@ -1125,12 +1178,13 @@ fn percentile(sorted: &[f64], numerator: usize, denominator: usize) -> f64 {
     sorted[index]
 }
 
+#[allow(clippy::too_many_lines)]
 fn markdown(report: &SimulationReport) -> String {
     let mut output = String::new();
     output.push_str("# Neural observability simulation results\n\n");
     let _ = write!(
         output,
-        "Laya `{}` ran on `{}` at revision `{}`. Governance lock `{}` approved six runtime packages, five checkpoint artifacts, four question sets, and a response schema. Kafka supplied {} accepted source records across {} event-time windows and the pipeline rejected {} duplicates or recovery redeliveries. The runner restored checkpoint generation {} after an injected pre-commit crash. All {} neural calls went through governed providers and real HTTP inference. Redis persisted checkpoints, delivery state, and admission deduplication; the routing gateway used memory for chain state and recording providers for controlled side effects.\n\n",
+        "Laya `{}` ran on `{}` at revision `{}`. Governance lock `{}` approved six runtime packages, five checkpoint artifacts, four question sets, and a response schema. Kafka supplied {} accepted source records across {} event-time windows and the pipeline rejected {} duplicates or recovery redeliveries. The runner restored checkpoint generation {} after an injected pre-commit crash. All {} neural calls went through governed providers and real HTTP inference. Redis persisted checkpoints, delivery state, dispatch receipts, and chain state. One gateway applied admission and routing; recording providers supplied controlled side effects.\n\n",
         report.model,
         report.health.device,
         report
@@ -1182,7 +1236,7 @@ fn markdown(report: &SimulationReport) -> String {
     output.push_str("\n## Aggregate\n\n");
     let _ = write!(
         output,
-        "- Governed runtime packages / model artifacts / locked contracts: **{} / {} / {}**\n- Kafka source records accepted: **{}**\n- Kafka duplicates and redeliveries rejected: **{}**\n- Recovery redeliveries deduplicated after restart: **{}**\n- Window checkpoints persisted before offset commits: **{}**\n- Final Kafka consumer lag: **{}**\n- Event-time windows completed: **{}**\n- Model calls: **{}**\n- Total model HTTP elapsed: **{:.0} ms**\n- Per-call p50 / p95: **{:.0} ms / {:.0} ms**\n- Incident chains: **{}** diagnostics capture and **{}** on-call notification\n- Bounded investigations: **{}**\n- Duplicate incident dispatches prevented by Acteon admission: **{}**\n\n",
+        "- Governed runtime packages / model artifacts / locked contracts: **{} / {} / {}**\n- Kafka source records accepted: **{}**\n- Kafka duplicates and redeliveries rejected: **{}**\n- Recovery redeliveries deduplicated after restart: **{}**\n- Window checkpoints persisted before offset commits: **{}**\n- Final Kafka consumer lag: **{}**\n- Event-time windows completed: **{}**\n- Model calls: **{}**\n- Total model HTTP elapsed: **{:.0} ms**\n- Per-call p50 / p95: **{:.0} ms / {:.0} ms**\n- Incident chains: **{}** diagnostics capture and **{}** on-call notification\n- Bounded investigations: **{}**\n- Duplicate incident dispatches prevented by durable receipts: **{}**\n\n",
         report.governance.policy.runtime.len(),
         report.governance.policy.artifacts.len(),
         report.governance.policy.contracts.len(),
@@ -1204,13 +1258,14 @@ fn markdown(report: &SimulationReport) -> String {
     output.push_str("## Managed delivery recovery\n\n");
     let _ = write!(
         output,
-        "| Observation | Result |\n|---|---:|\n| State backend | {} |\n| Cached decisions recovered | {} |\n| Delivery attempts | {} |\n| Accepted verdicts | {} |\n| Persisted retries | {} |\n| Replaced delivery workers | {} |\n| Redeliveries deduplicated by Acteon | {} |\n| Invalid verdicts retained for inspection | {} |\n| Pending window / verdict outputs | {} / {} |\n| Model calls repeated during retry | {} |\n\nDead-letter diagnostic: `{}`. The probe is inspected and explicitly discarded after measurement.\n\nTimings measure model HTTP request and response validation through the governed provider. They are not the server-only inference timings used in the previous report. Full wall times also include gateway dispatch and runtime identity checks.\n\n",
+        "| Observation | Result |\n|---|---:|\n| State backend | {} |\n| Cached decisions recovered | {} |\n| Delivery attempts | {} |\n| Accepted verdicts | {} |\n| Persisted retries | {} |\n| Replaced delivery workers / receiver gateways | {} / {} |\n| Redeliveries deduplicated by Acteon | {} |\n| Invalid verdicts retained for inspection | {} |\n| Pending window / verdict outputs | {} / {} |\n| Model calls repeated during retry | {} |\n\nDead-letter diagnostic: `{}`. The probe is inspected and explicitly discarded after measurement.\n\nTimings measure model HTTP request and response validation through the governed provider. They are not the server-only inference timings used in the previous report. Full wall times also include gateway dispatch and runtime identity checks.\n\n",
         report.delivery.state_backend,
         report.delivery.recovered_decisions,
         report.delivery.attempts,
         report.delivery.accepted_outputs,
         report.delivery.retries_scheduled,
         report.delivery.worker_restarts,
+        report.delivery.receiver_restarts,
         report.delivery.deduplicated_redeliveries,
         report.delivery.retained_dead_letters,
         report.delivery.pending_window_outputs,
@@ -1218,8 +1273,13 @@ fn markdown(report: &SimulationReport) -> String {
         report.delivery.model_calls_repeated_on_retry,
         report.delivery.dead_letter_reason,
     );
+    let _ = writeln!(
+        output,
+        "Receiver replacement preserved incident Action `{}` and chain execution `{}`; original and recovered receipt outcomes matched.\n",
+        report.delivery.incident_action_id, report.delivery.incident_chain_id
+    );
     output.push_str("## Interpretation\n\n");
-    output.push_str("The retry fault occurs after the receiver completes dispatch. A deduplicating admission rule precedes the verdict-routing gateway; the notification chain step re-enters gateway rules. This verifies post-acceptance acknowledgement loss, not an arbitrary receiver crash during execution. Acteon's deduplication rule claims its key before executing its provider, so an interrupted or failed nested dispatch requires separate operational reconciliation.\n\n");
+    output.push_str("The retry fault occurs after the receiver completes dispatch. Both the delivery worker and receiver gateway are replaced; the retry recovers the original durable dispatch receipt and chain identity. The notification chain step re-enters gateway rules. Generic gateway tests additionally exercise interruption before chain creation and after chain completion but before receipt completion. Interrupted external provider calls remain explicitly subject to reconciliation; receipt fencing cannot undo their effects.\n\n");
     output.push_str("Laya separated the first-stage signals, including the log-only noise case. Its low-confidence raw fusion choice still selected a non-healthy incident for healthy inputs. The deterministic corroboration gate prevented those raw false positives from reaching a provider. This is the intended safety property: neural decisions contribute bounded evidence, while Acteon policy controls side effects. These fixture results are integration evidence, not a detector-quality benchmark or a calibration claim.\n");
     output
 }
@@ -1882,7 +1942,6 @@ async fn main() -> Result<(), AnyError> {
         .await?;
     store.delete(&verdict_key).await?;
     laya.gateway.shutdown().await;
-    acteon.routing_gateway.shutdown().await;
     acteon.gateway.shutdown().await;
     Ok(())
 }
@@ -2056,7 +2115,7 @@ mod tests {
                 .with_dedup_key("pool"),
             )
             .await?;
-        assert_eq!(duplicate, "deduplicated by Acteon");
+        assert_eq!(duplicate, "replayed durable dispatch receipt");
         acteon.notification_intake.assert_called(0);
         acteon.diagnostics.assert_called(1);
         acteon.on_call.assert_called(1);
@@ -2095,7 +2154,6 @@ mod tests {
         acteon.diagnostics.assert_called(0);
         acteon.on_call.assert_called(0);
         acteon.investigator.assert_called(0);
-        acteon.routing_gateway.shutdown().await;
         acteon.gateway.shutdown().await;
         Ok(())
     }

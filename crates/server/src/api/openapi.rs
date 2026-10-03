@@ -15,6 +15,7 @@ use super::chains::{
     ChainStepStatus, ChainSummary, ChainValidationErrorResponse, ListChainDefinitionsResponse,
     ListChainsResponse, StepAttemptResponse, StepHistoryEntry,
 };
+use super::dispatch::{DispatchResponse, DurableDispatchResponse};
 use super::dlq::{DlqDrainResponse, DlqEntry, DlqStatsResponse};
 use super::embeddings::{SimilarityRequest, SimilarityResponse};
 use super::events::{
@@ -243,7 +244,7 @@ use acteon_core::{
     ),
     components(schemas(
         Action, ActionOutcome, ProviderResponse, ResponseStatus, ActionError,
-        ActionMetadata,
+        ActionMetadata, DispatchResponse, DurableDispatchResponse,
         HealthResponse, MetricsResponse, RuleSummary,
         ReloadRequest, ReloadResponse, SetEnabledRequest, SetEnabledResponse,
         ErrorResponse,

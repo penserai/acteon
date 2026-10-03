@@ -1459,6 +1459,11 @@ pub struct ChainState {
     /// read for executions persisted by older builds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_snapshot: Option<Box<ChainConfig>>,
+    /// Durable dispatch receipt storage ID. Admitted chains retain their state
+    /// without automatic TTL so interrupted receipt completion cannot recreate
+    /// an execution after its terminal state expires.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch_receipt_id: Option<String>,
     /// User-defined, queryable key-value attributes for visibility
     /// (`GET /v1/executions?attr=key=value`). Seeded from the origin
     /// action's metadata labels and updatable via

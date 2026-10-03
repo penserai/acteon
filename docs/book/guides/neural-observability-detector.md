@@ -356,18 +356,20 @@ Use rule priorities to separate the policy bands:
 | Investigate | high impact and `uncertainty > 0.20` | invoke bounded agent |
 | Remediate | chain or agent proposes a risky mutation | require approval |
 
-Acteon's rules stop at the first matching rule. One Action cannot both match
-a deduplication rule and start a chain. The simulation therefore composes two
-gateways: a `detector.deliver` Action matches a deduplication rule, and its
-receiver provider forwards the embedded `detector.verdict` to the routing
-gateway. The receiver's admission state is in Redis; no runner ledger controls
-alert delivery. A lost acknowledgement after completed dispatch causes a retry
-that Acteon deduplicates.
+The receiver uses [durable dispatch admission](../features/durable-dispatch.md)
+around a single gateway. It persists the original verdict, caller, chain start
+plan, and dispatch outcome under the window's stable key. Normal first-match
+rules still suppress noise, start a chain, or reroute to the investigator.
+An acknowledgement-loss retry retrieves that original receipt, including the
+same chain execution ID, without a separate forwarding provider or gateway.
 
-This tests post-acceptance acknowledgement loss. The deduplication rule claims
-its key before provider execution, so a receiver crash or failure during nested dispatch
-requires separate reconciliation. Do not interpret this fixture as an
-exactly-once execution guarantee. The demo admission TTL is one hour.
+The live fixture tests acknowledgement loss after the incident completes and
+replaces both the outbox worker and receiver gateway. Generic gateway tests
+also interrupt admission before chain creation and after chain completion but
+before receipt completion. Interrupted external provider calls become explicitly
+subject to reconciliation; they are not silently counted as completed or
+reexecuted. Receipts and admitted chains have no automatic TTL, so deployments
+must plan storage maintenance. This is not an exactly-once external-effects claim.
 
 The incident chain's notification uses a
 [full-pipeline dispatch step](../features/chains.md#full-pipeline-dispatch-steps)
@@ -477,7 +479,6 @@ examples/neural-observability-detector/
 │   ├── logs.json
 │   └── fusion.json
 ├── rules/
-│   ├── admission.yaml
 │   └── verdict-routing.yaml
 ├── fixtures/
 │   ├── baseline.json
@@ -518,8 +519,9 @@ Each completed decision, raw parsed model responses, and provider evidence are
 persisted in a separate verdict checkpoint before its input window is
 acknowledged. A [`StreamOutboxDispatcher`](../features/managed-stream-outbox.md)
 delivers those verdicts. The simulation loses an acknowledgement after the
-incident is accepted, drops the worker and its connection pool, and restores the
-persisted retry through a fresh worker. Acteon admission deduplicates the retry;
+incident is accepted, drops the worker and its connection pool, replaces the
+receiver gateway with a fresh Redis pool, and restores the persisted retry.
+Acteon retrieves the original dispatch receipt;
 it does not repeat the 16 Laya calls or the incident side effects.
 
 A malformed-verdict probe bypasses inference and enters retained dead-letter
@@ -552,16 +554,17 @@ and admitted an incident only when all three typed signal decisions agreed.
 | Governed runtime packages / artifacts / question sets / response schemas | 6 / 5 / 4 / 1 |
 | Event-time windows | 4 |
 | Real Laya calls | 16 |
-| Sum of model HTTP request times | 73,256 ms |
-| Per-call HTTP p50 / p95 | 3,645 ms / 9,047 ms |
+| Sum of model HTTP request times | 89,572 ms |
+| Per-call HTTP p50 / p95 | 5,632 ms / 10,347 ms |
 | Incident chains | 1 |
 | Bounded investigator calls | 1 |
 | Delivery attempts / accepted verdicts | 6 / 4 |
-| Persisted retries / replaced delivery workers | 1 / 1 |
+| Persisted retries / replaced delivery workers / receiver gateways | 1 / 1 / 1 |
 | Duplicate incident dispatches prevented by Acteon | 1 |
 | Invalid verdicts inspected in dead-letter storage | 1 |
 | Pending window / verdict outputs | 0 / 0 |
 | Model calls repeated during delivery retry | 0 |
+| Original incident Action and chain identity preserved | yes |
 
 Timings now measure model HTTP elapsed time through the governed provider,
 including response validation; the earlier report measured server-only
@@ -810,8 +813,8 @@ digests.
 7. Persist decisions and their evidence before acknowledging input windows.
 8. Deliver verdicts with the managed outbox. Verify suppression, the incident
    chain's full-pipeline notification, and the investigator recording provider.
-9. Lose the accepted incident's acknowledgement, replace the worker, restore the
-   retry, and verify receiver deduplication with no repeated inference.
+9. Lose the accepted incident's acknowledgement, replace the worker and receiver
+   gateway, restore the retry and original receipt, and verify no repeated inference.
 10. Inspect the invalid-verdict dead letter and generate measured reports.
 
 ```mermaid
@@ -821,8 +824,8 @@ flowchart LR
     WC --> M[Four governed model providers]
     M --> VC[(Redis decisions and verdict outbox)]
     VC --> D[Managed delivery worker]
-    D --> A[Deduplicating admission gateway]
-    A --> R[Verdict-routing gateway]
+    D --> R[One gateway: durable admission and routing]
+    R --> DR[(Redis receipts and chain state)]
     R --> C[Incident chain]
     C --> N[Full-pipeline notification dispatch]
     R --> I[Bounded investigator]
@@ -842,7 +845,8 @@ The simulation passes only if it can show:
 - correlated pool exhaustion starts exactly one response chain;
 - the ambiguous case reaches exactly one bounded investigator provider;
 - delivery retry survives worker replacement without repeating model calls;
-- Acteon deduplicates the accepted incident's redelivery with no second side effect;
+- a fresh receiver retrieves the accepted incident's receipt and chain ID with no
+  second side effect;
 - an invalid verdict reaches dead-letter storage before gateway dispatch;
 - both platform outboxes drain and all source consumer lag reaches zero;
 - every side effect can be traced to source offsets and a model version;
@@ -893,6 +897,8 @@ false-positive and agent-escalation budgets.
   correlation, watermarks, replay deduplication, and recovery snapshots
 - [Stream Checkpoints and Outbox](../features/stream-checkpoints.md) — atomic
   processor state, source positions, and idempotent ready outputs
+- [Durable Dispatch Admission](../features/durable-dispatch.md) — original outcomes,
+  chain identity, and explicit reconciliation across receiver replacement
 - [Managed Stream Outbox](../features/managed-stream-outbox.md) — leased delivery,
   retries, dead-letter replay, and durable delivery metrics
 - [Task Chains](../features/chains.md) — multi-step response workflows
