@@ -469,6 +469,10 @@ impl Actor {
         });
         // Kafka consumer destruction can wait for broker leave-group work. Keep
         // it off the async executor and inside the tracked session lifecycle.
+        self.pending.clear();
+        self.history.clear();
+        self.stale.clear();
+        drop(rx);
         let consumer = self.consumer;
         let _ = tokio::task::spawn_blocking(move || drop(consumer)).await;
     }

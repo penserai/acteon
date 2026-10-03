@@ -131,6 +131,7 @@ impl Fixture {
             extra: vec![
                 ("session.timeout.ms".into(), "6000".into()),
                 ("heartbeat.interval.ms".into(), "1000".into()),
+                ("group.id".into(), "acteon-live-wrong-global".into()),
             ],
             ..Default::default()
         })
