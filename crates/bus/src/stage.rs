@@ -3,8 +3,8 @@
 //! checkpointing may run again; processors should avoid non-idempotent side effects.
 use crate::{
     BusMessage, StreamCheckpointCoordinator, StreamCheckpointError, StreamCheckpointSnapshot,
-    StreamOutboxEntry, StreamPosition, StreamStageRecord, StreamStageSource,
-    StreamStageSourceError,
+    StreamInputFailure, StreamInputPolicy, StreamOutboxEntry, StreamPoisonPolicy, StreamPosition,
+    StreamQuarantinedInput, StreamStageRecord, StreamStageSource, StreamStageSourceError,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, TimeDelta, Utc};
@@ -21,6 +21,8 @@ const CAS_RETRIES: usize = 8;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StreamStageConfig {
+    #[serde(default, skip_serializing_if = "StreamInputPolicy::is_default")]
+    pub input: StreamInputPolicy,
     pub max_batch_records: usize,
     pub max_batch_bytes: usize,
     pub max_outputs_per_batch: usize,
@@ -40,6 +42,7 @@ pub struct StreamStageConfig {
 impl Default for StreamStageConfig {
     fn default() -> Self {
         Self {
+            input: StreamInputPolicy::default(),
             max_batch_records: 64,
             max_batch_bytes: 8 * 1024 * 1024,
             max_outputs_per_batch: 64,
@@ -59,6 +62,7 @@ impl Default for StreamStageConfig {
 }
 impl StreamStageConfig {
     fn validate(&self) -> Result<(), String> {
+        self.input.validate()?;
         let budget = self
             .receive_timeout_ms
             .checked_add(self.processing_timeout_ms)
@@ -106,6 +110,10 @@ impl StreamStageConfig {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StreamStageCounters {
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub quarantined_records: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub discarded_quarantined_records: u64,
     pub attempts: u64,
     pub completed_batches: u64,
     pub processed_records: u64,
@@ -122,6 +130,7 @@ pub struct StreamStageMetrics {
     pub counters: StreamStageCounters,
     pub checkpoint_generation: u64,
     pub pending_outputs: usize,
+    pub quarantined_records: usize,
     pub lease_expires_at: Option<DateTime<Utc>>,
     pub next_attempt_at: Option<DateTime<Utc>>,
     pub halted: bool,
@@ -153,10 +162,78 @@ pub(crate) struct ManagedStageState {
     lease: Option<StageLease>,
     retry: Option<StageRetry>,
     counters: StreamStageCounters,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    quarantine: Vec<StreamQuarantinedInput>,
 }
 impl ManagedStageState {
+    pub(crate) fn requires_v4(&self) -> bool {
+        !self.config.input.is_default()
+            || !self.quarantine.is_empty()
+            || self.counters.quarantined_records > 0
+    }
+    fn validate_quarantine(&self) -> Result<(), String> {
+        if !quarantine_fits(&self.quarantine, &self.config.input).map_err(|e| e.to_string())? {
+            return Err("quarantine retention capacity exceeded".into());
+        }
+        let mut ids = BTreeSet::new();
+        let mut positions = BTreeSet::new();
+        for entry in &self.quarantine {
+            let p = &entry.position;
+            if Uuid::parse_str(&entry.id).is_err()
+                || !ids.insert(&entry.id)
+                || !positions.insert((&p.lane, p.offset))
+                || p.offset < 0
+                || p.lane.partition < 0
+                || p.lane.source.trim().is_empty()
+                || p.lane.consumer_group.trim().is_empty()
+                || p.lane.topic != entry.message.topic
+                || entry.message.partition != Some(p.lane.partition)
+                || entry.message.offset != Some(p.offset)
+                || entry.reason.is_empty()
+                || entry.reason.len() > 4096
+            {
+                return Err("invalid quarantine envelope, identity, or diagnostic".into());
+            }
+            let expected = self
+                .config
+                .input
+                .contracts
+                .get(&p.lane.source)
+                .map(|c| &c.sha256);
+            if entry.contract_sha256.as_ref() != expected
+                || (entry.failure == StreamInputFailure::SchemaViolation && expected.is_none())
+            {
+                return Err("quarantine contract mismatch".into());
+            }
+        }
+        if !self.quarantine.is_empty()
+            && self.config.input.poison_policy != StreamPoisonPolicy::Quarantine
+        {
+            return Err("quarantine entries require quarantine policy".into());
+        }
+        if self
+            .counters
+            .quarantined_records
+            .checked_sub(self.counters.discarded_quarantined_records)
+            != Some(u64::try_from(self.quarantine.len()).map_err(|e| e.to_string())?)
+        {
+            return Err("quarantine counters do not match retained entries".into());
+        }
+        Ok(())
+    }
+    pub(crate) fn validate_positions(&self, positions: &[StreamPosition]) -> Result<(), String> {
+        if self.quarantine.iter().any(|entry| {
+            !positions
+                .iter()
+                .any(|p| p.lane == entry.position.lane && p.offset >= entry.position.offset)
+        }) {
+            return Err("quarantine input progress is not durable".into());
+        }
+        Ok(())
+    }
     pub(crate) fn validate(&self) -> Result<(), String> {
         self.config.validate()?;
+        self.validate_quarantine()?;
         if self.processor_version.trim().is_empty()
             || self.processor_version.len() > 4096
             || self.source_identity.trim().is_empty()
@@ -274,6 +351,7 @@ pub struct ManagedStreamStage<S, O> {
     config: StreamStageConfig,
     processor_version: String,
     source_identity: String,
+    validators: BTreeMap<String, jsonschema::Validator>,
 }
 impl<S, O> ManagedStreamStage<S, O>
 where
@@ -288,6 +366,19 @@ where
         config: StreamStageConfig,
     ) -> Result<Self, StreamStageError> {
         config.validate().map_err(StreamStageError::InvalidConfig)?;
+        let validators = config
+            .input
+            .contracts
+            .iter()
+            .map(|(name, contract)| {
+                Ok((
+                    name.clone(),
+                    contract
+                        .compile()
+                        .map_err(StreamStageError::InvalidConfig)?,
+                ))
+            })
+            .collect::<Result<BTreeMap<_, _>, StreamStageError>>()?;
         let worker = worker.into();
         let processor_version = processor_version.into();
         let source_identity = source_identity.into();
@@ -313,6 +404,7 @@ where
                     config,
                     processor_version,
                     source_identity,
+                    validators,
                 });
             }
             let mut next = coordinator.snapshot.clone();
@@ -324,6 +416,7 @@ where
                 lease: None,
                 retry: None,
                 counters: StreamStageCounters::default(),
+                quarantine: Vec::new(),
             });
             match tokio::time::timeout(
                 Duration::from_millis(config.storage_timeout_ms),
@@ -338,6 +431,7 @@ where
                         config,
                         processor_version,
                         source_identity,
+                        validators,
                     });
                 }
                 Ok(Err(StreamCheckpointError::Conflict { .. })) => tokio::time::timeout(
@@ -363,6 +457,38 @@ where
     }
     pub fn into_checkpoint(self) -> StreamCheckpointCoordinator<S, O> {
         self.coordinator
+    }
+    /// Reload and inspect retained original inputs. Receipt capabilities are never exposed.
+    pub async fn quarantined_inputs(
+        &mut self,
+    ) -> Result<Vec<StreamQuarantinedInput>, StreamStageError> {
+        self.reload().await?;
+        Ok(self.managed().quarantine.clone())
+    }
+    /// Explicitly remove a retained input. Does not rewind Kafka or invoke the processor.
+    pub async fn discard_quarantined_input(&mut self, id: &str) -> Result<bool, StreamStageError> {
+        for _ in 0..CAS_RETRIES {
+            self.reload().await?;
+            let mut next = self.coordinator.snapshot.clone();
+            let m = next.processing.as_mut().unwrap();
+            let Some(index) = m.quarantine.iter().position(|e| e.id == id) else {
+                return Ok(false);
+            };
+            m.quarantine.remove(index);
+            m.counters.discarded_quarantined_records = m
+                .counters
+                .discarded_quarantined_records
+                .checked_add(1)
+                .ok_or(StreamCheckpointError::GenerationOverflow)?;
+            match self.persist(next).await {
+                Err(StreamStageError::Checkpoint(StreamCheckpointError::Conflict { .. })) => {}
+                result => {
+                    result?;
+                    return Ok(true);
+                }
+            }
+        }
+        Err(StreamStageError::Fenced)
     }
     fn managed(&self) -> &ManagedStageState {
         self.coordinator
@@ -401,6 +527,7 @@ where
             counters: m.counters.clone(),
             checkpoint_generation: self.checkpoint().generation(),
             pending_outputs: self.checkpoint().pending_outputs().len(),
+            quarantined_records: m.quarantine.len(),
             lease_expires_at: m.lease.as_ref().map(|l| l.expires_at),
             next_attempt_at: m.retry.as_ref().and_then(|r| r.next_attempt_at),
             halted: m.retry.as_ref().is_some_and(|r| r.terminal),
@@ -645,6 +772,7 @@ where
             return Err(StreamStageError::RetryAnchorMissing);
         }
         let mut transition = None;
+        let mut quarantined = Vec::new();
         let mut elapsed = 0;
         if !fresh.is_empty() {
             let anchor = self
@@ -652,34 +780,72 @@ where
                 .retry
                 .as_ref()
                 .map_or_else(|| fresh[0].position.clone(), |r| r.anchor.clone());
-            self.begin_attempt(token, &anchor).await?;
-            let inputs = fresh
-                .iter()
-                .map(|r| {
-                    serde_json::from_value(r.message.payload.clone()).map(|payload| {
-                        StreamStageInput {
-                            position: r.position.clone(),
-                            message: r.message.clone(),
-                            payload,
-                        }
-                    })
-                })
-                .collect::<Result<Vec<StreamStageInput<I>>, _>>();
-            let inputs = match inputs {
-                Ok(i) => i,
-                Err(e) => {
-                    return self
-                        .failed(
-                            token,
-                            StreamStageProcessError::Permanent(format!(
-                                "typed input decode failed: {e}"
+            let mut inputs = Vec::new();
+            for r in &fresh {
+                let contract = self.config.input.contracts.get(&r.position.lane.source);
+                if !self.validators.is_empty() && contract.is_none() {
+                    self.release(token).await?;
+                    return Err(StreamStageError::InvalidConfig(
+                        "source has no pinned consume contract".into(),
+                    ));
+                }
+                let violation = self
+                    .validators
+                    .get(&r.position.lane.source)
+                    .and_then(|v| v.iter_errors(&r.message.payload).next())
+                    .map(|e| {
+                        (
+                            StreamInputFailure::SchemaViolation,
+                            bounded_error(format!(
+                                "consume schema violation at schema {}",
+                                e.schema_path()
                             )),
                         )
-                        .await;
+                    });
+                let decoded = if let Some(failure) = violation {
+                    Err(failure)
+                } else {
+                    serde_json::from_value(r.message.payload.clone()).map_err(|_| {
+                        (
+                            StreamInputFailure::TypedDecode,
+                            "payload cannot be decoded into the processor input type".into(),
+                        )
+                    })
+                };
+                match decoded {
+                    Ok(payload) => inputs.push(StreamStageInput {
+                        position: r.position.clone(),
+                        message: r.message.clone(),
+                        payload,
+                    }),
+                    Err((failure, reason)) => {
+                        if self.config.input.poison_policy == StreamPoisonPolicy::Halt {
+                            self.begin_attempt(token, &r.position).await?;
+                            return self
+                                .failed(token, StreamStageProcessError::Permanent(reason))
+                                .await;
+                        }
+                        quarantined.push(StreamQuarantinedInput {
+                            id: Uuid::new_v4().to_string(),
+                            position: r.position.clone(),
+                            message: r.message.clone(),
+                            failed_at: Utc::now(),
+                            failure,
+                            contract_sha256: contract.map(|c| c.sha256.clone()),
+                            reason,
+                        });
+                    }
                 }
-            };
+            }
+            let mut retained = self.managed().quarantine.clone();
+            retained.extend(quarantined.clone());
+            if !quarantine_fits(&retained, &self.config.input)? {
+                self.release(token).await?;
+                return Ok(StreamStageResult::Backpressured);
+            }
+            self.begin_attempt(token, &anchor).await?;
             let started = tokio::time::Instant::now();
-            let result = tokio::select! {biased;()=cancel.cancelled()=>{self.release(token).await?;return Ok(StreamStageResult::Cancelled{durable_generation:None});},r=tokio::time::timeout(Duration::from_millis(self.config.processing_timeout_ms),processor.process(self.checkpoint().state().clone(),&inputs))=>match r {Ok(r)=>r,Err(_)=>Err(StreamStageProcessError::Retryable("processing timeout".into()))}};
+            let result = tokio::select! {biased;()=cancel.cancelled()=>{self.release(token).await?;return Ok(StreamStageResult::Cancelled{durable_generation:None});},r=tokio::time::timeout(Duration::from_millis(self.config.processing_timeout_ms),async { if inputs.is_empty() { Ok(StreamStageTransition { state: self.checkpoint().state().clone(), outputs: Vec::new() }) } else { processor.process(self.checkpoint().state().clone(), &inputs).await } })=>match r {Ok(r)=>r,Err(_)=>Err(StreamStageProcessError::Retryable("processing timeout".into()))}};
             elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
             let result = match result {
                 Ok(r) => r,
@@ -746,6 +912,15 @@ where
                     t.outputs.clone(),
                 )?;
                 let m = next.processing.as_mut().unwrap();
+                m.quarantine.extend(quarantined.clone());
+                if !quarantine_fits(&m.quarantine, &self.config.input)? {
+                    self.release(token).await?;
+                    return Ok(StreamStageResult::Backpressured);
+                }
+                m.counters.quarantined_records = m
+                    .counters
+                    .quarantined_records
+                    .saturating_add(u64::try_from(quarantined.len()).unwrap_or(u64::MAX));
                 m.revision = m
                     .revision
                     .checked_add(1)
@@ -998,3 +1173,20 @@ fn bounded_error(mut error: String) -> String {
 #[cfg(test)]
 #[path = "stage_tests.rs"]
 mod tests;
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // Serde skip predicates receive references.
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
+fn quarantine_fits(
+    entries: &[StreamQuarantinedInput],
+    policy: &StreamInputPolicy,
+) -> Result<bool, StreamStageError> {
+    Ok(entries.is_empty()
+        || entries.len() <= policy.max_quarantined_records
+            && serde_json::to_vec(entries)
+                .map_err(StreamCheckpointError::from)?
+                .len()
+                <= policy.max_quarantine_bytes)
+}

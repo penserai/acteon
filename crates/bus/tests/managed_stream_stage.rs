@@ -2,9 +2,10 @@
 use acteon_bus::{
     BusBackend, BusMessage, KafkaBackend, KafkaBusConfig, LiveStreamStageSource,
     ManagedStreamStage, StartOffset, StreamCheckpointConfig, StreamCheckpointCoordinator,
-    StreamOutboxEntry, StreamStageConfig, StreamStageInput, StreamStageProcessError,
-    StreamStageProcessor, StreamStageResult, StreamStageSource, StreamStageSubscription,
-    StreamStageTransition, SubscriptionConfig, stream_checkpoint_key,
+    StreamInputContract, StreamInputPolicy, StreamOutboxEntry, StreamPoisonPolicy,
+    StreamStageConfig, StreamStageInput, StreamStageProcessError, StreamStageProcessor,
+    StreamStageResult, StreamStageSource, StreamStageSubscription, StreamStageTransition,
+    SubscriptionConfig, stream_checkpoint_key,
 };
 use acteon_core::Topic;
 use acteon_state_memory::MemoryStateStore;
@@ -65,6 +66,10 @@ async fn native_stage_replays_saved_positions_without_repeating_processing() {
         .produce(BusMessage::new(&name, serde_json::json!(7)))
         .await
         .unwrap();
+    backend
+        .produce(BusMessage::new(&name, serde_json::json!("poison")))
+        .await
+        .unwrap();
     let definitions = vec![StreamStageSubscription::new(
         "input",
         &name,
@@ -87,7 +92,20 @@ async fn native_stage_replays_saved_positions_without_repeating_processing() {
     )
     .await
     .unwrap();
+    let contract = StreamInputContract::from_schema(&acteon_core::Schema::new(
+        "input",
+        1,
+        "test",
+        "tenant",
+        serde_json::json!({"type":"integer"}),
+    ))
+    .unwrap();
     let config = StreamStageConfig {
+        input: StreamInputPolicy {
+            contracts: std::collections::BTreeMap::from([("input".into(), contract)]),
+            poison_policy: StreamPoisonPolicy::Quarantine,
+            ..Default::default()
+        },
         receive_timeout_ms: 25_000,
         lease_ms: 90_000,
         ..Default::default()
@@ -187,10 +205,11 @@ async fn native_stage_replays_saved_positions_without_repeating_processing() {
         StreamStageResult::Completed {
             generation: 1,
             processed: 0,
-            recovered: 1
+            recovered: 2
         }
     );
     assert_eq!(processor.0.load(Ordering::SeqCst), 1);
+    assert_eq!(stage.quarantined_inputs().await.unwrap().len(), 1);
     assert_eq!(*stage.checkpoint().state(), 7);
     assert_eq!(stage.checkpoint().pending_outputs().len(), 1);
     tokio::time::timeout(Duration::from_secs(5), async {

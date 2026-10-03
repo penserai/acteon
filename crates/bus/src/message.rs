@@ -22,7 +22,7 @@ pub enum StartOffset {
 /// Produced messages carry only the envelope fields the caller cares
 /// about; consumed messages additionally carry `partition`, `offset`,
 /// and `timestamp` populated by the broker.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BusMessage {
     /// Kafka topic the message belongs to (post-naming — the full
     /// `namespace.tenant.name` form from [`acteon_core::Topic`]).

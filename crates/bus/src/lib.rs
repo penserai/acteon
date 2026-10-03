@@ -65,3 +65,9 @@ pub use stage_source::{
     LiveStreamStageSource, StreamStageRecord, StreamStageSource, StreamStageSourceError,
     StreamStageSubscription,
 };
+
+pub mod ingestion;
+pub use ingestion::{
+    StreamInputContract, StreamInputFailure, StreamInputPolicy, StreamPoisonPolicy,
+    StreamQuarantinedInput,
+};

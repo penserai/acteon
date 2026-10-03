@@ -758,3 +758,303 @@ fn oversized_timestamp_policies_are_rejected_without_panicking() {
     assert!(config.validate().is_err());
     assert!(bounded_error("🦀".repeat(2048)).len() <= 4096);
 }
+
+fn consume_config() -> StreamStageConfig {
+    let contract = crate::StreamInputContract::from_schema(&acteon_core::Schema::new(
+        "input",
+        1,
+        "test",
+        "tenant",
+        json!({"type":"integer","minimum":1}),
+    ))
+    .unwrap();
+    StreamStageConfig {
+        input: StreamInputPolicy {
+            contracts: BTreeMap::from([("input".into(), contract)]),
+            poison_policy: StreamPoisonPolicy::Quarantine,
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+#[tokio::test]
+async fn consume_contract_quarantines_bad_input_before_ack_and_recovery_does_not_repeat_it() {
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let mut source = Source::new(store.clone(), 0..3);
+    source.records[1].message.payload = json!(-1);
+    source.fail_ack = true;
+    let processor = Processor::new();
+    let config = consume_config();
+    let mut worker = stage(store.clone(), config.clone()).await;
+    assert!(matches!(
+        worker
+            .process_once(&mut source, &processor, &CancellationToken::new())
+            .await,
+        Err(StreamStageError::Acknowledgement { generation: 1, .. })
+    ));
+    assert_eq!(*worker.checkpoint().state(), 4);
+    assert_eq!(worker.checkpoint().pending_outputs().len(), 2);
+    let quarantined = worker.quarantined_inputs().await.unwrap();
+    assert_eq!(quarantined.len(), 1);
+    assert_eq!(quarantined[0].position.offset, 1);
+    assert_eq!(quarantined[0].message.payload, json!(-1));
+    assert_eq!(quarantined[0].failure, StreamInputFailure::SchemaViolation);
+    assert_eq!(
+        quarantined[0].contract_sha256,
+        Some(config.input.contracts["input"].sha256.clone())
+    );
+    let mut replacement = stage(store, config).await;
+    replacement
+        .process_once(&mut source, &processor, &CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(processor.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(replacement.quarantined_inputs().await.unwrap(), quarantined);
+    assert_eq!(
+        replacement
+            .metrics()
+            .await
+            .unwrap()
+            .counters
+            .quarantined_records,
+        1
+    );
+}
+#[tokio::test]
+async fn all_poison_batch_never_invokes_processor_and_discard_is_explicit_and_idempotent() {
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let mut worker = stage(store.clone(), consume_config()).await;
+    let mut source = Source::new(store, 0..1);
+    source.records[0].message.payload = json!(0);
+    let processor = Processor::new();
+    worker
+        .process_once(&mut source, &processor, &CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(processor.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(source.ack_calls, 1);
+    assert_eq!(*worker.checkpoint().state(), 0);
+    let id = worker.quarantined_inputs().await.unwrap()[0].id.clone();
+    assert!(!worker.discard_quarantined_input("wrong-id").await.unwrap());
+    assert!(worker.discard_quarantined_input(&id).await.unwrap());
+    assert!(!worker.discard_quarantined_input(&id).await.unwrap());
+    assert_eq!(
+        worker
+            .metrics()
+            .await
+            .unwrap()
+            .counters
+            .discarded_quarantined_records,
+        1
+    );
+}
+#[tokio::test]
+async fn quarantine_capacity_blocks_before_callback_and_does_not_spend_attempt_budget() {
+    for byte_limit in [false, true] {
+        let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let mut config = consume_config();
+        config.max_batch_records = 1;
+        config.input.max_quarantined_records = 1;
+        if byte_limit {
+            config.input.max_quarantine_bytes = 1;
+        }
+        let mut worker = stage(store.clone(), config).await;
+        let mut source = Source::new(store, 0..2);
+        for r in &mut source.records {
+            r.message.payload = json!(0);
+        }
+        let processor = Processor::new();
+        if !byte_limit {
+            worker
+                .process_once(&mut source, &processor, &CancellationToken::new())
+                .await
+                .unwrap();
+        }
+        let before = worker.metrics().await.unwrap().counters.attempts;
+        for _ in 0..3 {
+            assert_eq!(
+                worker
+                    .process_once(&mut source, &processor, &CancellationToken::new())
+                    .await
+                    .unwrap(),
+                StreamStageResult::Backpressured
+            );
+        }
+        assert_eq!(worker.metrics().await.unwrap().counters.attempts, before);
+        assert_eq!(processor.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(source.ack_calls, usize::from(!byte_limit));
+        if !byte_limit {
+            let id = worker.quarantined_inputs().await.unwrap()[0].id.clone();
+            worker.discard_quarantined_input(&id).await.unwrap();
+            worker
+                .process_once(&mut source, &processor, &CancellationToken::new())
+                .await
+                .unwrap();
+            assert_eq!(source.ack_calls, 2);
+        }
+    }
+}
+#[tokio::test]
+async fn quarantine_checkpoint_lost_reply_recovers_without_duplicate_retention() {
+    let store: Arc<dyn StateStore> = Arc::new(LostWriteReply {
+        inner: MemoryStateStore::new(),
+        lost: std::sync::atomic::AtomicBool::new(false),
+    });
+    let mut source = Source::new(store.clone(), 0..1);
+    source.records[0].message.payload = json!(0);
+    let mut worker = stage(store.clone(), consume_config()).await;
+    let processor = Processor::new();
+    assert!(
+        worker
+            .process_once(&mut source, &processor, &CancellationToken::new())
+            .await
+            .is_err()
+    );
+    assert_eq!(source.ack_calls, 0);
+    expire(store.clone()).await;
+    worker = stage(store, consume_config()).await;
+    worker
+        .process_once(&mut source, &processor, &CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(worker.quarantined_inputs().await.unwrap().len(), 1);
+    assert_eq!(processor.calls.load(Ordering::SeqCst), 0);
+}
+#[tokio::test]
+async fn changed_consume_contracts_and_unbound_sources_fail_closed() {
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let mut worker = stage(store.clone(), consume_config()).await;
+    let mut changed = consume_config();
+    changed.input.contracts.get_mut("input").unwrap().version = 2;
+    assert!(matches!(
+        ManagedStreamStage::initialize(
+            coordinator(store.clone()).await,
+            "worker",
+            "processor-v1",
+            "test-source-v1",
+            changed
+        )
+        .await,
+        Err(StreamStageError::DefinitionMismatch)
+    ));
+    let mut source = Source::new(store, 0..1);
+    source.records[0].position.lane.source = "unbound".into();
+    assert!(matches!(
+        worker
+            .process_once(&mut source, &Processor::new(), &CancellationToken::new())
+            .await,
+        Err(StreamStageError::InvalidConfig(_))
+    ));
+    assert_eq!(source.ack_calls, 0);
+}
+#[tokio::test]
+async fn typed_decode_can_quarantine_even_when_json_schema_accepts_the_payload() {
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let mut config = consume_config();
+    config.input.contracts.clear();
+    let mut worker = stage(store.clone(), config).await;
+    let mut source = Source::new(store, 0..1);
+    source.records[0].message.payload = json!("private-payload");
+    worker
+        .process_once(&mut source, &Processor::new(), &CancellationToken::new())
+        .await
+        .unwrap();
+    let retained = worker.quarantined_inputs().await.unwrap();
+    assert_eq!(retained[0].failure, StreamInputFailure::TypedDecode);
+    assert!(!retained[0].reason.contains("private-payload"));
+}
+#[test]
+fn consume_contracts_reject_external_refs_bad_digests_and_invalid_schemas() {
+    let schema = |body| acteon_core::Schema::new("test", 1, "test", "tenant", body);
+    for body in [
+        json!({"$ref":"file:///etc/passwd"}),
+        json!({"$ref":"http://127.0.0.1/private"}),
+        json!({"type":42}),
+    ] {
+        assert!(crate::StreamInputContract::from_schema(&schema(body)).is_err());
+    }
+    let mut pinned =
+        crate::StreamInputContract::from_schema(&schema(json!({"type":"integer"}))).unwrap();
+    pinned.body = json!({"type":"string"});
+    assert!(pinned.compile().is_err());
+    assert!(
+        crate::StreamInputContract::from_schema(&schema(
+            json!({"$defs":{"integer":{"type":"integer"}},"$ref":"#/$defs/integer"})
+        ))
+        .is_ok()
+    );
+}
+
+#[tokio::test]
+async fn corrupted_quarantine_snapshots_are_rejected_before_recovery() {
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let mut worker = stage(store.clone(), consume_config()).await;
+    let mut source = Source::new(store.clone(), 0..1);
+    source.records[0].message.payload = json!(0);
+    worker
+        .process_once(&mut source, &Processor::new(), &CancellationToken::new())
+        .await
+        .unwrap();
+    let saved: serde_json::Value =
+        serde_json::from_str(&store.get(&key()).await.unwrap().unwrap()).unwrap();
+    assert_eq!(saved["schema_version"], 4);
+    for mutation in 0..5 {
+        let mut corrupt = saved.clone();
+        match mutation {
+            0 => corrupt["positions"] = json!([]),
+            1 => corrupt["processing"]["quarantine"][0]["message"]["offset"] = json!(99),
+            2 => corrupt["processing"]["quarantine"][0]["contract_sha256"] = json!("forged"),
+            3 => corrupt["processing"]["counters"]["quarantined_records"] = json!(2),
+            _ => corrupt["schema_version"] = json!(3),
+        }
+        store.set(&key(), &corrupt.to_string(), None).await.unwrap();
+        assert!(matches!(
+            StreamCheckpointCoordinator::<u64, u64>::initialize(
+                store.clone(),
+                key(),
+                0,
+                StreamCheckpointConfig::default()
+            )
+            .await,
+            Err(StreamCheckpointError::InvalidManagedStage(_))
+        ));
+    }
+}
+#[tokio::test]
+async fn schema_rejection_halts_by_default_without_advancing_offsets() {
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let mut config = consume_config();
+    config.input.poison_policy = StreamPoisonPolicy::Halt;
+    let mut worker = stage(store.clone(), config).await;
+    let mut source = Source::new(store, 0..1);
+    source.records[0].message.payload = json!(0);
+    let processor = Processor::new();
+    assert!(matches!(
+        worker
+            .process_once(&mut source, &processor, &CancellationToken::new())
+            .await
+            .unwrap(),
+        StreamStageResult::Halted { .. }
+    ));
+    assert_eq!(processor.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(source.ack_calls, 0);
+    assert_eq!(worker.checkpoint().positions(), []);
+}
+
+#[tokio::test]
+async fn forged_receipt_positions_cannot_persist_or_acknowledge_quarantine() {
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let mut worker = stage(store.clone(), consume_config()).await;
+    let mut source = Source::new(store, 0..1);
+    source.records[0].message.payload = json!(0);
+    source.forge = true;
+    assert!(matches!(
+        worker
+            .process_once(&mut source, &Processor::new(), &CancellationToken::new())
+            .await,
+        Err(StreamStageError::InvalidBatch(_))
+    ));
+    assert_eq!(source.ack_calls, 0);
+    assert_eq!(worker.checkpoint().positions(), []);
+    assert_eq!(worker.quarantined_inputs().await.unwrap(), []);
+}

@@ -21,6 +21,7 @@ parking_lot = "0.12"
 rdkafka = { version = "0.37", features = ["cmake-build", "tokio"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2.workspace = true
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
 tokio-util = { workspace = true }
