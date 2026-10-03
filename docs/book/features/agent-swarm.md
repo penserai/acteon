@@ -1,6 +1,6 @@
 # Agent Swarm Orchestrator
 
-The `acteon-swarm` crate provides a generic multi-agent swarm system that decomposes complex objectives into tasks, assigns them to specialist agents, and executes them with **parallel task execution**, **AI-powered plan refinement**, and **cross-agent knowledge sharing**. It combines three systems:
+Acteon's optional `acteon-swarm` orchestrator provides a multi-agent execution system that decomposes complex objectives into tasks, assigns them to specialist agents, and executes them with **parallel task execution**, **AI-powered plan refinement**, and **cross-agent knowledge sharing**. It combines three systems:
 
 - **Acteon** — workflow orchestration, safety rules, quotas, and audit trail
 - **TesseraiDB** — knowledge graph, semantic memory, and digital twin modeling of the swarm

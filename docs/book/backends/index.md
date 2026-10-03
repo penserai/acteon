@@ -1,23 +1,31 @@
 # Backends
 
-Acteon uses pluggable backends for both **state storage** and **audit trail** persistence. State and audit backends are independent — you can mix any state backend with any audit backend.
+Acteon separates **execution state** from **searchable action audit**. Choose each
+backend for its role in your deployment, recovery, and retention requirements.
 
-## Backend Categories
+State includes deduplication keys, locks, event state, execution progress,
+worker leases, durable receipts, and stream checkpoints. Some component-specific
+histories and control audits live with that state. An audit backend separately
+stores the configured searchable action trail. Kafka is the bus transport and
+does not replace either store.
 
-### State Backends
+## State backends
 
-State backends store distributed locks, deduplication keys, event state, group state, and chain state.
+| Backend | Fit | Operational consideration |
+|---|---|---|
+| [Memory](memory.md) | Local development and tests | State is lost when the process stops |
+| [Redis](redis.md) | Shared coordination and execution state | Configure persistence and availability for your recovery requirements |
+| [PostgreSQL](postgres.md) | Transactional database-backed state | Apply migrations and manage connection capacity |
+| [DynamoDB](dynamodb.md) | AWS-managed state storage | Configure tables, access policy, and capacity |
 
-| Backend | Consistency | Throughput | Use Case |
-|---------|------------|------------|----------|
-| [Memory](memory.md) | Perfect | ~50,000/s | Development, testing |
-| [Redis](redis.md) | Strong | ~2,000/s | General purpose, most deployments |
-| [PostgreSQL](postgres.md) | ACID | ~850/s | Strong consistency requirements |
-| [DynamoDB](dynamodb.md) | Strong | ~340/s | AWS-native deployments |
+Use the [performance guide](../reference/performance.md) for measured workloads
+and benchmark assumptions. Throughput depends on the operation and deployment.
 
-### Audit Backends
+## Audit backends
 
-Audit backends store the searchable history of every action and its outcome.
+
+When enabled, audit backends store action records and outcomes for inspection,
+analytics, replay, and configured compliance controls.
 
 | Backend | Best For | Features |
 |---------|----------|----------|
@@ -57,5 +65,5 @@ url = "postgres://acteon:acteon@localhost:5432/acteon"
 # Start both backends
 docker compose --profile postgres up -d
 scripts/migrate.sh -c acteon.toml
-cargo run -p acteon-server -- -c acteon.toml
+cargo run -p acteon-server --features postgres -- -c acteon.toml
 ```

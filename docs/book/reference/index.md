@@ -1,37 +1,20 @@
-# Reference
+# Reference and design notes
 
-Detailed reference documentation for Acteon types, errors, performance characteristics, and deployment.
+Use these pages for precise types, error behavior, deployment details, and
+performance evidence. Start with the [platform overview](../concepts/index.md)
+for the product model or [capabilities](../features/index.md) to select a building block.
 
-<div class="grid" markdown>
+| Reference | What it covers |
+|---|---|
+| [Types](types.md) | Public domain types and their fields |
+| [Errors](errors.md) | Error categories, retryability, and handling patterns |
+| [Performance](performance.md) | Recorded benchmarks, workload assumptions, and tuning |
+| [Bus benchmarks](bus-benchmarks.md) | Transport-specific measurements and methodology |
+| [Build optimization](build-optimization.md) | Feature selection, build profiles, test runners, and CI caching |
+| [Deployment](deployment.md) | Runtime configuration, persistence, and deployment patterns |
+| [ClickHouse state migration](migration-clickhouse-state.md) | Migration from the removed state backend to supported state storage |
+| [Roadmap](roadmap.md) | Shipped milestones and areas under consideration |
 
-<div class="card" markdown>
-### [Type Reference](types.md)
-All public types, traits, and their fields.
-</div>
-
-<div class="card" markdown>
-### [Error Handling](errors.md)
-Error types, retryability, and handling patterns.
-</div>
-
-<div class="card" markdown>
-### [Performance Guide](performance.md)
-Throughput benchmarks, latency characteristics, and optimization tips.
-</div>
-
-<div class="card" markdown>
-### [Deployment](deployment.md)
-Production deployment patterns, Docker, and operational guidance.
-</div>
-
-<div class="card" markdown>
-### [Build Optimization](build-optimization.md)
-Feature flags, profile overrides, nextest, and CI caching for fast builds.
-</div>
-
-<div class="card" markdown>
-### [Roadmap](roadmap.md)
-Planned features and enhancements, ordered by value/effort ratio.
-</div>
-
-</div>
+The bus design and phase notes preserve implementation history. For current
+usage, start with [streams and events](../features/streams-and-events.md) or the
+[Agentic Bus user guide](../concepts/agentic-bus.md).

@@ -1,70 +1,56 @@
-# Architecture
+# Platform architecture
 
-Acteon follows a **modular, crate-based architecture** where each component can be used independently or composed together. The system is organized as a Rust workspace with logical groupings.
+Acteon separates policy, execution, coordination, and persistence into composable
+Rust components. The server brings them together behind operational APIs. Workers,
+model runtimes, agent engines, and external services connect at explicit boundaries.
 
-## High-Level Overview
+## Runtime view
 
 ```mermaid
 flowchart TB
-    subgraph Intake["Intake Layer"]
-        HTTP["HTTP API<br/>(acteon-server)"]
-        Client["Rust Client<br/>(acteon-client)"]
-        Poly["Polyglot Clients<br/>Python / Node / Go / Java"]
-    end
-
-    subgraph Gateway["Gateway Layer (acteon-gateway)"]
-        direction TB
-        Lock["Distributed Lock"]
-        Rules["Rule Engine<br/>(acteon-rules)"]
-        Exec["Executor<br/>(acteon-executor)"]
-    end
-
-    subgraph Features["Feature Modules"]
-        SM["State Machines"]
-        GRP["Event Grouping"]
-        APR["Approval Manager"]
-        CHN["Chain Orchestrator"]
-        LLM["LLM Guardrails"]
-    end
-
-    subgraph Providers["Provider Layer (acteon-provider)"]
-        Email["Email SMTP"]
-        Slack["Slack"]
-        PD["PagerDuty"]
-        Twilio["Twilio SMS"]
-        Teams["Teams"]
-        Discord["Discord"]
-        WH["Webhooks"]
-        Custom["Custom Providers"]
-    end
-
-    subgraph State["State Layer"]
-        Mem["Memory"]
-        Redis["Redis"]
-        PG["PostgreSQL"]
-        DDB["DynamoDB"]
-    end
-
-    subgraph Audit["Audit Layer"]
-        AuditPG["PostgreSQL"]
-        AuditCH["ClickHouse"]
-        AuditES["Elasticsearch"]
-    end
-
-    HTTP --> Gateway
-    Client --> HTTP
-    Poly --> HTTP
-
-    Lock --> State
-    Rules --> Features
-    Rules --> Exec
-
-    Exec --> Providers
-    Features --> State
-
-    Exec -.->|record| Audit
-
+    Clients[Applications, agents, CLI, and Admin UI] --> API[HTTP APIs and scoped authorization]
+    MCP[MCP server] --> API
+    API --> Gateway[Action gateway: policy and provider execution]
+    API --> Exec[Durable executions and worker queues]
+    API --> Bus[Agentic Bus and A2A task services]
+    Gateway --> Providers[Providers: integrations, governed models, swarm goals]
+    Exec --> Gateway
+    Exec <--> Workers[Your task and workflow workers]
+    Bus <--> Kafka[Kafka topics and subscriptions]
+    Kafka <--> Stages[Your managed stream workers]
+    Stages --> Outbox[Checkpointed output delivery]
+    Outbox --> Gateway
+    Providers --> External[External services and model or agent runtimes]
+    Gateway --> State[(State store)]
+    Exec --> State
+    Bus --> State
+    Stages --> State
+    Outbox --> State
+    Gateway -.-> Audit[(Configured audit store)]
 ```
+
+The diagram shows the main runtime relationships, not a mandatory topology.
+In-memory state and a log provider are enough for the quick start. Persistent
+state supports recovery across restarts. Agent orchestration and the Kafka bus
+are optional build/runtime capabilities.
+
+## Responsibilities and boundaries
+
+| Component | Responsibility |
+|---|---|
+| **Server and operational interfaces** | Authenticate callers, enforce scoped API access, expose dispatch and lifecycle operations, and serve the Admin UI |
+| **Action gateway** | Apply the configured dispatch pipeline: policy, coordination, provider execution, and audit recording |
+| **Execution engine** | Track chains and workflows, pinned definitions, steps, waits, worker tasks, and history |
+| **Providers** | Translate actions into integration calls, including validated JSON inference and accepted swarm goals |
+| **Workers** | Run custom task/workflow code or typed stream processors in your environment |
+| **Bus and A2A services** | Support topics, agent identity, conversations, and interoperable task lifecycles through their respective APIs |
+| **State backend** | Persist coordination state, execution progress, leases, receipts, and stream checkpoints |
+| **Audit backend** | Store configured searchable action evidence independently of execution state |
+
+A provider response, a durable acceptance receipt, a completed workflow, and a
+Kafka acknowledgement describe different boundaries. See
+[the execution model](execution-model.md) for how they compose and
+[governance](governance.md) for where policy applies.
 
 ## Crate Organization
 
@@ -125,7 +111,9 @@ All crates live under the `crates/` directory with logical groupings:
 
 ## Data Flow
 
-Every action follows a consistent path through the system:
+A direct dispatch follows the gateway path below. Durable admission and longer
+executions add their own persistence and lifecycle protocols around it. Audit
+recording applies when an audit backend is configured:
 
 ```mermaid
 sequenceDiagram
@@ -173,6 +161,6 @@ sequenceDiagram
 
 4. **Pipeline Model** — Actions flow through a linear pipeline (intake → rules → execution → audit), making the system predictable and debuggable.
 
-5. **Backend Independence** — State and audit backends are fully independent. Any state backend can be combined with any audit backend.
+5. **Backend Independence** — Choose state and audit storage independently to match recovery and evidence requirements.
 
 6. **Hot Reload** — Rules and auth configuration can be reloaded at runtime without server restarts.

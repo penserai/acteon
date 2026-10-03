@@ -1,5 +1,10 @@
 # Providers
 
+Providers connect Acteon's execution engine to the systems that perform work. A
+notification channel, cloud service, webhook, governed model runtime, or custom
+Rust integration can occupy this role. Applications and agents use the same
+action contract to request provider operations under configured policy.
+
 Providers are the execution endpoints in Acteon. They receive actions and perform the actual work — sending emails, posting Slack messages, calling webhooks, or any custom operation.
 
 ## Provider Architecture

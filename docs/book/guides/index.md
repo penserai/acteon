@@ -1,37 +1,44 @@
-# Guides
+# Build a complete flow
 
-In-depth guides that show how to combine Acteon's features to solve real-world problems.
+See how Acteon's execution and governance capabilities work together in a real
+system. Each guide connects a domain problem to policy, integrations, execution,
+and the operational evidence needed to run it.
 
-<div class="grid" markdown>
+## Agents and intelligent operations
 
-<div class="card" markdown>
-### [Cascaded Neural Observability Detector](neural-observability-detector.md)
-Correlate metrics, traces, and logs with fast non-autoregressive detectors, typed Kafka contracts, deterministic routing, action chains, and a bounded agent escalation path. Includes a production plan and a small simulation design.
-</div>
+### [Cascading observability with local neural models](neural-observability-detector.md)
 
-<div class="card" markdown>
-### [AI Agent Swarm Coordination](agent-swarm-coordination.md)
-Use Acteon as a safety and orchestration layer for multi-agent AI swarms. Covers the autoresearch-style eval harness, adversarial challenge-recovery loop with cross-engine critique, code-writing recovery agents, program.md constraints, identity, permissions, rate limiting, and approval workflows.
-</div>
+Join metrics, traces, and logs from Kafka, call a real local Laya model, and let
+deterministic policy choose suppression, an incident chain, or bounded
+investigation. The runnable simulation covers checkpoints, quarantine repair,
+audited stage halt/resume, and delivery recovery, with measured results.
 
-<div class="card" markdown>
-### [AWS Event-Driven Pipeline](aws-event-pipeline.md)
-Build an IoT telemetry pipeline with Acteon routing sensor data to AWS services (SNS, Lambda, EventBridge, SQS, S3). Covers chain orchestration, circuit breaker fallbacks, event grouping, and a full LocalStack development setup.
-</div>
+### [A2A and agent registry](a2a-agent-registry-tutorial.md)
 
-<div class="card" markdown>
-### [Incident Response Pipeline](incident-response-pipeline.md)
-Route monitoring alerts through Acteon for triage, dedup, throttle, and multi-step escalation. Covers chain orchestration with war-room sub-chains, event lifecycle management, circuit breaker fallbacks, and recurring health checks.
-</div>
+Register and discover agents, follow interoperable tasks, and connect agent
+communication to Acteon's scoped operational interfaces.
 
-<div class="card" markdown>
-### [E-Commerce Order Pipeline](ecommerce-order-pipeline.md)
-Process e-commerce orders through Acteon with fraud screening, business-hours scheduling, approval gates, and multi-step fulfillment chains. Covers time-based conditions, SSE streaming, order lifecycle tracking, and payment field redaction.
-</div>
+### [Agent swarm coordination](agent-swarm-coordination.md)
 
-<div class="card" markdown>
-### [Healthcare Notification Pipeline](healthcare-notification-pipeline.md)
-Build a HIPAA-compliant notification gateway that detects and blocks PHI over insecure channels, reroutes sensitive data to a patient portal, and maintains a tamper-evident hash-chained audit trail. Covers compliance mode, approval workflows, and PHI redaction.
-</div>
+Coordinate specialist agents with identity, permissions, approvals, and usage
+limits. Explore evaluation, cross-engine adversarial critique, and recovery in
+a multi-agent execution loop.
 
-</div>
+## Business and infrastructure operations
+
+| Guide | Build |
+|---|---|
+| [Incident response](incident-response-pipeline.md) | Alert triage, deduplication, escalation chains, war-room sub-chains, and event lifecycle tracking |
+| [E-commerce orders](ecommerce-order-pipeline.md) | Fraud screening, approval gates, scheduled work, fulfillment chains, and payment-field redaction |
+| [Healthcare notifications](healthcare-notification-pipeline.md) | Notification policy, sensitive-data routing, approval workflows, and tamper-evident audit configuration |
+| [AWS event pipeline](aws-event-pipeline.md) | Sensor-event routing to cloud services, chains, fallbacks, and event grouping with a LocalStack setup |
+
+## Bring an existing system
+
+- [Migrate from Alertmanager](migrating-from-alertmanager.md): map routing,
+  inhibition, time intervals, and silences onto Acteon.
+- [Migrate to the Agentic Bus](agentic-bus-migration.md): adopt topics,
+  subscriptions, agent identity, and conversations.
+
+For focused code samples, use [examples and simulation](../examples/index.md).
+For a first local request, use the [quick start](../getting-started/quickstart.md).

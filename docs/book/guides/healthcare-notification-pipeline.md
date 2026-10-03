@@ -1,7 +1,6 @@
 # Healthcare Notification Pipeline
 
-This guide shows how to use Acteon as a **HIPAA-compliant notification gateway**
-for healthcare organizations. Patient notifications (appointment reminders, lab
+This guide shows how to use Acteon to build **governed healthcare notification workflows**. Patient notifications (appointment reminders, lab
 results, discharge summaries) flow through Acteon, which detects and blocks Protected
 Health Information (PHI) over insecure channels, reroutes sensitive data to the
 patient portal, requires compliance officer approval for external sharing, and

@@ -1,6 +1,8 @@
 # Configuration Reference
 
-Acteon is configured via a TOML file (default: `acteon.toml`). Every section is optional — sensible defaults are provided for all values.
+Acteon is configured via a TOML file (default: `acteon.toml`). Defaults support a small local setup; enable and configure the providers,
+identity controls, storage, and optional runtimes your deployment uses. The
+[platform overview](../concepts/index.md) explains how these components fit together.
 
 ## CLI Options
 

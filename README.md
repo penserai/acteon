@@ -1,22 +1,38 @@
 <p align="center">
-  <img src="docs/logo.svg" alt="Acteon — Actions forged in Rust" width="200">
+  <img src="docs/logo.svg" alt="Acteon" width="200">
 </p>
 
 <p align="center">
   <a href="https://github.com/penserai/acteon/actions/workflows/ci.yml"><img src="https://github.com/penserai/acteon/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
 </p>
 
-In Greek mythology, Actaeon was a hunter who, upon encountering the divine Artemis, was instantly transformed. He went from pursuer to stag—his form completely rewritten by a higher power.
+# Turn intent into accountable action.
 
-In distributed systems, raw actions are like that hunter: they arrive wild, untamed, and relentless. If they reach your core services unchanged, they can cause chaos.
+**Acteon is an open-source execution and governance platform for AI agents and
+deterministic operations.** It turns agent decisions, application requests, and
+events into work governed by identity, policy, durable execution, and operational
+evidence.
 
-Acteon is the force that manages this transformation. It serves as an Action Gateway that intercepts raw intent and reshapes it—deduplicating, throttling, and routing events through a configurable pipeline. It ensures that by the time an action reaches your logic, it has been forged into exactly what your system needs.
+Use one platform to dispatch an integration, run a business workflow, coordinate
+agents, or turn live telemetry into an incident response. Rules, approvals,
+chains, worker workflows, typed model calls, and managed streams compose around
+a shared operational foundation.
 
-## Guides
+Acteon includes an HTTP server, Admin UI, CLI, MCP server, and SDKs for Rust,
+Python, TypeScript, Go, and Java. It is built in Rust, self-hosted, and licensed
+under Apache 2.0. Start locally with a log provider; add persistent storage,
+credentials, worker code, and optional agent or Kafka capabilities as needed.
 
-> **[AI Agent Swarm Coordination](https://penserai.github.io/acteon/guides/agent-swarm-coordination/)** — Use Acteon as a safety and orchestration layer for multi-agent AI systems. Covers identity isolation, permission control, prompt injection defense, rate limiting, approval workflows, failure isolation, and full observability.
+**[Run the quick start](https://penserai.github.io/acteon/getting-started/quickstart/)** ·
+[Explore the platform](https://penserai.github.io/acteon/concepts/) ·
+[Choose an execution model](https://penserai.github.io/acteon/concepts/execution-model/)
 
-> **[Migrating from Prometheus Alertmanager](https://penserai.github.io/acteon/guides/migrating-from-alertmanager/)** — Lift an existing `alertmanager.yml` into Acteon with `acteon import alertmanager`, plus the concept-mapping table (routes, inhibit_rules, time_intervals, silences), cutover patterns, and what's still different between the two systems.
+## Build a complete flow
+
+- [Cascading neural observability](https://penserai.github.io/acteon/guides/neural-observability-detector/): real Kafka, Redis, and local Laya inference with deterministic routing, recovery, and audited controls.
+- [Agent swarm coordination](https://penserai.github.io/acteon/guides/agent-swarm-coordination/): coordinated agent work with identity, policy, approvals, evaluation, and recovery.
+- [Incident response](https://penserai.github.io/acteon/guides/incident-response-pipeline/) and [order processing](https://penserai.github.io/acteon/guides/ecommerce-order-pipeline/): durable operations across services and human decisions.
+- [All guides](https://penserai.github.io/acteon/guides/), including A2A, cloud pipelines, and migration from Alertmanager.
 
 ## Features
 

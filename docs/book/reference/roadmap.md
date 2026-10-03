@@ -1,35 +1,23 @@
 # Roadmap
 
-Planned features and enhancements for Acteon, ordered by estimated value/effort ratio. This is a living document — priorities may shift based on user feedback and operational experience.
+Acteon's current product is an execution and governance platform spanning actions,
+durable orchestration, agents, and managed event processing. Use the
+[capability guide](../features/index.md) for what you can build today. This page
+separates shipped milestones from possible extensions; it is not a delivery commitment.
 
-## Quick Wins
+## Available today
 
-### Dead-Letter Retention — shipped
+- [Durable executions](../features/durable-executions.md), [worker queues](../features/task-queues.md), and [code workflows](../features/workflows.md).
+- [A2A tasks](../features/a2a.md), the [Agentic Bus](../concepts/agentic-bus.md), and [swarm orchestration](../features/agent-swarm.md).
+- [Governed model inference](../features/governed-model-provider.md) with locked contracts and response validation.
+- [Managed stream stages](../features/managed-stream-stages.md), [quarantine repair](../features/stream-input-contracts.md), audited halt/resume, and [outbox delivery](../features/managed-stream-outbox.md).
+- [Durable dispatch receipts](../features/durable-dispatch.md), [action signing](../features/action-signing.md), [dead-letter retention](../features/dlq-retention.md), and [generated Prometheus alerts](../features/prometheus-alerting.md).
 
-`executor.dlq_retention_seconds` bounds both the built-in action DLQ and the
-state-store-backed A2A push-delivery DLQ. The built-in queue uses the shared
-clock and background cleanup; push-DLQ rows use backend TTLs. See
-[Dead-letter retention](../features/dlq-retention.md).
-
-### Prometheus Alerting Rules Export — shipped
-
-`acteon metrics export-alerts` and `GET /v1/metrics/alerts/prometheus.yaml` now
-generate rules from the running configuration. The generated file covers
-provider SLOs, quota exceedances, circuit breaker trips, compliance retention
-errors, and retention TTL warnings. See
-[Prometheus alerting rules](../features/prometheus-alerting.md).
-
-**Crates:** `acteon-ops`, `acteon-server`
-**Complexity:** Small (~400 LOC)
-
-## Medium Effort
+## Areas under consideration
 
 ### DynamoDB Hierarchical Tenant Index
 
 Hierarchical/multi-tenant audit reads currently fall back to a table `Scan` on the DynamoDB backend, because the `ns_tenant` composite partition key only supports exact match (see [DynamoDB Audit Backend](../backends/dynamodb-audit.md)). Add a sparse GSI keyed on `namespace` (PK) + `tenant` (SK) so a scoped read becomes a `begins_with(tenant, "acme.")` **Query** (indexed range) instead of a full Scan. Requires a write-time projection of the new key attributes and a one-time backfill. Only worth doing if users run scoped multi-tenant audit reads at volume on DynamoDB (ClickHouse/Postgres already handle this as an indexed prefix range).
-
-**Crates:** `acteon-audit-dynamodb`
-**Complexity:** Medium (~600 LOC + backfill/migration)
 
 ### Cursor-Based Audit Pagination
 
@@ -37,35 +25,21 @@ Hierarchical/multi-tenant audit reads currently fall back to a table `Scan` on t
 
 Replace offset with cursor-based pagination (`after_id` / `before_timestamp` / opaque continuation tokens) across all audit backends and their client SDKs. Unlocks efficient deep scans for rule coverage, audit replay, and compliance exports on non-SQL backends. Also eliminates pagination-drift bugs when new records land mid-scan.
 
-**Crates:** `acteon-audit`, `acteon-audit-*` (all backends), `acteon-client`, polyglot SDKs, `acteon-cli`
-**Complexity:** Medium (~1500 LOC; touches every audit backend and every SDK's query surface)
+### Additional Kafka publishing formats
 
-### Kafka Provider Integration
-
-Native `acteon-kafka` provider for publishing actions to Kafka topics with topic selection via routing rules, schema registry integration (Avro/Protobuf), batch publishing, partition key configuration, and circuit breaker integration with broker health checks.
-
-**Crates:** New `acteon-kafka` crate, `acteon-server`
-**Complexity:** Medium (~1500 LOC)
-
-### Action Signing & Tamper-Proof Dispatch
-
-Ed25519/ECDSA signing of dispatch requests with a `signature` and `signer_id` on each action. Validate incoming actions against a keyring. Provide `GET /v1/actions/{id}/verify` for cryptographic proof of action origin. Export signed audit records for downstream verification.
-
-**Crates:** `acteon-crypto`, `acteon-core`, `acteon-server`
-**Complexity:** Medium (~1200 LOC)
+The [Agentic Bus](../concepts/agentic-bus.md) already provides Kafka-backed topics,
+publishing, subscriptions, and JSON Schema validation. Further integration with
+Avro/Protobuf registries and provider-style publishing is a possible extension;
+it should build on the existing transport and governance capabilities.
 
 ### Cost Attribution & Tenant Billing Export
 
-Per-provider cost configuration, per-tenant pricing overrides, and billing export endpoints. `GET /v1/billing/tenant/{tenant}/usage` returns volume, cost, and breakdown by provider. `GET /v1/billing/export?format=csv` for bulk monthly export. CLI command `acteon billing export`.
+Possible additions include per-provider cost configuration, per-tenant pricing
+overrides, and usage exports for billing systems. API and CLI designs remain to
+be defined.
 
-**Crates:** New `acteon-billing` crate, `acteon-server`, `acteon-cli`
-**Complexity:** Medium (~1200 LOC)
-
-## Large Effort
+## Longer-term direction
 
 ### Multi-Region HA Failover
 
 Instance groups with health checking, leader election or consistent hashing for request routing, cross-region circuit breaker state sync, and geographic routing rules. Start with simple leader-election via state backend locks, grow to consistent hashing.
-
-**Crates:** New `acteon-ha-coordinator` crate, `acteon-server`, state backends
-**Complexity:** Large (~2500 LOC)
