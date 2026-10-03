@@ -217,7 +217,7 @@ azure_storage_blob = "1.0"
 azure_messaging_eventhubs = "0.15"
 
 # GCP
-google-cloud-pubsub = "=0.32.3-preview"
+google-cloud-pubsub = "=0.33.0"
 google-cloud-storage = "1"
 google-cloud-auth = { version = "1", default-features = false }
 
