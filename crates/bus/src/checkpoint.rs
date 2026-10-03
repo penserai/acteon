@@ -360,6 +360,18 @@ where
         &self.snapshot
     }
 
+    /// Load an existing checkpoint without creating or modifying it.
+    pub async fn load_existing(
+        store: Arc<dyn StateStore>,
+        key: StateKey,
+    ) -> Result<Option<Self>, StreamCheckpointError> {
+        validate_key(&key)?;
+        match store.get_versioned(&key).await? {
+            Some((value, version)) => Self::decode(store, key, version, &value).map(Some),
+            None => Ok(None),
+        }
+    }
+
     /// Current durable commit and delivery plan. This is useful for retrying
     /// broker commits after [`StreamCheckpointError::Commit`].
     #[must_use]
