@@ -8,6 +8,31 @@ import java.time.Duration;
  */
 public class ActionOutcome {
     private OutcomeType type;
+    private String groupId;
+    private long groupSize;
+    private String notifyAt;
+    private String fingerprint;
+    private String previousState;
+    private String newState;
+    private boolean notify;
+    private String approvalId;
+    private String expiresAt;
+    private String approveUrl;
+    private String rejectUrl;
+    private boolean notificationSent;
+    private String chainId;
+    private String chainName;
+    private long totalSteps;
+    private String firstStep;
+    private String provider;
+    private java.util.List<String> fallbackChain;
+    private String recurringId;
+    private String cronExpr;
+    private String nextExecutionAt;
+    private String silenceId;
+    private String interval;
+    private String reason;
+
     private ProviderResponse response;
     private String rule;
     private String originalProvider;
@@ -25,7 +50,7 @@ public class ActionOutcome {
     private String overageBehavior;
 
     public enum OutcomeType {
-        EXECUTED, DEDUPLICATED, SUPPRESSED, REROUTED, THROTTLED, FAILED, DRY_RUN, SCHEDULED, QUOTA_EXCEEDED
+        GROUPED, STATE_CHANGED, PENDING_APPROVAL, CHAIN_STARTED, CIRCUIT_OPEN, RECURRING_CREATED, SILENCED, MUTED, EXECUTED, DEDUPLICATED, SUPPRESSED, REROUTED, THROTTLED, FAILED, DRY_RUN, SCHEDULED, QUOTA_EXCEEDED
     }
 
     // Getters and setters
@@ -86,4 +111,60 @@ public class ActionOutcome {
 
     public String getOverageBehavior() { return overageBehavior; }
     public void setOverageBehavior(String overageBehavior) { this.overageBehavior = overageBehavior; }
+    public String getGroupId() { return groupId; }
+    public void setGroupId(String value) { this.groupId = value; }
+    public long getGroupSize() { return groupSize; }
+    public void setGroupSize(long value) { this.groupSize = value; }
+    public String getNotifyAt() { return notifyAt; }
+    public void setNotifyAt(String value) { this.notifyAt = value; }
+    public String getFingerprint() { return fingerprint; }
+    public void setFingerprint(String value) { this.fingerprint = value; }
+    public String getPreviousState() { return previousState; }
+    public void setPreviousState(String value) { this.previousState = value; }
+    public String getNewState() { return newState; }
+    public void setNewState(String value) { this.newState = value; }
+    public boolean getNotify() { return notify; }
+    public void setNotify(boolean value) { this.notify = value; }
+    public String getApprovalId() { return approvalId; }
+    public void setApprovalId(String value) { this.approvalId = value; }
+    public String getExpiresAt() { return expiresAt; }
+    public void setExpiresAt(String value) { this.expiresAt = value; }
+    public String getApproveUrl() { return approveUrl; }
+    public void setApproveUrl(String value) { this.approveUrl = value; }
+    public String getRejectUrl() { return rejectUrl; }
+    public void setRejectUrl(String value) { this.rejectUrl = value; }
+    public boolean getNotificationSent() { return notificationSent; }
+    public void setNotificationSent(boolean value) { this.notificationSent = value; }
+    public String getChainId() { return chainId; }
+    public void setChainId(String value) { this.chainId = value; }
+    public String getChainName() { return chainName; }
+    public void setChainName(String value) { this.chainName = value; }
+    public long getTotalSteps() { return totalSteps; }
+    public void setTotalSteps(long value) { this.totalSteps = value; }
+    public String getFirstStep() { return firstStep; }
+    public void setFirstStep(String value) { this.firstStep = value; }
+    public String getProvider() { return provider; }
+    public void setProvider(String value) { this.provider = value; }
+    public java.util.List<String> getFallbackChain() { return fallbackChain; }
+    public void setFallbackChain(java.util.List<String> value) { this.fallbackChain = value; }
+    public String getRecurringId() { return recurringId; }
+    public void setRecurringId(String value) { this.recurringId = value; }
+    public String getCronExpr() { return cronExpr; }
+    public void setCronExpr(String value) { this.cronExpr = value; }
+    public String getNextExecutionAt() { return nextExecutionAt; }
+    public void setNextExecutionAt(String value) { this.nextExecutionAt = value; }
+    public String getSilenceId() { return silenceId; }
+    public void setSilenceId(String value) { this.silenceId = value; }
+    public String getInterval() { return interval; }
+    public void setInterval(String value) { this.interval = value; }
+    public String getReason() { return reason; }
+    public void setReason(String value) { this.reason = value; }
+    public boolean isGrouped() { return type == OutcomeType.GROUPED; }
+    public boolean isStateChanged() { return type == OutcomeType.STATE_CHANGED; }
+    public boolean isPendingApproval() { return type == OutcomeType.PENDING_APPROVAL; }
+    public boolean isChainStarted() { return type == OutcomeType.CHAIN_STARTED; }
+    public boolean isCircuitOpen() { return type == OutcomeType.CIRCUIT_OPEN; }
+    public boolean isRecurringCreated() { return type == OutcomeType.RECURRING_CREATED; }
+    public boolean isSilenced() { return type == OutcomeType.SILENCED; }
+    public boolean isMuted() { return type == OutcomeType.MUTED; }
 }

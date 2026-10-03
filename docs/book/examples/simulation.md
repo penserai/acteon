@@ -43,7 +43,7 @@ flowchart LR
     end
 
     subgraph Assertions
-        OA[OutcomeAssertion]
+        OA[ActionOutcomeExt]
         PA[Provider Assertions]
     end
 
@@ -60,6 +60,7 @@ flowchart LR
 ```rust
 use acteon_simulation::prelude::*;
 use acteon_core::Action;
+use serde_json::json;
 
 #[tokio::test]
 async fn test_basic() {
@@ -96,6 +97,12 @@ async fn test_basic() {
 Captures all provider calls for verification:
 
 ```rust
+use std::{sync::Arc, time::Duration};
+use acteon_core::{Action, ProviderResponse};
+use acteon_provider::DynProvider;
+use acteon_simulation::prelude::*;
+use serde_json::json;
+
 let provider = Arc::new(RecordingProvider::new("email"));
 
 // With simulated latency
@@ -111,10 +118,13 @@ let smart = Arc::new(RecordingProvider::new("smart")
         Ok(ProviderResponse::success(json!({"processed": true})))
     }));
 
+// Exercise the recorder directly (or register it with a gateway).
+let action = Action::new("ns", "t1", "email", "notify", json!({}));
+provider.execute(&action).await.unwrap();
+
 // Assertions
 provider.assert_called(1);
-provider.assert_not_called();
-provider.assert_called_at_least(5);
+provider.assert_called_at_least(1);
 
 // Inspect calls
 for call in provider.calls() {
@@ -123,6 +133,7 @@ for call in provider.calls() {
 
 // Reset
 provider.clear();
+provider.assert_not_called();
 ```
 
 ### FailureMode Options
@@ -140,6 +151,9 @@ provider.clear();
 Simulates specific error types:
 
 ```rust
+use std::time::Duration;
+use acteon_simulation::prelude::*;
+
 // Connection error (retryable)
 let failing = FailingProvider::connection_error("webhook", "Connection refused");
 
@@ -153,27 +167,25 @@ let limited = FailingProvider::rate_limited("api");
 let broken = FailingProvider::execution_failed("broken", "Internal error");
 
 // Transient: fail first N, then recover
-let recovering = FailingProvider::execution_failed("flaky", "Temp error")
+let recovering = FailingProvider::connection_error("flaky", "Temporary connection failure")
     .fail_until(3);
 ```
 
-## OutcomeAssertion
+## ActionOutcomeExt
 
-Fluent assertions for dispatch results:
+The prelude imports `ActionOutcomeExt`, which adds assertion methods directly to
+`ActionOutcome`. Choose the assertion for the outcome you expect:
 
 ```rust
-harness.dispatch(&action).await.unwrap()
-    .assert_executed();      // Provider executed
-    .assert_deduplicated();  // Was deduplicated
-    .assert_suppressed();    // Was suppressed
-    .assert_throttled();     // Was throttled
-    .assert_failed();        // Provider failed
-    .assert_grouped();       // Added to group
-    .assert_state_changed(); // State transitioned
-    .assert_pending_approval(); // Needs approval
-    .assert_chain_started(); // Chain initiated
-    .assert_dry_run();       // Dry-run verdict returned
+let outcome = harness.dispatch(&action).await.unwrap();
+outcome.assert_executed();
 ```
+
+Other methods include `assert_deduplicated`, `assert_suppressed`,
+`assert_throttled`, `assert_failed`, `assert_grouped`, `assert_state_changed`,
+`assert_chain_started`, and `assert_dry_run`. They return `()`, so they cannot be
+chained. For approval outcomes, use
+`assert!(matches!(outcome, acteon_core::ActionOutcome::PendingApproval { .. }))`.
 
 ### Dry-Run Dispatch
 
@@ -222,19 +234,56 @@ for i in 0..15 {
 ### Failure Recovery
 
 ```rust
-let recovering = FailingProvider::execution_failed("api", "Temp")
-    .fail_until(2);
+use std::sync::Arc;
+use acteon_core::Action;
+use acteon_gateway::GatewayBuilder;
+use acteon_simulation::prelude::*;
+use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
+use serde_json::json;
 
-// First 2 calls fail, third succeeds (with retries)
+let recovering = Arc::new(
+    FailingProvider::connection_error("api", "Temporary connection failure")
+        .fail_until(2)
+);
+let gateway = GatewayBuilder::new()
+    .state(Arc::new(MemoryStateStore::new()))
+    .lock(Arc::new(MemoryDistributedLock::new()))
+    .provider(recovering.clone())
+    .build().unwrap();
+
+// The default executor allows three retries. The third attempt succeeds.
 let action = Action::new("ns", "t1", "api", "call", json!({}));
-let outcome = harness.dispatch(&action).await.unwrap();
-// With max_retries >= 2, this will eventually execute
+gateway.dispatch(action, None).await.unwrap().assert_executed();
+assert_eq!(recovering.call_count(), 3);
 ```
+
+`ExecutionFailed` is non-retryable. Use a connection error, timeout, or rate-limit
+failure to exercise automatic retry.
 
 ### Multi-Node Concurrent Dispatch
 
 ```rust
-let harness = SimulationHarness::multi_node_memory(3).await.unwrap();
+use acteon_core::{Action, ActionOutcome};
+use acteon_simulation::prelude::*;
+use serde_json::json;
+
+let harness = SimulationHarness::start(
+    SimulationConfig::builder()
+        .nodes(3)
+        .shared_state(true)
+        .add_recording_provider("email")
+        .add_rule_yaml(r#"
+            rules:
+              - name: dedup
+                condition:
+                  field: action.action_type
+                  eq: "notify"
+                action:
+                  type: deduplicate
+                  ttl_seconds: 60
+        "#)
+        .build()
+).await.unwrap();
 
 let action = Action::new("ns", "t1", "email", "notify", json!({}))
     .with_dedup_key("concurrent-key");
@@ -246,10 +295,12 @@ let futures: Vec<_> = (0..3)
 
 let outcomes = futures::future::join_all(futures).await;
 let executed = outcomes.iter()
-    .filter(|o| matches!(o.as_ref().unwrap().outcome(), ActionOutcome::Executed(_)))
+    .filter(|o| matches!(o.as_ref().unwrap(), ActionOutcome::Executed(_)))
     .count();
 
 assert_eq!(executed, 1); // Only one node executes
+harness.provider("email").unwrap().assert_called(1);
+harness.teardown().await.unwrap();
 ```
 
 ## Running Backend-Specific Simulations
@@ -262,7 +313,7 @@ docker run -d --name acteon-redis -p 6379:6379 redis:7-alpine
 
 # PostgreSQL
 docker run -d --name acteon-postgres -p 5433:5432 \
-  -e POSTGRES_PASSWORD=postgres postgres:16-alpine
+  -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=acteon_test postgres:16-alpine
 
 # DynamoDB Local
 docker run -d --name acteon-dynamodb -p 8000:8000 \

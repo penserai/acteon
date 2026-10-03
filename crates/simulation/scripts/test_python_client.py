@@ -10,9 +10,9 @@ import sys
 import uuid
 
 # Add the client to the path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../clients/python"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../../clients/python"))
 
-from acteon_client import ActeonClient, Action, AuditQuery
+from acteon_client import ActeonClient, Action, AuditQuery, PlatformOperation
 
 
 def main():
@@ -35,6 +35,7 @@ def main():
     # Test: Health check
     def test_health():
         assert client.health(), "Health check failed"
+        assert client.platform_request(PlatformOperation.HEALTH_HEALTH)["status"] == "ok"
 
     test("health()", test_health)
 

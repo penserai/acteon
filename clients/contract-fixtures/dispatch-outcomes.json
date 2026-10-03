@@ -1,0 +1,91 @@
+[
+  {
+    "type": "grouped",
+    "wire": {
+      "Grouped": {
+        "group_id": "group_id-value",
+        "group_size": 3,
+        "notify_at": "2026-10-03T12:00:00Z"
+      }
+    }
+  },
+  {
+    "type": "state_changed",
+    "wire": {
+      "StateChanged": {
+        "fingerprint": "fingerprint-value",
+        "previous_state": "previous_state-value",
+        "new_state": "new_state-value",
+        "notify": true
+      }
+    }
+  },
+  {
+    "type": "pending_approval",
+    "wire": {
+      "PendingApproval": {
+        "approval_id": "approval_id-value",
+        "expires_at": "2026-10-03T12:00:00Z",
+        "approve_url": "approve_url-value",
+        "reject_url": "reject_url-value",
+        "notification_sent": true
+      }
+    }
+  },
+  {
+    "type": "chain_started",
+    "wire": {
+      "ChainStarted": {
+        "chain_id": "chain_id-value",
+        "chain_name": "chain_name-value",
+        "total_steps": 3,
+        "first_step": "first_step-value"
+      }
+    }
+  },
+  {
+    "type": "circuit_open",
+    "wire": {
+      "CircuitOpen": {
+        "provider": "provider-value",
+        "fallback_chain": [
+          "fallback-one",
+          "fallback-two"
+        ]
+      }
+    }
+  },
+  {
+    "type": "recurring_created",
+    "wire": {
+      "RecurringCreated": {
+        "recurring_id": "recurring_id-value",
+        "cron_expr": "cron_expr-value",
+        "next_execution_at": null
+      }
+    }
+  },
+  {
+    "type": "silenced",
+    "wire": {
+      "Silenced": {
+        "silence_id": "silence_id-value",
+        "matched_rule": null
+      }
+    }
+  },
+  {
+    "type": "muted",
+    "wire": {
+      "Muted": {
+        "interval": "interval-value",
+        "reason": "reason-value",
+        "matched_rule": null
+      }
+    }
+  },
+  {
+    "type": "deduplicated",
+    "wire": "Deduplicated"
+  }
+]

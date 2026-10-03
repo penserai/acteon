@@ -135,18 +135,15 @@ class _BusClientMixin:
         return [BusTopic.from_dict(t) for t in resp.json().get("topics", [])]
 
     def get_bus_topic(self, namespace: str, tenant: str, name: str) -> BusTopic:
-        resp = self._request(
-            "GET",
-            f"/v1/bus/topics/{_seg(namespace)}/{_seg(tenant)}/{_seg(name)}",
-        )
-        _raise_for_status(resp)
-        return BusTopic.from_dict(resp.json())
+        topics = self.list_bus_topics(namespace=namespace, tenant=tenant)
+        for topic in topics:
+            if (topic.namespace, topic.tenant, topic.name) == (namespace, tenant, name):
+                return topic
+        raise HttpError(404, "Bus topic not found")
 
     def delete_bus_topic(self, namespace: str, tenant: str, name: str) -> None:
-        resp = self._request(
-            "DELETE",
-            f"/v1/bus/topics/{_seg(namespace)}/{_seg(tenant)}/{_seg(name)}",
-        )
+        topic = self.get_bus_topic(namespace, tenant, name)
+        resp = self._request("DELETE", f"/v1/bus/topics/{_seg(topic.kafka_name)}")
         _raise_for_status(resp)
 
     def publish_bus_message(self, req: PublishBusMessage) -> PublishReceipt:
@@ -180,12 +177,15 @@ class _BusClientMixin:
         return [BusSubscription.from_dict(s) for s in resp.json().get("subscriptions", [])]
 
     def get_bus_subscription(self, namespace: str, tenant: str, sub_id: str) -> BusSubscription:
-        resp = self._request(
-            "GET",
-            f"/v1/bus/subscriptions/{_seg(namespace)}/{_seg(tenant)}/{_seg(sub_id)}",
-        )
-        _raise_for_status(resp)
-        return BusSubscription.from_dict(resp.json())
+        subscriptions = self.list_bus_subscriptions(namespace=namespace, tenant=tenant)
+        for subscription in subscriptions:
+            if (subscription.namespace, subscription.tenant, subscription.id) == (
+                namespace,
+                tenant,
+                sub_id,
+            ):
+                return subscription
+        raise HttpError(404, "Bus subscription not found")
 
     def delete_bus_subscription(self, namespace: str, tenant: str, sub_id: str) -> None:
         resp = self._request(
@@ -765,18 +765,15 @@ class _AsyncBusClientMixin:
         return [BusTopic.from_dict(t) for t in resp.json().get("topics", [])]
 
     async def get_bus_topic(self, namespace: str, tenant: str, name: str) -> BusTopic:
-        resp = await self._request(
-            "GET",
-            f"/v1/bus/topics/{_seg(namespace)}/{_seg(tenant)}/{_seg(name)}",
-        )
-        _raise_for_status(resp)
-        return BusTopic.from_dict(resp.json())
+        topics = await self.list_bus_topics(namespace=namespace, tenant=tenant)
+        for topic in topics:
+            if (topic.namespace, topic.tenant, topic.name) == (namespace, tenant, name):
+                return topic
+        raise HttpError(404, "Bus topic not found")
 
     async def delete_bus_topic(self, namespace: str, tenant: str, name: str) -> None:
-        resp = await self._request(
-            "DELETE",
-            f"/v1/bus/topics/{_seg(namespace)}/{_seg(tenant)}/{_seg(name)}",
-        )
+        topic = await self.get_bus_topic(namespace, tenant, name)
+        resp = await self._request("DELETE", f"/v1/bus/topics/{_seg(topic.kafka_name)}")
         _raise_for_status(resp)
 
     async def publish_bus_message(self, req: PublishBusMessage) -> PublishReceipt:
@@ -812,12 +809,15 @@ class _AsyncBusClientMixin:
     async def get_bus_subscription(
         self, namespace: str, tenant: str, sub_id: str
     ) -> BusSubscription:
-        resp = await self._request(
-            "GET",
-            f"/v1/bus/subscriptions/{_seg(namespace)}/{_seg(tenant)}/{_seg(sub_id)}",
-        )
-        _raise_for_status(resp)
-        return BusSubscription.from_dict(resp.json())
+        subscriptions = await self.list_bus_subscriptions(namespace=namespace, tenant=tenant)
+        for subscription in subscriptions:
+            if (subscription.namespace, subscription.tenant, subscription.id) == (
+                namespace,
+                tenant,
+                sub_id,
+            ):
+                return subscription
+        raise HttpError(404, "Bus subscription not found")
 
     async def delete_bus_subscription(self, namespace: str, tenant: str, sub_id: str) -> None:
         resp = await self._request(

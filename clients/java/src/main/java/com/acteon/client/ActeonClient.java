@@ -44,6 +44,39 @@ import javax.net.ssl.X509TrustManager;
  * }</pre>
  */
 public class ActeonClient implements AutoCloseable {
+    /** Complete finite HTTP API. Uses server wire names and never auto-retries. */
+    public com.fasterxml.jackson.databind.JsonNode platformRequest(
+        PlatformOperation operation, Map<String, String> pathParameters,
+        Map<String, List<String>> query, Object body) throws ActeonException {
+        Map<String, String> values = pathParameters == null ? Map.of() : pathParameters;
+        if (!values.keySet().equals(new java.util.HashSet<>(java.util.Arrays.asList(operation.parameters)))) {
+            throw new IllegalArgumentException("Incorrect path parameters");
+        }
+        String path = operation.path;
+        for (String key : operation.parameters) {
+            String value = values.get(key);
+            if (value == null || value.isEmpty() || value.equals(".") || value.equals("..")) {
+                throw new IllegalArgumentException("Empty and dot path segments are not allowed");
+            }
+            path = path.replace("{" + key + "}", URLEncoder.encode(value, StandardCharsets.UTF_8).replace("+", "%20"));
+        }
+        if (operation.method.equals("GET") && body != null) throw new IllegalArgumentException("GET operations do not accept a body");
+        List<String> pairs = new ArrayList<>();
+        if (query != null) query.forEach((key, items) -> items.forEach(value -> pairs.add(
+            URLEncoder.encode(key, StandardCharsets.UTF_8) + "=" + URLEncoder.encode(value, StandardCharsets.UTF_8))));
+        if (!pairs.isEmpty()) path += "?" + String.join("&", pairs);
+        try {
+            HttpRequest request = requestBuilder(path).method(operation.method, body == null
+                ? HttpRequest.BodyPublishers.noBody()
+                : HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body))).build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() < 200 || response.statusCode() >= 300) throw new HttpException(response.statusCode(), response.body());
+            if (response.statusCode() == 204) return objectMapper.nullNode();
+            return operation.text ? objectMapper.getNodeFactory().textNode(response.body()) : objectMapper.readTree(response.body());
+        } catch (IOException e) { throw new ConnectionException(e.getMessage(), e); }
+        catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new ConnectionException("Request interrupted", e); }
+    }
+
     private final String baseUrl;
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
@@ -3203,6 +3236,9 @@ public class ActeonClient implements AutoCloseable {
                 case "POST" -> builder.POST(requestBody == null
                     ? HttpRequest.BodyPublishers.noBody()
                     : HttpRequest.BodyPublishers.ofString(requestBody)).build();
+                case "PUT" -> builder.PUT(requestBody == null
+                    ? HttpRequest.BodyPublishers.noBody()
+                    : HttpRequest.BodyPublishers.ofString(requestBody)).build();
                 case "PATCH" -> builder.method("PATCH", requestBody == null
                     ? HttpRequest.BodyPublishers.noBody()
                     : HttpRequest.BodyPublishers.ofString(requestBody)).build();
@@ -3283,15 +3319,14 @@ public class ActeonClient implements AutoCloseable {
     }
 
     public Bus.BusTopic getBusTopic(String namespace, String tenant, String name) throws ActeonException {
-        return busSend("GET",
-            "/v1/bus/topics/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(name),
-            null, Bus.BusTopic.class);
+        return listBusTopics(namespace, tenant).stream()
+            .filter(t -> namespace.equals(t.namespace()) && tenant.equals(t.tenant()) && name.equals(t.name()))
+            .findFirst().orElseThrow(() -> new HttpException(404, "Bus topic not found"));
     }
 
     public void deleteBusTopic(String namespace, String tenant, String name) throws ActeonException {
-        busSendVoid("DELETE",
-            "/v1/bus/topics/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(name),
-            null);
+        Bus.BusTopic topic = getBusTopic(namespace, tenant, name);
+        busSendVoid("DELETE", "/v1/bus/topics/" + busSeg(topic.kafkaName()), null);
     }
 
     public Bus.PublishReceipt publishBusMessage(Bus.PublishBusMessage req) throws ActeonException {
@@ -3315,9 +3350,9 @@ public class ActeonClient implements AutoCloseable {
     }
 
     public Bus.BusSubscription getBusSubscription(String namespace, String tenant, String subId) throws ActeonException {
-        return busSend("GET",
-            "/v1/bus/subscriptions/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(subId),
-            null, Bus.BusSubscription.class);
+        return listBusSubscriptions(namespace, tenant, null).stream()
+            .filter(s -> namespace.equals(s.namespace()) && tenant.equals(s.tenant()) && subId.equals(s.id()))
+            .findFirst().orElseThrow(() -> new HttpException(404, "Bus subscription not found"));
     }
 
     public void deleteBusSubscription(String namespace, String tenant, String subId) throws ActeonException {

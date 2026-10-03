@@ -154,6 +154,56 @@ public class ActionOutcomeDeserializer extends StdDeserializer<ActionOutcome> {
                     }
                 }
                 return outcome;
+            case "Grouped":
+                outcome.setType(OutcomeType.GROUPED);
+                outcome.setGroupId(payload.get("group_id").asText());
+                outcome.setGroupSize(payload.get("group_size").asLong());
+                outcome.setNotifyAt(payload.get("notify_at").asText());
+                return outcome;
+            case "StateChanged":
+                outcome.setType(OutcomeType.STATE_CHANGED);
+                outcome.setFingerprint(payload.get("fingerprint").asText());
+                outcome.setPreviousState(payload.get("previous_state").asText());
+                outcome.setNewState(payload.get("new_state").asText());
+                outcome.setNotify(payload.get("notify").asBoolean());
+                return outcome;
+            case "PendingApproval":
+                outcome.setType(OutcomeType.PENDING_APPROVAL);
+                outcome.setApprovalId(payload.get("approval_id").asText());
+                outcome.setExpiresAt(payload.get("expires_at").asText());
+                outcome.setApproveUrl(payload.get("approve_url").asText());
+                outcome.setRejectUrl(payload.get("reject_url").asText());
+                outcome.setNotificationSent(payload.get("notification_sent").asBoolean());
+                return outcome;
+            case "ChainStarted":
+                outcome.setType(OutcomeType.CHAIN_STARTED);
+                outcome.setChainId(payload.get("chain_id").asText());
+                outcome.setChainName(payload.get("chain_name").asText());
+                outcome.setTotalSteps(payload.get("total_steps").asLong());
+                outcome.setFirstStep(payload.get("first_step").asText());
+                return outcome;
+            case "CircuitOpen":
+                outcome.setType(OutcomeType.CIRCUIT_OPEN);
+                outcome.setProvider(payload.get("provider").asText());
+                outcome.setFallbackChain((payload.has("fallback_chain") ? mapper.convertValue(payload.get("fallback_chain"), new com.fasterxml.jackson.core.type.TypeReference<java.util.List<String>>() {}) : java.util.List.of()));
+                return outcome;
+            case "RecurringCreated":
+                outcome.setType(OutcomeType.RECURRING_CREATED);
+                outcome.setRecurringId(payload.get("recurring_id").asText());
+                outcome.setCronExpr(payload.get("cron_expr").asText());
+                outcome.setNextExecutionAt((payload.get("next_execution_at") == null || payload.get("next_execution_at").isNull() ? null : payload.get("next_execution_at").asText()));
+                return outcome;
+            case "Silenced":
+                outcome.setType(OutcomeType.SILENCED);
+                outcome.setSilenceId(payload.get("silence_id").asText());
+                outcome.setMatchedRule((payload.get("matched_rule") == null || payload.get("matched_rule").isNull() ? null : payload.get("matched_rule").asText()));
+                return outcome;
+            case "Muted":
+                outcome.setType(OutcomeType.MUTED);
+                outcome.setInterval(payload.get("interval").asText());
+                outcome.setReason(payload.get("reason").asText());
+                outcome.setMatchedRule((payload.get("matched_rule") == null || payload.get("matched_rule").isNull() ? null : payload.get("matched_rule").asText()));
+                return outcome;
             default:
                 outcome.setType(OutcomeType.FAILED);
                 outcome.setError(new ActionError("UNKNOWN", "Unknown outcome variant: " + variant, false, 0));

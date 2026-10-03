@@ -224,3 +224,5 @@ export {
   type MakeMessageOptions,
   type MakePushConfigOptions,
 } from "./a2a.js";
+
+export * from "./platform.js";

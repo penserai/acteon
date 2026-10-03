@@ -29,7 +29,7 @@ sequenceDiagram
     end
 ```
 
-1. An action matching a `require_approval` rule creates an approval record
+1. An action matching a `request_approval` rule creates an approval record
 2. HMAC-signed approve/reject URLs are generated
 3. A notification is sent to reviewers
 4. The action is held until approved, rejected, or expired
@@ -48,30 +48,31 @@ rules:
         - field: action.metadata.environment
           eq: "production"
     action:
-      type: require_approval
+      type: request_approval
       message: "Production deployment requires approval"
-      ttl_seconds: 3600
+      notify_provider: email
+      timeout_seconds: 3600
 ```
 
 ### Parameters
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `message` | string | Yes | Message shown to the reviewer |
-| `ttl_seconds` | u64 | No | Time before the approval expires (default: 1 hour) |
-| `notification_targets` | list | No | Where to send approval notifications |
-| `auto_approve_conditions` | list | No | Conditions for automatic approval |
+| `notify_provider` | string | Yes | Registered provider used for the approval notification |
+| `message` | string | No | Message shown to the reviewer |
+| `timeout_seconds` | u64 | No | Time before the approval expires (default: 1 hour) |
 
 ## Response
 
 ```json
 {
-  "outcome": "pending_approval",
+  "PendingApproval": {
   "approval_id": "apr-abc123",
   "expires_at": "2026-01-15T11:00:00Z",
   "approve_url": "/v1/approvals/ns/tenant-1/apr-abc123/approve?sig=...",
   "reject_url": "/v1/approvals/ns/tenant-1/apr-abc123/reject?sig=...",
   "notification_sent": true
+  }
 }
 ```
 
@@ -107,7 +108,7 @@ curl "http://localhost:8080/v1/approvals?namespace=ns&tenant=tenant-1"
 ### Get Approval Status
 
 ```bash
-curl "http://localhost:8080/v1/approvals/ns/tenant-1/apr-abc123"
+curl "http://localhost:8080/v1/approvals/ns/tenant-1/apr-abc123?sig=SIGNATURE&expires_at=TIMESTAMP"
 ```
 
 ## Approval States
@@ -129,16 +130,16 @@ stateDiagram-v2
 
     ```rust
     // Approve
-    client.approve("ns", "tenant-1", "apr-abc123", "sig", "expires_at").await?;
+    client.approve("ns", "tenant-1", "apr-abc123", "sig", 1791032400).await?;
 
     // Reject
-    client.reject("ns", "tenant-1", "apr-abc123", "sig", "expires_at").await?;
+    client.reject("ns", "tenant-1", "apr-abc123", "sig", 1791032400).await?;
 
     // List pending
     let approvals = client.list_approvals("ns", "tenant-1").await?;
 
     // Get status
-    let status = client.get_approval("ns", "tenant-1", "apr-abc123").await?;
+    let status = client.get_approval("ns", "tenant-1", "apr-abc123", "sig", 1791032400).await?;
     ```
 
 ## Use Cases

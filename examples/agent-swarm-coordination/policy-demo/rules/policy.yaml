@@ -1,0 +1,43 @@
+rules:
+  - name: block-forbidden
+    priority: 1
+    condition:
+      field: action.action_type
+      in_list: [delete_database, read_credentials]
+    action:
+      type: suppress
+      reason: "This operation is outside the agent's authority"
+  - name: approve-deploy
+    priority: 2
+    condition:
+      field: action.action_type
+      eq: deploy
+    action:
+      type: request_approval
+      notify_provider: notify
+      message: "Review the proposed deployment"
+      timeout_seconds: 600
+  - name: research-workflow
+    priority: 3
+    condition:
+      field: action.action_type
+      eq: research_request
+    action:
+      type: chain
+      chain: research-pipeline
+  - name: dedup-research
+    priority: 4
+    condition:
+      field: action.action_type
+      eq: search
+    action:
+      type: deduplicate
+      ttl_seconds: 600
+  - name: deny-unrecognized
+    priority: 100
+    condition:
+      field: action.namespace
+      eq: agent-swarm
+    action:
+      type: suppress
+      reason: "No permitted operation matched"

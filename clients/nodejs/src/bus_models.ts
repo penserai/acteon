@@ -66,6 +66,7 @@ export interface CreateBusSubscription {
   tenant: string;
   startingOffset?: string;
   ackMode?: string;
+  receiptRequired?: boolean;
   deadLetterTopic?: string;
   ackTimeoutMs?: number;
   description?: string;
@@ -79,6 +80,8 @@ export interface BusSubscription {
   tenant: string;
   startingOffset: string;
   ackMode: string;
+  receiptRequired?: boolean;
+  consumerGroup?: string;
   deadLetterTopic: string | null;
   ackTimeoutMs: number;
   description: string | null;
@@ -574,6 +577,7 @@ export function createBusSubscriptionBody(req: CreateBusSubscription): Record<st
   };
   if (req.startingOffset !== undefined) body.starting_offset = req.startingOffset;
   if (req.ackMode !== undefined) body.ack_mode = req.ackMode;
+  if (req.receiptRequired !== undefined) body.receipt_required = req.receiptRequired;
   if (req.deadLetterTopic !== undefined) body.dead_letter_topic = req.deadLetterTopic;
   if (req.ackTimeoutMs !== undefined) body.ack_timeout_ms = req.ackTimeoutMs;
   if (req.description !== undefined) body.description = req.description;
@@ -733,6 +737,8 @@ export function parseBusSubscription(d: Record<string, unknown>): BusSubscriptio
     tenant: d.tenant as string,
     startingOffset: d.starting_offset as string,
     ackMode: d.ack_mode as string,
+    receiptRequired: (d.receipt_required as boolean | undefined) ?? false,
+    consumerGroup: (d.consumer_group as string | undefined) ?? (d.id as string),
     deadLetterTopic: (d.dead_letter_topic as string | null | undefined) ?? null,
     ackTimeoutMs: d.ack_timeout_ms as number,
     description: (d.description as string | null | undefined) ?? null,

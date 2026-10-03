@@ -109,17 +109,24 @@ func (c *Client) ListBusTopics(ctx context.Context, filter *ListBusTopicsFilter)
 }
 
 func (c *Client) GetBusTopic(ctx context.Context, namespace, tenant, name string) (*BusTopic, error) {
-	path := fmt.Sprintf("/v1/bus/topics/%s/%s/%s", busSeg(namespace), busSeg(tenant), busSeg(name))
-	var out BusTopic
-	if _, err := c.busDoJSON(ctx, http.MethodGet, path, nil, &out); err != nil {
+	topics, err := c.ListBusTopics(ctx, &ListBusTopicsFilter{Namespace: namespace, Tenant: tenant})
+	if err != nil {
 		return nil, err
 	}
-	return &out, nil
+	for _, topic := range topics {
+		if topic.Namespace == namespace && topic.Tenant == tenant && topic.Name == name {
+			return &topic, nil
+		}
+	}
+	return nil, &HTTPError{Status: 404, Message: "Bus topic not found"}
 }
 
 func (c *Client) DeleteBusTopic(ctx context.Context, namespace, tenant, name string) error {
-	path := fmt.Sprintf("/v1/bus/topics/%s/%s/%s", busSeg(namespace), busSeg(tenant), busSeg(name))
-	_, err := c.busDoJSON(ctx, http.MethodDelete, path, nil, nil)
+	topic, err := c.GetBusTopic(ctx, namespace, tenant, name)
+	if err != nil {
+		return err
+	}
+	_, err = c.busDoJSON(ctx, http.MethodDelete, "/v1/bus/topics/"+busSeg(topic.KafkaName), nil, nil)
 	return err
 }
 
@@ -168,12 +175,16 @@ func (c *Client) ListBusSubscriptions(ctx context.Context, filter *ListBusSubscr
 }
 
 func (c *Client) GetBusSubscription(ctx context.Context, namespace, tenant, subID string) (*BusSubscription, error) {
-	path := fmt.Sprintf("/v1/bus/subscriptions/%s/%s/%s", busSeg(namespace), busSeg(tenant), busSeg(subID))
-	var out BusSubscription
-	if _, err := c.busDoJSON(ctx, http.MethodGet, path, nil, &out); err != nil {
+	subscriptions, err := c.ListBusSubscriptions(ctx, &ListBusSubscriptionsFilter{Namespace: namespace, Tenant: tenant})
+	if err != nil {
 		return nil, err
 	}
-	return &out, nil
+	for _, subscription := range subscriptions {
+		if subscription.Namespace == namespace && subscription.Tenant == tenant && subscription.ID == subID {
+			return &subscription, nil
+		}
+	}
+	return nil, &HTTPError{Status: 404, Message: "Bus subscription not found"}
 }
 
 func (c *Client) DeleteBusSubscription(ctx context.Context, namespace, tenant, subID string) error {

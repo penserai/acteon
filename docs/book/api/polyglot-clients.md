@@ -12,6 +12,8 @@ Acteon provides official client SDKs for multiple programming languages. All cli
 | **Go** | `github.com/penserai/acteon/clients/go/acteon` | `clients/go/` |
 | **Java** | `com.acteon:acteon-client` | `clients/java/` |
 
+See [SDK coverage and wire contracts](sdk-coverage.md) for the complete operation API, language-specific runtimes, and compatibility limits.
+
 ## Quick Examples
 
 === "Rust"
@@ -19,6 +21,7 @@ Acteon provides official client SDKs for multiple programming languages. All cli
     ```rust
     use acteon_client::ActeonClient;
     use acteon_core::Action;
+    use serde_json::json;
 
     let client = ActeonClient::new("http://localhost:8080");
     let action = Action::new(
@@ -31,7 +34,7 @@ Acteon provides official client SDKs for multiple programming languages. All cli
 === "Python"
 
     ```python
-    from acteon import ActeonClient, Action
+    from acteon_client import ActeonClient, Action
 
     client = ActeonClient("http://localhost:8080")
     action = Action("ns", "tenant", "email", "send", {"to": "user@example.com"})
@@ -210,16 +213,16 @@ All clients provide convenience types and factory functions for creating webhook
 The `polyglot_client_simulation` example tests all language clients against a running server:
 
 ```bash
-cargo run -p acteon-simulation --example polyglot_client_simulation
+RUST_LOG=info cargo run -p acteon-simulation --example polyglot_client_simulation
 ```
 
-This starts an in-memory server and runs each client's test suite, verifying compatibility across all languages.
+This starts an in-memory server and runs live smoke tests using the Rust, Python, TypeScript, Go, and Java clients. It checks dispatch and management requests, including the generated operation API in the polyglot clients. Run each SDK's unit and contract tests separately for broader coverage. Install all prerequisites to exercise every language; missing Java or Gradle is reported as a failed check.
 
 ### Prerequisites
 
 | Language | Requirements |
 |----------|-------------|
-| Python | Python 3.11+, `httpx` package |
+| Python | Python 3.11+, `pip install -e clients/python` |
 | Node.js | Node.js 18+, `npm install` in `clients/nodejs` |
 | Go | Go 1.22+ |
-| Java | Java 21+, jbang (optional) |
+| Java | Java 21+ and Gradle |

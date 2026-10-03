@@ -20,3 +20,13 @@ Consumers (a drift on any side fails that side's suite):
 When adding a workflow runner to another SDK (Go, Java), add a consumer
 for this file alongside it. When changing a wire shape, update the
 fixture and every consumer in the same PR.
+
+`platform-api.json` is generated from the server router by
+`scripts/sdk/platform_catalog.py`; its CI check keeps all five operation
+catalogs synchronized. Transport tests exercise authentication, paths, queries,
+bodies, response envelopes, and HTTP failures.
+
+`dispatch-outcomes.json` covers the governance outcomes that were previously
+missing from non-Rust SDKs, plus the bare-string deduplication outcome in batches.
+Rust round-trips these through `acteon_core::ActionOutcome`; Python, TypeScript,
+Go, and Java verify every field and the single/batch outcome discriminator.

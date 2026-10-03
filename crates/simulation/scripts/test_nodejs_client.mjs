@@ -9,7 +9,7 @@
 import { randomUUID } from "crypto";
 
 // Import from built client (must run npm build first)
-const clientPath = new URL("../../clients/nodejs/dist/index.js", import.meta.url);
+const clientPath = new URL("../../../clients/nodejs/dist/index.js", import.meta.url);
 const { ActeonClient, createAction } = await import(clientPath);
 
 const baseUrl = process.env.ACTEON_URL || "http://localhost:8080";
@@ -35,6 +35,8 @@ async function test(name, fn) {
 await test("health()", async () => {
   const healthy = await client.health();
   if (!healthy) throw new Error("Health check failed");
+  const wire = await client.platformRequest("health_health");
+  if (wire.status !== "ok") throw new Error("Platform health failed");
 });
 
 // Test: Single dispatch

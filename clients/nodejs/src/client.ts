@@ -1,3 +1,4 @@
+import { platformRequestParts, type PlatformOperation, type PlatformRequestOptions } from "./platform.js";
 /**
  * HTTP client for the Acteon action gateway.
  */
@@ -341,6 +342,15 @@ function extractErrorMessage(data: string): string {
 }
 
 export class ActeonClient {
+  /** Complete finite HTTP API, using wire field names. Never automatically retries. */
+  async platformRequest(operation: PlatformOperation, options: PlatformRequestOptions = {}): Promise<unknown> {
+    const parts = platformRequestParts(operation, options);
+    const response = await this.request(parts.method, parts.path, { params: parts.params, body: options.body });
+    if (!response.ok) throw new HttpError(response.status, await response.text());
+    if (response.status === 204) return null;
+    return parts.response === "text" ? response.text() : response.json();
+  }
+
   private readonly baseUrl: string;
   private readonly timeout: number;
   private readonly apiKey?: string;
@@ -411,7 +421,7 @@ export class ActeonClient {
       const fetchOptions: RequestInit & { dispatcher?: unknown } = {
         method,
         headers,
-        body: options?.body ? JSON.stringify(options.body) : undefined,
+        body: options?.body !== undefined ? JSON.stringify(options.body) : undefined,
         signal: controller.signal,
       };
       if (this.dispatcher) {
@@ -2507,19 +2517,15 @@ export class ActeonClient {
   }
 
   async getBusTopic(namespace: string, tenant: string, name: string): Promise<BusTopic> {
-    const response = await this.request(
-      "GET",
-      `/v1/bus/topics/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(name)}`,
-    );
-    if (!response.ok) await this.busThrowFromResponse(response);
-    return parseBusTopic((await response.json()) as Record<string, unknown>);
+    const topics = await this.listBusTopics({ namespace, tenant });
+    const topic = topics.find(t => t.namespace === namespace && t.tenant === tenant && t.name === name);
+    if (!topic) throw new HttpError(404, "Bus topic not found");
+    return topic;
   }
 
   async deleteBusTopic(namespace: string, tenant: string, name: string): Promise<void> {
-    const response = await this.request(
-      "DELETE",
-      `/v1/bus/topics/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(name)}`,
-    );
+    const topic = await this.getBusTopic(namespace, tenant, name);
+    const response = await this.request("DELETE", `/v1/bus/topics/${this.busSeg(topic.kafkaName)}`);
     if (!response.ok) await this.busThrowFromResponse(response);
   }
 
@@ -2556,17 +2562,11 @@ export class ActeonClient {
     return (body.subscriptions ?? []).map(parseBusSubscription);
   }
 
-  async getBusSubscription(
-    namespace: string,
-    tenant: string,
-    subId: string,
-  ): Promise<BusSubscription> {
-    const response = await this.request(
-      "GET",
-      `/v1/bus/subscriptions/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(subId)}`,
-    );
-    if (!response.ok) await this.busThrowFromResponse(response);
-    return parseBusSubscription((await response.json()) as Record<string, unknown>);
+  async getBusSubscription(namespace: string, tenant: string, subId: string): Promise<BusSubscription> {
+    const subscriptions = await this.listBusSubscriptions({ namespace, tenant });
+    const subscription = subscriptions.find(s => s.namespace === namespace && s.tenant === tenant && s.id === subId);
+    if (!subscription) throw new HttpError(404, "Bus subscription not found");
+    return subscription;
   }
 
   async deleteBusSubscription(
