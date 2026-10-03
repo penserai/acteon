@@ -132,6 +132,14 @@ async fn seeded_server(identity: CallerIdentity, quarantine: bool) -> TestServer
                 post(bus_stages::replay),
             )
             .route(
+                "/v1/bus/stages/{namespace}/{tenant}/{id}/control",
+                post(bus_stages::control),
+            )
+            .route(
+                "/v1/bus/stages/{namespace}/{tenant}/{id}/controls/{request}",
+                get(bus_stages::control_audit),
+            )
+            .route(
                 "/v1/bus/stages/{namespace}/{tenant}/{id}/replays/{request}",
                 get(bus_stages::replay_audit),
             )
@@ -435,4 +443,92 @@ async fn replay_requires_distinct_grant_and_binds_authenticated_actor_and_body()
         .json(&body)
         .await
         .assert_status_forbidden();
+}
+
+#[tokio::test]
+async fn control_requires_distinct_grant_revision_and_authenticated_audit() {
+    let base = "/v1/bus/stages/test/tenant/stage";
+    let request = uuid::Uuid::new_v4();
+    let body = serde_json::json!({"request_id":request,"command":"halt","expected_control_revision":0,"reason":"maintenance"});
+    for (role, grants) in [
+        (
+            Role::Operator,
+            vec!["stage_read", "stage_manage", "stage_replay"],
+        ),
+        (Role::Viewer, vec!["stage_control", "stage_read"]),
+    ] {
+        server(identity(role, grants))
+            .await
+            .post(&format!("{base}/control"))
+            .json(&body)
+            .await
+            .assert_status_forbidden();
+    }
+    let server = server(identity(
+        Role::Operator,
+        vec!["stage_control", "stage_read"],
+    ))
+    .await;
+    let accepted = server.post(&format!("{base}/control")).json(&body).await;
+    accepted.assert_status_ok();
+    let audit = accepted.json::<serde_json::Value>();
+    assert_eq!(audit["actor"], "api_key:operator");
+    assert_eq!(audit["control_revision"], 1);
+    assert_eq!(
+        server
+            .get(&format!("{base}/controls/{request}"))
+            .await
+            .json::<serde_json::Value>(),
+        audit
+    );
+    assert_eq!(
+        server
+            .post(&format!("{base}/control"))
+            .json(&body)
+            .await
+            .json::<serde_json::Value>(),
+        audit
+    );
+    let status = server.get(base).await.json::<serde_json::Value>();
+    assert_eq!(status["operator_halted"], true);
+    assert_eq!(status["control_revision"], 1);
+    let mut stale = body.clone();
+    stale["request_id"] = serde_json::json!(uuid::Uuid::new_v4());
+    stale["command"] = serde_json::json!("resume");
+    server
+        .post(&format!("{base}/control"))
+        .json(&stale)
+        .await
+        .assert_status_conflict();
+    stale["expected_control_revision"] = serde_json::json!(1);
+    server
+        .post(&format!("{base}/control"))
+        .json(&stale)
+        .await
+        .assert_status_ok();
+    assert_eq!(
+        server.get(base).await.json::<serde_json::Value>()["halted"],
+        false
+    );
+    server
+        .post(&format!("{base}/control"))
+        .json(&body)
+        .await
+        .assert_status_ok();
+    assert_eq!(
+        server.get(base).await.json::<serde_json::Value>()["operator_halted"],
+        false
+    );
+    server
+        .post(&format!("{base}/control").replace("/tenant/", "/other/"))
+        .json(&body)
+        .await
+        .assert_status_forbidden();
+    let mut spoof = body;
+    spoof["actor"] = serde_json::json!("admin");
+    server
+        .post(&format!("{base}/control"))
+        .json(&spoof)
+        .await
+        .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
 }

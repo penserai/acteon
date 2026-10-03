@@ -120,3 +120,63 @@ Rust SDK also supports these operations.
 
 See the [cascading observability guide](../guides/neural-observability-detector.md)
 for a real multi-source Kafka/Redis simulation using this stage and local Laya.
+
+## Audited halt and resume
+
+Operators can stop a stage without changing its processor definition, callback
+state, Kafka positions, quarantine, or output backlog. `StreamStageOperator::control`
+atomically commits a bounded audit, invalidates the processing lease, and advances
+the stage revision. A callback already running may finish its computation, but
+its fenced lease cannot commit a new checkpoint. Both normal input processing and
+quarantine replay refuse new claims while the operator halt is durable, including
+after worker replacement.
+
+The HTTP API requires a separate tenant/namespace-scoped `bus/stage_control` grant
+and an admin/operator role. Inspection uses `bus/stage_read`; quarantine management
+and replay grants do not confer control permission. The server binds the audit actor
+to the authenticated identity.
+
+```http
+POST /v1/bus/stages/{namespace}/{tenant}/{id}/control
+Content-Type: application/json
+
+{
+  "request_id": "54c803c4-71eb-43a5-9d09-16820ec51c29",
+  "command": "halt",
+  "expected_control_revision": 0,
+  "reason": "pause input processing for maintenance",
+  "reset_retry_budget": false
+}
+```
+
+Read `control_revision` from stage status before issuing a new command. Success
+returns the committed audit with the next revision. A stale revision or a reused
+request ID with different actor/body returns `409`. Retry the **same UUID and body**
+after a storage timeout or lost response: it returns the original audit even if
+another command has since committed, without reapplying the earlier command.
+`GET /v1/bus/stages/{namespace}/{tenant}/{id}/controls/{request}` retrieves an audit.
+The Rust SDK exposes typed `control_stage` and `get_stage_control_audit` methods.
+
+Use `"command": "resume"` with the current revision to clear the operator hold.
+Resume preserves ordinary retry attempts, terminal failures, and scheduled backoff.
+To recover a terminal normal-input failure after fixing its cause, explicitly set
+`reset_retry_budget: true` on resume. The audit captures the previous attempt count
+and terminal status. This grants a new attempt budget while **retaining the failed
+source anchor**: the source must redeliver that input before processing can continue.
+It does not revive failed quarantine replay requests; those require a new explicit
+repair request. Automatic counters remain cumulative across resets.
+
+`run` closes its source and exits on a halt; restart the driver after resume.
+Halt cannot undo a checkpoint already committed, a broker acknowledgement already
+in flight, a model request, or an operational effect. Independent outbox delivery
+continues for already-durable outputs. Use separate delivery controls when that
+worker also needs to stop.
+
+Control audits retain up to 1,000 commands and 16 MiB of serialized history per
+stage. They are never automatically evicted, preserving idempotency. New commands
+return `429` when capacity is full; old request retries still work. Halt admission
+reserves one command and 64 KiB for a resume, so reaching the audit limit cannot
+strand an operator hold. Plan a stage migration before exhausting history.
+The first control upgrades the checkpoint to version 6. Upgrade all workers before
+using controls: older readers reject the new format instead of ignoring a halt.
+Snapshots without controls retain their existing version and remain readable.

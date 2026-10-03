@@ -186,6 +186,8 @@ struct RecoveryReport {
     quarantines_restored_before_replay: usize,
     operator_quarantines_discarded: usize,
     operator_replay: acteon_bus::StreamReplayAudit,
+    operator_controls: Vec<acteon_bus::StreamStageControlAudit>,
+    halted_processing_probes: usize,
     rebalance_redelivery_offset: i64,
 }
 
@@ -1310,6 +1312,12 @@ fn markdown(report: &SimulationReport) -> String {
         report.recovery.operator_replay.attempts,
         report.recovery.operator_quarantines_discarded
     );
+    let _ = writeln!(
+        output,
+        "## Audited stage controls\n\nHTTP halt/resume commands committed **{} audits**. A replacement worker observed the durable halt; **{} processing/replay probes** were blocked with unchanged Kafka positions. Retrying the earlier halt after resume returned its original audit without halting the stage again.\n",
+        report.recovery.operator_controls.len(),
+        report.recovery.halted_processing_probes
+    );
     output.push_str("## Managed delivery recovery\n\n");
     let _ = write!(
         output,
@@ -1900,7 +1908,39 @@ async fn kafka_stream_replay(
         // A replacement worker reloads the durable request rather than receiving
         // a broker redelivery or repeating an operator's HTTP command.
         drop(stage);
-        let mut stage = ManagedStreamStage::initialize(open_windows(redis, empty.snapshot()).await?, "window-replay-worker", "telemetry-window-v1", source.identity(), stage_config.clone()).await?;
+        let stage = ManagedStreamStage::initialize(open_windows(redis, empty.snapshot()).await?, "window-replay-worker", "telemetry-window-v1", source.identity(), stage_config.clone()).await?;
+        let halt = acteon_bus::StreamStageControlRequest {
+            request_id: uuid::Uuid::new_v4(), command: acteon_bus::StreamStageCommand::Halt,
+            expected_control_revision: status.control_revision, reason: "pause window stage for audited maintenance".into(), reset_retry_budget: false,
+        };
+        let halted = client.control_stage(NAMESPACE,TENANT,"windows",&halt).await?;
+        if halted != client.control_stage(NAMESPACE,TENANT,"windows",&halt).await?
+            || halted != client.get_stage_control_audit(NAMESPACE,TENANT,"windows",halt.request_id).await? {
+            return Err(error("halt command audit or idempotence mismatch"));
+        }
+        // Recreate the worker while halted: the durable control survives replacement.
+        drop(stage);
+        let mut stage = ManagedStreamStage::initialize(open_windows(redis, empty.snapshot()).await?, "window-controlled-worker", "telemetry-window-v1", source.identity(), stage_config.clone()).await?;
+        for result in [
+            stage.process_once(&mut source,&processor,&tokio_util::sync::CancellationToken::new()).await?,
+            stage.replay_once(&processor,&tokio_util::sync::CancellationToken::new()).await?,
+        ] {
+            if !matches!(result, StreamStageResult::Halted { .. }) { return Err(error("halt did not block processing and replay")); }
+        }
+        if stage.checkpoint().positions() != before_positions || !stage.metrics().await?.operator_halted {
+            return Err(error("halt changed source progress or lost durable control"));
+        }
+        let resume = acteon_bus::StreamStageControlRequest {
+            request_id: uuid::Uuid::new_v4(), command: acteon_bus::StreamStageCommand::Resume,
+            expected_control_revision: halted.control_revision, reason: "resume verified window stage".into(), reset_retry_budget: false,
+        };
+        let resumed = client.control_stage(NAMESPACE,TENANT,"windows",&resume).await?;
+        if halted != client.control_stage(NAMESPACE,TENANT,"windows",&halt).await?
+            || client.stream_stage_status(NAMESPACE,TENANT,"windows").await?.operator_halted {
+            return Err(error("retrying old halt undid newer resume"));
+        }
+        let operator_controls = vec![halted, resumed];
+        let halted_processing_probes = 2;
         let replay_result = stage.replay_once(&processor,&tokio_util::sync::CancellationToken::new()).await?;
         if !matches!(replay_result, StreamStageResult::ReplayCompleted{request_id,..} if request_id == request.request_id) { return Err(error(format!("repair replay did not complete: {replay_result:?}; audit: {:?}",client.get_stage_replay_audit(NAMESPACE,TENANT,"windows",request.request_id).await?))); }
         let operator_replay = client.get_stage_replay_audit(NAMESPACE,TENANT,"windows",request.request_id).await?;
@@ -2013,6 +2053,8 @@ async fn kafka_stream_replay(
                 quarantines_restored_before_replay,
                 operator_quarantines_discarded,
                 operator_replay,
+                operator_controls,
+                halted_processing_probes,
                 rebalance_redelivery_offset,
             },
             checkpoints,

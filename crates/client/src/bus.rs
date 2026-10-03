@@ -3075,3 +3075,34 @@ impl ActeonClient {
         .await
     }
 }
+
+#[cfg(feature = "stream-processing")]
+impl ActeonClient {
+    pub async fn control_stage(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        id: &str,
+        request: &acteon_bus::StreamStageControlRequest,
+    ) -> Result<acteon_bus::StreamStageControlAudit, Error> {
+        self.bus_session_json(
+            self.client
+                .post(format!("{}/control", self.stage_url(namespace, tenant, id)))
+                .json(request),
+        )
+        .await
+    }
+    pub async fn get_stage_control_audit(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        id: &str,
+        request: uuid::Uuid,
+    ) -> Result<acteon_bus::StreamStageControlAudit, Error> {
+        self.bus_session_json(self.client.get(format!(
+            "{}/controls/{request}",
+            self.stage_url(namespace, tenant, id)
+        )))
+        .await
+    }
+}

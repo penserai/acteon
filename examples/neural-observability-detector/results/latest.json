@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-03T14:13:26.044079+00:00",
+  "generated_at": "2026-10-03T15:10:37.835162+00:00",
   "model": "typed-decisions",
   "health": {
     "loaded": [
@@ -70,17 +70,17 @@
     "replayed_records_deduplicated": 5,
     "committed_offsets": {
       "logs": {
-        "topic": "observability.acme.logs-020e628932fa4c2382276bb3970b5ea1",
+        "topic": "observability.acme.logs-e4b0ae53c8be4a2bb3d3119d25ecd784",
         "partition": 0,
         "offset": 4
       },
       "metrics": {
-        "topic": "observability.acme.metrics-020e628932fa4c2382276bb3970b5ea1",
+        "topic": "observability.acme.metrics-e4b0ae53c8be4a2bb3d3119d25ecd784",
         "partition": 0,
         "offset": 4
       },
       "traces": {
-        "topic": "observability.acme.traces-020e628932fa4c2382276bb3970b5ea1",
+        "topic": "observability.acme.traces-e4b0ae53c8be4a2bb3d3119d25ecd784",
         "partition": 0,
         "offset": 3
       }
@@ -114,7 +114,7 @@
       "logs": {
         "namespace": "observability",
         "tenant": "acme",
-        "subject": "telemetry-logs-020e628932fa4c2382276bb3970b5ea1",
+        "subject": "telemetry-logs-e4b0ae53c8be4a2bb3d3119d25ecd784",
         "version": 1,
         "body": {
           "additionalProperties": false,
@@ -184,7 +184,7 @@
       "metrics": {
         "namespace": "observability",
         "tenant": "acme",
-        "subject": "telemetry-metrics-020e628932fa4c2382276bb3970b5ea1",
+        "subject": "telemetry-metrics-e4b0ae53c8be4a2bb3d3119d25ecd784",
         "version": 1,
         "body": {
           "additionalProperties": false,
@@ -254,7 +254,7 @@
       "traces": {
         "namespace": "observability",
         "tenant": "acme",
-        "subject": "telemetry-traces-020e628932fa4c2382276bb3970b5ea1",
+        "subject": "telemetry-traces-e4b0ae53c8be4a2bb3d3119d25ecd784",
         "version": 1,
         "body": {
           "additionalProperties": false,
@@ -324,18 +324,18 @@
     },
     "quarantined_inputs": [
       {
-        "id": "f5d0a762-a4c4-4fed-9763-97f295571133",
+        "id": "f9776971-899f-4746-bfdd-819b39d9fd5f",
         "position": {
           "lane": {
             "source": "logs",
-            "consumer_group": "acteon-live-e8383fe7526d5f908089f639c343f566c2f99671bd1852211539cb502b5ccbf0",
-            "topic": "observability.acme.logs-020e628932fa4c2382276bb3970b5ea1",
+            "consumer_group": "acteon-live-c5b68ad60bc5f04ae4a2729adae0b5c79297fe70f7d72e48b2ddca2d70797c4a",
+            "topic": "observability.acme.logs-e4b0ae53c8be4a2bb3d3119d25ecd784",
             "partition": 0
           },
           "offset": 0
         },
         "message": {
-          "topic": "observability.acme.logs-020e628932fa4c2382276bb3970b5ea1",
+          "topic": "observability.acme.logs-e4b0ae53c8be4a2bb3d3119d25ecd784",
           "key": "acme:prod:checkout-api:checkout-v42",
           "payload": {
             "features": "malformed",
@@ -344,9 +344,9 @@
           },
           "partition": 0,
           "offset": 0,
-          "timestamp": "2026-10-03T14:12:18.195Z"
+          "timestamp": "2026-10-03T15:08:23.938Z"
         },
-        "failed_at": "2026-10-03T14:12:21.368521Z",
+        "failed_at": "2026-10-03T15:08:27.133452Z",
         "failure": "schema_violation",
         "contract_sha256": "54f65b9175110c2301fcdee331c461adce11002f4b13e890ccc65055cb89b3fe",
         "reason": "consume schema violation at schema /required"
@@ -355,18 +355,18 @@
     "quarantines_restored_before_replay": 1,
     "operator_quarantines_discarded": 0,
     "operator_replay": {
-      "request_id": "a92df042-4fd5-4017-97b8-45f4da951568",
-      "quarantine_id": "f5d0a762-a4c4-4fed-9763-97f295571133",
+      "request_id": "39d33a18-9530-42eb-9199-67cbb036b1b7",
+      "quarantine_id": "f9776971-899f-4746-bfdd-819b39d9fd5f",
       "actor": "anonymous:",
       "reason": "repair malformed log; preserve event deduplication",
-      "requested_at": "2026-10-03T14:12:21.512610Z",
-      "finished_at": "2026-10-03T14:12:21.536229Z",
+      "requested_at": "2026-10-03T15:08:27.282914Z",
+      "finished_at": "2026-10-03T15:08:27.338458Z",
       "processor_version": "telemetry-window-v1",
       "position": {
         "lane": {
           "source": "logs",
-          "consumer_group": "acteon-live-e8383fe7526d5f908089f639c343f566c2f99671bd1852211539cb502b5ccbf0",
-          "topic": "observability.acme.logs-020e628932fa4c2382276bb3970b5ea1",
+          "consumer_group": "acteon-live-c5b68ad60bc5f04ae4a2729adae0b5c79297fe70f7d72e48b2ddca2d70797c4a",
+          "topic": "observability.acme.logs-e4b0ae53c8be4a2bb3d3119d25ecd784",
           "partition": 0
         },
         "offset": 0
@@ -380,6 +380,45 @@
       "last_error": null,
       "completed_generation": 2
     },
+    "operator_controls": [
+      {
+        "request": {
+          "request_id": "457bb7cb-e8dc-44e1-b263-1d2942416833",
+          "command": "halt",
+          "expected_control_revision": 0,
+          "reason": "pause window stage for audited maintenance",
+          "reset_retry_budget": false
+        },
+        "actor": "anonymous:",
+        "reason": "pause window stage for audited maintenance",
+        "applied_at": "2026-10-03T15:08:27.296619Z",
+        "control_revision": 1,
+        "checkpoint_generation": 1,
+        "previous_operator_halted": false,
+        "previous_retry_attempts": null,
+        "previous_retry_terminal": false,
+        "lease_fenced": false
+      },
+      {
+        "request": {
+          "request_id": "b664b2d8-c250-4917-93be-640d8308537a",
+          "command": "resume",
+          "expected_control_revision": 1,
+          "reason": "resume verified window stage",
+          "reset_retry_budget": false
+        },
+        "actor": "anonymous:",
+        "reason": "resume verified window stage",
+        "applied_at": "2026-10-03T15:08:27.318414Z",
+        "control_revision": 2,
+        "checkpoint_generation": 1,
+        "previous_operator_halted": true,
+        "previous_retry_attempts": null,
+        "previous_retry_terminal": false,
+        "lease_fenced": false
+      }
+    ],
+    "halted_processing_probes": 2,
     "rebalance_redelivery_offset": 0
   },
   "trials": [
@@ -392,17 +431,17 @@
       "uncertainty": 0.7349,
       "source_positions": {
         "logs": {
-          "topic": "observability.acme.logs-020e628932fa4c2382276bb3970b5ea1",
+          "topic": "observability.acme.logs-e4b0ae53c8be4a2bb3d3119d25ecd784",
           "partition": 0,
           "offset": 1
         },
         "metrics": {
-          "topic": "observability.acme.metrics-020e628932fa4c2382276bb3970b5ea1",
+          "topic": "observability.acme.metrics-e4b0ae53c8be4a2bb3d3119d25ecd784",
           "partition": 0,
           "offset": 0
         },
         "traces": {
-          "topic": "observability.acme.traces-020e628932fa4c2382276bb3970b5ea1",
+          "topic": "observability.acme.traces-e4b0ae53c8be4a2bb3d3119d25ecd784",
           "partition": 0,
           "offset": 0
         }
@@ -415,8 +454,8 @@
           "evidence_probability": 0.2128,
           "impact_score": 1.4031,
           "available": true,
-          "model_request_ms": 6461.0,
-          "wall_ms": 6466.0,
+          "model_request_ms": 4154.0,
+          "wall_ms": 4160.0,
           "raw_response": {
             "answers": {
               "condition": {
@@ -485,7 +524,7 @@
             }
           },
           "provider_evidence": {
-            "acteon-model-elapsed-ms": "6461",
+            "acteon-model-elapsed-ms": "4154",
             "acteon-model-lock-digest": "sha256:38eb82188ec4f7c9e635c5f00e1243d537a557983348ba9c28e866c81393bb69",
             "acteon-model-name": "typed-decisions",
             "acteon-model-repository": "convaiinnovations/laya",
@@ -501,8 +540,8 @@
           "evidence_probability": 0.3264,
           "impact_score": 1.3027,
           "available": true,
-          "model_request_ms": 2439.0,
-          "wall_ms": 2445.0,
+          "model_request_ms": 7942.0,
+          "wall_ms": 7946.0,
           "raw_response": {
             "answers": {
               "condition": {
@@ -571,7 +610,7 @@
             }
           },
           "provider_evidence": {
-            "acteon-model-elapsed-ms": "2439",
+            "acteon-model-elapsed-ms": "7942",
             "acteon-model-lock-digest": "sha256:38eb82188ec4f7c9e635c5f00e1243d537a557983348ba9c28e866c81393bb69",
             "acteon-model-name": "typed-decisions",
             "acteon-model-repository": "convaiinnovations/laya",
@@ -587,8 +626,8 @@
           "evidence_probability": 0.3057,
           "impact_score": 1.1232,
           "available": true,
-          "model_request_ms": 4258.0,
-          "wall_ms": 4264.0,
+          "model_request_ms": 1938.0,
+          "wall_ms": 1944.0,
           "raw_response": {
             "answers": {
               "condition": {
@@ -657,7 +696,7 @@
             }
           },
           "provider_evidence": {
-            "acteon-model-elapsed-ms": "4258",
+            "acteon-model-elapsed-ms": "1938",
             "acteon-model-lock-digest": "sha256:38eb82188ec4f7c9e635c5f00e1243d537a557983348ba9c28e866c81393bb69",
             "acteon-model-name": "typed-decisions",
             "acteon-model-repository": "convaiinnovations/laya",
@@ -679,8 +718,8 @@
         },
         "correlated_probability": 0.4515,
         "impact_score": 2.0883,
-        "model_request_ms": 9001.0,
-        "wall_ms": 9003.0,
+        "model_request_ms": 15769.0,
+        "wall_ms": 15788.0,
         "raw_response": {
           "answers": {
             "correlated_incident": {
@@ -750,7 +789,7 @@
           }
         },
         "provider_evidence": {
-          "acteon-model-elapsed-ms": "9001",
+          "acteon-model-elapsed-ms": "15769",
           "acteon-model-lock-digest": "sha256:38eb82188ec4f7c9e635c5f00e1243d537a557983348ba9c28e866c81393bb69",
           "acteon-model-name": "typed-decisions",
           "acteon-model-repository": "convaiinnovations/laya",
@@ -771,17 +810,17 @@
       "uncertainty": 0.7208,
       "source_positions": {
         "logs": {
-          "topic": "observability.acme.logs-020e628932fa4c2382276bb3970b5ea1",
+          "topic": "observability.acme.logs-e4b0ae53c8be4a2bb3d3119d25ecd784",
           "partition": 0,
           "offset": 2
         },
         "metrics": {
-          "topic": "observability.acme.metrics-020e628932fa4c2382276bb3970b5ea1",
+          "topic": "observability.acme.metrics-e4b0ae53c8be4a2bb3d3119d25ecd784",
           "partition": 0,
           "offset": 2
         },
         "traces": {
-          "topic": "observability.acme.traces-020e628932fa4c2382276bb3970b5ea1",
+          "topic": "observability.acme.traces-e4b0ae53c8be4a2bb3d3119d25ecd784",
           "partition": 0,
           "offset": 1
         }
@@ -794,8 +833,8 @@
           "evidence_probability": 0.2181,
           "impact_score": 1.2921,
           "available": true,
-          "model_request_ms": 1909.0,
-          "wall_ms": 1911.0,
+          "model_request_ms": 18038.0,
+          "wall_ms": 18068.0,
           "raw_response": {
             "answers": {
               "condition": {
@@ -864,7 +903,7 @@
             }
           },
           "provider_evidence": {
-            "acteon-model-elapsed-ms": "1909",
+            "acteon-model-elapsed-ms": "18038",
             "acteon-model-lock-digest": "sha256:38eb82188ec4f7c9e635c5f00e1243d537a557983348ba9c28e866c81393bb69",
             "acteon-model-name": "typed-decisions",
             "acteon-model-repository": "convaiinnovations/laya",
@@ -880,8 +919,8 @@
           "evidence_probability": 0.2692,
           "impact_score": 1.2185,
           "available": true,
-          "model_request_ms": 3346.0,
-          "wall_ms": 3349.0,
+          "model_request_ms": 5002.0,
+          "wall_ms": 5030.0,
           "raw_response": {
             "answers": {
               "condition": {
@@ -950,7 +989,7 @@
             }
           },
           "provider_evidence": {
-            "acteon-model-elapsed-ms": "3346",
+            "acteon-model-elapsed-ms": "5002",
             "acteon-model-lock-digest": "sha256:38eb82188ec4f7c9e635c5f00e1243d537a557983348ba9c28e866c81393bb69",
             "acteon-model-name": "typed-decisions",
             "acteon-model-repository": "convaiinnovations/laya",
@@ -966,8 +1005,8 @@
           "evidence_probability": 0.2518,
           "impact_score": 1.2714,
           "available": true,
-          "model_request_ms": 4987.0,
-          "wall_ms": 4990.0,
+          "model_request_ms": 11352.0,
+          "wall_ms": 11380.0,
           "raw_response": {
             "answers": {
               "condition": {
@@ -1036,7 +1075,7 @@
             }
           },
           "provider_evidence": {
-            "acteon-model-elapsed-ms": "4987",
+            "acteon-model-elapsed-ms": "11352",
             "acteon-model-lock-digest": "sha256:38eb82188ec4f7c9e635c5f00e1243d537a557983348ba9c28e866c81393bb69",
             "acteon-model-name": "typed-decisions",
             "acteon-model-repository": "convaiinnovations/laya",
@@ -1058,8 +1097,8 @@
         },
         "correlated_probability": 0.475,
         "impact_score": 1.996,
-        "model_request_ms": 10820.0,
-        "wall_ms": 10822.0,
+        "model_request_ms": 14660.0,
+        "wall_ms": 14686.0,
         "raw_response": {
           "answers": {
             "correlated_incident": {
@@ -1129,7 +1168,7 @@
           }
         },
         "provider_evidence": {
-          "acteon-model-elapsed-ms": "10820",
+          "acteon-model-elapsed-ms": "14660",
           "acteon-model-lock-digest": "sha256:38eb82188ec4f7c9e635c5f00e1243d537a557983348ba9c28e866c81393bb69",
           "acteon-model-name": "typed-decisions",
           "acteon-model-repository": "convaiinnovations/laya",
@@ -1150,17 +1189,17 @@
       "uncertainty": 0.7281,
       "source_positions": {
         "logs": {
-          "topic": "observability.acme.logs-020e628932fa4c2382276bb3970b5ea1",
+          "topic": "observability.acme.logs-e4b0ae53c8be4a2bb3d3119d25ecd784",
           "partition": 0,
           "offset": 3
         },
         "metrics": {
-          "topic": "observability.acme.metrics-020e628932fa4c2382276bb3970b5ea1",
+          "topic": "observability.acme.metrics-e4b0ae53c8be4a2bb3d3119d25ecd784",
           "partition": 0,
           "offset": 3
         },
         "traces": {
-          "topic": "observability.acme.traces-020e628932fa4c2382276bb3970b5ea1",
+          "topic": "observability.acme.traces-e4b0ae53c8be4a2bb3d3119d25ecd784",
           "partition": 0,
           "offset": 2
         }
@@ -1173,8 +1212,8 @@
           "evidence_probability": 0.6586,
           "impact_score": 2.9302,
           "available": true,
-          "model_request_ms": 3639.0,
-          "wall_ms": 3643.0,
+          "model_request_ms": 4979.0,
+          "wall_ms": 5005.0,
           "raw_response": {
             "answers": {
               "condition": {
@@ -1243,7 +1282,7 @@
             }
           },
           "provider_evidence": {
-            "acteon-model-elapsed-ms": "3639",
+            "acteon-model-elapsed-ms": "4979",
             "acteon-model-lock-digest": "sha256:38eb82188ec4f7c9e635c5f00e1243d537a557983348ba9c28e866c81393bb69",
             "acteon-model-name": "typed-decisions",
             "acteon-model-repository": "convaiinnovations/laya",
@@ -1259,8 +1298,8 @@
           "evidence_probability": 0.512,
           "impact_score": 1.7298,
           "available": true,
-          "model_request_ms": 1677.0,
-          "wall_ms": 1680.0,
+          "model_request_ms": 13073.0,
+          "wall_ms": 13101.0,
           "raw_response": {
             "answers": {
               "condition": {
@@ -1329,7 +1368,7 @@
             }
           },
           "provider_evidence": {
-            "acteon-model-elapsed-ms": "1677",
+            "acteon-model-elapsed-ms": "13073",
             "acteon-model-lock-digest": "sha256:38eb82188ec4f7c9e635c5f00e1243d537a557983348ba9c28e866c81393bb69",
             "acteon-model-name": "typed-decisions",
             "acteon-model-repository": "convaiinnovations/laya",
@@ -1345,8 +1384,8 @@
           "evidence_probability": 0.6171,
           "impact_score": 2.853,
           "available": true,
-          "model_request_ms": 5254.0,
-          "wall_ms": 5257.0,
+          "model_request_ms": 8474.0,
+          "wall_ms": 8500.0,
           "raw_response": {
             "answers": {
               "condition": {
@@ -1415,7 +1454,7 @@
             }
           },
           "provider_evidence": {
-            "acteon-model-elapsed-ms": "5254",
+            "acteon-model-elapsed-ms": "8474",
             "acteon-model-lock-digest": "sha256:38eb82188ec4f7c9e635c5f00e1243d537a557983348ba9c28e866c81393bb69",
             "acteon-model-name": "typed-decisions",
             "acteon-model-repository": "convaiinnovations/laya",
@@ -1437,8 +1476,8 @@
         },
         "correlated_probability": 0.4539,
         "impact_score": 2.0426,
-        "model_request_ms": 8638.0,
-        "wall_ms": 8640.0,
+        "model_request_ms": 15096.0,
+        "wall_ms": 15132.0,
         "raw_response": {
           "answers": {
             "correlated_incident": {
@@ -1508,7 +1547,7 @@
           }
         },
         "provider_evidence": {
-          "acteon-model-elapsed-ms": "8638",
+          "acteon-model-elapsed-ms": "15096",
           "acteon-model-lock-digest": "sha256:38eb82188ec4f7c9e635c5f00e1243d537a557983348ba9c28e866c81393bb69",
           "acteon-model-name": "typed-decisions",
           "acteon-model-repository": "convaiinnovations/laya",
@@ -1529,17 +1568,17 @@
       "uncertainty": 0.75,
       "source_positions": {
         "logs": {
-          "topic": "observability.acme.logs-020e628932fa4c2382276bb3970b5ea1",
+          "topic": "observability.acme.logs-e4b0ae53c8be4a2bb3d3119d25ecd784",
           "partition": 0,
           "offset": 4
         },
         "metrics": {
-          "topic": "observability.acme.metrics-020e628932fa4c2382276bb3970b5ea1",
+          "topic": "observability.acme.metrics-e4b0ae53c8be4a2bb3d3119d25ecd784",
           "partition": 0,
           "offset": 4
         },
         "traces": {
-          "topic": "observability.acme.traces-020e628932fa4c2382276bb3970b5ea1",
+          "topic": "observability.acme.traces-e4b0ae53c8be4a2bb3d3119d25ecd784",
           "partition": 0,
           "offset": 3
         }
@@ -1552,8 +1591,8 @@
           "evidence_probability": 0.4844,
           "impact_score": 2.4798,
           "available": true,
-          "model_request_ms": 2015.0,
-          "wall_ms": 2018.0,
+          "model_request_ms": 4692.0,
+          "wall_ms": 4714.0,
           "raw_response": {
             "answers": {
               "condition": {
@@ -1622,7 +1661,7 @@
             }
           },
           "provider_evidence": {
-            "acteon-model-elapsed-ms": "2015",
+            "acteon-model-elapsed-ms": "4692",
             "acteon-model-lock-digest": "sha256:38eb82188ec4f7c9e635c5f00e1243d537a557983348ba9c28e866c81393bb69",
             "acteon-model-name": "typed-decisions",
             "acteon-model-repository": "convaiinnovations/laya",
@@ -1638,8 +1677,8 @@
           "evidence_probability": 0.3641,
           "impact_score": 1.5303,
           "available": true,
-          "model_request_ms": 3573.0,
-          "wall_ms": 3577.0,
+          "model_request_ms": 9269.0,
+          "wall_ms": 9291.0,
           "raw_response": {
             "answers": {
               "condition": {
@@ -1708,7 +1747,7 @@
             }
           },
           "provider_evidence": {
-            "acteon-model-elapsed-ms": "3573",
+            "acteon-model-elapsed-ms": "9269",
             "acteon-model-lock-digest": "sha256:38eb82188ec4f7c9e635c5f00e1243d537a557983348ba9c28e866c81393bb69",
             "acteon-model-name": "typed-decisions",
             "acteon-model-repository": "convaiinnovations/laya",
@@ -1724,8 +1763,8 @@
           "evidence_probability": 0.4468,
           "impact_score": 1.2477,
           "available": false,
-          "model_request_ms": 4604.0,
-          "wall_ms": 4608.0,
+          "model_request_ms": 14579.0,
+          "wall_ms": 14602.0,
           "raw_response": {
             "answers": {
               "condition": {
@@ -1794,7 +1833,7 @@
             }
           },
           "provider_evidence": {
-            "acteon-model-elapsed-ms": "4604",
+            "acteon-model-elapsed-ms": "14579",
             "acteon-model-lock-digest": "sha256:38eb82188ec4f7c9e635c5f00e1243d537a557983348ba9c28e866c81393bb69",
             "acteon-model-name": "typed-decisions",
             "acteon-model-repository": "convaiinnovations/laya",
@@ -1816,8 +1855,8 @@
         },
         "correlated_probability": 0.5235,
         "impact_score": 2.0435,
-        "model_request_ms": 8607.0,
-        "wall_ms": 8609.0,
+        "model_request_ms": 21461.0,
+        "wall_ms": 21468.0,
         "raw_response": {
           "answers": {
             "correlated_incident": {
@@ -1887,7 +1926,7 @@
           }
         },
         "provider_evidence": {
-          "acteon-model-elapsed-ms": "8607",
+          "acteon-model-elapsed-ms": "21461",
           "acteon-model-lock-digest": "sha256:38eb82188ec4f7c9e635c5f00e1243d537a557983348ba9c28e866c81393bb69",
           "acteon-model-name": "typed-decisions",
           "acteon-model-repository": "convaiinnovations/laya",
@@ -1902,9 +1941,9 @@
   ],
   "aggregate": {
     "model_calls": 16,
-    "total_model_request_ms": 81228.0,
-    "p50_model_request_ms": 4604.0,
-    "p95_model_request_ms": 10820.0,
+    "total_model_request_ms": 170478.0,
+    "p50_model_request_ms": 11352.0,
+    "p95_model_request_ms": 21461.0,
     "diagnostic_calls": 1,
     "on_call_notifications": 1,
     "investigator_calls": 1,
@@ -1917,8 +1956,8 @@
     "retries_scheduled": 1,
     "worker_restarts": 1,
     "receiver_restarts": 1,
-    "incident_action_id": "e4c998ef-6c17-463e-bcb3-82eca438a2f0",
-    "incident_chain_id": "1de87dc8-bd3a-407d-9efb-ce24e284a3f9",
+    "incident_action_id": "078cc75d-74fb-4eb1-a462-3de73d069068",
+    "incident_chain_id": "e1eaf17c-682a-4d30-9e68-7ea4a6e2064a",
     "receipt_identity_preserved": true,
     "deduplicated_redeliveries": 1,
     "pending_outputs": 0,

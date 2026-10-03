@@ -203,6 +203,8 @@ use acteon_core::{
         super::bus::delete_topic,
         super::bus::publish,
         super::bus::subscribe,
+        super::bus_stages::control,
+        super::bus_stages::control_audit,
         super::bus_stages::replay,
         super::bus_stages::replay_audit,
         super::bus_stages::status,

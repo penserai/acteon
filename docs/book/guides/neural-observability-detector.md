@@ -517,6 +517,14 @@ The window operator deduplicates the already-accounted event before its window
 closes, so repair causes no additional neural call or incident. The retained count becomes zero; the
 cumulative quarantine and replay counters remain one.
 
+The simulation also uses the generic [audited stage controls](../features/managed-stream-stages.md).
+An HTTP halt commits an audit tied to the demo caller and survives worker replacement.
+Two probes—normal processing and quarantine replay—return halted with unchanged
+Kafka positions. An audited resume releases the hold. Retrying the old halt UUID
+returns its original audit without undoing the newer resume. The pending repair
+then completes through the same leased worker path. These controls add no neural
+calls and leave the four expected decisions unchanged.
+
 The runner publishes their source
 features to separate metrics, traces, and logs topics, consumes the resulting
 broker positions, and joins them into 60-second event-time windows with 15
@@ -594,8 +602,9 @@ and admitted an incident only when all three typed signal decisions agreed.
 | Governed runtime packages / artifacts / question sets / response schemas | 6 / 5 / 4 / 1 |
 | Event-time windows | 4 |
 | Real Laya calls | 16 |
-| Sum of model HTTP request times | 81,228 ms |
-| Per-call HTTP p50 / p95 | 4,604 ms / 10,820 ms |
+| Audited stage commands / blocked processing probes | 2 / 2 |
+| Sum of model HTTP request times | 170,478 ms |
+| Per-call HTTP p50 / p95 | 11,352 ms / 21,461 ms |
 | Incident chains | 1 |
 | Bounded investigator calls | 1 |
 | Delivery attempts / accepted verdicts | 6 / 4 |
