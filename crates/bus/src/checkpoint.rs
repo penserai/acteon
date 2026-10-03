@@ -16,6 +16,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::{AcknowledgedSubscription, SubscriptionAck, SubscriptionError, SubscriptionReceipt};
 use crate::{BusBackend, OffsetPosition};
 
 const SNAPSHOT_VERSION: u16 = 2;
@@ -64,6 +65,22 @@ pub struct StreamOutboxEntry<T> {
     /// When the output first entered the outbox, for backlog-age monitoring.
     pub created_at: DateTime<Utc>,
     pub payload: T,
+}
+
+/// Processing receipts from one live source session. Positions are derived
+/// from these capabilities, never supplied as unchecked raw commit offsets.
+pub struct SubscriptionCheckpointBatch<'a> {
+    pub source: &'a str,
+    pub subscription: &'a mut dyn AcknowledgedSubscription,
+    pub receipts: &'a [SubscriptionReceipt],
+}
+
+/// Durable generation plus the broker-confirmed prefixes. Acknowledgements
+/// may cover several partitions but never skip unprocessed earlier deliveries.
+#[derive(Debug)]
+pub struct AcknowledgedStreamCheckpoint<O> {
+    pub checkpoint: PersistedStreamCheckpoint<O>,
+    pub acknowledgements: Vec<SubscriptionAck>,
 }
 
 /// Hard limits persisted with a checkpoint.
@@ -175,9 +192,20 @@ impl<O> PersistedStreamCheckpoint<O> {
 }
 
 /// Checkpoint protocol failures. Admission errors leave local and durable state
-/// unchanged. A `Commit` error happens after the named generation is durable.
+/// unchanged. A `Commit` error or an `Acknowledgement` error with a generation
+/// happens after the named generation is durable.
 #[derive(Debug, Error)]
 pub enum StreamCheckpointError {
+    #[error(
+        "live acknowledgement failed for {signal_source} (durable generation: {generation:?}): {error}"
+    )]
+    Acknowledgement {
+        /// None means validation failed before the checkpoint write.
+        generation: Option<u64>,
+        signal_source: String,
+        #[source]
+        error: SubscriptionError,
+    },
     #[error(transparent)]
     State(#[from] StateError),
     #[error("checkpoint serialization failed: {0}")]
@@ -378,9 +406,69 @@ where
         Ok(persisted)
     }
 
+    /// Validate live receipt ownership and processing prefixes, persist state
+    /// and outputs, then acknowledge through the original consumer sessions.
+    ///
+    /// A rebalance/commit failure after persistence leaves that generation and
+    /// its outbox durable. Kafka redelivery must recover from the checkpoint;
+    /// this is not an atomic transaction between the state store and Kafka.
+    pub async fn checkpoint_then_acknowledge<OI>(
+        &mut self,
+        state: S,
+        outputs: OI,
+        batches: &mut [SubscriptionCheckpointBatch<'_>],
+    ) -> Result<AcknowledgedStreamCheckpoint<O>, StreamCheckpointError>
+    where
+        OI: IntoIterator<Item = StreamOutboxEntry<O>>,
+    {
+        let mut positions = Vec::new();
+        for batch in batches.iter() {
+            if batch.source.trim().is_empty() {
+                return Err(StreamCheckpointError::EmptyPositionField { field: "source" });
+            }
+            batch
+                .subscription
+                .validate_checkpoint_receipts(batch.receipts)
+                .map_err(|error| StreamCheckpointError::Acknowledgement {
+                    generation: None,
+                    signal_source: batch.source.into(),
+                    error,
+                })?;
+            positions.extend(batch.receipts.iter().map(|receipt| StreamPosition {
+                lane: StreamPositionLane {
+                    source: batch.source.into(),
+                    consumer_group: receipt.consumer_group().into(),
+                    topic: receipt.topic().into(),
+                    partition: receipt.position().partition,
+                },
+                offset: receipt.position().offset,
+            }));
+        }
+        let checkpoint = self.checkpoint(state, positions, outputs).await?;
+        let mut acknowledgements = Vec::new();
+        for batch in batches {
+            let ack = batch
+                .subscription
+                .acknowledge(batch.receipts)
+                .await
+                .map_err(|error| StreamCheckpointError::Acknowledgement {
+                    generation: Some(checkpoint.generation),
+                    signal_source: batch.source.into(),
+                    error,
+                })?;
+            acknowledgements.push(ack);
+        }
+        Ok(AcknowledgedStreamCheckpoint {
+            checkpoint,
+            acknowledgements,
+        })
+    }
+
     /// Persist a checkpoint and commit its positions through an Acteon bus
     /// backend. This is the direct counterpart to [`Self::checkpoint_then_commit`]
-    /// for consumers that do not need a custom commit adapter.
+    /// for consumers that do not need a custom commit adapter. This legacy
+    /// raw-position path does not fence active assignment ownership. Prefer
+    /// [`Self::checkpoint_then_acknowledge`] for live Kafka processing.
     pub async fn checkpoint_then_commit_bus<PI, OI>(
         &mut self,
         state: S,
@@ -694,6 +782,223 @@ mod tests {
 
     use super::*;
     use crate::MemoryBackend;
+
+    struct TestSubscription {
+        ledger: crate::subscription::ReceiptLedger,
+        store: Arc<dyn StateStore>,
+        fail_ack: bool,
+        ack_calls: usize,
+    }
+
+    impl TestSubscription {
+        fn new(store: Arc<dyn StateStore>) -> Self {
+            let mut ledger = crate::subscription::ReceiptLedger::new(
+                "observability.acme.metrics".into(),
+                "detector-metrics".into(),
+                &crate::SubscriptionConfig::default(),
+            );
+            ledger.transition([0], false);
+            Self {
+                ledger,
+                store,
+                fail_ack: false,
+                ack_calls: 0,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl AcknowledgedSubscription for TestSubscription {
+        async fn recv(&mut self) -> Result<crate::SubscriptionDelivery, SubscriptionError> {
+            Err(SubscriptionError::Unsupported)
+        }
+        fn validate_receipts(
+            &self,
+            receipts: &[SubscriptionReceipt],
+        ) -> Result<(), SubscriptionError> {
+            self.ledger.validate(receipts)
+        }
+        fn validate_checkpoint_receipts(
+            &self,
+            receipts: &[SubscriptionReceipt],
+        ) -> Result<(), SubscriptionError> {
+            self.ledger.validate_checkpoint(receipts)
+        }
+        async fn acknowledge(
+            &mut self,
+            receipts: &[SubscriptionReceipt],
+        ) -> Result<SubscriptionAck, SubscriptionError> {
+            self.ack_calls += 1;
+            let raw = self.store.get(&key()).await.unwrap().unwrap();
+            let persisted: StreamCheckpointSnapshot<Value, Value> =
+                serde_json::from_str(&raw).unwrap();
+            assert_eq!(
+                persisted.generation(),
+                1,
+                "checkpoint must already be durable"
+            );
+            assert_eq!(persisted.pending_outputs().len(), 1);
+            assert_eq!(
+                persisted.positions()[0].offset,
+                receipts.last().unwrap().position().offset
+            );
+            if self.fail_ack {
+                self.ledger.transition([], false);
+                return Err(SubscriptionError::StaleReceipt);
+            }
+            let (epoch, commits) = self.ledger.prepare_ack(receipts)?;
+            self.ledger.finish_ack(epoch, commits)
+        }
+        fn ownership_changes(&self) -> tokio::sync::watch::Receiver<crate::SubscriptionOwnership> {
+            self.ledger.watch()
+        }
+    }
+
+    #[tokio::test]
+    async fn live_checkpoint_derives_offsets_and_persists_before_acknowledgement() {
+        let state = store();
+        let mut coordinator = coordinator(Arc::clone(&state)).await;
+        let mut subscription = TestSubscription::new(state);
+        let receipts = [
+            subscription.ledger.deliver(0, 2).unwrap(),
+            subscription.ledger.deliver(0, 5).unwrap(),
+        ];
+        let result = coordinator
+            .checkpoint_then_acknowledge(
+                json!({"seq": 1}),
+                [output("ready")],
+                &mut [SubscriptionCheckpointBatch {
+                    source: "metrics",
+                    subscription: &mut subscription,
+                    receipts: &receipts,
+                }],
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.checkpoint.positions()[0].offset, 5);
+        assert_eq!(result.acknowledgements[0].committed[0].offset, 5);
+        assert_eq!(result.acknowledgements[0].remaining_in_flight, 0);
+    }
+
+    #[tokio::test]
+    async fn live_checkpoint_rejects_gaps_and_revoked_receipts_before_persistence() {
+        let state = store();
+        let mut coordinator = coordinator(Arc::clone(&state)).await;
+        let mut subscription = TestSubscription::new(state);
+        subscription.ledger.deliver(0, 0).unwrap();
+        let receipts = [subscription.ledger.deliver(0, 1).unwrap()];
+        let error = coordinator
+            .checkpoint_then_acknowledge(
+                json!({"seq": 1}),
+                [output("ready")],
+                &mut [SubscriptionCheckpointBatch {
+                    source: "metrics",
+                    subscription: &mut subscription,
+                    receipts: &receipts,
+                }],
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            StreamCheckpointError::Acknowledgement {
+                generation: None,
+                error: SubscriptionError::CheckpointGap,
+                ..
+            }
+        ));
+        assert_eq!(coordinator.snapshot().generation(), 0);
+        subscription.ledger.transition([0], false);
+        let error = coordinator
+            .checkpoint_then_acknowledge(
+                json!({"seq": 1}),
+                [output("ready")],
+                &mut [SubscriptionCheckpointBatch {
+                    source: "metrics",
+                    subscription: &mut subscription,
+                    receipts: &receipts,
+                }],
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            StreamCheckpointError::Acknowledgement {
+                generation: None,
+                error: SubscriptionError::StaleReceipt,
+                ..
+            }
+        ));
+        assert_eq!(coordinator.snapshot().generation(), 0);
+    }
+
+    #[tokio::test]
+    async fn revocation_after_checkpoint_preserves_recoverable_outputs() {
+        let state = store();
+        let mut coordinator = coordinator(Arc::clone(&state)).await;
+        let mut subscription = TestSubscription::new(Arc::clone(&state));
+        subscription.fail_ack = true;
+        let receipts = [subscription.ledger.deliver(0, 1).unwrap()];
+        let error = coordinator
+            .checkpoint_then_acknowledge(
+                json!({"seq": 1}),
+                [output("ready")],
+                &mut [SubscriptionCheckpointBatch {
+                    source: "metrics",
+                    subscription: &mut subscription,
+                    receipts: &receipts,
+                }],
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            StreamCheckpointError::Acknowledgement {
+                generation: Some(1),
+                error: SubscriptionError::StaleReceipt,
+                ..
+            }
+        ));
+        let recovered = super::tests::coordinator(state).await;
+        assert_eq!(recovered.snapshot().generation(), 1);
+        assert_eq!(
+            recovered.snapshot().pending_outputs()[0].idempotency_key,
+            "ready"
+        );
+        assert_eq!(recovered.snapshot().positions()[0].offset, 1);
+    }
+
+    #[tokio::test]
+    async fn checkpoint_cas_conflict_never_acknowledges_live_receipts() {
+        let state = store();
+        let mut stale = coordinator(Arc::clone(&state)).await;
+        let mut winner = coordinator(Arc::clone(&state)).await;
+        let mut subscription = TestSubscription::new(Arc::clone(&state));
+        let receipts = [subscription.ledger.deliver(0, 1).unwrap()];
+        winner
+            .checkpoint(json!({"winner":true}), [position(1)], [output("winner")])
+            .await
+            .unwrap();
+        let error = stale
+            .checkpoint_then_acknowledge(
+                json!({"stale":true}),
+                [output("stale")],
+                &mut [SubscriptionCheckpointBatch {
+                    source: "metrics",
+                    subscription: &mut subscription,
+                    receipts: &receipts,
+                }],
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, StreamCheckpointError::Conflict { .. }));
+        assert_eq!(subscription.ack_calls, 0);
+        let recovered = coordinator(state).await;
+        assert_eq!(
+            recovered.snapshot().pending_outputs()[0].idempotency_key,
+            "winner"
+        );
+    }
 
     fn store() -> Arc<dyn StateStore> {
         Arc::new(MemoryStateStore::new())

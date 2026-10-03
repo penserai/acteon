@@ -14,19 +14,22 @@ pub mod checkpoint;
 pub mod config;
 pub mod error;
 pub mod kafka;
+mod kafka_subscription;
 pub mod memory;
 pub mod message;
 pub mod outbox;
 pub mod schema;
+pub mod subscription;
 #[doc(hidden)]
 pub mod testing;
 pub mod windowing;
 
 pub use backend::{BusBackend, ScanFrom, ScanWatermarks, SharedBackend, SubscribeStream};
 pub use checkpoint::{
-    PersistedStreamCheckpoint, StreamCheckpointConfig, StreamCheckpointCoordinator,
-    StreamCheckpointError, StreamCheckpointSnapshot, StreamOutboxEntry, StreamPosition,
-    StreamPositionLane, stream_checkpoint_key,
+    AcknowledgedStreamCheckpoint, PersistedStreamCheckpoint, StreamCheckpointConfig,
+    StreamCheckpointCoordinator, StreamCheckpointError, StreamCheckpointSnapshot,
+    StreamOutboxEntry, StreamPosition, StreamPositionLane, SubscriptionCheckpointBatch,
+    stream_checkpoint_key,
 };
 pub use config::{BusConfig, KafkaBusConfig};
 pub use error::BusError;
@@ -39,6 +42,10 @@ pub use outbox::{
     StreamOutboxError, StreamOutboxMetrics,
 };
 pub use schema::{SchemaValidator, SchemaValidatorError, ValidationIssue};
+pub use subscription::{
+    AcknowledgedSubscription, SubscriptionAck, SubscriptionConfig, SubscriptionDelivery,
+    SubscriptionError, SubscriptionOwnership, SubscriptionReceipt,
+};
 pub use windowing::{
     EventTimeWindow, EventTimeWindowAggregator, EventTimeWindowConfig, EventTimeWindowError,
     EventTimeWindowSnapshot, EventTimeWindowStats, WindowIngestDisposition, WindowIngestResult,

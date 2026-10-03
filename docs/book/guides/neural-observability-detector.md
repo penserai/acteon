@@ -515,6 +515,16 @@ window nor loses an output. The runner uses Redis-backed
 window state, ready-window outputs, and source offsets atomically before Kafka
 commits. Redis uses a persisted volume and AOF with `appendfsync always`.
 
+The replacement runner keeps three
+[`AcknowledgedSubscription`](../features/live-kafka-acknowledgements.md) sessions
+alive. `checkpoint_then_acknowledge` derives source offsets from their opaque
+receipts, validates the complete processing prefix, persists the Redis generation,
+and acknowledges through the consumers that delivered the records. A separate
+group probe joins a second member, observes revocation, rejects the old receipt,
+and proves redelivery from offset zero. That probe adds no windows, model calls,
+or operational effects. Source acknowledgement fencing does not undo external
+effects or atomically transact between Kafka and Redis.
+
 Each completed decision, raw parsed model responses, and provider evidence are
 persisted in a separate verdict checkpoint before its input window is
 acknowledged. A [`StreamOutboxDispatcher`](../features/managed-stream-outbox.md)
@@ -551,11 +561,14 @@ and admitted an incident only when all three typed signal decisions agreed.
 | Restart redeliveries deduplicated | 5 |
 | Input window checkpoints | 2 |
 | Final Kafka consumer lag | 0 |
+| Active source sessions / receipts acknowledged | 3 / 13 |
+| Stale acknowledgements rejected after rebalance | 1 |
+| Replacement delivery offset in fencing probe | 0 |
 | Governed runtime packages / artifacts / question sets / response schemas | 6 / 5 / 4 / 1 |
 | Event-time windows | 4 |
 | Real Laya calls | 16 |
-| Sum of model HTTP request times | 89,572 ms |
-| Per-call HTTP p50 / p95 | 5,632 ms / 10,347 ms |
+| Sum of model HTTP request times | 58,596 ms |
+| Per-call HTTP p50 / p95 | 3,496 ms / 7,585 ms |
 | Incident chains | 1 |
 | Bounded investigator calls | 1 |
 | Delivery attempts / accepted verdicts | 6 / 4 |

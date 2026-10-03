@@ -54,7 +54,7 @@ POST /v1/bus/subscriptions/agents/demo/order-processor/ack
 ```
 
 `offset` is the **last consumed** offset. The bus commits `offset + 1`
-to Kafka so a fresh consumer in the same group starts at `offset + 2`.
+to Kafka so a fresh consumer in the same group starts at `offset + 1`.
 
 > **Performance warning:** each `ack` call performs a full Kafka
 > JoinGroup/SyncGroup round-trip (hundreds of milliseconds on a warm
@@ -62,6 +62,11 @@ to Kafka so a fresh consumer in the same group starts at `offset + 2`.
 > high-throughput workload — batch or ack-at-end-of-batch only. A
 > future phase will introduce a stateful subscription registry that
 > keeps one long-lived consumer alive and routes commits through it.
+
+For library stream processors, [Live Kafka Acknowledgements](live-kafka-acknowledgements.md)
+now provides `subscribe_acknowledged` and assignment-scoped receipts on the
+original consumer. The HTTP endpoint above retains its legacy raw-offset path;
+a server subscription-session registry remains separate work.
 
 ### Lag
 
@@ -124,10 +129,10 @@ not allowed`.
 
 ## Known limitation — `commit_offset` semantics
 
-Kafka only lets a consumer commit offsets for a group if that consumer
-is *currently* a member of the group. The Phase 2 `commit_offset` API
-spins up its own short-lived consumer, which means it can't join while
-another consumer is still attached. Practical pattern:
+The Phase 2 `commit_offset` implementation spins up a short-lived consumer and
+joins the group before committing. Joining beside an active consumer can trigger
+a rebalance, and the supplied raw offset carries no proof of the original
+consumer's ownership. Its legacy batch pattern is:
 
 1. Consume records through `BusBackend::subscribe`.
 2. **Drop the subscribe stream** (so the consumer leaves the group).
@@ -137,8 +142,10 @@ another consumer is still attached. Practical pattern:
 This is fine for ack-at-end-of-batch workflows and for the
 "drain-and-checkpoint" pattern. It's **not** suitable for
 fine-grained per-record commits while the consumer is still attached
-— a future phase introduces a stateful subscription registry that
-holds one long-lived consumer and routes commits through it.
+— the HTTP transport still needs a subscription-session registry. Library
+processors should use `subscribe_acknowledged` and
+`checkpoint_then_acknowledge`, which keep the original consumer alive and
+fence receipts on assignment changes.
 
 See `crates/simulation/examples/bus_subscription_simulation.rs` for
 the canonical usage.

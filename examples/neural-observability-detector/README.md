@@ -106,6 +106,12 @@ defaults to `127.0.0.1:19092`. `ACTEON_CHECKPOINT_REDIS_URL` defaults to
   retry deadlines, and dead letters survive replacement of the worker and its
   Redis connection pool. Four cached decisions survive, and final source lag,
   pending-window outputs, and pending-verdict outputs are zero.
+- Three long-lived `AcknowledgedSubscription` sessions acknowledge 13 source
+  receipts through the same consumers after checkpoint persistence. An independent
+  group probe joins a second member, observes rebalance revocation, rejects a stale
+  receipt, and receives the uncommitted prefix from offset zero. It adds no model
+  calls or effects. The helper rejects processing gaps and receipts from old
+  assignments; it does not use the legacy raw-offset commit adapter.
 
 The acknowledgement-loss fault happens **after completed dispatch**. The retry
 recovers the original durable dispatch receipt and chain ID through a replacement

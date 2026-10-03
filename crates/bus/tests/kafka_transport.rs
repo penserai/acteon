@@ -71,3 +71,58 @@ async fn subscription_survives_broker_disconnect() {
 async fn scan_survives_broker_disconnect() {
     recovers_after_disconnect(true).await;
 }
+
+#[tokio::test]
+async fn acknowledged_subscription_retains_receipts_across_broker_disconnect() {
+    let cluster = MockCluster::new(1).expect("mock broker");
+    let topic = "acknowledged-recovery";
+    cluster.create_topic(topic, 1, 1).unwrap();
+    let backend = KafkaBackend::new(&KafkaBusConfig {
+        bootstrap_servers: cluster.bootstrap_servers(),
+        extra: vec![
+            ("reconnect.backoff.ms".into(), "50".into()),
+            ("reconnect.backoff.max.ms".into(), "100".into()),
+        ],
+        ..Default::default()
+    })
+    .unwrap();
+    backend
+        .produce(BusMessage::new(topic, serde_json::json!({"n":0})))
+        .await
+        .unwrap();
+    let mut subscription = backend
+        .subscribe_acknowledged(
+            topic,
+            "acknowledged-recovery",
+            StartOffset::Earliest,
+            acteon_bus::SubscriptionConfig::default(),
+        )
+        .await
+        .unwrap();
+    let first = tokio::time::timeout(Duration::from_secs(15), subscription.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    cluster.broker_down(1).unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), subscription.recv())
+            .await
+            .is_err()
+    );
+    cluster.broker_up(1).unwrap();
+    backend
+        .produce(BusMessage::new(topic, serde_json::json!({"n":1})))
+        .await
+        .unwrap();
+    let second = tokio::time::timeout(Duration::from_secs(15), subscription.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(second.message.payload["n"], 1);
+    let ack = subscription
+        .acknowledge(&[first.receipt, second.receipt])
+        .await
+        .unwrap();
+    assert_eq!(ack.committed[0].offset, 1);
+    assert_eq!(ack.remaining_in_flight, 0);
+}
