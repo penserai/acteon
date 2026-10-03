@@ -111,8 +111,10 @@ acknowledgement. Recovery then uses the saved positions.
 `metrics().await` reloads durable counters for processing attempts, completed
 batches, processed/recovered records, failures, retries, lease recovery,
 acknowledgement failures, and completed-callback elapsed time. It also reports current
-lease, retry, halt, generation, and output backlog information. These are library
-metrics; an operator HTTP API is a separate follow-up.
+lease, retry, halt, generation, and output backlog information. The tenant-scoped
+[operator HTTP APIs](stream-input-contracts.md#operator-http-apis) expose these
+metrics and quarantine inspection/discard without acquiring a processing lease
+or connecting to Kafka. The Rust SDK also supports these operations.
 
 See the [cascading observability guide](../guides/neural-observability-detector.md)
 for a real multi-source Kafka/Redis simulation using this stage and local Laya.
