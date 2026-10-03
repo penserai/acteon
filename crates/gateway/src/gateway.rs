@@ -645,10 +645,23 @@ impl Gateway {
     )]
     pub(crate) async fn dispatch_inner(
         &self,
+        action: Action,
+        caller: Option<&Caller>,
+        dry_run: bool,
+        origin: DispatchOrigin,
+    ) -> Result<ActionOutcome, GatewayError> {
+        self.dispatch_pipeline(action, caller, dry_run, origin, None)
+            .await
+    }
+
+    #[allow(clippy::too_many_lines)]
+    pub(crate) async fn dispatch_pipeline(
+        &self,
         mut action: Action,
         caller: Option<&Caller>,
         dry_run: bool,
         origin: DispatchOrigin,
+        admission: Option<&crate::admission::DispatchAttempt>,
     ) -> Result<ActionOutcome, GatewayError> {
         // Chain causality labels are gateway-owned. Strip caller-supplied
         // values at the public boundary so an action cannot forge a parent
@@ -1029,6 +1042,11 @@ impl Gateway {
             }
         }
 
+        // Fence a superseded/expired durable attempt before operational effects.
+        if let Some(attempt) = admission {
+            self.verify_dispatch_attempt(attempt).await?;
+        }
+
         // 4. Handle the verdict.
         let outcome = match &verdict {
             RuleVerdict::Allow(_) => self.execute_action(&action).await,
@@ -1099,7 +1117,14 @@ impl Gateway {
                 .await?
             }
             RuleVerdict::Chain { rule: _, chain } => {
-                self.handle_chain(&action, chain, caller).await?
+                let plan = match admission {
+                    Some(attempt) => {
+                        Some(self.prepare_admitted_chain(attempt, &action, chain).await?)
+                    }
+                    None => None,
+                };
+                self.handle_chain(&action, chain, caller, plan.as_ref())
+                    .await?
             }
             RuleVerdict::Schedule { .. } if origin == DispatchOrigin::Scheduled => {
                 self.execute_action(&action).await
@@ -2620,11 +2645,12 @@ impl Gateway {
     /// Handle the chain verdict: create chain state and start async execution.
     #[allow(clippy::too_many_lines)]
     #[instrument(name = "gateway.handle_chain", skip(self, action), fields(%chain_name))]
-    async fn handle_chain(
+    pub(crate) async fn handle_chain(
         &self,
         action: &Action,
         chain_name: &str,
         caller: Option<&Caller>,
+        admitted: Option<&crate::admission::AdmittedChain>,
     ) -> Result<ActionOutcome, GatewayError> {
         let mut ancestry = chain_ancestry(action);
         if ancestry.iter().any(|ancestor| ancestor == chain_name) {
@@ -2657,9 +2683,12 @@ impl Gateway {
             .entry(CHAIN_ROOT_ACTION_LABEL.to_owned())
             .or_insert_with(|| action.id.to_string());
 
-        let chain_config = self.chains.read().get(chain_name).cloned().ok_or_else(|| {
-            GatewayError::ChainError(format!("chain configuration not found: {chain_name}"))
-        })?;
+        let chain_config = match admitted {
+            Some(plan) => plan.config.clone(),
+            None => self.chains.read().get(chain_name).cloned().ok_or_else(|| {
+                GatewayError::ChainError(format!("chain configuration not found: {chain_name}"))
+            })?,
+        };
 
         if chain_config.steps.is_empty() {
             return Err(GatewayError::ChainError(format!(
@@ -2667,7 +2696,10 @@ impl Gateway {
             )));
         }
 
-        let chain_id = uuid::Uuid::new_v4().to_string();
+        let chain_id = admitted.map_or_else(
+            || uuid::Uuid::new_v4().to_string(),
+            |plan| plan.chain_id.clone(),
+        );
         let now = self.clock.now();
         let total_steps = chain_config.steps.len();
         let first_step = chain_config.steps[0].name.clone();
@@ -2722,6 +2754,7 @@ impl Gateway {
             // per version below) — embedding them per execution multiplied
             // every chain-state persist by the definition size.
             config_snapshot: None,
+            dispatch_receipt_id: admitted.map(|plan| plan.receipt_id.clone()),
             search_attributes: action
                 .metadata
                 .labels
@@ -2733,25 +2766,32 @@ impl Gateway {
 
         // Pin the definition before any state is persisted: an execution
         // must never exist without its version being resolvable.
-        self.pin_chain_definition(
-            action.namespace.as_str(),
-            action.tenant.as_str(),
-            &chain_config,
-        )
-        .await?;
+        if admitted.is_some() {
+            self.pin_admitted_chain_definition(action, &chain_config)
+                .await?;
+        } else {
+            self.pin_chain_definition(
+                action.namespace.as_str(),
+                action.tenant.as_str(),
+                &chain_config,
+            )
+            .await?;
+        }
 
-        self.append_execution_history(
-            action.namespace.as_str(),
-            action.tenant.as_str(),
-            &chain_id,
-            ExecutionEventType::ExecutionStarted {
-                name: chain_name.to_owned(),
-                version: chain_config.version,
-                input: action.payload.clone(),
-            },
-            None,
-        )
-        .await;
+        if admitted.is_none() {
+            self.append_execution_history(
+                action.namespace.as_str(),
+                action.tenant.as_str(),
+                &chain_id,
+                ExecutionEventType::ExecutionStarted {
+                    name: chain_name.to_owned(),
+                    version: chain_config.version,
+                    input: action.payload.clone(),
+                },
+                None,
+            )
+            .await;
+        }
 
         // Persist chain state.
         let chain_key = StateKey::new(
@@ -2760,8 +2800,48 @@ impl Gateway {
             KeyKind::Chain,
             &chain_id,
         );
-        self.persist_chain_state(&chain_key, &mut chain_state, None)
-            .await?;
+        if let Err(error) = self
+            .persist_chain_state(&chain_key, &mut chain_state, None)
+            .await
+        {
+            if admitted.is_none() {
+                return Err(error);
+            }
+            let existing = self
+                .get_chain_status(action.namespace.as_str(), action.tenant.as_str(), &chain_id)
+                .await?
+                .ok_or(error)?;
+            if existing.chain_name != chain_name
+                || existing.origin_action.id != action.id
+                || existing.chain_version != chain_config.version
+            {
+                return Err(GatewayError::ChainError(
+                    "admitted chain identity mismatch".into(),
+                ));
+            }
+            if existing.dispatch_receipt_id.as_deref()
+                != admitted.map(|plan| plan.receipt_id.as_str())
+            {
+                return Err(GatewayError::ChainError(
+                    "admitted chain receipt mismatch".into(),
+                ));
+            }
+            self.append_admitted_chain_start_history(&existing).await?;
+            if existing.status.is_active() {
+                self.repair_chain_discovery(&existing).await?;
+            }
+            return Ok(ActionOutcome::ChainStarted {
+                chain_id,
+                chain_name: chain_name.to_owned(),
+                total_steps,
+                first_step,
+            });
+        }
+
+        if admitted.is_some() {
+            self.append_admitted_chain_start_history(&chain_state)
+                .await?;
+        }
 
         // Add to pending chains index.
         let pending_key = StateKey::new(
@@ -6046,6 +6126,7 @@ impl Gateway {
             caller: parent.caller.clone(),
             chain_version: sub_config.version,
             config_snapshot: None,
+            dispatch_receipt_id: None,
             search_attributes: parent.search_attributes.clone(),
             wait_state: None,
         };
@@ -6449,6 +6530,13 @@ impl Gateway {
         chain_state: &mut ChainState,
         ttl: Option<Duration>,
     ) -> Result<(), GatewayError> {
+        // Never expire an admitted execution independently of its receipt:
+        // a lost receipt acknowledgement must not recreate a completed chain.
+        let ttl = if chain_state.dispatch_receipt_id.is_some() {
+            None
+        } else {
+            ttl
+        };
         let json = serde_json::to_string(chain_state).map_err(|e| {
             GatewayError::ChainError(format!("failed to serialize chain state: {e}"))
         })?;
@@ -12779,6 +12867,7 @@ mod tests {
             caller: None,
             chain_version: 1,
             config_snapshot: None,
+            dispatch_receipt_id: None,
             search_attributes: Default::default(),
             wait_state: None,
         };
@@ -12856,6 +12945,7 @@ mod tests {
             caller: None,
             chain_version: 1,
             config_snapshot: None,
+            dispatch_receipt_id: None,
             search_attributes: Default::default(),
             wait_state: None,
         };
@@ -12939,6 +13029,7 @@ mod tests {
             caller: None,
             chain_version: 1,
             config_snapshot: None,
+            dispatch_receipt_id: None,
             search_attributes: Default::default(),
             wait_state: None,
         };
@@ -13006,6 +13097,7 @@ mod tests {
             caller,
             chain_version: 1,
             config_snapshot: None,
+            dispatch_receipt_id: None,
             search_attributes: Default::default(),
             wait_state: None,
         };
@@ -13235,6 +13327,7 @@ mod tests {
             caller: None,
             chain_version: 1,
             config_snapshot: None,
+            dispatch_receipt_id: None,
             search_attributes: Default::default(),
             wait_state: None,
         };

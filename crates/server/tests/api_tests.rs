@@ -789,6 +789,16 @@ async fn openapi_json_is_valid() {
         spec["openapi"]
     );
 
+    assert!(spec["components"]["schemas"]["DispatchResponse"].is_object());
+    assert!(spec["components"]["schemas"]["DurableDispatchResponse"].is_object());
+    assert!(
+        spec["paths"]["/v1/dispatch"]["post"]["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|parameter| parameter["name"] == "durable")
+    );
+
     // Verify all expected paths are present
     let paths = spec["paths"]
         .as_object()
@@ -3880,4 +3890,162 @@ async fn tenant_authz_dlq_stats_denies_namespace_scoped_wildcard_tenant() {
     let app = build_app(build_test_state_with_auth(vec![grant]));
     let status = auth_get_status(app, "/v1/dlq/stats").await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+// Durable admission must retain the transport's signature, grant, and replay gates.
+#[tokio::test]
+async fn durable_dispatch_replays_receipt_without_bypassing_action_id_replay_protection() {
+    let mut state = build_test_state(vec![]);
+    state.replay_protection = Some((true, 3600));
+    let app = build_app(state);
+    let action = test_action().with_dedup_key("durable-incident");
+    let request = |action: &Action, path: &str| {
+        Request::builder()
+            .method("POST")
+            .uri(path)
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(serde_json::to_vec(action).unwrap()))
+            .unwrap()
+    };
+    let first = app
+        .clone()
+        .oneshot(request(&action, "/v1/dispatch?durable=true"))
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+    let first: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(first.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(first["replayed"], false);
+    assert_eq!(first["receipt"]["status"]["state"], "completed");
+    let replay = app
+        .clone()
+        .oneshot(request(&action, "/v1/dispatch?durable=true"))
+        .await
+        .unwrap();
+    assert_eq!(replay.status(), StatusCode::OK);
+    let replay: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(replay.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(replay["replayed"], true);
+    assert_eq!(first["receipt"], replay["receipt"]);
+    let mut changed = action.clone();
+    changed.payload = serde_json::json!({"to":"different@example.com"});
+    assert_eq!(
+        app.clone()
+            .oneshot(request(&changed, "/v1/dispatch?durable=true"))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::CONFLICT
+    );
+    let mut other_key = action.clone();
+    other_key.dedup_key = Some("another-key".into());
+    assert_eq!(
+        app.clone()
+            .oneshot(request(&other_key, "/v1/dispatch?durable=true"))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        app.oneshot(request(&action, "/v1/dispatch"))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::CONFLICT
+    );
+}
+
+#[tokio::test]
+async fn durable_dispatch_verifies_every_retry_signature() {
+    let (state, key) = build_test_state_with_signing(true);
+    let app = build_app(state);
+    let action = sign_action(test_action().with_dedup_key("signed-incident"), &key);
+    let request = |action: &Action| {
+        Request::builder()
+            .method("POST")
+            .uri("/v1/dispatch?durable=true")
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(serde_json::to_vec(action).unwrap()))
+            .unwrap()
+    };
+    assert_eq!(
+        app.clone()
+            .oneshot(request(&action))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+    let mut forged = action.clone();
+    forged.signature = Some("forged".into());
+    assert_eq!(
+        app.clone()
+            .oneshot(request(&forged))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        app.oneshot(request(&action)).await.unwrap().status(),
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn durable_dispatch_requires_grants_explicit_key_and_execution_mode() {
+    let state = build_test_state_with_auth(vec![default_test_grant()]);
+    let app = build_app(state);
+    let request = |action: &Action, path: &str| {
+        Request::builder()
+            .method("POST")
+            .uri(path)
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(auth_headers().0, auth_headers().1)
+            .body(Body::from(serde_json::to_vec(action).unwrap()))
+            .unwrap()
+    };
+    assert_eq!(
+        app.clone()
+            .oneshot(request(&test_action(), "/v1/dispatch?durable=true"))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    let mut action = test_action().with_dedup_key("authorized-incident");
+    assert_eq!(
+        app.clone()
+            .oneshot(request(&action, "/v1/dispatch?durable=true&dry_run=true"))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    action.tenant = "other-tenant".into();
+    assert_eq!(
+        app.clone()
+            .oneshot(request(&action, "/v1/dispatch?durable=true"))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    action.tenant = "tenant-1".into();
+    assert_eq!(
+        app.oneshot(request(&action, "/v1/dispatch?durable=true"))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
 }

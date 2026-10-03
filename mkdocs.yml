@@ -137,6 +137,7 @@ nav:
     - Workflows as Code: features/workflows.md
     - LLM Guardrails: features/llm-guardrails.md
     - Governed Model Provider: features/governed-model-provider.md
+    - Durable Dispatch Admission: features/durable-dispatch.md
     - Semantic Routing: features/semantic-routing.md
     - Audit Trail: features/audit-trail.md
     - Analytics & Aggregations: features/analytics.md

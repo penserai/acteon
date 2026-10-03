@@ -1182,6 +1182,7 @@ mod tests {
             caller: None,
             chain_version: 1,
             config_snapshot: None,
+            dispatch_receipt_id: None,
             search_attributes: Default::default(),
             wait_state: None,
         }

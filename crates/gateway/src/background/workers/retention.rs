@@ -154,6 +154,16 @@ impl BackgroundProcessor {
                 continue;
             };
 
+            // An admitted chain must outlive receipt recovery. Expiring it
+            // independently could recreate completed operational effects.
+            if chain_data
+                .get("dispatch_receipt_id")
+                .and_then(serde_json::Value::as_str)
+                .is_some()
+            {
+                continue;
+            }
+
             // Only delete terminal chains.
             let status = chain_data
                 .get("status")

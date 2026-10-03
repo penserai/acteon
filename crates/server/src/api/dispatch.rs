@@ -27,6 +27,29 @@ pub struct DispatchQuery {
     /// the action, recording state, or emitting audit records.
     #[serde(default)]
     pub dry_run: bool,
+    /// Persist acceptance and return the original receipt on idempotent retry.
+    /// Requires `Action.dedup_key` and cannot be combined with `dry_run`.
+    #[serde(default)]
+    pub durable: bool,
+}
+
+/// Successful response shape selected by the durable dispatch query flag.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[serde(untagged)]
+pub enum DispatchResponse {
+    /// Legacy dispatch returns the original `ActionOutcome` shape.
+    Outcome(ActionOutcome),
+    /// Opt-in durable dispatch returns a receipt and replay flag.
+    Durable(DurableDispatchResponse),
+}
+
+/// Durable dispatch envelope. Receipt contents are documented by the gateway API.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct DurableDispatchResponse {
+    /// Durable acceptance/result record.
+    pub receipt: serde_json::Value,
+    /// Whether an existing acceptance was reused.
+    pub replayed: bool,
 }
 
 /// `POST /v1/dispatch` -- dispatch a single action through the gateway pipeline.
@@ -43,10 +66,13 @@ pub struct DispatchQuery {
     description = "Sends a single action through the gateway pipeline (lock, rules, execute) and returns the outcome. Pass ?dry_run=true to evaluate rules without executing.",
     request_body(content = Action, description = "Action to dispatch"),
     params(
-        ("dry_run" = Option<bool>, Query, description = "Evaluate rules without executing the action")
+        ("dry_run" = Option<bool>, Query, description = "Evaluate rules without executing the action"),
+        ("durable" = Option<bool>, Query, description = "Persist admission using dedup_key; returns a receipt wrapper and cannot combine with dry_run")
     ),
     responses(
-        (status = 200, description = "Action dispatched successfully", body = ActionOutcome),
+        (status = 200, description = "Action dispatched successfully; durable mode returns receipt and replayed", body = DispatchResponse),
+        (status = 202, description = "Durable dispatch attempt is in progress", body = DurableDispatchResponse),
+        (status = 409, description = "Conflicting durable request or reconciliation required", body = serde_json::Value),
         (status = 401, description = "Unauthorized", body = ErrorResponse),
         (status = 403, description = "Forbidden", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
@@ -83,6 +109,22 @@ pub async fn dispatch(
                     "forbidden: no grant covers tenant={}, namespace={}, provider={}, action={}",
                     action.tenant, action.namespace, action.provider, action.action_type
                 ),
+            })),
+        ));
+    }
+
+    if query.durable
+        && (query.dry_run
+            || action
+                .dedup_key
+                .as_deref()
+                .is_none_or(|key| key.trim().is_empty()))
+    {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!(ErrorResponse {
+                error: "durable dispatch requires a dedup_key and cannot combine with dry_run"
+                    .into(),
             })),
         ));
     }
@@ -130,10 +172,34 @@ pub async fn dispatch(
             acteon_state::KeyKind::Custom("action_replay".into()),
             action.id.to_string(),
         );
+        let marker = if query.durable {
+            use sha2::{Digest, Sha256};
+            format!(
+                "durable:{}",
+                hex::encode(Sha256::digest(
+                    action.dedup_key.as_deref().unwrap().as_bytes()
+                ))
+            )
+        } else {
+            "1".into()
+        };
         if let Ok(false) = gw
             .state_store()
-            .check_and_set(&replay_key, "1", Some(std::time::Duration::from_secs(ttl)))
+            .check_and_set(
+                &replay_key,
+                &marker,
+                Some(std::time::Duration::from_secs(ttl)),
+            )
             .await
+            && !(query.durable
+                && gw
+                    .state_store()
+                    .get(&replay_key)
+                    .await
+                    .ok()
+                    .flatten()
+                    .as_deref()
+                    == Some(marker.as_str()))
         {
             // Already existed — replay detected.
             drop(gw);
@@ -175,6 +241,50 @@ pub async fn dispatch(
     action.trace_context = super::trace_context::capture_trace_context();
 
     let gw = state.gateway.read().await;
+    if query.durable {
+        use acteon_gateway::{
+            DispatchAdmissionConfig, DispatchAdmissionError, DispatchReceiptStatus,
+        };
+        return match gw
+            .dispatch_durable(action, Some(&caller), DispatchAdmissionConfig::default())
+            .await
+        {
+            Ok(result) => {
+                let status = match &result.receipt.status {
+                    DispatchReceiptStatus::Completed { .. } => StatusCode::OK,
+                    DispatchReceiptStatus::ReconciliationRequired => StatusCode::CONFLICT,
+                    _ => StatusCode::ACCEPTED,
+                };
+                Ok((status, Json(serde_json::json!(result))))
+            }
+            Err(error) => {
+                let (status, message) = match error {
+                    DispatchAdmissionError::RequestConflict => (
+                        StatusCode::CONFLICT,
+                        "idempotency key conflicts with original request",
+                    ),
+                    DispatchAdmissionError::Conflict | DispatchAdmissionError::LeaseLost => (
+                        StatusCode::CONFLICT,
+                        "dispatch receipt changed; retry to inspect its current state",
+                    ),
+                    DispatchAdmissionError::Invalid(_) => (
+                        StatusCode::BAD_REQUEST,
+                        "invalid durable dispatch request or receipt",
+                    ),
+                    _ => (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "durable dispatch failed; retry with the same key to inspect its receipt",
+                    ),
+                };
+                Ok((
+                    status,
+                    Json(serde_json::json!(ErrorResponse {
+                        error: message.into()
+                    })),
+                ))
+            }
+        };
+    }
     let result = if query.dry_run {
         gw.dispatch_dry_run(action, Some(&caller)).await
     } else {
@@ -219,12 +329,21 @@ pub async fn dispatch(
         (status = 200, description = "Array of dispatch outcomes", body = Vec<serde_json::Value>)
     )
 )]
+#[allow(clippy::too_many_lines)]
 pub async fn dispatch_batch(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
     Query(query): Query<DispatchQuery>,
     Json(actions): Json<Vec<Action>>,
 ) -> Result<impl IntoResponse, ServerError> {
+    if query.durable {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(vec![serde_json::json!(ErrorResponse {
+                error: "durable admission is supported only for single-action dispatch".into(),
+            })]),
+        ));
+    }
     // Enforce maximum batch size to prevent resource exhaustion.
     if actions.len() > MAX_BATCH_SIZE {
         return Ok((
