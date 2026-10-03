@@ -1935,3 +1935,61 @@ async fn competing_controls_and_resume_preserve_scheduled_retry_backoff() {
     assert_eq!(before.checkpoint_generation, after.checkpoint_generation);
     assert!(!after.halted);
 }
+
+#[tokio::test]
+async fn recovered_only_prefix_cannot_erase_resumed_failed_anchor() {
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let mut worker = stage(store.clone(), StreamStageConfig::default()).await;
+    let p = Processor::new();
+    worker
+        .process_once(
+            &mut Source::new(store.clone(), 0..1),
+            &p,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let mut failed_input = Source::new(store.clone(), 1..2);
+    let failure = Processor {
+        failures: AtomicUsize::new(1),
+        permanent: true,
+        ..Processor::new()
+    };
+    worker
+        .process_once(&mut failed_input, &failure, &CancellationToken::new())
+        .await
+        .unwrap();
+    let mut op = StreamStageOperator::load(store.clone(), key())
+        .await
+        .unwrap()
+        .unwrap();
+    op.control(
+        "operator",
+        &control_request(StreamStageCommand::Resume, 0, true),
+    )
+    .await
+    .unwrap();
+    worker
+        .process_once(
+            &mut Source::new(store.clone(), 0..1),
+            &p,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let mut replacement = stage(store.clone(), StreamStageConfig::default()).await;
+    assert!(matches!(
+        replacement
+            .process_once(&mut Source::new(store, 2..3), &p, &CancellationToken::new())
+            .await,
+        Err(StreamStageError::RetryAnchorMissing)
+    ));
+    assert_eq!(p.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(*replacement.checkpoint().state(), 1);
+    replacement
+        .process_once(&mut failed_input, &p, &CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(p.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(*replacement.checkpoint().state(), 3);
+}

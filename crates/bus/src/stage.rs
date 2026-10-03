@@ -1065,7 +1065,10 @@ where
                     .revision
                     .checked_add(1)
                     .ok_or(StreamCheckpointError::GenerationOverflow)?;
-                m.retry = None;
+                // A recovered-only prefix has not resolved the outstanding anchor.
+                if !fresh.is_empty() {
+                    m.retry = None;
+                }
                 m.counters.completed_batches = m.counters.completed_batches.saturating_add(1);
                 m.counters.processed_records = m
                     .counters
