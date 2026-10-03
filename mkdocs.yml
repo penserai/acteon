@@ -248,7 +248,6 @@ nav:
     - Performance: reference/performance.md
     - Bus benchmarks: reference/bus-benchmarks.md
     - Build optimization: reference/build-optimization.md
-    - ClickHouse state migration: reference/migration-clickhouse-state.md
     - Roadmap: reference/roadmap.md
     - Bus design history:
       - Master plan: concepts/bus-master-plan.md
