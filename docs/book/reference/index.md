@@ -12,7 +12,6 @@ for the product model or [capabilities](../features/index.md) to select a buildi
 | [Bus benchmarks](bus-benchmarks.md) | Transport-specific measurements and methodology |
 | [Build optimization](build-optimization.md) | Feature selection, build profiles, test runners, and CI caching |
 | [Deployment](deployment.md) | Runtime configuration, persistence, and deployment patterns |
-| [ClickHouse state migration](migration-clickhouse-state.md) | Migration from the removed state backend to supported state storage |
 | [Roadmap](roadmap.md) | Shipped milestones and areas under consideration |
 
 The bus design and phase notes preserve implementation history. For current
