@@ -517,6 +517,14 @@ pub fn router(state: AppState) -> Router {
             post(bus_stages::replay),
         )
         .route(
+            "/v1/bus/stages/{namespace}/{tenant}/{id}/control",
+            post(bus_stages::control),
+        )
+        .route(
+            "/v1/bus/stages/{namespace}/{tenant}/{id}/controls/{request}",
+            get(bus_stages::control_audit),
+        )
+        .route(
             "/v1/bus/stages/{namespace}/{tenant}/{id}/replays/{request}",
             get(bus_stages::replay_audit),
         )

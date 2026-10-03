@@ -572,6 +572,7 @@ struct LostWriteReply {
     inner: MemoryStateStore,
     lost: std::sync::atomic::AtomicBool,
     replay_completion: bool,
+    control_completion: bool,
 }
 #[async_trait]
 impl StateStore for LostWriteReply {
@@ -631,7 +632,11 @@ impl StateStore for LostWriteReply {
             .await?;
         let saved: serde_json::Value = serde_json::from_str(new_value).unwrap();
         if result == acteon_state::CasResult::Ok
-            && if self.replay_completion {
+            && if self.control_completion {
+                saved["processing"]["controls"]
+                    .as_array()
+                    .is_some_and(|a| !a.is_empty())
+            } else if self.replay_completion {
                 saved["processing"]["replays"]
                     .as_array()
                     .is_some_and(|jobs| jobs.iter().any(|j| j["audit"]["status"] == "completed"))
@@ -685,6 +690,7 @@ async fn ambiguous_checkpoint_write_is_reloaded_before_recovery_processing() {
         inner: MemoryStateStore::new(),
         lost: std::sync::atomic::AtomicBool::new(false),
         replay_completion: false,
+        control_completion: false,
     });
     let p = Processor::new();
     let mut source = Source::new(store.clone(), 0..1);
@@ -908,6 +914,7 @@ async fn quarantine_checkpoint_lost_reply_recovers_without_duplicate_retention()
         inner: MemoryStateStore::new(),
         lost: std::sync::atomic::AtomicBool::new(false),
         replay_completion: false,
+        control_completion: false,
     });
     let mut source = Source::new(store.clone(), 0..1);
     source.records[0].message.payload = json!(0);
@@ -1415,6 +1422,7 @@ async fn replay_checkpoint_lost_response_does_not_repeat_callback_or_outputs() {
         inner: MemoryStateStore::new(),
         lost: std::sync::atomic::AtomicBool::new(false),
         replay_completion: true,
+        control_completion: false,
     });
     let mut worker = stage(store.clone(), consume_config()).await;
     let mut source = Source::new(store.clone(), 0..1);
@@ -1538,4 +1546,392 @@ async fn typed_replay_decode_failure_never_invokes_the_processor() {
     ));
     assert_eq!(processor.calls.load(Ordering::SeqCst), 0);
     assert_eq!(worker.quarantined_inputs().await.unwrap().len(), 1);
+}
+
+fn control_request(
+    command: StreamStageCommand,
+    revision: u64,
+    reset: bool,
+) -> StreamStageControlRequest {
+    StreamStageControlRequest {
+        request_id: Uuid::new_v4(),
+        command,
+        expected_control_revision: revision,
+        reason: "operator maintenance".into(),
+        reset_retry_budget: reset,
+    }
+}
+
+#[tokio::test]
+async fn audited_halt_resume_is_durable_idempotent_and_revision_guarded() {
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let mut worker = stage(store.clone(), StreamStageConfig::default()).await;
+    let mut op = StreamStageOperator::load(store.clone(), key())
+        .await
+        .unwrap()
+        .unwrap();
+    let halt = control_request(StreamStageCommand::Halt, 0, false);
+    let audit = op.control("operator", &halt).await.unwrap();
+    assert_eq!(op.control("operator", &halt).await.unwrap(), audit);
+    assert!(matches!(
+        op.control("other", &halt).await,
+        Err(StreamStageError::ControlConflict)
+    ));
+    let mut source = Source::new(store.clone(), 0..1);
+    let p = Processor::new();
+    assert!(matches!(
+        worker
+            .process_once(&mut source, &p, &CancellationToken::new())
+            .await
+            .unwrap(),
+        StreamStageResult::Halted { .. }
+    ));
+    assert_eq!(source.receive_calls, 0);
+    assert_eq!(p.calls.load(Ordering::SeqCst), 0);
+    let mut restarted = stage(store, StreamStageConfig::default()).await;
+    assert!(restarted.metrics().await.unwrap().operator_halted);
+    let stale = control_request(StreamStageCommand::Resume, 0, false);
+    assert!(matches!(
+        op.control("operator", &stale).await,
+        Err(StreamStageError::ControlConflict)
+    ));
+    let resume = control_request(StreamStageCommand::Resume, 1, false);
+    let resumed = op.control("operator", &resume).await.unwrap();
+    op.control(
+        "operator",
+        &control_request(StreamStageCommand::Halt, 2, false),
+    )
+    .await
+    .unwrap();
+    assert_eq!(op.control("operator", &resume).await.unwrap(), resumed);
+    assert!(op.status().operator_halted);
+    assert_eq!(op.status().checkpoint_generation, 0);
+    assert_eq!(op.status().control_revision, 3);
+    op.control(
+        "operator",
+        &control_request(StreamStageCommand::Resume, 3, false),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        restarted
+            .process_once(&mut source, &p, &CancellationToken::new())
+            .await
+            .unwrap(),
+        StreamStageResult::Completed { .. }
+    ));
+    assert_eq!(source.ack_calls, 1);
+}
+
+#[tokio::test]
+async fn explicit_resume_reset_retains_failed_source_anchor_and_new_budget() {
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let config = StreamStageConfig {
+        max_attempts: 1,
+        ..Default::default()
+    };
+    let mut worker = stage(store.clone(), config.clone()).await;
+    let mut source = Source::new(store.clone(), 0..1);
+    let failure = Processor {
+        failures: AtomicUsize::new(1),
+        permanent: true,
+        ..Processor::new()
+    };
+    assert!(matches!(
+        worker
+            .process_once(&mut source, &failure, &CancellationToken::new())
+            .await
+            .unwrap(),
+        StreamStageResult::Halted { .. }
+    ));
+    let mut op = StreamStageOperator::load(store.clone(), key())
+        .await
+        .unwrap()
+        .unwrap();
+    op.control(
+        "operator",
+        &control_request(StreamStageCommand::Resume, 0, false),
+    )
+    .await
+    .unwrap();
+    assert!(worker.metrics().await.unwrap().halted);
+    let audit = op
+        .control(
+            "operator",
+            &control_request(StreamStageCommand::Resume, 1, true),
+        )
+        .await
+        .unwrap();
+    assert_eq!(audit.previous_retry_attempts, Some(1));
+    assert!(audit.previous_retry_terminal);
+    let mut worker = stage(store.clone(), config).await;
+    let p = Processor::new();
+    let mut skipping = Source::new(store, 1..2);
+    assert!(matches!(
+        worker
+            .process_once(&mut skipping, &p, &CancellationToken::new())
+            .await,
+        Err(StreamStageError::RetryAnchorMissing)
+    ));
+    assert_eq!(p.calls.load(Ordering::SeqCst), 0);
+    worker
+        .process_once(&mut source, &p, &CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(p.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(worker.metrics().await.unwrap().counters.attempts, 2);
+    assert_eq!(*worker.checkpoint().state(), 1);
+}
+
+#[tokio::test]
+async fn halt_fences_running_callback_and_blocks_replay_without_removing_quarantine() {
+    let (store, mut worker, id) = replay_fixture(consume_config()).await;
+    let mut op = StreamStageOperator::load(store.clone(), key())
+        .await
+        .unwrap()
+        .unwrap();
+    op.request_replay(Uuid::new_v4(), &id, "operator", "repair", json!(7))
+        .await
+        .unwrap();
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let processor = BlockReplay {
+        entered: entered.clone(),
+        release: release.clone(),
+    };
+    let old = tokio::spawn(async move {
+        worker
+            .replay_once(&processor, &CancellationToken::new())
+            .await
+    });
+    entered.notified().await;
+    let audit = op
+        .control(
+            "operator",
+            &control_request(StreamStageCommand::Halt, 0, false),
+        )
+        .await
+        .unwrap();
+    assert!(audit.lease_fenced);
+    release.notify_one();
+    assert!(matches!(old.await.unwrap(), Err(StreamStageError::Fenced)));
+    let mut replacement = stage(store, consume_config()).await;
+    let p = Processor::new();
+    assert!(matches!(
+        replacement
+            .replay_once(&p, &CancellationToken::new())
+            .await
+            .unwrap(),
+        StreamStageResult::Halted { .. }
+    ));
+    assert_eq!(p.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(op.quarantined_inputs().len(), 1);
+    assert_eq!(*replacement.checkpoint().state(), 0);
+    assert!(replacement.checkpoint().pending_outputs().is_empty());
+    op.control(
+        "operator",
+        &control_request(StreamStageCommand::Resume, 1, false),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        replacement
+            .replay_once(&p, &CancellationToken::new())
+            .await
+            .unwrap(),
+        StreamStageResult::ReplayCompleted { .. }
+    ));
+}
+
+#[tokio::test]
+async fn control_history_is_bounded_without_evicting_idempotency() {
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    stage(store.clone(), StreamStageConfig::default()).await;
+    let mut op = StreamStageOperator::load(store, key())
+        .await
+        .unwrap()
+        .unwrap();
+    for revision in 0..999 {
+        op.control(
+            "operator",
+            &control_request(StreamStageCommand::Halt, revision, false),
+        )
+        .await
+        .unwrap();
+    }
+    let old = op.control_audits()[0].clone();
+    assert!(matches!(
+        op.control(
+            "operator",
+            &control_request(StreamStageCommand::Halt, 999, false)
+        )
+        .await,
+        Err(StreamStageError::ControlCapacity)
+    ));
+    // The reserved final slot can always release the operator hold.
+    op.control(
+        "operator",
+        &control_request(StreamStageCommand::Resume, 999, false),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        op.control(
+            "operator",
+            &control_request(StreamStageCommand::Resume, 1000, false)
+        )
+        .await,
+        Err(StreamStageError::ControlCapacity)
+    ));
+    assert!(!op.status().operator_halted);
+    assert_eq!(op.control("operator", &old.request).await.unwrap(), old);
+}
+
+#[tokio::test]
+async fn lost_control_commit_response_is_recovered_without_reapplying_command() {
+    let store: Arc<dyn StateStore> = Arc::new(LostWriteReply {
+        inner: MemoryStateStore::new(),
+        lost: std::sync::atomic::AtomicBool::new(false),
+        replay_completion: false,
+        control_completion: true,
+    });
+    stage(store.clone(), StreamStageConfig::default()).await;
+    let mut op = StreamStageOperator::load(store.clone(), key())
+        .await
+        .unwrap()
+        .unwrap();
+    let halt = control_request(StreamStageCommand::Halt, 0, false);
+    assert!(op.control("operator", &halt).await.is_err());
+    let mut op = StreamStageOperator::load(store, key())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(op.status().operator_halted);
+    let audit = op.control("operator", &halt).await.unwrap();
+    assert_eq!(audit.control_revision, 1);
+    op.control(
+        "operator",
+        &control_request(StreamStageCommand::Resume, 1, false),
+    )
+    .await
+    .unwrap();
+    assert_eq!(op.control("operator", &halt).await.unwrap(), audit);
+    assert!(!op.status().operator_halted);
+    assert_eq!(op.control_audits().len(), 2);
+}
+
+#[tokio::test]
+async fn halt_fences_normal_input_commit_and_acknowledgement() {
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let mut worker = stage(store.clone(), StreamStageConfig::default()).await;
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let processor = BlockReplay {
+        entered: entered.clone(),
+        release: release.clone(),
+    };
+    let task_store = store.clone();
+    let task = tokio::spawn(async move {
+        let mut source = Source::new(task_store, 0..1);
+        let result = worker
+            .process_once(&mut source, &processor, &CancellationToken::new())
+            .await;
+        (result, source.ack_calls)
+    });
+    entered.notified().await;
+    let mut op = StreamStageOperator::load(store.clone(), key())
+        .await
+        .unwrap()
+        .unwrap();
+    op.control(
+        "operator",
+        &control_request(StreamStageCommand::Halt, 0, false),
+    )
+    .await
+    .unwrap();
+    release.notify_one();
+    let (result, acks) = task.await.unwrap();
+    assert!(matches!(result, Err(StreamStageError::Fenced)));
+    assert_eq!(acks, 0);
+    let restored = stage(store, StreamStageConfig::default()).await;
+    assert_eq!(*restored.checkpoint().state(), 0);
+    assert!(restored.checkpoint().pending_outputs().is_empty());
+    assert!(restored.checkpoint().positions().is_empty());
+}
+
+#[tokio::test]
+async fn controls_require_version_six_and_reject_corrupt_audit_revision() {
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    stage(store.clone(), StreamStageConfig::default()).await;
+    let original: serde_json::Value =
+        serde_json::from_str(&store.get(&key()).await.unwrap().unwrap()).unwrap();
+    assert_eq!(original["schema_version"], 3);
+    let mut op = StreamStageOperator::load(store.clone(), key())
+        .await
+        .unwrap()
+        .unwrap();
+    op.control(
+        "operator",
+        &control_request(StreamStageCommand::Halt, 0, false),
+    )
+    .await
+    .unwrap();
+    let mut saved: serde_json::Value =
+        serde_json::from_str(&store.get(&key()).await.unwrap().unwrap()).unwrap();
+    assert_eq!(saved["schema_version"], 6);
+    saved["schema_version"] = json!(5);
+    store.set(&key(), &saved.to_string(), None).await.unwrap();
+    assert!(
+        StreamStageOperator::load(store.clone(), key())
+            .await
+            .is_err()
+    );
+    saved["schema_version"] = json!(6);
+    saved["processing"]["controls"][0]["control_revision"] = json!(9);
+    store.set(&key(), &saved.to_string(), None).await.unwrap();
+    assert!(StreamStageOperator::load(store, key()).await.is_err());
+}
+
+#[tokio::test]
+async fn competing_controls_and_resume_preserve_scheduled_retry_backoff() {
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let mut worker = stage(store.clone(), StreamStageConfig::default()).await;
+    let mut source = Source::new(store.clone(), 0..1);
+    let failure = Processor {
+        failures: AtomicUsize::new(1),
+        ..Processor::new()
+    };
+    worker
+        .process_once(&mut source, &failure, &CancellationToken::new())
+        .await
+        .unwrap();
+    let before = worker.metrics().await.unwrap();
+    let mut first = StreamStageOperator::load(store.clone(), key())
+        .await
+        .unwrap()
+        .unwrap();
+    let mut second = StreamStageOperator::load(store, key())
+        .await
+        .unwrap()
+        .unwrap();
+    let halt = control_request(StreamStageCommand::Halt, 0, false);
+    let resume = control_request(StreamStageCommand::Resume, 0, false);
+    let (a, b) = tokio::join!(
+        first.control("operator", &halt),
+        second.control("operator", &resume)
+    );
+    assert!(a.is_ok());
+    assert!(matches!(b, Err(StreamStageError::ControlConflict)));
+    first
+        .control(
+            "operator",
+            &control_request(StreamStageCommand::Resume, 1, false),
+        )
+        .await
+        .unwrap();
+    let after = worker.metrics().await.unwrap();
+    assert_eq!(before.next_attempt_at, after.next_attempt_at);
+    assert_eq!(before.counters, after.counters);
+    assert_eq!(before.checkpoint_generation, after.checkpoint_generation);
+    assert!(!after.halted);
 }

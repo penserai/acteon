@@ -19,7 +19,7 @@ use thiserror::Error;
 use crate::{AcknowledgedSubscription, SubscriptionAck, SubscriptionError, SubscriptionReceipt};
 use crate::{BusBackend, OffsetPosition};
 
-const SNAPSHOT_VERSION: u16 = 5;
+const SNAPSHOT_VERSION: u16 = 6;
 const STATE_KIND: &str = "bus_stream_checkpoint";
 const DEFAULT_MAX_POSITIONS: usize = 10_000;
 const DEFAULT_MAX_PENDING_OUTPUTS: usize = 100_000;
@@ -660,6 +660,12 @@ where
             if next
                 .processing
                 .as_ref()
+                .is_some_and(crate::stage::ManagedStageState::requires_v6)
+            {
+                6
+            } else if next
+                .processing
+                .as_ref()
                 .is_some_and(crate::stage::ManagedStageState::requires_v5)
             {
                 5
@@ -753,6 +759,11 @@ fn validate_snapshot<S, O>(
         ));
     }
     if let Some(stage) = &snapshot.processing {
+        if stage.requires_v6() && snapshot.schema_version < 6 {
+            return Err(StreamCheckpointError::InvalidManagedStage(
+                "stage controls require version 6".into(),
+            ));
+        }
         if stage.requires_v5() && snapshot.schema_version < 5 {
             return Err(StreamCheckpointError::InvalidManagedStage(
                 "replay audit requires version 5".into(),

@@ -17,8 +17,11 @@ use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+#[path = "stage_control.rs"]
+mod control;
 #[path = "stage_replay.rs"]
 mod replay;
+pub use control::{StreamStageCommand, StreamStageControlAudit, StreamStageControlRequest};
 pub use replay::{StreamReplayAudit, StreamReplayStatus};
 const CAS_RETRIES: usize = 8;
 fn replay_count_default() -> usize {
@@ -171,6 +174,10 @@ pub struct StreamStageMetrics {
     pub lease_expires_at: Option<DateTime<Utc>>,
     pub next_attempt_at: Option<DateTime<Utc>>,
     pub halted: bool,
+    #[serde(default)]
+    pub operator_halted: bool,
+    #[serde(default)]
+    pub control_revision: u64,
     pub last_error: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -188,6 +195,8 @@ struct StageRetry {
     next_attempt_at: Option<DateTime<Utc>>,
     last_error: Option<String>,
     terminal: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    reset_budget: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -203,8 +212,13 @@ pub(crate) struct ManagedStageState {
     quarantine: Vec<StreamQuarantinedInput>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     replays: Vec<replay::ReplayJob>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    controls: Vec<StreamStageControlAudit>,
 }
 impl ManagedStageState {
+    pub(crate) fn requires_v6(&self) -> bool {
+        !self.controls.is_empty() || self.retry.as_ref().is_some_and(|r| r.reset_budget)
+    }
     pub(crate) fn requires_v5(&self) -> bool {
         !self.replays.is_empty()
             || self.counters.replayed_quarantined_records > 0
@@ -272,6 +286,13 @@ impl ManagedStageState {
         positions: &[StreamPosition],
         generation: u64,
     ) -> Result<(), String> {
+        if self
+            .controls
+            .iter()
+            .any(|a| a.checkpoint_generation > generation)
+        {
+            return Err("control audit generation is not durable".into());
+        }
         if self.replays.iter().any(|j| {
             j.audit
                 .completed_generation
@@ -299,6 +320,7 @@ impl ManagedStageState {
         self.config.validate()?;
         self.validate_quarantine()?;
         self.validate_replays()?;
+        self.validate_controls()?;
         if self.processor_version.trim().is_empty()
             || self.processor_version.len() > 4096
             || self.source_identity.trim().is_empty()
@@ -314,7 +336,8 @@ impl ManagedStageState {
             return Err("invalid worker identity".into());
         }
         if let Some(r) = &self.retry
-            && (r.attempts == 0
+            && (r.reset_budget && (r.terminal || r.next_attempt_at.is_some())
+                || r.attempts == 0
                 || r.attempts > self.config.max_attempts
                 || r.anchor.offset < 0
                 || r.anchor.lane.partition < 0
@@ -400,6 +423,10 @@ pub enum StreamStageError {
     InvalidConfig(String),
     #[error("replay request conflicts with retained state or an existing request")]
     ReplayConflict,
+    #[error("control request conflicts with existing audit or control revision")]
+    ControlConflict,
+    #[error("control audit retention capacity reached")]
+    ControlCapacity,
     #[error("replay audit retention capacity reached")]
     ReplayCapacity,
     #[error("stage definition or persisted policy changed")]
@@ -498,6 +525,7 @@ where
                 counters: StreamStageCounters::default(),
                 quarantine: Vec::new(),
                 replays: Vec::new(),
+                controls: Vec::new(),
             });
             match tokio::time::timeout(
                 Duration::from_millis(config.storage_timeout_ms),
@@ -623,7 +651,9 @@ where
                 .count(),
             lease_expires_at: m.lease.as_ref().map(|l| l.expires_at),
             next_attempt_at: m.retry.as_ref().and_then(|r| r.next_attempt_at),
-            halted: m.retry.as_ref().is_some_and(|r| r.terminal),
+            halted: m.operator_halted() || m.retry.as_ref().is_some_and(|r| r.terminal),
+            operator_halted: m.operator_halted(),
+            control_revision: m.control_revision(),
             last_error: m.retry.as_ref().and_then(|r| r.last_error.clone()),
         })
     }
@@ -671,6 +701,12 @@ where
             self.reload().await?;
             let now = Utc::now();
             let m = self.managed();
+            if m.operator_halted() {
+                return Ok(Err(StreamStageResult::Halted {
+                    attempts: m.retry.as_ref().map_or(0, |r| r.attempts),
+                    reason: m.controls.last().unwrap().reason.clone(),
+                }));
+            }
             if m.lease.as_ref().is_some_and(|l| l.expires_at > now) {
                 return Ok(Err(StreamStageResult::Busy));
             }
@@ -681,7 +717,7 @@ where
                         reason: r.last_error.clone().unwrap_or_default(),
                     }));
                 }
-                if r.attempts >= self.config.max_attempts {
+                if !r.reset_budget && r.attempts >= self.config.max_attempts {
                     let mut next = self.coordinator.snapshot.clone();
                     let m = next.processing.as_mut().unwrap();
                     m.lease = None;
@@ -746,13 +782,20 @@ where
             self.owned(token)?;
             let mut next = self.coordinator.snapshot.clone();
             let m = next.processing.as_mut().unwrap();
-            let attempts = m.retry.as_ref().map_or(1, |r| r.attempts.saturating_add(1));
+            let attempts = m.retry.as_ref().map_or(1, |r| {
+                if r.reset_budget {
+                    1
+                } else {
+                    r.attempts.saturating_add(1)
+                }
+            });
             m.retry = Some(StageRetry {
                 anchor: anchor.clone(),
                 attempts,
                 next_attempt_at: None,
                 last_error: None,
                 terminal: false,
+                reset_budget: false,
             });
             m.counters.attempts = m.counters.attempts.saturating_add(1);
             match self.persist(next).await {
@@ -865,6 +908,7 @@ where
             && !fresh.is_empty()
             && !fresh.iter().any(|r| r.position == retry.anchor)
         {
+            self.release(token).await?;
             return Err(StreamStageError::RetryAnchorMissing);
         }
         let mut transition = None;
@@ -1322,7 +1366,9 @@ impl StreamStageOperator {
                 .count(),
             lease_expires_at: m.lease.as_ref().map(|l| l.expires_at),
             next_attempt_at: m.retry.as_ref().and_then(|r| r.next_attempt_at),
-            halted: m.retry.as_ref().is_some_and(|r| r.terminal),
+            halted: m.operator_halted() || m.retry.as_ref().is_some_and(|r| r.terminal),
+            operator_halted: m.operator_halted(),
+            control_revision: m.control_revision(),
             last_error: m.retry.as_ref().and_then(|r| r.last_error.clone()),
         }
     }

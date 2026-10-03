@@ -57,10 +57,10 @@ pub use windowing::{
 pub use acteon_core::PartitionLag;
 
 pub use stage::{
-    ManagedStreamStage, StreamReplayAudit, StreamReplayStatus, StreamStageConfig,
-    StreamStageCounters, StreamStageError, StreamStageInput, StreamStageMetrics,
-    StreamStageOperator, StreamStageProcessError, StreamStageProcessor, StreamStageResult,
-    StreamStageTransition,
+    ManagedStreamStage, StreamReplayAudit, StreamReplayStatus, StreamStageCommand,
+    StreamStageConfig, StreamStageControlAudit, StreamStageControlRequest, StreamStageCounters,
+    StreamStageError, StreamStageInput, StreamStageMetrics, StreamStageOperator,
+    StreamStageProcessError, StreamStageProcessor, StreamStageResult, StreamStageTransition,
 };
 pub use stage_source::{
     LiveStreamStageSource, StreamStageRecord, StreamStageSource, StreamStageSourceError,

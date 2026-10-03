@@ -181,3 +181,12 @@ quarantine entry is inspected through the operator HTTP APIs, then repaired thro
 a durable, audited replay request. A replacement worker completes it once without
 rewinding Kafka or counting the same event twice. Repeating the request returns the
 same completed audit; retained quarantine finishes at zero.
+
+## Audited operator controls
+
+The runner sends real HTTP halt/resume commands using the platform SDK. It replaces
+the window worker while halted, verifies both input processing and repair replay
+are blocked without moving Kafka positions, and proves an old halt retry cannot
+undo a newer resume. The results include two control audits tied to the demo caller and two
+blocked probes. Existing output delivery and already-committed acknowledgements
+remain independent of the processing hold.

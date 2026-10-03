@@ -245,6 +245,127 @@ pub struct ReplayRequest {
     pub reason: String,
     pub payload: serde_json::Value,
 }
+
+#[derive(serde::Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ControlRequest {
+    #[schema(value_type = String)]
+    pub request_id: uuid::Uuid,
+    /// `halt` or `resume`.
+    pub command: String,
+    pub expected_control_revision: u64,
+    pub reason: String,
+    #[serde(default)]
+    pub reset_retry_budget: bool,
+}
+#[utoipa::path(post, path="/v1/bus/stages/{namespace}/{tenant}/{id}/control", tag="bus", params(("namespace"=String, Path, description="Stage namespace"),("tenant"=String, Path, description="Stage tenant"),("id"=String, Path, description="Processor ID")), request_body=ControlRequest, responses((status=200, description="Committed control audit", body=serde_json::Value),(status=409, description="Stale revision or conflicting request"),(status=429, description="Audit retention full")))]
+pub async fn control(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<
+        crate::auth::identity::CallerIdentity,
+    >,
+    Path((ns, tenant, id)): Path<(String, String, String)>,
+    Json(request): Json<ControlRequest>,
+) -> Response {
+    #[cfg(feature = "bus")]
+    {
+        let mut op = match load(
+            &state,
+            &identity,
+            &ns,
+            &tenant,
+            &id,
+            super::bus::BusOp::StageControl,
+        )
+        .await
+        {
+            Ok(op) => op,
+            Err(e) => return e,
+        };
+        let command = match request.command.as_str() {
+            "halt" => acteon_bus::StreamStageCommand::Halt,
+            "resume" => acteon_bus::StreamStageCommand::Resume,
+            _ => return error(StatusCode::BAD_REQUEST, "unknown control command"),
+        };
+        let request = acteon_bus::StreamStageControlRequest {
+            request_id: request.request_id,
+            command,
+            expected_control_revision: request.expected_control_revision,
+            reason: request.reason,
+            reset_retry_budget: request.reset_retry_budget,
+        };
+        let actor = format!("{}:{}", identity.auth_method, identity.id);
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            op.control(&actor, &request),
+        )
+        .await
+        {
+            Ok(Ok(audit)) => Json(audit).into_response(),
+            Ok(Err(acteon_bus::StreamStageError::InvalidConfig(_))) => {
+                error(StatusCode::BAD_REQUEST, "invalid control request")
+            }
+            Ok(Err(acteon_bus::StreamStageError::ControlConflict)) => error(
+                StatusCode::CONFLICT,
+                "stale control revision or conflicting request",
+            ),
+            Ok(Err(acteon_bus::StreamStageError::ControlCapacity)) => error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "control audit retention capacity reached",
+            ),
+            Ok(Err(_)) => error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "cannot commit control; retry the same request ID",
+            ),
+            Err(_) => error(
+                StatusCode::GATEWAY_TIMEOUT,
+                "storage timeout; retry the same control request ID",
+            ),
+        }
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, ns, tenant, id, request);
+        error(StatusCode::SERVICE_UNAVAILABLE, "bus feature disabled")
+    }
+}
+#[utoipa::path(get, path="/v1/bus/stages/{namespace}/{tenant}/{id}/controls/{request}", tag="bus", params(("namespace"=String, Path, description="Stage namespace"),("tenant"=String, Path, description="Stage tenant"),("id"=String, Path, description="Processor ID"),("request"=String, Path, description="Control request UUID")), responses((status=200, description="Control audit", body=serde_json::Value),(status=404, description="Unknown request")))]
+pub async fn control_audit(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<
+        crate::auth::identity::CallerIdentity,
+    >,
+    Path((ns, tenant, id, request)): Path<(String, String, String, uuid::Uuid)>,
+) -> Response {
+    #[cfg(feature = "bus")]
+    {
+        match load(
+            &state,
+            &identity,
+            &ns,
+            &tenant,
+            &id,
+            super::bus::BusOp::StageRead,
+        )
+        .await
+        {
+            Ok(op) => match op
+                .control_audits()
+                .iter()
+                .find(|a| a.request.request_id == request)
+            {
+                Some(a) => Json(a).into_response(),
+                None => error(StatusCode::NOT_FOUND, "control request not found"),
+            },
+            Err(e) => e,
+        }
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, ns, tenant, id, request);
+        error(StatusCode::SERVICE_UNAVAILABLE, "bus feature disabled")
+    }
+}
 #[utoipa::path(post, path="/v1/bus/stages/{namespace}/{tenant}/{id}/quarantine/{entry}/replay", tag="bus", params(("namespace"=String, Path, description="Stage namespace"),("tenant"=String, Path, description="Stage tenant"),("id"=String, Path, description="Processor ID"),("entry"=String, Path, description="Quarantined input UUID")), request_body=ReplayRequest, responses((status=202, description="Durable replay audit", body=serde_json::Value),(status=409, description="Conflicting request")))]
 pub async fn replay(
     State(state): State<AppState>,
