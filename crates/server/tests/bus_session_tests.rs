@@ -144,6 +144,23 @@ impl Fixture {
         topic.partitions = 1;
         topic.replication_factor = 1;
         backend.create_topic(&topic).await.unwrap();
+        // Admin acknowledgement can precede topic/leader metadata propagation.
+        // Verify the partition serves watermark requests before opening consumers.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(25);
+        loop {
+            if backend
+                .scan_topic_watermarks(&topic.kafka_topic_name())
+                .await
+                .is_ok_and(|w| w.high_water_marks.contains_key(&0))
+            {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "topic partition readiness deadline"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
         let mut sub = Subscription::new(
             format!("sub-{}", Uuid::new_v4().simple()),
             topic.kafka_topic_name(),
