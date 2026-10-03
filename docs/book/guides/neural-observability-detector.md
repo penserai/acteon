@@ -510,8 +510,9 @@ seconds of allowed lateness. It atomically checkpoints active windows,
 finalized-window keys, event IDs, source watermarks, ready outputs, and source
 offsets. The simulation then terminates its consumers before committing,
 restores the checkpoint, and proves that Kafka redelivery neither reopens a
-window nor loses an output. The runner uses Redis-backed
-[`StreamCheckpointCoordinator`](../features/stream-checkpoints.md) to persist
+window nor loses an output. The runner uses a typed window processor inside
+[`ManagedStreamStage`](../features/managed-stream-stages.md), backed by Redis
+[`StreamCheckpointCoordinator`](../features/stream-checkpoints.md), to persist
 window state, ready-window outputs, and source offsets atomically before Kafka
 commits. Redis uses a persisted volume and AOF with `appendfsync always`.
 
@@ -521,9 +522,12 @@ use the public HTTP API. The simulation replaces the HTTP server and its
 consumer registry after the pre-commit checkpoint, verifies that the old session
 ID is rejected, and opens replacement consumers. These replay the uncommitted
 prefix while the persisted source positions prevent duplicate ingestion.
-Before the final checkpoint, `validate_bus_receipts` derives offsets and checks
-the complete processing prefix. The runner persists the Redis generation, then
-calls `acknowledge_bus_receipts` through the same server-owned consumers.
+`HttpStreamStageSource` owns the HTTP receipt operations. The platform stage
+decodes typed telemetry, runs the window processor, validates the complete receipt
+prefix, persists state/positions/outputs, and acknowledges the original consumers.
+The five checkpointed records replay without invoking the processor. Its lease,
+batch limits, output headroom, callback timeout, and persisted retry budget are
+generic building blocks; telemetry correlation remains application policy.
 A separate library group probe joins a second member, observes revocation,
 rejects the old receipt, and proves redelivery from offset zero. That probe adds
 no windows, model calls, or operational effects. Source acknowledgement fencing
@@ -565,7 +569,8 @@ and admitted an incident only when all three typed signal decisions agreed.
 | Kafka source records accepted | 12 |
 | Kafka duplicates and redeliveries rejected | 6 |
 | Restart redeliveries deduplicated | 5 |
-| Input window checkpoints | 2 |
+| Input window checkpoints | 4 |
+| Typed processor attempts / replayed records skipped before callback | 4 / 5 |
 | Final Kafka consumer lag | 0 |
 | Active source sessions / receipts acknowledged | 3 / 13 |
 | Stale acknowledgements rejected after rebalance | 1 |
@@ -573,8 +578,8 @@ and admitted an incident only when all three typed signal decisions agreed.
 | Governed runtime packages / artifacts / question sets / response schemas | 6 / 5 / 4 / 1 |
 | Event-time windows | 4 |
 | Real Laya calls | 16 |
-| Sum of model HTTP request times | 62,156 ms |
-| Per-call HTTP p50 / p95 | 3,629 ms / 7,649 ms |
+| Sum of model HTTP request times | 128,735 ms |
+| Per-call HTTP p50 / p95 | 8,101 ms / 16,677 ms |
 | Incident chains | 1 |
 | Bounded investigator calls | 1 |
 | Delivery attempts / accepted verdicts | 6 / 4 |
@@ -588,8 +593,8 @@ and admitted an incident only when all three typed signal decisions agreed.
 Timings now measure model HTTP elapsed time through the governed provider,
 including response validation; the earlier report measured server-only
 inference time. These totals are not directly comparable. Full wall times also
-include the provider's identity check and gateway dispatch. The two checkpoint
-counts describe input-state saves; delivery and acknowledgements advance
+include the provider's identity check and gateway dispatch. Input checkpoint
+counts describe completed processing batches; delivery and acknowledgements advance
 additional generations.
 
 See the
@@ -823,8 +828,9 @@ digests.
 
 1. Start Kafka, Redis AOF storage, and the pinned Laya service.
 2. Publish metrics, traces, and logs, including one duplicate event ID.
-3. Persist window state and ready outputs, replace the uncommitted consumer,
-   restore from Redis, reject redeliveries, and checkpoint before offset commits.
+3. Run typed window processing through the managed stage, persist state and
+   ready outputs, replace the HTTP server, and recover five records without
+   invoking the processor again before committing their receipts.
 4. Invoke the three signal question sets concurrently through governed providers.
 5. Verify runtime identity, locked response shape, IDs, labels, numeric ranges,
    probability sums, and zero output tokens.

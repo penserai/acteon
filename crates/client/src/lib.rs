@@ -395,3 +395,8 @@ mod tests {
         assert!(error.error().is_some());
     }
 }
+
+#[cfg(feature = "stream-processing")]
+pub mod stream_stage;
+#[cfg(feature = "stream-processing")]
+pub use stream_stage::{HttpStageSubscription, HttpStreamStageSource};

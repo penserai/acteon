@@ -4,10 +4,10 @@ Laya `typed-decisions` ran on `cpu` at revision `55cf4c4ebb4ebe31b2550e8bdf3bd21
 
 | Trial | Signal decisions | Raw fusion | Acteon outcome | Model HTTP elapsed | Result |
 |---|---|---|---|---:|---|
-| healthy-baseline | metrics: healthy (0.52)<br>traces: healthy (0.40)<br>logs: healthy (0.41) | downstream_timeout (0.27) | suppressed by suppress-observability-noise | 14986 ms | PASS |
-| log-only-noise | metrics: healthy (0.54)<br>traces: healthy (0.45)<br>logs: healthy (0.35) | downstream_timeout (0.28) | suppressed by suppress-observability-noise | 15448 ms | PASS |
-| pool-exhaustion | metrics: db_pool_pressure (0.52)<br>traces: database_wait (0.48)<br>logs: pool_timeout (0.58) | db_pool_exhaustion (0.27) | completed observability-incident chain | 16040 ms | PASS |
-| ambiguous-regression | metrics: application_errors (0.39)<br>traces: application_work (0.31)<br>logs: downstream_error (0.31) | downstream_timeout (0.25) | rerouted to investigator | 15682 ms | PASS |
+| healthy-baseline | metrics: healthy (0.52)<br>traces: healthy (0.40)<br>logs: healthy (0.41) | downstream_timeout (0.27) | suppressed by suppress-observability-noise | 14858 ms | PASS |
+| log-only-noise | metrics: healthy (0.54)<br>traces: healthy (0.45)<br>logs: healthy (0.35) | downstream_timeout (0.28) | suppressed by suppress-observability-noise | 28733 ms | PASS |
+| pool-exhaustion | metrics: db_pool_pressure (0.52)<br>traces: database_wait (0.48)<br>logs: pool_timeout (0.58) | db_pool_exhaustion (0.27) | completed observability-incident chain | 43899 ms | PASS |
+| ambiguous-regression | metrics: application_errors (0.39)<br>traces: application_work (0.31)<br>logs: downstream_error (0.31) | downstream_timeout (0.25) | rerouted to investigator | 41245 ms | PASS |
 
 ## Aggregate
 
@@ -15,12 +15,12 @@ Laya `typed-decisions` ran on `cpu` at revision `55cf4c4ebb4ebe31b2550e8bdf3bd21
 - Kafka source records accepted: **12**
 - Kafka duplicates and redeliveries rejected: **6**
 - Recovery redeliveries deduplicated after restart: **5**
-- Window checkpoints persisted before offset commits: **2**
+- Window checkpoints persisted before offset commits: **4**
 - Final Kafka consumer lag: **0**
 - Event-time windows completed: **4**
 - Model calls: **16**
-- Total model HTTP elapsed: **62156 ms**
-- Per-call p50 / p95: **3629 ms / 7649 ms**
+- Total model HTTP elapsed: **128735 ms**
+- Per-call p50 / p95: **8101 ms / 16677 ms**
 - Incident chains: **1** diagnostics capture and **1** on-call notification
 - Bounded investigations: **1**
 - Duplicate incident dispatches prevented by durable receipts: **1**
@@ -35,6 +35,16 @@ Laya `typed-decisions` ran on `cpu` at revision `55cf4c4ebb4ebe31b2550e8bdf3bd21
 | Replacement delivery offset in fencing probe | 0 |
 
 All three source consumers use Acteon HTTP receipt sessions through the Rust client. The HTTP server restarts once; its old session ID is rejected, and new consumers replay the uncommitted prefix. Checkpoint validation derives positions from opaque receipt IDs before Redis persistence. Source acknowledgements use the consumers that delivered the records. An independent group probe joins a second member, observes revocation, rejects the old receipt, and receives the uncommitted prefix again. It adds no model calls or operational effects.
+
+## Managed input processing
+
+| Observation | Result |
+|---|---:|
+| Typed processor attempts / completed batches | 4 / 4 |
+| Broker records processed / recovered without callback | 13 / 5 |
+| Persisted processor retries / failures | 0 / 0 |
+
+The generic managed stage owns bounded receive, typed decode, processor execution, receipt validation, checkpoint persistence, and acknowledgement. The five checkpointed records replay after server replacement without another window-processor call.
 
 ## Managed delivery recovery
 
@@ -55,7 +65,7 @@ Dead-letter diagnostic: `invalid verdict envelope or idempotency key`. The probe
 
 Timings measure model HTTP request and response validation through the governed provider. They are not the server-only inference timings used in the previous report. Full wall times also include gateway dispatch and runtime identity checks.
 
-Receiver replacement preserved incident Action `bb1ac5c4-a2b9-4163-964b-80ea07504185` and chain execution `77fce51a-f04d-460d-b2c0-b87a6b489031`; original and recovered receipt outcomes matched.
+Receiver replacement preserved incident Action `5640bd1f-db95-462b-9eae-11fc1b1b7f21` and chain execution `02b066b7-c119-450e-b57f-65f8542a9862`; original and recovered receipt outcomes matched.
 
 ## Interpretation
 

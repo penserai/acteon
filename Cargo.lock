@@ -186,8 +186,10 @@ dependencies = [
 name = "acteon-client"
 version = "0.1.0"
 dependencies = [
+ "acteon-bus",
  "acteon-core",
  "acteon-crypto",
+ "async-trait",
  "chrono",
  "futures",
  "percent-encoding",
@@ -197,6 +199,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",
+ "uuid",
 ]
 
 [[package]]
@@ -674,6 +677,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tokio-rustls",
+ "tokio-util",
  "tower",
  "tracing",
  "tracing-subscriber",

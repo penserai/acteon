@@ -161,3 +161,6 @@ processing is succeeding while downstream delivery is not.
 For event-time correlation, store `EventTimeWindowSnapshot` as the coordinator's
 state and use each emitted window's `idempotency_key()` for its outbox entry.
 See [Event-Time Windows](event-time-windows.md) for that state machine.
+
+For bounded typed input processing and checkpoint-before-ack coordination, use
+[Managed Stream Processing Stages](managed-stream-stages.md).

@@ -19,7 +19,7 @@ use thiserror::Error;
 use crate::{AcknowledgedSubscription, SubscriptionAck, SubscriptionError, SubscriptionReceipt};
 use crate::{BusBackend, OffsetPosition};
 
-const SNAPSHOT_VERSION: u16 = 2;
+const SNAPSHOT_VERSION: u16 = 3;
 const STATE_KIND: &str = "bus_stream_checkpoint";
 const DEFAULT_MAX_POSITIONS: usize = 10_000;
 const DEFAULT_MAX_PENDING_OUTPUTS: usize = 100_000;
@@ -132,6 +132,8 @@ pub struct StreamCheckpointSnapshot<S, O> {
     pub(crate) outbox: Vec<StreamOutboxEntry<O>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) managed: Option<crate::outbox::ManagedOutboxState<O>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) processing: Option<crate::stage::ManagedStageState>,
 }
 
 impl<S, O> StreamCheckpointSnapshot<S, O> {
@@ -246,6 +248,10 @@ pub enum StreamCheckpointError {
         stored: i64,
         proposed: i64,
     },
+    #[error("managed processing state must be changed through its stage lease")]
+    ManagedProcessing,
+    #[error("invalid managed stage snapshot: {0}")]
+    InvalidManagedStage(String),
     #[error("managed output must be completed through its dispatcher lease")]
     ManagedOutput,
     #[error("invalid managed outbox snapshot: {0}")]
@@ -302,6 +308,7 @@ where
             positions: Vec::new(),
             outbox: Vec::new(),
             managed: None,
+            processing: None,
         };
         let encoded = serde_json::to_string(&snapshot)?;
         if store.check_and_set(&key, &encoded, None).await? {
@@ -371,6 +378,9 @@ where
         PI: IntoIterator<Item = StreamPosition>,
         OI: IntoIterator<Item = StreamOutboxEntry<O>>,
     {
+        if self.snapshot.processing.is_some() {
+            return Err(StreamCheckpointError::ManagedProcessing);
+        }
         let next = self.prepare_checkpoint(state, positions, outputs)?;
         self.persist(next).await?;
         Ok(self.persisted_view())
@@ -543,7 +553,7 @@ where
         Ok(self.persisted_view())
     }
 
-    fn prepare_checkpoint<PI, OI>(
+    pub(crate) fn prepare_checkpoint<PI, OI>(
         &self,
         state: S,
         positions: PI,
@@ -626,6 +636,7 @@ where
                 .collect(),
             outbox: outbox.into_values().collect(),
             managed: self.snapshot.managed.clone(),
+            processing: self.snapshot.processing.clone(),
         })
     }
 
@@ -633,8 +644,10 @@ where
         &mut self,
         mut next: StreamCheckpointSnapshot<S, O>,
     ) -> Result<(), StreamCheckpointError> {
-        next.schema_version = if next.managed.is_some() {
+        next.schema_version = if next.processing.is_some() {
             SNAPSHOT_VERSION
+        } else if next.managed.is_some() {
+            2
         } else {
             1
         };
@@ -686,7 +699,7 @@ fn validate_snapshot<S, O>(
     snapshot: &StreamCheckpointSnapshot<S, O>,
     expected_processor_id: &str,
 ) -> Result<(), StreamCheckpointError> {
-    if snapshot.schema_version != 1 && snapshot.schema_version != SNAPSHOT_VERSION {
+    if !(1..=SNAPSHOT_VERSION).contains(&snapshot.schema_version) {
         return Err(StreamCheckpointError::UnsupportedSnapshotVersion(
             snapshot.schema_version,
         ));
@@ -707,6 +720,16 @@ fn validate_snapshot<S, O>(
         return Err(StreamCheckpointError::InvalidManagedOutbox(
             "managed state requires version 2".into(),
         ));
+    }
+    if snapshot.processing.is_some() && snapshot.schema_version < 3 {
+        return Err(StreamCheckpointError::InvalidManagedStage(
+            "managed processing requires version 3".into(),
+        ));
+    }
+    if let Some(stage) = &snapshot.processing {
+        stage
+            .validate()
+            .map_err(StreamCheckpointError::InvalidManagedStage)?;
     }
     positions_to_map(&snapshot.positions)?;
     if snapshot.outbox.len() > snapshot.config.max_pending_outputs {
