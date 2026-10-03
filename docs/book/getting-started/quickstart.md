@@ -1,4 +1,8 @@
-# Quick Start
+# Run your first governed action
+
+See the smallest complete Acteon flow: submit intent, apply policy, execute an
+integration, and inspect the outcome. You will run one action, deduplicate a
+repeat, and suppress a request that policy blocks.
 
 Run these commands from the repository root after [building from source](installation.md).
 You need Rust 1.88+, Cargo, and curl. The first build can take several minutes.
@@ -161,8 +165,9 @@ cargo build --locked -p acteon-server
 python3 scripts/ci/quickstart.py --server target/debug/acteon-server
 ```
 
-## What's Next?
+## Build on this flow
 
-- [Configuration Reference](configuration.md) — TOML config options
-- [Architecture](../concepts/architecture.md) — how Acteon works internally
-- [Features](../features/index.md) — explore features in detail
+- [Choose an execution model](../concepts/execution-model.md): compose actions into chains, workers, workflows, or stream processing.
+- [Add governance](../concepts/governance.md): scope callers, require approvals, and retain evidence.
+- [Follow a complete guide](../guides/index.md): build agents, incident response, business workflows, or event-driven automation.
+- [Configure your deployment](configuration.md): connect real providers and persistent storage.

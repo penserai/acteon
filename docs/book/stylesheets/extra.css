@@ -7,30 +7,7 @@
   --md-accent-fg-color: #ffc107;
 }
 
-/* Hero section on homepage */
-.md-typeset .hero {
-  text-align: center;
-  padding: 2rem 0;
-}
-
-.md-typeset .hero img {
-  max-width: 180px;
-  margin-bottom: 1rem;
-}
-
-.md-typeset .hero h1 {
-  font-size: 2.5rem;
-  font-weight: 700;
-  margin-bottom: 0.5rem;
-}
-
-.md-typeset .hero p.tagline {
-  font-size: 1.3rem;
-  color: var(--md-default-fg-color--light);
-  margin-bottom: 2rem;
-}
-
-/* Feature grid on homepage */
+/* Shared feature grids in reference pages */
 .md-typeset .grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
@@ -95,4 +72,148 @@
 .md-typeset .badge.development {
   background-color: #ff9800;
   color: white;
+}
+
+/* The platform overview follows the work: intent, policy, execution, evidence. */
+.md-typeset .platform-home {
+  --platform-violet: #673ab7;
+  --platform-deep: #4527a0;
+  --platform-amber: #ffc107;
+  --platform-ink: #202333;
+  --platform-tint: #f6f4fb;
+}
+
+.md-typeset .platform-hero {
+  max-width: 46rem;
+  padding: 2.2rem 0 1.6rem;
+}
+
+.md-typeset .platform-hero h1 {
+  max-width: 18ch;
+  margin: 0 0 1.2rem;
+  color: var(--md-default-fg-color);
+  font-size: clamp(2.1rem, 5vw, 3.5rem);
+  font-weight: 750;
+  line-height: 1.08;
+  letter-spacing: -0.035em;
+  text-wrap: balance;
+}
+
+.md-typeset .platform-hero p {
+  max-width: 66ch;
+}
+
+.md-typeset .platform-hero p:first-of-type {
+  font-size: 1.15rem;
+  line-height: 1.5;
+}
+
+.md-typeset .platform-home .md-button {
+  margin: 0.4rem 0.5rem 0.2rem 0;
+}
+
+.md-typeset .execution-path {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0 1.4rem;
+  margin: 0.8rem 0 3rem;
+  padding: 1.2rem 1.5rem;
+  border-top: 0.2rem solid var(--platform-amber);
+  background: var(--platform-tint);
+  color: var(--platform-ink);
+}
+
+.md-typeset .execution-path dt {
+  margin: 0;
+  color: var(--platform-deep);
+  font-weight: 700;
+}
+
+.md-typeset .execution-path dd {
+  margin: 0.4rem 0 0;
+  font-size: 0.8rem;
+}
+
+.md-typeset .platform-stories {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 2rem;
+  margin-bottom: 2.8rem;
+}
+
+.md-typeset .platform-stories section h3 {
+  margin-top: 0;
+  font-weight: 700;
+}
+
+.md-typeset .platform-stories section p {
+  max-width: 64ch;
+}
+
+.md-typeset .platform-proof {
+  margin: 2.8rem 0;
+  padding: 1.3rem 1.7rem;
+  border-left: 0.25rem solid var(--platform-violet);
+  background: var(--platform-tint);
+}
+
+.md-typeset .platform-proof h2 {
+  margin-top: 0;
+}
+
+.md-typeset .platform-proof p {
+  max-width: 76ch;
+}
+
+.md-typeset .platform-home a:focus-visible {
+  outline: 0.15rem solid var(--md-accent-fg-color);
+  outline-offset: 0.2rem;
+}
+
+[data-md-color-scheme="slate"] .md-typeset .platform-home {
+  --platform-tint: #292637;
+  --platform-ink: #ebe7f5;
+  --platform-deep: #c7b3ee;
+}
+
+@media (max-width: 60em) {
+  .md-typeset .platform-stories {
+    grid-template-columns: 1fr;
+    gap: 0.7rem;
+  }
+}
+
+@media (max-width: 40em) {
+  .md-typeset .platform-hero {
+    padding-top: 1rem;
+  }
+
+  .md-typeset .execution-path {
+    display: block;
+    padding: 1rem;
+  }
+
+  .md-typeset .execution-path div + div {
+    margin-top: 1rem;
+  }
+
+  .md-typeset .platform-proof {
+    padding: 1rem;
+  }
+}
+
+/* Keep text links and secondary actions readable against the slate surface. */
+[data-md-color-scheme="slate"][data-md-color-primary] {
+  --md-typeset-a-color: #c7b3ee;
+}
+
+[data-md-color-scheme="slate"] .md-typeset .md-button:not(.md-button--primary) {
+  color: #c7b3ee;
+  border-color: #c7b3ee;
+}
+
+[data-md-color-scheme="slate"] .md-typeset .md-button:not(.md-button--primary):hover,
+[data-md-color-scheme="slate"] .md-typeset .md-button:not(.md-button--primary):focus {
+  color: #202333;
+  border-color: #ffc107;
 }

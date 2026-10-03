@@ -1,5 +1,14 @@
 # Deployment
 
+Deploy Acteon as the execution and governance service for your applications and
+agents. Select the server features, state and audit backends, and provider
+integrations your workload needs. Custom workers, Kafka, model runtimes, and agent
+engines run alongside the server when those capabilities are used.
+
+Start with [installation](../getting-started/installation.md) for build options,
+[governance](../concepts/governance.md) for authority and policy, and
+[operations](../operations/index.md) for monitoring and recovery.
+
 ## Database Migrations
 
 Before starting the server for the first time (or after upgrading), run migrations to initialize database schemas:

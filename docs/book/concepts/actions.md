@@ -1,6 +1,10 @@
 # Actions & Outcomes
 
-The **Action** is the fundamental unit of work in Acteon. Every request to the gateway creates an action that flows through the dispatch pipeline and produces an **ActionOutcome**.
+The **Action** is the unit of intent submitted to Acteon's dispatch engine. An
+application, agent, operator, or stream worker can request an operation through
+the same action contract. Dispatch applies policy and produces an
+**ActionOutcome**. Longer work is tracked through the execution or run linked by
+that outcome; see [the execution model](execution-model.md).
 
 ## The Action Type
 
@@ -56,10 +60,13 @@ let action = Action::new(
 
 ### JSON Representation
 
-When sending actions via the API:
+A complete action sent to the dispatch API includes an ID and creation timestamp.
+SDK constructors can supply these fields:
 
 ```json
 {
+  "id": "550e8400-e29b-41d4-a716-446655440001",
+  "created_at": "2026-01-01T00:00:00Z",
   "namespace": "notifications",
   "tenant": "tenant-1",
   "provider": "email",

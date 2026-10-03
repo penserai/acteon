@@ -1,6 +1,6 @@
 # Admin UI
 
-Acteon ships with a built-in web-based admin dashboard for monitoring, inspecting, and managing your action gateway in real time. The UI connects to the same REST API used by the client SDKs.
+Acteon ships with a built-in web-based admin dashboard for monitoring, inspecting, and managing platform operations in real time. The UI connects to the same REST API used by the client SDKs.
 
 ![Dashboard](assets/dashboard.png)
 
@@ -32,7 +32,9 @@ View server configuration, manage providers and circuit breakers, and toggle dar
 
 ## Quick Start
 
-The admin UI is served by the Acteon server. No separate installation is required.
+The packaged container includes the UI, served by the Acteon server. For a source
+deployment, build the static assets as described below. Advanced capabilities may
+be exposed through the API or CLI before they have a dedicated UI view.
 
 ### Development Mode
 

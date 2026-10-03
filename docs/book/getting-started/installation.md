@@ -1,5 +1,10 @@
 # Installation
 
+Build the Acteon server with the capabilities your workload needs, or build the
+container for a packaged server and Admin UI. The [quick start](quickstart.md)
+uses an in-memory configuration; production deployments add persistent storage
+and configured integrations.
+
 ## Building from Source
 
 Clone the repository and build:
@@ -60,6 +65,29 @@ cargo build -p acteon-server --features aws-all
 | `aws-ec2` | EC2 |
 | `aws-autoscaling` | Auto Scaling |
 | `aws-all` | All eight AWS providers |
+
+### Agent, stream, and cloud capabilities
+
+The server's optional capabilities are selected at build time and configured at
+runtime. Enable only the integrations you use:
+
+| Feature | Capability | Runtime requirement |
+|---|---|---|
+| `bus` | Agentic Bus and its HTTP APIs | Kafka and configured bus settings |
+| `swarm` | Ambient swarm provider and run APIs | Swarm configuration, agent engines, and their credentials |
+| `azure-blob`, `azure-eventhubs`, `azure-all` | Azure provider integrations | Service endpoints and credentials |
+| `gcp-storage`, `gcp-pubsub`, `gcp-all` | Google Cloud provider integrations | Service endpoints and credentials |
+
+```bash
+cargo build --locked -p acteon-server --features bus,swarm
+```
+
+Managed stream processors are composed in Rust workers. The Rust client's
+`stream-processing` feature enables the HTTP source adapter and typed stage
+operator APIs. Python and TypeScript code workflows run in your worker processes.
+A governed model provider connects to a separately deployed inference endpoint.
+See [agents and AI](../features/agents-and-ai.md) and
+[streams and events](../features/streams-and-events.md) for the integration paths.
 
 ### Running the Server
 

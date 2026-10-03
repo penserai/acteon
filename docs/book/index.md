@@ -1,314 +1,125 @@
 ---
+title: Execution and governance for agents and operations
+description: Turn agent decisions, application requests, and events into governed, durable action with Acteon.
 hide:
   - navigation
   - toc
 ---
 
-<div class="hero" markdown>
+<div class="platform-home" markdown>
 
-![Acteon — Actions forged in Rust](assets/logo.svg){ width="180" }
+<div class="platform-hero" markdown>
 
-_A distributed action gateway that transforms, deduplicates, routes, and dispatches actions through a configurable pipeline of rules, providers, and state backends._
+# Turn intent into accountable action.
 
-[Get Started](getting-started/quickstart.md){ .md-button .md-button--primary }
-[View on GitHub](https://github.com/penserai/acteon){ .md-button }
+**Execution and governance for AI agents and deterministic operations.**
 
-</div>
+Acteon is an open-source platform for putting automation to work. Bring an agent's
+decision, an application's request, or a stream of events. Define who can act,
+what may run, when a human must approve, and how execution recovers when something
+fails.
 
----
+Rules, durable workflows, agent coordination, typed model calls, and operational
+controls work together in one platform—built in Rust and deployed on your infrastructure.
 
-## What is Acteon?
-
-Acteon is a **distributed action gateway** built in Rust. It sits between your application and external services (email, SMS, Slack, webhooks, LLMs, and more), providing a powerful control plane that decides _what happens_ to every action before it reaches the outside world.
-
-The name draws from the Greek myth of **Actaeon**, a hunter transformed by Artemis into a stag — the very thing he pursued. Likewise, actions entering Acteon are **transformed** — deduplicated, rerouted, throttled, or dispatched — before they ever reach the outside world.
-
-```mermaid
-flowchart LR
-    A[Your Application] -->|Action| B(Acteon Gateway)
-    B --> C{Rule Engine}
-    C -->|Allow| D[Provider Execution]
-    C -->|Deduplicate| E[Return Cached]
-    C -->|Suppress| F[Block Action]
-    C -->|Throttle| G[Rate Limit]
-    C -->|Reroute| H[Different Provider]
-    D --> I[Email / Twilio / Slack / Teams / Discord / Webhook / SNS / Lambda / SQS / S3]
-```
-
----
-
-<div class="grid" markdown>
-
-<div class="card" markdown>
-
-### Rule-Based Processing
-
-Define rules in YAML to suppress, deduplicate, throttle, reroute, or modify actions. Rules are evaluated by priority and can match on any field of the action payload.
-
-[Learn more](concepts/rules.md)
+[Run your first action](getting-started/quickstart.md){ .md-button .md-button--primary }
+[Explore the platform](concepts/index.md){ .md-button }
 
 </div>
 
-<div class="card" markdown>
+<dl class="execution-path" aria-label="From intent to evidence">
+  <div><dt>Intent</dt><dd>Agent decisions, service requests, events</dd></div>
+  <div><dt>Policy</dt><dd>Identity, rules, quotas, approvals</dd></div>
+  <div><dt>Execution</dt><dd>Providers, chains, workers, workflows</dd></div>
+  <div><dt>Evidence</dt><dd>Outcomes, histories, audit, recovery</dd></div>
+</dl>
 
-### Event Lifecycle Management
+## Build automation you can operate
 
-Track events through configurable state machines with automatic timeout transitions. Group related events for consolidated notifications.
+<div class="platform-stories" markdown>
 
-[Learn more](features/state-machines.md)
+<section markdown>
 
-</div>
+### Give agents a governed way to act
 
-<div class="card" markdown>
+Connect agents through MCP, A2A, or the Agentic Bus. Scope their permissions,
+put sensitive actions behind approval, and invoke models through validated
+contracts. Run coordinated agent work with the optional swarm orchestrator.
 
-### Pluggable Backends
+[Build with agents and AI](features/agents-and-ai.md)
 
-Choose from Memory, Redis, PostgreSQL, or DynamoDB for state storage. Mix and match with PostgreSQL, ClickHouse, or Elasticsearch for audit trails. (Note: ClickHouse state backend was removed in v0.1.0; see [Migration Guide](reference/migration-clickhouse-state.md)).
+</section>
+<section markdown>
 
-[Learn more](backends/index.md)
+### Keep business operations moving
 
-</div>
+Turn a single action into a durable execution. Compose provider calls into
+chains, wait for a signal, run tasks on your own workers, or write workflows in
+Python and TypeScript. Track progress across retries, waits, and restarts.
 
-<div class="card" markdown>
+[Choose your execution model](concepts/execution-model.md)
 
-### Human-in-the-Loop Approvals
+</section>
+<section markdown>
 
-Require human approval before executing sensitive actions. Supports HMAC-signed approval/rejection URLs with configurable TTLs.
+### Turn live signals into decisions
 
-[Learn more](features/approvals.md)
+Correlate Kafka streams with event-time windows. Validate inputs, checkpoint
+processing, quarantine failures, and deliver outputs through a managed outbox.
+Combine deterministic rules, typed inference, and agent escalation in one flow.
 
-</div>
+[Build event-driven systems](features/streams-and-events.md)
 
-<div class="card" markdown>
-
-### Multi-Step Task Chains
-
-Orchestrate multi-step workflows where each step's output feeds into the next. Supports configurable failure policies and delay between steps.
-
-[Learn more](features/chains.md)
-
-</div>
-
-<div class="card" markdown>
-
-### LLM Guardrails
-
-Use LLM-based evaluation to gate actions through AI-powered guardrails. Block or flag actions based on content analysis with configurable confidence thresholds.
-
-[Learn more](features/llm-guardrails.md)
+</section>
 
 </div>
 
-<div class="card" markdown>
+## Make control part of execution
 
-### Semantic Routing
+An agent can propose a remediation. A rule can determine whether the evidence is
+sufficient. An approval can authorize a sensitive step. A durable chain can carry
+out the work and preserve its history. Acteon gives each responsibility a place.
 
-Route actions by meaning, not just field values. Use vector embeddings and cosine similarity to match actions against topic descriptions in natural language.
+| Your operational question | The platform capability |
+|---|---|
+| **Who is allowed to do this?** | Tenant and namespace scoping, API key/JWT authentication, grants, and agent lifecycle controls |
+| **Should this action run now?** | Rules, deduplication, throttling, quotas, schedules, and human approvals |
+| **What happens if it fails?** | Durable receipts, retries, worker leases, checkpoints, dead letters, and explicit recovery operations |
+| **How do we explain the outcome?** | Rule evaluation tools, execution histories, model contract evidence, audit storage, metrics, and tracing |
 
-[Learn more](features/semantic-routing.md)
+[Understand the governance model](concepts/governance.md)
 
-</div>
+<div class="platform-proof" markdown>
 
-<div class="card" markdown>
+## See the platform working end to end
 
-### AWS Providers
+The [cascading observability guide](guides/neural-observability-detector.md) joins
+metrics, traces, and logs from three Kafka sources, makes real calls to a local
+Laya model, and routes the result to suppression, an incident chain, or a bounded
+investigator.
 
-Native integrations for SNS, Lambda, EventBridge, SQS, S3, and SES with automatic STS credential refresh, cross-account role assumption, and LocalStack support for local development.
+Its checked-in simulation covers **four scenarios and 16 real model calls**,
+plus worker replacement, quarantine repair, audited halt/resume, and delivery
+recovery. Read the configuration, run the experiment, and inspect the results.
 
-[Learn more](features/aws-providers.md)
-
-</div>
-
-<div class="card" markdown>
-
-### Enterprise Ready
-
-Multi-tenant isolation, API key and JWT authentication, hot-reload for rules and auth config, graceful shutdown, and comprehensive audit trails.
-
-[Learn more](api/authentication.md)
-
-</div>
-
-<div class="card" markdown>
-
-### Polyglot Clients
-
-Official SDKs for Rust, Python, Node.js/TypeScript, Go, and Java. Every client provides dispatch, batch, rule management, and audit querying.
-
-[Learn more](api/polyglot-clients.md)
+[Run the observability scenario](guides/neural-observability-detector.md){ .md-button }
 
 </div>
 
-<div class="card" markdown>
+## Start with one action. Expand when you need to.
 
-### Simulation & Testing
+Acteon includes an HTTP server, Admin UI, CLI, MCP server, and SDKs for Rust,
+Python, TypeScript, Go, and Java. Start locally with in-memory state and a log
+provider; add the integrations, persistent backends, and workers your workload
+needs. Agent orchestration and Kafka capabilities are available through optional
+build features.
 
-End-to-end testing framework with mock providers, failure injection, multi-node scenarios, and performance benchmarks across all backend combinations.
+- **Try it:** [run the quick start](getting-started/quickstart.md) and see execution, deduplication, and suppression.
+- **Build a real flow:** choose an [agent, observability, incident, commerce, or cloud guide](guides/index.md).
+- **Deploy it:** configure [identity and policy](concepts/governance.md), [persistence](backends/index.md), and [production operations](reference/deployment.md).
 
-[Learn more](examples/simulation.md)
-
-</div>
-
-<div class="card" markdown>
-
-### Guides
-
-In-depth guides that combine multiple Acteon features to solve real-world problems, from AI agent swarm coordination to production deployment patterns.
-
-[Learn more](guides/index.md)
+Acteon is self-hosted, built in Rust, and released under the
+[Apache 2.0 license](https://github.com/penserai/acteon/blob/main/LICENSE).
+[Explore the source](https://github.com/penserai/acteon).
 
 </div>
-
-</div>
-
----
-
-## Agent Swarm Orchestrator
-
-Acteon also ships `acteon-swarm` — a standalone multi-agent orchestrator that **uses** the Acteon gateway for safety enforcement but is a separate product surface. While Acteon core is an action gateway (rules, routing, audit), the swarm is an **agent orchestration engine** inspired by [Karpathy's autoresearch](https://github.com/karpathy/autoresearch) pattern.
-
-<div class="grid" markdown>
-
-<div class="card" markdown>
-
-### Build → Eval → Critique → Fix → Verify
-
-Primary agents build your project, an **eval harness** scores it, adversarial agents **critique** across engines (Claude + Gemini), and recovery agents **fix code** — all gated by fitness scoring with automatic **git revert on regression**.
-
-</div>
-
-<div class="card" markdown>
-
-### Cross-Engine Adversarial Review
-
-Use a different AI engine for critique than for building — Claude primary with Gemini adversarial, or vice versa. Cross-model blind spots catch issues that a single model misses.
-
-</div>
-
-<div class="card" markdown>
-
-### Autoresearch Primitives
-
-Three Karpathy primitives: editable asset (workspace), scalar metric (eval score), time-boxed cycles. Plus a fourth: SWE-bench-style binary assertions auto-generated from adversarial challenges.
-
-</div>
-
-<div class="card" markdown>
-
-### Acteon as Safety Layer
-
-Every agent tool call flows through Acteon for policy enforcement — dedup, throttle, approval gates, audit trail. The swarm is the orchestrator; Acteon is the guardrail.
-
-</div>
-
-</div>
-
-[Learn more about Agent Swarm](features/agent-swarm.md){ .md-button }
-
----
-
-## Quick Example
-
-Define a rule to deduplicate emails and suppress spam:
-
-```yaml title="rules/basic.yaml"
-rules:
-  - name: block-spam
-    priority: 1
-    condition:
-      field: action.action_type
-      eq: "spam"
-    action:
-      type: suppress
-
-  - name: dedup-email
-    priority: 10
-    condition:
-      field: action.action_type
-      eq: "send_email"
-    action:
-      type: deduplicate
-      ttl_seconds: 300
-```
-
-Dispatch an action:
-
-```bash
-curl -X POST http://localhost:8080/v1/dispatch \
-  -H "Content-Type: application/json" \
-  -d '{
-    "namespace": "notifications",
-    "tenant": "tenant-1",
-    "provider": "email",
-    "action_type": "send_email",
-    "payload": {
-      "to": "user@example.com",
-      "subject": "Welcome!"
-    },
-    "dedup_key": "welcome-user@example.com"
-  }'
-```
-
----
-
-## Architecture at a Glance
-
-```mermaid
-graph TB
-    subgraph Intake
-        API[HTTP API / Swagger UI]
-        CLI[CLI / Clients]
-    end
-
-    subgraph Control Plane
-        RE[Rule Engine]
-        SM[State Machines]
-        GRP[Event Grouping]
-        APR[Approval Manager]
-        CHN[Chain Orchestrator]
-        LLM[LLM Guardrails]
-    end
-
-    subgraph Execution
-        EX[Executor with Retries]
-        PROV[Provider Registry]
-    end
-
-    subgraph State
-        MEM[(Memory)]
-        RED[(Redis)]
-        PG[(PostgreSQL)]
-        DDB[(DynamoDB)]
-    end
-
-    subgraph Audit
-        AUD_PG[(PostgreSQL)]
-        AUD_CH[(ClickHouse)]
-        AUD_ES[(Elasticsearch)]
-    end
-
-    API --> RE
-    CLI --> RE
-    RE --> SM
-    RE --> GRP
-    RE --> APR
-    RE --> CHN
-    RE --> LLM
-    RE --> EX
-    EX --> PROV
-    PROV --> Email[Email SMTP/SES]
-    PROV --> Slack[Slack]
-    PROV --> Twilio[Twilio SMS]
-    PROV --> Teams[Teams]
-    PROV --> Discord[Discord]
-    PROV --> WH[Webhooks]
-    PROV --> AWS[AWS SNS/Lambda/SQS/S3]
-    RE -.-> MEM & RED & PG & DDB
-    EX -.-> AUD_PG & AUD_CH & AUD_ES
-```
-
----
-
-## License
-
-Copyright 2026 Renzo C. Sanchez-Silva. Licensed under the [Apache License 2.0](https://github.com/penserai/acteon/blob/main/LICENSE).

@@ -1,196 +1,72 @@
-# Features
+# Platform capabilities
 
-Acteon provides a rich set of features for controlling action dispatch. Each feature is implemented as a rule action type and can be combined with any condition.
+Acteon combines execution, governance, and recovery in a set of composable
+building blocks. Choose a capability for the responsibility it owns, then
+connect it to the rest of your flow.
 
-## Rule-Based Processing
+## Execute work
 
-<div class="grid" markdown>
+| Capability | What it enables |
+|---|---|
+| [Action dispatch](../concepts/pipeline.md) and [providers](../concepts/providers.md) | Execute integration calls under configured policy |
+| [Durable dispatch admission](durable-dispatch.md) | Accept work with an idempotent receipt and recover its recorded outcome |
+| [Chains](chains.md), [sub-chains](sub-chains.md), and [parallel steps](parallel-steps.md) | Compose steps, data flow, branches, and parallel work |
+| [Durable executions](durable-executions.md) and [chain retry](chain-retry.md) | Preserve progress, pin definitions, wait on timers/signals, and retry failed steps |
+| [Task queues](task-queues.md) and [workflows as code](workflows.md) | Run custom code on your workers with checkpoints and continuations |
+| [Scheduled](scheduled-actions.md) and [recurring actions](recurring-actions.md) | Run work later or on a recurring schedule |
 
-<div class="card" markdown>
-### [Deduplication](deduplication.md)
-Prevent duplicate processing using configurable keys and TTLs.
-</div>
+[Choose your execution model](../concepts/execution-model.md).
 
-<div class="card" markdown>
-### [Suppression](suppression.md)
-Block actions matching specific conditions — spam filtering, maintenance windows, etc.
-</div>
+## Govern behavior
 
-<div class="card" markdown>
-### [Throttling](throttling.md)
-Rate-limit actions per tenant, provider, or action type with automatic retry-after hints.
-</div>
+| Capability | What it enables |
+|---|---|
+| [Authentication](../api/authentication.md) and [scoped grants](api-key-scoping.md) | Control which callers can operate within each namespace and tenant |
+| [Suppression](suppression.md), [deduplication](deduplication.md), and [throttling](throttling.md) | Block unwanted work, recognize duplicates, and bound dispatch rates |
+| [Rerouting](rerouting.md), [payload modification](modification.md), and [templates](payload-templates.md) | Select integrations and shape requests before execution |
+| [Human approvals](approvals.md) and [tenant quotas](tenant-quotas.md) | Require authorization for sensitive work and limit usage |
+| [Time-based rules](time-based-rules.md), [silences](silences.md), and [time intervals](time-intervals.md) | Express operating windows and maintenance policy |
+| [Action signing](action-signing.md), [encryption](payload-encryption.md), and [compliance mode](compliance-mode.md) | Verify origin and protect retained evidence |
 
-<div class="card" markdown>
-### [Rerouting](rerouting.md)
-Dynamically redirect actions to different providers based on priority, load, or content.
-</div>
+[Understand the governance model](../concepts/governance.md).
 
-<div class="card" markdown>
-### [Payload Modification](modification.md)
-Transform action payloads before execution — redaction, enrichment, normalization.
-</div>
+## Coordinate agents and invoke models
 
-<div class="card" markdown>
-### [Scheduled Actions](scheduled-actions.md)
-Delay action execution by a configurable duration — send reminders later, retry at off-peak times, or schedule escalations.
-</div>
+Use [MCP](../api/mcp-server.md) to expose supported operations to agents,
+[A2A](a2a.md) for interoperable agent tasks, and the [Agentic Bus](../concepts/agentic-bus.md)
+for identity, inboxes, and conversations. The [swarm orchestrator](agent-swarm.md)
+coordinates agent teams; the [swarm provider](swarm-provider.md) accepts prepared
+goals through dispatch.
 
-<div class="card" markdown>
-### [Recurring Actions](recurring-actions.md)
-Cron-scheduled actions that fire on a recurring basis — daily digests, weekly reports, periodic health checks.
-</div>
+[Governed model calls](governed-model-provider.md), [LLM guardrails](llm-guardrails.md),
+and [semantic routing](semantic-routing.md) give inference distinct roles in a
+flow. [Agent lifecycle controls](operator-lifecycle.md) provide operator intervention.
 
-</div>
+[Explore agents and AI](agents-and-ai.md).
 
-## Event Lifecycle
+## Process events and streams
 
-<div class="grid" markdown>
+[Event grouping](event-grouping.md) and [state machines](state-machines.md) manage
+event lifecycles. [Event-time windows](event-time-windows.md) correlate sources,
+while [managed stream stages](managed-stream-stages.md) own typed processing and
+durable progress. [Consume contracts and quarantine](stream-input-contracts.md)
+handle invalid inputs; [checkpoints](stream-checkpoints.md),
+[live Kafka acknowledgements](live-kafka-acknowledgements.md), and
+[managed outbox delivery](managed-stream-outbox.md) connect processing to recovery.
 
-<div class="card" markdown>
-### [Event Grouping](event-grouping.md)
-Batch related events together for consolidated notifications.
-</div>
+[Explore streams and events](streams-and-events.md).
 
-<div class="card" markdown>
-### [State Machines](state-machines.md)
-Track event lifecycle through configurable states with automatic timeouts.
-</div>
+## Operate and improve
 
-</div>
+- **Inspect:** [Admin UI](../admin-ui/index.md), [audit trail](audit-trail.md), [analytics](analytics.md), and [SSE event streaming](event-streaming.md).
+- **Observe:** [provider health](provider-health.md), [tracing](distributed-tracing.md), [Grafana dashboards](grafana-dashboards.md), and [Prometheus alerting](prometheus-alerting.md).
+- **Recover:** [circuit breakers](circuit-breaker.md), [action replay](action-replay.md), [data retention](data-retention.md), and [dead-letter retention](dlq-retention.md).
+- **Validate:** [dry runs](dry-run.md), [rule playground](rule-playground.md), [rule coverage](rule-coverage.md), [rule tests](rule-testing-cli.md), and [simulation](../examples/simulation.md).
 
-## Payload Processing
+## Connect your environment
 
-<div class="grid" markdown>
-
-<div class="card" markdown>
-### [Payload Templates](payload-templates.md)
-Reusable, parameterized content rendered into payloads at dispatch time using MiniJinja templates.
-</div>
-
-<div class="card" markdown>
-### [Attachments](attachments.md)
-Include files with action dispatches -- real MIME email attachments, Slack/Discord file uploads, and webhook multipart parts.
-</div>
-
-</div>
-
-## Infrastructure
-
-<div class="grid" markdown>
-
-<div class="card" markdown>
-### [Circuit Breaker](circuit-breaker.md)
-Automatic provider health tracking — stop requests to failing providers, reroute to fallbacks, and recover gracefully.
-</div>
-
-<div class="card" markdown>
-### [Provider Health Dashboard](provider-health.md)
-Real-time visibility into provider health, performance metrics, and circuit breaker state — success rates, latency percentiles, and last errors at a glance.
-</div>
-
-<div class="card" markdown>
-### [Event Streaming](event-streaming.md)
-Real-time SSE event stream for dashboards and monitoring — subscribe to action outcomes as they happen.
-</div>
-
-<div class="card" markdown>
-### [Distributed Tracing](distributed-tracing.md)
-OpenTelemetry distributed tracing — end-to-end visibility across the dispatch pipeline with OTLP export to Jaeger, Tempo, Zipkin, and more.
-</div>
-
-<div class="card" markdown>
-### [Grafana Dashboards](grafana-dashboards.md)
-Pre-built Grafana dashboard templates with Prometheus integration — throughput, provider health, latency percentiles, and error rates out of the box.
-</div>
-
-</div>
-
-## Advanced Features
-
-<div class="grid" markdown>
-
-<div class="card" markdown>
-### [Human Approvals](approvals.md)
-Require human approval before executing sensitive actions.
-</div>
-
-<div class="card" markdown>
-### [Task Chains](chains.md)
-Orchestrate multi-step workflows where each step feeds the next.
-</div>
-
-<div class="card" markdown>
-### [LLM Guardrails](llm-guardrails.md)
-AI-powered content evaluation and action gating.
-</div>
-
-<div class="card" markdown>
-### [Governed Model Provider](governed-model-provider.md)
-Invoke content-addressed typed JSON models through ordinary rules and chains.
-</div>
-
-<div class="card" markdown>
-### [Event-Time Windows](event-time-windows.md)
-Correlate replay-safe multi-source streams with watermarks and durable snapshots.
-</div>
-
-<div class="card" markdown>
-### [Stream Checkpoints and Outbox](stream-checkpoints.md)
-Persist processor state, source offsets, and idempotent outputs in one CAS record.
-</div>
-
-<div class="card" markdown>
-### [Managed Stream Outbox](managed-stream-outbox.md)
-Deliver checkpoint outputs with leases, durable retries, dead-letter replay, and metrics.
-</div>
-
-<div class="card" markdown>
-### [Semantic Routing](semantic-routing.md)
-Route actions by meaning using vector embeddings and cosine similarity.
-</div>
-
-<div class="card" markdown>
-### [Audit Trail](audit-trail.md)
-Comprehensive, searchable record of every action and its outcome.
-</div>
-
-<div class="card" markdown>
-### [Dry-Run Mode](dry-run.md)
-Test rules without executing actions — see what *would* happen before it happens.
-</div>
-
-<div class="card" markdown>
-### [Rule Playground](rule-playground.md)
-Detailed per-rule evaluation trace with time-travel debugging, mock state, and modify-payload preview.
-</div>
-
-<div class="card" markdown>
-### [Time-Based Rules](time-based-rules.md)
-Apply rules based on time of day, day of week, or date — business hours, weekend routing, maintenance windows.
-</div>
-
-<div class="card" markdown>
-### [Action Replay](action-replay.md)
-Reconstruct and re-dispatch actions from the audit trail — recover from outages, fix suppressed actions, bulk reprocess.
-</div>
-
-</div>
-
-## Agent Orchestration
-
-The `acteon-swarm` crate is a separate product surface that **uses** Acteon for safety enforcement but provides its own agent orchestration engine.
-
-<div class="grid" markdown>
-
-<div class="card" markdown>
-### [Agent Swarm Orchestrator](agent-swarm.md)
-Multi-agent swarm with parallel execution, 5 built-in roles, AI-powered plan refinement, and knowledge sharing via TesseraiDB. Supports Claude and Gemini engines.
-</div>
-
-<div class="card" markdown>
-### [Adversarial Loop & Eval Harness](agent-swarm.md#adversarial-review-and-independently-verified-recovery)
-Karpathy-style autoresearch: adversarial critique across engines, code-writing recovery agents, SWE-bench binary assertions, program.md constraints, fitness-gated git keep/revert, polyglot support for 12 languages.
-</div>
-
-</div>
+Use [native providers](native-providers.md), [AWS](aws-providers.md),
+[Azure](azure-providers.md), or [GCP](gcp-providers.md) integrations. Extend provider
+behavior through the Rust [provider abstraction](../concepts/providers.md), or
+add custom rule evaluation with [WASM plugins](wasm-plugins.md).
+[Attachments](attachments.md) carry files alongside supported provider payloads.

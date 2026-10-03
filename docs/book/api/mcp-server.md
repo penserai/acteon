@@ -1,6 +1,6 @@
 # MCP Server
 
-The Acteon MCP Server exposes the Acteon gateway to LLMs and AI agents via the [Model Context Protocol](https://modelcontextprotocol.io/). It enables agentic workflows for incident response, alert tuning, and automated operations.
+The Acteon MCP Server exposes supported Acteon execution and operational tools to LLMs and AI agents via the [Model Context Protocol](https://modelcontextprotocol.io/). It enables agentic workflows for incident response, alert tuning, and automated operations.
 
 ## Installation
 

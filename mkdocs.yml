@@ -1,5 +1,5 @@
-site_name: Acteon — Operations Manual
-site_description: Complete documentation for the Acteon action gateway
+site_name: Acteon
+site_description: Execution and governance for AI agents and deterministic operations. Turn intent into accountable action with Acteon.
 site_url: https://penserai.github.io/acteon
 repo_url: https://github.com/penserai/acteon
 repo_name: penserai/acteon
@@ -100,152 +100,165 @@ copyright: Copyright &copy; 2026 Renzo C. Sanchez-Silva — Apache 2.0 License
 
 nav:
   - Home: index.md
-  - Getting Started:
+  - Start here:
     - getting-started/index.md
+    - Quick start: getting-started/quickstart.md
     - Installation: getting-started/installation.md
-    - Quick Start: getting-started/quickstart.md
     - Configuration: getting-started/configuration.md
-  - Concepts:
+  - Platform:
     - concepts/index.md
+    - Choose an execution model: concepts/execution-model.md
+    - Governance model: concepts/governance.md
     - Architecture: concepts/architecture.md
-    - Actions & Outcomes: concepts/actions.md
-    - The Dispatch Pipeline: concepts/pipeline.md
-    - Rule System: concepts/rules.md
+    - Actions and outcomes: concepts/actions.md
+    - Dispatch pipeline: concepts/pipeline.md
+    - Rules: concepts/rules.md
     - Providers: concepts/providers.md
-  - Features:
+  - Capabilities:
     - features/index.md
-    - Deduplication: features/deduplication.md
-    - Suppression: features/suppression.md
-    - Throttling: features/throttling.md
-    - Rerouting: features/rerouting.md
-    - Payload Modification: features/modification.md
-    - Scheduled Actions: features/scheduled-actions.md
-    - Time-Based Rules: features/time-based-rules.md
-    - Payload Templates: features/payload-templates.md
-    - Attachments: features/attachments.md
-    - Event Grouping: features/event-grouping.md
-    - State Machines: features/state-machines.md
-    - Human Approvals: features/approvals.md
-    - Agent2Agent (A2A) Protocol: features/a2a.md
-    - Operator Lifecycle (Active/Suspended/Banned): features/operator-lifecycle.md
-    - Task Chains: features/chains.md
-    - Sub-Chains: features/sub-chains.md
-    - Chain Step Retry: features/chain-retry.md
-    - Parallel Steps: features/parallel-steps.md
-    - Durable Executions: features/durable-executions.md
-    - Task Queues & Workers: features/task-queues.md
-    - Workflows as Code: features/workflows.md
-    - LLM Guardrails: features/llm-guardrails.md
-    - Governed Model Provider: features/governed-model-provider.md
-    - Durable Dispatch Admission: features/durable-dispatch.md
-    - Semantic Routing: features/semantic-routing.md
-    - Audit Trail: features/audit-trail.md
-    - Analytics & Aggregations: features/analytics.md
-    - Action Replay: features/action-replay.md
-    - Action Signing & Verification: features/action-signing.md
-    - Compliance Mode: features/compliance-mode.md
-    - Payload Encryption: features/payload-encryption.md
-    - Circuit Breaker: features/circuit-breaker.md
-    - Recurring Actions: features/recurring-actions.md
-    - Tenant Quotas: features/tenant-quotas.md
-    - Data Retention: features/data-retention.md
-    - Dead-letter Retention: features/dlq-retention.md
-    - Event Streaming (SSE): features/event-streaming.md
-    - Distributed Tracing: features/distributed-tracing.md
-    - Mutual TLS (mTLS): features/mtls.md
-    - Prometheus Alerting Rules: features/prometheus-alerting.md
-    - Rule Playground: features/rule-playground.md
-    - Rule Coverage: features/rule-coverage.md
-    - Rule Testing CLI: features/rule-testing-cli.md
-    - Dry-Run Mode: features/dry-run.md
-    - Silences: features/silences.md
-    - Time Intervals: features/time-intervals.md
-    - API Key Scoping: features/api-key-scoping.md
-    - Provider Health: features/provider-health.md
-    - Grafana Dashboards: features/grafana-dashboards.md
-    - WASM Plugins: features/wasm-plugins.md
-    - Native Providers: features/native-providers.md
-    - AWS Providers: features/aws-providers.md
-    - Azure Providers: features/azure-providers.md
-    - GCP Providers: features/gcp-providers.md
-    - OpsGenie: features/opsgenie.md
-    - VictorOps: features/victorops.md
-    - Pushover: features/pushover.md
-    - Telegram: features/telegram.md
-    - WeChat Work: features/wechat.md
-  - Backends:
-    - backends/index.md
-    - State Backends: backends/state-backends.md
-    - Memory: backends/memory.md
-    - Redis: backends/redis.md
-    - PostgreSQL: backends/postgres.md
-    - DynamoDB: backends/dynamodb.md
-    - Audit Backends: backends/audit-backends.md
-    - PostgreSQL Audit: backends/postgres-audit.md
-    - ClickHouse Audit: backends/clickhouse-audit.md
-    - Elasticsearch Audit: backends/elasticsearch-audit.md
-    - DynamoDB Audit: backends/dynamodb-audit.md
-  - API Reference:
-    - api/index.md
-    - REST API: api/rest-api.md
-    - MCP Server: api/mcp-server.md
-    - CLI: api/cli.md
-    - Rust Client: api/rust-client.md
-    - Polyglot Clients: api/polyglot-clients.md
-    - YAML Rule Reference: api/rule-reference.md
-    - Authentication: api/authentication.md
-  - Admin UI:
-    - admin-ui/index.md
-    - Dashboard: admin-ui/dashboard.md
-    - Operations: admin-ui/operations.md
-    - Templates & Profiles: admin-ui/templates.md
-    - Settings: admin-ui/settings.md
-  - Examples:
-    - examples/index.md
-    - Basic Usage: examples/basic-usage.md
-    - Advanced Patterns: examples/advanced-patterns.md
-    - Simulation & Testing: examples/simulation.md
-  - Agent Swarm:
-    - Orchestrator: features/agent-swarm.md
-    - Ambient Swarm Provider: features/swarm-provider.md
-  - Agentic Bus:
-    - User Guide: concepts/agentic-bus.md
-    - Event-Time Windows: features/event-time-windows.md
-    - Stream Checkpoints and Outbox: features/stream-checkpoints.md
-    - Live Kafka Acknowledgements: features/live-kafka-acknowledgements.md
-    - Managed Stream Outbox: features/managed-stream-outbox.md
-    - Managed Stream Processing Stages: features/managed-stream-stages.md
-    - Consume Contracts and Quarantine: features/stream-input-contracts.md
-    - Master Plan: concepts/bus-master-plan.md
-    - Phase 1 (Topics + Publish + Subscribe): features/bus-phase-1.md
-    - Phase 2 (Subscriptions + Ack + Lag + DLQ): features/bus-phase-2.md
-    - Phase 3 (Schemas + Publish Validation): features/bus-phase-3.md
-    - Phase 4 (Agents + Shared Inbox + Heartbeat): features/bus-phase-4.md
-    - Phase 5 (Conversations + Threads): features/bus-phase-5.md
-    - Phase 6a (Tool-call envelopes): features/bus-phase-6a.md
-    - Phase 6b (Streaming chunks): features/bus-phase-6b.md
-    - Phase 6c (HITL approvals): features/bus-phase-6c.md
-    - Phase 7 (Admin UI): features/bus-phase-7.md
-    - Phase 8 (Polyglot SDKs): features/bus-phase-8.md
-    - Phase 9 (Docs, migration, demo, benchmarks): features/bus-phase-9.md
+    - Execution:
+      - Durable dispatch admission: features/durable-dispatch.md
+      - Chains: features/chains.md
+      - Sub-chains: features/sub-chains.md
+      - Parallel steps: features/parallel-steps.md
+      - Chain retry: features/chain-retry.md
+      - Durable executions: features/durable-executions.md
+      - Task queues and workers: features/task-queues.md
+      - Workflows as code: features/workflows.md
+      - Scheduled actions: features/scheduled-actions.md
+      - Recurring actions: features/recurring-actions.md
+    - Policy and governance:
+      - Human approvals: features/approvals.md
+      - API key scoping: features/api-key-scoping.md
+      - Tenant quotas: features/tenant-quotas.md
+      - Deduplication: features/deduplication.md
+      - Suppression: features/suppression.md
+      - Throttling: features/throttling.md
+      - Rerouting: features/rerouting.md
+      - Payload modification: features/modification.md
+      - Time-based rules: features/time-based-rules.md
+      - Silences: features/silences.md
+      - Time intervals: features/time-intervals.md
+      - Action signing: features/action-signing.md
+      - Compliance mode: features/compliance-mode.md
+      - Payload encryption: features/payload-encryption.md
+      - Mutual TLS: features/mtls.md
+    - Agents and AI:
+      - features/agents-and-ai.md
+      - Governed model provider: features/governed-model-provider.md
+      - LLM guardrails: features/llm-guardrails.md
+      - Semantic routing: features/semantic-routing.md
+      - Agent2Agent protocol: features/a2a.md
+      - Agent lifecycle controls: features/operator-lifecycle.md
+      - Swarm orchestrator: features/agent-swarm.md
+      - Ambient swarm provider: features/swarm-provider.md
+    - Streams and events:
+      - features/streams-and-events.md
+      - Agentic Bus: concepts/agentic-bus.md
+      - Event grouping: features/event-grouping.md
+      - State machines: features/state-machines.md
+      - Event-time windows: features/event-time-windows.md
+      - Stream checkpoints: features/stream-checkpoints.md
+      - Live Kafka acknowledgements: features/live-kafka-acknowledgements.md
+      - Managed stream stages: features/managed-stream-stages.md
+      - Consume contracts and quarantine: features/stream-input-contracts.md
+      - Managed stream outbox: features/managed-stream-outbox.md
+    - Integrations and extensions:
+      - Native providers: features/native-providers.md
+      - AWS: features/aws-providers.md
+      - Azure: features/azure-providers.md
+      - Google Cloud: features/gcp-providers.md
+      - OpsGenie: features/opsgenie.md
+      - VictorOps: features/victorops.md
+      - Pushover: features/pushover.md
+      - Telegram: features/telegram.md
+      - WeChat Work: features/wechat.md
+      - Payload templates: features/payload-templates.md
+      - Attachments: features/attachments.md
+      - WASM plugins: features/wasm-plugins.md
+    - Policy validation:
+      - Dry runs: features/dry-run.md
+      - Rule playground: features/rule-playground.md
+      - Rule coverage: features/rule-coverage.md
+      - Rule testing CLI: features/rule-testing-cli.md
   - Guides:
     - guides/index.md
-    - Cascaded Neural Observability Detector: guides/neural-observability-detector.md
-    - A2A & Agent Registry — End-to-End Tutorial: guides/a2a-agent-registry-tutorial.md
-    - AI Agent Swarm Coordination: guides/agent-swarm-coordination.md
-    - AWS Event-Driven Pipeline: guides/aws-event-pipeline.md
-    - Incident Response Pipeline: guides/incident-response-pipeline.md
-    - E-Commerce Order Pipeline: guides/ecommerce-order-pipeline.md
-    - Healthcare Notification Pipeline: guides/healthcare-notification-pipeline.md
-    - Migrating from Alertmanager: guides/migrating-from-alertmanager.md
-    - Migrating to the Agentic Bus: guides/agentic-bus-migration.md
+    - Neural observability: guides/neural-observability-detector.md
+    - A2A and agent registry: guides/a2a-agent-registry-tutorial.md
+    - Agent swarm coordination: guides/agent-swarm-coordination.md
+    - Incident response: guides/incident-response-pipeline.md
+    - E-commerce orders: guides/ecommerce-order-pipeline.md
+    - Healthcare notifications: guides/healthcare-notification-pipeline.md
+    - AWS event pipeline: guides/aws-event-pipeline.md
+    - Migrate from Alertmanager: guides/migrating-from-alertmanager.md
+    - Migrate to the Agentic Bus: guides/agentic-bus-migration.md
+    - Examples and simulation:
+      - examples/index.md
+      - Basic usage: examples/basic-usage.md
+      - Advanced patterns: examples/advanced-patterns.md
+      - Simulation and testing: examples/simulation.md
+  - Build and integrate:
+    - api/index.md
+    - REST API: api/rest-api.md
+    - Rust client: api/rust-client.md
+    - Polyglot SDKs: api/polyglot-clients.md
+    - MCP server: api/mcp-server.md
+    - CLI: api/cli.md
+    - Authentication: api/authentication.md
+    - YAML rule reference: api/rule-reference.md
+  - Operate:
+    - operations/index.md
+    - Deployment: reference/deployment.md
+    - Admin UI:
+      - admin-ui/index.md
+      - Dashboard: admin-ui/dashboard.md
+      - Operations: admin-ui/operations.md
+      - Templates and profiles: admin-ui/templates.md
+      - Settings: admin-ui/settings.md
+    - Persistence:
+      - backends/index.md
+      - State backends: backends/state-backends.md
+      - Memory: backends/memory.md
+      - Redis: backends/redis.md
+      - PostgreSQL: backends/postgres.md
+      - DynamoDB: backends/dynamodb.md
+      - Audit backends: backends/audit-backends.md
+      - PostgreSQL audit: backends/postgres-audit.md
+      - ClickHouse audit: backends/clickhouse-audit.md
+      - Elasticsearch audit: backends/elasticsearch-audit.md
+      - DynamoDB audit: backends/dynamodb-audit.md
+    - Evidence and observability:
+      - Audit trail: features/audit-trail.md
+      - Analytics: features/analytics.md
+      - Event streaming: features/event-streaming.md
+      - Distributed tracing: features/distributed-tracing.md
+      - Prometheus alerting: features/prometheus-alerting.md
+      - Grafana dashboards: features/grafana-dashboards.md
+      - Provider health: features/provider-health.md
+    - Recovery and retention:
+      - Circuit breakers: features/circuit-breaker.md
+      - Action replay: features/action-replay.md
+      - Data retention: features/data-retention.md
+      - Dead-letter retention: features/dlq-retention.md
   - Reference:
     - reference/index.md
-    - Type Reference: reference/types.md
-    - Error Handling: reference/errors.md
-    - ClickHouse State Migration: reference/migration-clickhouse-state.md
-    - Performance Guide: reference/performance.md
-    - Build Optimization: reference/build-optimization.md
-    - Deployment: reference/deployment.md
-    - Bus Benchmarks: reference/bus-benchmarks.md
+    - Types: reference/types.md
+    - Errors: reference/errors.md
+    - Performance: reference/performance.md
+    - Bus benchmarks: reference/bus-benchmarks.md
+    - Build optimization: reference/build-optimization.md
+    - ClickHouse state migration: reference/migration-clickhouse-state.md
     - Roadmap: reference/roadmap.md
+    - Bus design history:
+      - Master plan: concepts/bus-master-plan.md
+      - Topics and publishing: features/bus-phase-1.md
+      - Subscriptions and acknowledgements: features/bus-phase-2.md
+      - Schemas: features/bus-phase-3.md
+      - Agent registry: features/bus-phase-4.md
+      - Conversations: features/bus-phase-5.md
+      - Tool envelopes: features/bus-phase-6a.md
+      - Streaming chunks: features/bus-phase-6b.md
+      - Human approvals: features/bus-phase-6c.md
+      - Admin UI: features/bus-phase-7.md
+      - SDKs: features/bus-phase-8.md
+      - Migration and benchmarks: features/bus-phase-9.md

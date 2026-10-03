@@ -1,42 +1,36 @@
-# API Reference
+# Build and integrate
 
-Complete reference for all Acteon interfaces — REST API, MCP server, CLI, client SDKs, rule syntax, and authentication.
+Connect applications, agents, workers, and operational tools to Acteon through
+the interface that fits your environment. The HTTP API is the server contract;
+SDKs, the CLI, MCP tools, and the Admin UI expose supported parts of that contract.
 
-<div class="grid" markdown>
+| Interface | Best starting point |
+|---|---|
+| [REST API](rest-api.md) | Dispatch actions and manage policy, executions, tasks, and operational state over HTTP |
+| [Rust client](rust-client.md) | Integrate Rust services and use the opt-in managed stream HTTP source |
+| [Python, TypeScript, Go, and Java SDKs](polyglot-clients.md) | Build application clients; Python and TypeScript also support code workflows |
+| [MCP server](mcp-server.md) | Expose supported Acteon tools to an MCP-capable agent host |
+| [CLI](cli.md) | Operate the platform from a terminal or automation script |
+| [A2A](../features/a2a.md) | Discover agents and exchange interoperable tasks |
+| [Agentic Bus](../concepts/agentic-bus.md) | Connect event producers, subscribers, and conversational agents |
 
-<div class="card" markdown>
-### [REST API](rest-api.md)
-Full HTTP endpoint reference with request/response schemas.
-</div>
+## Start with the contract
 
-<div class="card" markdown>
-### [MCP Server](mcp-server.md)
-Expose Acteon to LLMs and AI agents via the Model Context Protocol.
-</div>
+An [action](../concepts/actions.md) names the namespace, tenant, provider, action
+type, and payload. Its [outcome](../concepts/actions.md) describes the dispatch
+result. Longer work has its own execution or run identity. Use the
+[execution model](../concepts/execution-model.md) to choose the correct lifecycle
+before wiring an integration.
 
-<div class="card" markdown>
-### [CLI](cli.md)
-Command-line interface for dispatching actions, querying audit trails, and managing rules.
-</div>
+The running server serves interactive Swagger UI at `/swagger-ui/` and its
+OpenAPI document at `/api-doc/openapi.json`. Consult each SDK's feature coverage
+and examples for the operations it supports; advanced capabilities vary by client.
 
-<div class="card" markdown>
-### [Rust Client](rust-client.md)
-Native Rust client library (`acteon-client`) for programmatic access.
-</div>
+## Configure access and policy
 
-<div class="card" markdown>
-### [Polyglot Clients](polyglot-clients.md)
-Official SDKs for Python, Node.js/TypeScript, Go, and Java.
-</div>
+Use [authentication](authentication.md) and [scoped grants](../features/api-key-scoping.md)
+to establish caller authority. Define policy with the [YAML rule reference](rule-reference.md)
+and inspect it through [dry runs](../features/dry-run.md) or the
+[rule playground](../features/rule-playground.md).
 
-<div class="card" markdown>
-### [YAML Rule Reference](rule-reference.md)
-Complete syntax reference for YAML rule files.
-</div>
-
-<div class="card" markdown>
-### [Authentication](authentication.md)
-API key and JWT authentication configuration.
-</div>
-
-</div>
+For complete compositions, see the [guides](../guides/index.md).

@@ -1,22 +1,31 @@
-# Examples
+# Examples and simulation
 
-Practical examples showing how to use Acteon in real-world scenarios.
+Try a small building block, then validate the failure and recovery behavior of
+a complete flow. Acteon includes code examples, runnable domain setups, and a
+simulation framework with recording providers and fault injection.
 
-<div class="grid" markdown>
+| Start here | What you will learn |
+|---|---|
+| [Basic usage](basic-usage.md) | Create actions, apply rules, deduplicate requests, and inspect outcomes |
+| [Advanced patterns](advanced-patterns.md) | Combine provider routing, event lifecycles, inhibition, and deployment configuration |
+| [Simulation and testing](simulation.md) | Exercise providers, failure modes, multi-node behavior, and backend combinations |
+| [End-to-end guides](../guides/index.md) | Build agent, observability, incident, commerce, healthcare, and cloud flows |
 
-<div class="card" markdown>
-### [Basic Usage](basic-usage.md)
-Deduplication, suppression, and dispatching your first actions with the gateway.
-</div>
+## A complete, measurable example
 
-<div class="card" markdown>
-### [Advanced Patterns](advanced-patterns.md)
-Multi-provider routing, event lifecycle management, inhibition, and production configurations.
-</div>
+The [cascading observability detector](../guides/neural-observability-detector.md)
+uses real Kafka, Redis, and local Laya inference. Four scenarios cover normal
+traffic, isolated noise, correlated failure, and incomplete evidence. Its output
+includes model decisions, policy routes, durable recovery, quarantine repair,
+and audited stage controls.
 
-<div class="card" markdown>
-### [Simulation & Testing](simulation.md)
-End-to-end testing with mock providers, failure injection, and performance benchmarks.
-</div>
+Operational effects are recorded by the example's providers so you can inspect
+them locally. The model requests and transport recovery are real. See the guide
+for the exact setup and the scope of each measurement.
 
-</div>
+## Test the boundary that matters
+
+Use [rule tests](../features/rule-testing-cli.md) for deterministic policy,
+[dry runs](../features/dry-run.md) for dispatch evaluation, and simulations for
+execution and recovery. Check behavior after a worker stops, a receipt response
+is lost, a provider fails, or an operator changes a stage's control state.
