@@ -10,9 +10,13 @@ rust-version.workspace = true
 [features]
 default = []
 signing = ["dep:acteon-crypto"]
+# Opt-in managed stream adapters (also builds the Kafka-capable bus crate).
+stream-processing = ["dep:acteon-bus", "dep:async-trait", "dep:uuid"]
 
 [dependencies]
 acteon-core.workspace = true
+acteon-bus = { workspace = true, optional = true }
+async-trait = { workspace = true, optional = true }
 acteon-crypto = { workspace = true, features = ["signing"], optional = true }
 
 chrono.workspace = true
@@ -22,6 +26,7 @@ reqwest = { workspace = true, features = ["stream"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+uuid = { workspace = true, optional = true }
 tokio.workspace = true
 tokio-util = { workspace = true }
 

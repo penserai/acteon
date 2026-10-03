@@ -19,6 +19,8 @@ pub mod memory;
 pub mod message;
 pub mod outbox;
 pub mod schema;
+pub mod stage;
+pub mod stage_source;
 pub mod subscription;
 #[doc(hidden)]
 pub mod testing;
@@ -53,3 +55,13 @@ pub use windowing::{
 };
 
 pub use acteon_core::PartitionLag;
+
+pub use stage::{
+    ManagedStreamStage, StreamStageConfig, StreamStageCounters, StreamStageError, StreamStageInput,
+    StreamStageMetrics, StreamStageProcessError, StreamStageProcessor, StreamStageResult,
+    StreamStageTransition,
+};
+pub use stage_source::{
+    LiveStreamStageSource, StreamStageRecord, StreamStageSource, StreamStageSourceError,
+    StreamStageSubscription,
+};

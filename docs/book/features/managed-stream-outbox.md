@@ -169,3 +169,6 @@ and delivers successfully. It checks the forwarded key and these results:
 
 See [Stream Checkpoints and Outbox](stream-checkpoints.md) for producer APIs and
 [Event-Time Windows](event-time-windows.md) for a processor state machine.
+
+For bounded typed input processing and checkpoint-before-ack coordination, use
+[Managed Stream Processing Stages](managed-stream-stages.md).

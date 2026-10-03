@@ -19,10 +19,13 @@ use std::sync::{
 use std::time::Duration;
 
 use acteon_bus::{
-    BusBackend, BusMessage, KafkaBackend, KafkaBusConfig, StartOffset, StreamCheckpointConfig,
-    StreamCheckpointCoordinator, StreamDeliveryError, StreamOutboxConfig, StreamOutboxDelivery,
-    StreamOutboxDispatchResult, StreamOutboxDispatcher, StreamOutboxEntry, StreamOutboxMetrics,
-    SubscriptionConfig, SubscriptionError, stream_checkpoint_key,
+    BusBackend, BusMessage, KafkaBackend, KafkaBusConfig, ManagedStreamStage, StartOffset,
+    StreamCheckpointConfig, StreamCheckpointCoordinator, StreamDeliveryError, StreamOutboxConfig,
+    StreamOutboxDelivery, StreamOutboxDispatchResult, StreamOutboxDispatcher, StreamOutboxEntry,
+    StreamOutboxMetrics, StreamStageConfig, StreamStageCounters, StreamStageInput,
+    StreamStageProcessError, StreamStageProcessor, StreamStageRecord, StreamStageResult,
+    StreamStageSource, StreamStageSourceError, StreamStageTransition, SubscriptionConfig,
+    SubscriptionError, stream_checkpoint_key,
 };
 use acteon_core::chain::{ChainConfig, ChainStatus, ChainStepConfig, DispatchStepConfig};
 use acteon_core::{Action, ActionOutcome, Topic};
@@ -50,10 +53,9 @@ mod http_sessions;
 #[path = "neural_observability/checkpoint.rs"]
 mod checkpoint;
 
-use checkpoint::{
-    WindowCheckpoint, is_recovery_record, open_windows, source_positions, stream_positions,
-    window_key, window_outputs,
-};
+use checkpoint::{WindowCheckpoint, open_windows, source_positions, window_key, window_outputs};
+#[cfg(test)]
+use checkpoint::{is_recovery_record, stream_positions};
 use windowing::{
     CorrelatedWindow, EventTimeCorrelator, IngestDisposition, SCHEMA_VERSION, SignalSource,
     SourcePosition, TelemetryEvent, WindowingStats,
@@ -177,6 +179,7 @@ struct RecoveryReport {
     expired_http_sessions_rejected: usize,
     source_receipts_acknowledged: usize,
     stale_acknowledgements_rejected: usize,
+    managed_stage: StreamStageCounters,
     rebalance_redelivery_offset: i64,
 }
 
@@ -1273,6 +1276,18 @@ fn markdown(report: &SimulationReport) -> String {
         report.recovery.stale_acknowledgements_rejected,
         report.recovery.rebalance_redelivery_offset
     );
+    output.push_str("## Managed input processing\n\n");
+    let counters = &report.recovery.managed_stage;
+    let _ = write!(
+        output,
+        "| Observation | Result |\n|---|---:|\n| Typed processor attempts / completed batches | {} / {} |\n| Broker records processed / recovered without callback | {} / {} |\n| Persisted processor retries / failures | {} / {} |\n\nThe generic managed stage owns bounded receive, typed decode, processor execution, receipt validation, checkpoint persistence, and acknowledgement. The five checkpointed records replay after server replacement without another window-processor call.\n\n",
+        counters.attempts,
+        counters.completed_batches,
+        counters.processed_records,
+        counters.recovered_records,
+        counters.retries_scheduled,
+        counters.failures,
+    );
     output.push_str("## Managed delivery recovery\n\n");
     let _ = write!(
         output,
@@ -1407,6 +1422,7 @@ fn telemetry_event(fixture: &Fixture, source: SignalSource) -> TelemetryEvent {
     }
 }
 
+#[cfg(test)]
 fn remember_source_position(
     message: &BusMessage,
     offsets: &mut BTreeMap<SignalSource, SourcePosition>,
@@ -1501,6 +1517,99 @@ async fn prove_rebalance_fencing(
     Ok(offset)
 }
 
+struct TelemetryWindowProcessor {
+    expected_records: usize,
+}
+#[async_trait]
+impl StreamStageProcessor<TelemetryEvent, windowing::CorrelatorSnapshot, CorrelatedWindow>
+    for TelemetryWindowProcessor
+{
+    async fn process(
+        &self,
+        state: windowing::CorrelatorSnapshot,
+        inputs: &[StreamStageInput<TelemetryEvent>],
+    ) -> Result<
+        StreamStageTransition<windowing::CorrelatorSnapshot, CorrelatedWindow>,
+        StreamStageProcessError,
+    > {
+        let mut correlator = EventTimeCorrelator::restore(state)
+            .map_err(|e| StreamStageProcessError::Permanent(e.to_string()))?;
+        let mut outputs = Vec::new();
+        for input in inputs {
+            if input.position.lane.source != input.payload.source.as_str() {
+                return Err(StreamStageProcessError::Permanent(
+                    "source label mismatch".into(),
+                ));
+            }
+            let result = correlator
+                .ingest(input.message.clone())
+                .map_err(|e| StreamStageProcessError::Permanent(e.to_string()))?;
+            if result.disposition == IngestDisposition::Late {
+                return Err(StreamStageProcessError::Permanent(
+                    "fixture produced a late record".into(),
+                ));
+            }
+            outputs.extend(result.emitted);
+        }
+        if correlator.stats().accepted_records == self.expected_records {
+            outputs.extend(
+                correlator
+                    .finish()
+                    .map_err(|e| StreamStageProcessError::Permanent(e.to_string()))?,
+            );
+        }
+        Ok(StreamStageTransition {
+            state: correlator.snapshot(),
+            outputs: window_outputs(outputs),
+        })
+    }
+}
+struct CheckpointPauseSource {
+    source: acteon_client::HttpStreamStageSource,
+    cancel: tokio_util::sync::CancellationToken,
+}
+#[async_trait]
+impl StreamStageSource for CheckpointPauseSource {
+    type Receipt = <acteon_client::HttpStreamStageSource as StreamStageSource>::Receipt;
+    fn identity(&self) -> String {
+        self.source.identity()
+    }
+    async fn receive(
+        &mut self,
+        max: usize,
+    ) -> Result<Vec<StreamStageRecord<Self::Receipt>>, StreamStageSourceError> {
+        loop {
+            let records = self.source.receive(max).await?;
+            if records.len() == max {
+                return Ok(records);
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+    async fn validate(
+        &mut self,
+        records: &[StreamStageRecord<Self::Receipt>],
+    ) -> Result<Vec<acteon_bus::StreamPosition>, StreamStageSourceError> {
+        let positions = self.source.validate(records).await?;
+        self.cancel.cancel();
+        Ok(positions)
+    }
+    async fn acknowledge(
+        &mut self,
+        _: &[StreamStageRecord<Self::Receipt>],
+    ) -> Result<(), StreamStageSourceError> {
+        Err(StreamStageSourceError::Permanent(
+            "injected cancellation must prevent acknowledgement".into(),
+        ))
+    }
+    async fn recover(&mut self) -> Result<(), StreamStageSourceError> {
+        self.source.recover().await
+    }
+    async fn close(&mut self) {
+        self.source.close().await;
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 async fn kafka_stream_replay(
     fixtures: &[Fixture],
@@ -1543,10 +1652,39 @@ async fn kafka_stream_replay(
             })
             .await?;
     }
-    let mut sessions =
-        http_sessions::HttpSources::create(&http.as_ref().unwrap().client, &topics, &run_id)
+    let mut definitions = Vec::new();
+    let mut subscription_ids = Vec::new();
+    let mut consumer_groups = BTreeMap::new();
+    for source in SignalSource::ALL {
+        let sub = http
+            .as_ref()
+            .unwrap()
+            .client
+            .create_bus_subscription(&acteon_client::CreateSubscription {
+                id: format!("neural-{}-{run_id}", source.as_str()),
+                topic: topics[&source].kafka_topic_name(),
+                namespace: NAMESPACE.into(),
+                tenant: TENANT.into(),
+                starting_offset: Some("earliest".into()),
+                receipt_required: true,
+                ack_timeout_ms: Some(60_000),
+                ..Default::default()
+            })
             .await?;
-    let consumer_groups = sessions.groups.clone();
+        subscription_ids.push(sub.id.clone());
+        consumer_groups.insert(source, sub.consumer_group.clone());
+        definitions.push(acteon_client::HttpStageSubscription::new(
+            source.as_str(),
+            &sub,
+        )?);
+    }
+    let stage_config = StreamStageConfig {
+        max_batch_records: 5,
+        receive_timeout_ms: 20_000,
+        processing_timeout_ms: 5000,
+        lease_ms: 90_000,
+        ..Default::default()
+    };
 
     let replay = async {
         for source in SignalSource::ALL {
@@ -1563,8 +1701,13 @@ async fn kafka_stream_replay(
                 // Test event-ID deduplication before its retention watermark can
                 // prune the original ID. Kafka preserves this per-partition order.
                 if source == SignalSource::Metrics && fixture.window_id == fixtures[0].window_id {
-                    backend.produce(BusMessage::new(topic.clone(), serde_json::to_value(&event)?)
-                        .with_key(event.correlation_key()).with_header("schema", "observability.telemetry.v1")).await?;
+                    backend
+                        .produce(
+                            BusMessage::new(topic.clone(), serde_json::to_value(&event)?)
+                                .with_key(event.correlation_key())
+                                .with_header("schema", "observability.telemetry.v1"),
+                        )
+                        .await?;
                 }
             }
         }
@@ -1572,101 +1715,132 @@ async fn kafka_stream_replay(
         let expected_records = fixtures.len() * SignalSource::ALL.len() + 1;
         let pre_crash_records = 5;
 
-        // Phase 1 persists all correlator state and ready outputs, then exits
-        // without acknowledging Kafka. This is the injected crash boundary.
-        {
-
-            let mut correlator = EventTimeCorrelator::new(
-                ChronoDuration::minutes(1),
-                ChronoDuration::seconds(15),
-            )?;
-            let mut ready_windows = Vec::new();
-            let mut source_offsets = BTreeMap::new();
-            for _ in 0..pre_crash_records {
-                let next = tokio::time::timeout(Duration::from_secs(20), sessions.next(&http.as_ref().unwrap().client))
-                    .await
-                    .map_err(|_| error("timed out before the injected Kafka restart"))??;
-                let next = next.0;
-                remember_source_position(&next, &mut source_offsets)?;
-                let result = correlator.ingest(next)?;
-                if result.disposition == IngestDisposition::Late {
-                    return Err(error("fixture stream unexpectedly produced a late record"));
-                }
-                ready_windows.extend(result.emitted);
+        let empty =
+            EventTimeCorrelator::new(ChronoDuration::minutes(1), ChronoDuration::seconds(15))?;
+        let processor = TelemetryWindowProcessor {
+            expected_records: fixtures.len() * SignalSource::ALL.len(),
+        };
+        let source = acteon_client::HttpStreamStageSource::connect(
+            Arc::new(http.as_ref().unwrap().client.clone()),
+            definitions.clone(),
+        )?;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        // This wrapper injects the fault after processing/receipt validation.
+        // The platform stage drains its checkpoint and skips acknowledgement.
+        let mut fault = CheckpointPauseSource {
+            source,
+            cancel: cancel.clone(),
+        };
+        let mut first = ManagedStreamStage::initialize(
+            open_windows(redis, empty.snapshot()).await?,
+            "window-before-restart",
+            "telemetry-window-v1",
+            fault.identity(),
+            stage_config.clone(),
+        )
+        .await?;
+        let result = first.process_once(&mut fault, &processor, &cancel).await?;
+        if !matches!(
+            result,
+            StreamStageResult::Cancelled {
+                durable_generation: Some(_)
             }
-            let mut checkpoints = open_windows(redis, correlator.snapshot()).await?;
-            checkpoints.checkpoint(correlator.snapshot(), stream_positions(&source_offsets, &consumer_groups), window_outputs(ready_windows)).await?;
-            // Drop the entire Redis pool and coordinator before opening a replacement.
-
+        ) {
+            return Err(error(format!(
+                "expected checkpoint-before-ack pause: {result:?}"
+            )));
         }
-
-        // The old consumers disappear without a commit. A replacement process
-        // restores generation 1 and receives the uncommitted prefix again.
-        let expired_session=sessions.sessions[&SignalSource::Metrics].clone();
+        let restored_generation = first.checkpoint().generation();
+        let expired_session = fault
+            .source
+            .session_ids()
+            .first()
+            .ok_or_else(|| error("source did not open HTTP sessions"))?
+            .clone();
+        drop(first);
         http.take().unwrap().stop().await;
-        http=Some(http_sessions::HttpServer::start(Arc::clone(&backend),Arc::clone(&store)).await?);
-        if http.as_ref().unwrap().client.get_bus_session(NAMESPACE,TENANT,&sessions.ids[&SignalSource::Metrics],&expired_session).await.is_ok() {return Err(error("restarted HTTP server accepted an old session"));}
-        sessions.open(&http.as_ref().unwrap().client).await?;
-        let empty = EventTimeCorrelator::new(ChronoDuration::minutes(1), ChronoDuration::seconds(15))?;
-        let mut checkpoints = open_windows(redis, empty.snapshot()).await?;
-        let restored_generation = checkpoints.snapshot().generation();
-        let crash_offsets = source_positions(checkpoints.snapshot().positions())?;
-        let mut correlator = EventTimeCorrelator::restore(checkpoints.snapshot().state().clone())?;
-        let mut windows = checkpoints.snapshot().pending_outputs().iter().map(|entry| entry.payload.clone()).collect::<Vec<_>>();
-        let existing_window_keys = checkpoints.snapshot().pending_outputs().iter().map(|entry| entry.idempotency_key.clone()).collect::<BTreeSet<_>>();
-        let mut source_offsets = crash_offsets.clone();
-        let mut recovery_redeliveries = 0;
-
-        let mut receipts = SignalSource::ALL.into_iter().map(|source| (source, Vec::<String>::new())).collect::<BTreeMap<_, _>>();
+        http =
+            Some(http_sessions::HttpServer::start(Arc::clone(&backend), Arc::clone(&store)).await?);
+        if http
+            .as_ref()
+            .unwrap()
+            .client
+            .get_bus_session(NAMESPACE, TENANT, &subscription_ids[2], &expired_session)
+            .await
+            .is_ok()
         {
-            for _ in 0..expected_records {
-                let next = tokio::time::timeout(Duration::from_secs(20), sessions.next(&http.as_ref().unwrap().client))
-                    .await
-                    .map_err(|_| error("timed out consuming observability Kafka records"))??;
-                let (source, position) = remember_source_position(&next.0, &mut source_offsets)?;
-                receipts.get_mut(&source).unwrap().push(next.1);
-                let next = next.0;
-                let is_recovery_redelivery = is_recovery_record(source, &position, &crash_offsets);
-                if is_recovery_redelivery {
-                    // The durable checkpoint already represents this broker
-                    // position, even if event-ID retention has since advanced.
-                    recovery_redeliveries += 1;
-                    continue;
+            return Err(error("restarted HTTP server accepted an old session"));
+        }
+        let mut source = acteon_client::HttpStreamStageSource::connect(
+            Arc::new(http.as_ref().unwrap().client.clone()),
+            definitions.clone(),
+        )?;
+        let mut stage = ManagedStreamStage::initialize(
+            open_windows(redis, empty.snapshot()).await?,
+            "window-after-restart",
+            "telemetry-window-v1",
+            source.identity(),
+            stage_config.clone(),
+        )
+        .await?;
+        let mut source_receipts_acknowledged = 0;
+        let mut recovery_redeliveries = 0;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        while source_receipts_acknowledged < expected_records {
+            match stage
+                .process_once(
+                    &mut source,
+                    &processor,
+                    &tokio_util::sync::CancellationToken::new(),
+                )
+                .await?
+            {
+                StreamStageResult::Completed {
+                    processed,
+                    recovered,
+                    ..
+                } => {
+                    source_receipts_acknowledged += processed + recovered;
+                    recovery_redeliveries += recovered;
                 }
-                let result = correlator.ingest(next)?;
-                if result.disposition == IngestDisposition::Late {
-                    return Err(error("fixture stream unexpectedly produced a late record"));
-                }
-                windows.extend(result.emitted);
+                StreamStageResult::Idle => {}
+                other => return Err(error(format!("unexpected managed-stage result: {other:?}"))),
+            }
+            if tokio::time::Instant::now() > deadline {
+                return Err(error("managed telemetry stage timed out"));
             }
         }
-
-        windows.extend(correlator.finish()?);
-        windows.sort_by_key(|window| window.starts_at);
+        if recovery_redeliveries != pre_crash_records {
+            return Err(error(format!(
+                "expected {pre_crash_records} recovered records, got {recovery_redeliveries}"
+            )));
+        }
+        let managed_stage = stage.metrics().await?.counters;
+        let checkpoints = stage.into_checkpoint();
+        let correlator = EventTimeCorrelator::restore(checkpoints.snapshot().state().clone())?;
         let stats = correlator.stats().clone();
+        let mut windows = checkpoints
+            .snapshot()
+            .pending_outputs()
+            .iter()
+            .map(|entry| entry.payload.clone())
+            .collect::<Vec<_>>();
+        windows.sort_by_key(|w| w.starts_at);
         if stats.accepted_records != fixtures.len() * SignalSource::ALL.len()
             || stats.duplicate_records != 1
             || stats.late_records != 0
             || stats.complete_windows != fixtures.len()
             || stats.incomplete_windows != 0
         {
-            return Err(error(format!("unexpected windowing stats: {stats:?}")));
+            return Err(error(format!("unexpected managed window stats: {stats:?}")));
         }
-        if recovery_redeliveries != pre_crash_records {
-            return Err(error(format!(
-                "expected {pre_crash_records} recovery redeliveries, observed {recovery_redeliveries}"
-            )));
-        }
-
-        // HTTP validation derives trusted positions; persist state and outputs before
-        // sending receipt IDs back to the same server-owned consumers for acknowledgement.
-        let positions=sessions.validate(&http.as_ref().unwrap().client,&receipts,&topics).await?;
-        let committed=checkpoints.checkpoint(correlator.snapshot(),positions,
-            window_outputs(windows.iter().filter(|window| !existing_window_keys.contains(&window_key(window))).cloned())).await?;
-        sessions.acknowledge(&http.as_ref().unwrap().client,&receipts).await?;
-        let source_receipts_acknowledged = receipts.values().map(Vec::len).sum();
-        let rebalance_redelivery_offset = prove_rebalance_fencing(backend.as_ref(),
-            &topics[&SignalSource::Metrics].kafka_topic_name(), &format!("fence-probe-{run_id}")).await?;
+        source.close().await;
+        let rebalance_redelivery_offset = prove_rebalance_fencing(
+            backend.as_ref(),
+            &topics[&SignalSource::Metrics].kafka_topic_name(),
+            &format!("fence-probe-{run_id}"),
+        )
+        .await?;
 
         let mut final_consumer_lag = BTreeMap::new();
         for source in SignalSource::ALL {
@@ -1691,19 +1865,22 @@ async fn kafka_stream_replay(
             windows,
             stats,
             recovery: RecoveryReport {
-                checkpoint_writes: 2,
+                checkpoint_writes: usize::try_from(managed_stage.completed_batches)?,
                 restored_generation,
                 pre_crash_records,
                 replayed_records_deduplicated: recovery_redeliveries,
-                committed_offsets: source_positions(committed.positions())?.into_iter()
-                    .map(|(source, position)| (source.as_str().to_owned(), position)).collect(),
+                committed_offsets: source_positions(checkpoints.snapshot().positions())?
+                    .into_iter()
+                    .map(|(source, position)| (source.as_str().to_owned(), position))
+                    .collect(),
                 final_consumer_lag,
-                live_source_sessions: sessions.sessions.len(),
+                live_source_sessions: definitions.len(),
                 source_transport: "Acteon HTTP receipt sessions".into(),
                 http_server_restarts: 1,
                 expired_http_sessions_rejected: 1,
                 source_receipts_acknowledged,
                 stale_acknowledgements_rejected: 1,
+                managed_stage,
                 rebalance_redelivery_offset,
             },
             checkpoints,
@@ -1714,7 +1891,7 @@ async fn kafka_stream_replay(
     if let Some(server) = http.take() {
         server.stop().await;
     }
-    for id in sessions.ids.values() {
+    for id in &subscription_ids {
         let _ = store
             .delete(&acteon_state::StateKey::new(
                 NAMESPACE,

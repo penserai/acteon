@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use acteon_bus::{
     StreamCheckpointConfig, StreamCheckpointCoordinator, StreamOutboxEntry, StreamPosition,
-    StreamPositionLane, stream_checkpoint_key,
+    stream_checkpoint_key,
 };
 use acteon_state_redis::{RedisConfig, RedisStateStore};
 use chrono::Utc;
@@ -27,6 +27,7 @@ pub async fn open_windows(
     .await?)
 }
 
+#[cfg(test)]
 pub fn stream_positions(
     offsets: &BTreeMap<SignalSource, SourcePosition>,
     groups: &BTreeMap<SignalSource, String>,
@@ -34,7 +35,7 @@ pub fn stream_positions(
     offsets
         .iter()
         .map(|(source, position)| StreamPosition {
-            lane: StreamPositionLane {
+            lane: acteon_bus::StreamPositionLane {
                 source: source.as_str().into(),
                 consumer_group: groups[source].clone(),
                 topic: position.topic.clone(),
@@ -81,6 +82,7 @@ pub fn window_outputs(
 }
 
 /// Reject broker positions already represented by a restored checkpoint.
+#[cfg(test)]
 pub fn is_recovery_record(
     source: SignalSource,
     position: &SourcePosition,

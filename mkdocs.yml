@@ -214,6 +214,7 @@ nav:
     - Stream Checkpoints and Outbox: features/stream-checkpoints.md
     - Live Kafka Acknowledgements: features/live-kafka-acknowledgements.md
     - Managed Stream Outbox: features/managed-stream-outbox.md
+    - Managed Stream Processing Stages: features/managed-stream-stages.md
     - Master Plan: concepts/bus-master-plan.md
     - Phase 1 (Topics + Publish + Subscribe): features/bus-phase-1.md
     - Phase 2 (Subscriptions + Ack + Lag + DLQ): features/bus-phase-2.md

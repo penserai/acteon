@@ -45,8 +45,8 @@ The script:
 
 1. builds the pinned CPU Laya service and verifies runtime and model artifacts;
 2. starts Kafka and Redis with AOF persistence, then publishes three telemetry streams;
-3. uses `EventTimeWindowAggregator` and Redis-backed `StreamCheckpointCoordinator`
-   to persist window state, ready outputs, and source positions;
+3. runs a typed window processor through `ManagedStreamStage` and
+   `HttpStreamStageSource`, with bounded batches and Redis-backed state/output checkpoints;
 4. replaces the consumer/coordinator before committing Kafka offsets, restores
    from a fresh Redis connection pool, and rejects five replayed broker positions;
 5. invokes four locked question sets through `GovernedModelProvider` and the
@@ -109,8 +109,8 @@ defaults to `127.0.0.1:19092`. `ACTEON_CHECKPOINT_REDIS_URL` defaults to
 - All three telemetry consumers use the public Acteon HTTP receipt-session API
   through the Rust client. The simulation registers topics and receipt-required
   subscriptions over HTTP, replaces the server after the pre-commit checkpoint,
-  rejects its old session ID, and restores three consumers. It validates opaque
-  receipt IDs to derive checkpoint positions, persists state and outputs, then
+  rejects its old session ID, and restores three consumers. The SDK source adapter
+  and managed stage validate opaque receipt IDs to derive checkpoint positions, persists state and outputs, then
   acknowledges 13 source receipts through their delivering consumers.
 - An independent library group probe joins a second member, observes rebalance
   revocation, rejects a stale receipt, and receives the uncommitted prefix from
@@ -160,7 +160,10 @@ beside the Rust example in
 `crates/simulation/examples/neural_observability/windowing.rs`.
 The checkpoint module beside the example now only converts telemetry envelopes
 and broker positions. Storage, CAS, leases, retries, and dead letters come from
-`acteon-bus::StreamCheckpointCoordinator` and `StreamOutboxDispatcher`.
+`acteon-bus::ManagedStreamStage`, `StreamCheckpointCoordinator`, and
+`StreamOutboxDispatcher`; the HTTP source adapter comes from the Rust SDK.
+The processor contains telemetry/window policy, while the platform stage owns
+receipt validation, checkpoint ordering, leases, retry budgets, and backpressure.
 
 All 16 model requests go through four `acteon-llm::GovernedModelProvider`
 instances registered with a gateway. Each provider injects its locked questions
