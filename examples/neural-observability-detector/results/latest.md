@@ -1,26 +1,26 @@
 # Neural observability simulation results
 
-Laya `typed-decisions` ran on `cpu` at revision `55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851`. Governance lock `sha256:38eb82188ec4f7c9e635c5f00e1243d537a557983348ba9c28e866c81393bb69` approved six runtime packages, five checkpoint artifacts, four question sets, and a response schema. Kafka supplied 12 accepted source records across 4 event-time windows and the pipeline rejected 6 duplicates or recovery redeliveries. The runner restored checkpoint generation 1 after an injected pre-commit crash. All 16 neural calls went through governed providers and real HTTP inference. Redis persisted checkpoints, delivery state, dispatch receipts, and chain state. One gateway applied admission and routing; recording providers supplied controlled side effects.
+Laya `typed-decisions` ran on `cpu` at revision `55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851`. Governance lock `sha256:38eb82188ec4f7c9e635c5f00e1243d537a557983348ba9c28e866c81393bb69` approved six runtime packages, five checkpoint artifacts, four question sets, and a response schema. Kafka supplied 12 accepted source records across 4 event-time windows and the pipeline rejected 7 duplicates or recovery redeliveries. The runner restored checkpoint generation 1 after an injected pre-commit crash. All 16 neural calls went through governed providers and real HTTP inference. Redis persisted checkpoints, delivery state, dispatch receipts, and chain state. One gateway applied admission and routing; recording providers supplied controlled side effects.
 
 | Trial | Signal decisions | Raw fusion | Acteon outcome | Model HTTP elapsed | Result |
 |---|---|---|---|---:|---|
-| healthy-baseline | metrics: healthy (0.52)<br>traces: healthy (0.40)<br>logs: healthy (0.41) | downstream_timeout (0.27) | suppressed by suppress-observability-noise | 16661 ms | PASS |
-| log-only-noise | metrics: healthy (0.54)<br>traces: healthy (0.45)<br>logs: healthy (0.35) | downstream_timeout (0.28) | suppressed by suppress-observability-noise | 19667 ms | PASS |
-| pool-exhaustion | metrics: db_pool_pressure (0.52)<br>traces: database_wait (0.48)<br>logs: pool_timeout (0.58) | db_pool_exhaustion (0.27) | completed observability-incident chain | 20585 ms | PASS |
-| ambiguous-regression | metrics: application_errors (0.39)<br>traces: application_work (0.31)<br>logs: downstream_error (0.31) | downstream_timeout (0.25) | rerouted to investigator | 19658 ms | PASS |
+| healthy-baseline | metrics: healthy (0.52)<br>traces: healthy (0.40)<br>logs: healthy (0.41) | downstream_timeout (0.27) | suppressed by suppress-observability-noise | 22159 ms | PASS |
+| log-only-noise | metrics: healthy (0.54)<br>traces: healthy (0.45)<br>logs: healthy (0.35) | downstream_timeout (0.28) | suppressed by suppress-observability-noise | 21062 ms | PASS |
+| pool-exhaustion | metrics: db_pool_pressure (0.52)<br>traces: database_wait (0.48)<br>logs: pool_timeout (0.58) | db_pool_exhaustion (0.27) | completed observability-incident chain | 19208 ms | PASS |
+| ambiguous-regression | metrics: application_errors (0.39)<br>traces: application_work (0.31)<br>logs: downstream_error (0.31) | downstream_timeout (0.25) | rerouted to investigator | 18799 ms | PASS |
 
 ## Aggregate
 
 - Governed runtime packages / model artifacts / locked contracts: **6 / 5 / 5**
 - Kafka source records accepted: **12**
-- Kafka duplicates and redeliveries rejected: **6**
+- Kafka duplicates and redeliveries rejected: **7**
 - Recovery redeliveries deduplicated after restart: **5**
 - Window checkpoints persisted before offset commits: **4**
 - Final Kafka consumer lag: **0**
 - Event-time windows completed: **4**
 - Model calls: **16**
-- Total model HTTP elapsed: **76571 ms**
-- Per-call p50 / p95: **4234 ms / 9672 ms**
+- Total model HTTP elapsed: **81228 ms**
+- Per-call p50 / p95: **4604 ms / 10820 ms**
 - Incident chains: **1** diagnostics capture and **1** on-call notification
 - Bounded investigations: **1**
 - Duplicate incident dispatches prevented by durable receipts: **1**
@@ -52,11 +52,11 @@ The generic managed stage owns bounded receive, typed decode, processor executio
 |---|---:|
 | Pinned per-source consume contracts | 3 |
 | Quarantined inputs persisted / restored before replay | 1 / 1 |
-| Quarantines after replay | 1 |
+| Original poison envelopes captured in report | 1 |
 
 One malformed log envelope bypasses the HTTP publish edge. The platform consume contract rejects it before window processing or inference. Its original envelope, position, contract digest, and failure class are retained in Redis in the same checkpoint as input progress. Server replacement restores it before receipt replay, which adds no second quarantine entry. The remaining valid telemetry still produces the four expected decisions.
 
-Tenant-scoped operator HTTP APIs inspect status and the original poison envelope after restart, then explicitly discard 1 retained input. A repeated discard returns false; retained quarantine is now zero.
+An operator queues a corrected poison input with a reason and stable request ID. A replacement worker completes replay once without changing Kafka positions. The window operator deduplicates the already-accounted event before its window closes, so no extra neural call or incident occurs. Audit status: **Completed**, attempts: **1**, operator discards: **0**, retained quarantine: **0**.
 
 ## Managed delivery recovery
 
@@ -77,7 +77,7 @@ Dead-letter diagnostic: `invalid verdict envelope or idempotency key`. The probe
 
 Timings measure model HTTP request and response validation through the governed provider. They are not the server-only inference timings used in the previous report. Full wall times also include gateway dispatch and runtime identity checks.
 
-Receiver replacement preserved incident Action `c5c6cdf6-a09e-4616-868d-4af055dcaaa5` and chain execution `41b9936a-62d3-4d3e-b0a0-5614ba716b68`; original and recovered receipt outcomes matched.
+Receiver replacement preserved incident Action `e4c998ef-6c17-463e-bcb3-82eca438a2f0` and chain execution `1de87dc8-bd3a-407d-9efb-ce24e284a3f9`; original and recovered receipt outcomes matched.
 
 ## Interpretation
 

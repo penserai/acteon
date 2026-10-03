@@ -17,12 +17,39 @@ use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+#[path = "stage_replay.rs"]
+mod replay;
+pub use replay::{StreamReplayAudit, StreamReplayStatus};
 const CAS_RETRIES: usize = 8;
+fn replay_count_default() -> usize {
+    1000
+}
+fn replay_bytes_default() -> usize {
+    16 * 1024 * 1024
+}
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_replay_count_default(n: &usize) -> bool {
+    *n == replay_count_default()
+}
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_replay_bytes_default(n: &usize) -> bool {
+    *n == replay_bytes_default()
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StreamStageConfig {
     #[serde(default, skip_serializing_if = "StreamInputPolicy::is_default")]
     pub input: StreamInputPolicy,
+    #[serde(
+        default = "replay_count_default",
+        skip_serializing_if = "is_replay_count_default"
+    )]
+    pub max_replay_requests: usize,
+    #[serde(
+        default = "replay_bytes_default",
+        skip_serializing_if = "is_replay_bytes_default"
+    )]
+    pub max_replay_bytes: usize,
     pub max_batch_records: usize,
     pub max_batch_bytes: usize,
     pub max_outputs_per_batch: usize,
@@ -43,6 +70,8 @@ impl Default for StreamStageConfig {
     fn default() -> Self {
         Self {
             input: StreamInputPolicy::default(),
+            max_replay_requests: replay_count_default(),
+            max_replay_bytes: replay_bytes_default(),
             max_batch_records: 64,
             max_batch_bytes: 8 * 1024 * 1024,
             max_outputs_per_batch: 64,
@@ -69,6 +98,8 @@ impl StreamStageConfig {
             .and_then(|n| n.checked_add(self.source_timeout_ms.saturating_mul(2)))
             .and_then(|n| n.checked_add(self.storage_timeout_ms.saturating_mul(3)));
         if !(1..=100_000).contains(&self.max_batch_records)
+            || self.max_replay_requests == 0
+            || self.max_replay_bytes == 0
             || self.max_batch_bytes == 0
             || self.max_outputs_per_batch == 0
             || self.max_output_bytes == 0
@@ -113,6 +144,8 @@ pub struct StreamStageCounters {
     #[serde(default, skip_serializing_if = "is_zero")]
     pub quarantined_records: u64,
     #[serde(default, skip_serializing_if = "is_zero")]
+    pub replayed_quarantined_records: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
     pub discarded_quarantined_records: u64,
     pub attempts: u64,
     pub completed_batches: u64,
@@ -131,6 +164,10 @@ pub struct StreamStageMetrics {
     pub checkpoint_generation: u64,
     pub pending_outputs: usize,
     pub quarantined_records: usize,
+    #[serde(default)]
+    pub pending_replays: usize,
+    #[serde(default)]
+    pub failed_replays: usize,
     pub lease_expires_at: Option<DateTime<Utc>>,
     pub next_attempt_at: Option<DateTime<Utc>>,
     pub halted: bool,
@@ -164,8 +201,16 @@ pub(crate) struct ManagedStageState {
     counters: StreamStageCounters,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     quarantine: Vec<StreamQuarantinedInput>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    replays: Vec<replay::ReplayJob>,
 }
 impl ManagedStageState {
+    pub(crate) fn requires_v5(&self) -> bool {
+        !self.replays.is_empty()
+            || self.counters.replayed_quarantined_records > 0
+            || self.config.max_replay_requests != replay_count_default()
+            || self.config.max_replay_bytes != replay_bytes_default()
+    }
     pub(crate) fn requires_v4(&self) -> bool {
         !self.config.input.is_default()
             || !self.quarantine.is_empty()
@@ -215,13 +260,32 @@ impl ManagedStageState {
             .counters
             .quarantined_records
             .checked_sub(self.counters.discarded_quarantined_records)
+            .and_then(|n| n.checked_sub(self.counters.replayed_quarantined_records))
             != Some(u64::try_from(self.quarantine.len()).map_err(|e| e.to_string())?)
         {
             return Err("quarantine counters do not match retained entries".into());
         }
         Ok(())
     }
-    pub(crate) fn validate_positions(&self, positions: &[StreamPosition]) -> Result<(), String> {
+    pub(crate) fn validate_positions(
+        &self,
+        positions: &[StreamPosition],
+        generation: u64,
+    ) -> Result<(), String> {
+        if self.replays.iter().any(|j| {
+            j.audit
+                .completed_generation
+                .is_some_and(|g| g == 0 || g > generation)
+        }) {
+            return Err("invalid replay completed generation".into());
+        }
+        if self.replays.iter().any(|j| {
+            !positions
+                .iter()
+                .any(|p| p.lane == j.audit.position.lane && p.offset >= j.audit.position.offset)
+        }) {
+            return Err("replay audit source progress is not durable".into());
+        }
         if self.quarantine.iter().any(|entry| {
             !positions
                 .iter()
@@ -234,6 +298,7 @@ impl ManagedStageState {
     pub(crate) fn validate(&self) -> Result<(), String> {
         self.config.validate()?;
         self.validate_quarantine()?;
+        self.validate_replays()?;
         if self.processor_version.trim().is_empty()
             || self.processor_version.len() > 4096
             || self.source_identity.trim().is_empty()
@@ -299,6 +364,17 @@ pub trait StreamStageProcessor<I, S, O>: Send + Sync {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamStageResult {
     Idle,
+    ReplayCompleted {
+        request_id: Uuid,
+        generation: u64,
+    },
+    ReplayFailed {
+        request_id: Uuid,
+    },
+    ReplayRetryScheduled {
+        request_id: Uuid,
+        next_attempt_at: DateTime<Utc>,
+    },
     Busy,
     Backpressured,
     Completed {
@@ -322,6 +398,10 @@ pub enum StreamStageResult {
 pub enum StreamStageError {
     #[error("invalid stream stage: {0}")]
     InvalidConfig(String),
+    #[error("replay request conflicts with retained state or an existing request")]
+    ReplayConflict,
+    #[error("replay audit retention capacity reached")]
+    ReplayCapacity,
     #[error("stage definition or persisted policy changed")]
     DefinitionMismatch,
     #[error("managed processing metadata is missing")]
@@ -417,6 +497,7 @@ where
                 retry: None,
                 counters: StreamStageCounters::default(),
                 quarantine: Vec::new(),
+                replays: Vec::new(),
             });
             match tokio::time::timeout(
                 Duration::from_millis(config.storage_timeout_ms),
@@ -474,6 +555,12 @@ where
             let Some(index) = m.quarantine.iter().position(|e| e.id == id) else {
                 return Ok(false);
             };
+            if m.replays
+                .iter()
+                .any(|j| j.audit.quarantine_id == id && j.audit.status.active())
+            {
+                return Err(StreamStageError::ReplayConflict);
+            }
             m.quarantine.remove(index);
             m.counters.discarded_quarantined_records = m
                 .counters
@@ -528,6 +615,12 @@ where
             checkpoint_generation: self.checkpoint().generation(),
             pending_outputs: self.checkpoint().pending_outputs().len(),
             quarantined_records: m.quarantine.len(),
+            pending_replays: m.replays.iter().filter(|j| j.audit.status.active()).count(),
+            failed_replays: m
+                .replays
+                .iter()
+                .filter(|j| j.audit.status == StreamReplayStatus::Failed)
+                .count(),
             lease_expires_at: m.lease.as_ref().map(|l| l.expires_at),
             next_attempt_at: m.retry.as_ref().and_then(|r| r.next_attempt_at),
             halted: m.retry.as_ref().is_some_and(|r| r.terminal),
@@ -740,6 +833,9 @@ where
             Ok(t) => t,
             Err(r) => return Ok(r),
         };
+        if let Some(result) = self.process_replay(token, processor, cancel).await? {
+            return Ok(result);
+        }
         let records = tokio::select! {
             biased;
             ()=cancel.cancelled()=>{self.release(token).await?;return Ok(StreamStageResult::Cancelled{durable_generation:None});},
@@ -1218,6 +1314,12 @@ impl StreamStageOperator {
             checkpoint_generation: self.coordinator.snapshot.generation(),
             pending_outputs: self.coordinator.snapshot.pending_outputs().len(),
             quarantined_records: m.quarantine.len(),
+            pending_replays: m.replays.iter().filter(|j| j.audit.status.active()).count(),
+            failed_replays: m
+                .replays
+                .iter()
+                .filter(|j| j.audit.status == StreamReplayStatus::Failed)
+                .count(),
             lease_expires_at: m.lease.as_ref().map(|l| l.expires_at),
             next_attempt_at: m.retry.as_ref().and_then(|r| r.next_attempt_at),
             halted: m.retry.as_ref().is_some_and(|r| r.terminal),
@@ -1245,6 +1347,12 @@ impl StreamStageOperator {
             let Some(index) = m.quarantine.iter().position(|e| e.id == id) else {
                 return Ok(false);
             };
+            if m.replays
+                .iter()
+                .any(|j| j.audit.quarantine_id == id && j.audit.status.active())
+            {
+                return Err(StreamStageError::ReplayConflict);
+            }
             m.quarantine.remove(index);
             m.counters.discarded_quarantined_records = m
                 .counters

@@ -571,6 +571,7 @@ async fn input_and_output_bounds_leave_progress_uncommitted() {
 struct LostWriteReply {
     inner: MemoryStateStore,
     lost: std::sync::atomic::AtomicBool,
+    replay_completion: bool,
 }
 #[async_trait]
 impl StateStore for LostWriteReply {
@@ -630,7 +631,13 @@ impl StateStore for LostWriteReply {
             .await?;
         let saved: serde_json::Value = serde_json::from_str(new_value).unwrap();
         if result == acteon_state::CasResult::Ok
-            && saved["generation"] == 1
+            && if self.replay_completion {
+                saved["processing"]["replays"]
+                    .as_array()
+                    .is_some_and(|jobs| jobs.iter().any(|j| j["audit"]["status"] == "completed"))
+            } else {
+                saved["generation"] == 1
+            }
             && !self.lost.swap(true, Ordering::SeqCst)
         {
             return Err(acteon_state::StateError::Connection(
@@ -677,6 +684,7 @@ async fn ambiguous_checkpoint_write_is_reloaded_before_recovery_processing() {
     let store: Arc<dyn StateStore> = Arc::new(LostWriteReply {
         inner: MemoryStateStore::new(),
         lost: std::sync::atomic::AtomicBool::new(false),
+        replay_completion: false,
     });
     let p = Processor::new();
     let mut source = Source::new(store.clone(), 0..1);
@@ -899,6 +907,7 @@ async fn quarantine_checkpoint_lost_reply_recovers_without_duplicate_retention()
     let store: Arc<dyn StateStore> = Arc::new(LostWriteReply {
         inner: MemoryStateStore::new(),
         lost: std::sync::atomic::AtomicBool::new(false),
+        replay_completion: false,
     });
     let mut source = Source::new(store.clone(), 0..1);
     source.records[0].message.payload = json!(0);
@@ -1107,4 +1116,426 @@ async fn operator_access_is_read_only_and_discard_preserves_newer_worker_progres
             .unwrap()
             .is_none()
     );
+}
+
+async fn replay_fixture(
+    config: StreamStageConfig,
+) -> (Arc<dyn StateStore>, ManagedStreamStage<u64, u64>, String) {
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let mut worker = stage(store.clone(), config).await;
+    let mut source = Source::new(store.clone(), 0..1);
+    source.records[0].message.payload = json!(0);
+    worker
+        .process_once(&mut source, &Processor::new(), &CancellationToken::new())
+        .await
+        .unwrap();
+    let id = worker.quarantined_inputs().await.unwrap()[0].id.clone();
+    (store, worker, id)
+}
+#[tokio::test]
+async fn replay_is_audited_idempotent_and_atomically_commits_without_source_progress() {
+    let (store, mut worker, id) = replay_fixture(consume_config()).await;
+    let positions = worker.checkpoint().positions().to_vec();
+    let mut op = StreamStageOperator::load(store.clone(), key())
+        .await
+        .unwrap()
+        .unwrap();
+    let request = Uuid::new_v4();
+    assert!(
+        op.request_replay(request, &id, "operator", "repair", json!(0))
+            .await
+            .is_err()
+    );
+    let audit = op
+        .request_replay(request, &id, "operator", "repair", json!(7))
+        .await
+        .unwrap();
+    assert_eq!(audit.status, StreamReplayStatus::Pending);
+    assert_eq!(
+        audit,
+        op.request_replay(request, &id, "operator", "repair", json!(7))
+            .await
+            .unwrap()
+    );
+    assert!(matches!(
+        op.request_replay(request, &id, "other", "repair", json!(7))
+            .await,
+        Err(StreamStageError::ReplayConflict)
+    ));
+    assert!(matches!(
+        op.request_replay(Uuid::new_v4(), &id, "operator", "repair", json!(8))
+            .await,
+        Err(StreamStageError::ReplayConflict)
+    ));
+    assert!(matches!(
+        op.discard(&id).await,
+        Err(StreamStageError::ReplayConflict)
+    ));
+    assert!(matches!(
+        worker.discard_quarantined_input(&id).await,
+        Err(StreamStageError::ReplayConflict)
+    ));
+    let processor = Processor::new();
+    assert!(
+        matches!(worker.replay_once(&processor,&CancellationToken::new()).await.unwrap(),StreamStageResult::ReplayCompleted{request_id,..} if request_id==request)
+    );
+    assert_eq!(worker.checkpoint().positions(), positions);
+    assert_eq!(*worker.checkpoint().state(), 7);
+    assert_eq!(worker.checkpoint().pending_outputs().len(), 1);
+    assert_eq!(
+        worker
+            .metrics()
+            .await
+            .unwrap()
+            .counters
+            .replayed_quarantined_records,
+        1
+    );
+    assert!(worker.quarantined_inputs().await.unwrap().is_empty());
+    let completed = op
+        .request_replay(request, &id, "operator", "repair", json!(7))
+        .await
+        .unwrap();
+    assert_eq!(completed.status, StreamReplayStatus::Completed);
+    assert_eq!(completed.attempts, 1);
+    assert_eq!(
+        completed.completed_generation,
+        Some(worker.checkpoint().generation())
+    );
+    assert_ne!(
+        completed.original_payload_sha256,
+        completed.repaired_payload_sha256
+    );
+    let mut replacement = stage(store.clone(), consume_config()).await;
+    assert_eq!(
+        replacement
+            .replay_once(&processor, &CancellationToken::new())
+            .await
+            .unwrap(),
+        StreamStageResult::Idle
+    );
+    assert_eq!(processor.calls.load(Ordering::SeqCst), 1);
+    let raw: serde_json::Value =
+        serde_json::from_str(&store.get(&key()).await.unwrap().unwrap()).unwrap();
+    assert_eq!(raw["schema_version"], 5);
+}
+#[tokio::test]
+async fn replay_retry_budget_survives_interrupted_worker_and_preserves_original() {
+    let mut config = consume_config();
+    config.max_attempts = 2;
+    config.initial_backoff_ms = 1;
+    let (store, mut worker, id) = replay_fixture(config.clone()).await;
+    let mut op = StreamStageOperator::load(store.clone(), key())
+        .await
+        .unwrap()
+        .unwrap();
+    let request = Uuid::new_v4();
+    op.request_replay(request, &id, "operator", "repair", json!(5))
+        .await
+        .unwrap();
+    let p = Processor::new();
+    p.failures.store(1, Ordering::SeqCst);
+    assert!(matches!(
+        worker
+            .replay_once(&p, &CancellationToken::new())
+            .await
+            .unwrap(),
+        StreamStageResult::ReplayRetryScheduled { .. }
+    ));
+    assert_eq!(*worker.checkpoint().state(), 0);
+    worker.reload().await.unwrap();
+    let mut next = worker.coordinator.snapshot.clone();
+    let a = &mut next.processing.as_mut().unwrap().replays[0].audit;
+    a.status = StreamReplayStatus::Running;
+    a.attempts = 2;
+    a.next_attempt_at = None;
+    worker.persist(next).await.unwrap();
+    let mut replacement = stage(store, config).await;
+    assert!(
+        matches!(replacement.replay_once(&p,&CancellationToken::new()).await.unwrap(),StreamStageResult::ReplayFailed{request_id} if request_id==request)
+    );
+    assert_eq!(p.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(replacement.quarantined_inputs().await.unwrap().len(), 1);
+    assert!(replacement.discard_quarantined_input(&id).await.unwrap());
+}
+#[tokio::test]
+async fn replay_audit_capacity_reserves_room_for_error_outcomes() {
+    let mut config = consume_config();
+    config.max_replay_bytes = 100;
+    let (store, mut worker, id) = replay_fixture(config).await;
+    let mut op = StreamStageOperator::load(store, key())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        op.request_replay(Uuid::new_v4(), &id, "operator", "repair", json!(1))
+            .await,
+        Err(StreamStageError::ReplayCapacity)
+    ));
+    assert_eq!(worker.quarantined_inputs().await.unwrap().len(), 1);
+    assert!(op.replay_audits().is_empty());
+}
+
+#[tokio::test]
+async fn replay_drains_through_normal_worker_loop_without_receiving_or_acknowledging() {
+    let (store, mut worker, id) = replay_fixture(consume_config()).await;
+    let mut op = StreamStageOperator::load(store.clone(), key())
+        .await
+        .unwrap()
+        .unwrap();
+    op.request_replay(Uuid::new_v4(), &id, "operator", "repair", json!(3))
+        .await
+        .unwrap();
+    let mut source = Source::new(store, 1..2);
+    assert!(matches!(
+        worker
+            .process_once(&mut source, &Processor::new(), &CancellationToken::new())
+            .await
+            .unwrap(),
+        StreamStageResult::ReplayCompleted { .. }
+    ));
+    assert_eq!(source.receive_calls, 0);
+    assert_eq!(source.ack_calls, 0);
+    assert_eq!(worker.checkpoint().positions()[0].offset, 0);
+}
+struct BlockReplay {
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+#[async_trait]
+impl StreamStageProcessor<u64, u64, u64> for BlockReplay {
+    async fn process(
+        &self,
+        state: u64,
+        _inputs: &[StreamStageInput<u64>],
+    ) -> Result<StreamStageTransition<u64, u64>, StreamStageProcessError> {
+        self.entered.notify_one();
+        self.release.notified().await;
+        Ok(StreamStageTransition {
+            state: state + 999,
+            outputs: vec![StreamOutboxEntry {
+                idempotency_key: "stale-worker-output".into(),
+                created_at: Utc::now(),
+                payload: 999,
+            }],
+        })
+    }
+}
+#[tokio::test]
+async fn expired_replay_worker_cannot_overwrite_replacement_outcome() {
+    let (store, mut worker, id) = replay_fixture(consume_config()).await;
+    let mut op = StreamStageOperator::load(store.clone(), key())
+        .await
+        .unwrap()
+        .unwrap();
+    op.request_replay(Uuid::new_v4(), &id, "operator", "repair", json!(7))
+        .await
+        .unwrap();
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let processor = BlockReplay {
+        entered: entered.clone(),
+        release: release.clone(),
+    };
+    let old = tokio::spawn(async move {
+        worker
+            .replay_once(&processor, &CancellationToken::new())
+            .await
+    });
+    entered.notified().await;
+    expire(store.clone()).await;
+    let mut replacement = stage(store, consume_config()).await;
+    assert!(matches!(
+        replacement
+            .replay_once(&Processor::new(), &CancellationToken::new())
+            .await
+            .unwrap(),
+        StreamStageResult::ReplayCompleted { .. }
+    ));
+    release.notify_one();
+    assert!(matches!(old.await.unwrap(), Err(StreamStageError::Fenced)));
+    assert_eq!(*replacement.checkpoint().state(), 7);
+    assert_eq!(replacement.checkpoint().pending_outputs().len(), 1);
+    assert_eq!(
+        replacement.checkpoint().pending_outputs()[0].idempotency_key,
+        "input:0"
+    );
+}
+struct EscapedReplayFailure;
+#[async_trait]
+impl StreamStageProcessor<u64, u64, u64> for EscapedReplayFailure {
+    async fn process(
+        &self,
+        _state: u64,
+        _inputs: &[StreamStageInput<u64>],
+    ) -> Result<StreamStageTransition<u64, u64>, StreamStageProcessError> {
+        Err(StreamStageProcessError::Permanent("\0".repeat(4096)))
+    }
+}
+#[tokio::test]
+async fn admitted_replay_can_persist_worst_case_escaped_error_within_audit_budget() {
+    let mut config = consume_config();
+    config.max_replay_bytes = 32 * 1024;
+    let (store, mut worker, id) = replay_fixture(config).await;
+    let mut op = StreamStageOperator::load(store.clone(), key())
+        .await
+        .unwrap()
+        .unwrap();
+    op.request_replay(Uuid::new_v4(), &id, "operator", "repair", json!(2))
+        .await
+        .unwrap();
+    assert!(matches!(
+        worker
+            .replay_once(&EscapedReplayFailure, &CancellationToken::new())
+            .await
+            .unwrap(),
+        StreamStageResult::ReplayFailed { .. }
+    ));
+    let reloaded = StreamStageOperator::load(store, key())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        reloaded.replay_audits()[0].status,
+        StreamReplayStatus::Failed
+    );
+    assert!(
+        reloaded.replay_audits()[0]
+            .last_error
+            .as_ref()
+            .unwrap()
+            .contains('\0')
+    );
+    assert_eq!(reloaded.quarantined_inputs().len(), 1);
+}
+
+#[tokio::test]
+async fn replay_checkpoint_lost_response_does_not_repeat_callback_or_outputs() {
+    let store: Arc<dyn StateStore> = Arc::new(LostWriteReply {
+        inner: MemoryStateStore::new(),
+        lost: std::sync::atomic::AtomicBool::new(false),
+        replay_completion: true,
+    });
+    let mut worker = stage(store.clone(), consume_config()).await;
+    let mut source = Source::new(store.clone(), 0..1);
+    source.records[0].message.payload = json!(0);
+    worker
+        .process_once(&mut source, &Processor::new(), &CancellationToken::new())
+        .await
+        .unwrap();
+    let id = worker.quarantined_inputs().await.unwrap()[0].id.clone();
+    let mut op = StreamStageOperator::load(store.clone(), key())
+        .await
+        .unwrap()
+        .unwrap();
+    let request = Uuid::new_v4();
+    op.request_replay(request, &id, "operator", "repair", json!(8))
+        .await
+        .unwrap();
+    let processor = Processor::new();
+    assert!(
+        worker
+            .replay_once(&processor, &CancellationToken::new())
+            .await
+            .is_err()
+    );
+    let mut replacement = stage(store, consume_config()).await;
+    assert_eq!(
+        replacement
+            .replay_once(&processor, &CancellationToken::new())
+            .await
+            .unwrap(),
+        StreamStageResult::Idle
+    );
+    assert_eq!(*replacement.checkpoint().state(), 8);
+    assert_eq!(replacement.checkpoint().pending_outputs().len(), 1);
+    assert!(replacement.quarantined_inputs().await.unwrap().is_empty());
+    assert_eq!(processor.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        op.request_replay(request, &id, "operator", "repair", json!(8))
+            .await
+            .unwrap()
+            .status,
+        StreamReplayStatus::Completed
+    );
+}
+struct InvalidReplayTransition;
+#[async_trait]
+impl StreamStageProcessor<u64, u64, u64> for InvalidReplayTransition {
+    async fn process(
+        &self,
+        state: u64,
+        _inputs: &[StreamStageInput<u64>],
+    ) -> Result<StreamStageTransition<u64, u64>, StreamStageProcessError> {
+        Ok(StreamStageTransition {
+            state,
+            outputs: vec![StreamOutboxEntry {
+                idempotency_key: String::new(),
+                created_at: Utc::now(),
+                payload: 1,
+            }],
+        })
+    }
+}
+#[tokio::test]
+async fn invalid_replay_output_is_audited_failed_instead_of_abandoning_the_worker() {
+    let (store, mut worker, id) = replay_fixture(consume_config()).await;
+    let mut op = StreamStageOperator::load(store.clone(), key())
+        .await
+        .unwrap()
+        .unwrap();
+    op.request_replay(Uuid::new_v4(), &id, "operator", "repair", json!(2))
+        .await
+        .unwrap();
+    assert!(matches!(
+        worker
+            .replay_once(&InvalidReplayTransition, &CancellationToken::new())
+            .await
+            .unwrap(),
+        StreamStageResult::ReplayFailed { .. }
+    ));
+    assert!(worker.checkpoint().pending_outputs().is_empty());
+    assert_eq!(worker.quarantined_inputs().await.unwrap().len(), 1);
+    let op = StreamStageOperator::load(store, key())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(op.replay_audits()[0].status, StreamReplayStatus::Failed);
+}
+#[tokio::test]
+async fn typed_replay_decode_failure_never_invokes_the_processor() {
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let mut config = consume_config();
+    config.input.contracts.clear();
+    let mut worker = stage(store.clone(), config).await;
+    let mut source = Source::new(store.clone(), 0..1);
+    source.records[0].message.payload = json!("bad integer");
+    let processor = Processor::new();
+    worker
+        .process_once(&mut source, &processor, &CancellationToken::new())
+        .await
+        .unwrap();
+    let id = worker.quarantined_inputs().await.unwrap()[0].id.clone();
+    let mut op = StreamStageOperator::load(store, key())
+        .await
+        .unwrap()
+        .unwrap();
+    op.request_replay(
+        Uuid::new_v4(),
+        &id,
+        "operator",
+        "repair",
+        json!({"still":"wrong type"}),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        worker
+            .replay_once(&processor, &CancellationToken::new())
+            .await
+            .unwrap(),
+        StreamStageResult::ReplayFailed { .. }
+    ));
+    assert_eq!(processor.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(worker.quarantined_inputs().await.unwrap().len(), 1);
 }

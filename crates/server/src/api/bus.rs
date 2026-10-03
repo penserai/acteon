@@ -73,6 +73,7 @@ pub(super) fn authorize_bus_op(
     action: BusOp,
 ) -> Result<(), axum::response::Response> {
     let (permission, action_verb) = match action {
+        BusOp::StageReplay => (Permission::Dispatch, "stage_replay"),
         BusOp::StageRead => (Permission::AuditRead, "stage_read"),
         BusOp::StageManage => (Permission::Dispatch, "stage_manage"),
         BusOp::Manage => (Permission::Dispatch, "manage"),
@@ -110,6 +111,7 @@ pub(super) fn authorize_bus_op(
 #[cfg(feature = "bus")]
 #[derive(Clone, Copy)]
 pub(super) enum BusOp {
+    StageReplay,
     StageRead,
     StageManage,
     /// Topic CRUD (create / delete).

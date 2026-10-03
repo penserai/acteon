@@ -85,7 +85,8 @@ let removed = stage.discard_quarantined_input(&entries[0].id).await?;
 Inspection reloads durable state. Discard is explicit, CAS-protected, idempotent,
 and increments a durable discard counter. It does not rewind Kafka, dispatch an
 action, or invoke the processor. Concurrent input processing preserves retention
-changes when it saves its transition. Controlled replay is a separate follow-up.
+changes when it saves its transition. Inputs with pending/running replay requests
+cannot be discarded (409), so a worker never loses the original during repair.
 
 ### Operator HTTP APIs
 
@@ -120,12 +121,14 @@ The Rust SDK exposes `stream_stage_status`, `list_stage_quarantine`,
 access for embedded operators without knowing processor state/output types.
 
 `StreamStageMetrics` includes retained quarantine count and cumulative retained /
-discarded counters. `processed_records` counts fresh broker inputs whose progress
+discarded/replayed counters, plus pending and failed replay counts. `processed_records` counts fresh broker inputs whose progress
 was checkpointed, including quarantined records; it is not a model invocation
 count. Model or processor calls need their own invocation evidence.
 
-Checkpoints with consume policy use snapshot version 4. Existing versions 1–3
-remain readable, and stages using the default input policy retain version 3.
+Checkpoints with consume policy use snapshot version 4; durable replay requests
+and custom replay retention limits require version 5. Existing versions 1–4 remain readable, and stages using the
+default input policy retain version 3. Deploy replay-capable workers before
+enabling replay requests: older workers reject version 5.
 Changing a live stage's policy requires a deliberate checkpoint migration or a
 new processing key and consumer group.
 
@@ -133,3 +136,63 @@ The [cascading observability simulation](../guides/neural-observability-detector
 registers three schemas, injects a malformed Kafka log, and demonstrates durable
 quarantine across server replacement while valid telemetry reaches real Laya
 inference.
+
+
+### Controlled, audited replay
+
+Replay is an explicit repair processed by the existing leased stage worker. It
+never rewinds Kafka or acknowledges old receipt capabilities. The original
+quarantine stays retained until the repaired input, processor state, outputs,
+and completed audit are saved in one CAS checkpoint. Source positions stay
+unchanged. Outputs flow through the same durable outbox as normal processing.
+
+`POST /v1/bus/stages/{namespace}/{tenant}/{id}/quarantine/{entry}/replay`
+requires an admin/operator role and a distinct `provider=bus`,
+`action=stage_replay` grant. Topic management and discard grants do not authorize
+re-execution. The body contains a non-nil `request_id` UUID, a nonempty `reason`
+(up to 4096 bytes), and a corrected JSON `payload`. The authenticated server
+identity supplies the actor; callers cannot impersonate another operator in the
+body. The original envelope metadata and position remain fixed.
+
+Admission validates the pinned consume schema and input byte bound. The worker
+also validates that schema and decodes the actual processor input type before
+invoking the callback. Invalid admission returns 400 without creating a request;
+a type/processor failure produces a durable failed audit and retains the original.
+
+The POST returns 202 with a durable audit. Repeat the same UUID, entry, actor,
+reason, and payload after a timeout; the API returns the original request, even
+after completion. Changing any of those values under the same UUID returns 409.
+Only one active request per input is allowed. A failed request can be followed
+by a new explicit request ID while its original remains retained.
+
+Read `GET /v1/bus/stages/{namespace}/{tenant}/{id}/replays/{request_id}` with a
+`stage_read` grant. Its payload-free audit records the operator, reason, original
+position, processor version, pinned contract digest, original/repaired payload
+digests, attempts, retry time, error, outcome time, and completed generation.
+States are `pending`, `running`, `completed`, and `failed`.
+
+The normal `process_once`/`run` loop drains ready repairs before receiving a
+source batch. Embedded workers can call `replay_once` without connecting to
+Kafka. Replays respect the stage lease, halt state, output headroom, processing
+timeout, and persisted attempt/backoff policy. Interruptions before checkpoint
+may repeat the callback; use pure/idempotent callbacks. A persisted completed
+request cannot execute again, and an expired worker cannot overwrite its
+replacement's outcome. Retry attempts survive worker replacement; exhausting
+them fails the request and preserves the original. Pending backoff does not
+block normal source input.
+
+`StreamStageConfig.max_replay_requests` (default 1000) and
+`max_replay_bytes` (default 16 MiB) bound retained requests **including terminal
+audit history and reserved space for error outcomes**. History is never silently
+evicted to accept a new request; capacity exhaustion returns 429. Choose bounds
+that fit the state store together with processor state, quarantine, and outbox.
+Archival/pruning of this audit history remains a separate lifecycle feature.
+
+The Rust SDK exposes `request_stage_replay` and `get_stage_replay_audit` with
+`stream-processing`. Embedded operators use `StreamStageOperator::request_replay`
+and `replay_audits`.
+
+Repair does not override domain rules. In the observability simulation, a repair
+of the poison log is queued twice under one ID and completed by a replacement
+worker. The window operator deduplicates its event ID while the window is still open. The audit completes once, quarantine becomes
+empty, and no extra Laya inference or incident occurs.
