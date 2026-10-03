@@ -107,6 +107,9 @@ def main():
             assert dispatch("search", dedup_key="guide-research") == "Deduplicated"
             assert "Suppressed" in dispatch("delete_database")
             assert "Suppressed" in dispatch("unknown_operation")
+            assert "Suppressed" in dispatch("search", provider="deploy")
+            assert "Suppressed" in dispatch("research_request", provider="deploy")
+            assert "Suppressed" in dispatch("deploy", provider="research")
             try:
                 dispatch("search", tenant="another-team")
                 raise AssertionError("Cross-tenant dispatch was accepted")

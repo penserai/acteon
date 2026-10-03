@@ -6,12 +6,16 @@ rules:
       in_list: [delete_database, read_credentials]
     action:
       type: suppress
-      reason: "This operation is outside the agent's authority"
   - name: approve-deploy
     priority: 2
     condition:
-      field: action.action_type
-      eq: deploy
+      all:
+        - field: action.namespace
+          eq: agent-swarm
+        - field: action.provider
+          eq: deploy
+        - field: action.action_type
+          eq: deploy
     action:
       type: request_approval
       notify_provider: notify
@@ -20,16 +24,26 @@ rules:
   - name: research-workflow
     priority: 3
     condition:
-      field: action.action_type
-      eq: research_request
+      all:
+        - field: action.namespace
+          eq: agent-swarm
+        - field: action.provider
+          eq: research
+        - field: action.action_type
+          eq: research_request
     action:
       type: chain
       chain: research-pipeline
   - name: dedup-research
     priority: 4
     condition:
-      field: action.action_type
-      eq: search
+      all:
+        - field: action.namespace
+          eq: agent-swarm
+        - field: action.provider
+          eq: research
+        - field: action.action_type
+          eq: search
     action:
       type: deduplicate
       ttl_seconds: 600
@@ -40,4 +54,3 @@ rules:
       eq: agent-swarm
     action:
       type: suppress
-      reason: "No permitted operation matched"

@@ -30,3 +30,14 @@ regexes = [
     '''eyJhbGciOiJIUzI1NiIs\.\.\.''', '''a1b2c3d4e5f6\.\.\.''',
     '''abc123def456''',
 ]
+
+[[allowlists]]
+description = "Exact SHA-256 of the documented public local policy-demo key"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = [
+    '''docs/book/guides/agent-swarm-coordination\.md$''',
+    '''examples/agent-swarm-coordination/policy-demo/auth\.toml$''',
+]
+regexTarget = "match"
+regexes = ['''key_hash\s*=\s*"e5522a60c16c993c80c7c251fe4dc4ad5f1de7926c57ec5401d3d42891633ad8"''']

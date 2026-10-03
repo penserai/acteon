@@ -17,6 +17,7 @@ email account, or production system is required to verify the flow.
 | Repeat the same research key | Deduplicated |
 | Read credentials or delete a database | Suppressed |
 | An unrecognized operation | Suppressed by the default rule |
+| A research operation aimed at the deploy provider | Suppressed; provider identity is part of the rule |
 | Dispatch into another team's tenant | HTTP 403 |
 | Propose a deployment | Pending approval; execution follows signed approval |
 | Request a research workflow | A two-step chain completes |
@@ -152,8 +153,9 @@ payload_template = { summary = "{{steps.capture.body}}" }
 
 ### Caller identity
 
-The key belongs to the `researcher` principal and can dispatch only within the
-listed scope. Giving another agent a different tenant label in its payload does
+The local test key belongs to the `researcher` principal and can dispatch only within the
+listed scope. Its `operator` role also grants management permissions: it is a
+**trusted orchestrator credential**, not a credential to give an untrusted agent. Giving another agent a different tenant label in its payload does
 not establish identity: the server compares that scope with the authenticated
 caller's grants. Create separate keys and grants for separate principals.
 
@@ -208,12 +210,16 @@ rules:
       in_list: [delete_database, read_credentials]
     action:
       type: suppress
-      reason: "This operation is outside the agent's authority"
   - name: approve-deploy
     priority: 2
     condition:
-      field: action.action_type
-      eq: deploy
+      all:
+        - field: action.namespace
+          eq: agent-swarm
+        - field: action.provider
+          eq: deploy
+        - field: action.action_type
+          eq: deploy
     action:
       type: request_approval
       notify_provider: notify
@@ -222,16 +228,26 @@ rules:
   - name: research-workflow
     priority: 3
     condition:
-      field: action.action_type
-      eq: research_request
+      all:
+        - field: action.namespace
+          eq: agent-swarm
+        - field: action.provider
+          eq: research
+        - field: action.action_type
+          eq: research_request
     action:
       type: chain
       chain: research-pipeline
   - name: dedup-research
     priority: 4
     condition:
-      field: action.action_type
-      eq: search
+      all:
+        - field: action.namespace
+          eq: agent-swarm
+        - field: action.provider
+          eq: research
+        - field: action.action_type
+          eq: search
     action:
       type: deduplicate
       ttl_seconds: 600
@@ -242,7 +258,6 @@ rules:
       eq: agent-swarm
     action:
       type: suppress
-      reason: "No permitted operation matched"
 ```
 
 The YAML approval action is `request_approval`, with `notify_provider` and
@@ -274,6 +289,17 @@ built-in human gate. Use approval rules or an explicitly designed durable signal
 flow instead.
 
 ## Connect a real agent team
+
+Keep the operator credential in a trusted host or adapter. The current `operator`
+role can manage rules; action grants do not turn it into a dispatch-only role.
+Expose only the intended action-submission tool to an untrusted agent, fix its
+namespace and tenant in the adapter, and keep management endpoints inaccessible
+to that agent. Network access and credentials must enforce this boundary.
+
+The host must also retain approval capability URLs and send them only to the
+human reviewer. Return the pending status and approval ID to the agent, not the
+signed approve/reject URLs. Giving an agent those capabilities lets it decide its
+own approval.
 
 Choose the integration that matches the work:
 
