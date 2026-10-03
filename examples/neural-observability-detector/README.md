@@ -177,5 +177,7 @@ request and response contract names, lock digests, revisions, and elapsed times.
 Consume contracts and quarantine come from `acteon-bus::StreamInputPolicy`.
 The malformed Kafka envelope is retained for inspection; it reaches neither
 window processing nor inference. Output backlogs are zero while one input
-quarantine entry is inspected through the operator HTTP APIs, explicitly discarded,
-and discarded again to verify idempotence. The retained count finishes at zero.
+quarantine entry is inspected through the operator HTTP APIs, then repaired through
+a durable, audited replay request. A replacement worker completes it once without
+rewinding Kafka or counting the same event twice. Repeating the request returns the
+same completed audit; retained quarantine finishes at zero.

@@ -185,6 +185,7 @@ struct RecoveryReport {
     quarantined_inputs: Vec<StreamQuarantinedInput>,
     quarantines_restored_before_replay: usize,
     operator_quarantines_discarded: usize,
+    operator_replay: acteon_bus::StreamReplayAudit,
     rebalance_redelivery_offset: i64,
 }
 
@@ -1296,7 +1297,7 @@ fn markdown(report: &SimulationReport) -> String {
     output.push_str("## Consume contracts and poison quarantine\n\n");
     let _ = write!(
         output,
-        "| Observation | Result |\n|---|---:|\n| Pinned per-source consume contracts | {} |\n| Quarantined inputs persisted / restored before replay | {} / {} |\n| Quarantines after replay | {} |\n\nOne malformed log envelope bypasses the HTTP publish edge. The platform consume contract rejects it before window processing or inference. Its original envelope, position, contract digest, and failure class are retained in Redis in the same checkpoint as input progress. Server replacement restores it before receipt replay, which adds no second quarantine entry. The remaining valid telemetry still produces the four expected decisions.\n\n",
+        "| Observation | Result |\n|---|---:|\n| Pinned per-source consume contracts | {} |\n| Quarantined inputs persisted / restored before replay | {} / {} |\n| Original poison envelopes captured in report | {} |\n\nOne malformed log envelope bypasses the HTTP publish edge. The platform consume contract rejects it before window processing or inference. Its original envelope, position, contract digest, and failure class are retained in Redis in the same checkpoint as input progress. Server replacement restores it before receipt replay, which adds no second quarantine entry. The remaining valid telemetry still produces the four expected decisions.\n\n",
         report.recovery.consume_contracts.len(),
         report.recovery.managed_stage.quarantined_records,
         report.recovery.quarantines_restored_before_replay,
@@ -1304,7 +1305,9 @@ fn markdown(report: &SimulationReport) -> String {
     );
     let _ = writeln!(
         output,
-        "Tenant-scoped operator HTTP APIs inspect status and the original poison envelope after restart, then explicitly discard {} retained input. A repeated discard returns false; retained quarantine is now zero.\n",
+        "An operator queues a corrected poison input with a reason and stable request ID. A replacement worker completes replay once without changing Kafka positions. The window operator deduplicates the already-accounted event before its window closes, so no extra neural call or incident occurs. Audit status: **{:?}**, attempts: **{}**, operator discards: **{}**, retained quarantine: **0**.\n",
+        report.recovery.operator_replay.status,
+        report.recovery.operator_replay.attempts,
         report.recovery.operator_quarantines_discarded
     );
     output.push_str("## Managed delivery recovery\n\n");
@@ -1758,7 +1761,7 @@ async fn kafka_stream_replay(
                     .produce(BusMessage::new(
                         &topic,
                         json!({"schema_version": 1, "source": "logs", "features": "malformed"}),
-                    ))
+                    ).with_key(telemetry_event(&fixtures[0], SignalSource::Logs).correlation_key()))
                     .await?;
             }
             for fixture in fixtures {
@@ -1867,6 +1870,45 @@ async fn kafka_stream_replay(
             return Err(error("poison input was not durable before acknowledgement"));
         }
 
+        let managed_stage = stage.metrics().await?.counters;
+        let quarantined_inputs = stage.quarantined_inputs().await?;
+        if quarantined_inputs.len() != 1 || managed_stage.quarantined_records != 1 {
+            return Err(error(
+                "poison input was lost or quarantined again during replay",
+            ));
+        }
+        let client = &http.as_ref().unwrap().client;
+        let status = client
+            .stream_stage_status(NAMESPACE, TENANT, "windows")
+            .await?;
+        if status.quarantined_records != 1 || status.counters != managed_stage {
+            return Err(error("operator status disagrees with durable stage"));
+        }
+        let retained = client
+            .get_stage_quarantined_input(NAMESPACE, TENANT, "windows", &quarantined_inputs[0].id)
+            .await?;
+        if retained != quarantined_inputs[0] {
+            return Err(error("operator inspection changed original input"));
+        }
+        let request = acteon_client::RequestStageReplay {
+            request_id: uuid::Uuid::new_v4(), reason: "repair malformed log; preserve event deduplication".into(),
+            payload: serde_json::to_value(telemetry_event(&fixtures[0], SignalSource::Logs))?,
+        };
+        let queued = client.request_stage_replay(NAMESPACE,TENANT,"windows",&retained.id,&request).await?;
+        if queued != client.request_stage_replay(NAMESPACE,TENANT,"windows",&retained.id,&request).await? { return Err(error("replay request was not idempotent")); }
+        let before_positions = stage.checkpoint().positions().to_vec();
+        // A replacement worker reloads the durable request rather than receiving
+        // a broker redelivery or repeating an operator's HTTP command.
+        drop(stage);
+        let mut stage = ManagedStreamStage::initialize(open_windows(redis, empty.snapshot()).await?, "window-replay-worker", "telemetry-window-v1", source.identity(), stage_config.clone()).await?;
+        let replay_result = stage.replay_once(&processor,&tokio_util::sync::CancellationToken::new()).await?;
+        if !matches!(replay_result, StreamStageResult::ReplayCompleted{request_id,..} if request_id == request.request_id) { return Err(error(format!("repair replay did not complete: {replay_result:?}; audit: {:?}",client.get_stage_replay_audit(NAMESPACE,TENANT,"windows",request.request_id).await?))); }
+        let operator_replay = client.get_stage_replay_audit(NAMESPACE,TENANT,"windows",request.request_id).await?;
+        if operator_replay.status != acteon_bus::StreamReplayStatus::Completed
+            || operator_replay.attempts != 1 || stage.checkpoint().positions() != before_positions
+            || operator_replay != client.request_stage_replay(NAMESPACE,TENANT,"windows",&retained.id,&request).await?
+            || client.stream_stage_status(NAMESPACE,TENANT,"windows").await?.quarantined_records != 0 { return Err(error("replay audit, source progress or idempotence mismatch")); }
+        let operator_quarantines_discarded = 0;
         let mut source_receipts_acknowledged = 0;
         let mut recovery_redeliveries = 0;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
@@ -1900,41 +1942,7 @@ async fn kafka_stream_replay(
             )));
         }
         let managed_stage = stage.metrics().await?.counters;
-        let quarantined_inputs = stage.quarantined_inputs().await?;
-        if quarantined_inputs.len() != 1 || managed_stage.quarantined_records != 1 {
-            return Err(error(
-                "poison input was lost or quarantined again during replay",
-            ));
-        }
-        let client = &http.as_ref().unwrap().client;
-        let status = client
-            .stream_stage_status(NAMESPACE, TENANT, "windows")
-            .await?;
-        if status.quarantined_records != 1 || status.counters != managed_stage {
-            return Err(error("operator status disagrees with durable stage"));
-        }
-        let retained = client
-            .get_stage_quarantined_input(NAMESPACE, TENANT, "windows", &quarantined_inputs[0].id)
-            .await?;
-        if retained != quarantined_inputs[0] {
-            return Err(error("operator inspection changed original input"));
-        }
-        if !client
-            .discard_stage_quarantined_input(NAMESPACE, TENANT, "windows", &retained.id)
-            .await?
-            || client
-                .discard_stage_quarantined_input(NAMESPACE, TENANT, "windows", &retained.id)
-                .await?
-            || client
-                .stream_stage_status(NAMESPACE, TENANT, "windows")
-                .await?
-                .quarantined_records
-                != 0
-        {
-            return Err(error("operator discard was not durable and idempotent"));
-        }
-        let operator_quarantines_discarded = 1;
-        stage.metrics().await?; // Reload the operator CAS before transferring the checkpoint.
+        if !stage.quarantined_inputs().await?.is_empty() || managed_stage.quarantined_records != 1 || managed_stage.replayed_quarantined_records != 1 { return Err(error("repair replay lost its outcome or broker recovery retained another poison copy")); }
         let checkpoints = stage.into_checkpoint();
         let correlator = EventTimeCorrelator::restore(checkpoints.snapshot().state().clone())?;
         let stats = correlator.stats().clone();
@@ -1946,7 +1954,7 @@ async fn kafka_stream_replay(
             .collect::<Vec<_>>();
         windows.sort_by_key(|w| w.starts_at);
         if stats.accepted_records != fixtures.len() * SignalSource::ALL.len()
-            || stats.duplicate_records != 1
+            || stats.duplicate_records != 2
             || stats.late_records != 0
             || stats.complete_windows != fixtures.len()
             || stats.incomplete_windows != 0
@@ -2004,6 +2012,7 @@ async fn kafka_stream_replay(
                 quarantined_inputs,
                 quarantines_restored_before_replay,
                 operator_quarantines_discarded,
+                operator_replay,
                 rebalance_redelivery_offset,
             },
             checkpoints,

@@ -36,18 +36,9 @@ async fn load(
     ns: &str,
     tenant: &str,
     id: &str,
-    manage: bool,
+    operation: super::bus::BusOp,
 ) -> Result<acteon_bus::stage::StreamStageOperator, Response> {
-    super::bus::authorize_bus_op(
-        identity,
-        tenant,
-        ns,
-        if manage {
-            super::bus::BusOp::StageManage
-        } else {
-            super::bus::BusOp::StageRead
-        },
-    )?;
+    super::bus::authorize_bus_op(identity, tenant, ns, operation)?;
     // State stores encode scope components with ':' separators. Never permit
     // an authorized spelling to alias another namespace/tenant's durable row.
     if [ns, tenant]
@@ -93,7 +84,16 @@ pub async fn status(
 ) -> Response {
     #[cfg(feature = "bus")]
     {
-        match load(&state, &identity, &ns, &tenant, &id, false).await {
+        match load(
+            &state,
+            &identity,
+            &ns,
+            &tenant,
+            &id,
+            super::bus::BusOp::StageRead,
+        )
+        .await
+        {
             Ok(op) => Json(op.status()).into_response(),
             Err(e) => e,
         }
@@ -118,7 +118,16 @@ pub async fn list(
     }
     #[cfg(feature = "bus")]
     {
-        let op = match load(&state, &identity, &ns, &tenant, &id, false).await {
+        let op = match load(
+            &state,
+            &identity,
+            &ns,
+            &tenant,
+            &id,
+            super::bus::BusOp::StageRead,
+        )
+        .await
+        {
             Ok(op) => op,
             Err(e) => return e,
         };
@@ -159,7 +168,16 @@ pub async fn get(
 ) -> Response {
     #[cfg(feature = "bus")]
     {
-        match load(&state, &identity, &ns, &tenant, &id, false).await {
+        match load(
+            &state,
+            &identity,
+            &ns,
+            &tenant,
+            &id,
+            super::bus::BusOp::StageRead,
+        )
+        .await
+        {
             Ok(op) => match op.quarantined_inputs().iter().find(|e| e.id == entry) {
                 Some(e) => Json(e).into_response(),
                 None => error(StatusCode::NOT_FOUND, "input not retained"),
@@ -183,15 +201,28 @@ pub async fn discard(
 ) -> Response {
     #[cfg(feature = "bus")]
     {
-        let mut op = match load(&state, &identity, &ns, &tenant, &id, true).await {
+        let mut op = match load(
+            &state,
+            &identity,
+            &ns,
+            &tenant,
+            &id,
+            super::bus::BusOp::StageManage,
+        )
+        .await
+        {
             Ok(op) => op,
             Err(e) => return e,
         };
         match tokio::time::timeout(std::time::Duration::from_secs(5), op.discard(&entry)).await {
             Ok(Ok(discarded)) => Json(serde_json::json!({"discarded":discarded})).into_response(),
-            Ok(Err(acteon_bus::stage::StreamStageError::Fenced)) => {
-                error(StatusCode::CONFLICT, "concurrent checkpoint updates; retry")
-            }
+            Ok(Err(
+                acteon_bus::stage::StreamStageError::Fenced
+                | acteon_bus::stage::StreamStageError::ReplayConflict,
+            )) => error(
+                StatusCode::CONFLICT,
+                "pending replay or concurrent checkpoint updates",
+            ),
             Ok(Err(_)) => error(StatusCode::INTERNAL_SERVER_ERROR, "cannot discard input"),
             Err(_) => error(
                 StatusCode::GATEWAY_TIMEOUT,
@@ -202,6 +233,117 @@ pub async fn discard(
     #[cfg(not(feature = "bus"))]
     {
         let _ = (state, ns, tenant, id, entry);
+        error(StatusCode::SERVICE_UNAVAILABLE, "bus feature disabled")
+    }
+}
+
+#[derive(serde::Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReplayRequest {
+    #[schema(value_type = String)]
+    pub request_id: uuid::Uuid,
+    pub reason: String,
+    pub payload: serde_json::Value,
+}
+#[utoipa::path(post, path="/v1/bus/stages/{namespace}/{tenant}/{id}/quarantine/{entry}/replay", tag="bus", params(("namespace"=String, Path, description="Stage namespace"),("tenant"=String, Path, description="Stage tenant"),("id"=String, Path, description="Processor ID"),("entry"=String, Path, description="Quarantined input UUID")), request_body=ReplayRequest, responses((status=202, description="Durable replay audit", body=serde_json::Value),(status=409, description="Conflicting request")))]
+pub async fn replay(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<
+        crate::auth::identity::CallerIdentity,
+    >,
+    Path((ns, tenant, id, entry)): Path<(String, String, String, String)>,
+    Json(request): Json<ReplayRequest>,
+) -> Response {
+    #[cfg(feature = "bus")]
+    {
+        let mut op = match load(
+            &state,
+            &identity,
+            &ns,
+            &tenant,
+            &id,
+            super::bus::BusOp::StageReplay,
+        )
+        .await
+        {
+            Ok(op) => op,
+            Err(e) => return e,
+        };
+        let actor = format!("{}:{}", identity.auth_method, identity.id);
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            op.request_replay(
+                request.request_id,
+                &entry,
+                &actor,
+                &request.reason,
+                request.payload,
+            ),
+        )
+        .await
+        {
+            Ok(Ok(audit)) => (StatusCode::ACCEPTED, Json(audit)).into_response(),
+            Ok(Err(acteon_bus::StreamStageError::InvalidConfig(_))) => error(
+                StatusCode::BAD_REQUEST,
+                "invalid repair, request ID or reason",
+            ),
+            Ok(Err(acteon_bus::StreamStageError::ReplayCapacity)) => error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "replay audit retention capacity reached",
+            ),
+            Ok(Err(
+                acteon_bus::StreamStageError::ReplayConflict | acteon_bus::StreamStageError::Fenced,
+            )) => error(
+                StatusCode::CONFLICT,
+                "replay request conflicts with durable state",
+            ),
+            Ok(Err(_)) => error(StatusCode::INTERNAL_SERVER_ERROR, "cannot enqueue replay"),
+            Err(_) => error(
+                StatusCode::GATEWAY_TIMEOUT,
+                "storage timeout; retry the same replay request ID",
+            ),
+        }
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, ns, tenant, id, entry, request);
+        error(StatusCode::SERVICE_UNAVAILABLE, "bus feature disabled")
+    }
+}
+#[utoipa::path(get, path="/v1/bus/stages/{namespace}/{tenant}/{id}/replays/{request}", tag="bus", params(("namespace"=String, Path, description="Stage namespace"),("tenant"=String, Path, description="Stage tenant"),("id"=String, Path, description="Processor ID"),("request"=String, Path, description="Replay request UUID")), responses((status=200, description="Replay audit without payload", body=serde_json::Value),(status=404, description="Unknown request")))]
+pub async fn replay_audit(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<
+        crate::auth::identity::CallerIdentity,
+    >,
+    Path((ns, tenant, id, request)): Path<(String, String, String, uuid::Uuid)>,
+) -> Response {
+    #[cfg(feature = "bus")]
+    {
+        match load(
+            &state,
+            &identity,
+            &ns,
+            &tenant,
+            &id,
+            super::bus::BusOp::StageRead,
+        )
+        .await
+        {
+            Ok(op) => match op
+                .replay_audits()
+                .into_iter()
+                .find(|a| a.request_id == request)
+            {
+                Some(a) => Json(a).into_response(),
+                None => error(StatusCode::NOT_FOUND, "replay request not found"),
+            },
+            Err(e) => e,
+        }
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, ns, tenant, id, request);
         error(StatusCode::SERVICE_UNAVAILABLE, "bus feature disabled")
     }
 }

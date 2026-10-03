@@ -13,7 +13,10 @@ use acteon_server::{
 };
 use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
 use axum::http::{Method, StatusCode};
-use axum::{Extension, Router, routing::get};
+use axum::{
+    Extension, Router,
+    routing::{get, post},
+};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tower::ServiceExt;
@@ -124,6 +127,14 @@ async fn seeded_server(identity: CallerIdentity, quarantine: bool) -> TestServer
                 "/v1/bus/stages/{namespace}/{tenant}/{id}/quarantine/{entry}",
                 get(bus_stages::get).delete(bus_stages::discard),
             )
+            .route(
+                "/v1/bus/stages/{namespace}/{tenant}/{id}/quarantine/{entry}/replay",
+                post(bus_stages::replay),
+            )
+            .route(
+                "/v1/bus/stages/{namespace}/{tenant}/{id}/replays/{request}",
+                get(bus_stages::replay_audit),
+            )
             .layer(Extension(identity))
             .with_state(state),
     )
@@ -199,6 +210,9 @@ async fn scoped_reads_and_discard_are_independently_authorized_without_broker() 
 
 struct TestServer(Router);
 impl TestServer {
+    fn post(&self, path: &str) -> TestRequest {
+        self.request(Method::POST, path)
+    }
     fn get(&self, path: &str) -> TestRequest {
         self.request(Method::GET, path)
     }
@@ -219,6 +233,12 @@ struct TestRequest {
     method: Method,
     path: String,
     body: serde_json::Value,
+}
+impl TestRequest {
+    fn json(mut self, body: &serde_json::Value) -> Self {
+        self.body = body.clone();
+        self
+    }
 }
 impl std::future::IntoFuture for TestRequest {
     type Output = TestResponse;
@@ -347,4 +367,72 @@ async fn encoded_scope_delimiters_are_rejected_before_storage_lookup() {
         .get("/v1/bus/stages/test/tenant/%20")
         .await
         .assert_status_bad_request();
+}
+
+#[tokio::test]
+async fn replay_requires_distinct_grant_and_binds_authenticated_actor_and_body() {
+    let server = seeded_server(
+        identity(
+            Role::Operator,
+            vec!["stage_read", "stage_replay", "stage_manage"],
+        ),
+        true,
+    )
+    .await;
+    let base = "/v1/bus/stages/test/tenant/stage";
+    let page = server
+        .get(&format!("{base}/quarantine"))
+        .await
+        .json::<serde_json::Value>();
+    let entry = page["entries"][0]["id"].as_str().unwrap();
+    let request = uuid::Uuid::new_v4();
+    let path = format!("{base}/quarantine/{entry}/replay");
+    let body =
+        serde_json::json!({"request_id":request,"reason":"repair invalid telemetry","payload":7});
+    let accepted = server.post(&path).json(&body).await;
+    accepted.assert_status(StatusCode::ACCEPTED);
+    let audit = accepted.json::<serde_json::Value>();
+    assert_eq!(audit["actor"], "api_key:operator");
+    assert_eq!(audit["status"], "pending");
+    assert!(audit.get("payload").is_none());
+    server
+        .post(&path)
+        .json(&body)
+        .await
+        .assert_status(StatusCode::ACCEPTED);
+    let mut changed = body.clone();
+    changed["payload"] = serde_json::json!(8);
+    server
+        .post(&path)
+        .json(&changed)
+        .await
+        .assert_status_conflict();
+    server
+        .delete(&format!("{base}/quarantine/{entry}"))
+        .await
+        .assert_status_conflict();
+    let history = server.get(&format!("{base}/replays/{request}")).await;
+    history.assert_status_ok();
+    assert_eq!(history.json::<serde_json::Value>(), audit);
+    let manage_only = seeded_server(identity(Role::Operator, vec!["stage_manage"]), true).await;
+    manage_only
+        .post(&path)
+        .json(&body)
+        .await
+        .assert_status_forbidden();
+    let viewer = seeded_server(
+        identity(Role::Viewer, vec!["stage_read", "stage_replay"]),
+        true,
+    )
+    .await;
+    viewer
+        .post(&path)
+        .json(&body)
+        .await
+        .assert_status_forbidden();
+    server
+        .post(&path.replace("/tenant/", "/other/"))
+        .json(&body)
+        .await
+        .assert_status_forbidden();
 }

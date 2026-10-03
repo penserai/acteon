@@ -3032,3 +3032,46 @@ mod stage_operator_tests {
         );
     }
 }
+
+#[cfg(feature = "stream-processing")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RequestStageReplay {
+    pub request_id: uuid::Uuid,
+    pub reason: String,
+    pub payload: serde_json::Value,
+}
+#[cfg(feature = "stream-processing")]
+impl ActeonClient {
+    pub async fn request_stage_replay(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        id: &str,
+        entry: &str,
+        request: &RequestStageReplay,
+    ) -> Result<acteon_bus::StreamReplayAudit, Error> {
+        self.bus_session_json(
+            self.client
+                .post(format!(
+                    "{}/quarantine/{}/replay",
+                    self.stage_url(namespace, tenant, id),
+                    encode_segment(entry)
+                ))
+                .json(request),
+        )
+        .await
+    }
+    pub async fn get_stage_replay_audit(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        id: &str,
+        request: uuid::Uuid,
+    ) -> Result<acteon_bus::StreamReplayAudit, Error> {
+        self.bus_session_json(self.client.get(format!(
+            "{}/replays/{request}",
+            self.stage_url(namespace, tenant, id)
+        )))
+        .await
+    }
+}

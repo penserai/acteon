@@ -68,7 +68,7 @@ impl jsonschema::Retrieve for NoExternalReferences {
         Err("consume contracts must be self-contained; external references are disabled".into())
     }
 }
-fn digest(body: &Value) -> String {
+pub(crate) fn digest(body: &Value) -> String {
     fn canonical(value: &Value) -> Value {
         match value {
             Value::Object(map) => {

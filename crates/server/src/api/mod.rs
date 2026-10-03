@@ -512,6 +512,14 @@ pub fn router(state: AppState) -> Router {
             "/v1/bus/stages/{namespace}/{tenant}/{id}/quarantine/{entry}",
             get(bus_stages::get).delete(bus_stages::discard),
         )
+        .route(
+            "/v1/bus/stages/{namespace}/{tenant}/{id}/quarantine/{entry}/replay",
+            post(bus_stages::replay),
+        )
+        .route(
+            "/v1/bus/stages/{namespace}/{tenant}/{id}/replays/{request}",
+            get(bus_stages::replay_audit),
+        )
         // Phase 3: JSON-Schema registry + topic binding. Tenant-scoped
         // URLs keep state lookups O(1) and make authorization surfaces
         // explicit, matching topics and subscriptions.
