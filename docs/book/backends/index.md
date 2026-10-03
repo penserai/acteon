@@ -23,7 +23,6 @@ and benchmark assumptions. Throughput depends on the operation and deployment.
 
 ## Audit backends
 
-
 When enabled, audit backends store action records and outcomes for inspection,
 analytics, replay, and configured compliance controls.
 
@@ -41,7 +40,7 @@ analytics, replay, and configured compliance controls.
 |----------|-------|-------|-----|
 | **Development** | Memory | Memory | Zero dependencies |
 | **Production (general)** | Redis | PostgreSQL | Fast state + reliable audit |
-| **Production (strict)** | PostgreSQL | PostgreSQL | ACID everywhere |
+| **PostgreSQL operations** | PostgreSQL | PostgreSQL | Operate state and audit on a common database engine |
 | **Analytics-heavy** | Redis | ClickHouse | Fast state + analytics |
 | **Search-heavy** | Redis | Elasticsearch | Fast state + full-text search |
 | **AWS-native** | DynamoDB | DynamoDB or PostgreSQL | Fully managed AWS infrastructure |

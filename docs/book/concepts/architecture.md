@@ -12,7 +12,8 @@ flowchart TB
     MCP[MCP server] --> API
     API --> Gateway[Action gateway: policy and provider execution]
     API --> Exec[Durable executions and worker queues]
-    API --> Bus[Agentic Bus and A2A task services]
+    API --> Bus[Agentic Bus]
+    API --> A2A[A2A task services]
     Gateway --> Providers[Providers: integrations, governed models, swarm goals]
     Exec --> Gateway
     Exec <--> Workers[Your task and workflow workers]
@@ -24,6 +25,7 @@ flowchart TB
     Gateway --> State[(State store)]
     Exec --> State
     Bus --> State
+    A2A --> State
     Stages --> State
     Outbox --> State
     Gateway -.-> Audit[(Configured audit store)]

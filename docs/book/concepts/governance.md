@@ -36,7 +36,8 @@ and [rule tests](../features/rule-testing-cli.md) to inspect policy before deplo
 ## Bound model and agent behavior
 
 A [governed model provider](../features/governed-model-provider.md) binds an
-inference integration to a model lock, request material, and response schema.
+inference integration to a model lock and response schema, with optional locked
+request material.
 It verifies the runtime identity it can observe and rejects invalid responses
 before they enter a downstream step. [LLM guardrails](../features/llm-guardrails.md)
 and [semantic routing](../features/semantic-routing.md) offer additional model-assisted
