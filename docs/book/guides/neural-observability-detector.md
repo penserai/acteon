@@ -503,7 +503,14 @@ replaceable inference container behind its typed HTTP API.
 | Pool exhaustion | the three correlated signals from the scenario | one incident chain, even when the window is replayed |
 | Ambiguous regression | high latency, conflicting trace and log labels, one missing source | one bounded investigation-agent run; no remediation |
 
-The fixtures use fixed timestamps and IDs. The runner publishes their source
+The fixtures use fixed timestamps and IDs. Three versioned schemas are registered
+and pinned in the managed stage's [consume policy](../features/stream-input-contracts.md).
+A malformed log envelope deliberately bypasses the HTTP publish edge. The stage
+quarantines it before window processing or inference and saves its full envelope,
+position, failure class, and contract digest atomically with source progress. The
+quarantine restores before receipt replay and remains one entry afterward.
+
+ The runner publishes their source
 features to separate metrics, traces, and logs topics, consumes the resulting
 broker positions, and joins them into 60-second event-time windows with 15
 seconds of allowed lateness. It atomically checkpoints active windows,
@@ -572,14 +579,15 @@ and admitted an incident only when all three typed signal decisions agreed.
 | Input window checkpoints | 4 |
 | Typed processor attempts / replayed records skipped before callback | 4 / 5 |
 | Final Kafka consumer lag | 0 |
-| Active source sessions / receipts acknowledged | 3 / 13 |
+| Active source sessions / receipts acknowledged | 3 / 14 |
+| Pinned consume contracts / input quarantines retained after restart | 3 / 1 |
 | Stale acknowledgements rejected after rebalance | 1 |
 | Replacement delivery offset in fencing probe | 0 |
 | Governed runtime packages / artifacts / question sets / response schemas | 6 / 5 / 4 / 1 |
 | Event-time windows | 4 |
 | Real Laya calls | 16 |
-| Sum of model HTTP request times | 128,735 ms |
-| Per-call HTTP p50 / p95 | 8,101 ms / 16,677 ms |
+| Sum of model HTTP request times | 73,634 ms |
+| Per-call HTTP p50 / p95 | 4,729 ms / 8,654 ms |
 | Incident chains | 1 |
 | Bounded investigator calls | 1 |
 | Delivery attempts / accepted verdicts | 6 / 4 |
@@ -827,10 +835,12 @@ digests.
 ### Simulation sequence
 
 1. Start Kafka, Redis AOF storage, and the pinned Laya service.
-2. Publish metrics, traces, and logs, including one duplicate event ID.
+2. Register and pin consume contracts; publish metrics, traces, and logs, including
+   one duplicate event ID and one malformed log that bypasses the publish edge.
 3. Run typed window processing through the managed stage, persist state and
    ready outputs, replace the HTTP server, and recover five records without
-   invoking the processor again before committing their receipts.
+   invoking the processor again before committing their receipts. Restore the input
+   quarantine and verify the poison record is retained once.
 4. Invoke the three signal question sets concurrently through governed providers.
 5. Verify runtime identity, locked response shape, IDs, labels, numeric ranges,
    probability sums, and zero output tokens.

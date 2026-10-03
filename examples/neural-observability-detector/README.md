@@ -44,7 +44,8 @@ examples/neural-observability-detector/scripts/run.sh
 The script:
 
 1. builds the pinned CPU Laya service and verifies runtime and model artifacts;
-2. starts Kafka and Redis with AOF persistence, then publishes three telemetry streams;
+2. starts Kafka and Redis with AOF persistence, registers/pins three consume schemas,
+   and publishes three telemetry streams plus a malformed log envelope;
 3. runs a typed window processor through `ManagedStreamStage` and
    `HttpStreamStageSource`, with bounded batches and Redis-backed state/output checkpoints;
 4. replaces the consumer/coordinator before committing Kafka offsets, restores
@@ -104,14 +105,16 @@ defaults to `127.0.0.1:19092`. `ACTEON_CHECKPOINT_REDIS_URL` defaults to
 - Recovery and output delivery use platform checkpoint/outbox APIs backed by
   Redis. Window checkpoints precede Kafka commits. Delivery policy, attempts,
   retry deadlines, and dead letters survive replacement of the worker and its
-  Redis connection pool. Four cached decisions survive, and final source lag,
+  Redis connection pool. One malformed log is quarantined before window processing
+  and restored before receipt replay without a duplicate retention entry. Four
+  cached decisions survive, and final source lag,
   pending-window outputs, and pending-verdict outputs are zero.
 - All three telemetry consumers use the public Acteon HTTP receipt-session API
   through the Rust client. The simulation registers topics and receipt-required
   subscriptions over HTTP, replaces the server after the pre-commit checkpoint,
   rejects its old session ID, and restores three consumers. The SDK source adapter
   and managed stage validate opaque receipt IDs to derive checkpoint positions, persists state and outputs, then
-  acknowledges 13 source receipts through their delivering consumers.
+  acknowledges 14 source receipts through their delivering consumers.
 - An independent library group probe joins a second member, observes rebalance
   revocation, rejects a stale receipt, and receives the uncommitted prefix from
   offset zero. It adds no model calls or effects. The server also rejects raw
@@ -170,3 +173,8 @@ instances registered with a gateway. Each provider injects its locked questions
 and model name, verifies runtime identity, and uses `TypedJsonModelClient` for
 response-schema validation. The report preserves parsed Laya responses, model
 request and response contract names, lock digests, revisions, and elapsed times.
+
+Consume contracts and quarantine come from `acteon-bus::StreamInputPolicy`.
+The malformed Kafka envelope is retained for inspection; it reaches neither
+window processing nor inference. Output backlogs are zero while one input
+quarantine entry remains deliberately retained.

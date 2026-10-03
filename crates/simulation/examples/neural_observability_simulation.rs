@@ -20,9 +20,10 @@ use std::time::Duration;
 
 use acteon_bus::{
     BusBackend, BusMessage, KafkaBackend, KafkaBusConfig, ManagedStreamStage, StartOffset,
-    StreamCheckpointConfig, StreamCheckpointCoordinator, StreamDeliveryError, StreamOutboxConfig,
-    StreamOutboxDelivery, StreamOutboxDispatchResult, StreamOutboxDispatcher, StreamOutboxEntry,
-    StreamOutboxMetrics, StreamStageConfig, StreamStageCounters, StreamStageInput,
+    StreamCheckpointConfig, StreamCheckpointCoordinator, StreamDeliveryError, StreamInputContract,
+    StreamInputPolicy, StreamOutboxConfig, StreamOutboxDelivery, StreamOutboxDispatchResult,
+    StreamOutboxDispatcher, StreamOutboxEntry, StreamOutboxMetrics, StreamPoisonPolicy,
+    StreamQuarantinedInput, StreamStageConfig, StreamStageCounters, StreamStageInput,
     StreamStageProcessError, StreamStageProcessor, StreamStageRecord, StreamStageResult,
     StreamStageSource, StreamStageSourceError, StreamStageTransition, SubscriptionConfig,
     SubscriptionError, stream_checkpoint_key,
@@ -180,6 +181,9 @@ struct RecoveryReport {
     source_receipts_acknowledged: usize,
     stale_acknowledgements_rejected: usize,
     managed_stage: StreamStageCounters,
+    consume_contracts: BTreeMap<String, StreamInputContract>,
+    quarantined_inputs: Vec<StreamQuarantinedInput>,
+    quarantines_restored_before_replay: usize,
     rebalance_redelivery_offset: i64,
 }
 
@@ -1288,6 +1292,15 @@ fn markdown(report: &SimulationReport) -> String {
         counters.retries_scheduled,
         counters.failures,
     );
+    output.push_str("## Consume contracts and poison quarantine\n\n");
+    let _ = write!(
+        output,
+        "| Observation | Result |\n|---|---:|\n| Pinned per-source consume contracts | {} |\n| Quarantined inputs persisted / restored before replay | {} / {} |\n| Quarantines after replay | {} |\n\nOne malformed log envelope bypasses the HTTP publish edge. The platform consume contract rejects it before window processing or inference. Its original envelope, position, contract digest, and failure class are retained in Redis in the same checkpoint as input progress. Server replacement restores it before receipt replay, which adds no second quarantine entry. The remaining valid telemetry still produces the four expected decisions.\n\n",
+        report.recovery.consume_contracts.len(),
+        report.recovery.managed_stage.quarantined_records,
+        report.recovery.quarantines_restored_before_replay,
+        report.recovery.quarantined_inputs.len()
+    );
     output.push_str("## Managed delivery recovery\n\n");
     let _ = write!(
         output,
@@ -1517,6 +1530,19 @@ async fn prove_rebalance_fencing(
     Ok(offset)
 }
 
+fn telemetry_consume_schema(source: SignalSource) -> Value {
+    json!({"type":"object", "additionalProperties":false,
+    "required":["schema_version","event_id","observed_at","ingested_at","window_id","tenant","environment","service","deployment_revision","source","available","features"],
+    "properties": {
+        "schema_version":{"const":1}, "event_id":{"type":"string","minLength":1},
+        "observed_at":{"type":"string","format":"date-time"}, "ingested_at":{"type":"string","format":"date-time"},
+        "window_id":{"type":"string","minLength":1}, "tenant":{"const":TENANT},
+        "environment":{"type":"string","minLength":1}, "service":{"type":"string","minLength":1},
+        "deployment_revision":{"type":"string","minLength":1}, "source":{"const":source.as_str()},
+        "available":{"type":"boolean"}, "features":{"type":"object"}
+    }})
+}
+
 struct TelemetryWindowProcessor {
     expected_records: usize,
 }
@@ -1653,6 +1679,7 @@ async fn kafka_stream_replay(
             .await?;
     }
     let mut definitions = Vec::new();
+    let mut consume_contracts = BTreeMap::new();
     let mut subscription_ids = Vec::new();
     let mut consumer_groups = BTreeMap::new();
     for source in SignalSource::ALL {
@@ -1673,12 +1700,42 @@ async fn kafka_stream_replay(
             .await?;
         subscription_ids.push(sub.id.clone());
         consumer_groups.insert(source, sub.consumer_group.clone());
-        definitions.push(acteon_client::HttpStageSubscription::new(
-            source.as_str(),
-            &sub,
-        )?);
+        let definition = acteon_client::HttpStageSubscription::new(source.as_str(), &sub)?;
+        let schema = http
+            .as_ref()
+            .unwrap()
+            .client
+            .register_bus_schema(&acteon_client::RegisterBusSchema {
+                subject: format!("telemetry-{}-{run_id}", source.as_str()),
+                namespace: NAMESPACE.into(),
+                tenant: TENANT.into(),
+                body: telemetry_consume_schema(source),
+                labels: std::collections::HashMap::new(),
+            })
+            .await?;
+        http.as_ref()
+            .unwrap()
+            .client
+            .bind_topic_schema(
+                NAMESPACE,
+                TENANT,
+                &topics[&source].name,
+                &schema.subject,
+                schema.version,
+            )
+            .await?;
+        consume_contracts.insert(
+            source.as_str().to_string(),
+            definition.input_contract(&schema)?,
+        );
+        definitions.push(definition);
     }
     let stage_config = StreamStageConfig {
+        input: StreamInputPolicy {
+            contracts: consume_contracts.clone(),
+            poison_policy: StreamPoisonPolicy::Quarantine,
+            ..Default::default()
+        },
         max_batch_records: 5,
         receive_timeout_ms: 20_000,
         processing_timeout_ms: 5000,
@@ -1689,6 +1746,15 @@ async fn kafka_stream_replay(
     let replay = async {
         for source in SignalSource::ALL {
             let topic = topics[&source].kafka_topic_name();
+            if source == SignalSource::Logs {
+                // A producer bypassing the publish API can place invalid data on Kafka.
+                backend
+                    .produce(BusMessage::new(
+                        &topic,
+                        json!({"schema_version": 1, "source": "logs", "features": "malformed"}),
+                    ))
+                    .await?;
+            }
             for fixture in fixtures {
                 let event = telemetry_event(fixture, source);
                 backend
@@ -1712,7 +1778,7 @@ async fn kafka_stream_replay(
             }
         }
 
-        let expected_records = fixtures.len() * SignalSource::ALL.len() + 1;
+        let expected_records = fixtures.len() * SignalSource::ALL.len() + 2;
         let pre_crash_records = 5;
 
         let empty =
@@ -1783,6 +1849,11 @@ async fn kafka_stream_replay(
             stage_config.clone(),
         )
         .await?;
+        let quarantines_restored_before_replay = stage.quarantined_inputs().await?.len();
+        if quarantines_restored_before_replay != 1 {
+            return Err(error("poison input was not durable before acknowledgement"));
+        }
+
         let mut source_receipts_acknowledged = 0;
         let mut recovery_redeliveries = 0;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
@@ -1816,6 +1887,12 @@ async fn kafka_stream_replay(
             )));
         }
         let managed_stage = stage.metrics().await?.counters;
+        let quarantined_inputs = stage.quarantined_inputs().await?;
+        if quarantined_inputs.len() != 1 || managed_stage.quarantined_records != 1 {
+            return Err(error(
+                "poison input was lost or quarantined again during replay",
+            ));
+        }
         let checkpoints = stage.into_checkpoint();
         let correlator = EventTimeCorrelator::restore(checkpoints.snapshot().state().clone())?;
         let stats = correlator.stats().clone();
@@ -1881,6 +1958,9 @@ async fn kafka_stream_replay(
                 source_receipts_acknowledged,
                 stale_acknowledgements_rejected: 1,
                 managed_stage,
+                consume_contracts: consume_contracts.clone(),
+                quarantined_inputs,
+                quarantines_restored_before_replay,
                 rebalance_redelivery_offset,
             },
             checkpoints,

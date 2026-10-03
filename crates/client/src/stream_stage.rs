@@ -21,6 +21,25 @@ pub struct HttpStageSubscription {
     consumer_group: String,
 }
 impl HttpStageSubscription {
+    /// Pin a registered schema from the same namespace/tenant as this subscription.
+    pub fn input_contract(
+        &self,
+        schema: &crate::BusSchema,
+    ) -> Result<acteon_bus::StreamInputContract, StreamStageSourceError> {
+        if schema.namespace != self.namespace || schema.tenant != self.tenant {
+            return Err(StreamStageSourceError::Permanent(
+                "consume schema belongs to another scope".into(),
+            ));
+        }
+        acteon_bus::StreamInputContract::from_schema(&acteon_core::Schema::new(
+            &schema.subject,
+            schema.version,
+            &schema.namespace,
+            &schema.tenant,
+            schema.body.clone(),
+        ))
+        .map_err(StreamStageSourceError::Permanent)
+    }
     pub fn new(
         source: impl Into<String>,
         subscription: &BusSubscription,
@@ -325,5 +344,35 @@ fn map_error(error: &Error) -> StreamStageSourceError {
         Error::Http { status: 429, .. } => StreamStageSourceError::Retryable(error.to_string()),
         _ if error.is_retryable() => StreamStageSourceError::Retryable(error.to_string()),
         _ => StreamStageSourceError::Permanent(error.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod consume_contract_tests {
+    use super::*;
+    #[test]
+    fn registry_contracts_are_scoped_and_pinned() {
+        let subscription = HttpStageSubscription {
+            source: "input".into(),
+            namespace: "test".into(),
+            tenant: "tenant".into(),
+            id: "subscription".into(),
+            topic: "test.tenant.input".into(),
+            consumer_group: "group".into(),
+        };
+        let mut schema = crate::BusSchema {
+            subject: "input".into(),
+            version: 7,
+            namespace: "test".into(),
+            tenant: "tenant".into(),
+            body: serde_json::json!({"type":"integer"}),
+            labels: std::collections::HashMap::new(),
+            created_at: "2026-10-03T00:00:00Z".into(),
+        };
+        let pinned = subscription.input_contract(&schema).unwrap();
+        assert_eq!(pinned.version, 7);
+        assert_eq!(pinned.body, schema.body);
+        schema.tenant = "other".into();
+        assert!(subscription.input_contract(&schema).is_err());
     }
 }

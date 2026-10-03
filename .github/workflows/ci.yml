@@ -107,7 +107,9 @@ jobs:
           cargo build --locked -p acteon-server
           python3 scripts/ci/quickstart.py --server target/debug/acteon-server
       - name: Verify neural observability platform adapters
-        run: cargo test --locked -p acteon-simulation --features bus,redis --example neural_observability_simulation
+        run: |
+          cargo test --locked -p acteon-simulation --features bus,redis --example neural_observability_simulation
+          cargo test --locked -p acteon-client --features stream-processing --lib stream_stage
       - name: Test AWS providers
         run: cargo nextest run --locked -p acteon-aws --features full --lib --tests
       - name: Test Azure providers

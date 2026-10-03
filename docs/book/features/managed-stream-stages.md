@@ -87,10 +87,13 @@ transition over a replacement worker.
 
 Retryable processor failures persist their attempt count, source anchor, diagnostic,
 and next-attempt time. Replacement workers retain that budget, including attempts
-interrupted by a crash. Permanent failures, malformed typed payloads, oversized
-outputs, and exhausted retry budgets halt without acknowledging input. The failed
+interrupted by a crash. Permanent processor failures, oversized outputs, and exhausted retry budgets
+halt without acknowledging input. Malformed typed payloads and schema violations
+halt by default; the opt-in quarantine policy retains them durably. The failed
 anchor must reappear in a fresh retry batch; a different batch cannot reset its
-budget. There is no automatic poison-record skip or dead-letter input policy.
+budget. [Consume contracts and quarantine](stream-input-contracts.md) add an explicit
+policy for retaining rejected inputs before advancing their positions. Processor
+failures still use the retry/halt policy.
 
 After a successful state/output checkpoint, failed acknowledgement leaves input
 progress durable. Replayed broker positions are acknowledged without invoking the

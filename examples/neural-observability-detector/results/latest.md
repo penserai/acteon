@@ -4,10 +4,10 @@ Laya `typed-decisions` ran on `cpu` at revision `55cf4c4ebb4ebe31b2550e8bdf3bd21
 
 | Trial | Signal decisions | Raw fusion | Acteon outcome | Model HTTP elapsed | Result |
 |---|---|---|---|---:|---|
-| healthy-baseline | metrics: healthy (0.52)<br>traces: healthy (0.40)<br>logs: healthy (0.41) | downstream_timeout (0.27) | suppressed by suppress-observability-noise | 14858 ms | PASS |
-| log-only-noise | metrics: healthy (0.54)<br>traces: healthy (0.45)<br>logs: healthy (0.35) | downstream_timeout (0.28) | suppressed by suppress-observability-noise | 28733 ms | PASS |
-| pool-exhaustion | metrics: db_pool_pressure (0.52)<br>traces: database_wait (0.48)<br>logs: pool_timeout (0.58) | db_pool_exhaustion (0.27) | completed observability-incident chain | 43899 ms | PASS |
-| ambiguous-regression | metrics: application_errors (0.39)<br>traces: application_work (0.31)<br>logs: downstream_error (0.31) | downstream_timeout (0.25) | rerouted to investigator | 41245 ms | PASS |
+| healthy-baseline | metrics: healthy (0.52)<br>traces: healthy (0.40)<br>logs: healthy (0.41) | downstream_timeout (0.27) | suppressed by suppress-observability-noise | 17368 ms | PASS |
+| log-only-noise | metrics: healthy (0.54)<br>traces: healthy (0.45)<br>logs: healthy (0.35) | downstream_timeout (0.28) | suppressed by suppress-observability-noise | 18699 ms | PASS |
+| pool-exhaustion | metrics: db_pool_pressure (0.52)<br>traces: database_wait (0.48)<br>logs: pool_timeout (0.58) | db_pool_exhaustion (0.27) | completed observability-incident chain | 19573 ms | PASS |
+| ambiguous-regression | metrics: application_errors (0.39)<br>traces: application_work (0.31)<br>logs: downstream_error (0.31) | downstream_timeout (0.25) | rerouted to investigator | 17994 ms | PASS |
 
 ## Aggregate
 
@@ -19,8 +19,8 @@ Laya `typed-decisions` ran on `cpu` at revision `55cf4c4ebb4ebe31b2550e8bdf3bd21
 - Final Kafka consumer lag: **0**
 - Event-time windows completed: **4**
 - Model calls: **16**
-- Total model HTTP elapsed: **128735 ms**
-- Per-call p50 / p95: **8101 ms / 16677 ms**
+- Total model HTTP elapsed: **73634 ms**
+- Per-call p50 / p95: **4729 ms / 8654 ms**
 - Incident chains: **1** diagnostics capture and **1** on-call notification
 - Bounded investigations: **1**
 - Duplicate incident dispatches prevented by durable receipts: **1**
@@ -30,7 +30,7 @@ Laya `typed-decisions` ran on `cpu` at revision `55cf4c4ebb4ebe31b2550e8bdf3bd21
 | Observation | Result |
 |---|---:|
 | Active HTTP source sessions | 3 |
-| Source receipts acknowledged after checkpoint | 13 |
+| Source receipts acknowledged after checkpoint | 14 |
 | Stale acknowledgements rejected after rebalance | 1 |
 | Replacement delivery offset in fencing probe | 0 |
 
@@ -41,10 +41,20 @@ All three source consumers use Acteon HTTP receipt sessions through the Rust cli
 | Observation | Result |
 |---|---:|
 | Typed processor attempts / completed batches | 4 / 4 |
-| Broker records processed / recovered without callback | 13 / 5 |
+| Broker records processed / recovered without callback | 14 / 5 |
 | Persisted processor retries / failures | 0 / 0 |
 
 The generic managed stage owns bounded receive, typed decode, processor execution, receipt validation, checkpoint persistence, and acknowledgement. The five checkpointed records replay after server replacement without another window-processor call.
+
+## Consume contracts and poison quarantine
+
+| Observation | Result |
+|---|---:|
+| Pinned per-source consume contracts | 3 |
+| Quarantined inputs persisted / restored before replay | 1 / 1 |
+| Quarantines after replay | 1 |
+
+One malformed log envelope bypasses the HTTP publish edge. The platform consume contract rejects it before window processing or inference. Its original envelope, position, contract digest, and failure class are retained in Redis in the same checkpoint as input progress. Server replacement restores it before receipt replay, which adds no second quarantine entry. The remaining valid telemetry still produces the four expected decisions.
 
 ## Managed delivery recovery
 
@@ -65,7 +75,7 @@ Dead-letter diagnostic: `invalid verdict envelope or idempotency key`. The probe
 
 Timings measure model HTTP request and response validation through the governed provider. They are not the server-only inference timings used in the previous report. Full wall times also include gateway dispatch and runtime identity checks.
 
-Receiver replacement preserved incident Action `5640bd1f-db95-462b-9eae-11fc1b1b7f21` and chain execution `02b066b7-c119-450e-b57f-65f8542a9862`; original and recovered receipt outcomes matched.
+Receiver replacement preserved incident Action `3691b631-103a-47f0-8b3b-0932ceefdc78` and chain execution `1664ba1c-4671-46f9-8b05-064bf2e38610`; original and recovered receipt outcomes matched.
 
 ## Interpretation
 

@@ -19,7 +19,7 @@ use thiserror::Error;
 use crate::{AcknowledgedSubscription, SubscriptionAck, SubscriptionError, SubscriptionReceipt};
 use crate::{BusBackend, OffsetPosition};
 
-const SNAPSHOT_VERSION: u16 = 3;
+const SNAPSHOT_VERSION: u16 = 4;
 const STATE_KIND: &str = "bus_stream_checkpoint";
 const DEFAULT_MAX_POSITIONS: usize = 10_000;
 const DEFAULT_MAX_PENDING_OUTPUTS: usize = 100_000;
@@ -645,7 +645,15 @@ where
         mut next: StreamCheckpointSnapshot<S, O>,
     ) -> Result<(), StreamCheckpointError> {
         next.schema_version = if next.processing.is_some() {
-            SNAPSHOT_VERSION
+            if next
+                .processing
+                .as_ref()
+                .is_some_and(crate::stage::ManagedStageState::requires_v4)
+            {
+                4
+            } else {
+                3
+            }
         } else if next.managed.is_some() {
             2
         } else {
@@ -727,6 +735,14 @@ fn validate_snapshot<S, O>(
         ));
     }
     if let Some(stage) = &snapshot.processing {
+        if stage.requires_v4() && snapshot.schema_version < 4 {
+            return Err(StreamCheckpointError::InvalidManagedStage(
+                "consume contracts/quarantine require version 4".into(),
+            ));
+        }
+        stage
+            .validate_positions(&snapshot.positions)
+            .map_err(StreamCheckpointError::InvalidManagedStage)?;
         stage
             .validate()
             .map_err(StreamCheckpointError::InvalidManagedStage)?;
