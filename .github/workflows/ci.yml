@@ -109,7 +109,7 @@ jobs:
       - name: Verify neural observability platform adapters
         run: |
           cargo test --locked -p acteon-simulation --features bus,redis --example neural_observability_simulation
-          cargo test --locked -p acteon-client --features stream-processing --lib stream_stage
+          cargo test --locked -p acteon-client --features stream-processing --lib
       - name: Test AWS providers
         run: cargo nextest run --locked -p acteon-aws --features full --lib --tests
       - name: Test Azure providers
@@ -248,7 +248,7 @@ jobs:
         run: |
           test -n "$ACTEON_KAFKA_BOOTSTRAP"
           cargo test --locked -p acteon-bus --lib --tests
-          cargo test --locked -p acteon-server --features bus --test bus_session_tests
+          cargo test --locked -p acteon-server --features bus --test bus_session_tests --test bus_stage_tests
       - name: Kafka broker logs
         if: always()
         run: docker logs "${{ job.services.kafka.id }}"

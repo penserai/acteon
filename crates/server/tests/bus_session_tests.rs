@@ -144,6 +144,23 @@ impl Fixture {
         topic.partitions = 1;
         topic.replication_factor = 1;
         backend.create_topic(&topic).await.unwrap();
+        // Admin acknowledgement can precede topic/leader metadata propagation.
+        // Verify the partition serves watermark requests before opening consumers.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(25);
+        loop {
+            if backend
+                .scan_topic_watermarks(&topic.kafka_topic_name())
+                .await
+                .is_ok_and(|w| w.high_water_marks.contains_key(&0))
+            {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "topic partition readiness deadline"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
         let mut sub = Subscription::new(
             format!("sub-{}", Uuid::new_v4().simple()),
             topic.kafka_topic_name(),
@@ -459,8 +476,25 @@ async fn http_sessions_expire_and_bound_retained_capacity() {
     let r = server.get(&format!("{}/{}", f.path(), s.session_id)).await;
     r.assert_status_ok();
     assert_eq!(r.json::<SessionResponse>().phase, "closed");
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    let next = f.open(&server, Uuid::new_v4()).await;
+    // The closed snapshot precedes blocking Kafka teardown. Retention starts
+    // when teardown completes, so a fixed sleep from observing closure races it.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(25);
+    let request_id = Uuid::new_v4();
+    let next = loop {
+        let response = server
+            .post(&f.path())
+            .json(&json!({"request_id":request_id}))
+            .await;
+        if response.status == StatusCode::OK {
+            break response.json::<SessionResponse>();
+        }
+        response.assert_status_too_many_requests();
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "closed-session capacity release deadline"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
     assert_ne!(next.session_id, s.session_id);
     f.cleanup().await;
 }
@@ -586,7 +620,11 @@ async fn http_sessions_close_on_payload_limits_and_absolute_lifetime() {
     loop {
         let status: SessionResponse = server.get(&path).await.json();
         if status.phase == "closed" {
-            assert!(status.closed_reason.unwrap().contains("buffer limit"));
+            let reason = status.closed_reason.unwrap();
+            assert!(
+                reason.contains("buffer limit"),
+                "unexpected closure: {reason}"
+            );
             break;
         }
         assert!(tokio::time::Instant::now() < deadline);

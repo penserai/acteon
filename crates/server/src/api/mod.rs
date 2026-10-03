@@ -11,6 +11,7 @@ pub mod audit;
 pub mod auth;
 pub mod bus;
 pub mod bus_sessions;
+pub mod bus_stages;
 pub mod chains;
 pub mod circuit_breakers;
 pub mod compliance;
@@ -498,6 +499,18 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/sessions/{session}/ack",
             post(bus_sessions::ack),
+        )
+        .route(
+            "/v1/bus/stages/{namespace}/{tenant}/{id}",
+            get(bus_stages::status),
+        )
+        .route(
+            "/v1/bus/stages/{namespace}/{tenant}/{id}/quarantine",
+            get(bus_stages::list),
+        )
+        .route(
+            "/v1/bus/stages/{namespace}/{tenant}/{id}/quarantine/{entry}",
+            get(bus_stages::get).delete(bus_stages::discard),
         )
         // Phase 3: JSON-Schema registry + topic binding. Tenant-scoped
         // URLs keep state lookups O(1) and make authorization surfaces

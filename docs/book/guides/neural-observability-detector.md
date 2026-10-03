@@ -509,6 +509,10 @@ A malformed log envelope deliberately bypasses the HTTP publish edge. The stage
 quarantines it before window processing or inference and saves its full envelope,
 position, failure class, and contract digest atomically with source progress. The
 quarantine restores before receipt replay and remains one entry afterward.
+The simulation then uses the tenant-scoped operator HTTP APIs to inspect stage
+status and the original envelope, explicitly discard it, and repeat the discard
+to verify idempotence. The retained count becomes zero; the cumulative quarantine
+and discard counters remain one.
 
 The runner publishes their source
 features to separate metrics, traces, and logs topics, consumes the resulting
@@ -581,13 +585,14 @@ and admitted an incident only when all three typed signal decisions agreed.
 | Final Kafka consumer lag | 0 |
 | Active source sessions / receipts acknowledged | 3 / 14 |
 | Pinned consume contracts / input quarantines retained after restart | 3 / 1 |
+| Operator HTTP discards / retained inputs after discard | 1 / 0 |
 | Stale acknowledgements rejected after rebalance | 1 |
 | Replacement delivery offset in fencing probe | 0 |
 | Governed runtime packages / artifacts / question sets / response schemas | 6 / 5 / 4 / 1 |
 | Event-time windows | 4 |
 | Real Laya calls | 16 |
-| Sum of model HTTP request times | 73,634 ms |
-| Per-call HTTP p50 / p95 | 4,729 ms / 8,654 ms |
+| Sum of model HTTP request times | 76,571 ms |
+| Per-call HTTP p50 / p95 | 4,234 ms / 9,672 ms |
 | Incident chains | 1 |
 | Bounded investigator calls | 1 |
 | Delivery attempts / accepted verdicts | 6 / 4 |

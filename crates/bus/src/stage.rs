@@ -125,7 +125,7 @@ pub struct StreamStageCounters {
     pub total_processing_ms: u64,
     pub last_processing_ms: u64,
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StreamStageMetrics {
     pub counters: StreamStageCounters,
     pub checkpoint_generation: u64,
@@ -1189,4 +1189,76 @@ fn quarantine_fits(
                 .map_err(StreamCheckpointError::from)?
                 .len()
                 <= policy.max_quarantine_bytes)
+}
+
+/// Durable operator access independent of Kafka consumers and processor state types.
+pub struct StreamStageOperator {
+    coordinator: StreamCheckpointCoordinator<serde_json::Value, serde_json::Value>,
+}
+impl StreamStageOperator {
+    /// Missing checkpoints return None; unmanaged checkpoints are rejected.
+    pub async fn load(
+        store: std::sync::Arc<dyn acteon_state::StateStore>,
+        key: acteon_state::StateKey,
+    ) -> Result<Option<Self>, StreamStageError> {
+        let Some(coordinator) = StreamCheckpointCoordinator::load_existing(store, key).await?
+        else {
+            return Ok(None);
+        };
+        if coordinator.snapshot.processing.is_none() {
+            return Err(StreamStageError::MissingManagedState);
+        }
+        Ok(Some(Self { coordinator }))
+    }
+    /// A safe projection: no state, outputs, source identity, or lease capabilities.
+    pub fn status(&self) -> StreamStageMetrics {
+        let m = self.coordinator.snapshot.processing.as_ref().unwrap();
+        StreamStageMetrics {
+            counters: m.counters.clone(),
+            checkpoint_generation: self.coordinator.snapshot.generation(),
+            pending_outputs: self.coordinator.snapshot.pending_outputs().len(),
+            quarantined_records: m.quarantine.len(),
+            lease_expires_at: m.lease.as_ref().map(|l| l.expires_at),
+            next_attempt_at: m.retry.as_ref().and_then(|r| r.next_attempt_at),
+            halted: m.retry.as_ref().is_some_and(|r| r.terminal),
+            last_error: m.retry.as_ref().and_then(|r| r.last_error.clone()),
+        }
+    }
+    pub fn quarantined_inputs(&self) -> &[StreamQuarantinedInput] {
+        &self
+            .coordinator
+            .snapshot
+            .processing
+            .as_ref()
+            .unwrap()
+            .quarantine
+    }
+    /// CAS retries preserve concurrent checkpoint and outbox updates. Idempotent.
+    pub async fn discard(&mut self, id: &str) -> Result<bool, StreamStageError> {
+        for _ in 0..CAS_RETRIES {
+            self.coordinator.reload().await?;
+            let mut next = self.coordinator.snapshot.clone();
+            let m = next
+                .processing
+                .as_mut()
+                .ok_or(StreamStageError::MissingManagedState)?;
+            let Some(index) = m.quarantine.iter().position(|e| e.id == id) else {
+                return Ok(false);
+            };
+            m.quarantine.remove(index);
+            m.counters.discarded_quarantined_records = m
+                .counters
+                .discarded_quarantined_records
+                .checked_add(1)
+                .ok_or(StreamCheckpointError::GenerationOverflow)?;
+            match self.coordinator.persist(next).await {
+                Err(StreamCheckpointError::Conflict { .. }) => {}
+                result => {
+                    result?;
+                    return Ok(true);
+                }
+            }
+        }
+        Err(StreamStageError::Fenced)
+    }
 }

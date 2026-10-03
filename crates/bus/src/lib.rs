@@ -58,8 +58,8 @@ pub use acteon_core::PartitionLag;
 
 pub use stage::{
     ManagedStreamStage, StreamStageConfig, StreamStageCounters, StreamStageError, StreamStageInput,
-    StreamStageMetrics, StreamStageProcessError, StreamStageProcessor, StreamStageResult,
-    StreamStageTransition,
+    StreamStageMetrics, StreamStageOperator, StreamStageProcessError, StreamStageProcessor,
+    StreamStageResult, StreamStageTransition,
 };
 pub use stage_source::{
     LiveStreamStageSource, StreamStageRecord, StreamStageSource, StreamStageSourceError,

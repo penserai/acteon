@@ -1058,3 +1058,53 @@ async fn forged_receipt_positions_cannot_persist_or_acknowledge_quarantine() {
     assert_eq!(worker.checkpoint().positions(), []);
     assert_eq!(worker.quarantined_inputs().await.unwrap(), []);
 }
+
+#[tokio::test]
+async fn operator_access_is_read_only_and_discard_preserves_newer_worker_progress() {
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    assert!(
+        StreamStageOperator::load(store.clone(), key())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(store.get(&key()).await.unwrap().is_none());
+    let mut worker = stage(store.clone(), consume_config()).await;
+    let mut source = Source::new(store.clone(), 0..2);
+    source.records[0].message.payload = json!(0);
+    worker
+        .process_once(&mut source, &Processor::new(), &CancellationToken::new())
+        .await
+        .unwrap();
+    let before = store.get_versioned(&key()).await.unwrap();
+    let mut operator = StreamStageOperator::load(store.clone(), key())
+        .await
+        .unwrap()
+        .unwrap();
+    let id = operator.quarantined_inputs()[0].id.clone();
+    assert_eq!(operator.status().quarantined_records, 1);
+    assert_eq!(before, store.get_versioned(&key()).await.unwrap());
+    let mut next_source = Source::new(store.clone(), 2..3);
+    worker
+        .process_once(
+            &mut next_source,
+            &Processor::new(),
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert!(operator.discard(&id).await.unwrap());
+    assert!(!operator.discard(&id).await.unwrap());
+    let c = coordinator(store.clone()).await;
+    assert_eq!(*c.snapshot().state(), 5);
+    assert_eq!(c.snapshot().pending_outputs().len(), 2);
+    assert_eq!(operator.status().counters.processed_records, 3);
+    assert_eq!(operator.status().counters.discarded_quarantined_records, 1);
+    assert_eq!(worker.metrics().await.unwrap().quarantined_records, 0);
+    assert!(
+        StreamStageOperator::load(store, stream_checkpoint_key("test", "other", "typed-stage"))
+            .await
+            .unwrap()
+            .is_none()
+    );
+}

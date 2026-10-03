@@ -2924,3 +2924,111 @@ impl ActeonClient {
         }
     }
 }
+
+/// A bounded metadata page. Full original messages are fetched separately.
+#[cfg(feature = "stream-processing")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StageQuarantinePage {
+    pub entries: Vec<StageQuarantineSummary>,
+    pub next_after: Option<String>,
+    pub checkpoint_generation: u64,
+}
+#[cfg(feature = "stream-processing")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StageQuarantineSummary {
+    pub id: String,
+    pub position: acteon_bus::StreamPosition,
+    pub failed_at: DateTime<Utc>,
+    pub failure: acteon_bus::StreamInputFailure,
+    pub contract_sha256: Option<String>,
+    pub reason: String,
+}
+#[cfg(feature = "stream-processing")]
+impl ActeonClient {
+    fn stage_url(&self, namespace: &str, tenant: &str, id: &str) -> String {
+        format!(
+            "{}/v1/bus/stages/{}/{}/{}",
+            self.base_url,
+            encode_segment(namespace),
+            encode_segment(tenant),
+            encode_segment(id)
+        )
+    }
+    pub async fn stream_stage_status(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        id: &str,
+    ) -> Result<acteon_bus::StreamStageMetrics, Error> {
+        self.bus_session_json(self.client.get(self.stage_url(namespace, tenant, id)))
+            .await
+    }
+    pub async fn list_stage_quarantine(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        id: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<StageQuarantinePage, Error> {
+        let mut request = self
+            .client
+            .get(format!(
+                "{}/quarantine",
+                self.stage_url(namespace, tenant, id)
+            ))
+            .query(&[("limit", limit.to_string())]);
+        if let Some(after) = after {
+            request = request.query(&[("after", after)]);
+        }
+        self.bus_session_json(request).await
+    }
+    pub async fn get_stage_quarantined_input(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        id: &str,
+        entry: &str,
+    ) -> Result<acteon_bus::StreamQuarantinedInput, Error> {
+        self.bus_session_json(self.client.get(format!(
+            "{}/quarantine/{}",
+            self.stage_url(namespace, tenant, id),
+            encode_segment(entry)
+        )))
+        .await
+    }
+    /// Explicit removal only: never rewinds sources or runs a processor.
+    pub async fn discard_stage_quarantined_input(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        id: &str,
+        entry: &str,
+    ) -> Result<bool, Error> {
+        #[derive(Deserialize)]
+        struct Discard {
+            discarded: bool,
+        }
+        let result: Discard = self
+            .bus_session_json(self.client.delete(format!(
+                "{}/quarantine/{}",
+                self.stage_url(namespace, tenant, id),
+                encode_segment(entry)
+            )))
+            .await?;
+        Ok(result.discarded)
+    }
+}
+
+#[cfg(all(test, feature = "stream-processing"))]
+mod stage_operator_tests {
+    use super::*;
+    #[test]
+    fn stage_paths_encode_each_scope_segment() {
+        let client = ActeonClient::new("http://localhost:8080/");
+        assert_eq!(
+            client.stage_url("name/space", "tenant?other", "stage#x%y"),
+            "http://localhost:8080/v1/bus/stages/name%2Fspace/tenant%3Fother/stage%23x%25y"
+        );
+    }
+}

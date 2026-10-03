@@ -85,9 +85,39 @@ let removed = stage.discard_quarantined_input(&entries[0].id).await?;
 Inspection reloads durable state. Discard is explicit, CAS-protected, idempotent,
 and increments a durable discard counter. It does not rewind Kafka, dispatch an
 action, or invoke the processor. Concurrent input processing preserves retention
-changes when it saves its transition. Operator HTTP endpoints and controlled
-replay are separate follow-ups; quarantine inspection/discard are currently Rust
-library APIs.
+changes when it saves its transition. Controlled replay is a separate follow-up.
+
+### Operator HTTP APIs
+
+These endpoints read the durable checkpoint even when Kafka is unavailable. They
+never open consumers, acquire processing leases, or create missing stages.
+
+| Method | Path suffix under `/v1/bus/stages/{namespace}/{tenant}/{id}` | Result |
+|---|---|---|
+| GET | (none) | Counters, checkpoint generation, pending outputs, retained count, lease expiry, retry/halt status |
+| GET | `/quarantine?limit=50&after=UUID` | Metadata only; at most 100 entries, with `next_after` cursor |
+| GET | `/quarantine/{entry}` | One complete original envelope and failure metadata |
+| DELETE | `/quarantine/{entry}` | `{ "discarded": true }`, or false if already absent |
+
+Reads require a grant for the target namespace/tenant with `provider=bus` and
+`action=stage_read`. All roles can read with that grant. Discard requires an
+admin/operator role and a separate `action=stage_manage` grant. Existing subscribe
+and topic management grants do not authorize stage operations. Original envelopes
+may contain sensitive telemetry; grant read access accordingly.
+
+Status omits processor state, output payloads, source identity, and lease tokens.
+A missing stage or input returns 404. An unmanaged checkpoint returns 409.
+Namespace and tenant components reject `:` and control characters to prevent
+storage-key aliases. Processor IDs must be nonempty and at most 4096 bytes. Pages
+reflect current retained state rather than a frozen snapshot; if a cursor was
+discarded between requests, the API returns 409 and the caller restarts listing.
+Requests have a five-second storage deadline. A timed-out discard may have
+committed: inspect or repeat the idempotent request.
+
+The Rust SDK exposes `stream_stage_status`, `list_stage_quarantine`,
+`get_stage_quarantined_input`, and `discard_stage_quarantined_input` with the
+`stream-processing` feature. `StreamStageOperator::load` provides the same durable
+access for embedded operators without knowing processor state/output types.
 
 `StreamStageMetrics` includes retained quarantine count and cumulative retained /
 discarded counters. `processed_records` counts fresh broker inputs whose progress

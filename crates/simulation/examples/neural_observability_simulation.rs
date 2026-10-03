@@ -184,6 +184,7 @@ struct RecoveryReport {
     consume_contracts: BTreeMap<String, StreamInputContract>,
     quarantined_inputs: Vec<StreamQuarantinedInput>,
     quarantines_restored_before_replay: usize,
+    operator_quarantines_discarded: usize,
     rebalance_redelivery_offset: i64,
 }
 
@@ -1301,6 +1302,11 @@ fn markdown(report: &SimulationReport) -> String {
         report.recovery.quarantines_restored_before_replay,
         report.recovery.quarantined_inputs.len()
     );
+    let _ = writeln!(
+        output,
+        "Tenant-scoped operator HTTP APIs inspect status and the original poison envelope after restart, then explicitly discard {} retained input. A repeated discard returns false; retained quarantine is now zero.\n",
+        report.recovery.operator_quarantines_discarded
+    );
     output.push_str("## Managed delivery recovery\n\n");
     let _ = write!(
         output,
@@ -1849,7 +1855,14 @@ async fn kafka_stream_replay(
             stage_config.clone(),
         )
         .await?;
-        let quarantines_restored_before_replay = stage.quarantined_inputs().await?.len();
+        let quarantines_restored_before_replay = http
+            .as_ref()
+            .unwrap()
+            .client
+            .list_stage_quarantine(NAMESPACE, TENANT, "windows", None, 10)
+            .await?
+            .entries
+            .len();
         if quarantines_restored_before_replay != 1 {
             return Err(error("poison input was not durable before acknowledgement"));
         }
@@ -1893,6 +1906,35 @@ async fn kafka_stream_replay(
                 "poison input was lost or quarantined again during replay",
             ));
         }
+        let client = &http.as_ref().unwrap().client;
+        let status = client
+            .stream_stage_status(NAMESPACE, TENANT, "windows")
+            .await?;
+        if status.quarantined_records != 1 || status.counters != managed_stage {
+            return Err(error("operator status disagrees with durable stage"));
+        }
+        let retained = client
+            .get_stage_quarantined_input(NAMESPACE, TENANT, "windows", &quarantined_inputs[0].id)
+            .await?;
+        if retained != quarantined_inputs[0] {
+            return Err(error("operator inspection changed original input"));
+        }
+        if !client
+            .discard_stage_quarantined_input(NAMESPACE, TENANT, "windows", &retained.id)
+            .await?
+            || client
+                .discard_stage_quarantined_input(NAMESPACE, TENANT, "windows", &retained.id)
+                .await?
+            || client
+                .stream_stage_status(NAMESPACE, TENANT, "windows")
+                .await?
+                .quarantined_records
+                != 0
+        {
+            return Err(error("operator discard was not durable and idempotent"));
+        }
+        let operator_quarantines_discarded = 1;
+        stage.metrics().await?; // Reload the operator CAS before transferring the checkpoint.
         let checkpoints = stage.into_checkpoint();
         let correlator = EventTimeCorrelator::restore(checkpoints.snapshot().state().clone())?;
         let stats = correlator.stats().clone();
@@ -1961,6 +2003,7 @@ async fn kafka_stream_replay(
                 consume_contracts: consume_contracts.clone(),
                 quarantined_inputs,
                 quarantines_restored_before_replay,
+                operator_quarantines_discarded,
                 rebalance_redelivery_offset,
             },
             checkpoints,
