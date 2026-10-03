@@ -19,10 +19,11 @@ use std::sync::{
 use std::time::Duration;
 
 use acteon_bus::{
-    BusBackend, BusMessage, KafkaBackend, KafkaBusConfig, StartOffset, StreamCheckpointConfig,
-    StreamCheckpointCoordinator, StreamDeliveryError, StreamOutboxConfig, StreamOutboxDelivery,
-    StreamOutboxDispatchResult, StreamOutboxDispatcher, StreamOutboxEntry, StreamOutboxMetrics,
-    stream_checkpoint_key,
+    AcknowledgedSubscription, BusBackend, BusMessage, KafkaBackend, KafkaBusConfig, StartOffset,
+    StreamCheckpointConfig, StreamCheckpointCoordinator, StreamDeliveryError, StreamOutboxConfig,
+    StreamOutboxDelivery, StreamOutboxDispatchResult, StreamOutboxDispatcher, StreamOutboxEntry,
+    StreamOutboxMetrics, SubscriptionCheckpointBatch, SubscriptionConfig, SubscriptionDelivery,
+    SubscriptionError, SubscriptionReceipt, stream_checkpoint_key,
 };
 use acteon_core::chain::{ChainConfig, ChainStatus, ChainStepConfig, DispatchStepConfig};
 use acteon_core::{Action, ActionOutcome, Topic};
@@ -38,7 +39,6 @@ use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
 use acteon_state_redis::{RedisConfig, RedisStateStore};
 use async_trait::async_trait;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
-use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
@@ -169,6 +169,10 @@ struct RecoveryReport {
     replayed_records_deduplicated: usize,
     committed_offsets: BTreeMap<String, SourcePosition>,
     final_consumer_lag: BTreeMap<String, i64>,
+    live_source_sessions: usize,
+    source_receipts_acknowledged: usize,
+    stale_acknowledgements_rejected: usize,
+    rebalance_redelivery_offset: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -1255,6 +1259,15 @@ fn markdown(report: &SimulationReport) -> String {
         report.aggregate.investigator_calls,
         report.aggregate.duplicate_dispatches_prevented
     );
+    output.push_str("## Live Kafka acknowledgements\n\n");
+    let _ = write!(
+        output,
+        "| Observation | Result |\n|---|---:|\n| Active source sessions | {} |\n| Source receipts acknowledged after checkpoint | {} |\n| Stale acknowledgements rejected after rebalance | {} |\n| Replacement delivery offset in fencing probe | {} |\n\nSource acknowledgements use the consumers that delivered the records. An independent group probe joins a second member, observes revocation, rejects the old receipt, and receives the uncommitted prefix again. It adds no model calls or operational effects.\n\n",
+        report.recovery.live_source_sessions,
+        report.recovery.source_receipts_acknowledged,
+        report.recovery.stale_acknowledgements_rejected,
+        report.recovery.rebalance_redelivery_offset
+    );
     output.push_str("## Managed delivery recovery\n\n");
     let _ = write!(
         output,
@@ -1418,6 +1431,105 @@ fn remember_source_position(
     Ok((source, position))
 }
 
+async fn open_source_sessions(
+    backend: &dyn BusBackend,
+    topics: &BTreeMap<SignalSource, Topic>,
+    groups: &BTreeMap<SignalSource, String>,
+) -> Result<BTreeMap<SignalSource, Box<dyn AcknowledgedSubscription>>, AnyError> {
+    let mut sessions = BTreeMap::new();
+    for source in SignalSource::ALL {
+        sessions.insert(
+            source,
+            backend
+                .subscribe_acknowledged(
+                    &topics[&source].kafka_topic_name(),
+                    &groups[&source],
+                    StartOffset::Earliest,
+                    SubscriptionConfig::default(),
+                )
+                .await?,
+        );
+    }
+    Ok(sessions)
+}
+
+async fn receive_source_record(
+    sessions: &mut BTreeMap<SignalSource, Box<dyn AcknowledgedSubscription>>,
+) -> Result<SubscriptionDelivery, SubscriptionError> {
+    let receives = sessions
+        .values_mut()
+        .map(|session| Box::pin(session.recv()))
+        .collect::<Vec<_>>();
+    // Losing receives are cancelled before delivery, so they cannot consume a
+    // record without returning its receipt. The same sessions remain alive.
+    futures::future::select_all(receives).await.0
+}
+
+async fn prove_rebalance_fencing(
+    backend: &dyn BusBackend,
+    topic: &str,
+    group: &str,
+) -> Result<i64, AnyError> {
+    // An independent consumer group probes ownership using existing telemetry.
+    // It contributes no windows, inference calls, or operational side effects.
+    let mut original = backend
+        .subscribe_acknowledged(
+            topic,
+            group,
+            StartOffset::Earliest,
+            SubscriptionConfig::default(),
+        )
+        .await?;
+    let old = tokio::time::timeout(Duration::from_secs(20), original.recv()).await??;
+    let ownership = original.ownership_changes();
+    let epoch = ownership.borrow().epoch;
+    let mut peer = backend
+        .subscribe_acknowledged(
+            topic,
+            group,
+            StartOffset::Earliest,
+            SubscriptionConfig::default(),
+        )
+        .await?;
+    let mut replacement = tokio::spawn(async move {
+        let delivery = peer.recv().await?;
+        Ok::<_, SubscriptionError>((peer, delivery))
+    });
+    let revoked = tokio::time::timeout(Duration::from_secs(20), async {
+        while ownership.borrow().epoch == epoch {
+            let _ = tokio::time::timeout(Duration::from_millis(100), original.recv()).await;
+        }
+    })
+    .await;
+    if revoked.is_err() {
+        replacement.abort();
+        return Err(error(
+            "rebalance probe did not revoke the original assignment",
+        ));
+    }
+    if !matches!(
+        original.acknowledge(&[old.receipt]).await,
+        Err(SubscriptionError::StaleReceipt)
+    ) {
+        replacement.abort();
+        return Err(error("rebalance probe allowed a stale acknowledgement"));
+    }
+    drop(original); // If the original kept the only partition, the peer now inherits it.
+    let (mut peer, delivery) =
+        if let Ok(result) = tokio::time::timeout(Duration::from_secs(20), &mut replacement).await {
+            result??
+        } else {
+            replacement.abort();
+            return Err(error("rebalance probe did not redeliver"));
+        };
+    let offset = delivery.receipt.position().offset;
+    if offset != 0 {
+        return Err(error("rebalance probe skipped an uncommitted record"));
+    }
+    peer.acknowledge(&[delivery.receipt]).await?;
+    Ok(offset)
+}
+
 #[allow(clippy::too_many_lines)]
 async fn kafka_stream_replay(
     fixtures: &[Fixture],
@@ -1485,19 +1597,7 @@ async fn kafka_stream_replay(
         // Phase 1 persists all correlator state and ready outputs, then exits
         // without acknowledging Kafka. This is the injected crash boundary.
         {
-            let mut streams = Vec::new();
-            for source in SignalSource::ALL {
-                streams.push(
-                    backend
-                        .subscribe(
-                            &topics[&source].kafka_topic_name(),
-                            &consumer_groups[&source],
-                            StartOffset::Earliest,
-                        )
-                        .await?,
-                );
-            }
-            let mut messages = futures::stream::select_all(streams);
+            let mut sessions = open_source_sessions(backend.as_ref(), &topics, &consumer_groups).await?;
             let mut correlator = EventTimeCorrelator::new(
                 ChronoDuration::minutes(1),
                 ChronoDuration::seconds(15),
@@ -1505,10 +1605,10 @@ async fn kafka_stream_replay(
             let mut ready_windows = Vec::new();
             let mut source_offsets = BTreeMap::new();
             for _ in 0..pre_crash_records {
-                let next = tokio::time::timeout(Duration::from_secs(20), messages.next())
+                let next = tokio::time::timeout(Duration::from_secs(20), receive_source_record(&mut sessions))
                     .await
-                    .map_err(|_| error("timed out before the injected Kafka restart"))?
-                    .ok_or_else(|| error("observability Kafka stream ended before restart"))??;
+                    .map_err(|_| error("timed out before the injected Kafka restart"))??;
+                let next = next.message;
                 remember_source_position(&next, &mut source_offsets)?;
                 let result = correlator.ingest(next)?;
                 if result.disposition == IngestDisposition::Late {
@@ -1534,26 +1634,16 @@ async fn kafka_stream_replay(
         let existing_window_keys = checkpoints.snapshot().pending_outputs().iter().map(|entry| entry.idempotency_key.clone()).collect::<BTreeSet<_>>();
         let mut source_offsets = crash_offsets.clone();
         let mut recovery_redeliveries = 0;
+        let mut sessions = open_source_sessions(backend.as_ref(), &topics, &consumer_groups).await?;
+        let mut receipts = SignalSource::ALL.into_iter().map(|source| (source, Vec::<SubscriptionReceipt>::new())).collect::<BTreeMap<_, _>>();
         {
-            let mut streams = Vec::new();
-            for source in SignalSource::ALL {
-                streams.push(
-                    backend
-                        .subscribe(
-                            &topics[&source].kafka_topic_name(),
-                            &consumer_groups[&source],
-                            StartOffset::Earliest,
-                        )
-                        .await?,
-                );
-            }
-            let mut messages = futures::stream::select_all(streams);
             for _ in 0..expected_records {
-                let next = tokio::time::timeout(Duration::from_secs(20), messages.next())
+                let next = tokio::time::timeout(Duration::from_secs(20), receive_source_record(&mut sessions))
                     .await
-                    .map_err(|_| error("timed out consuming observability Kafka records"))?
-                    .ok_or_else(|| error("observability Kafka stream ended early"))??;
-                let (source, position) = remember_source_position(&next, &mut source_offsets)?;
+                    .map_err(|_| error("timed out consuming observability Kafka records"))??;
+                let (source, position) = remember_source_position(&next.message, &mut source_offsets)?;
+                receipts.get_mut(&source).unwrap().push(next.receipt);
+                let next = next.message;
                 let is_recovery_redelivery = is_recovery_record(source, &position, &crash_offsets);
                 if is_recovery_redelivery {
                     // The durable checkpoint already represents this broker
@@ -1586,14 +1676,20 @@ async fn kafka_stream_replay(
             )));
         }
 
-        // The stream is dropped before the out-of-band batch commit. Generation
-        // 2 is persisted in Redis first; only then does each source offset advance.
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        let committed = checkpoints.checkpoint_then_commit_bus(
-            correlator.snapshot(), stream_positions(&source_offsets, &consumer_groups),
+        // Persist generation 2 before acknowledging receipts on the three
+        // consumers that delivered them. No temporary group members join to commit.
+        let mut batches = sessions.iter_mut().map(|(source, subscription)| SubscriptionCheckpointBatch {
+            source: source.as_str(), subscription: subscription.as_mut(), receipts: &receipts[source],
+        }).collect::<Vec<_>>();
+        let committed = checkpoints.checkpoint_then_acknowledge(
+            correlator.snapshot(),
             window_outputs(windows.iter().filter(|window| !existing_window_keys.contains(&window_key(window))).cloned()),
-            backend.as_ref(),
-        ).await?;
+            &mut batches,
+        ).await?.checkpoint;
+        drop(batches);
+        let source_receipts_acknowledged = receipts.values().map(Vec::len).sum();
+        let rebalance_redelivery_offset = prove_rebalance_fencing(backend.as_ref(),
+            &topics[&SignalSource::Metrics].kafka_topic_name(), &format!("fence-probe-{run_id}")).await?;
 
         let mut final_consumer_lag = BTreeMap::new();
         for source in SignalSource::ALL {
@@ -1625,6 +1721,10 @@ async fn kafka_stream_replay(
                 committed_offsets: source_positions(committed.positions())?.into_iter()
                     .map(|(source, position)| (source.as_str().to_owned(), position)).collect(),
                 final_consumer_lag,
+                live_source_sessions: sessions.len(),
+                source_receipts_acknowledged,
+                stale_acknowledgements_rejected: 1,
+                rebalance_redelivery_offset,
             },
             checkpoints,
         })

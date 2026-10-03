@@ -59,6 +59,19 @@ pub type SubscribeStream =
 /// caring whether the underlying impl is Kafka or in-memory.
 #[async_trait]
 pub trait BusBackend: Send + Sync + 'static {
+    /// Open an active consumer with assignment-scoped acknowledgement receipts.
+    /// Unsupported backends return an explicit error; raw-offset commits are
+    /// never silently substituted for an ownership-fenced acknowledgement.
+    async fn subscribe_acknowledged(
+        &self,
+        _kafka_topic: &str,
+        _group_id: &str,
+        _from: StartOffset,
+        _config: crate::SubscriptionConfig,
+    ) -> Result<Box<dyn crate::AcknowledgedSubscription>, crate::SubscriptionError> {
+        Err(crate::SubscriptionError::Unsupported)
+    }
+
     /// Create the backing topic. Idempotent: returns `Ok(())` when the
     /// topic already exists with a matching partition count.
     async fn create_topic(&self, topic: &Topic) -> Result<(), BusError>;

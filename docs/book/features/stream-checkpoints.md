@@ -107,8 +107,14 @@ async fn save_batch(
 runs only after the compare-and-swap succeeds. If a broker commit fails, the
 error identifies the already-durable generation and position. Call
 `persisted()` to retry that commit plan without producing another generation.
-`checkpoint_then_commit_bus` commits directly through a `BusBackend`; for Kafka,
-use it after draining and dropping the subscription stream as described in the
+For live Kafka processing, use `checkpoint_then_acknowledge` with receipts from
+`subscribe_acknowledged`. It derives positions from the live deliveries,
+validates ownership and processing prefixes, persists the checkpoint, and then
+acknowledges through those same consumers. See
+[Live Kafka Acknowledgements](live-kafka-acknowledgements.md).
+
+`checkpoint_then_commit_bus` remains a legacy raw-position adapter. For Kafka,
+use it after draining and dropping the legacy subscription stream as described in the
 [subscription commit semantics](bus-phase-2.md#known-limitation-commit_offset-semantics).
 
 Offsets may stay equal or advance. A regression is rejected before storage.

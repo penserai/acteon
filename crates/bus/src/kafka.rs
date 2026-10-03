@@ -171,7 +171,7 @@ fn map_kafka_error(err: KafkaError) -> BusError {
 // the stream would destroy that consumer before it can recover. Keep this list
 // narrow: authentication, authorization, missing topics, and fatal errors must
 // still reach the caller.
-fn is_recoverable_consumer_error(error: &KafkaError) -> bool {
+pub(crate) fn is_recoverable_consumer_error(error: &KafkaError) -> bool {
     matches!(
         error,
         KafkaError::MessageConsumption(
@@ -199,6 +199,21 @@ where
 
 #[async_trait]
 impl BusBackend for KafkaBackend {
+    async fn subscribe_acknowledged(
+        &self,
+        kafka_topic: &str,
+        group_id: &str,
+        from: StartOffset,
+        config: crate::SubscriptionConfig,
+    ) -> Result<Box<dyn crate::AcknowledgedSubscription>, crate::SubscriptionError> {
+        crate::kafka_subscription::open(
+            self.consumer_config(group_id, from),
+            kafka_topic,
+            group_id,
+            &config,
+        )
+    }
+
     async fn create_topic(&self, topic: &Topic) -> Result<(), BusError> {
         let name = topic.kafka_topic_name();
         let new_topic = NewTopic::new(
