@@ -4,6 +4,8 @@ pub mod audit_factory;
 pub mod auth;
 #[cfg(feature = "bus")]
 pub mod bus_reconciler;
+#[cfg(feature = "bus")]
+pub mod bus_sessions;
 pub mod config;
 pub mod error;
 pub mod file_watcher;

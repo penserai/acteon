@@ -121,7 +121,6 @@ impl KafkaBackend {
         let mut cfg = ClientConfig::new();
         cfg.set("bootstrap.servers", &self.bootstrap);
         cfg.set("client.id", &self.client_id);
-        cfg.set("group.id", group_id);
         cfg.set(
             "auto.offset.reset",
             match from {
@@ -135,6 +134,10 @@ impl KafkaBackend {
         for (k, v) in &self.extra {
             cfg.set(k, v);
         }
+        // The operation-scoped group is authoritative. An extra property must
+        // not redirect lag queries, raw commits, or legacy consumers into a
+        // receipt-required group reserved by the HTTP session API.
+        cfg.set("group.id", group_id);
         cfg
     }
 }

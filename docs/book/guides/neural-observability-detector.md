@@ -515,15 +515,21 @@ window nor loses an output. The runner uses Redis-backed
 window state, ready-window outputs, and source offsets atomically before Kafka
 commits. Redis uses a persisted volume and AOF with `appendfsync always`.
 
-The replacement runner keeps three
-[`AcknowledgedSubscription`](../features/live-kafka-acknowledgements.md) sessions
-alive. `checkpoint_then_acknowledge` derives source offsets from their opaque
-receipts, validates the complete processing prefix, persists the Redis generation,
-and acknowledges through the consumers that delivered the records. A separate
-group probe joins a second member, observes revocation, rejects the old receipt,
-and proves redelivery from offset zero. That probe adds no windows, model calls,
-or operational effects. Source acknowledgement fencing does not undo external
-effects or atomically transact between Kafka and Redis.
+The runner uses three [HTTP receipt sessions](../features/live-kafka-acknowledgements.md#http-subscription-sessions)
+through the Rust client. Topic and receipt-required subscription registration
+use the public HTTP API. The simulation replaces the HTTP server and its
+consumer registry after the pre-commit checkpoint, verifies that the old session
+ID is rejected, and opens replacement consumers. These replay the uncommitted
+prefix while the persisted source positions prevent duplicate ingestion.
+Before the final checkpoint, `validate_bus_receipts` derives offsets and checks
+the complete processing prefix. The runner persists the Redis generation, then
+calls `acknowledge_bus_receipts` through the same server-owned consumers.
+A separate library group probe joins a second member, observes revocation,
+rejects the old receipt, and proves redelivery from offset zero. That probe adds
+no windows, model calls, or operational effects. Source acknowledgement fencing
+does not undo external effects or atomically transact between Kafka and Redis.
+HTTP sessions require sticky routing; expired sessions recover through new
+consumers and the durable checkpoint.
 
 Each completed decision, raw parsed model responses, and provider evidence are
 persisted in a separate verdict checkpoint before its input window is
@@ -567,8 +573,8 @@ and admitted an incident only when all three typed signal decisions agreed.
 | Governed runtime packages / artifacts / question sets / response schemas | 6 / 5 / 4 / 1 |
 | Event-time windows | 4 |
 | Real Laya calls | 16 |
-| Sum of model HTTP request times | 58,596 ms |
-| Per-call HTTP p50 / p95 | 3,496 ms / 7,585 ms |
+| Sum of model HTTP request times | 62,156 ms |
+| Per-call HTTP p50 / p95 | 3,629 ms / 7,649 ms |
 | Incident chains | 1 |
 | Bounded investigator calls | 1 |
 | Delivery attempts / accepted verdicts | 6 / 4 |

@@ -10,6 +10,7 @@ pub mod approvals;
 pub mod audit;
 pub mod auth;
 pub mod bus;
+pub mod bus_sessions;
 pub mod chains;
 pub mod circuit_breakers;
 pub mod compliance;
@@ -139,6 +140,8 @@ pub struct AppState {
     /// registered.
     #[cfg(feature = "bus")]
     pub bus_schema_validator: acteon_bus::SchemaValidator,
+    #[cfg(feature = "bus")]
+    pub bus_sessions: Arc<crate::bus_sessions::BusSessionRegistry>,
 }
 
 /// Build the Axum router with all API routes, middleware, and Swagger UI.
@@ -475,6 +478,26 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/deadletter",
             post(bus::deadletter_subscription),
+        )
+        .route(
+            "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/sessions",
+            post(bus_sessions::open),
+        )
+        .route(
+            "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/sessions/{session}",
+            get(bus_sessions::get).delete(bus_sessions::close),
+        )
+        .route(
+            "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/sessions/{session}/receive",
+            post(bus_sessions::receive),
+        )
+        .route(
+            "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/sessions/{session}/validate",
+            post(bus_sessions::validate),
+        )
+        .route(
+            "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/sessions/{session}/ack",
+            post(bus_sessions::ack),
         )
         // Phase 3: JSON-Schema registry + topic binding. Tenant-scoped
         // URLs keep state lookups O(1) and make authorization surfaces

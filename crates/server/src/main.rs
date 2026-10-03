@@ -2653,6 +2653,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
+    #[cfg(feature = "bus")]
+    let bus_sessions = Arc::new(acteon_server::bus_sessions::BusSessionRegistry::new(
+        config.bus.sessions.clone(),
+    )?);
     let state = AppState {
         gateway: Arc::clone(&gateway),
         metrics: gateway_metrics,
@@ -2687,6 +2691,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         bus_backend,
         #[cfg(feature = "bus")]
         bus_schema_validator: acteon_bus::SchemaValidator::new(),
+        #[cfg(feature = "bus")]
+        bus_sessions: Arc::clone(&bus_sessions),
     };
     let app = acteon_server::api::router(state);
 
@@ -2728,6 +2734,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         axum::serve(listener, app)
             .with_graceful_shutdown(shutdown_signal())
             .await?;
+    }
+
+    #[cfg(feature = "bus")]
+    if tokio::time::timeout(
+        Duration::from_secs(config.server.shutdown_timeout_seconds),
+        bus_sessions.shutdown(),
+    )
+    .await
+    .is_err()
+    {
+        tracing::warn!("bus session shutdown timeout exceeded");
     }
 
     // Wait for pending audit tasks to complete (with configurable timeout).

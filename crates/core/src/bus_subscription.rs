@@ -9,6 +9,7 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 /// Where a fresh subscription should begin reading if the group has no
 /// committed offset yet.
@@ -70,12 +71,16 @@ pub struct Subscription {
     /// Ack model.
     #[serde(default)]
     pub ack_mode: AckMode,
+    /// Require live server-session receipts. Legacy raw-offset acknowledgements
+    /// are rejected. Uses a tenant/namespace-scoped consumer group.
+    #[serde(default)]
+    pub receipt_required: bool,
     /// Optional Kafka-name of the dead-letter topic to route failures to.
     /// When `None`, a failed delivery is retried by Kafka's rebalance.
     #[serde(default)]
     pub dead_letter_topic: Option<String>,
-    /// Per-delivery ack timeout. Messages un-acked after this much time
-    /// are routed to the DLQ (if configured) and marked failed.
+    /// Per-delivery acknowledgement timeout. Live HTTP sessions close without
+    /// committing when this budget expires; DLQ routing is an explicit operation.
     #[serde(default = "default_ack_timeout_ms")]
     pub ack_timeout_ms: u64,
     /// Human-readable description.
@@ -113,6 +118,7 @@ impl Subscription {
             tenant: tenant.into(),
             starting_offset: StartOffset::default(),
             ack_mode: AckMode::default(),
+            receipt_required: false,
             dead_letter_topic: None,
             ack_timeout_ms: default_ack_timeout_ms(),
             description: None,
@@ -126,6 +132,9 @@ impl Subscription {
     /// ID is also used as the Kafka `group.id`, which accepts a superset
     /// but Acteon tightens to the topic-fragment rule for consistency.
     pub fn validate_id(s: &str) -> Result<(), SubscriptionValidationError> {
+        if s.starts_with("acteon-live-") {
+            return Err(SubscriptionValidationError::ReservedId);
+        }
         if s.is_empty() {
             return Err(SubscriptionValidationError::EmptyId);
         }
@@ -144,6 +153,9 @@ impl Subscription {
     /// Validate the subscription end-to-end.
     pub fn validate(&self) -> Result<(), SubscriptionValidationError> {
         Self::validate_id(&self.id)?;
+        if self.receipt_required && self.ack_mode != AckMode::Manual {
+            return Err(SubscriptionValidationError::ReceiptsRequireManual);
+        }
         if self.ack_timeout_ms == 0 {
             return Err(SubscriptionValidationError::ZeroAckTimeout);
         }
@@ -151,6 +163,18 @@ impl Subscription {
             return Err(SubscriptionValidationError::EmptyTopic);
         }
         Ok(())
+    }
+
+    /// Stable broker group. Receipt-required groups cannot collide across
+    /// tenants or be addressed through the legacy raw-subscribe group namespace.
+    #[must_use]
+    pub fn consumer_group(&self) -> String {
+        if !self.receipt_required {
+            return self.id.clone();
+        }
+        let identity = serde_json::to_vec(&(&self.namespace, &self.tenant, &self.id))
+            .expect("string tuple serializes");
+        format!("acteon-live-{:x}", Sha256::digest(identity))
     }
 }
 
@@ -168,6 +192,10 @@ pub struct PartitionLag {
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum SubscriptionValidationError {
+    #[error("subscription id uses the reserved acteon-live- group prefix")]
+    ReservedId,
+    #[error("receipt-required subscriptions require manual acknowledgements")]
+    ReceiptsRequireManual,
     #[error("subscription id must not be empty")]
     EmptyId,
     #[error("subscription id exceeds 120 characters")]
@@ -211,6 +239,36 @@ mod tests {
         assert_eq!(
             s.validate(),
             Err(SubscriptionValidationError::ZeroAckTimeout)
+        );
+    }
+
+    #[test]
+    fn receipt_policy_preserves_legacy_records_and_scopes_new_groups() {
+        let mut s = Subscription::new("sub-1", "ns.t.orders", "ns", "t");
+        assert_eq!(s.consumer_group(), "sub-1");
+        let mut value = serde_json::to_value(&s).unwrap();
+        value.as_object_mut().unwrap().remove("receipt_required");
+        assert!(
+            !serde_json::from_value::<Subscription>(value)
+                .unwrap()
+                .receipt_required
+        );
+        s.receipt_required = true;
+        let group = s.consumer_group();
+        assert!(group.starts_with("acteon-live-"));
+        s.tenant = "another".into();
+        assert_ne!(group, s.consumer_group());
+        s.tenant = "t".into();
+        s.namespace = "another".into();
+        assert_ne!(group, s.consumer_group());
+        s.ack_mode = AckMode::AutoOnDelivery;
+        assert_eq!(
+            s.validate(),
+            Err(SubscriptionValidationError::ReceiptsRequireManual)
+        );
+        assert_eq!(
+            Subscription::validate_id(&group),
+            Err(SubscriptionValidationError::ReservedId)
         );
     }
 

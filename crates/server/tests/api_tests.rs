@@ -129,6 +129,8 @@ fn build_test_state_with_audit_and_analytics(
         bus_backend: None,
         #[cfg(feature = "bus")]
         bus_schema_validator: acteon_bus::SchemaValidator::new(),
+        #[cfg(feature = "bus")]
+        bus_sessions: Arc::new(acteon_server::bus_sessions::BusSessionRegistry::default()),
     }
 }
 
@@ -1253,6 +1255,8 @@ fn build_approval_state_with_providers(
         bus_backend: None,
         #[cfg(feature = "bus")]
         bus_schema_validator: acteon_bus::SchemaValidator::new(),
+        #[cfg(feature = "bus")]
+        bus_sessions: Arc::new(acteon_server::bus_sessions::BusSessionRegistry::default()),
     }
 }
 
