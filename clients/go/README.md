@@ -2,6 +2,22 @@
 
 Go client for the Acteon action gateway.
 
+## Complete platform API
+
+The generated operation catalog exposes all 187 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, and stream windows. Use an authenticated client and a configured, existing stage for this example:
+
+```go
+status, err := client.PlatformRequest(ctx, acteon.OpBusStagesStatus,
+    map[string]string{"namespace": "observability", "tenant": "demo", "id": "log-detector"},
+    nil, nil)
+if err != nil { return err }
+fmt.Println(string(status))
+```
+
+Path parameters are escaped individually. Query and body fields use the server's wire names; JSON response envelopes are preserved. Calls do not retry automatically. Keep request IDs stable across retries and return opaque receipt IDs unchanged. HTTP access does not imply a code-defined workflow runner in every language.
+
+See [SDK coverage and wire contracts](https://penserai.github.io/acteon/api/sdk-coverage/) for return types, native streaming APIs, runtime availability, and server feature requirements. The catalog is generated from the registered server routes and checked in CI.
+
 ## Installation
 
 ```bash
@@ -268,3 +284,7 @@ if err != nil {
 ## License
 
 Apache-2.0
+
+## Dispatch outcomes
+
+All clients recognize the server's 17 dispatch variants, including `Grouped`, `StateChanged`, `PendingApproval`, `ChainStarted`, `CircuitOpen`, `RecurringCreated`, `Silenced`, and `Muted`. Single and batch dispatch preserve their fields, including approval capabilities and chain IDs. A pending approval or a started chain is not a completed provider execution; inspect the outcome before advancing an agent workflow.

@@ -98,10 +98,16 @@ public final class Bus {
         @JsonProperty("dead_letter_topic") String deadLetterTopic,
         @JsonProperty("ack_timeout_ms") Long ackTimeoutMs,
         String description,
-        Map<String, String> labels
+        Map<String, String> labels,
+        @JsonProperty("receipt_required") Boolean receiptRequired
     ) {
+        public CreateBusSubscription(String id, String topic, String namespace, String tenant,
+            String startingOffset, String ackMode, String deadLetterTopic, Long ackTimeoutMs,
+            String description, Map<String, String> labels) {
+            this(id, topic, namespace, tenant, startingOffset, ackMode, deadLetterTopic, ackTimeoutMs, description, labels, null);
+        }
         public CreateBusSubscription(String id, String topic, String namespace, String tenant) {
-            this(id, topic, namespace, tenant, null, null, null, null, null, null);
+            this(id, topic, namespace, tenant, null, null, null, null, null, null, null);
         }
     }
 
@@ -117,8 +123,17 @@ public final class Bus {
         String description,
         Map<String, String> labels,
         @JsonProperty("created_at") String createdAt,
-        @JsonProperty("updated_at") String updatedAt
-    ) {}
+        @JsonProperty("updated_at") String updatedAt,
+        @JsonProperty("receipt_required") boolean receiptRequired,
+        @JsonProperty("consumer_group") String consumerGroup
+    ) {
+        public BusSubscription(String id, String topic, String namespace, String tenant,
+            String startingOffset, String ackMode, String deadLetterTopic, long ackTimeoutMs,
+            String description, Map<String, String> labels, String createdAt, String updatedAt) {
+            this(id, topic, namespace, tenant, startingOffset, ackMode, deadLetterTopic,
+                ackTimeoutMs, description, labels, createdAt, updatedAt, false, id);
+        }
+    }
 
     public record ListBusSubscriptionsResponse(
         List<BusSubscription> subscriptions,

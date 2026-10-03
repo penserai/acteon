@@ -73,6 +73,7 @@ type PublishReceipt struct {
 // =============================================================================
 
 type CreateBusSubscription struct {
+	ReceiptRequired bool              `json:"receipt_required,omitempty"`
 	ID              string            `json:"id"`
 	Topic           string            `json:"topic"`
 	Namespace       string            `json:"namespace"`
@@ -86,6 +87,8 @@ type CreateBusSubscription struct {
 }
 
 type BusSubscription struct {
+	ReceiptRequired bool              `json:"receipt_required"`
+	ConsumerGroup   string            `json:"consumer_group"`
 	ID              string            `json:"id"`
 	Topic           string            `json:"topic"`
 	Namespace       string            `json:"namespace"`

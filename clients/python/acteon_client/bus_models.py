@@ -143,6 +143,7 @@ class CreateBusSubscription:
     ack_timeout_ms: int | None = None
     description: str | None = None
     labels: dict[str, str] = field(default_factory=dict)
+    receipt_required: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -150,6 +151,7 @@ class CreateBusSubscription:
             "topic": self.topic,
             "namespace": self.namespace,
             "tenant": self.tenant,
+            "receipt_required": self.receipt_required,
         }
         if self.starting_offset is not None:
             d["starting_offset"] = self.starting_offset
@@ -180,6 +182,8 @@ class BusSubscription:
     labels: dict[str, str]
     created_at: str
     updated_at: str
+    receipt_required: bool = False
+    consumer_group: str = ""
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> BusSubscription:
@@ -196,6 +200,8 @@ class BusSubscription:
             labels=d.get("labels", {}) or {},
             created_at=d["created_at"],
             updated_at=d["updated_at"],
+            receipt_required=d.get("receipt_required", False),
+            consumer_group=d.get("consumer_group", d["id"]),
         )
 
 

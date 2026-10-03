@@ -131,7 +131,8 @@ Point the server config at a quotas file:
 
 ```toml
 # in your server config TOML
-[server.quotas]
+[quotas]
+enabled = true
 policies_file = "/etc/acteon/quotas.toml"
 watch = true                # default; set to false to disable file watching
 ```

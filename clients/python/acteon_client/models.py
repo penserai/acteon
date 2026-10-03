@@ -116,7 +116,8 @@ class ActionOutcome:
     Attributes:
         outcome_type: One of "executed", "deduplicated", "suppressed",
                       "rerouted", "throttled", "failed", "dry_run",
-                      "scheduled".
+                      "scheduled", or a governance outcome such as
+                      "pending_approval", "chain_started", "silenced", or "muted".
         response: Provider response (for executed/rerouted).
         rule: Rule name (for suppressed).
         original_provider: Original provider (for rerouted).
@@ -143,6 +144,32 @@ class ActionOutcome:
     limit: int | None = None
     used: int | None = None
     overage_behavior: str | None = None
+
+    group_id: str | None = None
+    group_size: int | None = None
+    notify_at: str | None = None
+    fingerprint: str | None = None
+    previous_state: str | None = None
+    new_state: str | None = None
+    notify: bool | None = None
+    approval_id: str | None = None
+    expires_at: str | None = None
+    approve_url: str | None = None
+    reject_url: str | None = None
+    notification_sent: bool | None = None
+    chain_id: str | None = None
+    chain_name: str | None = None
+    total_steps: int | None = None
+    first_step: str | None = None
+    provider: str | None = None
+    fallback_chain: list[str] | None = None
+    recurring_id: str | None = None
+    cron_expr: str | None = None
+    next_execution_at: str | None = None
+    silence_id: str | None = None
+    matched_rule: str | None = None
+    interval: str | None = None
+    reason: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | str) -> "ActionOutcome":
@@ -210,6 +237,72 @@ class ActionOutcome:
                 used=quota.get("used"),
                 overage_behavior=quota.get("overage_behavior"),
             )
+        elif "Grouped" in data:
+            value = data["Grouped"]
+            return cls(
+                outcome_type="grouped",
+                group_id=value.get("group_id"),
+                group_size=value.get("group_size"),
+                notify_at=value.get("notify_at"),
+            )
+        elif "StateChanged" in data:
+            value = data["StateChanged"]
+            return cls(
+                outcome_type="state_changed",
+                fingerprint=value.get("fingerprint"),
+                previous_state=value.get("previous_state"),
+                new_state=value.get("new_state"),
+                notify=value.get("notify"),
+            )
+        elif "PendingApproval" in data:
+            value = data["PendingApproval"]
+            return cls(
+                outcome_type="pending_approval",
+                approval_id=value.get("approval_id"),
+                expires_at=value.get("expires_at"),
+                approve_url=value.get("approve_url"),
+                reject_url=value.get("reject_url"),
+                notification_sent=value.get("notification_sent"),
+            )
+        elif "ChainStarted" in data:
+            value = data["ChainStarted"]
+            return cls(
+                outcome_type="chain_started",
+                chain_id=value.get("chain_id"),
+                chain_name=value.get("chain_name"),
+                total_steps=value.get("total_steps"),
+                first_step=value.get("first_step"),
+            )
+        elif "CircuitOpen" in data:
+            value = data["CircuitOpen"]
+            return cls(
+                outcome_type="circuit_open",
+                provider=value.get("provider"),
+                fallback_chain=value.get("fallback_chain"),
+            )
+        elif "RecurringCreated" in data:
+            value = data["RecurringCreated"]
+            return cls(
+                outcome_type="recurring_created",
+                recurring_id=value.get("recurring_id"),
+                cron_expr=value.get("cron_expr"),
+                next_execution_at=value.get("next_execution_at"),
+            )
+        elif "Silenced" in data:
+            value = data["Silenced"]
+            return cls(
+                outcome_type="silenced",
+                silence_id=value.get("silence_id"),
+                matched_rule=value.get("matched_rule"),
+            )
+        elif "Muted" in data:
+            value = data["Muted"]
+            return cls(
+                outcome_type="muted",
+                interval=value.get("interval"),
+                reason=value.get("reason"),
+                matched_rule=value.get("matched_rule"),
+            )
         else:
             return cls(outcome_type="unknown")
 
@@ -240,6 +333,30 @@ class ActionOutcome:
     def is_quota_exceeded(self) -> bool:
         return self.outcome_type == "quota_exceeded"
 
+    def is_grouped(self) -> bool:
+        return self.outcome_type == "grouped"
+
+    def is_state_changed(self) -> bool:
+        return self.outcome_type == "state_changed"
+
+    def is_pending_approval(self) -> bool:
+        return self.outcome_type == "pending_approval"
+
+    def is_chain_started(self) -> bool:
+        return self.outcome_type == "chain_started"
+
+    def is_circuit_open(self) -> bool:
+        return self.outcome_type == "circuit_open"
+
+    def is_recurring_created(self) -> bool:
+        return self.outcome_type == "recurring_created"
+
+    def is_silenced(self) -> bool:
+        return self.outcome_type == "silenced"
+
+    def is_muted(self) -> bool:
+        return self.outcome_type == "muted"
+
 
 @dataclass
 class ErrorResponse:
@@ -259,9 +376,9 @@ class BatchResult:
     error: ErrorResponse | None = None
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "BatchResult":
+    def from_dict(cls, data: dict[str, Any] | str) -> "BatchResult":
         """Parse from API response."""
-        if "error" in data:
+        if isinstance(data, dict) and "error" in data:
             err = data["error"]
             return cls(
                 success=False,

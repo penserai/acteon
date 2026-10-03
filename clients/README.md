@@ -1,12 +1,12 @@
 # Acteon Client Libraries
 
-Official client libraries for the Acteon action gateway.
+Official client libraries for Acteon, the execution and governance platform for agents and services.
 
 ## Available Clients
 
 | Language | Directory | Package |
 |----------|-----------|---------|
-| [Rust](../acteon-client/README.md) | `acteon-client/` | `acteon-client` |
+| [Rust](../crates/client/README.md) | `crates/client/` | `acteon-client` |
 | [Python](python/README.md) | `clients/python/` | `acteon-client` |
 | [Node.js/TypeScript](nodejs/README.md) | `clients/nodejs/` | `@acteon/client` |
 | [Go](go/README.md) | `clients/go/` | `github.com/penserai/acteon/clients/go/acteon` |
@@ -14,7 +14,9 @@ Official client libraries for the Acteon action gateway.
 
 ## API Consistency
 
-All clients provide the same API surface:
+All five clients provide typed helpers for common operations and a generated platform operation API for every finite HTTP route. Higher-level runtime support differs by language; see [SDK coverage and wire contracts](https://penserai.github.io/acteon/api/sdk-coverage/) for the exact boundary.
+
+The table below lists common helpers, not the complete API:
 
 ### Methods
 
@@ -103,3 +105,7 @@ ActionOutcome outcome = client.dispatch(action);
 ## License
 
 Apache-2.0
+
+## Dispatch outcomes
+
+All clients recognize the server's 17 dispatch variants, including `Grouped`, `StateChanged`, `PendingApproval`, `ChainStarted`, `CircuitOpen`, `RecurringCreated`, `Silenced`, and `Muted`. Single and batch dispatch preserve their fields, including approval capabilities and chain IDs. A pending approval or a started chain is not a completed provider execution; inspect the outcome before advancing an agent workflow.

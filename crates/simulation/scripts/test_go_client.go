@@ -9,6 +9,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -54,6 +55,21 @@ func main() {
 		}
 		if !healthy {
 			return fmt.Errorf("health check returned false")
+		}
+		return nil
+	})
+
+	test("PlatformRequest()", func() error {
+		data, err := client.PlatformRequest(ctx, acteon.OpHealthHealth, nil, nil, nil)
+		if err != nil {
+			return err
+		}
+		var result map[string]any
+		if err := json.Unmarshal(data, &result); err != nil {
+			return err
+		}
+		if result["status"] != "ok" {
+			return fmt.Errorf("platform health failed: %s", data)
 		}
 		return nil
 	})

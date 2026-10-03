@@ -107,6 +107,31 @@ type ProviderResponse struct {
 
 // ActionOutcome represents the outcome of dispatching an action.
 type ActionOutcome struct {
+	GroupID          string
+	GroupSize        uint64
+	NotifyAt         string
+	Fingerprint      string
+	PreviousState    string
+	NewState         string
+	Notify           bool
+	ApprovalID       string
+	ExpiresAt        string
+	ApproveURL       string
+	RejectURL        string
+	NotificationSent bool
+	ChainID          string
+	ChainName        string
+	TotalSteps       uint64
+	FirstStep        string
+	Provider         string
+	FallbackChain    []string
+	RecurringID      string
+	CronExpr         string
+	NextExecutionAt  *string
+	SilenceID        string
+	Interval         string
+	Reason           string
+
 	Type             OutcomeType
 	Response         *ProviderResponse // For Executed, Rerouted
 	Rule             string            // For Suppressed
@@ -129,15 +154,23 @@ type ActionOutcome struct {
 type OutcomeType string
 
 const (
-	OutcomeExecuted      OutcomeType = "executed"
-	OutcomeDeduplicated  OutcomeType = "deduplicated"
-	OutcomeSuppressed    OutcomeType = "suppressed"
-	OutcomeRerouted      OutcomeType = "rerouted"
-	OutcomeThrottled     OutcomeType = "throttled"
-	OutcomeFailed        OutcomeType = "failed"
-	OutcomeDryRun        OutcomeType = "dry_run"
-	OutcomeScheduled     OutcomeType = "scheduled"
-	OutcomeQuotaExceeded OutcomeType = "quota_exceeded"
+	OutcomeGrouped          OutcomeType = "grouped"
+	OutcomeStateChanged     OutcomeType = "state_changed"
+	OutcomePendingApproval  OutcomeType = "pending_approval"
+	OutcomeChainStarted     OutcomeType = "chain_started"
+	OutcomeCircuitOpen      OutcomeType = "circuit_open"
+	OutcomeRecurringCreated OutcomeType = "recurring_created"
+	OutcomeSilenced         OutcomeType = "silenced"
+	OutcomeMuted            OutcomeType = "muted"
+	OutcomeExecuted         OutcomeType = "executed"
+	OutcomeDeduplicated     OutcomeType = "deduplicated"
+	OutcomeSuppressed       OutcomeType = "suppressed"
+	OutcomeRerouted         OutcomeType = "rerouted"
+	OutcomeThrottled        OutcomeType = "throttled"
+	OutcomeFailed           OutcomeType = "failed"
+	OutcomeDryRun           OutcomeType = "dry_run"
+	OutcomeScheduled        OutcomeType = "scheduled"
+	OutcomeQuotaExceeded    OutcomeType = "quota_exceeded"
 )
 
 // ActionError represents error details when an action fails.
@@ -278,6 +311,130 @@ func (o *ActionOutcome) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 
+	if data, ok := raw["Grouped"]; ok {
+		var value struct {
+			GroupID   string `json:"group_id"`
+			GroupSize uint64 `json:"group_size"`
+			NotifyAt  string `json:"notify_at"`
+		}
+		if err := json.Unmarshal(data, &value); err != nil {
+			return err
+		}
+		o.Type = OutcomeGrouped
+		o.GroupID = value.GroupID
+		o.GroupSize = value.GroupSize
+		o.NotifyAt = value.NotifyAt
+		return nil
+	}
+	if data, ok := raw["StateChanged"]; ok {
+		var value struct {
+			Fingerprint   string `json:"fingerprint"`
+			PreviousState string `json:"previous_state"`
+			NewState      string `json:"new_state"`
+			Notify        bool   `json:"notify"`
+		}
+		if err := json.Unmarshal(data, &value); err != nil {
+			return err
+		}
+		o.Type = OutcomeStateChanged
+		o.Fingerprint = value.Fingerprint
+		o.PreviousState = value.PreviousState
+		o.NewState = value.NewState
+		o.Notify = value.Notify
+		return nil
+	}
+	if data, ok := raw["PendingApproval"]; ok {
+		var value struct {
+			ApprovalID       string `json:"approval_id"`
+			ExpiresAt        string `json:"expires_at"`
+			ApproveURL       string `json:"approve_url"`
+			RejectURL        string `json:"reject_url"`
+			NotificationSent bool   `json:"notification_sent"`
+		}
+		if err := json.Unmarshal(data, &value); err != nil {
+			return err
+		}
+		o.Type = OutcomePendingApproval
+		o.ApprovalID = value.ApprovalID
+		o.ExpiresAt = value.ExpiresAt
+		o.ApproveURL = value.ApproveURL
+		o.RejectURL = value.RejectURL
+		o.NotificationSent = value.NotificationSent
+		return nil
+	}
+	if data, ok := raw["ChainStarted"]; ok {
+		var value struct {
+			ChainID    string `json:"chain_id"`
+			ChainName  string `json:"chain_name"`
+			TotalSteps uint64 `json:"total_steps"`
+			FirstStep  string `json:"first_step"`
+		}
+		if err := json.Unmarshal(data, &value); err != nil {
+			return err
+		}
+		o.Type = OutcomeChainStarted
+		o.ChainID = value.ChainID
+		o.ChainName = value.ChainName
+		o.TotalSteps = value.TotalSteps
+		o.FirstStep = value.FirstStep
+		return nil
+	}
+	if data, ok := raw["CircuitOpen"]; ok {
+		var value struct {
+			Provider      string   `json:"provider"`
+			FallbackChain []string `json:"fallback_chain"`
+		}
+		if err := json.Unmarshal(data, &value); err != nil {
+			return err
+		}
+		o.Type = OutcomeCircuitOpen
+		o.Provider = value.Provider
+		o.FallbackChain = value.FallbackChain
+		return nil
+	}
+	if data, ok := raw["RecurringCreated"]; ok {
+		var value struct {
+			RecurringID     string  `json:"recurring_id"`
+			CronExpr        string  `json:"cron_expr"`
+			NextExecutionAt *string `json:"next_execution_at"`
+		}
+		if err := json.Unmarshal(data, &value); err != nil {
+			return err
+		}
+		o.Type = OutcomeRecurringCreated
+		o.RecurringID = value.RecurringID
+		o.CronExpr = value.CronExpr
+		o.NextExecutionAt = value.NextExecutionAt
+		return nil
+	}
+	if data, ok := raw["Silenced"]; ok {
+		var value struct {
+			SilenceID   string  `json:"silence_id"`
+			MatchedRule *string `json:"matched_rule"`
+		}
+		if err := json.Unmarshal(data, &value); err != nil {
+			return err
+		}
+		o.Type = OutcomeSilenced
+		o.SilenceID = value.SilenceID
+		o.MatchedRule = value.MatchedRule
+		return nil
+	}
+	if data, ok := raw["Muted"]; ok {
+		var value struct {
+			Interval    string  `json:"interval"`
+			Reason      string  `json:"reason"`
+			MatchedRule *string `json:"matched_rule"`
+		}
+		if err := json.Unmarshal(data, &value); err != nil {
+			return err
+		}
+		o.Type = OutcomeMuted
+		o.Interval = value.Interval
+		o.Reason = value.Reason
+		o.MatchedRule = value.MatchedRule
+		return nil
+	}
 	o.Type = OutcomeFailed
 	o.Error = &ActionError{Code: "UNKNOWN", Message: "Unknown outcome"}
 	return nil
@@ -326,6 +483,13 @@ type BatchResult struct {
 
 // UnmarshalJSON implements custom JSON unmarshaling for BatchResult.
 func (r *BatchResult) UnmarshalJSON(data []byte) error {
+	var unit string
+	if json.Unmarshal(data, &unit) == nil && unit == "Deduplicated" {
+		r.Success = true
+		r.Outcome = &ActionOutcome{Type: OutcomeDeduplicated}
+		r.Error = nil
+		return nil
+	}
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err

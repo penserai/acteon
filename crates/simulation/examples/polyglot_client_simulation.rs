@@ -150,7 +150,7 @@ struct ClientTestResult {
 /// Run the Python client test
 fn run_python_client(base_url: &str, project_root: &str) -> ClientTestResult {
     let script = format!(
-        "{}/acteon-simulation/scripts/test_python_client.py",
+        "{}/crates/simulation/scripts/test_python_client.py",
         project_root
     );
 
@@ -182,19 +182,21 @@ fn run_python_client(base_url: &str, project_root: &str) -> ClientTestResult {
 fn run_nodejs_client(base_url: &str, project_root: &str) -> ClientTestResult {
     let client_dir = format!("{}/clients/nodejs", project_root);
 
-    // Install dependencies if needed
+    // Install the locked dependency graph without modifying the lockfile
     let install_output = Command::new("npm")
-        .arg("install")
-        .arg("--legacy-peer-deps")
+        .arg("ci")
         .current_dir(&client_dir)
         .output();
 
-    if let Err(e) = install_output {
-        return ClientTestResult {
-            language: "Node.js".to_string(),
-            success: false,
-            output: format!("Failed to install dependencies: {}", e),
-        };
+    match install_output {
+        Ok(out) if out.status.success() => {}
+        result => {
+            return ClientTestResult {
+                language: "Node.js".to_string(),
+                success: false,
+                output: format!("Failed to install dependencies: {result:?}"),
+            };
+        }
     }
 
     // Build the TypeScript client
@@ -225,7 +227,7 @@ fn run_nodejs_client(base_url: &str, project_root: &str) -> ClientTestResult {
     }
 
     let script = format!(
-        "{}/acteon-simulation/scripts/test_nodejs_client.mjs",
+        "{}/crates/simulation/scripts/test_nodejs_client.mjs",
         project_root
     );
 
@@ -255,7 +257,7 @@ fn run_nodejs_client(base_url: &str, project_root: &str) -> ClientTestResult {
 /// Run the Go client test
 fn run_go_client(base_url: &str, project_root: &str) -> ClientTestResult {
     let script = format!(
-        "{}/acteon-simulation/scripts/test_go_client.go",
+        "{}/crates/simulation/scripts/test_go_client.go",
         project_root
     );
     let go_client_dir = format!("{}/clients/go", project_root);
@@ -294,8 +296,8 @@ fn run_java_client(base_url: &str, project_root: &str) -> ClientTestResult {
     if java_check.is_err() || !java_check.unwrap().status.success() {
         return ClientTestResult {
             language: "Java".to_string(),
-            success: true,
-            output: "Skipped (java not available)".to_string(),
+            success: false,
+            output: "Unavailable (java is required)".to_string(),
         };
     }
 
@@ -304,8 +306,8 @@ fn run_java_client(base_url: &str, project_root: &str) -> ClientTestResult {
     if gradle_check.is_err() {
         return ClientTestResult {
             language: "Java".to_string(),
-            success: true,
-            output: "Skipped (gradle not available)".to_string(),
+            success: false,
+            output: "Unavailable (gradle is required)".to_string(),
         };
     }
 
@@ -338,7 +340,7 @@ fn run_java_client(base_url: &str, project_root: &str) -> ClientTestResult {
 
     // Run the test script using the JAR
     let script = format!(
-        "{}/acteon-simulation/scripts/TestJavaClient.java",
+        "{}/crates/simulation/scripts/TestJavaClient.java",
         project_root
     );
     let jar_path = format!("{}/build/libs/acteon-client-0.1.0.jar", java_client_dir);
@@ -373,7 +375,7 @@ fn run_java_client(base_url: &str, project_root: &str) -> ClientTestResult {
 
     // Fall back to running compiled test with java
     // Compile and run the test class using the JAR
-    let compile_dir = format!("{}/acteon-simulation/scripts", project_root);
+    let compile_dir = format!("{}/crates/simulation/scripts", project_root);
 
     // Compile TestJavaClient.java
     let compile_output = Command::new("javac")

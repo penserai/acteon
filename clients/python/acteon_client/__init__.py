@@ -149,6 +149,7 @@ from .workflows import (
 
 __version__ = "0.1.0"
 __all__ = [
+    "PlatformOperation",
     "ActeonClient",
     "AsyncActeonClient",
     "A2A_PROTOCOL_VERSION",
@@ -291,3 +292,5 @@ __all__ = [
     "RegisterBusSchema",
     "SetBusAgentAdminState",
 ]
+
+from .platform_catalog import PlatformOperation as PlatformOperation

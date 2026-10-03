@@ -1,0 +1,59 @@
+# Run from the repository root. All providers log locally.
+[server]
+host = "127.0.0.1"
+port = 8080
+
+[state]
+backend = "memory"
+
+[audit]
+enabled = true
+backend = "memory"
+store_payload = true
+
+[auth]
+enabled = true
+config_path = "auth.toml"
+watch = false
+
+[background]
+enabled = true
+namespace = "agent-swarm"
+tenant = "researcher"
+
+[rules]
+directory = "examples/agent-swarm-coordination/policy-demo/rules"
+
+[quotas]
+enabled = true
+policies_file = "examples/agent-swarm-coordination/policy-demo/quotas.toml"
+watch = false
+
+[[providers]]
+name = "research"
+type = "log"
+
+[[providers]]
+name = "notify"
+type = "log"
+
+[[providers]]
+name = "deploy"
+type = "log"
+
+[[chains.definitions]]
+name = "research-pipeline"
+on_failure = "abort"
+timeout_seconds = 60
+
+[[chains.definitions.steps]]
+name = "capture"
+provider = "research"
+action_type = "capture_summary"
+payload_template = { query = "{{origin.payload.query}}" }
+
+[[chains.definitions.steps]]
+name = "notify"
+provider = "notify"
+action_type = "send_message"
+payload_template = { summary = "{{steps.capture.body}}" }

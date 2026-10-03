@@ -106,6 +106,8 @@ jobs:
         run: |
           cargo build --locked -p acteon-server
           python3 scripts/ci/quickstart.py --server target/debug/acteon-server
+          python3 scripts/ci/agent_guide.py --server target/debug/acteon-server
+          python3 scripts/sdk/platform_catalog.py --check
       - name: Verify neural observability platform adapters
         run: |
           cargo test --locked -p acteon-simulation --features bus,redis --example neural_observability_simulation

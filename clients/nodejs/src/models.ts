@@ -148,6 +148,14 @@ export interface ProviderResponse {
  * Outcome of dispatching an action.
  */
 export type ActionOutcome =
+  | { type: "grouped"; groupId: string; groupSize: number; notifyAt: string }
+  | { type: "state_changed"; fingerprint: string; previousState: string; newState: string; notify: boolean }
+  | { type: "pending_approval"; approvalId: string; expiresAt: string; approveUrl: string; rejectUrl: string; notificationSent: boolean }
+  | { type: "chain_started"; chainId: string; chainName: string; totalSteps: number; firstStep: string }
+  | { type: "circuit_open"; provider: string; fallbackChain: string[] }
+  | { type: "recurring_created"; recurringId: string; cronExpr: string; nextExecutionAt: string | null }
+  | { type: "silenced"; silenceId: string; matchedRule: string | null }
+  | { type: "muted"; interval: string; reason: string; matchedRule: string | null }
   | { type: "executed"; response: ProviderResponse }
   | { type: "deduplicated" }
   | { type: "suppressed"; rule: string }
@@ -274,6 +282,80 @@ export function parseActionOutcome(data: unknown): ActionOutcome {
     };
   }
 
+  if ("Grouped" in obj) {
+    const value = obj.Grouped as Record<string, unknown>;
+    return { type: "grouped",
+      groupId: value.group_id as string,
+      groupSize: value.group_size as number,
+      notifyAt: value.notify_at as string,
+    };
+  }
+
+  if ("StateChanged" in obj) {
+    const value = obj.StateChanged as Record<string, unknown>;
+    return { type: "state_changed",
+      fingerprint: value.fingerprint as string,
+      previousState: value.previous_state as string,
+      newState: value.new_state as string,
+      notify: value.notify as boolean,
+    };
+  }
+
+  if ("PendingApproval" in obj) {
+    const value = obj.PendingApproval as Record<string, unknown>;
+    return { type: "pending_approval",
+      approvalId: value.approval_id as string,
+      expiresAt: value.expires_at as string,
+      approveUrl: value.approve_url as string,
+      rejectUrl: value.reject_url as string,
+      notificationSent: value.notification_sent as boolean,
+    };
+  }
+
+  if ("ChainStarted" in obj) {
+    const value = obj.ChainStarted as Record<string, unknown>;
+    return { type: "chain_started",
+      chainId: value.chain_id as string,
+      chainName: value.chain_name as string,
+      totalSteps: value.total_steps as number,
+      firstStep: value.first_step as string,
+    };
+  }
+
+  if ("CircuitOpen" in obj) {
+    const value = obj.CircuitOpen as Record<string, unknown>;
+    return { type: "circuit_open",
+      provider: value.provider as string,
+      fallbackChain: ((value.fallback_chain as string[] | undefined) ?? []),
+    };
+  }
+
+  if ("RecurringCreated" in obj) {
+    const value = obj.RecurringCreated as Record<string, unknown>;
+    return { type: "recurring_created",
+      recurringId: value.recurring_id as string,
+      cronExpr: value.cron_expr as string,
+      nextExecutionAt: ((value.next_execution_at as string | undefined) ?? null),
+    };
+  }
+
+  if ("Silenced" in obj) {
+    const value = obj.Silenced as Record<string, unknown>;
+    return { type: "silenced",
+      silenceId: value.silence_id as string,
+      matchedRule: ((value.matched_rule as string | undefined) ?? null),
+    };
+  }
+
+  if ("Muted" in obj) {
+    const value = obj.Muted as Record<string, unknown>;
+    return { type: "muted",
+      interval: value.interval as string,
+      reason: value.reason as string,
+      matchedRule: ((value.matched_rule as string | undefined) ?? null),
+    };
+  }
+
   return { type: "failed", error: { code: "UNKNOWN", message: "Unknown outcome", retryable: false, attempts: 0 } };
 }
 
@@ -297,6 +379,7 @@ export type BatchResult =
  * Parse a BatchResult from API response.
  */
 export function parseBatchResult(data: unknown): BatchResult {
+  if (data === "Deduplicated") return { success: true, outcome: { type: "deduplicated" } };
   if (typeof data !== "object" || data === null) {
     return { success: false, error: { code: "UNKNOWN", message: "Invalid response", retryable: false } };
   }

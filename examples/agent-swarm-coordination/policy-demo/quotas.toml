@@ -1,0 +1,6 @@
+[[quotas]]
+namespace = "agent-swarm"
+tenant = "researcher"
+max_actions = 50
+window = "hourly"
+overage_behavior = "block"

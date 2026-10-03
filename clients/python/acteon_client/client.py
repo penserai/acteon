@@ -91,11 +91,14 @@ from .models import (
     WasmPlugin,
     _parse_sse_stream,
 )
+from .platform import _AsyncPlatformMixin, _PlatformMixin
 from .queues import _AsyncQueuesClientMixin, _QueuesClientMixin
 from .workflows import _AsyncWorkflowsClientMixin, _WorkflowsClientMixin
 
 
-class ActeonClient(_A2AClientMixin, _BusClientMixin, _QueuesClientMixin, _WorkflowsClientMixin):
+class ActeonClient(
+    _PlatformMixin, _A2AClientMixin, _BusClientMixin, _QueuesClientMixin, _WorkflowsClientMixin
+):
     """HTTP client for the Acteon action gateway.
 
     Example:
@@ -2551,6 +2554,7 @@ class ActeonClient(_A2AClientMixin, _BusClientMixin, _QueuesClientMixin, _Workfl
 
 
 class AsyncActeonClient(
+    _AsyncPlatformMixin,
     _AsyncA2AClientMixin,
     _AsyncBusClientMixin,
     _AsyncQueuesClientMixin,

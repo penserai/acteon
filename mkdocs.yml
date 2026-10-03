@@ -202,6 +202,7 @@ nav:
     - REST API: api/rest-api.md
     - Rust client: api/rust-client.md
     - Polyglot SDKs: api/polyglot-clients.md
+    - SDK coverage and contracts: api/sdk-coverage.md
     - MCP server: api/mcp-server.md
     - CLI: api/cli.md
     - Authentication: api/authentication.md
