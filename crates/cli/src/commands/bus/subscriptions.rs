@@ -46,6 +46,9 @@ pub enum SubscriptionsCommand {
         /// `auto` or `manual`.
         #[arg(long)]
         ack_mode: Option<String>,
+        /// Require live HTTP receipt acknowledgements (manual mode).
+        #[arg(long)]
+        receipt_required: bool,
         /// Optional dead-letter topic Kafka name.
         #[arg(long)]
         dead_letter_topic: Option<String>,
@@ -151,6 +154,7 @@ pub async fn run(
             tenant,
             starting_offset,
             ack_mode,
+            receipt_required,
             dead_letter_topic,
             ack_timeout_ms,
             description,
@@ -163,6 +167,7 @@ pub async fn run(
                 tenant: tenant.clone(),
                 starting_offset: starting_offset.clone(),
                 ack_mode: ack_mode.clone(),
+                receipt_required: *receipt_required,
                 dead_letter_topic: dead_letter_topic.clone(),
                 ack_timeout_ms: *ack_timeout_ms,
                 description: description.clone(),

@@ -19,11 +19,10 @@ use std::sync::{
 use std::time::Duration;
 
 use acteon_bus::{
-    AcknowledgedSubscription, BusBackend, BusMessage, KafkaBackend, KafkaBusConfig, StartOffset,
-    StreamCheckpointConfig, StreamCheckpointCoordinator, StreamDeliveryError, StreamOutboxConfig,
-    StreamOutboxDelivery, StreamOutboxDispatchResult, StreamOutboxDispatcher, StreamOutboxEntry,
-    StreamOutboxMetrics, SubscriptionCheckpointBatch, SubscriptionConfig, SubscriptionDelivery,
-    SubscriptionError, SubscriptionReceipt, stream_checkpoint_key,
+    BusBackend, BusMessage, KafkaBackend, KafkaBusConfig, StartOffset, StreamCheckpointConfig,
+    StreamCheckpointCoordinator, StreamDeliveryError, StreamOutboxConfig, StreamOutboxDelivery,
+    StreamOutboxDispatchResult, StreamOutboxDispatcher, StreamOutboxEntry, StreamOutboxMetrics,
+    SubscriptionConfig, SubscriptionError, stream_checkpoint_key,
 };
 use acteon_core::chain::{ChainConfig, ChainStatus, ChainStepConfig, DispatchStepConfig};
 use acteon_core::{Action, ActionOutcome, Topic};
@@ -44,6 +43,9 @@ use serde_json::{Map, Value, json};
 
 #[path = "neural_observability/windowing.rs"]
 mod windowing;
+
+#[path = "neural_observability/http_sessions.rs"]
+mod http_sessions;
 
 #[path = "neural_observability/checkpoint.rs"]
 mod checkpoint;
@@ -170,6 +172,9 @@ struct RecoveryReport {
     committed_offsets: BTreeMap<String, SourcePosition>,
     final_consumer_lag: BTreeMap<String, i64>,
     live_source_sessions: usize,
+    source_transport: String,
+    http_server_restarts: usize,
+    expired_http_sessions_rejected: usize,
     source_receipts_acknowledged: usize,
     stale_acknowledgements_rejected: usize,
     rebalance_redelivery_offset: i64,
@@ -1262,7 +1267,7 @@ fn markdown(report: &SimulationReport) -> String {
     output.push_str("## Live Kafka acknowledgements\n\n");
     let _ = write!(
         output,
-        "| Observation | Result |\n|---|---:|\n| Active source sessions | {} |\n| Source receipts acknowledged after checkpoint | {} |\n| Stale acknowledgements rejected after rebalance | {} |\n| Replacement delivery offset in fencing probe | {} |\n\nSource acknowledgements use the consumers that delivered the records. An independent group probe joins a second member, observes revocation, rejects the old receipt, and receives the uncommitted prefix again. It adds no model calls or operational effects.\n\n",
+        "| Observation | Result |\n|---|---:|\n| Active HTTP source sessions | {} |\n| Source receipts acknowledged after checkpoint | {} |\n| Stale acknowledgements rejected after rebalance | {} |\n| Replacement delivery offset in fencing probe | {} |\n\nAll three source consumers use Acteon HTTP receipt sessions through the Rust client. The HTTP server restarts once; its old session ID is rejected, and new consumers replay the uncommitted prefix. Checkpoint validation derives positions from opaque receipt IDs before Redis persistence. Source acknowledgements use the consumers that delivered the records. An independent group probe joins a second member, observes revocation, rejects the old receipt, and receives the uncommitted prefix again. It adds no model calls or operational effects.\n\n",
         report.recovery.live_source_sessions,
         report.recovery.source_receipts_acknowledged,
         report.recovery.stale_acknowledgements_rejected,
@@ -1431,40 +1436,6 @@ fn remember_source_position(
     Ok((source, position))
 }
 
-async fn open_source_sessions(
-    backend: &dyn BusBackend,
-    topics: &BTreeMap<SignalSource, Topic>,
-    groups: &BTreeMap<SignalSource, String>,
-) -> Result<BTreeMap<SignalSource, Box<dyn AcknowledgedSubscription>>, AnyError> {
-    let mut sessions = BTreeMap::new();
-    for source in SignalSource::ALL {
-        sessions.insert(
-            source,
-            backend
-                .subscribe_acknowledged(
-                    &topics[&source].kafka_topic_name(),
-                    &groups[&source],
-                    StartOffset::Earliest,
-                    SubscriptionConfig::default(),
-                )
-                .await?,
-        );
-    }
-    Ok(sessions)
-}
-
-async fn receive_source_record(
-    sessions: &mut BTreeMap<SignalSource, Box<dyn AcknowledgedSubscription>>,
-) -> Result<SubscriptionDelivery, SubscriptionError> {
-    let receives = sessions
-        .values_mut()
-        .map(|session| Box::pin(session.recv()))
-        .collect::<Vec<_>>();
-    // Losing receives are cancelled before delivery, so they cannot consume a
-    // record without returning its receipt. The same sessions remain alive.
-    futures::future::select_all(receives).await.0
-}
-
 async fn prove_rebalance_fencing(
     backend: &dyn BusBackend,
     topic: &str,
@@ -1555,20 +1526,27 @@ async fn kafka_stream_replay(
         })
         .collect::<BTreeMap<_, _>>();
 
+    let store: Arc<dyn StateStore> = Arc::new(RedisStateStore::new(redis)?);
+    let mut http =
+        Some(http_sessions::HttpServer::start(Arc::clone(&backend), Arc::clone(&store)).await?);
     for topic in topics.values() {
-        backend.create_topic(topic).await?;
+        http.as_ref()
+            .unwrap()
+            .client
+            .create_bus_topic(&acteon_client::CreateBusTopic {
+                name: topic.name.clone(),
+                namespace: NAMESPACE.into(),
+                tenant: TENANT.into(),
+                partitions: Some(1),
+                replication_factor: Some(1),
+                ..Default::default()
+            })
+            .await?;
     }
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    let consumer_groups = SignalSource::ALL
-        .into_iter()
-        .map(|source| {
-            (
-                source,
-                format!("neural-detector-{}-{run_id}", source.as_str()),
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
+    let mut sessions =
+        http_sessions::HttpSources::create(&http.as_ref().unwrap().client, &topics, &run_id)
+            .await?;
+    let consumer_groups = sessions.groups.clone();
 
     let replay = async {
         for source in SignalSource::ALL {
@@ -1597,7 +1575,7 @@ async fn kafka_stream_replay(
         // Phase 1 persists all correlator state and ready outputs, then exits
         // without acknowledging Kafka. This is the injected crash boundary.
         {
-            let mut sessions = open_source_sessions(backend.as_ref(), &topics, &consumer_groups).await?;
+
             let mut correlator = EventTimeCorrelator::new(
                 ChronoDuration::minutes(1),
                 ChronoDuration::seconds(15),
@@ -1605,10 +1583,10 @@ async fn kafka_stream_replay(
             let mut ready_windows = Vec::new();
             let mut source_offsets = BTreeMap::new();
             for _ in 0..pre_crash_records {
-                let next = tokio::time::timeout(Duration::from_secs(20), receive_source_record(&mut sessions))
+                let next = tokio::time::timeout(Duration::from_secs(20), sessions.next(&http.as_ref().unwrap().client))
                     .await
                     .map_err(|_| error("timed out before the injected Kafka restart"))??;
-                let next = next.message;
+                let next = next.0;
                 remember_source_position(&next, &mut source_offsets)?;
                 let result = correlator.ingest(next)?;
                 if result.disposition == IngestDisposition::Late {
@@ -1624,7 +1602,11 @@ async fn kafka_stream_replay(
 
         // The old consumers disappear without a commit. A replacement process
         // restores generation 1 and receives the uncommitted prefix again.
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        let expired_session=sessions.sessions[&SignalSource::Metrics].clone();
+        http.take().unwrap().stop().await;
+        http=Some(http_sessions::HttpServer::start(Arc::clone(&backend),Arc::clone(&store)).await?);
+        if http.as_ref().unwrap().client.get_bus_session(NAMESPACE,TENANT,&sessions.ids[&SignalSource::Metrics],&expired_session).await.is_ok() {return Err(error("restarted HTTP server accepted an old session"));}
+        sessions.open(&http.as_ref().unwrap().client).await?;
         let empty = EventTimeCorrelator::new(ChronoDuration::minutes(1), ChronoDuration::seconds(15))?;
         let mut checkpoints = open_windows(redis, empty.snapshot()).await?;
         let restored_generation = checkpoints.snapshot().generation();
@@ -1634,16 +1616,16 @@ async fn kafka_stream_replay(
         let existing_window_keys = checkpoints.snapshot().pending_outputs().iter().map(|entry| entry.idempotency_key.clone()).collect::<BTreeSet<_>>();
         let mut source_offsets = crash_offsets.clone();
         let mut recovery_redeliveries = 0;
-        let mut sessions = open_source_sessions(backend.as_ref(), &topics, &consumer_groups).await?;
-        let mut receipts = SignalSource::ALL.into_iter().map(|source| (source, Vec::<SubscriptionReceipt>::new())).collect::<BTreeMap<_, _>>();
+
+        let mut receipts = SignalSource::ALL.into_iter().map(|source| (source, Vec::<String>::new())).collect::<BTreeMap<_, _>>();
         {
             for _ in 0..expected_records {
-                let next = tokio::time::timeout(Duration::from_secs(20), receive_source_record(&mut sessions))
+                let next = tokio::time::timeout(Duration::from_secs(20), sessions.next(&http.as_ref().unwrap().client))
                     .await
                     .map_err(|_| error("timed out consuming observability Kafka records"))??;
-                let (source, position) = remember_source_position(&next.message, &mut source_offsets)?;
-                receipts.get_mut(&source).unwrap().push(next.receipt);
-                let next = next.message;
+                let (source, position) = remember_source_position(&next.0, &mut source_offsets)?;
+                receipts.get_mut(&source).unwrap().push(next.1);
+                let next = next.0;
                 let is_recovery_redelivery = is_recovery_record(source, &position, &crash_offsets);
                 if is_recovery_redelivery {
                     // The durable checkpoint already represents this broker
@@ -1676,17 +1658,12 @@ async fn kafka_stream_replay(
             )));
         }
 
-        // Persist generation 2 before acknowledging receipts on the three
-        // consumers that delivered them. No temporary group members join to commit.
-        let mut batches = sessions.iter_mut().map(|(source, subscription)| SubscriptionCheckpointBatch {
-            source: source.as_str(), subscription: subscription.as_mut(), receipts: &receipts[source],
-        }).collect::<Vec<_>>();
-        let committed = checkpoints.checkpoint_then_acknowledge(
-            correlator.snapshot(),
-            window_outputs(windows.iter().filter(|window| !existing_window_keys.contains(&window_key(window))).cloned()),
-            &mut batches,
-        ).await?.checkpoint;
-        drop(batches);
+        // HTTP validation derives trusted positions; persist state and outputs before
+        // sending receipt IDs back to the same server-owned consumers for acknowledgement.
+        let positions=sessions.validate(&http.as_ref().unwrap().client,&receipts,&topics).await?;
+        let committed=checkpoints.checkpoint(correlator.snapshot(),positions,
+            window_outputs(windows.iter().filter(|window| !existing_window_keys.contains(&window_key(window))).cloned())).await?;
+        sessions.acknowledge(&http.as_ref().unwrap().client,&receipts).await?;
         let source_receipts_acknowledged = receipts.values().map(Vec::len).sum();
         let rebalance_redelivery_offset = prove_rebalance_fencing(backend.as_ref(),
             &topics[&SignalSource::Metrics].kafka_topic_name(), &format!("fence-probe-{run_id}")).await?;
@@ -1721,7 +1698,10 @@ async fn kafka_stream_replay(
                 committed_offsets: source_positions(committed.positions())?.into_iter()
                     .map(|(source, position)| (source.as_str().to_owned(), position)).collect(),
                 final_consumer_lag,
-                live_source_sessions: sessions.len(),
+                live_source_sessions: sessions.sessions.len(),
+                source_transport: "Acteon HTTP receipt sessions".into(),
+                http_server_restarts: 1,
+                expired_http_sessions_rejected: 1,
                 source_receipts_acknowledged,
                 stale_acknowledgements_rejected: 1,
                 rebalance_redelivery_offset,
@@ -1731,7 +1711,28 @@ async fn kafka_stream_replay(
     }
     .await;
 
+    if let Some(server) = http.take() {
+        server.stop().await;
+    }
+    for id in sessions.ids.values() {
+        let _ = store
+            .delete(&acteon_state::StateKey::new(
+                NAMESPACE,
+                TENANT,
+                acteon_state::KeyKind::BusSubscription,
+                id,
+            ))
+            .await;
+    }
     for topic in topics.values() {
+        let _ = store
+            .delete(&acteon_state::StateKey::new(
+                NAMESPACE,
+                TENANT,
+                acteon_state::KeyKind::BusTopic,
+                topic.kafka_topic_name(),
+            ))
+            .await;
         let _ = backend.delete_topic(&topic.kafka_topic_name()).await;
     }
     replay

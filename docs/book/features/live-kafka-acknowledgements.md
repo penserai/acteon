@@ -5,9 +5,9 @@ input progress. Each record arrives with an opaque receipt tied to the consumer
 session and its current partition assignment. Acknowledgements use that same
 consumer; they do not join a temporary group member to commit raw offsets.
 
-This is an `acteon-bus` library building block. Existing SSE subscriptions and
-HTTP raw-offset acknowledgement endpoints keep their legacy behavior. A server
-session registry and operations API are separate follow-ups. Backends without
+This building block is available through `acteon-bus` and the HTTP session API.
+Existing SSE subscriptions and raw-offset acknowledgements keep their legacy
+behavior for subscriptions without receipt-required policy. Backends without
 this capability return `SubscriptionError::Unsupported`; Acteon does not
 silently substitute an unfenced commit.
 
@@ -138,3 +138,86 @@ See [Stream Checkpoints](stream-checkpoints.md),
 [Managed Stream Outbox](managed-stream-outbox.md), and
 [Cascaded Neural Observability Detector](../guides/neural-observability-detector.md)
 for the complete input-to-durable-dispatch path.
+
+## HTTP subscription sessions
+
+The server exposes the same live-consumer capabilities over HTTP when built
+with `--features bus`. Create a durable subscription with `receipt_required:
+true` and `ack_mode: "manual"`. Its `consumer_group` is derived from namespace,
+tenant, and subscription ID. Legacy subscriptions keep their existing group;
+enabling this policy on a new subscription creates a separate group and does
+not migrate old broker offsets. The `acteon-live-` group prefix is reserved:
+legacy SSE cannot join it, and the raw-offset acknowledgement endpoint rejects
+receipt-required subscriptions on every server instance.
+
+All paths below start with
+`/v1/bus/subscriptions/{namespace}/{tenant}/{id}/sessions`:
+
+| Method and suffix | Request | Result |
+|---|---|---|
+| `POST` | `{"request_id":"<client UUID>"}` | Open a server-owned consumer; return `session_id` and `consumer_group` |
+| `GET /{session_id}` | — | Phase, epoch, partitions, pending count, buffered bytes, closure reason |
+| `POST /{session_id}/receive` | `{"max_messages":64,"wait_ms":10000}` | Bounded batch containing opaque `receipt_id`, message, position, and epoch |
+| `POST /{session_id}/validate` | `{"receipt_ids":["<receipt UUID>"]}` | Complete-prefix validation and broker-derived checkpoint positions; no commit |
+| `POST /{session_id}/ack` | Same receipt-ID body | Revalidate the prefix and acknowledge through the delivering consumer |
+| `DELETE /{session_id}` | — | Close without acknowledging pending records |
+
+The client workflow is **receive → process → validate → persist state and
+outputs → acknowledge**. Position responses use last-consumed offsets. The
+server never accepts raw offsets in a receipt request. It cannot prove that
+an application persisted its checkpoint; that ordering remains the caller's
+responsibility. A rebalance after validation can still reject acknowledgement
+after persistence: recover using the persisted checkpoint and broker redelivery.
+
+Repeated open requests with the same caller, subscription, and `request_id`
+return the same session during its lifetime and closed-session retention.
+A closed retained key returns `410`; after retention a fresh session may be
+created with a new server UUID. Retrying receive returns cached pending receipt
+IDs; additional records can appear as the consumer prefetches. Successful ack
+retries are confirmed from bounded history in the same assignment. Unknown or
+history-evicted IDs return `404`; tracked revoked IDs and processing gaps return
+`409`. Expired or closed sessions reject work with `410`. Authentication and
+subscribe grants are checked on every request. Receipt access is also bound to
+the caller ID, authentication method, exact scope, and subscription definition.
+
+Configure resource limits under `[bus.sessions]`:
+
+```toml
+[bus.sessions]
+max_sessions = 512
+max_sessions_per_tenant = 64
+max_in_flight = 256
+max_buffer_bytes = 8388608
+max_ack_history = 1024
+idle_timeout_ms = 60000
+lifetime_ms = 300000
+closed_retention_ms = 30000
+```
+
+Capacity includes closed entries during retention. Each session has a bounded
+32-command queue; full registry or queue returns `429`. Receive limits cannot
+exceed `max_in_flight`; `wait_ms` cannot exceed 30,000. Consumer opening has a
+10-second deadline. Payload bytes cover serialized messages retained by the
+server; librdkafka's queues and HTTP response buffers have separate limits.
+Idle expiry, absolute lifetime, and the subscription's `ack_timeout_ms` close
+the consumer and discard pending capabilities **without committing**. Invalid
+broker JSON and excess payload bytes also close it. These paths do not perform
+automatic dead-letter routing or automatic acknowledgement.
+
+Consumers poll in the background while record and payload capacity remains.
+A full batch pauses polling; process and acknowledge it before Kafka's maximum
+poll interval or the configured receipt timeout. A full consumer does not make
+an expired assignment safe to commit. Broker membership fencing remains active.
+
+The registry is **process-local**. Use sticky routing for all requests belonging
+to a session. Another replica or a restarted server returns `404` for an old
+session; it never opens a substitute consumer to commit those receipts. Open a
+new session and restore the durable application checkpoint. Subscription
+removal cancels local sessions, and later requests reload the subscription
+record. Closing or disconnecting during an already-started commit cannot undo
+that commit; retry or reconcile broker progress. Sessions do not provide an
+atomic Kafka/state-store transaction or exactly-once external effects.
+
+The Rust client provides `open_bus_session`, `get_bus_session`,
+`receive_bus_session`, `validate_bus_receipts`, `acknowledge_bus_receipts`, and
+`close_bus_session`. Other clients can use the documented JSON endpoints.

@@ -84,6 +84,8 @@ impl TestServer {
             bus_backend: None,
             #[cfg(feature = "bus")]
             bus_schema_validator: acteon_bus::SchemaValidator::new(),
+            #[cfg(feature = "bus")]
+            bus_sessions: Arc::new(acteon_server::bus_sessions::BusSessionRegistry::default()),
         };
 
         // Build router

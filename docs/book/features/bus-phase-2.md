@@ -142,8 +142,8 @@ consumer's ownership. Its legacy batch pattern is:
 This is fine for ack-at-end-of-batch workflows and for the
 "drain-and-checkpoint" pattern. It's **not** suitable for
 fine-grained per-record commits while the consumer is still attached
-— the HTTP transport still needs a subscription-session registry. Library
-processors should use `subscribe_acknowledged` and
+— use [HTTP receipt sessions](live-kafka-acknowledgements.md#http-subscription-sessions)
+for server clients. Library processors should use `subscribe_acknowledged` and
 `checkpoint_then_acknowledge`, which keep the original consumer alive and
 fence receipts on assignment changes.
 

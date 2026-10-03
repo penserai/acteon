@@ -246,6 +246,7 @@ jobs:
         run: |
           test -n "$ACTEON_KAFKA_BOOTSTRAP"
           cargo test --locked -p acteon-bus --lib --tests
+          cargo test --locked -p acteon-server --features bus --test bus_session_tests
       - name: Kafka broker logs
         if: always()
         run: docker logs "${{ job.services.kafka.id }}"

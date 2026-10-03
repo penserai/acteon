@@ -66,7 +66,7 @@ use acteon_state::{KeyKind, StateKey};
 // an extra alloc in the hot happy-path; the Result is only ever
 // constructed in these handlers and never stored, so the large-err
 // lint isn't a concern here.
-fn authorize_bus_op(
+pub(super) fn authorize_bus_op(
     identity: &CallerIdentity,
     tenant: &str,
     namespace: &str,
@@ -107,7 +107,7 @@ fn authorize_bus_op(
 
 #[cfg(feature = "bus")]
 #[derive(Clone, Copy)]
-enum BusOp {
+pub(super) enum BusOp {
     /// Topic CRUD (create / delete).
     Manage,
     /// Produce to a topic.
@@ -1097,6 +1097,15 @@ pub async fn subscribe(
         if let Err(resp) = authorize_bus_op(&identity, tenant, ns, BusOp::Subscribe) {
             return resp;
         }
+        if subscription_id.starts_with("acteon-live-") {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "reserved consumer group; use receipt sessions".into(),
+                }),
+            )
+                .into_response();
+        }
         let from = match params.from.as_deref() {
             Some("earliest") => acteon_bus::StartOffset::Earliest,
             Some("latest") | None => acteon_bus::StartOffset::Latest,
@@ -1208,7 +1217,8 @@ fn sse_stream(
 /// Request body for `POST /v1/bus/subscriptions`.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateSubscriptionRequest {
-    /// Stable identifier. Doubles as the Kafka `group.id`.
+    /// Stable identifier. Legacy subscriptions use it as the Kafka `group.id`;
+    /// receipt-required subscriptions derive a scoped group.
     /// Must be `[a-zA-Z0-9_-]{1..=120}`.
     pub id: String,
     /// Target Kafka topic (full `namespace.tenant.name` form).
@@ -1223,6 +1233,9 @@ pub struct CreateSubscriptionRequest {
     /// `manual` (default) or `auto_on_delivery`.
     #[serde(default)]
     pub ack_mode: Option<String>,
+    /// Require opaque receipts from live HTTP sessions.
+    #[serde(default)]
+    pub receipt_required: bool,
     /// Optional DLQ topic (`namespace.tenant.name`). Must also belong
     /// to the subscription's tenant and be registered in Acteon state.
     #[serde(default)]
@@ -1244,6 +1257,8 @@ pub struct SubscriptionResponse {
     pub tenant: String,
     pub starting_offset: String,
     pub ack_mode: String,
+    pub receipt_required: bool,
+    pub consumer_group: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dead_letter_topic: Option<String>,
     pub ack_timeout_ms: u64,
@@ -1431,6 +1446,7 @@ pub async fn create_subscription(
                 }
             };
         }
+        sub.receipt_required = req.receipt_required;
         sub.dead_letter_topic = req.dead_letter_topic.clone();
         if let Some(t) = req.ack_timeout_ms {
             sub.ack_timeout_ms = t;
@@ -1668,6 +1684,9 @@ pub async fn delete_subscription(
                     .into_response();
             }
         }
+        state
+            .bus_sessions
+            .close_subscription(&namespace, &tenant, &id);
         if let Err(e) = store.delete(&key).await {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1703,14 +1722,8 @@ pub async fn ack_subscription(
     Path((namespace, tenant, id)): Path<(String, String, String)>,
     Json(req): Json<AckRequest>,
 ) -> impl IntoResponse {
-    // **Performance warning**: this endpoint spins up a fresh Kafka
-    // consumer, performs a full JoinGroup/SyncGroup round-trip, then
-    // commits. The Kafka round-trip is hundreds of milliseconds on a
-    // warm broker and is **not** suitable for per-record acks in a
-    // high-throughput workload. Use it for end-of-batch checkpoints
-    // only. A future phase introduces a stateful subscription
-    // registry that holds one long-lived consumer so commits stream
-    // through it with microsecond overhead.
+    // Legacy raw-offset transport. Receipt-required subscriptions reject it;
+    // live sessions commit through the consumer that delivered their receipts.
     #[cfg(feature = "bus")]
     {
         let Some(backend) = state.bus_backend.clone() else {
@@ -1723,6 +1736,15 @@ pub async fn ack_subscription(
             Ok(s) => s,
             Err(resp) => return resp,
         };
+        if sub.receipt_required || sub.id.starts_with("acteon-live-") {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorResponse {
+                    error: "subscription requires live receipts".into(),
+                }),
+            )
+                .into_response();
+        }
         match backend
             .commit_offset(
                 &sub.topic,
@@ -1778,7 +1800,10 @@ pub async fn subscription_lag(
             Ok(s) => s,
             Err(resp) => return resp,
         };
-        match backend.consumer_lag(&sub.topic, &sub.id).await {
+        match backend
+            .consumer_lag(&sub.topic, &sub.consumer_group())
+            .await
+        {
             Ok(entries) => {
                 let total_lag: i64 = entries.iter().map(|e| e.lag).sum();
                 let body = LagResponse {
@@ -1968,6 +1993,8 @@ fn subscription_to_response(s: &acteon_core::Subscription) -> SubscriptionRespon
             acteon_core::AckMode::Manual => "manual".into(),
             acteon_core::AckMode::AutoOnDelivery => "auto_on_delivery".into(),
         },
+        receipt_required: s.receipt_required,
+        consumer_group: s.consumer_group(),
         dead_letter_topic: s.dead_letter_topic.clone(),
         ack_timeout_ms: s.ack_timeout_ms,
         description: s.description.clone(),
@@ -1980,7 +2007,7 @@ fn subscription_to_response(s: &acteon_core::Subscription) -> SubscriptionRespon
 /// O(1) direct lookup of a subscription by its full `(namespace, tenant, id)`
 /// triple. Replaces the O(N) scan from an earlier draft.
 #[cfg(feature = "bus")]
-async fn load_subscription(
+pub(super) async fn load_subscription(
     state: &AppState,
     namespace: &str,
     tenant: &str,

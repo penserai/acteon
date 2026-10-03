@@ -14,6 +14,55 @@ pub struct BusServerConfig {
     pub enabled: bool,
     /// Kafka-specific settings. Required when `enabled` is `true`.
     pub kafka: KafkaClientConfig,
+    /// Bounded, process-local HTTP consumer sessions.
+    pub sessions: BusSessionConfig,
+}
+
+/// `[bus.sessions]` limits. Closed sessions count toward capacity until retention expires.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct BusSessionConfig {
+    pub max_sessions: usize,
+    pub max_sessions_per_tenant: usize,
+    pub max_in_flight: usize,
+    pub max_buffer_bytes: usize,
+    pub max_ack_history: usize,
+    pub idle_timeout_ms: u64,
+    pub lifetime_ms: u64,
+    pub closed_retention_ms: u64,
+}
+
+impl Default for BusSessionConfig {
+    fn default() -> Self {
+        Self {
+            max_sessions: 512,
+            max_sessions_per_tenant: 64,
+            max_in_flight: 256,
+            max_buffer_bytes: 8 * 1024 * 1024,
+            max_ack_history: 1024,
+            idle_timeout_ms: 60_000,
+            lifetime_ms: 300_000,
+            closed_retention_ms: 30_000,
+        }
+    }
+}
+
+impl BusSessionConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.max_sessions == 0
+            || self.max_sessions_per_tenant == 0
+            || self.max_sessions_per_tenant > self.max_sessions
+            || !(1..=100_000).contains(&self.max_in_flight)
+            || self.max_buffer_bytes == 0
+            || self.max_ack_history == 0
+            || self.idle_timeout_ms == 0
+            || self.lifetime_ms == 0
+            || self.closed_retention_ms == 0
+        {
+            return Err("invalid bus session capacity or timeout".into());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]

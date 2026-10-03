@@ -126,6 +126,8 @@ pub struct CreateSubscription {
     pub starting_offset: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ack_mode: Option<String>,
+    #[serde(default)]
+    pub receipt_required: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dead_letter_topic: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -144,6 +146,10 @@ pub struct BusSubscription {
     pub tenant: String,
     pub starting_offset: String,
     pub ack_mode: String,
+    #[serde(default)]
+    pub receipt_required: bool,
+    #[serde(default)]
+    pub consumer_group: String,
     #[serde(default)]
     pub dead_letter_topic: Option<String>,
     pub ack_timeout_ms: u64,
@@ -2719,5 +2725,202 @@ mod consumer_tests {
         };
         let err = parse_bus_stream_envelope(Ok(SseEnvelope::Frame(frame))).unwrap_err();
         assert!(matches!(err, Error::Deserialization(_)));
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OpenSessionRequest {
+    pub request_id: String,
+}
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ReceiveRequest {
+    pub max_messages: usize,
+    pub wait_ms: u64,
+}
+impl Default for ReceiveRequest {
+    fn default() -> Self {
+        Self {
+            max_messages: 64,
+            wait_ms: 10_000,
+        }
+    }
+}
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReceiptRequest {
+    pub receipt_ids: Vec<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionResponse {
+    pub session_id: String,
+    pub consumer_group: String,
+    pub phase: String,
+    pub assignment_epoch: u64,
+    pub partitions: Vec<i32>,
+    pub pending: usize,
+    pub buffered_bytes: usize,
+    pub closed_reason: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionDelivery {
+    pub receipt_id: String,
+    pub message: serde_json::Value,
+    pub partition: i32,
+    /// Last consumed offset; acknowledgement accepts only the opaque receipt ID.
+    pub offset: i64,
+    pub assignment_epoch: u64,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReceiveResponse {
+    pub deliveries: Vec<SessionDelivery>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReceiptPosition {
+    pub partition: i32,
+    pub offset: i64,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReceiptResponse {
+    pub consumer_group: String,
+    pub positions: Vec<ReceiptPosition>,
+    pub remaining_in_flight: usize,
+}
+
+impl ActeonClient {
+    /// Open a live, owner-bound consumer. Retry with the same request ID on the same server.
+    pub async fn open_bus_session(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        id: &str,
+        request_id: &str,
+    ) -> Result<SessionResponse, Error> {
+        let url = self.subscription_url(namespace, tenant, id, Some("sessions"));
+        self.bus_session_json(self.client.post(url).json(&OpenSessionRequest {
+            request_id: request_id.into(),
+        }))
+        .await
+    }
+    pub async fn get_bus_session(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        id: &str,
+        session: &str,
+    ) -> Result<SessionResponse, Error> {
+        self.bus_session_json(
+            self.client
+                .get(self.bus_session_url(namespace, tenant, id, session, None)),
+        )
+        .await
+    }
+    /// Receive or replay the pending batch. A lost response retains the same receipt IDs.
+    pub async fn receive_bus_session(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        id: &str,
+        session: &str,
+        request: &ReceiveRequest,
+    ) -> Result<ReceiveResponse, Error> {
+        self.bus_session_json(
+            self.client
+                .post(self.bus_session_url(namespace, tenant, id, session, Some("receive")))
+                .json(request),
+        )
+        .await
+    }
+    /// Validate the complete prefix and derive checkpoint positions without committing.
+    pub async fn validate_bus_receipts(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        id: &str,
+        session: &str,
+        receipt_ids: &[String],
+    ) -> Result<ReceiptResponse, Error> {
+        self.bus_session_json(
+            self.client
+                .post(self.bus_session_url(namespace, tenant, id, session, Some("validate")))
+                .json(&ReceiptRequest {
+                    receipt_ids: receipt_ids.to_vec(),
+                }),
+        )
+        .await
+    }
+    /// Persist processing state and outputs BEFORE acknowledging. Retries are bounded
+    /// by session lifetime, assignment ownership, and acknowledgement history retention.
+    pub async fn acknowledge_bus_receipts(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        id: &str,
+        session: &str,
+        receipt_ids: &[String],
+    ) -> Result<ReceiptResponse, Error> {
+        self.bus_session_json(
+            self.client
+                .post(self.bus_session_url(namespace, tenant, id, session, Some("ack")))
+                .json(&ReceiptRequest {
+                    receipt_ids: receipt_ids.to_vec(),
+                }),
+        )
+        .await
+    }
+    pub async fn close_bus_session(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        id: &str,
+        session: &str,
+    ) -> Result<(), Error> {
+        let response = self
+            .add_auth(
+                self.client
+                    .delete(self.bus_session_url(namespace, tenant, id, session, None)),
+            )
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            Err(map_error(response).await)
+        }
+    }
+    fn bus_session_url(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        id: &str,
+        session: &str,
+        suffix: Option<&str>,
+    ) -> String {
+        let base = self.subscription_url(namespace, tenant, id, Some("sessions"));
+        let session = encode_segment(session);
+        match suffix {
+            Some(s) => format!("{base}/{session}/{s}"),
+            None => format!("{base}/{session}"),
+        }
+    }
+    async fn bus_session_json<T: serde::de::DeserializeOwned>(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> Result<T, Error> {
+        let response = self
+            .add_auth(request)
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+        if response.status().is_success() {
+            response
+                .json()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))
+        } else {
+            Err(map_error(response).await)
+        }
     }
 }
