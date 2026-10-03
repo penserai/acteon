@@ -126,6 +126,8 @@ The live path forces auto-commit and auto-offset-store off, pins the requested
 group ID, and uses classic eager `range` assignment. Pass-through settings
 cannot override these correctness properties. Cooperative assignment needs
 a separate per-partition epoch protocol and is not enabled by this API.
+Each session subscribes to one literal topic; Kafka regex subscriptions are
+rejected so a receipt's topic always identifies the concrete source lane.
 
 Malformed JSON and terminal consumption errors close the session. A later record
 cannot be committed past an undispatched poison record. Recovery needs an

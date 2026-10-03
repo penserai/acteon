@@ -59,9 +59,9 @@ pub(crate) fn open(
     bounds: &SubscriptionConfig,
 ) -> Result<Box<dyn AcknowledgedSubscription>, SubscriptionError> {
     bounds.validate()?;
-    if topic.trim().is_empty() || group.trim().is_empty() {
+    if topic.trim().is_empty() || topic.starts_with('^') || group.trim().is_empty() {
         return Err(SubscriptionError::InvalidConfig(
-            "topic and group must be nonempty".into(),
+            "a nonempty literal topic and group are required; regex topics are unsupported".into(),
         ));
     }
     // These correctness properties cannot be overridden by pass-through config.
@@ -252,5 +252,23 @@ impl Drop for KafkaSubscription {
         self.ledger.lock().transition([], true);
         // A blocking acknowledgement still owns its Arc and operation guard.
         // Closing the ledger fences its completion; Kafka also fences lost membership.
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn regex_subscriptions_cannot_issue_receipts_for_a_literal_topic() {
+        assert!(matches!(
+            open(
+                ClientConfig::new(),
+                "^observability.*",
+                "group",
+                &SubscriptionConfig::default()
+            ),
+            Err(SubscriptionError::InvalidConfig(_))
+        ));
     }
 }
