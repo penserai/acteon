@@ -84,8 +84,17 @@
 }
 
 .md-typeset .platform-hero {
-  max-width: 46rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 180px;
+  align-items: center;
+  gap: 3rem;
   padding: 2.2rem 0 1.6rem;
+}
+
+.md-typeset .platform-logo {
+  display: block;
+  width: 180px;
+  height: auto;
 }
 
 .md-typeset .platform-hero h1 {
@@ -185,7 +194,17 @@
 
 @media (max-width: 40em) {
   .md-typeset .platform-hero {
+    grid-template-columns: 1fr;
+    gap: 1.5rem;
     padding-top: 1rem;
+  }
+
+  .md-typeset .platform-brand {
+    order: -1;
+  }
+
+  .md-typeset .platform-logo {
+    width: 110px;
   }
 
   .md-typeset .execution-path {
