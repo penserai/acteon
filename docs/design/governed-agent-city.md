@@ -1,8 +1,8 @@
 # Acteon: shared infrastructure for autonomous and deterministic operations
 
-**Status:** proposed design and implementation plan.
+**Status:** platform design; implementation proceeds through the companion phase gates.
 
-**Baseline:** architecture inventory at revision `9037a71a57928d24347088fdeae9bb03c2704138`; execution-role changes inspected at checkout revision `6bfcd7b6e31ffdf24437fcf7d1cdccf29a5ddb04` on October 3, 2026. Checkout implementation is not evidence of release or publication.
+**Baseline:** reviewed principal-binding head `4093ae26`, merged as `f44b9e37`, including execution-role, coordinator and resource-identity changes. Checkout implementation alone is not evidence of release or publication; the tracker records those separately. The original effect inventory was taken at `9037a71a`; integrations must be rechecked as source changes.
 
 **Audience:** platform maintainers, SDK authors, operators, and agent-runtime integrators.
 
@@ -73,9 +73,10 @@ The baseline already has substantial reusable infrastructure:
 
 | Area | Existing implementation | What this design adds |
 |---|---|---|
-| Authentication and grants | API keys, JWTs, tenant/namespace/provider/action grants; optional grant-bound agent identity | Stable actor model, execution-only access, permit lifecycle and delegated authority |
+| Authentication and grants | API keys, JWTs, Executor role, scoped grants, optional stable principal bindings and current-identity inspection | Principal lifecycle, trusted deferred authority, permit lifecycle and delegated authority |
 | Policy and execution | Rules, approvals, quotas, silences, circuit breakers, dispatch, chains and workflows | Common authorization checkpoint across execution boundaries |
 | Durability | CAS-backed dispatch receipts, worker tasks, recovery, result handoffs, execution history | Persisted authority lineage, intervention reconciliation, delegation receipts |
+| Governance substrate | Bounded CAS coordinator and exact typed resource references; not integrated into effects | Verified authority evaluation, atomic root reservations and common effect checkpoints |
 | Agent registry | Scoped agents, capability filters, heartbeats, administrative suspension/ban, individual cards | Governed candidate discovery and validated destination resolution |
 | A2A | JSON-RPC/REST task submission, reads, cancellation, SSE and discovery | Destination selection, runtime handoff, outbound peer invocation and remote-task reconciliation |
 | Messaging | Agent inbox addressing, bus subscriptions, conversations and receipts | Governed publish/delivery and preserved sender/delegation authority |
@@ -83,7 +84,7 @@ The baseline already has substantial reusable infrastructure:
 
 Important implementation details constrain the plan:
 
-- The inspected checkout contains Admin, Operator, Executor, and Viewer. Executor separates dispatch from the OperationsManage ceiling; the original baseline had only Admin, Operator, and Viewer. Existing action grants already constrain namespace, tenant, provider, and action type. Execution-only endpoint access is implemented in this checkout; durable per-effect authority is still proposed.
+- The inspected checkout contains Admin, Operator, Executor, and Viewer. Executor separates dispatch from the OperationsManage ceiling. Existing action grants already constrain namespace, tenant, provider, and action type. Stable principal metadata is retained through admission receipts and chains on this branch; complete durable per-effect authority is still proposed.
 - `CallerIdentity` is server-local. Its conversion to the core `Caller` is an audit identity, not a complete authorization context suitable for deferred execution.
 - A2A `method_message_send` creates a Submitted task or appends task history. It does not resolve a target agent or invoke its runtime. Accepted `configuration` and `metadata` fields are currently ignored.
 - A2A shares state, audit and streaming infrastructure, but task submission does not automatically traverse ordinary dispatch rules and quotas.
@@ -123,7 +124,7 @@ A rule can narrow authority or choose a permitted route. It cannot expand a perm
 ### Placement in the repository
 
 - `acteon-core`: serializable principal, resource, permit, closure, decision and execution-context types.
-- Proposed `acteon-governance` crate: deterministic evaluation, selector matching, attenuation validation, versioned authority storage and reservations. Keep this independent of Axum and agent planning.
+- `acteon-governance`: extend the existing coordinator substrate with deterministic evaluation, selector matching, attenuation validation, versioned authority storage and reservations. Keep this independent of Axum and agent planning.
 - `acteon-gateway`: admission and effect checkpoints, context propagation, durable intervention and delegation orchestration.
 - `acteon-server`: authenticate requests, construct trusted contexts, expose scoped administration and discovery/delegation APIs, OpenAPI schemas.
 - Proposed A2A transport module or crate: outbound protocol negotiation, credentials, bounded networking and peer-task reconciliation. The gateway owns execution state; transport does not own policy.
@@ -136,7 +137,7 @@ Do not create a second agent registry or a separate scheduler for the mesh.
 
 ### Principals
 
-Introduce `PrincipalRef { id, kind, namespace, tenant }`, with kinds `human`, `agent`, `service`, and `system`. Kind is descriptive; it does not determine privileges. Credentials authenticate a principal. Rotating a credential does not change the principal or its audit history.
+The checkout's `PrincipalIdentity { id, kind }` is an administrative-domain identity, separate from namespace/tenant grants. Introduce a scoped `PrincipalRef` for governance bindings without redefining that identity or treating its descriptive kind as a privilege. Kinds are `human`, `agent`, `service`, and `system`. Credentials authenticate a principal. Rotating a credential does not change the principal; preserve the credential used for each original admission as separate provenance.
 
 A request records both the authenticated actor and any authorized represented actor. Human approval and service execution remain distinguishable. Acting on behalf of another principal requires an explicit binding; payload fields cannot establish that binding.
 
@@ -553,3 +554,98 @@ Before merging, perform an adversarial review around bypass paths, privilege amp
 | How fresh must federated revocation be, and what happens during partition? | Phase 5 trust contract; no implicit optimistic execution |
 
 The first implementation milestone should be **an execution-only actor whose authority survives asynchronous handoffs and whose next effect can be reliably denied**. That foundation makes the city metaphor an enforceable product contract and makes later autonomous mesh behavior safe to compose.
+
+## 17. Concrete execution and storage contracts
+
+The contracts below refine the proposal into implementation boundaries. Names are illustrative; they do not describe APIs already available to callers.
+
+### Trusted context versus persisted data
+
+Use three distinct representations:
+
+| Representation | Who may produce it | What it proves |
+|---|---|---|
+| Request metadata | Caller, model or SDK | Business intent only |
+| Versioned persisted context | Trusted admission or delegation path | Recorded provenance and accepted ceiling; still needs verification on recovery |
+| Verified execution context | Configured authentication/runtime adapter or recovery verifier | Usable input to current authority evaluation; never permanent authorization to send |
+
+The verified wrapper has private construction and is not deserializable from public request bodies. A model-facing tool receives an opaque execution handle; its host resolves that handle and supplies the parent context. The model can propose a destination and input, but cannot choose an authenticated actor, budget ledger or permit ancestry.
+
+Persisted context verification checks format, administrative domain, namespace/tenant, execution ownership, semantic request digest and lineage. Recovery uses trusted storage and validates the referenced authority records. Storage access is a privileged boundary; accepting an arbitrary caller-supplied serialized context is never a recovery path. Federation adds authenticated, audience-bound envelopes rather than relaxing this rule.
+
+Keep original accepted grant ceilings even when another credential for the same principal has broader grants. Current principal status and current ceiling revisions may narrow execution further. Do not union credentials belonging to one principal. A file-backed auth reload that changes execution authority must publish its authoritative revision through the coordinator before replicas treat that revision as effective; independent file watchers cannot establish globally ordered revocation.
+
+### Evaluation and attempt registration
+
+The common checkpoint accepts a verified context and a resolved effect descriptor: operation, complete resource set, destination binding revision, input digest, attempt ID and bounded cost units.
+
+1. Resolve and validate the actual target, including redirects or fallbacks allowed by the adapter.
+2. Wait for local execution capacity without holding a fresh start authorization.
+3. Read current authority and evaluate grants, permits, lineage, principal status, closures, deadline and root capacity.
+4. Atomically register the attempt and reserve its units against the evaluated authority generation. If that generation changed, reevaluate; do not reuse the earlier allow.
+5. Persist the send intent needed for recovery, then perform one external attempt.
+6. Persist settlement or uncertainty and deliver audit/result outboxes idempotently.
+
+Registration is the start linearization point. A duplicate attempt ID returns an observation of the existing attempt, never a second authorization to send. Retries and new chain steps use fresh attempt IDs and checkpoints. Once registered, an attempt may be in flight even if its process pauses before sending. This limitation must remain visible in operator impact reports.
+
+Start registration, restrictions and root reservations must share a validated atomic boundary. The current coordinator stores one resource per start and has no root-budget accounting; multi-resource authorization and accounting require an explicit extension, not parallel calls to the existing API. If a root spans multiple coordinators, initially reject that execution or use a separately proven protocol.
+
+### Authoritative records and projections
+
+| Record | Authoritative content | Repairable projection |
+|---|---|---|
+| Principal/ceiling | Status, issuance/execution ceilings, revision | Search/list index and display name |
+| Permit | Exact scope, lineage, validity, constraints, revision | Subject/resource lookup index |
+| Execution | Verified lineage references, accepted ceiling, digest, lifecycle | Operator search and delegation graph |
+| Coordinator/root ledger | Authority incarnation/generation, restrictions, attempts and reservations | Utilization dashboards |
+| Closure | Selector, mode, revision, activation boundary and pending intervention | Impact index and UI counts |
+| Delegation | Child identity, target binding, send intent, remote mapping and uncertainty | Progress stream and notification delivery |
+
+Publishing a mutation must make its restriction and revision authoritative before acknowledging success. Secondary indexes and notifications may lag and are repaired through durable intents. A permit record stored separately from the coordinator needs a staged publication/reconciliation protocol; a plain pair of writes is insufficient. Failures leave either the old effective revision or a fail-closed pending change, never an untracked allow.
+
+## 18. Lifecycle and failure semantics
+
+Track execution lifecycle separately from effect attempts and operator intent:
+
+| Transition | Required condition | Failure behavior |
+|---|---|---|
+| Accepted → ready | Durable context and permitted admission | Reject admission or retain a classified parked record |
+| Ready → running | Current authority and registered attempt | Deny/park without sending |
+| Running → completed/failed | Durable known outcome | Retry result delivery, not the external effect |
+| Running → uncertain | Acceptance or effect outcome cannot be established | Retain reservation and require reconciliation |
+| Ready → paused | Active intervention at a safe boundary | Resume only after current authority reevaluation |
+| Any nonterminal state → cancel-requested | Authorized operator/participant intent | Keep request separate from adapter acknowledgment |
+| Cancel-requested → canceled | Confirmed local non-start or supported remote acknowledgment | Otherwise remain running or unresolved |
+
+Map these internal distinctions to existing public task/receipt states with explicit reason and intervention fields. Do not equate a failed governance check, provider failure and uncertain send. An uncertain record is not made safe to replay by a timeout, expired lease, server restart or closure reopening.
+
+Closures have their own lifecycle: requested, active, intervention-pending, reconciled and ended. Activation means the restriction is authoritative; reconciliation means affected work has been classified. Neither means every remote operation stopped. Overlapping closure records retain independent identities; ending one cannot remove another's restriction. Expiry follows the same serialized authority change as manual reopen.
+
+### Required failure experiments
+
+- Stop a process immediately before and after attempt registration, external send, settlement and result handoff; verify each recovery classification.
+- Lose the response to a successful CAS and to a peer acceptance; prove neither causes an unverified second send.
+- Revoke a permit while another replica waits on a semaphore or retry timer; verify the next checkpoint refuses.
+- Disable the actor or narrow its ceiling while queued work retains the original credential name; verify recovery does not borrow an administrator's or replacement credential's privileges.
+- Exhaust coordinator capacity, including retained records; verify admission stops and an unpersisted closure is reported as failed.
+- Restore stale state or delete/recreate a coordinator; reject old incarnations and document the recovery procedure before enabling new work.
+
+## 19. Deployment, rollout and operational readiness
+
+The initial deployment is one administrative domain with scoped server replicas, trusted workers and one qualified durable coordination backend. External agent runtimes use narrowly scoped credentials and restricted network access. Deterministic operations use the same admission and checkpoint paths. Direct calls that bypass Acteon cannot be governed by its permits.
+
+Enable enforcement per scope and effect class only after coverage is complete. At startup, validate backend capabilities, supported context versions, adapter capabilities and the selected enforcement profile. An unfinished effect class is refused in that profile; it does not fall back to legacy execution. Observe mode retains existing safety checks while reporting additional proposed governance decisions.
+
+Before cutover, inventory existing durable work, bind principals, provision exact resource identities and ceilings, issue permits, and classify legacy records. Run observation against representative production traffic, correct missing grants and false assumptions, then canary a narrow scope. Widen only after denial, latency, recovery and capacity evidence meet agreed thresholds.
+
+Define service objectives during qualification rather than inventing numeric promises here: checkpoint latency, admission throughput, control activation latency, reconciliation lag, maximum unresolved attempts and recovery time. Benchmark contention at both a hot tenant and many independent tenants. Capacity limits and unsupported backends belong in the public support matrix.
+
+Incident runbooks cover unavailable authority storage, exhausted coordinator records, compromised credentials, stuck uncertain attempts, stale projections, remote cancellation failure and incompatible rollback. Emergency admission stop must remain available when ordinary record capacity is exhausted. Restoration of availability never automatically replays uncertain effects.
+
+## 20. Scope decisions for the first useful release
+
+The first governed release provides exact resources, stable actors, trusted durable context, revocable permits, integer call/concurrency limits and a qualified deterministic execution path. A narrow agent runtime then uses those same primitives. Humans retain separate issuance and intervention permissions; ordinary deterministic clients do not need to masquerade as agents.
+
+The first autonomous mesh release adds registry-based selection, actual inbound execution and outbound A2A, attenuated child authority and honest remote recovery. A static chain that chooses all peers in advance is useful orchestration but does not demonstrate autonomous selection.
+
+Keep advanced label selectors, strict monetary limits, cross-domain federation and cross-region atomic coordination behind independent contracts. Models may improve planning and diagnosis; no model is part of the authorization decision. This keeps the platform useful for traditional software while allowing agents to choose their next operation within enforceable permits.

@@ -31,17 +31,17 @@ verify per-effect permits, revocation during a chain, closures or mesh execution
 
 ## Remaining phase gates
 
-| Phase | State after this slice | Next required evidence |
+| Phase | Current state | Next required evidence |
 |---|---|---|
-| 0: Inventory/coordinator | HTTP inventory implemented; effect inventory and unintegrated coordinator prototype in progress | Complete effect call-site mapping; multi-replica start/closure race and crash tests |
-| 1: Actors/context | Execution-only role implemented; stable principals and durable context remain | Unforgeable context construction and propagation through every deferred path, migration and credential rotation tests |
+| 0: Inventory/coordinator | HTTP/effect inventories, unintegrated coordinator and exact resource identity implemented; memory/Redis race contracts pass | Atomic root reservations, multi-resource starts, retention/emergency stop and backend failover qualification |
+| 1: Actors/context | Executor role and principal bindings merged; trusted root context substrate in progress | Propagation through every deferred path, current authority publication/evaluation, migration and rollback gates |
 | 2: Permits/checkpoints | Not implemented | Revocation and target reauthorization at each effect; atomic root reservations |
 | 3: Closures/intervention | Existing agent lifecycle only | Generic serialized closures, durable intervention, drain/pause/cancel semantics and acknowledgments |
 | 4: Autonomous mesh | Existing registry and submitted A2A tasks only | Real target resolution/invocation, attenuation, lineage, recovery and safe peer retry |
 | 5: Production/federation | Not implemented | Verified backend and peer capability matrix, trust/revocation protocol and failure tests |
 
-Next work should map the actual effect paths and prototype the coordinator
-contract, then introduce stable principals and trusted execution context. Do
+Next work should integrate trusted execution context into deferred paths and
+complete coordinator/accounting prerequisites before per-effect enforcement. Do
 not expose workflow/queue mutation as executor tooling merely by changing the
 role table: these need retained authority and operation/resource checks first.
 
@@ -49,7 +49,7 @@ For every slice, record PR/review/merge and publication evidence here, keep
 public guides synchronized with shipped behavior, and retain the full remaining
 phase gates until their own runtime evidence passes.
 
-## Coordinator substrate slice (in progress)
+## Coordinator substrate slice (merged, unintegrated)
 
 The working `acteon-governance` crate implements bounded single-key CAS
 coordination, incarnation/generation stamps, exact subject/resource restrictions,
@@ -62,7 +62,7 @@ orderings, lost acknowledgments, ambiguous settlement, active/retained-record
 capacity, missing/unknown state, and stale-incarnation rejection. The same
 sequential/race/response-loss contract passes through two independently connected
 Redis clients using a unique test prefix. The integration workflow now explicitly
-runs the real-Redis contract; CI execution is still pending.
+runs the real-Redis contract; PR #407 CI confirms it executed and passed.
 
 Remaining Phase 0 work includes reservation protocol proof, canonical resource
 identity, checked effect coverage, retention/emergency admission-stop design,
@@ -71,7 +71,7 @@ per-retry enforcement remain Phase 1/2 integration gates. Neither a substrate
 unit test nor a Redis test certifies the full city vision.
 
 
-## Canonical resource identity slice (in progress)
+## Canonical resource identity slice (merged)
 
 `ResourceRef` supplies exact validated kind/scope/ID identity and a versioned,
 strict canonical encoding. Coordinator attempts and restrictions now store typed
@@ -80,7 +80,7 @@ migrated. See [resource identity ADR](resource-identity.md).
 
 Targeted core/governance tests, the independent Redis contract, core OpenAPI
 compilation, full workspace lint/tests/all-target checks, UI lint/build, and
-strict documentation build pass locally. Current-head CI/release evidence remains pending. Actual
+strict documentation build pass locally. PR #408 merged at `aca3fd45` after current-head CI passed. Actual
 resource resolution and per-effect enforcement are not implemented by this type.
 
 The executor slice merged as PR #406 at `e9fc89f6`; its publication verification
@@ -88,7 +88,7 @@ is tracked separately from implementation. Coordinator PR #407 merged at `854643
 Its integration-job log confirms the independent Redis contract executed and
 passed rather than being left ignored.
 
-## Stable principal binding slice (in progress)
+## Stable principal binding slice (merged)
 
 Optional validated principal metadata is bound by operator-controlled auth
 configuration, kept separate from credential names and secrets, and retained
@@ -109,8 +109,9 @@ fixtures exercise every SDK, including legacy null principal and async Python.
 Local workspace validation passed 3,338 tests, lint and all-target checks;
 all five SDK contract suites, Python lint/types, Node packaging, Java build,
 UI lint/build, and strict docs build pass. The updated live agent guide passes
-against the built server, including its principal-binding assertion. Current-head
-CI, adversarial review, and release evidence remain pending. Server bus-feature
+against the built server, including its principal-binding assertion. PR #409
+merged at `f44b9e37` after adversarial review and all current-head CI checks passed.
+Server bus-feature
 lib/integration tests also pass locally.
 
 This slice does not make Caller a trusted authority envelope or establish
@@ -119,3 +120,27 @@ current deferred authority evaluation, coordinator-backed credential/principal
 changes, permits, root reservations, and effect checkpoints remain required.
 Existing audit caller/quota filters retain their credential-name semantics;
 adding a principal binding does not silently reinterpret those controls.
+
+## Trusted root context substrate (in progress)
+
+The internal context store captures versioned, HMAC-sealed root provenance and
+exact accepted effect tuples. Replacement replicas recover only through trusted
+storage with expected actor/execution/input bindings; unknown formats, tampering,
+expired deadlines and changed authority incarnations fail closed. Stable-handle
+capture reconciles lost acknowledgments and rejects authority broadening on
+replay. Signing-key rotation retains old verification keys explicitly.
+
+See the [context ADR](trusted-execution-context.md). This is not yet integrated
+into gateway admission or deferred work, does not evaluate current permissions,
+and does not complete Phase 1. Child attenuation, durable propagation, legacy
+migration, retained-context lifecycle and per-effect enforcement remain gates.
+The city design and phase plan now include concrete storage, lifecycle, ownership
+and acceptance contracts alongside the current implementation baseline.
+
+Local evidence: eleven context contracts pass, plus one explicitly executed
+independent-client Redis contract. Required workspace checks (3,349 passing tests), UI lint/build and
+strict public docs build pass; PR review/CI and merge evidence remain pending.
+
+Principal-binding publication: Deploy Documentation run `37176654460` passed
+for merge `f44b9e37`; fetched authentication and agent-swarm pages contain the
+identity endpoint and stable-principal/executor guidance.

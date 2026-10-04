@@ -62,6 +62,45 @@ Single-key CAS correctness and storage durability/failover assumptions are backe
 requirements. Tests against a running Redis prove the exercised contract, not
 correctness under every Redis deployment or failover configuration.
 
+## Trusted durable root context
+
+`context::TrustedContextStore` captures a trusted adapter's authenticated root
+identity, original credential provenance, exact accepted operation/resource
+tuples, ceiling revision, input digest, deadline and evaluated authority stamp.
+It persists a versioned HMAC-SHA256 sealed record and returns an opaque reference.
+Recovery on another replica verifies the signature, domain/scope, expected
+execution/actor/input binding, deadline and coordinator incarnation before
+constructing a non-deserializable `VerifiedExecutionContext`.
+
+This is a privileged library boundary. The deployment supplies strong signing
+keys and retains verification keys during rotation. Never expose root capture or
+key material to models; do not translate client metadata directly into admission
+facts. A handle is not a bearer credential, and its trusted host must check work
+ownership independently. A holder of signing keys can issue context records.
+
+Allocate the handle before capture and retain it across retries. Lost write
+acknowledgments are reconciled through the same handle. Replays observe the
+original facts and reject changed ceilings, deadlines, credentials or input.
+Capture uses an independently evaluated authority stamp; stale fresh captures
+are refused. Later generation changes do not invalidate provenance, but require
+current effect evaluation. A new incarnation refuses old contexts.
+
+Verified provenance is **not effect authorization**. Current principal/permit
+evaluation, atomic reservations and start checkpoints remain mandatory future
+integration. This slice does not wire contexts into gateway/deferred records or
+implement child delegation. Exact tuples cannot be mixed across entries.
+Records are bounded to 64 KiB, 128 effect tuples and 16 resources per tuple.
+They do not expire automatically: retained-work cleanup and key retirement need
+an explicit lifecycle policy before production integration. No public API or SDK
+surface is introduced by this internal substrate.
+
+```sh
+cargo test -p acteon-governance --test context
+ACTEON_GOVERNANCE_REDIS_URL=redis://127.0.0.1:6379 \
+  cargo test -p acteon-governance --test context \
+  independent_redis_context_capture_and_recovery -- --ignored
+```
+
 ## Verification
 
 ```sh
