@@ -1,6 +1,6 @@
 # Atomic effect registration and shared root reservations
 
-**Status:** internal coordinator contract on the working branch; runtime permit
+**Status:** implemented internal coordinator contract; runtime permit
 evaluation and effect wiring remain open.
 
 ## Decision

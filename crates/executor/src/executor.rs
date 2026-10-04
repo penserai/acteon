@@ -8,6 +8,9 @@ use acteon_provider::{DispatchContext, DynProvider, ProviderError};
 
 use crate::config::ExecutorConfig;
 use crate::dlq::DeadLetterSink;
+use crate::gate::{
+    AttemptSettlement, ProviderAttempt, ProviderAttemptGate, ProviderAttemptOutcome,
+};
 
 /// Executes actions against a provider with retry logic and bounded concurrency.
 ///
@@ -24,6 +27,7 @@ pub struct ActionExecutor {
     config: ExecutorConfig,
     semaphore: Arc<Semaphore>,
     dlq: Option<Arc<dyn DeadLetterSink>>,
+    require_attempt_gate: bool,
 }
 
 impl ActionExecutor {
@@ -43,6 +47,7 @@ impl ActionExecutor {
             config,
             semaphore,
             dlq: None,
+            require_attempt_gate: false,
         }
     }
 
@@ -56,6 +61,7 @@ impl ActionExecutor {
             config,
             semaphore,
             dlq: Some(dlq),
+            require_attempt_gate: false,
         }
     }
 
@@ -64,6 +70,31 @@ impl ActionExecutor {
     pub fn clock(mut self, clock: Arc<dyn acteon_time::Clock>) -> Self {
         self.clock = clock;
         self
+    }
+
+    /// Refuse all ungated calls, including attachment and batch entrypoints.
+    /// This library setting does not enable gateway-wide permit enforcement.
+    #[must_use]
+    pub fn require_attempt_gate(mut self) -> Self {
+        self.require_attempt_gate = true;
+        self
+    }
+
+    /// Execute with a trusted gate after waits and before every provider attempt.
+    /// A fresh durable guard is required for each retry. Ambiguous settlement or
+    /// settlement failure stops automatic retries without DLQ redispatch.
+    /// Legacy DLQ entries cannot retain authority; gated failures are returned
+    /// without writing that sink. The host must retain governed result/handoff
+    /// evidence through its registered-attempt adapter.
+    #[instrument(skip(self, action, provider, ctx, gate), fields(action.id = %action.id, attempt, otel.status_code))]
+    pub async fn execute_with_gate(
+        &self,
+        action: &Action,
+        provider: &dyn DynProvider,
+        ctx: Option<&DispatchContext>,
+        gate: &dyn ProviderAttemptGate,
+    ) -> ActionOutcome {
+        self.execute_inner(action, provider, ctx, Some(gate)).await
     }
 
     /// Return a reference to the executor configuration.
@@ -106,7 +137,7 @@ impl ActionExecutor {
     /// non-retryable error.
     #[instrument(skip(self, action, provider), fields(action.id = %action.id, attempt, otel.status_code))]
     pub async fn execute(&self, action: &Action, provider: &dyn DynProvider) -> ActionOutcome {
-        self.execute_inner(action, provider, None).await
+        self.execute_inner(action, provider, None, None).await
     }
 
     /// Execute an action with a [`DispatchContext`] (e.g. resolved attachments).
@@ -121,7 +152,7 @@ impl ActionExecutor {
         provider: &dyn DynProvider,
         ctx: &DispatchContext,
     ) -> ActionOutcome {
-        self.execute_inner(action, provider, Some(ctx)).await
+        self.execute_inner(action, provider, Some(ctx), None).await
     }
 
     /// Shared retry/timeout/concurrency loop used by both [`execute`] and
@@ -132,7 +163,11 @@ impl ActionExecutor {
         action: &Action,
         provider: &dyn DynProvider,
         ctx: Option<&DispatchContext>,
+        gate: Option<&dyn ProviderAttemptGate>,
     ) -> ActionOutcome {
+        if self.require_attempt_gate && gate.is_none() {
+            return gate_failure("ATTEMPT_GATE_REQUIRED", 0);
+        }
         // Acquire a concurrency permit. This is cancel-safe: if the caller
         // drops the future while waiting, the permit is never acquired.
         let _permit = self
@@ -152,6 +187,23 @@ impl ActionExecutor {
                 "executing action"
             );
 
+            let registered = if let Some(gate) = gate {
+                match gate
+                    .start(ProviderAttempt {
+                        action,
+                        provider_name: provider.name(),
+                        ordinal: attempt,
+                        now_ms: self.clock.now().timestamp_millis(),
+                    })
+                    .await
+                {
+                    Ok(registered) => Some(registered),
+                    Err(error) => return gate_failure(error.code(), attempt),
+                }
+            } else {
+                None
+            };
+
             let result = acteon_time::timeout(
                 self.clock.as_ref(),
                 self.config.execution_timeout,
@@ -161,6 +213,21 @@ impl ActionExecutor {
                 },
             )
             .await;
+
+            if let Some(registered) = registered {
+                let outcome = match &result {
+                    Ok(Ok(response)) => ProviderAttemptOutcome::Succeeded(response),
+                    Ok(Err(error)) => ProviderAttemptOutcome::Failed(error),
+                    Err(_) => ProviderAttemptOutcome::TimedOut,
+                };
+                match registered.finish(outcome).await {
+                    Ok(AttemptSettlement::Settled) => {}
+                    Ok(AttemptSettlement::Uncertain) => {
+                        return gate_failure("ATTEMPT_UNCERTAIN", attempt + 1);
+                    }
+                    Err(_) => return gate_failure("ATTEMPT_SETTLEMENT_REQUIRED", attempt + 1),
+                }
+            }
 
             match result {
                 Ok(Ok(response)) => {
@@ -191,14 +258,14 @@ impl ActionExecutor {
                             "action failed"
                         );
                         // Push to DLQ only if retries were exhausted (not for non-retryable errors).
-                        if is_retryable {
+                        if is_retryable && gate.is_none() {
                             self.push_to_dlq(action, &err.to_string(), attempts).await;
                         }
                         tracing::Span::current().record("otel.status_code", "ERROR");
                         return ActionOutcome::Failed(ActionError {
                             code: error_code(&err),
                             message: err.to_string(),
-                            retryable: is_retryable,
+                            retryable: is_retryable && gate.is_none(),
                             attempts,
                         });
                     }
@@ -223,12 +290,14 @@ impl ActionExecutor {
                             attempt,
                             "execution timed out, no retries left"
                         );
-                        self.push_to_dlq(action, &err.to_string(), attempts).await;
+                        if gate.is_none() {
+                            self.push_to_dlq(action, &err.to_string(), attempts).await;
+                        }
                         tracing::Span::current().record("otel.status_code", "ERROR");
                         return ActionOutcome::Failed(ActionError {
                             code: error_code(&err),
                             message: err.to_string(),
-                            retryable: true,
+                            retryable: gate.is_none(),
                             attempts,
                         });
                     }
@@ -240,15 +309,27 @@ impl ActionExecutor {
         // retryable.  Turn the last seen error into a final failure.
         let err = last_error.expect("at least one error must have occurred");
         let attempts = self.config.max_retries + 1;
-        self.push_to_dlq(action, &err.to_string(), attempts).await;
+        if gate.is_none() {
+            self.push_to_dlq(action, &err.to_string(), attempts).await;
+        }
         tracing::Span::current().record("otel.status_code", "ERROR");
         ActionOutcome::Failed(ActionError {
             code: error_code(&err),
             message: err.to_string(),
-            retryable: err.is_retryable(),
+            retryable: err.is_retryable() && gate.is_none(),
             attempts,
         })
     }
+}
+
+fn gate_failure(code: &str, attempts: u32) -> ActionOutcome {
+    tracing::Span::current().record("otel.status_code", "ERROR");
+    ActionOutcome::Failed(ActionError {
+        code: code.into(),
+        message: "Provider execution requires authority or settlement review".into(),
+        retryable: false,
+        attempts,
+    })
 }
 
 /// Map a [`ProviderError`] variant to a short error code string.

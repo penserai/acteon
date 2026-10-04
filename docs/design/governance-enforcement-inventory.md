@@ -14,7 +14,7 @@ must enter, survive deferral, and govern the actual attempt.
 |---|---|---|---|
 | External dispatch/batch | `api/dispatch.rs`; `Gateway::dispatch_pipeline` | Server identity becomes minimal core Caller | Create trusted context from current identity; persist admission; reject payload authority fields |
 | Admitted dispatch/replay | `gateway/admission.rs` | Receipt retains original Action and Caller | Retain context in receipt; current permit state before attempt; preserve reconciliation state |
-| Ordinary provider execution | `Gateway::execute_action` / `execute_provider`; `Executor::execute_inner` | Action, optional attachment DispatchContext | Resolve actual provider resources; authorize each retry after concurrency acquisition, not just the first gateway call |
+| Ordinary provider execution | `Gateway::execute_action` / `execute_provider`; `Executor::execute_inner` | Action, optional attachment DispatchContext; explicit library gate after waits, not yet provisioned by Gateway | Supply the production trusted gate, resolve complete provider resources and preserve context; library contract covers each retry after concurrency acquisition |
 | Circuit-breaker fallback | `Gateway::execute_on_fallback` | Original Action plus separately selected target name | Check the actual target: action.provider can still name the original provider when the executor receives the fallback instance |
 | Deduplicated provider execution | `Gateway::handle_dedup` | Action | Dedup reservation is not authority; check the actual effect before executor attempt |
 | Direct chain provider step | `Gateway::advance_chain` / parallel advancement | ChainState retains audit Caller | Propagate full root context; child resource/call reservation for every step and retry |

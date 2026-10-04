@@ -16,6 +16,9 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+acteon-governance.workspace = true
+acteon-state-memory.workspace = true
+uuid.workspace = true
 chrono = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
