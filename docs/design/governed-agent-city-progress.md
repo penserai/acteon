@@ -175,7 +175,7 @@ continuation ID and reference. PR #411 merged at `9283dfef` after adversarial
 review and all current-head CI checks passed. Team/mandate enforcement and
 remaining Phase 1 gates are still open.
 
-## Complete effect resources and atomic root accounting (in progress)
+## Complete effect resources and atomic root accounting (merged)
 
 The coordinator's format-3 contract registers complete exact resource sets and
 root unit/concurrency reservations together. Immutable root allocations cannot
@@ -196,4 +196,27 @@ Local evidence: ten reservation contracts pass, plus the explicitly executed
 independent-client Redis reservation contract. Existing Redis coordinator and
 trusted-context contracts also pass against format 3. Required workspace
 format/clippy/tests/all-target checks, UI lint/build, strict public docs build
-and changed design links pass. PR review, CI and merge evidence remain pending.
+and changed design links pass. PR #412 merged at `3d0fe750` after adversarial
+review and all current-head CI checks passed. Integration run `37182689055`
+explicitly executed the Redis reservation contract: one passed, zero ignored.
+
+## Actual provider attempt boundary (in progress)
+
+The executor now offers a trusted per-attempt admission/settlement interface.
+Admission runs after semaphore and retry-delay waits, using the actual selected
+provider identity. A new durable guard is required for each invocation. Unknown
+outcomes, settlement failure and cancellation retain obligations; automatic
+retries stop on uncertainty. An opt-in library requirement refuses ungated
+legacy/attachment/batch calls. Gated exhaustion does not write authority-free
+legacy DLQ entries. See the [attempt-boundary ADR](provider-attempt-gates.md).
+
+Nine executor contracts exercise provider calls against the real memory
+coordinator, including controlled revocation during backoff, closure during
+semaphore wait, timeout, cancellation and settlement failure. No production
+permit evaluator or gateway/server profile is installed yet. The remaining
+lineage, permit publication, governed result retention and full effect coverage
+gates remain open.
+
+Local evidence: required workspace checks pass with 3,378 tests, alongside UI
+lint/build, strict public docs build and changed design links. Review/CI/merge
+evidence for this slice remains pending.

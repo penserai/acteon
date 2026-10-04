@@ -290,7 +290,9 @@ name = "acteon-executor"
 version = "0.1.0"
 dependencies = [
  "acteon-core",
+ "acteon-governance",
  "acteon-provider",
+ "acteon-state-memory",
  "acteon-time",
  "async-trait",
  "chrono",
@@ -298,6 +300,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
