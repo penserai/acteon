@@ -12,6 +12,12 @@
 
 Acteon provides a shared operating environment where humans, autonomous agents, and deterministic software can discover services, perform work, and collaborate under enforceable authority. Operators supply the permits, infrastructure, and interventions that make that autonomy manageable.
 
+The organizational model is an [agent workforce](agent-workforce.md): humans
+belong to teams, own personal agents and collaborate with shared team agents.
+Ownership, membership, represented party and execution authority remain distinct.
+Team mandates and personal delegation are generic authority building blocks in
+this plan, not tags added only to the demonstration.
+
 The first useful release lets a narrowly authorized participant start durable work, preserves its identity through a restart, and refuses its next external effect after revocation. The next release lets an operator close a resource and inspect what was blocked, what was already in flight, and what remains unresolved. Autonomous registry-based delegation then composes these primitives rather than creating a separate execution system.
 
 A registry tells a participant where it could go. A permit determines where it may go. Policy determines whether and when authorized work should proceed. A start checkpoint determines whether current authority still permits the actual effect.
@@ -81,7 +87,13 @@ Measure record size, active attempts, CAS conflict rate, and mutation latency. S
 
 1. **Execution/control separation.** Verify the checkout's Executor role and fail-closed operation inventory. Maintain independently scoped management permissions; exercise REST, JSON-RPC batches, bus routes, and credential reload.
 2. **Stable principals.** Bind API keys, JWT users, and trusted services to stable principal IDs. Specify disablement, credential rotation, represented actors, and administrative issuance ceilings. Preserve file-backed authentication workflows without competing sources of truth.
+   Add scoped team identity, direct human memberships, personal/team agent
+   ownership and roster assignments with independent management permissions.
+   Ownership and assignment must confer no automatic tool permissions.
 3. **Trusted execution context.** Add versioned principal, root/parent, resource, deadline, authority-reference, and request-digest types. Constructors require trusted adapters. Client metadata remains separate and cannot replace ancestry.
+   Include actual actor, initiator, represented human/team, accountability owner
+   and accepted mandate/membership revisions. Unknown representation formats
+   fail closed; existing actor-only records require explicit migration/parking.
 4. **Durable propagation.** Add context to admissions, chains, workflows, worker queues, approvals, schedules, recurring work, and derived notifications. Grouping requires compatible authority or an explicitly permitted aggregator with contributor provenance.
 5. **Migration and surface.** Classify old records as reviewed migration, bounded drain, or parked work. Add principal administration/inspection APIs, all SDKs, UI, and credential guidance.
 
@@ -98,6 +110,9 @@ An executor cannot modify registry endpoints or execution constraints, even with
 ### Work packages
 
 1. **Permit model and administration.** Implement versioned subject, operation, exact resource scope, validity, constraints, delegation policy, limits, issuer, and revocation. Updates require expected revisions. Issuance is bounded by the issuer's configured ceiling.
+   Add personal and team representation mandates, team issuance ceilings and
+   requester service-invocation entitlement. Derive permits for concrete acting
+   principals; never authorize from roster membership or ownership alone.
 2. **Deterministic evaluator.** Match complete operation/resource tuples. Compose current grants, permit lineage, principal status, restrictions, deadline, and budget. Return stable reason codes and redacted decision evidence. Dry evaluation is advisory and spends nothing.
 3. **Executor integration.** Check after concurrency waiting and before each real attempt. Resolve the actual fallback/provider instance, not only the action's original provider field. Every retry obtains fresh authority and its own classified reservation.
 4. **Asynchronous and auxiliary integration.** Cover chain/subchain, workflow, queue, approval, scheduled/recurring/grouped work, inference, embeddings, enrichment, notifications, bus publication/delivery, and trusted library adapters. If a class is unfinished, strict-mode admission for it is refused explicitly.
@@ -107,6 +122,12 @@ An executor cannot modify registry endpoints or execution constraints, even with
 ### Acceptance evidence
 
 Revoke between enqueue and claim, between chain steps, during retry backoff, and during semaphore waiting. All subsequent affected attempts are refused. Approval, fallback, preview inference, direct execution, and recovery cannot bypass authorization. Concurrent fan-out cannot spend the last units twice. Observation mode records decisions without claiming enforcement; strict mode rejects missing authority and unavailable authoritative storage.
+
+Remove a relevant team membership or revoke a representation mandate during a
+wait. The next dependent effect must be denied. Separately prove a standing team
+job continues when its former human creator leaves if its independently issued
+mandate does not depend on that membership. A personal agent cannot union its
+owner's teams or supply a represented team in model metadata.
 
 **Completion gate:** the inventory is completely enforced or explicitly unsupported within the enabled scope. Real-server and multi-replica tests confirm admission versus execution semantics.
 
@@ -135,6 +156,9 @@ Closure races follow the documented start linearization point across replicas. R
 ### Work packages
 
 1. **Governed discovery.** Reuse individual registry cards. Filter by caller authority, skill, lifecycle, and scope; return bounded untrusted descriptions and revisions. Cards advertise capability, not entitlement.
+   Filter workforce rosters by personal/team visibility and validated mandates.
+   Personal agents can invoke team agents through explicit service authority;
+   shared agents isolate requesters' conversations, memory and artifacts.
 2. **Runtime bindings.** Configure agent-specific inbound task execution using existing chains, workers, swarm providers, or an external runtime. Preserve current tenant-level A2A semantics unless a target is explicitly configured.
 3. **Delegation authority.** Derive child authority from root constraints, parent delegation rights, the child envelope, and recipient execution permissions. Use opaque server-held handles bound to recipient and execution. Share root limits and retain ancestry.
 4. **Durable outbound transport.** Resolve approved endpoints and credential references; enforce network bounds. Persist send intent, attempt registration, local child/remote task mapping, progress cursor, artifact bounds, and reconciliation state.
@@ -179,7 +203,10 @@ Split any package whose adversarial review cannot cover its bypass paths. API wo
 
 ## End-to-end validation and presentation
 
-Use a human operator, scheduled detector, investigator, diagnostic peer, and remediation peer. Simulated incident data is sufficient, but Acteon dispatch, durable state, peer HTTP calls, and governance decisions are real.
+Use a human team member, their personal assistant, a team-owned scheduled
+detector, investigator, diagnostic peer and remediation peer. Simulated incident
+data is sufficient, but Acteon dispatch, durable state, peer HTTP calls,
+membership/mandate checks and governance decisions are real.
 
 1. Dispatch a narrow diagnostic root and let its agent discover/select a peer.
 2. Invoke that peer and collect structured progress/results.
@@ -188,6 +215,10 @@ Use a human operator, scheduled detector, investigator, diagnostic peer, and rem
 5. Close that resource before its next effect while unrelated work proceeds.
 6. Repeat with restart, overlapping closures, budget exhaustion, and lost acceptance responses.
 7. Demonstrate pause/cancel only against adapters whose capability has been verified.
+8. Remove the human's relevant membership mid-job; refuse subsequent dependent
+   effects while the team's independent standing diagnostic duty continues.
+9. Change an agent's owner and verify admitted jobs retain original lineage;
+   do not inherit the new owner's authority or expose another user's artifacts.
 
 Produce JSON assertions and a readable report: actor/permit matrix, delegation graph, request IDs at both peers, decision timeline, closure boundary, effect counts, reservation ledger, and recovery evidence. Assert zero unauthorized effects and no new registration after a winning denial. Show unresolved outcomes rather than smoothing them away. An optional real model planner can select peers; label whether it was invoked and keep governance independent of its output.
 

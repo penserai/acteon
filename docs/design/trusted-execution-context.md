@@ -48,7 +48,10 @@ The substrate supports roots only. It limits each sealed record to 64 KiB,
 scope and duplicate resources are refused. Tuple matching never combines an
 operation from one entry with a destination from another.
 
-No existing admission, worker, workflow or schedule path calls this store yet.
+The [workflow provenance integration](workflow-context-propagation.md) calls this
+store from a library profile at workflow start and continuation enqueue/repair/poll.
+Public entrypoints, standalone/chain workers, schedules and effect authorization
+remain unintegrated.
 Before integration, define accepted grant/permit ceiling compilation and
 coordinator-backed publication of current authority revisions. Add a handle and
 independently bound ownership/input to every authoritative deferred record.

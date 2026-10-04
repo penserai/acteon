@@ -10,6 +10,7 @@ rust-version.workspace = true
 acteon-time.workspace = true
 acteon-audit = { workspace = true }
 acteon-core = { workspace = true }
+acteon-governance.workspace = true
 acteon-crypto = { workspace = true }
 acteon-llm = { workspace = true }
 acteon-state = { workspace = true }

@@ -24,6 +24,7 @@ mod template_management;
 mod time_interval_management;
 pub mod watcher;
 pub mod workflow;
+pub mod workflow_context;
 
 pub use acteon_executor::{DeadLetterEntry, DeadLetterQueue, DeadLetterSink};
 pub use background::{

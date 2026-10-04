@@ -121,7 +121,7 @@ changes, permits, root reservations, and effect checkpoints remain required.
 Existing audit caller/quota filters retain their credential-name semantics;
 adding a principal binding does not silently reinterpret those controls.
 
-## Trusted root context substrate (in progress)
+## Trusted root context substrate (merged, integration in progress)
 
 The internal context store captures versioned, HMAC-sealed root provenance and
 exact accepted effect tuples. Replacement replicas recover only through trusted
@@ -130,17 +130,45 @@ expired deadlines and changed authority incarnations fail closed. Stable-handle
 capture reconciles lost acknowledgments and rejects authority broadening on
 replay. Signing-key rotation retains old verification keys explicitly.
 
-See the [context ADR](trusted-execution-context.md). This is not yet integrated
-into gateway admission or deferred work, does not evaluate current permissions,
-and does not complete Phase 1. Child attenuation, durable propagation, legacy
+See the [context ADR](trusted-execution-context.md). PR #410 merged at `6cfcc318`
+after adversarial review and all current-head CI checks passed. Workflow library
+propagation is the next slice; this does not evaluate current permissions or
+complete Phase 1. Child attenuation, durable propagation, legacy
 migration, retained-context lifecycle and per-effect enforcement remain gates.
 The city design and phase plan now include concrete storage, lifecycle, ownership
 and acceptance contracts alongside the current implementation baseline.
 
 Local evidence: eleven context contracts pass, plus one explicitly executed
 independent-client Redis contract. Required workspace checks (3,349 passing tests), UI lint/build and
-strict public docs build pass; PR review/CI and merge evidence remain pending.
+strict public docs build pass; PR #410's integration job executed the Redis
+contract and passed. Runtime enforcement remains unintegrated.
 
 Principal-binding publication: Deploy Documentation run `37176654460` passed
 for merge `f44b9e37`; fetched authentication and agent-swarm pages contain the
 identity endpoint and stable-principal/executor guidance.
+
+## Workflow provenance propagation (in progress)
+
+Validated durable references now connect signed root context to workflow and
+continuation-task records. An opt-in library profile verifies complete
+scope/workflow/queue/input binding, accepted tuple and original actor at start,
+enqueue, repair and poll-before-lease. Replacement/timer continuations preserve
+the reference. Corrupted, stripped, expired or unconfigured provenance parks
+delivery; observation and cancellation remain available. Child creation refuses
+provenance loss pending attenuated derivation. See the [integration ADR](workflow-context-propagation.md).
+
+The [agent workforce design](agent-workforce.md) now maps human teams, personal
+agents, team agents, ownership, roster assignments and representation mandates
+into the same authority model. These organizational/representation capabilities
+are proposed, not supplied by the actual-principal context slice. The phased
+plan includes their schema, enforcement, offboarding and real-scenario gates.
+
+Public root provisioning, team/mandate context versions, remaining deferred
+paths, child attenuation, current authority evaluation and effect checkpoints
+remain required. This profile is provenance integrity, not permit enforcement.
+
+Local workflow slice evidence: eight integration scenarios plus two core identity/
+compatibility tests pass; the required full workspace has 3,359 passing tests.
+Formatting/clippy/all-target checks, UI lint/build, strict public docs build and
+design links pass. Interrupted task/index publication repairs the original chosen
+continuation ID and reference. Review/CI/merge evidence for this slice is pending.
