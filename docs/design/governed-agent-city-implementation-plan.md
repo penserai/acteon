@@ -6,6 +6,8 @@
 
 **Implementation evidence:** [progress tracker](governed-agent-city-progress.md) and [effect-boundary inventory](governance-enforcement-inventory.md). This plan does not certify deployment, publication, or completion of any phase.
 
+**Planning baseline:** principal-binding head `4093ae26`, merged as `f44b9e37`. Executor separation, the unintegrated coordinator, exact resource identity and optional principal bindings are implemented. Complete trusted context, permits, generic closures and autonomous peer invocation remain delivery work. Use these existing primitives rather than restarting them as new projects.
+
 ## Product outcome
 
 Acteon provides a shared operating environment where humans, autonomous agents, and deterministic software can discover services, perform work, and collaborate under enforceable authority. Operators supply the permits, infrastructure, and interventions that make that autonomy manageable.
@@ -198,3 +200,48 @@ For each package, update the progress tracker with its commit/PR, adversarial re
 After merge, verify release/deployment status and published documentation separately. Run the relevant released scenario and record the result artifact. A successful docs build does not prove publication, and a merged implementation does not prove a phase's runtime contract.
 
 The vision is complete only when participants share one durable authority model across every supported mediated effect, operators can impose observable restrictions, and autonomous delegation preserves authority and accountability through failure. Until then, the progress tracker must retain the unmet gates.
+
+## Execution roadmap and ownership
+
+Ownership below names responsibilities, not assigned people. Each phase needs one accountable maintainer who coordinates the runtime, storage, SDK and documentation work. A handoff is complete only when the receiving integration has an executable contract test.
+
+| Phase | Accountable responsibility | Main code areas | Exit artifact |
+|---|---|---|---|
+| 0 | Governance/storage maintainer | `crates/governance`, state backends, checked inventories | Coordination/reservation ADR, backend contract suite, bounded-capacity report |
+| 1 | Authentication/runtime maintainer | Core/server auth, admission, chains, workflows, queues and schedules | Context compatibility matrix and restart/rotation tests |
+| 2 | Gateway/executor maintainer | Evaluator, executor retry loop, all effect adapters | Enforced coverage report and revocation/fan-out proof |
+| 3 | Operator-control maintainer | Closure storage, intervention outboxes, adapters, UI | Closure/cancellation capability matrix and recovery runbooks |
+| 4 | Agent-runtime/transport maintainer | Registry, inbound binding, outbound A2A, delegation lifecycle | Real peer invocation and constrained mesh result bundle |
+| 5 | Reliability/security maintainer | Backends, retention, federation and deployment | Qualified support matrix, load/chaos evidence and trust ADR |
+
+SDK/API, UI and documentation maintainers participate throughout. Their work is part of each feature's exit gate, rather than a final cleanup phase.
+
+### Immediate implementation sequence
+
+1. **Finish the trusted-context contract.** Define separate persisted and verified types, scoped principal references, immutable accepted ceilings, trusted constructors and recovery verification. Record which auth revision is authoritative and how file reload publishes it. Test spoofed metadata, two credentials with different grants for one principal, unknown versions and incompatible rollback.
+2. **Propagate context through durable execution.** Start with admission and chains, then worker/workflow/approval handoffs, scheduled and recurring work, grouping and notifications. Extend the effect inventory with the stored field and recovery verifier at each boundary. Park legacy records according to the migration policy. Do not claim revocation enforcement from propagation alone.
+3. **Close coordinator/accounting prerequisites.** Extend single-resource starts to complete resource sets and specify atomic root reservations. Test multi-resource closures, lost acknowledgments, fan-out, retention and emergency admission stop. Publish the supported single-domain/backend limits before wiring strict checkpoints.
+4. **Deliver the smallest enforced vertical slice.** Implement current permit/ceiling evaluation and one real deterministic provider path, including its wait, retry and fallback behavior. A second replica resumes the original actor, and revocation blocks its next attempt. Ship that scope's SDK/UI/docs and refuse unsupported paths within it.
+5. **Expand coverage and intervention.** Cover every deferred and auxiliary effect class, then expose deny-new closures and impact reconciliation. Add drain/pause/cancel incrementally against named adapter capabilities.
+6. **Build the mesh on the proven substrate.** Add governed candidates, runtime bindings, attenuated child authority and durable real A2A transport. Demonstrate a model/runtime-selected peer with recorded receive-side evidence and no root-authority expansion.
+
+Steps 1–2 advance Phase 1 while Step 3 completes remaining Phase 0 prerequisites. Step 4 cannot ship an enforcement claim until both dependency streams pass. The current bounded coordinator is a useful starting point, not proof that those prerequisites are already satisfied.
+
+### Sizing and scheduling policy
+
+Use dependency gates rather than fixed calendar promises. Size each package after its affected effect paths and migration work are known. Separate changes that require a new storage proof, an externally visible wire contract or an independently reviewable adapter. Keep each PR small enough that its authority bypasses and crash states can be reviewed together.
+
+After Phase 0, publish measured checkpoint overhead and the integration inventory to set staffing and dates. If backend qualification or legacy migration blocks strict rollout, continue independently useful context, SDK and observation work while retaining the blocked enforcement gate. Federation must not consume effort needed to make local revocation and recovery correct.
+
+## Phase acceptance scenarios
+
+| Gate | Minimal demonstrable scenario | Evidence that fails the gate |
+|---|---|---|
+| 0 | Two independent clients race start registration with restriction; crash/lost-response recovery preserves accounting | Unit tests against a single fake client, or separate non-atomic counters |
+| 1 | A different replica resumes a queued execution with the original principal and accepted ceiling after key rotation | Only adding caller fields, or recovering under current server credentials |
+| 2 | Revocation during capacity wait/backoff denies the actual next provider attempt; concurrent children conserve root units | An admission-only check, or grants collected from several credentials |
+| 3 | An active closure survives restart; overlapping reopen and remote cancel show accurate impact | A UI toggle without authoritative activation, or cancel-request counted as canceled |
+| 4 | The runtime discovers and chooses a peer; that peer executes a real A2A call under attenuated authority | A submitted task without runtime handoff, or only a hardcoded routing chain |
+| 5 | Qualified deployment and named remote peers pass failover/partition/replay tests with documented trust freshness | Assuming every state backend or A2A implementation behaves identically |
+
+For each scenario, save the input configuration, build revision, assertions, effect counts and recovery timeline. Business data may be simulated; authentication, storage, checkpoint decisions and network invocations must be real for the guarantee being tested.
