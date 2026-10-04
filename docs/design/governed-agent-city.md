@@ -2,11 +2,13 @@
 
 **Status:** proposed design and implementation plan.
 
-**Baseline:** repository revision `9037a71a57928d24347088fdeae9bb03c2704138`, inspected October 3, 2026.
+**Baseline:** architecture inventory at revision `9037a71a57928d24347088fdeae9bb03c2704138`; execution-role changes inspected at checkout revision `6bfcd7b6e31ffdf24437fcf7d1cdccf29a5ddb04` on October 3, 2026. Checkout implementation is not evidence of release or publication.
 
 **Audience:** platform maintainers, SDK authors, operators, and agent-runtime integrators.
 
-All new types, endpoints, configuration, and guarantees below are proposals. The current-capabilities section describes what exists today. This document is a platform design; its examples exercise reusable primitives rather than defining special-purpose observability behavior.
+Unless explicitly identified as existing checkout behavior, new types, endpoints, configuration, and guarantees below are proposals. The current-capabilities section describes what exists today. This document is a platform design; its examples exercise reusable primitives rather than defining special-purpose observability behavior.
+
+The companion [phased delivery plan](governed-agent-city-implementation-plan.md) breaks this design into reviewable work packages, dependency gates, and release evidence. The [implementation tracker](governed-agent-city-progress.md) records progress; the [effect inventory](governance-enforcement-inventory.md) identifies concrete integration boundaries.
 
 ## 1. Product definition
 
@@ -81,7 +83,7 @@ The baseline already has substantial reusable infrastructure:
 
 Important implementation details constrain the plan:
 
-- `Role` currently contains Admin, Operator, and Viewer. Operator has both Dispatch and management permissions such as RulesManage. Existing action grants already constrain namespace, tenant, provider, and action type; the gap is not absence of all scoping.
+- The inspected checkout contains Admin, Operator, Executor, and Viewer. Executor separates dispatch from the OperationsManage ceiling; the original baseline had only Admin, Operator, and Viewer. Existing action grants already constrain namespace, tenant, provider, and action type. Execution-only endpoint access is implemented in this checkout; durable per-effect authority is still proposed.
 - `CallerIdentity` is server-local. Its conversion to the core `Caller` is an audit identity, not a complete authorization context suitable for deferred execution.
 - A2A `method_message_send` creates a Submitted task or appends task history. It does not resolve a target agent or invoke its runtime. Accepted `configuration` and `metadata` fields are currently ignored.
 - A2A shares state, audit and streaming infrastructure, but task submission does not automatically traverse ordinary dispatch rules and quotas.
@@ -142,7 +144,7 @@ The existing agent registry remains the capability and liveness directory for ag
 
 ### Control plane and data plane
 
-Add an execution-only role first. Introduce explicit endpoint permissions for permit management, closure management, registry publication, delegation, task observation, cancellation, and reconciliation. Audit every registered route, including bus endpoints that currently use general scope checks.
+Retain and verify the checkout's execution-only role and checked route-permission inventory. Introduce explicit endpoint permissions for permit management, closure management, registry publication, delegation, task observation, cancellation, and reconciliation. Audit every registered route, including bus endpoints that currently use general scope checks.
 
 Administrators and trusted operators may manage authority. Executing production work still requires an execution permit once enforcement is enabled. Administrative power is not an implicit bypass at the effect boundary.
 
