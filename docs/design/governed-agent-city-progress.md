@@ -317,8 +317,8 @@ scope/API/SDK/UI surfaces and complete effect coverage remain open.
 source-epoch coordinator into real server startup, auth file watching, login,
 JWT validation, API-key lookup and middleware. It rejects stale replicas using
 obsolete security tables, binds authenticated identities to private configuration
-observations, and checks current principal disablement. The optional Redis mode
-uses explicit versions, keyed fingerprints and a dedicated auth control scope.
+observations, and checks current principal disablement. The optional mode uses the configured `StateStore`, explicit versions, keyed
+fingerprints and a dedicated auth control scope.
 Normal startup cannot recreate missing authority state.
 
 Focused memory contracts pass (seven tests). Independent-client Redis HTTP and
@@ -330,3 +330,15 @@ Rust 1.88. Public authentication/configuration docs and sanitized UI settings co
 the configured mode. PR/merge/publication evidence remains pending. This source-only epoch has no credential execution projection and does
 not enable per-effect permits; qualified effect resolution, credential enrollment,
 root capture, scope mutation stamps and complete execution coverage remain next.
+
+
+The follow-up removes the Redis-only startup gate: auth authority uses the same
+configured `Arc<dyn StateStore>` as the gateway. Independent-client and actual
+binary startup/watcher contracts now pass for PostgreSQL and DynamoDB Local as
+well as Redis. The memory binary test passed with the Redis feature disabled.
+Updated full checks passed with 3,433 workspace tests, Clippy, all-target
+compilation, UI lint/build and strict documentation. Focused stable/Rust 1.88
+Clippy covers PostgreSQL and DynamoDB features. Updated exact-head review/CI,
+merge and publication remain pending. These
+contracts qualify auth-source behavior, not backend failover or all execution
+classes. The memory backend remains process-local and ephemeral.

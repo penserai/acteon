@@ -2,7 +2,8 @@
 
 **Status:** server integration on the working branch; focused memory, independent
 Redis-client HTTP, and actual server startup/watcher contracts pass. Required local
-checks pass with 3,432 workspace tests; PR review, merge and publication remain
+backend-neutral checks pass with 3,433 workspace tests, stable/Rust 1.88 Clippy,
+UI and documentation builds. Updated PR review/CI, merge and publication remain
 pending.
 
 ## Outcome and boundary
@@ -36,7 +37,10 @@ for this source. That is a configuration-file trust boundary, not an HTTP
 management permission or an authenticated user's borrowed privileges. Backend
 write access and access to deployment files/secrets remain privileged.
 
-The binary currently requires the qualified Redis backend. `bootstrap = true`
+The binary uses the existing configured `StateStore`, including memory, Redis,
+PostgreSQL and DynamoDB. There is no backend-specific auth store or startup gate.
+The memory backend is process-local; durable/shared guarantees depend on the
+selected persistent backend. `bootstrap = true`
 is an explicit reviewed initialization action; normal startup uses `connect`
 and refuses missing state. Initialization does not repair old jobs, settle
 uncertain effects or establish backend failover/archival guarantees. Control
@@ -73,7 +77,7 @@ re-enrollment and explicit credential authority IDs remain execution-profile wor
 
 `crates/server/tests/auth_authority.rs` verifies:
 
-- actual HTTP middleware with independent providers and memory/Redis clients;
+- actual HTTP middleware with independent providers and configured state-backend clients;
 - stale replica request refusal, key rotation, role/grant narrowing and principal
   disablement;
 - stale startup and reload refusal, same-version fingerprint/key conflicts,
@@ -84,8 +88,9 @@ re-enrollment and explicit credential authority IDs remain execution-profile wor
 - actual binary startup, one-time bootstrap, production filesystem watcher,
   outdated process restart failure and recovery using the current file.
 
-The Redis tests use unique prefixes and clean only their fixture coordinator.
-CI explicitly runs both ignored contracts; default ignored counts are not evidence.
+Backend tests use isolated prefixes/tables and clean only their fixture state.
+CI explicitly runs the Redis, PostgreSQL and DynamoDB Local contracts and the
+memory binary without the Redis feature; default ignored counts are not evidence.
 The public authentication/configuration docs describe the guard. Sanitized server
 configuration and the UI expose source/scope and startup mode without secrets.
 All five SDKs use their existing auth headers and generic configuration operation;

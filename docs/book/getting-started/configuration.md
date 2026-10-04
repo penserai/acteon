@@ -631,7 +631,7 @@ cargo run -p acteon-server --features postgres -- -c examples/postgres.toml
 
 ## Replicated authentication configuration
 
-For Redis replicas, optional `[auth.authority]` coordinates an explicit
+Optional `[auth.authority]` uses the configured state backend to coordinate an explicit
 `authority_revision` in `auth.toml`. It publishes configuration before installing
 local tables and refuses authentication from stale replicas. Configure a dedicated
 control scope and shared fingerprint key; normal startup connects to existing

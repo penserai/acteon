@@ -75,17 +75,16 @@ in flight or establish authorization for each step of an existing chain.
 
 ## Shared authentication authority across replicas
 
-For a replicated Redis deployment, enable a shared configuration authority to
+Enable a shared configuration authority using the configured state backend to
 prevent a server with an older auth file from accepting credentials under
 obsolete roles or grants. Each logical auth file has one source ID and an
 explicit monotonically increasing version. Every replica uses the same source,
-control scope, Redis key prefix and fingerprint key.
+control scope, state storage and fingerprint key. The implementation uses the
+existing `StateStore` interface for memory, Redis, PostgreSQL or DynamoDB; it
+does not create a separate Redis store.
 
 ```toml title="acteon.toml"
-[state]
-backend = "redis"
-url = "redis://localhost:6379"
-prefix = "acteon"
+# Keep your existing [state] configuration.
 
 [auth]
 enabled = true
@@ -123,7 +122,9 @@ On the first reviewed startup only, set `bootstrap = true` to initialize the
 dedicated control coordinator. Then set it to `false` for normal startup.
 Missing, deleted or unsupported state fails closed in normal operation. Keep
 this scope separate from execution coordinators and other auth sources; resetting
-it is recovery work, not an ordinary reload operation.
+it is recovery work, not an ordinary reload operation. The memory backend is
+process-local and loses authority state on restart; shared replicas and durable
+restart use a persistent backend.
 
 A reload publishes the whole source version before installing its local tables.
 Increment `authority_revision` for changes to roles, grants, principal bindings,

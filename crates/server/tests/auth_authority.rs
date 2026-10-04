@@ -439,9 +439,9 @@ async fn jwt_sessions_refresh_only_from_current_tables_and_stale_replica_login_i
     );
 }
 
-#[cfg(feature = "redis")]
 mod server_process {
     use super::*;
+    #[cfg(feature = "redis")]
     use acteon_state_redis::{RedisConfig, RedisStateStore};
     use std::{
         fs,
@@ -457,7 +457,7 @@ mod server_process {
     }
     impl Server {
         fn start(
-            redis: &RedisConfig,
+            state_config: &str,
             bootstrap: bool,
             revision: u64,
             role: &str,
@@ -475,9 +475,7 @@ mod server_process {
 host = "127.0.0.1"
 port = {port}
 [state]
-backend = "redis"
-url = {url:?}
-prefix = {prefix:?}
+{state_config}
 [ui]
 enabled = false
 [auth]
@@ -489,9 +487,7 @@ namespace = "auth-control"
 tenant = "deployment"
 source_id = "workforce-auth"
 bootstrap = {bootstrap}
-"#,
-                url = redis.url,
-                prefix = redis.prefix
+"#
             );
             fs::write(directory.join("acteon.toml"), config).unwrap();
             Self::write_auth(&directory, revision, role, raw_key);
@@ -582,6 +578,37 @@ actions = ["execute"]
     }
 
     #[tokio::test]
+    async fn real_memory_server_uses_the_configured_state_backend() {
+        let client = reqwest::Client::new();
+        let mut missing =
+            Server::start("backend = \"memory\"", false, 1, "operator", "key-original");
+        missing.wait_refused().await;
+        drop(missing);
+        let mut server = Server::start("backend = \"memory\"", true, 1, "operator", "key-original");
+        server.wait_role(&client, "key-original", "operator").await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !server.log().contains("auth watcher started") {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .unwrap();
+        Server::write_auth(&server.directory, 2, "executor", "key-rotated");
+        server.wait_role(&client, "key-rotated", "executor").await;
+        assert_eq!(
+            client
+                .get(&server.url)
+                .bearer_auth("key-original")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            401
+        );
+    }
+
+    #[cfg(feature = "redis")]
+    #[tokio::test]
     #[ignore = "requires ACTEON_GOVERNANCE_REDIS_URL; real production startup and watcher"]
     async fn real_server_startup_and_watcher_refuse_stale_authentication() {
         let cfg = RedisConfig {
@@ -590,9 +617,18 @@ actions = ["execute"]
             ..Default::default()
         };
         let state = RedisStateStore::new(&cfg).unwrap();
+        let state_config = format!(
+            "backend = \"redis\"\nurl = {:?}\nprefix = {:?}",
+            cfg.url, cfg.prefix
+        );
+        production_contract(&state_config, &state).await;
+    }
+
+    #[cfg(any(feature = "redis", feature = "postgres", feature = "dynamodb"))]
+    pub(super) async fn production_contract(state_config: &str, state: &dyn StateStore) {
         let client = reqwest::Client::new();
         // Normal startup cannot implicitly recreate a missing authority record.
-        let mut missing = Server::start(&cfg, false, 1, "operator", "key-original");
+        let mut missing = Server::start(state_config, false, 1, "operator", "key-original");
         missing.wait_refused().await;
         assert!(
             missing.log().contains("refusing recreation"),
@@ -600,9 +636,9 @@ actions = ["execute"]
             missing.log()
         );
         drop(missing);
-        let mut a = Server::start(&cfg, true, 1, "operator", "key-original");
+        let mut a = Server::start(state_config, true, 1, "operator", "key-original");
         a.wait_role(&client, "key-original", "operator").await;
-        let mut b = Server::start(&cfg, false, 1, "operator", "key-original");
+        let mut b = Server::start(state_config, false, 1, "operator", "key-original");
         b.wait_role(&client, "key-original", "operator").await;
         tokio::time::timeout(Duration::from_secs(5), async {
             while !b.log().contains("auth watcher started") {
@@ -634,7 +670,7 @@ actions = ["execute"]
             401
         );
         drop(a);
-        let mut obsolete = Server::start(&cfg, false, 1, "operator", "key-original");
+        let mut obsolete = Server::start(state_config, false, 1, "operator", "key-original");
         obsolete.wait_refused().await;
         assert!(
             obsolete.log().contains("publication refused"),
@@ -642,7 +678,7 @@ actions = ["execute"]
             obsolete.log()
         );
         drop(obsolete);
-        let mut recovered = Server::start(&cfg, false, 2, "executor", "key-rotated");
+        let mut recovered = Server::start(state_config, false, 2, "executor", "key-rotated");
         recovered
             .wait_role(&client, "key-rotated", "executor")
             .await;
@@ -658,4 +694,70 @@ actions = ["execute"]
             .await
             .unwrap();
     }
+}
+
+#[cfg(feature = "postgres")]
+#[tokio::test]
+#[ignore = "requires DATABASE_URL; independent configured PostgreSQL clients"]
+async fn independent_postgres_authentication_replicas_pass_the_contract() {
+    use acteon_state_postgres::{PostgresConfig, PostgresStateStore};
+    let config = PostgresConfig {
+        url: std::env::var("DATABASE_URL").unwrap(),
+        table_prefix: format!("auth_guard_{}_", uuid::Uuid::new_v4().simple()),
+        ..Default::default()
+    };
+    let a: Arc<dyn StateStore> = Arc::new(PostgresStateStore::new(config.clone()).await.unwrap());
+    let b: Arc<dyn StateStore> = Arc::new(PostgresStateStore::new(config.clone()).await.unwrap());
+    replica_contract(a.clone(), b).await;
+    let state_config = format!(
+        "backend = \"postgres\"\nurl = {:?}\nprefix = {:?}",
+        config.url, config.table_prefix
+    );
+    server_process::production_contract(&state_config, a.as_ref()).await;
+    drop(a);
+    // Table prefix was allocated by this fixture; no shared/live tables or rows.
+    let pool = sqlx::PgPool::connect(&config.url).await.unwrap();
+    for suffix in ["state", "locks", "timeout_index", "chain_ready_index"] {
+        sqlx::query(&format!(
+            "DROP TABLE public.{}{suffix}",
+            config.table_prefix
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    pool.close().await;
+}
+
+#[cfg(feature = "dynamodb")]
+#[tokio::test]
+#[ignore = "requires DYNAMODB_ENDPOINT; independent configured DynamoDB Local clients"]
+async fn independent_dynamodb_authentication_replicas_pass_the_contract() {
+    use acteon_state_dynamodb::{DynamoConfig, DynamoStateStore, build_client, create_table};
+    let config = DynamoConfig {
+        endpoint_url: Some(std::env::var("DYNAMODB_ENDPOINT").unwrap()),
+        table_name: format!("auth_guard_{}", uuid::Uuid::new_v4().simple()),
+        key_prefix: format!("auth_guard_{}", uuid::Uuid::new_v4().simple()),
+        ..Default::default()
+    };
+    let client = build_client(&config).await;
+    create_table(&client, &config.table_name).await.unwrap();
+    let a: Arc<dyn StateStore> = Arc::new(DynamoStateStore::new(&config).await.unwrap());
+    let b: Arc<dyn StateStore> = Arc::new(DynamoStateStore::new(&config).await.unwrap());
+    replica_contract(a.clone(), b).await;
+    let state_config = format!(
+        "backend = \"dynamodb\"\nurl = {:?}\ntable_name = {:?}\nprefix = {:?}\nregion = {:?}",
+        config.endpoint_url.as_ref().unwrap(),
+        config.table_name,
+        config.key_prefix,
+        config.region
+    );
+    server_process::production_contract(&state_config, a.as_ref()).await;
+    drop(a);
+    client
+        .delete_table()
+        .table_name(&config.table_name)
+        .send()
+        .await
+        .unwrap();
 }

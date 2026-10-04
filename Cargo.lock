@@ -643,6 +643,7 @@ dependencies = [
  "serde_json",
  "serde_yaml_ng",
  "sha2",
+ "sqlx",
  "thiserror 2.0.21",
  "tokio",
  "tokio-rustls",

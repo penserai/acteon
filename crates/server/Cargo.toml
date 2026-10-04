@@ -136,6 +136,7 @@ hex = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+sqlx = { workspace = true }
 acteon-audit = { workspace = true }
 acteon-audit-memory = { workspace = true }
 acteon-time = { workspace = true }

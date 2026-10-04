@@ -198,11 +198,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         decrypt_auth_config(&mut auth_config, &auth_master_key)?;
 
         let provider = if let Some(authority_config) = &config.auth.authority {
-            if config.state.backend != "redis" {
-                return Err(
-                    "shared auth authority currently requires the qualified Redis backend".into(),
-                );
-            }
             let fingerprint_key = acteon_server::auth::crypto::SecretString::new(
                 std::env::var("ACTEON_AUTH_AUTHORITY_KEY")
                     .map_err(|_| "ACTEON_AUTH_AUTHORITY_KEY is required for shared auth authority")?
