@@ -73,6 +73,86 @@ Removing a user rejects that user's existing sessions. API-key changes also
 apply on subsequent requests. Reload does not stop a provider call already
 in flight or establish authorization for each step of an existing chain.
 
+## Shared authentication authority across replicas
+
+Enable a shared configuration authority using the configured state backend to
+prevent a server with an older auth file from accepting credentials under
+obsolete roles or grants. Each logical auth file has one source ID and an
+explicit monotonically increasing version. Every replica uses the same source,
+control scope, state storage and fingerprint key. The implementation uses the
+existing `StateStore` interface for memory, Redis, PostgreSQL or DynamoDB; it
+does not create a separate Redis store.
+
+```toml title="acteon.toml"
+# Keep your existing [state] configuration.
+
+[auth]
+enabled = true
+config_path = "auth.toml"
+watch = true
+
+[auth.authority]
+namespace = "auth-control"
+tenant = "deployment"
+source_id = "workforce-auth"
+bootstrap = false
+```
+
+Add a positive **top-level** version to the decrypted auth file, before any
+TOML table headers. Every user and API key in this mode needs a stable principal
+binding as described below.
+
+```toml title="auth.toml"
+authority_revision = 1
+
+[settings]
+jwt_secret = "REPLACE_WITH_YOUR_JWT_SECRET"
+jwt_expiry_seconds = 3600
+
+# Existing [[users]] and [[api_keys]] entries follow.
+```
+
+Set `ACTEON_AUTH_AUTHORITY_KEY` to a separate random secret of at least 32 bytes,
+in addition to the existing `ACTEON_AUTH_KEY` used for decryption. Keep the
+fingerprint key consistent across replicas. The coordinator stores a keyed
+fingerprint of the decrypted security configuration; it does not store the
+password/key hashes, signing secret, role/grant contents or raw credentials.
+
+On the first reviewed startup only, set `bootstrap = true` to initialize the
+dedicated control coordinator. Then set it to `false` for normal startup.
+Missing, deleted or unsupported state fails closed in normal operation. Keep
+this scope separate from execution coordinators and other auth sources; resetting
+it is recovery work, not an ordinary reload operation. The memory backend is
+process-local and loses authority state on restart; shared replicas and durable
+restart use a persistent backend.
+
+A reload publishes the whole source version before installing its local tables.
+Increment `authority_revision` for changes to roles, grants, principal bindings,
+credentials or JWT settings. Equivalent reordered definitions can reuse the
+current version. Different content at that version conflicts, and an older
+version is refused. A replica using old tables denies authenticated requests
+until it installs the current configuration. A failed or lost publication
+acknowledgment can be reconciled by retrying the identical version/content;
+previous local tables cannot authenticate if the newer version already committed.
+
+Login, JWT validation and API-key lookup check source freshness and current
+principal disablement. Existing JWT sessions still refresh from the current
+user's role/grants; password changes alone do not revoke all existing sessions.
+Removed users are denied. JWT signing settings remain fixed during a process's
+lifetime: changes require a restart with the new configuration version.
+
+This guard observes authority when authenticating a request. Requests already
+authenticated may be in flight, and queued work does not inherit an ongoing
+freshness guarantee. It does not install execution permits, terminal credential
+retirement, team mandates or per-effect enforcement. Those require their own
+execution integration. The control record is bounded and retains publication
+history; publication at capacity is refused and needs reviewed recovery.
+
+The [server configuration page](../admin-ui/index.md) displays whether shared
+configuration authority is configured. All five SDKs continue using their
+existing authentication headers and the generic `config_get_config` operation;
+no client-supplied authority reference is accepted.
+
 ## Execution and administration roles
 
 Use `executor` for agent runtimes and services that submit actions. Keep

@@ -90,6 +90,7 @@ acteon-swarm-provider = { workspace = true, optional = true, features = ["openap
 acteon-bus = { workspace = true, optional = true }
 acteon-executor = { workspace = true }
 acteon-gateway = { workspace = true }
+acteon-governance = { workspace = true }
 acteon-llm = { workspace = true }
 acteon-embedding = { workspace = true }
 acteon-crypto = { workspace = true, features = ["tls", "signing"] }
@@ -130,10 +131,12 @@ minijinja = { workspace = true }
 jsonwebtoken = { workspace = true }
 argon2 = { workspace = true }
 sha2 = { workspace = true }
+hmac = { workspace = true }
 hex = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+sqlx = { workspace = true }
 acteon-audit = { workspace = true }
 acteon-audit-memory = { workspace = true }
 acteon-time = { workspace = true }

@@ -317,6 +317,12 @@ jobs:
         env:
           ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
         run: cargo test --locked -p acteon-governance --test configurations independent_redis_configuration_snapshots_pass_the_contract -- --ignored
+      - name: Server authentication with memory and no Redis feature
+        run: cargo test --locked -p acteon-server --no-default-features --test auth_authority real_memory_server_uses_the_configured_state_backend
+      - name: Server authentication authority and startup Redis contracts
+        env:
+          ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
+        run: cargo test --locked -p acteon-server --test auth_authority authentication -- --ignored
       - name: Governance credential authority multi-client Redis contract
         env:
           ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
@@ -325,12 +331,21 @@ jobs:
         env:
           ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
         run: cargo test --locked -p acteon-executor --test governed_provider independent_redis_workers_observe_one_provider_attempt -- --ignored
+      - name: Server authentication authority and startup PostgreSQL contract
+        run: cargo test --locked -p acteon-server --features postgres --test auth_authority independent_postgres_authentication_replicas_pass_the_contract -- --ignored
       - name: PostgreSQL audit-store conformance
         run: cargo test --locked -p acteon-audit-postgres --features integration --lib
       - name: Start disposable DynamoDB
         run: docker run -d --name acteon-ci-dynamodb -p 127.0.0.1:8000:8000 amazon/dynamodb-local:3.3.0 -jar DynamoDBLocal.jar -inMemory -sharedDb
       - name: DynamoDB state and lock conformance
         run: cargo test --locked -p acteon-state-dynamodb --features integration --lib
+        env:
+          DYNAMODB_ENDPOINT: http://127.0.0.1:8000
+          AWS_ACCESS_KEY_ID: acteonlocaltest
+          AWS_SECRET_ACCESS_KEY: acteon-local-test
+          AWS_EC2_METADATA_DISABLED: 'true'
+      - name: Server authentication authority and startup DynamoDB contract
+        run: cargo test --locked -p acteon-server --features dynamodb --test auth_authority independent_dynamodb_authentication_replicas_pass_the_contract -- --ignored
         env:
           DYNAMODB_ENDPOINT: http://127.0.0.1:8000
           AWS_ACCESS_KEY_ID: acteonlocaltest

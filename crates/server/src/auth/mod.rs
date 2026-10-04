@@ -1,4 +1,5 @@
 pub mod api_key;
+pub mod authority;
 pub mod config;
 pub mod crypto;
 pub mod identity;
@@ -38,6 +39,7 @@ struct AuthTables {
     users: HashMap<String, UserEntry>,
     /// SHA-256 hex hash to `ApiKeyEntry` lookup table.
     api_keys: HashMap<String, ApiKeyEntry>,
+    authority_reference: Option<acteon_governance::configuration::CredentialConfigurationReference>,
 }
 
 /// Central auth provider built once at startup from the decrypted `auth.toml`.
@@ -50,6 +52,13 @@ pub struct AuthProvider {
     state_store: Arc<dyn StateStore>,
     /// Hot-reloadable auth tables protected by `RwLock`.
     tables: RwLock<AuthTables>,
+    authority: Option<Arc<authority::AuthAuthority>>,
+    jwt_settings: (SecretString, u64),
+}
+
+pub(super) struct AuthenticatedCaller {
+    identity: CallerIdentity,
+    binding: Option<authority::AuthenticatedConfiguration>,
 }
 
 impl AuthProvider {
@@ -66,7 +75,27 @@ impl AuthProvider {
             jwt_manager,
             state_store,
             tables: RwLock::new(tables),
+            authority: None,
+            jwt_settings: (
+                config.settings.jwt_secret.clone(),
+                config.settings.jwt_expiry_seconds,
+            ),
         })
+    }
+
+    /// Publish a shared authentication epoch before exposing this provider.
+    /// Every subsequent credential lookup verifies the same authoritative source.
+    /// This does not enable an execution-permit profile.
+    pub async fn new_with_authority(
+        config: &AuthFileConfig,
+        state_store: Arc<dyn StateStore>,
+        authority: Arc<authority::AuthAuthority>,
+    ) -> Result<Self, String> {
+        let mut provider = Self::new(config, state_store)?;
+        let reference = authority.publish(config).await?;
+        provider.tables.get_mut().authority_reference = Some(reference);
+        provider.authority = Some(authority);
+        Ok(provider)
     }
 
     /// Build the internal lookup tables from configuration.
@@ -104,7 +133,11 @@ impl AuthProvider {
             }
         }
 
-        Ok(AuthTables { users, api_keys })
+        Ok(AuthTables {
+            users,
+            api_keys,
+            authority_reference: None,
+        })
     }
 
     /// Hot-reload users and API keys from a new configuration.
@@ -116,12 +149,23 @@ impl AuthProvider {
     ///
     /// Returns an error if the configuration contains invalid roles.
     pub async fn reload(&self, config: &AuthFileConfig) -> Result<(), String> {
-        let new_tables = Self::build_tables(config)?;
+        if self.authority.is_some()
+            && (self.jwt_settings.0.expose_secret() != config.settings.jwt_secret.expose_secret()
+                || self.jwt_settings.1 != config.settings.jwt_expiry_seconds)
+        {
+            return Err("JWT settings changed; restart with a new authority revision".into());
+        }
+        let mut new_tables = Self::build_tables(config)?;
 
         let user_count = new_tables.users.len();
         let key_count = new_tables.api_keys.len();
 
+        // Serialize publication and local installation. Old tables remain on
+        // failure, but cannot authenticate once another snapshot is current.
         let mut tables = self.tables.write().await;
+        if let Some(authority) = &self.authority {
+            new_tables.authority_reference = Some(authority.publish(config).await?);
+        }
         *tables = new_tables;
 
         info!(
@@ -156,6 +200,8 @@ impl AuthProvider {
             auth_method: "jwt".to_owned(),
         };
 
+        self.bind_identity(&tables, &identity).await?;
+
         // Drop the read lock before issuing the token (which may also need state access).
         drop(tables);
 
@@ -166,6 +212,13 @@ impl AuthProvider {
 
     /// Validate a JWT token and return the caller identity.
     pub async fn validate_jwt(&self, token: &str) -> Result<CallerIdentity, String> {
+        Ok(self.validate_jwt_bound(token).await?.identity)
+    }
+
+    pub(super) async fn validate_jwt_bound(
+        &self,
+        token: &str,
+    ) -> Result<AuthenticatedCaller, String> {
         let mut identity = self
             .jwt_manager
             .validate_token(token, &self.state_store)
@@ -183,7 +236,8 @@ impl AuthProvider {
         }
         identity.role = user.role;
         identity.grants.clone_from(&user.grants);
-        Ok(identity)
+        let binding = self.bind_identity(&tables, &identity).await?;
+        Ok(AuthenticatedCaller { identity, binding })
     }
 
     /// Revoke a JWT token (logout).
@@ -196,7 +250,32 @@ impl AuthProvider {
 
     /// Authenticate an API key and return the caller identity.
     pub async fn authenticate_api_key(&self, raw_key: &str) -> Option<CallerIdentity> {
+        self.authenticate_api_key_bound(raw_key)
+            .await
+            .map(|caller| caller.identity)
+    }
+
+    pub(super) async fn authenticate_api_key_bound(
+        &self,
+        raw_key: &str,
+    ) -> Option<AuthenticatedCaller> {
         let tables = self.tables.read().await;
-        authenticate_api_key(raw_key, &tables.api_keys)
+        let identity = authenticate_api_key(raw_key, &tables.api_keys)?;
+        let binding = self.bind_identity(&tables, &identity).await.ok()?;
+        Some(AuthenticatedCaller { identity, binding })
+    }
+
+    async fn bind_identity(
+        &self,
+        tables: &AuthTables,
+        identity: &CallerIdentity,
+    ) -> Result<Option<authority::AuthenticatedConfiguration>, String> {
+        match (&self.authority, &tables.authority_reference) {
+            (Some(authority), Some(reference)) => {
+                Ok(Some(authority.verify(reference, identity).await?))
+            }
+            (None, None) => Ok(None),
+            _ => Err("authentication authority binding unavailable".into()),
+        }
     }
 }

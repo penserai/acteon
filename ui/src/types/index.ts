@@ -775,6 +775,12 @@ export interface ConfigResponse {
     enabled: boolean
     config_path: string | null
     watch: boolean | null
+    authority?: {
+      namespace: string
+      tenant: string
+      source_id: string
+      bootstrap: boolean
+    } | null
   }
   rate_limit: {
     enabled: boolean

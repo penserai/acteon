@@ -181,6 +181,7 @@ fn build_test_state_with_auth_role(role: &str, grants: Vec<Grant>) -> AppState {
         grants,
     };
     let auth_config = AuthFileConfig {
+        authority_revision: None,
         settings: AuthSettings {
             jwt_secret: SecretString::new("test-jwt-secret-32-bytes-long!!!!".to_string().into()),
             jwt_expiry_seconds: 3600,
@@ -2886,6 +2887,7 @@ async fn silence_list_hides_silences_outside_caller_tenant_grants() {
         }],
     };
     let auth_config = AuthFileConfig {
+        authority_revision: None,
         settings: AuthSettings {
             jwt_secret: SecretString::new("test-jwt-secret-32-bytes-long!!!!".to_string().into()),
             jwt_expiry_seconds: 3600,
@@ -3452,6 +3454,7 @@ async fn silence_create_requires_silences_manage_permission() {
         grants: vec![default_test_grant()],
     };
     let auth_config = AuthFileConfig {
+        authority_revision: None,
         settings: AuthSettings {
             jwt_secret: SecretString::new("test-jwt-secret-32-bytes-long!!!!".to_string().into()),
             jwt_expiry_seconds: 3600,
@@ -4176,6 +4179,7 @@ async fn existing_jwt_uses_reloaded_role_and_grants_and_rejects_removed_user() {
     use acteon_server::auth::config::UserConfig;
     use argon2::password_hash::{PasswordHasher, SaltString};
     let mut config = AuthFileConfig {
+        authority_revision: None,
         settings: AuthSettings {
             jwt_secret: SecretString::new("test-jwt-secret-32-bytes-long!!!!".to_string().into()),
             jwt_expiry_seconds: 3600,
@@ -4286,6 +4290,7 @@ async fn executor_can_heartbeat_self_and_message_peer_without_registry_authority
         .as_ref()
         .unwrap()
         .reload(&AuthFileConfig {
+            authority_revision: None,
             settings: AuthSettings {
                 jwt_secret: SecretString::new("unchanged-secret".to_string().into()),
                 jwt_expiry_seconds: 3600,
@@ -4455,6 +4460,7 @@ async fn viewer_does_not_gain_existing_execution_scoped_bus_or_a2a_reads() {
 
 fn principal_key_config(name: &str, raw: &str, actor: &str) -> AuthFileConfig {
     AuthFileConfig {
+        authority_revision: None,
         settings: AuthSettings {
             jwt_secret: SecretString::new("test-jwt-secret-32-bytes-long!!!!".to_string().into()),
             jwt_expiry_seconds: 3600,

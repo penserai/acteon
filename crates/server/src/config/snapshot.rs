@@ -276,6 +276,8 @@ pub struct AuthSnapshot {
     pub config_path: Option<String>,
     /// Whether file watching is enabled.
     pub watch: Option<bool>,
+    /// Shared authentication freshness guard (no key material).
+    pub authority: Option<super::AuthAuthorityConfig>,
 }
 
 impl From<&AuthRefConfig> for AuthSnapshot {
@@ -284,6 +286,7 @@ impl From<&AuthRefConfig> for AuthSnapshot {
             enabled: cfg.enabled,
             config_path: cfg.config_path.clone(),
             watch: cfg.watch,
+            authority: cfg.authority.clone(),
         }
     }
 }

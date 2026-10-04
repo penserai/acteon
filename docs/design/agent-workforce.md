@@ -52,6 +52,43 @@ agents are individual assistants, and team agents are authorized representatives
 Acteon supplies the shared infrastructure and enforces the operating rules.
 Teams choose their workforce, duties and collaborators within those rules.
 
+## Workforce operating model
+
+A workforce is organized around duties and accountable teams, rather than a
+collection of interchangeable agents. People and agents can perform related
+work, but each retains its own identity and authorized responsibilities.
+
+| Organizational question | Workforce concept | Example |
+|---|---|---|
+| Who is responsible for the work? | Accountable team or person | Reliability owns incident diagnosis |
+| What recurring responsibility exists? | Duty with a reviewed service definition | Investigate production incidents |
+| Who is available to perform it? | Human members and assigned agents | On-call engineers and the incident investigator |
+| On whose behalf may they act? | Membership-backed authority or representation mandate | Investigator represents Reliability |
+| What work was requested now? | Concrete governed job | Diagnose incident `INC-42` |
+| What may happen during that job? | Bounded execution permit and current policy | Read telemetry; request approval for remediation |
+| Who pays and reviews the result? | Explicit funding allocation and accountable owner | Reliability's diagnostic allocation and on-call reviewer |
+
+Treat a duty as a stable responsibility and a job as one execution of that
+responsibility. A roster assignment makes an agent available for a duty. A
+mandate authorizes its representation, while a permit bounds the concrete job.
+Publishing a duty or assigning an agent cannot itself grant execution rights.
+Initially, duties can reference existing versioned job/workflow definitions;
+this model does not require a separate scheduling or workflow engine.
+
+The operational lifecycle is: establish the team and its human members; enroll
+separate personal and team agent identities; assign duties; issue bounded
+mandates; admit authorized jobs; and review outcomes or intervene. Offboarding
+removes the relevant relationships and authority without deleting execution
+history. Workforce managers, mandate issuers, requesters and reviewers have
+separate capabilities, even when one person holds several of those roles.
+
+One personal agent may assist its owner across several teams. One team agent
+may serve many requesters and collaborate with other teams. Every job selects
+its represented party, requester entitlement and funding allocation explicitly;
+shared availability never merges team permissions or requester data. Standing
+team duties have their own authority and lifecycle rather than borrowing the
+credentials of the person who set them up.
+
 ## Domain model
 
 ```mermaid

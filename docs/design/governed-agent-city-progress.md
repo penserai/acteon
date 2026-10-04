@@ -33,9 +33,9 @@ verify per-effect permits, revocation during a chain, closures or mesh execution
 
 | Phase | Current state | Next required evidence |
 |---|---|---|
-| 0: Inventory/coordinator | HTTP/effect inventories, unintegrated coordinator and exact resource identity implemented; memory/Redis race contracts pass | Atomic root reservations, multi-resource starts, retention/emergency stop and backend failover qualification |
-| 1: Actors/context | Executor role and principal bindings merged; trusted root context substrate in progress | Propagation through every deferred path, current authority publication/evaluation, migration and rollback gates |
-| 2: Permits/checkpoints | Not implemented | Revocation and target reauthorization at each effect; atomic root reservations |
+| 0: Inventory/coordinator | Exact resources, bounded CAS coordinator, multi-resource starts and atomic root reservations implemented; memory/Redis contracts pass | Complete boundary qualification, retention/emergency stop and backend failover proof |
+| 1: Actors/context | Executor role, stable principals, signed root contexts and selected workflow propagation merged; shared server authentication guard in progress | Remaining deferred propagation, team/mandate lineage, credential enrollment, migration and rollback gates |
+| 2: Permits/checkpoints | Internal current permits/credentials/configuration snapshots and durable direct-provider adapter merged; public server enforcement remains open | Qualified credential projection, authenticated scope stamps, real gateway effect coverage, provisioning/API/SDK/UI and recovery |
 | 3: Closures/intervention | Existing agent lifecycle only | Generic serialized closures, durable intervention, drain/pause/cancel semantics and acknowledgments |
 | 4: Autonomous mesh | Existing registry and submitted A2A tasks only | Real target resolution/invocation, attenuation, lineage, recovery and safe peer retry |
 | 5: Production/federation | Not implemented | Verified backend and peer capability matrix, trust/revocation protocol and failure tests |
@@ -288,7 +288,7 @@ publication/resolution, public APIs/SDKs/UI, workforce mandates and delegated
 lineage remain open; coordinator format 6/context format 2 require reviewed
 migration and compatible readers.
 
-## Credential configuration snapshots (in progress)
+## Credential configuration snapshots (merged internal primitive)
 
 [Atomic configuration snapshots](credential-configuration-snapshots.md) prevent
 partial per-credential reloads and stale replicas restoring old grants. One scope
@@ -301,7 +301,44 @@ the coordinator incarnation; disabled credentials can have empty deny-all ceilin
 Ten focused contracts and both controlled snapshot/start orderings pass, including
 an explicitly executed independent-client Redis test with zero ignored. Required
 workspace checks pass with 3,425 tests, UI lint/build, strict public documentation
-build and changed design links. Focused Rust 1.88 Clippy passes. Review and PR
-evidence remain pending. Coordinator format 7 requires reviewed migration/parking.
-Server auth publication, keyed fingerprinting, authentication-result binding,
-public scope/API/SDK/UI surfaces and complete effect coverage remain open.
+build and changed design links. Focused Rust 1.88 Clippy passes. PR [#417](https://github.com/penserai/acteon/pull/417)
+was adversarially reviewed at head `5dabb316` and merged as `6de26ad3` after all
+current-head checks passed (CI run `37210220443`). The explicit configuration
+Redis step passed one test with zero ignored in integration job `111459709491`.
+Public source at the merge commit was verified separately; this design-only slice
+is not a public-book deployment or crates release. Coordinator format 7 requires
+reviewed migration/parking. Execution-scope credential projection, public
+scope/API/SDK/UI surfaces and complete effect coverage remain open.
+
+
+## Shared authentication authority (server slice in progress)
+
+[Shared authentication authority](shared-authentication-authority.md) wires the
+source-epoch coordinator into real server startup, auth file watching, login,
+JWT validation, API-key lookup and middleware. It rejects stale replicas using
+obsolete security tables, binds authenticated identities to private configuration
+observations, and checks current principal disablement. The optional mode uses the configured `StateStore`, explicit versions, keyed
+fingerprints and a dedicated auth control scope.
+Normal startup cannot recreate missing authority state.
+
+Focused memory contracts pass (seven tests). Independent-client Redis HTTP and
+actual binary startup/watcher contracts were explicitly run together: two passed,
+zero ignored. Required full checks passed with 3,432 workspace tests, workspace
+Clippy, all-target compilation, UI lint/build, strict docs, catalog/permission
+checks and changed Markdown links. Focused server Clippy passes on stable and
+Rust 1.88. Public authentication/configuration docs and sanitized UI settings cover
+the configured mode. PR/merge/publication evidence remains pending. This source-only epoch has no credential execution projection and does
+not enable per-effect permits; qualified effect resolution, credential enrollment,
+root capture, scope mutation stamps and complete execution coverage remain next.
+
+
+The follow-up removes the Redis-only startup gate: auth authority uses the same
+configured `Arc<dyn StateStore>` as the gateway. Independent-client and actual
+binary startup/watcher contracts now pass for PostgreSQL and DynamoDB Local as
+well as Redis. The memory binary test passed with the Redis feature disabled.
+Updated full checks passed with 3,433 workspace tests, Clippy, all-target
+compilation, UI lint/build and strict documentation. Focused stable/Rust 1.88
+Clippy covers PostgreSQL and DynamoDB features. Updated exact-head review/CI,
+merge and publication remain pending. These
+contracts qualify auth-source behavior, not backend failover or all execution
+classes. The memory backend remains process-local and ephemeral.

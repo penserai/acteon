@@ -166,6 +166,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|raw| parse_master_key(&raw).map_err(|e| format!("invalid ACTEON_AUTH_KEY: {e}")))
         .transpose()?;
 
+    if config.auth.authority.is_some() && !config.auth.enabled {
+        return Err("auth authority requires authentication to be enabled".into());
+    }
+
     // Build the auth provider if enabled.
     let (auth_provider, _auth_watcher_handle) = if config.auth.enabled {
         let auth_master_key = master_key
@@ -193,7 +197,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         decrypt_auth_config(&mut auth_config, &auth_master_key)?;
 
-        let provider = Arc::new(AuthProvider::new(&auth_config, Arc::clone(&store))?);
+        let provider = if let Some(authority_config) = &config.auth.authority {
+            let fingerprint_key = acteon_server::auth::crypto::SecretString::new(
+                std::env::var("ACTEON_AUTH_AUTHORITY_KEY")
+                    .map_err(|_| "ACTEON_AUTH_AUTHORITY_KEY is required for shared auth authority")?
+                    .into(),
+            );
+            let coordinator = if authority_config.bootstrap {
+                acteon_governance::AuthorityCoordinator::initialize(
+                    Arc::clone(&store),
+                    &authority_config.namespace,
+                    &authority_config.tenant,
+                    acteon_governance::CoordinatorLimits::default(),
+                )
+                .await?
+            } else {
+                acteon_governance::AuthorityCoordinator::connect(
+                    Arc::clone(&store),
+                    &authority_config.namespace,
+                    &authority_config.tenant,
+                )
+                .await?
+            };
+            let authority = Arc::new(acteon_server::auth::authority::AuthAuthority::new(
+                coordinator,
+                authority_config,
+                fingerprint_key,
+            )?);
+            Arc::new(
+                AuthProvider::new_with_authority(&auth_config, Arc::clone(&store), authority)
+                    .await?,
+            )
+        } else {
+            Arc::new(AuthProvider::new(&auth_config, Arc::clone(&store))?)
+        };
         info!("auth provider initialized");
 
         // Spawn the auth watcher for hot-reload.

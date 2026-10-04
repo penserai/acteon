@@ -18,6 +18,13 @@ Ownership, membership, represented party and execution authority remain distinct
 Team mandates and personal delegation are generic authority building blocks in
 this plan, not tags added only to the demonstration.
 
+Deliver the workforce experience in this order: organize people and agent
+ownership; assign reviewed duties; authorize personal/team representation;
+execute concrete jobs under bounded permits; then enable autonomous discovery
+and delegation between eligible workers. Duties initially reference existing
+versioned workflows or job definitions. Roster administration must not become
+an alternate route for issuing execution authority.
+
 The first useful release lets a narrowly authorized participant start durable work, preserves its identity through a restart, and refuses its next external effect after revocation. The next release lets an operator close a resource and inspect what was blocked, what was already in flight, and what remains unresolved. Autonomous registry-based delegation then composes these primitives rather than creating a separate execution system.
 
 A registry tells a participant where it could go. A permit determines where it may go. Policy determines whether and when authorized work should proceed. A start checkpoint determines whether current authority still permits the actual effect.

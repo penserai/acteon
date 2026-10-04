@@ -6,8 +6,8 @@ use axum::http::{Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use tower::{Layer, Service};
 
-use super::AuthProvider;
 use super::identity::CallerIdentity;
+use super::{AuthProvider, AuthenticatedCaller};
 
 /// Tower layer that adds authentication middleware.
 #[derive(Clone)]
@@ -78,16 +78,16 @@ where
                 .map(str::to_owned);
 
             if let Some(ref token) = bearer_token {
-                match provider.validate_jwt(token).await {
+                match provider.validate_jwt_bound(token).await {
                     Ok(identity) => {
-                        req.extensions_mut().insert(identity);
+                        insert_authenticated(&mut req, identity);
                         return inner.call(req).await;
                     }
                     Err(jwt_err) => {
                         // JWT validation failed — try API key fallback
                         // before returning 401.
-                        if let Some(identity) = provider.authenticate_api_key(token).await {
-                            req.extensions_mut().insert(identity);
+                        if let Some(identity) = provider.authenticate_api_key_bound(token).await {
+                            insert_authenticated(&mut req, identity);
                             return inner.call(req).await;
                         }
                         // Neither JWT nor API key worked. Surface the
@@ -103,9 +103,9 @@ where
             if let Some(api_key_header) = req.headers().get("x-api-key")
                 && let Ok(key_str) = api_key_header.to_str()
             {
-                match provider.authenticate_api_key(key_str).await {
+                match provider.authenticate_api_key_bound(key_str).await {
                     Some(identity) => {
-                        req.extensions_mut().insert(identity);
+                        insert_authenticated(&mut req, identity);
                         return inner.call(req).await;
                     }
                     None => {
@@ -122,4 +122,11 @@ where
 fn unauthorized(message: &str) -> Response {
     let body = serde_json::json!({ "error": message });
     (StatusCode::UNAUTHORIZED, axum::Json(body)).into_response()
+}
+
+fn insert_authenticated(req: &mut Request<Body>, caller: AuthenticatedCaller) {
+    req.extensions_mut().insert(caller.identity);
+    if let Some(binding) = caller.binding {
+        req.extensions_mut().insert(binding);
+    }
 }
