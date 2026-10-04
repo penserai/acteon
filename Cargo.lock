@@ -375,6 +375,8 @@ dependencies = [
  "acteon-state",
  "acteon-state-memory",
  "acteon-state-redis",
+ "acteon-time",
+ "chrono",
  "hmac",
  "serde",
  "serde_json",

@@ -1,7 +1,7 @@
 //! Durable coordination between authority changes and effect starts.
 //!
-//! This is a coordination substrate, not a permit evaluator. Trusted adapters
-//! must validate authority against a generation before registering a start.
+//! Exact root-profile permits share this coordinator with effect registration.
+//! Trusted adapters still authenticate identity, grants and representation.
 //! No existing gateway execution path is wired to these primitives yet.
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -12,9 +12,10 @@ use serde::{Deserialize, Serialize};
 
 mod budget;
 pub mod context;
+pub mod permit;
 pub use budget::{RootBudget, RootBudgetLimits, RootReservation};
 
-const FORMAT: u32 = 3;
+const FORMAT: u32 = 4;
 const MAX_ATTEMPT_RESOURCES: usize = 16;
 const RETRIES: usize = 32;
 const CONTROL_RECORD_RESERVE: usize = 16;
@@ -29,7 +30,7 @@ pub const COORDINATOR_KIND: &str = "governance_coordinator";
 pub struct CoordinatorLimits {
     /// Maximum in-flight or uncertain attempts. Uncertainty retains capacity.
     pub max_active: usize,
-    /// Retained root/start/change records; reaching the limit refuses new work.
+    /// Retained permit/root/start/change records; the limit refuses new work.
     pub max_records: usize,
     /// Maximum JSON state size, checked before every mutation.
     pub max_bytes: usize,
@@ -54,6 +55,12 @@ pub enum AuthorityChange {
     ReopenResource { resource: ResourceRef },
     /// Refuse this subject's subsequent starts.
     RevokeSubject { subject: String },
+    /// Only publish through the bounded trusted issuance entrypoint.
+    PublishPermit { permit: permit::ExecutionPermit },
+    RevokePermit {
+        permit_id: String,
+        expected_revision: u64,
+    },
 }
 
 /// Start state is honest about effects whose settlement is unknown.
@@ -115,9 +122,13 @@ pub struct CoordinatorSnapshot {
     pub starts: BTreeMap<String, StartRecord>,
     pub roots: BTreeMap<String, RootBudget>,
     pub changes: BTreeMap<String, ChangeRecord>,
+    pub permits: BTreeMap<String, permit::PermitRecord>,
 }
 
 impl CoordinatorSnapshot {
+    fn record_count(&self) -> usize {
+        self.roots.len() + self.starts.len() + self.changes.len() + self.permits.len()
+    }
     #[must_use]
     pub fn stamp(&self) -> AuthorityStamp {
         AuthorityStamp {
@@ -165,6 +176,8 @@ pub enum CoordinationError {
     ConcurrencyExhausted,
     #[error("root deadline exceeded")]
     DeadlineExceeded,
+    #[error("execution permit denied: {0}")]
+    PermitDenied(permit::PermitDenial),
     #[error("idempotency key conflicts with its original request")]
     Conflict,
     #[error("coordinator CAS contention; retry observation")]
@@ -282,6 +295,7 @@ impl AuthorityCoordinator {
             starts: BTreeMap::new(),
             roots: BTreeMap::new(),
             changes: BTreeMap::new(),
+            permits: BTreeMap::new(),
         };
         let coordinator = Self { store, key };
         let encoded = Self::encode(&initial)?;
@@ -367,16 +381,21 @@ impl AuthorityCoordinator {
                 .iter()
                 .any(|r| self.validate_resource_scope(r).is_err())
             || !self.valid_start_accounting(&state)
+            || !self.valid_permit_history(&state)
             || state.changes.values().any(|record| match &record.change {
                 AuthorityChange::CloseResource { resource }
                 | AuthorityChange::ReopenResource { resource } => {
                     self.validate_resource_scope(resource).is_err()
                 }
                 AuthorityChange::RevokeSubject { .. } => false,
+                AuthorityChange::PublishPermit { permit } => !self.valid_permit(permit),
+                AuthorityChange::RevokePermit {
+                    permit_id,
+                    expected_revision,
+                } => !valid_text(permit_id) || *expected_revision == 0,
             })
             || state.generation == 0
-            || state.roots.len() + state.starts.len() + state.changes.len()
-                > state.limits.max_records
+            || state.record_count() > state.limits.max_records
             || state
                 .starts
                 .values()
@@ -421,6 +440,14 @@ impl AuthorityCoordinator {
     pub async fn register_attempt(
         &self,
         request: AttemptRequest<'_>,
+    ) -> Result<StartRegistration, CoordinationError> {
+        self.register_attempt_checked(request, None).await
+    }
+
+    async fn register_attempt_checked(
+        &self,
+        request: AttemptRequest<'_>,
+        permit_check: Option<&permit::PermittedAttempt<'_>>,
     ) -> Result<StartRegistration, CoordinationError> {
         let AttemptRequest {
             id,
@@ -479,8 +506,12 @@ impl AuthorityCoordinator {
             {
                 return Err(CoordinationError::Restricted);
             }
-            if state.roots.len() + state.starts.len() + state.changes.len()
-                >= state.limits.max_records - CONTROL_RECORD_RESERVE
+            let checked_now =
+                permit_check.map_or(now_ms, |check| check.clock.now().timestamp_millis());
+            if let Some(check) = permit_check {
+                permit::evaluate(&state, check, checked_now)?;
+            }
+            if state.record_count() >= state.limits.max_records - CONTROL_RECORD_RESERVE
                 || state
                     .starts
                     .values()
@@ -491,7 +522,7 @@ impl AuthorityCoordinator {
                 return Err(CoordinationError::Capacity);
             }
             if let Some(reservation) = &reservation {
-                budget::reserve_root(&mut state, reservation, now_ms)?;
+                budget::reserve_root(&mut state, reservation, checked_now)?;
             }
             let record = StartRecord {
                 subject: subject.into(),
@@ -531,6 +562,19 @@ impl AuthorityCoordinator {
                 return Err(CoordinationError::Invalid("subject".into()));
             }
             AuthorityChange::RevokeSubject { .. } => {}
+            AuthorityChange::PublishPermit { .. } => {
+                return Err(CoordinationError::Invalid(
+                    "use bounded permit publication".into(),
+                ));
+            }
+            AuthorityChange::RevokePermit {
+                permit_id,
+                expected_revision,
+            } => {
+                if !valid_text(permit_id) || *expected_revision == 0 {
+                    return Err(CoordinationError::Invalid("permit revocation".into()));
+                }
+            }
         }
         if ![id, actor, reason].into_iter().all(valid_text) {
             return Err(CoordinationError::Invalid("change fields".into()));
@@ -543,9 +587,7 @@ impl AuthorityCoordinator {
                 }
                 return Ok(old.clone());
             }
-            if state.roots.len() + state.starts.len() + state.changes.len()
-                >= state.limits.max_records
-            {
+            if state.record_count() >= state.limits.max_records {
                 return Err(CoordinationError::Capacity);
             }
             state.generation = state
@@ -561,6 +603,22 @@ impl AuthorityCoordinator {
                 }
                 AuthorityChange::RevokeSubject { subject } => {
                     state.revoked_subjects.insert(subject.clone());
+                }
+                AuthorityChange::RevokePermit {
+                    permit_id,
+                    expected_revision,
+                } => {
+                    let record = state
+                        .permits
+                        .get_mut(permit_id)
+                        .ok_or(CoordinationError::Conflict)?;
+                    if record.permit.revision != *expected_revision {
+                        return Err(CoordinationError::Conflict);
+                    }
+                    record.revoked = true;
+                }
+                AuthorityChange::PublishPermit { .. } => {
+                    unreachable!("publication uses its bounded entrypoint")
                 }
             }
             let record = ChangeRecord {

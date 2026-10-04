@@ -67,6 +67,9 @@ old records, preserving in-flight/uncertain obligations. Rollback to older
 readers is unsupported for format-3 state. Signed context format is unchanged;
 its coordinator dependency still refuses incompatible authority storage.
 
+The subsequent [format-4 permit profile](current-execution-permits.md) retains
+this accounting contract and adds current policy; it refuses formats 1–3.
+
 The legacy one-resource `register_start` delegates to an explicitly unmetered
 attempt. A future enforce profile must require its verified root reservation;
 it cannot fall back to this compatibility helper. Root IDs/units/time must come

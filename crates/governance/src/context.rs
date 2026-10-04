@@ -108,6 +108,10 @@ struct SealedRecord {
 pub struct VerifiedExecutionContext(ContextRecord);
 
 impl VerifiedExecutionContext {
+    #[must_use]
+    pub fn authority_stamp(&self) -> &AuthorityStamp {
+        &self.0.authority
+    }
     pub fn reference(&self) -> Result<acteon_core::ExecutionContextReference, ContextError> {
         acteon_core::ExecutionContextReference::new(
             self.0.handle.0,
@@ -221,6 +225,33 @@ fn valid_digest(value: &str) -> bool {
 }
 
 impl TrustedContextStore {
+    /// Capture a root under current exact permits and create its immutable budget.
+    /// Context publication and budget allocation are separate recoverable writes:
+    /// an interruption may leave an inert context, never an authorized effect.
+    pub async fn capture_permitted_root(
+        &self,
+        mut admission: RootContextAdmission,
+        permits: &[crate::permit::PermitReference],
+        limits: crate::RootBudgetLimits,
+        clock: &dyn acteon_time::Clock,
+    ) -> Result<VerifiedExecutionContext, ContextError> {
+        admission.accepted_ceiling_revision = crate::permit::permit_revision_tag(permits)?;
+        let state = self.coordinator.snapshot().await?;
+        let now_ms = clock.now().timestamp_millis();
+        crate::permit::validate_root_admission(&state, &admission, permits, &limits, now_ms)?;
+        let stamp = admission.evaluated_authority.clone();
+        let context = self.capture_root(admission, now_ms).await?;
+        self.coordinator
+            .create_root_budget(
+                &context.execution_id().to_string(),
+                context.principal().id(),
+                limits,
+                &stamp,
+                clock.now().timestamp_millis(),
+            )
+            .await?;
+        Ok(context)
+    }
     /// Expected reference must come from an independently trusted work record.
     pub async fn recover_reference(
         &self,

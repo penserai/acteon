@@ -4,8 +4,8 @@ Coordination substrate for the [governed-city design](../../docs/design/governed
 
 This crate serializes effect-start registrations and authority restrictions through
 one bounded, non-expiring per-tenant StateStore CAS record. It is not yet connected
-to gateway execution and does not implement execution permits, principal
-administration, delegated authority, or a public closure API.
+to gateway execution. It implements internal exact root-profile permits, but
+principal administration, delegated authority and public closure APIs remain open.
 
 ## Contract
 
@@ -89,6 +89,30 @@ ACTEON_GOVERNANCE_REDIS_URL=redis://127.0.0.1:6379 \
   independent_redis_root_reservations_pass_the_contract -- --ignored
 ```
 
+## Current execution permits
+
+The `permit` module publishes immutable-ID current revisions under a trusted
+issuance ceiling and revokes them through the same authority CAS. Current policy
+is reconstructed from retained control history on load. Terminal revocation
+cannot be undone by republishing the same ID.
+
+`TrustedContextStore::capture_permitted_root` verifies current subject, complete
+effects, selected revisions and bounds before sealing provenance and allocating
+its root budget. `register_permitted_attempt` binds the actual input digest and
+reevaluates original/current permits and root counters on every CAS retry, with
+a refreshed trusted clock. Selected permits intersect; they never assemble a
+cross-product of unrelated permissions. Existing registrations remain observation.
+
+These are privileged host APIs, not credential authentication or a public enforce
+profile. Production gates, grants/mandates, represented lineage and API/SDK/UI
+provisioning remain open. See the [permit ADR](../../docs/design/current-execution-permits.md).
+
+```sh
+ACTEON_GOVERNANCE_REDIS_URL=redis://127.0.0.1:6379 \
+  cargo test -p acteon-governance --test permits \
+  independent_redis_current_permits_pass_the_contract -- --ignored
+```
+
 ## Trusted durable root context
 
 `context::TrustedContextStore` captures a trusted adapter's authenticated root
@@ -144,11 +168,11 @@ replay, revocation, and durable pending control events.
 
 ## Resource format compatibility
 
-Coordinator format 3 stores complete exact resource sets and root accounting.
-Formats 1 (string resources) and 2 (single typed resource) are refused.
+Coordinator format 4 stores complete exact resource sets, root accounting and
+current permits. Formats 1–3 are refused.
 No automatic deletion/recreation or permissive migration is performed. The earlier
 substrate is not wired into live gateway effects, but any standalone adopter must
 stop admission and explicitly review/migrate retained records before upgrade.
 Unknown/uncertain attempts retain their reconciliation obligations. Rolling back
-to an older reader is unsupported for format-3 state. Signed context format is
+to an older reader is unsupported for format-4 state. Signed context format is
 unchanged, but recovery still requires a compatible coordinator.
