@@ -12,7 +12,7 @@ The companion [phased delivery plan](governed-agent-city-implementation-plan.md)
 
 ## 1. Product definition
 
-**Acteon is the execution and governance infrastructure for humans, agents, and software operating together. It gives every participant scoped authority, connects them to shared services, coordinates durable work, and lets operators intervene while the system is running.**
+**Acteon is the shared execution and governance infrastructure for an agent workforce: humans, their personal agents, team agents and software services working together under explicit mandates and enforceable permits. It connects participants to shared services, coordinates durable work, and lets operators intervene while the system is running.**
 
 The organizational model is an **agent workforce**: people work in teams with
 personal assistants, shared team agents and deterministic services. Acteon

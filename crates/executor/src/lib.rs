@@ -3,6 +3,7 @@ pub mod config;
 pub mod dlq;
 pub mod executor;
 pub mod gate;
+pub mod governed;
 pub mod retry;
 
 pub use config::ExecutorConfig;

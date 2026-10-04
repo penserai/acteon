@@ -1,7 +1,9 @@
 # Provider attempt admission and settlement
 
-**Status:** executor library integration on the working branch. Current permit
-evaluation and gateway/server provisioning remain open.
+**Status:** generic executor boundary merged in PR #413. Current root permit
+evaluation merged in PR #414; gateway/server provisioning remains open.
+The [durable provider adapter](durable-provider-governance.md) connects these
+primitives on the working branch.
 
 ## Decision
 
@@ -53,9 +55,9 @@ including optional attachment context. `require_attempt_gate()` refuses legacy
 Unconfigured legacy executors keep their existing behavior.
 
 This is a library boundary, not a public enforce-mode switch. A trusted host
-supplies the gate; models or SDK metadata cannot choose one. No production permit
-adapter, server scope profile, gateway effect path or public API/SDK/UI is enabled
-by this change. Principal/permit/mandate lifecycle publication, signed lineage,
+supplies the gate; models or SDK metadata cannot choose one. The generic boundary alone enables no server scope profile, gateway effect path
+or public API/SDK/UI. The subsequent durable adapter provides a directly mediated
+root-permit library path. Principal/permit/mandate lifecycle publication, signed lineage,
 current permission matching and root allocation remain required. Providers with
 internal retries or several external operations need their own qualified gates;
 one provider-method invocation does not prove every internal socket is mediated.
