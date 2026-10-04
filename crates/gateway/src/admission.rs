@@ -262,8 +262,13 @@ fn request_digest(
             .expect("Action serializes as object")
             .remove(field);
     }
+    let semantic_caller = match caller.and_then(|c| c.principal.as_ref()) {
+        Some(principal) => serde_json::json!({"principal":principal}),
+        None => serde_json::to_value(caller)
+            .map_err(|e| DispatchAdmissionError::Invalid(e.to_string()))?,
+    };
     let bytes = serde_json::to_vec(&canonical(
-        serde_json::json!({"action":value,"caller":caller}),
+        serde_json::json!({"action":value,"caller":semantic_caller}),
     ))
     .map_err(|e| DispatchAdmissionError::Invalid(e.to_string()))?;
     Ok(hex::encode(Sha256::digest(bytes)))
@@ -869,6 +874,7 @@ rules:
             resolution,
             resolved_by: Caller {
                 id: "operator".into(),
+                principal: None,
                 auth_method: "api_key".into(),
             },
             reason: "Verified receiver state and stopped the previous worker".into(),
@@ -947,6 +953,55 @@ rules:
     }
 
     #[tokio::test]
+    async fn original_principal_survives_replacement_gateway_and_chain_handoff() {
+        let clock = clock();
+        let store = Arc::new(MemoryStateStore::with_clock(clock.clone()));
+        let sink = Sink::new(false);
+        let original = gateway(store.clone(), clock.clone(), sink.clone(), true);
+        let actor =
+            acteon_core::PrincipalIdentity::new("investigator", acteon_core::PrincipalKind::Agent)
+                .unwrap();
+        let caller = Caller {
+            id: "old-key".into(),
+            auth_method: "api_key".into(),
+            principal: Some(actor.clone()),
+        };
+        original
+            .admit_dispatch(action(), Some(&caller), config())
+            .await
+            .unwrap();
+        drop(original);
+        let replacement = gateway(store, clock, sink.clone(), true);
+        let rotated = Caller {
+            id: "new-key".into(),
+            auth_method: "api_key".into(),
+            principal: Some(actor.clone()),
+        };
+        let result = replacement
+            .dispatch_durable(action(), Some(&rotated), config())
+            .await
+            .unwrap();
+        let retained = result.receipt.caller.as_ref().unwrap();
+        assert_eq!(retained.id, "old-key");
+        assert_eq!(retained.principal.as_ref(), Some(&actor));
+        let chain_id = result.receipt.chain_id().unwrap();
+        let chain = replacement
+            .get_chain_status("observability", "acme", chain_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            chain.caller.as_ref().unwrap().principal.as_ref(),
+            Some(&actor)
+        );
+        assert_eq!(chain.caller.as_ref().unwrap().id, "old-key");
+        Box::pin(replacement.advance_chain("observability", "acme", chain_id))
+            .await
+            .unwrap();
+        assert_eq!(sink.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
     async fn changed_payload_or_caller_conflicts_but_tenant_keys_are_independent() {
         let clock = clock();
         let store = Arc::new(MemoryStateStore::with_clock(clock.clone()));
@@ -954,6 +1009,7 @@ rules:
         let gw = gateway(store, clock, sink.clone(), false);
         let caller = Caller {
             id: "alice".into(),
+            principal: None,
             auth_method: "api_key".into(),
         };
         gw.dispatch_durable(action(), Some(&caller), config())

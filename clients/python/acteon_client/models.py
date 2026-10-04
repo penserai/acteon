@@ -4276,3 +4276,31 @@ class ListSwarmRunsResponse:
             runs=[SwarmRunSnapshot.from_dict(r) for r in data.get("runs", [])],
             total=int(data.get("total", 0)),
         )
+
+
+@dataclass
+class PrincipalIdentity:
+    """Stable actor metadata; kind does not grant authority."""
+
+    id: str
+    kind: str
+
+
+@dataclass
+class CredentialIdentity:
+    """Current credential and its optional operator-configured actor binding."""
+
+    credential_id: str
+    auth_method: str
+    role: str
+    principal: PrincipalIdentity | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "CredentialIdentity":
+        actor = data.get("principal")
+        return cls(
+            data["credential_id"],
+            data["auth_method"],
+            data["role"],
+            None if actor is None else PrincipalIdentity(actor["id"], actor["kind"]),
+        )

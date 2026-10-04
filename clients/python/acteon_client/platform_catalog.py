@@ -24,6 +24,7 @@ class PlatformOperation(StrEnum):
     APPROVALS_REJECT = "approvals_reject"
     AUDIT_GET_AUDIT_BY_ACTION = "audit_get_audit_by_action"
     AUDIT_QUERY_AUDIT = "audit_query_audit"
+    AUTH_IDENTITY = "auth_identity"
     AUTH_LOGIN = "auth_login"
     AUTH_LOGOUT = "auth_logout"
     BUS_ACK_SUBSCRIPTION = "bus_ack_subscription"
@@ -304,6 +305,7 @@ OPERATIONS = {
         "json",
     ),
     PlatformOperation.AUDIT_QUERY_AUDIT: ("GET", "/v1/audit", (), "json"),
+    PlatformOperation.AUTH_IDENTITY: ("GET", "/v1/auth/identity", (), "json"),
     PlatformOperation.AUTH_LOGIN: ("POST", "/v1/auth/login", (), "json"),
     PlatformOperation.AUTH_LOGOUT: ("POST", "/v1/auth/logout", (), "json"),
     PlatformOperation.BUS_ACK_SUBSCRIPTION: (

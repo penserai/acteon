@@ -163,3 +163,43 @@ def test_typed_bus_lookup_and_delete_use_registered_routes():
         ("GET", "/v1/bus/topics"),
         ("DELETE", "/v1/bus/topics/actual.logs"),
     ]
+
+
+@pytest.mark.parametrize(
+    "wire", json.loads((Path(__file__).parents[2] / "contract-fixtures/identity.json").read_text())
+)
+def test_typed_identity_preserves_binding_and_legacy_null(wire):
+    def handle(req):
+        assert req.method == "GET"
+        assert req.url.path == "/v1/auth/identity"
+        assert req.headers["Authorization"] == "Bearer local-test"
+        return httpx.Response(200, json=wire)
+
+    with ActeonClient("http://localhost", api_key="local-test") as client:
+        client._client.close()
+        client._client = httpx.Client(transport=httpx.MockTransport(handle))
+        identity = client.identity()
+        assert identity.credential_id == wire["credential_id"]
+        assert identity.auth_method == wire["auth_method"]
+        assert identity.role == wire["role"]
+        assert (None if identity.principal is None else vars(identity.principal)) == wire[
+            "principal"
+        ]
+
+
+@pytest.mark.asyncio
+async def test_async_typed_identity_uses_authenticated_endpoint():
+    wire = json.loads((Path(__file__).parents[2] / "contract-fixtures/identity.json").read_text())[
+        0
+    ]
+
+    def handle(req):
+        assert req.url.path == "/v1/auth/identity"
+        assert req.headers["Authorization"] == "Bearer local-test"
+        return httpx.Response(200, json=wire)
+
+    async with AsyncActeonClient("http://localhost", api_key="local-test") as client:
+        await client._client.aclose()
+        client._client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+        identity = await client.identity()
+        assert identity.principal.id == wire["principal"]["id"]

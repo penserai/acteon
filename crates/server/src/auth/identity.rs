@@ -8,6 +8,8 @@ use super::role::Role;
 pub struct CallerIdentity {
     /// Caller identifier (username or API key name).
     pub id: String,
+    /// Trusted credential-to-actor binding, independent of its display name.
+    pub principal: Option<acteon_core::PrincipalIdentity>,
     /// The principal's role.
     pub role: Role,
     /// The principal's resource grants.
@@ -21,6 +23,7 @@ impl CallerIdentity {
     pub fn anonymous() -> Self {
         Self {
             id: String::new(),
+            principal: None,
             role: Role::Admin,
             grants: vec![Grant {
                 tenants: vec!["*".to_owned()],
@@ -129,6 +132,7 @@ impl CallerIdentity {
     pub fn to_caller(&self) -> Caller {
         Caller {
             id: self.id.clone(),
+            principal: self.principal.clone(),
             auth_method: self.auth_method.clone(),
         }
     }
@@ -299,6 +303,7 @@ mod tests {
     fn identity_with(grants: Vec<Grant>) -> CallerIdentity {
         CallerIdentity {
             id: "test".into(),
+            principal: None,
             role: Role::Admin,
             grants,
             auth_method: "test".into(),

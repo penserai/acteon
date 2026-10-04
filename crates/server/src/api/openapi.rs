@@ -91,6 +91,7 @@ use acteon_core::{
         (name = "bus", description = "Agentic message bus (Kafka-backed topics, publish, subscribe)")
     ),
     paths(
+        super::auth::identity,
         super::health::health,
         super::health::metrics,
         super::dispatch::dispatch,

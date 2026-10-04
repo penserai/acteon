@@ -69,6 +69,8 @@ pub mod stream;
 pub mod webhook;
 
 // Domain-specific modules containing `impl ActeonClient` blocks and model types.
+mod identity;
+pub use acteon_core::{CredentialIdentity, PrincipalIdentity, PrincipalKind};
 mod analytics;
 mod approvals;
 mod audit;

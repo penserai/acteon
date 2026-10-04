@@ -138,6 +138,12 @@
     "permission": "AuditRead"
   },
   {
+    "name": "auth_identity",
+    "method": "GET",
+    "path": "/v1/auth/identity",
+    "permission": "Session"
+  },
+  {
     "name": "auth_login",
     "method": "POST",
     "path": "/v1/auth/login",

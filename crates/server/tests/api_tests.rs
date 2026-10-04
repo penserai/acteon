@@ -175,6 +175,7 @@ fn build_test_state_with_auth_role(role: &str, grants: Vec<Grant>) -> AppState {
 
     let api_key_config = ApiKeyConfig {
         name: "test-key".to_string(),
+        principal: None,
         key_hash: SecretString::new(hash_api_key("test-raw-key").into()),
         role: role.to_string(),
         grants,
@@ -2860,6 +2861,7 @@ async fn silence_list_hides_silences_outside_caller_tenant_grants() {
 
     let admin_key = ApiKeyConfig {
         name: "admin-key".to_string(),
+        principal: None,
         key_hash: SecretString::new(hash_api_key("admin-raw-key").into()),
         role: "admin".to_string(),
         grants: vec![Grant {
@@ -2872,6 +2874,7 @@ async fn silence_list_hides_silences_outside_caller_tenant_grants() {
     };
     let limited_key = ApiKeyConfig {
         name: "limited-key".to_string(),
+        principal: None,
         key_hash: SecretString::new(hash_api_key("limited-raw-key").into()),
         role: "admin".to_string(),
         grants: vec![Grant {
@@ -3443,6 +3446,7 @@ async fn silence_create_requires_silences_manage_permission() {
     // Viewer role lacks SilencesManage.
     let api_key_config = ApiKeyConfig {
         name: "viewer-key".to_string(),
+        principal: None,
         key_hash: SecretString::new(hash_api_key("test-raw-key").into()),
         role: "viewer".to_string(),
         grants: vec![default_test_grant()],
@@ -4178,6 +4182,7 @@ async fn existing_jwt_uses_reloaded_role_and_grants_and_rejects_removed_user() {
         },
         users: vec![UserConfig {
             username: "human".into(),
+            principal: None,
             password_hash: SecretString::new(
                 argon2::Argon2::default()
                     .hash_password(
@@ -4288,6 +4293,7 @@ async fn executor_can_heartbeat_self_and_message_peer_without_registry_authority
             users: vec![],
             api_keys: vec![ApiKeyConfig {
                 name: "test-key".into(),
+                principal: None,
                 key_hash: SecretString::new(hash_api_key("test-raw-key").into()),
                 role: "executor".into(),
                 grants: vec![grant],
@@ -4445,4 +4451,223 @@ async fn viewer_does_not_gain_existing_execution_scoped_bus_or_a2a_reads() {
             .unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN, "{path}");
     }
+}
+
+fn principal_key_config(name: &str, raw: &str, actor: &str) -> AuthFileConfig {
+    AuthFileConfig {
+        settings: AuthSettings {
+            jwt_secret: SecretString::new("test-jwt-secret-32-bytes-long!!!!".to_string().into()),
+            jwt_expiry_seconds: 3600,
+        },
+        users: vec![],
+        api_keys: vec![ApiKeyConfig {
+            name: name.into(),
+            principal: Some(
+                acteon_core::PrincipalIdentity::new(actor, acteon_core::PrincipalKind::Service)
+                    .unwrap(),
+            ),
+            key_hash: SecretString::new(hash_api_key(raw).into()),
+            role: "executor".into(),
+            grants: vec![wildcard_admin_grant()],
+        }],
+    }
+}
+
+#[tokio::test]
+async fn stable_principal_survives_rotation_and_binds_durable_replay() {
+    let mut state = build_test_state(vec![]);
+    let config = principal_key_config("key-old", "raw-old", "detector");
+    let auth = Arc::new(AuthProvider::new(&config, Arc::new(MemoryStateStore::new())).unwrap());
+    state.auth = Some(auth.clone());
+    let app = build_app(state);
+    let request = |key: &str, action: &Action| {
+        Request::builder()
+            .method("POST")
+            .uri("/v1/dispatch?durable=true")
+            .header("X-API-Key", key)
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_vec(action).unwrap()))
+            .unwrap()
+    };
+    let mut action = Action::new(
+        "notifications",
+        "test-tenant",
+        "email",
+        "send_email",
+        serde_json::json!({"ok":true}),
+    )
+    .with_dedup_key("principal-rotation");
+    action
+        .metadata
+        .labels
+        .insert("principal".into(), "forged-actor".into());
+    let response = app
+        .clone()
+        .oneshot(request("raw-old", &action))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let first: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(first["receipt"]["caller"]["principal"]["id"], "detector");
+    assert_eq!(first["receipt"]["caller"]["id"], "key-old");
+    auth.reload(&principal_key_config("key-new", "raw-new", "detector"))
+        .await
+        .unwrap();
+    assert!(auth.authenticate_api_key("raw-old").await.is_none());
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/auth/identity")
+                .header("X-API-Key", "raw-new")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let current: acteon_core::CredentialIdentity = serde_json::from_slice(&body).unwrap();
+    assert_eq!(current.credential_id, "key-new");
+    assert_eq!(current.principal.unwrap().id(), "detector");
+    let response = app
+        .clone()
+        .oneshot(request("raw-new", &action))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let replay: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(replay["replayed"], true);
+    assert_eq!(replay["receipt"]["caller"], first["receipt"]["caller"]);
+    let mut narrowed = principal_key_config("key-new", "raw-new", "detector");
+    narrowed.api_keys[0].grants.clear();
+    auth.reload(&narrowed).await.unwrap();
+    assert_eq!(
+        app.clone()
+            .oneshot(request("raw-new", &action))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    auth.reload(&principal_key_config("key-new", "raw-new", "other-actor"))
+        .await
+        .unwrap();
+    assert_eq!(
+        app.oneshot(request("raw-new", &action))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::CONFLICT
+    );
+}
+
+#[tokio::test]
+async fn changed_principal_binding_invalidates_existing_jwt_without_retargeting_actor() {
+    use acteon_server::auth::config::UserConfig;
+    use argon2::password_hash::{PasswordHasher, SaltString};
+    let mut config = principal_key_config("unused", "unused", "service");
+    config.users.push(UserConfig {
+        username: "human".into(),
+        principal: Some(
+            acteon_core::PrincipalIdentity::new("person-a", acteon_core::PrincipalKind::Human)
+                .unwrap(),
+        ),
+        password_hash: SecretString::new(
+            argon2::Argon2::default()
+                .hash_password(
+                    b"password",
+                    &SaltString::encode_b64(b"test-principal-salt").unwrap(),
+                )
+                .unwrap()
+                .to_string()
+                .into(),
+        ),
+        role: "executor".into(),
+        grants: vec![wildcard_admin_grant()],
+    });
+    let auth = AuthProvider::new(&config, Arc::new(MemoryStateStore::new())).unwrap();
+    let (token, _) = auth.login("human", "password").await.unwrap();
+    assert_eq!(
+        auth.validate_jwt(&token)
+            .await
+            .unwrap()
+            .principal
+            .unwrap()
+            .id(),
+        "person-a"
+    );
+    config.users[0].role = "viewer".into();
+    auth.reload(&config).await.unwrap();
+    assert_eq!(
+        auth.validate_jwt(&token).await.unwrap().role,
+        acteon_server::auth::role::Role::Viewer
+    );
+    config.users[0].principal = Some(
+        acteon_core::PrincipalIdentity::new("person-b", acteon_core::PrincipalKind::Human).unwrap(),
+    );
+    auth.reload(&config).await.unwrap();
+    assert!(auth.validate_jwt(&token).await.is_err());
+    let (fresh, _) = auth.login("human", "password").await.unwrap();
+    assert_eq!(
+        auth.validate_jwt(&fresh)
+            .await
+            .unwrap()
+            .principal
+            .unwrap()
+            .id(),
+        "person-b"
+    );
+    config.users[0].principal = None;
+    auth.reload(&config).await.unwrap();
+    assert!(auth.validate_jwt(&fresh).await.is_err());
+    let (legacy, _) = auth.login("human", "password").await.unwrap();
+    config.users[0].principal = Some(
+        acteon_core::PrincipalIdentity::new("person-b", acteon_core::PrincipalKind::Human).unwrap(),
+    );
+    auth.reload(&config).await.unwrap();
+    assert!(auth.validate_jwt(&legacy).await.is_err());
+}
+
+#[tokio::test]
+async fn principal_configuration_errors_leave_current_auth_tables_intact() {
+    let config = principal_key_config("key", "raw", "actor");
+    let auth = AuthProvider::new(&config, Arc::new(MemoryStateStore::new())).unwrap();
+    let mut conflict = principal_key_config("key", "raw", "actor");
+    conflict.api_keys.push(ApiKeyConfig {
+        name: "other".into(),
+        key_hash: SecretString::new(hash_api_key("other").into()),
+        role: "executor".into(),
+        grants: vec![],
+        principal: Some(
+            acteon_core::PrincipalIdentity::new("actor", acteon_core::PrincipalKind::Agent)
+                .unwrap(),
+        ),
+    });
+    assert!(auth.reload(&conflict).await.is_err());
+    assert_eq!(
+        auth.authenticate_api_key("raw")
+            .await
+            .unwrap()
+            .principal
+            .unwrap()
+            .kind(),
+        acteon_core::PrincipalKind::Service
+    );
+    conflict.api_keys.pop();
+    conflict.api_keys[0].role = "typo".into();
+    assert!(auth.reload(&conflict).await.is_err());
+    assert!(auth.authenticate_api_key("raw").await.is_some());
+    conflict.api_keys[0].role = "executor".into();
+    let mut duplicate = principal_key_config("other", "raw", "other-actor");
+    duplicate.api_keys.append(&mut conflict.api_keys);
+    assert!(auth.reload(&duplicate).await.is_err());
 }

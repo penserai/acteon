@@ -33,6 +33,7 @@ from .models import (
     CreateSilenceRequest,
     CreateTemplateRequest,
     CreateTimeIntervalRequest,
+    CredentialIdentity,
     DagResponse,
     DlqDrainResponse,
     DlqStatsResponse,
@@ -92,6 +93,7 @@ from .models import (
     _parse_sse_stream,
 )
 from .platform import _AsyncPlatformMixin, _PlatformMixin
+from .platform_catalog import PlatformOperation
 from .queues import _AsyncQueuesClientMixin, _QueuesClientMixin
 from .workflows import _AsyncWorkflowsClientMixin, _WorkflowsClientMixin
 
@@ -203,6 +205,10 @@ class ActeonClient(
     # =========================================================================
     # Health
     # =========================================================================
+
+    def identity(self) -> CredentialIdentity:
+        """Inspect this credential's stable principal binding."""
+        return CredentialIdentity.from_dict(self.platform_request(PlatformOperation.AUTH_IDENTITY))
 
     def health(self) -> bool:
         """Check if the server is healthy.
@@ -2649,6 +2655,12 @@ class AsyncActeonClient(
             raise ConnectionError(str(e)) from e
         except httpx.TimeoutException as e:
             raise ConnectionError(f"Request timed out: {e}") from e
+
+    async def identity(self) -> CredentialIdentity:
+        """Inspect this credential's stable principal binding."""
+        return CredentialIdentity.from_dict(
+            await self.platform_request(PlatformOperation.AUTH_IDENTITY)
+        )
 
     async def health(self) -> bool:
         try:
