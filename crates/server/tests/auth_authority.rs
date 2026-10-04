@@ -920,3 +920,399 @@ async fn invalid_and_cross_method_enrollment_ids_are_refused() {
     cfg.users[0].authority_id = Some("credential/user-one".into());
     assert!(AuthProvider::new(&cfg, state).is_ok());
 }
+
+async fn projection_fixture() -> (
+    acteon_server::auth::projection::CredentialPolicyProjector,
+    AuthorityCoordinator,
+    Arc<AuthAuthority>,
+    AuthFileConfig,
+) {
+    projection_fixture_on(Arc::new(MemoryStateStore::new())).await
+}
+
+async fn projection_fixture_on(
+    state: Arc<dyn StateStore>,
+) -> (
+    acteon_server::auth::projection::CredentialPolicyProjector,
+    AuthorityCoordinator,
+    Arc<AuthAuthority>,
+    AuthFileConfig,
+) {
+    projection_fixture_for(state, "prod").await
+}
+
+async fn projection_fixture_for(
+    state: Arc<dyn StateStore>,
+    namespace: &str,
+) -> (
+    acteon_server::auth::projection::CredentialPolicyProjector,
+    AuthorityCoordinator,
+    Arc<AuthAuthority>,
+    AuthFileConfig,
+) {
+    use acteon_core::{ResourceKind, ResourceRef};
+    use acteon_executor::{catalog::QualifiedProviderCatalog, governed::BoundProvider};
+    use acteon_governance::{RootBudgetLimits, permit::PermitIssuanceCeiling};
+    let auth = authority(coordinator(state.clone()).await);
+    let scope =
+        AuthorityCoordinator::initialize(state, namespace, "acme", CoordinatorLimits::default())
+            .await
+            .unwrap();
+    let mut cfg = configuration(1);
+    cfg.api_keys[0].authority_id = Some("credential/diagnostics".into());
+    cfg.api_keys[0].grants[0].namespaces = vec!["prod".into(), "secondary".into()];
+    let bindings = ["read", "write"]
+        .into_iter()
+        .map(|name| {
+            let provider: Arc<dyn acteon_provider::DynProvider> =
+                Arc::new(acteon_provider::LogProvider::new(name));
+            BoundProvider::new_trusted(
+                provider,
+                &ResourceRef::new(ResourceKind::Endpoint, namespace, "acme", name).unwrap(),
+                "execute",
+                "opaque-version-v1",
+                vec![],
+            )
+            .unwrap()
+        })
+        .collect();
+    let catalog = QualifiedProviderCatalog::new_trusted(bindings).unwrap();
+    let effects = catalog
+        .definitions(namespace, "acme")
+        .into_iter()
+        .map(|d| d.effect)
+        .collect();
+    let limits = RootBudgetLimits {
+        max_units: 5,
+        max_concurrent: 2,
+        deadline_ms: 4_102_444_800_000,
+    };
+    let issuance = PermitIssuanceCeiling {
+        issuer: PrincipalIdentity::new("scope-publisher", PrincipalKind::System).unwrap(),
+        subjects: vec![cfg.api_keys[0].principal.clone().unwrap()],
+        effects,
+        valid_from_ms: 0,
+        limits: limits.clone(),
+    };
+    let projector = acteon_server::auth::projection::CredentialPolicyProjector::new_trusted(
+        scope.clone(),
+        catalog,
+        issuance,
+        0,
+        limits,
+    )
+    .await
+    .unwrap();
+    (projector, scope, auth, cfg)
+}
+
+#[tokio::test]
+async fn qualified_projection_keeps_credentials_separate_and_retires_omissions() {
+    let (projector, scope, auth, mut cfg) = projection_fixture().await;
+    let mut read_only = configuration(1).api_keys.remove(0);
+    read_only.authority_id = Some("credential/reader".into());
+    read_only.key_hash = SecretString::new(hash_api_key("reader-key").into());
+    read_only.grants[0].providers = vec!["read".into()];
+    cfg.api_keys.push(read_only);
+    let mut viewer = configuration(1).api_keys.remove(0);
+    viewer.authority_id = Some("credential/viewer".into());
+    viewer.key_hash = SecretString::new(hash_api_key("viewer-key").into());
+    viewer.role = "viewer".into();
+    cfg.api_keys.push(viewer);
+    let reference = projector.publish(&auth, &cfg, 1).await.unwrap();
+    scope
+        .verify_credential_configuration(&reference)
+        .await
+        .unwrap();
+    let snapshot = scope.snapshot().await.unwrap();
+    assert_eq!(
+        snapshot.credentials["credential/diagnostics"]
+            .authority
+            .ceiling
+            .effects
+            .len(),
+        2
+    );
+    assert_eq!(
+        snapshot.credentials["credential/reader"]
+            .authority
+            .ceiling
+            .effects
+            .len(),
+        1
+    );
+    assert!(
+        !snapshot.credentials["credential/viewer"]
+            .authority
+            .execution_enabled
+    );
+    assert!(
+        snapshot.credentials["credential/viewer"]
+            .authority
+            .ceiling
+            .effects
+            .is_empty()
+    );
+    assert_eq!(projector.publish(&auth, &cfg, 2).await.unwrap(), reference);
+    assert_eq!(
+        scope.snapshot().await.unwrap().generation,
+        snapshot.generation
+    );
+    cfg.api_keys[0].grants.clear();
+    assert!(projector.publish(&auth, &cfg, 3).await.is_err());
+    assert_eq!(
+        scope.snapshot().await.unwrap().generation,
+        snapshot.generation
+    );
+    cfg.api_keys.remove(0);
+    cfg.authority_revision = Some(2);
+    projector.publish(&auth, &cfg, 4).await.unwrap();
+    assert!(
+        scope
+            .verify_credential_configuration(&reference)
+            .await
+            .is_err()
+    );
+    assert!(scope.snapshot().await.unwrap().credentials["credential/diagnostics"].revoked);
+    let mut restored = configuration(3).api_keys.remove(0);
+    restored.authority_id = Some("credential/diagnostics".into());
+    cfg.api_keys.push(restored);
+    cfg.authority_revision = Some(3);
+    assert!(projector.publish(&auth, &cfg, 5).await.is_err());
+    cfg.api_keys.last_mut().unwrap().authority_id = Some("credential/diagnostics-v2".into());
+    projector.publish(&auth, &cfg, 6).await.unwrap();
+    assert!(!scope.snapshot().await.unwrap().credentials["credential/diagnostics-v2"].revoked);
+}
+
+#[tokio::test]
+async fn scope_projection_refuses_unenrolled_and_ambiguous_authentication_inputs() {
+    let (projector, scope, auth, mut cfg) = projection_fixture().await;
+    let initial = scope.snapshot().await.unwrap().generation;
+    cfg.api_keys[0].authority_id = None;
+    assert!(projector.publish(&auth, &cfg, 1).await.is_err());
+    assert_eq!(scope.snapshot().await.unwrap().generation, initial);
+    cfg.api_keys[0].authority_id = Some("credential/diagnostics".into());
+    let mut duplicate = configuration(1).api_keys.remove(0);
+    duplicate.authority_id = Some("credential/other".into());
+    cfg.api_keys.push(duplicate); // The same hash cannot resolve two logical credentials.
+    assert!(projector.publish(&auth, &cfg, 1).await.is_err());
+    assert_eq!(scope.snapshot().await.unwrap().generation, initial);
+}
+
+#[tokio::test]
+async fn real_http_scope_bindings_refuse_partial_publication_and_reconcile_without_refresh() {
+    use acteon_server::auth::projection::AuthenticatedExecutionConfiguration;
+    use std::sync::Mutex;
+    let faults = Arc::new(FaultStore::new(Arc::new(MemoryStateStore::new())));
+    let state: Arc<dyn StateStore> = faults.clone();
+    let (projector, scope, authority, mut cfg) = projection_fixture_on(state.clone()).await;
+    let projector = Arc::new(projector);
+    let a = Arc::new(
+        AuthProvider::new_with_scope_projection(
+            &cfg,
+            state.clone(),
+            authority.clone(),
+            vec![projector.clone()],
+        )
+        .await
+        .unwrap(),
+    );
+    let b = Arc::new(
+        AuthProvider::new_with_scope_projection(&cfg, state, authority.clone(), vec![projector])
+            .await
+            .unwrap(),
+    );
+    // A node omitting the declared projection cannot join the same auth epoch.
+    assert!(
+        AuthProvider::new_with_authority(&cfg, faults.clone(), authority)
+            .await
+            .is_err()
+    );
+    let saved = Arc::new(Mutex::new(None::<AuthenticatedExecutionConfiguration>));
+    let mut servers = Vec::new();
+    let mut urls = Vec::new();
+    for provider in [a.clone(), b.clone()] {
+        let scope = scope.clone();
+        let saved = saved.clone();
+        let app = Router::new().route("/scope", get(
+            move |Extension(proof): Extension<AuthenticatedExecutionConfiguration>| {
+                let scope = scope.clone();
+                let saved = saved.clone();
+                async move {
+                    let binding = proof.scope("prod", "acme").unwrap();
+                    *saved.lock().unwrap() = Some(proof);
+                    if binding.verify_current(&scope, chrono::Utc::now().timestamp_millis()).await.is_err() {
+                        return (axum::http::StatusCode::FORBIDDEN, Json(json!({"eligible": false})));
+                    }
+                    (axum::http::StatusCode::OK, Json(json!({
+                        "scope_revision": binding.configuration_reference().revision,
+                        "auth_revision": binding.authentication_source().reference().revision,
+                        "credential": binding.credential_reference().id,
+                    })))
+                }
+            }
+        )).layer(AuthLayer::new(Some(provider)));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        urls.push(format!("http://{}/scope", listener.local_addr().unwrap()));
+        servers.push(tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        }));
+    }
+    let client = reqwest::Client::new();
+    let old = client
+        .get(&urls[0])
+        .bearer_auth("key-original")
+        .header("x-scope-revision", "999")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(old.status(), 200);
+    assert_eq!(
+        old.json::<Value>().await.unwrap(),
+        json!({
+            "scope_revision": 1, "auth_revision": 1, "credential": "credential/diagnostics",
+        })
+    );
+    let captured = saved
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap()
+        .scope("prod", "acme")
+        .unwrap();
+    assert!(
+        captured
+            .verify_current(&scope, 4_102_444_800_000)
+            .await
+            .is_err()
+    );
+    cfg.authority_revision = Some(2);
+    cfg.api_keys[0].grants[0].providers = vec!["read".into()];
+    faults
+        .fail_next(
+            KeyKind::Custom(COORDINATOR_KIND.into()),
+            WriteOperation::CompareAndSwap,
+            FaultTiming::After,
+        )
+        .unwrap();
+    assert!(a.reload(&cfg).await.is_err());
+    // Scope commit succeeded but the auth epoch/table swap was not acknowledged.
+    assert!(a.authenticate_api_key("key-original").await.is_some());
+    assert_eq!(
+        client
+            .get(&urls[0])
+            .bearer_auth("key-original")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+    assert!(captured.verify_current(&scope, 1).await.is_err());
+    a.reload(&cfg).await.unwrap();
+    let current = client
+        .get(&urls[0])
+        .bearer_auth("key-original")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(current.status(), 200);
+    assert_eq!(current.json::<Value>().await.unwrap()["scope_revision"], 2);
+    assert_eq!(
+        client
+            .get(&urls[1])
+            .bearer_auth("key-original")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+    let generation = scope.snapshot().await.unwrap().generation;
+    b.reload(&cfg).await.unwrap();
+    assert_eq!(scope.snapshot().await.unwrap().generation, generation);
+    assert_eq!(
+        client
+            .get(&urls[1])
+            .bearer_auth("key-original")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    assert!(captured.verify_current(&scope, 1).await.is_err());
+    for task in servers {
+        task.abort();
+    }
+}
+
+#[tokio::test]
+async fn partial_multi_scope_publication_is_restrictive_and_identical_retry_converges() {
+    use acteon_server::auth::projection::AuthenticatedExecutionConfiguration;
+    let faults = Arc::new(FaultStore::new(Arc::new(MemoryStateStore::new())));
+    let state: Arc<dyn StateStore> = faults.clone();
+    let (first, scope_a, authority, mut cfg) = projection_fixture_for(state.clone(), "prod").await;
+    let (second, scope_b, _, _) = projection_fixture_for(state.clone(), "secondary").await;
+    let provider = Arc::new(
+        AuthProvider::new_with_scope_projection(
+            &cfg,
+            state,
+            authority,
+            vec![Arc::new(first), Arc::new(second)],
+        )
+        .await
+        .unwrap(),
+    );
+    let app = Router::new().route("/scope-pair", get(
+        move |Extension(proof): Extension<AuthenticatedExecutionConfiguration>| {
+            let a = scope_a.clone(); let b = scope_b.clone();
+            async move {
+                let now = chrono::Utc::now().timestamp_millis();
+                Json(json!({
+                    "first": proof.scope("prod", "acme").unwrap().verify_current(&a, now).await.is_ok(),
+                    "second": proof.scope("secondary", "acme").unwrap().verify_current(&b, now).await.is_ok(),
+                }))
+            }
+        }
+    )).layer(AuthLayer::new(Some(provider.clone())));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/scope-pair", listener.local_addr().unwrap());
+    let task = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let client = reqwest::Client::new();
+    let read = || client.get(&url).bearer_auth("key-original").send();
+    assert_eq!(
+        read().await.unwrap().json::<Value>().await.unwrap(),
+        json!({"first":true,"second":true})
+    );
+    cfg.authority_revision = Some(2);
+    cfg.api_keys[0].grants[0].providers = vec!["read".into()];
+    faults
+        .fail_after_matches(
+            KeyKind::Custom(COORDINATOR_KIND.into()),
+            WriteOperation::CompareAndSwap,
+            FaultTiming::Before,
+            1,
+        )
+        .unwrap();
+    assert!(provider.reload(&cfg).await.is_err());
+    assert_eq!(
+        read().await.unwrap().json::<Value>().await.unwrap(),
+        json!({"first":false,"second":true})
+    );
+    provider.reload(&cfg).await.unwrap();
+    assert_eq!(
+        read().await.unwrap().json::<Value>().await.unwrap(),
+        json!({"first":true,"second":true})
+    );
+    cfg.authority_revision = Some(1);
+    cfg.api_keys[0].grants[0].providers = vec!["read".into(), "write".into()];
+    assert!(provider.reload(&cfg).await.is_err());
+    assert_eq!(
+        read().await.unwrap().json::<Value>().await.unwrap(),
+        json!({"first":true,"second":true})
+    );
+    task.abort();
+}

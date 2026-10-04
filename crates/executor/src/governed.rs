@@ -80,10 +80,14 @@ struct Binding {
 /// Privileged host binding. Endpoint identity/version must describe the actual
 /// immutable provider instance and all additional protected resources. A provider
 /// with dynamic destinations/internal retries needs a qualified resolver first.
+#[derive(Clone)]
 pub struct BoundProvider {
     provider: Arc<dyn DynProvider>,
     binding: Binding,
     failures: Arc<dyn ProviderFailureContract>,
+    action_type: String,
+    endpoint: ResourceRef,
+    catalog_version: Option<ResourceRef>,
 }
 impl BoundProvider {
     pub fn new_trusted(
@@ -138,6 +142,9 @@ impl BoundProvider {
             },
             provider,
             failures: Arc::new(ConservativeFailures),
+            action_type: action_type.into(),
+            endpoint: endpoint.clone(),
+            catalog_version: None,
         })
     }
     pub fn with_failure_contract(
@@ -149,11 +156,63 @@ impl BoundProvider {
         }
         self.binding.failure_revision = contract.revision().into();
         self.failures = contract;
+        if self.catalog_version.is_some() {
+            self.refresh_catalog_version()?;
+        }
         Ok(self)
     }
     #[must_use]
     pub fn effect(&self) -> &AcceptedEffect {
         &self.binding.effect
+    }
+
+    pub(crate) fn catalog_definition(&self) -> crate::catalog::QualifiedProviderDefinition {
+        crate::catalog::QualifiedProviderDefinition {
+            namespace: self.endpoint.namespace().into(),
+            tenant: self.endpoint.tenant().into(),
+            provider: self.binding.provider.clone(),
+            action_type: self.action_type.clone(),
+            endpoint: self.endpoint.clone(),
+            revision: self.binding.revision.clone(),
+            failure_revision: self.binding.failure_revision.clone(),
+            effect: self.binding.effect.clone(),
+        }
+    }
+
+    pub(crate) fn is_provider(&self, provider: &Arc<dyn DynProvider>) -> bool {
+        Arc::ptr_eq(&self.provider, provider)
+    }
+
+    pub(crate) fn qualify_for_catalog(mut self) -> Result<Self, GovernedProviderError> {
+        if self.catalog_version.is_none() {
+            self.refresh_catalog_version()?;
+        }
+        Ok(self)
+    }
+
+    fn refresh_catalog_version(&mut self) -> Result<(), GovernedProviderError> {
+        if let Some(previous) = self.catalog_version.take() {
+            self.binding.effect.resources.retain(|r| r != &previous);
+        }
+        if self.binding.effect.resources.len() >= 16 {
+            return Err(GovernedProviderError::Invalid);
+        }
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "format": "acteon.qualified_provider.v1", "binding": self.binding,
+            "primary_action": self.action_type, "endpoint": self.endpoint,
+        }))
+        .map_err(|_| GovernedProviderError::Invalid)?;
+        let version = ResourceRef::new(
+            ResourceKind::Route,
+            self.endpoint.namespace(),
+            self.endpoint.tenant(),
+            format!("provider-version/{:x}", Sha256::digest(bytes)),
+        )
+        .map_err(|_| GovernedProviderError::Invalid)?;
+        self.binding.effect.resources.push(version.clone());
+        self.binding.effect.resources.sort();
+        self.catalog_version = Some(version);
+        Ok(())
     }
 }
 fn valid_text(value: &str) -> bool {
@@ -554,10 +613,7 @@ impl GovernedProviderExecutor {
             return Err(GovernedProviderError::Invalid);
         }
         let effect = &self.runtime.bound.binding.effect;
-        if !effect
-            .resources
-            .iter()
-            .any(|r| r.kind() == ResourceKind::Action && r.id() == action.action_type)
+        if action.action_type != self.runtime.bound.action_type
             || effect
                 .resources
                 .iter()

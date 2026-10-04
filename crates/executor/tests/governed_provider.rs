@@ -111,15 +111,25 @@ fn config() -> ExecutorConfig {
     }
 }
 fn bound(provider: Arc<dyn DynProvider>, known: bool) -> BoundProvider {
-    let binding =
-        BoundProvider::new_trusted(provider, &endpoint(), "work", "definition-v1", vec![]).unwrap();
-    if known {
+    let binding = BoundProvider::new_trusted(
+        provider.clone(),
+        &endpoint(),
+        "work",
+        "definition-v1",
+        vec![],
+    )
+    .unwrap();
+    let binding = if known {
         binding
             .with_failure_contract(Arc::new(KnownRateLimit))
             .unwrap()
     } else {
         binding
-    }
+    };
+    let catalog =
+        acteon_executor::catalog::QualifiedProviderCatalog::new_trusted(vec![binding]).unwrap();
+    let probe = Action::new("city", "tenant", "original", "work", serde_json::json!({}));
+    catalog.resolve(&probe, &provider).unwrap().clone()
 }
 struct Fixture {
     state: Arc<dyn StateStore>,
@@ -815,8 +825,30 @@ async fn real_http_result_is_recovered_without_a_second_network_invocation() {
         config(),
     )
     .await;
-    let first = f
-        .driver(provider.clone(), None)
+    let selected: Arc<dyn DynProvider> = provider.clone();
+    let catalog = acteon_executor::catalog::QualifiedProviderCatalog::new_trusted(vec![bound(
+        selected.clone(),
+        false,
+    )])
+    .unwrap();
+    let replacement: Arc<dyn DynProvider> = Arc::new(HttpProvider {
+        client: reqwest::Client::new(),
+        url: provider.url.clone(),
+    });
+    assert!(catalog.resolve(&f.action, &replacement).is_err());
+    assert_eq!(f.action.provider.as_str(), "original");
+    let qualified = catalog.resolve(&f.action, &selected).unwrap().clone();
+    let driver = GovernedProviderExecutor::new(
+        f.state.clone(),
+        f.coordinator.clone(),
+        f.contexts.clone(),
+        qualified,
+        f.settings.clone(),
+        f.clock.clone(),
+        None,
+    )
+    .unwrap();
+    let first = driver
         .execute(&f.reference, &references(), &f.action, &actor())
         .await
         .unwrap();
@@ -1171,4 +1203,58 @@ async fn required_credential_profile_refuses_actor_only_contexts() {
             .unwrap()
             .is_none()
     );
+}
+
+#[tokio::test]
+async fn an_accepted_root_cannot_adopt_a_new_binding_or_failure_contract() {
+    use acteon_executor::catalog::QualifiedProviderCatalog;
+    for change_failure_contract in [false, true] {
+        let provider = Arc::new(Counting::new(Mode::Success));
+        let f = fixture(
+            Arc::new(MemoryStateStore::new()),
+            provider.clone(),
+            false,
+            config(),
+        )
+        .await;
+        let selected: Arc<dyn DynProvider> = provider.clone();
+        let changed = if change_failure_contract {
+            bound(selected.clone(), false)
+                .with_failure_contract(Arc::new(KnownRateLimit))
+                .unwrap()
+        } else {
+            let new_binding = BoundProvider::new_trusted(
+                selected.clone(),
+                &endpoint(),
+                "work",
+                "definition-v2",
+                vec![],
+            )
+            .unwrap();
+            let catalog = QualifiedProviderCatalog::new_trusted(vec![new_binding]).unwrap();
+            catalog.resolve(&f.action, &selected).unwrap().clone()
+        };
+        assert_ne!(changed.effect(), bound(selected, false).effect());
+        let driver = GovernedProviderExecutor::new(
+            f.state.clone(),
+            f.coordinator.clone(),
+            f.contexts.clone(),
+            changed,
+            f.settings.clone(),
+            f.clock.clone(),
+            None,
+        )
+        .unwrap();
+        assert!(matches!(
+            driver
+                .execute(&f.reference, &references(), &f.action, &actor())
+                .await,
+            Err(GovernedProviderError::Admission("ATTEMPT_DENIED"))
+        ));
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+        let snapshot = f.coordinator.snapshot().await.unwrap();
+        let root = &snapshot.roots[&f.reference.execution_id().to_string()];
+        assert_eq!(root.spent_units, 0);
+        assert_eq!(root.active_attempts, 0);
+    }
 }
