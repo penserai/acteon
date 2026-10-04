@@ -54,13 +54,40 @@ library boundary, not a credential-authenticating service.
 Admission preserves reserved record and byte headroom for control changes, but
 history remains finite. Reaching capacity refuses new work or the requested
 mutation; callers must not report an unpersisted restriction as active. Unlimited
-operator control, safe archival/compaction, emergency admission stop, shared-root
-budgets, and scalable indexes are still open design work. Unresolved attempts must
+operator control, safe archival/compaction, emergency admission stop, aggregate
+team/funding allocations, and scalable indexes are still open design work. Unresolved attempts must
 never be evicted to release capacity.
 
 Single-key CAS correctness and storage durability/failover assumptions are backend
 requirements. Tests against a running Redis prove the exercised contract, not
 correctness under every Redis deployment or failover configuration.
+
+## Complete effects and atomic root budgets
+
+`register_attempt` accepts up to 16 distinct exact resources, a stable attempt ID,
+evaluated authority stamp and optional positive-unit root reservation. All
+resource restrictions, actor/root-owner revocation, root deadline, remaining
+units and concurrency are checked before one CAS persists both reservation and
+attempt. Any affected resource blocks the complete operation.
+
+`create_root_budget` captures an immutable allocation supplied by a trusted
+evaluator. Replaying creation cannot increase its limits. Attempts across
+descendants share its ID; retries spend new units. Unknown outcomes retain
+concurrency, and known settlement releases it once without refunding spent units.
+Counters are verified against retained attempt records on load. Roots count
+toward bounded capacity while preserving control headroom.
+
+This is not authentication, lineage verification, aggregate team funding or
+runtime enforcement. A future enforce profile must derive root IDs/units from
+verified context and require reservations. The compatibility `register_start`
+helper is explicitly unmetered and cannot be a strict-mode fallback. See the
+[accounting ADR](../../docs/design/atomic-effect-reservations.md).
+
+```sh
+ACTEON_GOVERNANCE_REDIS_URL=redis://127.0.0.1:6379 \
+  cargo test -p acteon-governance --test reservations \
+  independent_redis_root_reservations_pass_the_contract -- --ignored
+```
 
 ## Trusted durable root context
 
@@ -117,10 +144,11 @@ replay, revocation, and durable pending control events.
 
 ## Resource format compatibility
 
-Coordinator format 2 stores typed resource references. Format 1 string-resource
-records are refused; names are not sufficient to infer a resource kind safely.
+Coordinator format 3 stores complete exact resource sets and root accounting.
+Formats 1 (string resources) and 2 (single typed resource) are refused.
 No automatic deletion/recreation or permissive migration is performed. The earlier
 substrate is not wired into live gateway effects, but any standalone adopter must
 stop admission and explicitly review/migrate retained records before upgrade.
 Unknown/uncertain attempts retain their reconciliation obligations. Rolling back
-to a format-1 reader also fails closed on format-2 state.
+to an older reader is unsupported for format-3 state. Signed context format is
+unchanged, but recovery still requires a compatible coordinator.

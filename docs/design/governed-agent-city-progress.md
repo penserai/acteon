@@ -147,7 +147,7 @@ Principal-binding publication: Deploy Documentation run `37176654460` passed
 for merge `f44b9e37`; fetched authentication and agent-swarm pages contain the
 identity endpoint and stable-principal/executor guidance.
 
-## Workflow provenance propagation (in progress)
+## Workflow provenance propagation (merged)
 
 Validated durable references now connect signed root context to workflow and
 continuation-task records. An opt-in library profile verifies complete
@@ -171,4 +171,29 @@ Local workflow slice evidence: eight integration scenarios plus two core identit
 compatibility tests pass; the required full workspace has 3,359 passing tests.
 Formatting/clippy/all-target checks, UI lint/build, strict public docs build and
 design links pass. Interrupted task/index publication repairs the original chosen
-continuation ID and reference. Review/CI/merge evidence for this slice is pending.
+continuation ID and reference. PR #411 merged at `9283dfef` after adversarial
+review and all current-head CI checks passed. Team/mandate enforcement and
+remaining Phase 1 gates are still open.
+
+## Complete effect resources and atomic root accounting (in progress)
+
+The coordinator's format-3 contract registers complete exact resource sets and
+root unit/concurrency reservations together. Immutable root allocations cannot
+be enlarged by replay. Root-owner revocation, any resource closure, expiry and
+remaining capacity constrain fresh starts. Uncertainty retains concurrency;
+known settlement releases it once, and spent call units remain charged. Load
+validates retained usage and refuses corrupt counters or earlier formats.
+
+See the [accounting ADR](atomic-effect-reservations.md). Controlled memory and
+independent Redis tests cover final-unit competition, closure-before-start,
+start-before-closure, response loss and immutable replay. Byte-capacity failure
+does not partially spend. These are internal coordinator contracts, not live
+permit enforcement, lineage verification or aggregate team funding. Retention,
+emergency admission stop, backend failover qualification and runtime wiring
+remain gates.
+
+Local evidence: ten reservation contracts pass, plus the explicitly executed
+independent-client Redis reservation contract. Existing Redis coordinator and
+trusted-context contracts also pass against format 3. Required workspace
+format/clippy/tests/all-target checks, UI lint/build, strict public docs build
+and changed design links pass. PR review, CI and merge evidence remain pending.

@@ -31,6 +31,10 @@ and authorize every required reference.
 
 ## Coordinator integration
 
+The current [format-3 accounting contract](atomic-effect-reservations.md) stores
+complete resource sets and root reservations in one CAS. Format 2 below describes
+the earlier identity slice; format 3 now refuses both earlier formats.
+
 Start records and resource restrictions store typed references. Registering a
 start or changing a restriction for another namespace/tenant fails before CAS.
 Restart readers validate retained resource scope. Two resources with the same
