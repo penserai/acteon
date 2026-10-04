@@ -135,6 +135,85 @@ an agent receiving an approval URL can use it regardless of its role. The
 [agent coordination guide](../guides/agent-swarm-coordination.md) runs a verified
 example with an execution-only credential.
 
+## Stable principals and credential rotation
+
+Bind a credential to a stable actor with an optional `principal` entry in
+`auth.toml`. Credential names identify keys or login accounts; the principal
+identifies the person, agent, or service using them.
+
+```toml
+[[api_keys]]
+name = "diagnostic-key-2026-10"
+key_hash = "<sha256-of-your-key>"
+role = "executor"
+principal = { id = "diagnostic-agent", kind = "agent" }
+
+[[api_keys.grants]]
+tenants = ["production"]
+namespaces = ["observability"]
+providers = ["diagnostics"]
+actions = ["inspect"]
+```
+
+The same entry is supported on `[[users]]`. Kinds are `human`, `agent`, `service`,
+and `system`; they describe the actor and grant no privileges. Keep the principal
+ID and kind unchanged when rotating a key or changing its credential name. Each
+credential still needs its own role and scoped grants. An agent principal does
+not automatically create a registry entry or bind a bus sender; bus identity
+still requires the configured grant's `agent_id`.
+
+Inspect the current binding with an authenticated request:
+
+```bash
+curl http://localhost:8080/v1/auth/identity \
+  -H "Authorization: Bearer $ACTEON_API_KEY"
+```
+
+```json
+{
+  "credential_id": "diagnostic-key-2026-10",
+  "auth_method": "api_key",
+  "role": "executor",
+  "principal": { "id": "diagnostic-agent", "kind": "agent" }
+}
+```
+
+All roles can inspect their own identity. The response contains no key hash or
+secret. Existing configurations remain valid and return `principal: null` when
+unbound; anonymous development mode also has no principal binding.
+
+Durable dispatch receipts and chains retain the originally authenticated
+principal and credential provenance. For bound callers, reusing an idempotency
+key after credential rotation resolves the same semantic request under the same
+principal, while preserving the original receipt. A different principal or
+changed payload conflicts. Current transport authorization still applies, so a
+narrower replacement credential cannot use a receipt to bypass its grants.
+Enabling a binding on an old unbound request changes its semantic caller; use a
+new idempotency key or explicitly reconcile the old work.
+
+Use principal-aware server versions on every replica processing bound work.
+Drain or park bound work before downgrading: older chain readers can discard
+principal metadata, and older receipt readers cannot validate bound digests.
+
+JWT sessions are bound to the principal at issuance. Changing or removing a
+user's binding invalidates its existing sessions; log in again after an
+intentional binding migration. Role/grant reloads under the same binding apply
+to subsequent requests. Duplicate usernames, duplicate API-key hashes, invalid
+roles, and conflicting kinds for one principal ID reject a reload atomically,
+leaving the previous configuration active.
+
+| SDK | Inspect the current binding |
+|---|---|
+| Rust | `client.identity().await?` |
+| Python | `client.identity()` or `await client.identity()` |
+| TypeScript | `await client.identity()` |
+| Go | `client.Identity(ctx)` |
+| Java | `client.identity()` |
+
+The returned principal is identity metadata. Execution permits, delegated
+authority, and reauthorization at each deferred effect remain separate platform
+capabilities; this binding does not establish those guarantees.
+
 ## Security Features
 
 - **Password hashing** — Argon2 for secure password storage

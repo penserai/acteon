@@ -23,6 +23,7 @@ public enum PlatformOperation {
     APPROVALS_REJECT("POST", "/v1/approvals/{namespace}/{tenant}/{id}/reject", false, new String[]{"namespace", "tenant", "id"}),
     AUDIT_GET_AUDIT_BY_ACTION("GET", "/v1/audit/{action_id}", false, new String[]{"action_id"}),
     AUDIT_QUERY_AUDIT("GET", "/v1/audit", false, new String[]{}),
+    AUTH_IDENTITY("GET", "/v1/auth/identity", false, new String[]{}),
     AUTH_LOGIN("POST", "/v1/auth/login", false, new String[]{}),
     AUTH_LOGOUT("POST", "/v1/auth/logout", false, new String[]{}),
     BUS_ACK_SUBSCRIPTION("POST", "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/ack", false, new String[]{"namespace", "tenant", "id"}),

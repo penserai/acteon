@@ -239,9 +239,17 @@ public class ActeonClient implements AutoCloseable {
     // Health
     // =========================================================================
 
-    /**
-     * Checks if the server is healthy.
-     */
+    /** Inspect this credential's stable principal binding. */
+    public CredentialIdentity identity() throws ActeonException {
+        var node = platformRequest(PlatformOperation.AUTH_IDENTITY, null, null, null);
+        try {
+            return objectMapper.treeToValue(node, CredentialIdentity.class);
+        } catch (IOException e) {
+            throw new ConnectionException("Malformed identity response", e);
+        }
+    }
+
+    /** Check if the server is healthy. */
     public boolean health() {
         try {
             HttpRequest request = requestBuilder("/health")

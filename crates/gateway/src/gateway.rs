@@ -12484,6 +12484,7 @@ mod tests {
     fn make_caller(id: &str) -> acteon_core::Caller {
         acteon_core::Caller {
             id: id.to_string(),
+            principal: None,
             auth_method: "api_key".to_string(),
         }
     }

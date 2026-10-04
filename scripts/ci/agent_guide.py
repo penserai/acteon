@@ -104,6 +104,9 @@ def main():
                         raise RuntimeError("Guide server readiness timeout") from None
                     time.sleep(0.1)
             # Even a correctly scoped runtime credential cannot alter policy.
+            identity = request("/v1/auth/identity")
+            assert identity["role"] == "executor", identity
+            assert identity["principal"] == {"id": "researcher", "kind": "agent"}, identity
             for path, method in [
                 ("/v1/rules/reload", "POST"),
                 ("/v1/quotas", "POST"),
@@ -149,7 +152,7 @@ def main():
             assert quotas["count"] == 1, quotas
             assert quotas["quotas"][0]["max_actions"] == 50, quotas
             print(
-                "Agent guide passed: execution-only role, scoped auth, control-plane denial, execution, deduplication, forbidden/unknown suppression, approval, chain completion, static quota loading"
+                "Agent guide passed: execution-only role, stable principal binding, scoped auth, control-plane denial, execution, deduplication, forbidden/unknown suppression, approval, chain completion, static quota loading"
             )
         except BaseException:
             log.seek(0)

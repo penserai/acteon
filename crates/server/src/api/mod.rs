@@ -684,6 +684,7 @@ pub fn router(state: AppState) -> Router {
         )
         // Logout (requires auth)
         .route("/v1/auth/logout", post(auth::logout))
+        .route("/v1/auth/identity", get(auth::identity))
         // A checked role ceiling protects every registered endpoint, including
         // handlers whose local checks only constrain tenant/namespace scope.
         .route_layer(middleware::from_fn(

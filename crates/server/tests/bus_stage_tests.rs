@@ -150,6 +150,7 @@ async fn seeded_server(identity: CallerIdentity, quarantine: bool) -> TestServer
 fn identity(role: Role, actions: Vec<&str>) -> CallerIdentity {
     CallerIdentity {
         id: "operator".into(),
+        principal: None,
         role,
         auth_method: "api_key".into(),
         grants: vec![Grant {

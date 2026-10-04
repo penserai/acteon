@@ -27,6 +27,7 @@ use self::role::Role;
 #[derive(Debug, Clone)]
 pub struct UserEntry {
     pub password_hash: SecretString,
+    pub principal: Option<acteon_core::PrincipalIdentity>,
     pub role: Role,
     pub grants: Vec<Grant>,
 }
@@ -72,19 +73,36 @@ impl AuthProvider {
     fn build_tables(config: &AuthFileConfig) -> Result<AuthTables, String> {
         let mut users = HashMap::new();
         for u in &config.users {
+            if users.contains_key(&u.username) {
+                return Err("duplicate username".into());
+            }
             let role = Role::from_str_loose(&u.role)
                 .ok_or_else(|| format!("invalid role '{}' for user '{}'", u.role, u.username))?;
             users.insert(
                 u.username.clone(),
                 UserEntry {
                     password_hash: u.password_hash.clone(),
+                    principal: u.principal.clone(),
                     role,
                     grants: u.grants.clone(),
                 },
             );
         }
 
-        let api_keys = build_api_key_table(&config.api_keys);
+        let api_keys = build_api_key_table(&config.api_keys)?;
+        let mut principal_kinds = HashMap::new();
+        for principal in config
+            .users
+            .iter()
+            .filter_map(|u| u.principal.as_ref())
+            .chain(config.api_keys.iter().filter_map(|k| k.principal.as_ref()))
+        {
+            if let Some(previous) = principal_kinds.insert(principal.id(), principal.kind())
+                && previous != principal.kind()
+            {
+                return Err("principal ID has conflicting kinds".into());
+            }
+        }
 
         Ok(AuthTables { users, api_keys })
     }
@@ -132,6 +150,7 @@ impl AuthProvider {
 
         let identity = CallerIdentity {
             id: username.to_owned(),
+            principal: user.principal.clone(),
             role: user.role,
             grants: user.grants.clone(),
             auth_method: "jwt".to_owned(),
@@ -158,6 +177,10 @@ impl AuthProvider {
             .users
             .get(&identity.id)
             .ok_or_else(|| "user is no longer authorized".to_owned())?;
+        // Existing sessions may refresh privileges, but never change actor.
+        if identity.principal != user.principal {
+            return Err("principal binding changed; login again".into());
+        }
         identity.role = user.role;
         identity.grants.clone_from(&user.grants);
         Ok(identity)

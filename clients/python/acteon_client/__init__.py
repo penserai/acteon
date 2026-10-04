@@ -148,7 +148,11 @@ from .workflows import (
 )
 
 __version__ = "0.1.0"
+from .models import CredentialIdentity, PrincipalIdentity
+
 __all__ = [
+    "CredentialIdentity",
+    "PrincipalIdentity",
     "PlatformOperation",
     "ActeonClient",
     "AsyncActeonClient",

@@ -90,3 +90,17 @@ it("resolves scoped topics before deleting by registered Kafka name", async () =
   await new ActeonClient("http://localhost").deleteBusTopic("n", "t", "logs");
   expect(seen).toEqual(["GET /v1/bus/topics", "DELETE /v1/bus/topics/actual.logs"]);
 });
+
+it("typed identity preserves credential, actor, and legacy null", async () => {
+  const fixtures = JSON.parse(readFileSync(new URL("../../contract-fixtures/identity.json", import.meta.url), "utf8"));
+  for (const wire of fixtures) {
+    vi.stubGlobal("fetch", async (input: string, init: RequestInit) => {
+      expect(new URL(input).pathname).toBe("/v1/auth/identity");
+      expect(init.method).toBe("GET");
+      expect((init.headers as Record<string, string>).Authorization).toBe("Bearer local-test");
+      return new Response(JSON.stringify(wire));
+    });
+    const identity = await new ActeonClient("http://localhost", { apiKey: "local-test" }).identity();
+    expect(identity).toEqual({ credentialId: wire.credential_id, authMethod: wire.auth_method, role: wire.role, principal: wire.principal });
+  }
+});

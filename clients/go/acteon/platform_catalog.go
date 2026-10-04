@@ -25,6 +25,7 @@ const (
 	OpApprovalsReject                     PlatformOperation = "approvals_reject"
 	OpAuditGetAuditByAction               PlatformOperation = "audit_get_audit_by_action"
 	OpAuditQueryAudit                     PlatformOperation = "audit_query_audit"
+	OpAuthIdentity                        PlatformOperation = "auth_identity"
 	OpAuthLogin                           PlatformOperation = "auth_login"
 	OpAuthLogout                          PlatformOperation = "auth_logout"
 	OpBusAckSubscription                  PlatformOperation = "bus_ack_subscription"
@@ -215,6 +216,7 @@ var platformOperations = map[PlatformOperation]platformDescriptor{
 	OpApprovalsReject:                     {"POST", "/v1/approvals/{namespace}/{tenant}/{id}/reject", []string{"namespace", "tenant", "id"}, false},
 	OpAuditGetAuditByAction:               {"GET", "/v1/audit/{action_id}", []string{"action_id"}, false},
 	OpAuditQueryAudit:                     {"GET", "/v1/audit", []string{}, false},
+	OpAuthIdentity:                        {"GET", "/v1/auth/identity", []string{}, false},
 	OpAuthLogin:                           {"POST", "/v1/auth/login", []string{}, false},
 	OpAuthLogout:                          {"POST", "/v1/auth/logout", []string{}, false},
 	OpBusAckSubscription:                  {"POST", "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/ack", []string{"namespace", "tenant", "id"}, false},

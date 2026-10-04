@@ -1182,3 +1182,14 @@ export interface WorkflowExecutionSummary {
 export interface ListWorkflowExecutionsResponse {
   executions: WorkflowExecutionSummary[]
 }
+
+export interface PrincipalIdentity {
+  id: string
+  kind: 'human' | 'agent' | 'service' | 'system'
+}
+export interface CredentialIdentity {
+  credential_id: string
+  auth_method: string
+  role: string
+  principal: PrincipalIdentity | null
+}

@@ -32,6 +32,9 @@ fn default_jwt_expiry() -> u64 {
 #[derive(Debug, Deserialize)]
 pub struct UserConfig {
     pub username: String,
+    /// Optional stable actor binding; kind is descriptive and grants remain required.
+    #[serde(default)]
+    pub principal: Option<acteon_core::PrincipalIdentity>,
     /// Argon2 password hash (may be `ENC[...]` before decryption).
     ///
     /// Wrapped in [`SecretString`] so it is redacted in logs.
@@ -231,6 +234,9 @@ actions = ["*"]
 #[derive(Debug, Deserialize)]
 pub struct ApiKeyConfig {
     pub name: String,
+    /// Optional stable actor binding, shared by rotating credentials.
+    #[serde(default)]
+    pub principal: Option<acteon_core::PrincipalIdentity>,
     /// SHA-256 hash of the raw key (may be `ENC[...]` before decryption).
     ///
     /// Wrapped in [`SecretString`] so it is redacted in logs.

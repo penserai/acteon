@@ -87,3 +87,35 @@ The executor slice merged as PR #406 at `e9fc89f6`; its publication verification
 is tracked separately from implementation. Coordinator PR #407 merged at `854643c5` after all current-head checks passed.
 Its integration-job log confirms the independent Redis contract executed and
 passed rather than being left ignored.
+
+## Stable principal binding slice (in progress)
+
+Optional validated principal metadata is bound by operator-controlled auth
+configuration, kept separate from credential names and secrets, and retained
+in core Caller, durable admissions, and chain state. Bound idempotency digests
+use the stable principal; original credential provenance is retained on replay.
+JWT issuance pins the binding and subsequent validation refuses remapping an
+existing session. Invalid/conflicting configuration reloads remain atomic.
+
+`GET /v1/auth/identity` and typed Rust/Python/TypeScript/Go/Java methods inspect
+only the current identity. The UI distinguishes credential and principal. The
+checked operation catalog contains 194 routes. Agent-guide fixtures and the live
+verifier include the explicit principal binding.
+
+Targeted tests prove rotation/replay isolation, current-grant denial, metadata
+forgery resistance, JWT remapping refusal, atomic reload failure, and original
+principal retention across replacement-gateway chain handoff. Shared identity
+fixtures exercise every SDK, including legacy null principal and async Python.
+Local workspace validation passed 3,338 tests, lint and all-target checks;
+all five SDK contract suites, Python lint/types, Node packaging, Java build,
+UI lint/build, and strict docs build pass. The updated live agent guide passes
+against the built server, including its principal-binding assertion. Current-head
+CI, adversarial review, and release evidence remain pending. Server bus-feature
+lib/integration tests also pass locally.
+
+This slice does not make Caller a trusted authority envelope or establish
+principal lifecycle administration. Worker/workflow/schedule context propagation,
+current deferred authority evaluation, coordinator-backed credential/principal
+changes, permits, root reservations, and effect checkpoints remain required.
+Existing audit caller/quota filters retain their credential-name semantics;
+adding a principal binding does not silently reinterpret those controls.

@@ -15,6 +15,9 @@ use super::role::Role;
 pub struct Claims {
     /// Subject (username).
     pub sub: String,
+    /// Actor bound at issuance; old tokens default to legacy unbound identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub principal: Option<acteon_core::PrincipalIdentity>,
     /// Unique token ID for revocation tracking.
     pub jti: String,
     /// Role name.
@@ -53,6 +56,7 @@ impl JwtManager {
 
         let claims = Claims {
             sub: identity.id.clone(),
+            principal: identity.principal.clone(),
             jti: jti.clone(),
             role: identity.role.to_string(),
             grants: identity.grants.clone(),
@@ -109,6 +113,7 @@ impl JwtManager {
 
         Ok(CallerIdentity {
             id: claims.sub,
+            principal: claims.principal,
             role,
             grants: claims.grants,
             auth_method: "jwt".to_owned(),

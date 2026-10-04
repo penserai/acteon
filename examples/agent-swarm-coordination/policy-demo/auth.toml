@@ -4,6 +4,7 @@ jwt_secret = "acteon-policy-demo-local-only-secret"
 
 [[api_keys]]
 name = "researcher"
+principal = { id = "researcher", kind = "agent" }
 key_hash = "e5522a60c16c993c80c7c251fe4dc4ad5f1de7926c57ec5401d3d42891633ad8"
 role = "executor"
 

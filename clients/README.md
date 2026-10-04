@@ -119,3 +119,14 @@ established by the server, not by client-supplied action fields. Administrative
 methods return HTTP 403 for executor credentials. Keep operator credentials and
 signed human approval URLs in a trusted host.
 See [authentication and role boundaries](https://penserai.github.io/acteon/api/authentication/).
+
+
+### Stable actor identity
+
+Rust: `client.identity().await?`; Python/TypeScript/Java: `client.identity()`; Go: `client.Identity(ctx)` inspects the authenticated credential and its optional stable
+principal binding. Configure `principal = { id = "diagnostic-agent", kind = "agent" }`
+on the credential in server `auth.toml`; keep it unchanged across credential
+rotation. Roles and grants still apply independently to each credential. Legacy
+credentials return a null principal. Principal metadata does not grant execution
+permits or bind a bus agent automatically. See the
+[authentication guide](https://penserai.github.io/acteon/api/authentication/).

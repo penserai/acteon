@@ -4,6 +4,8 @@ import { platformRequestParts, type PlatformOperation, type PlatformRequestOptio
  */
 
 import {
+  CredentialIdentity,
+  parseCredentialIdentity,
   Action,
   ActionOutcome,
   AuditPage,
@@ -446,9 +448,12 @@ export class ActeonClient {
   // Health
   // =========================================================================
 
-  /**
-   * Check if the server is healthy.
-   */
+  /** Inspect this credential's stable principal binding. */
+  async identity(): Promise<CredentialIdentity> {
+    return parseCredentialIdentity(await this.platformRequest("auth_identity") as Record<string, unknown>);
+  }
+
+  /** Check if the server is healthy. */
   async health(): Promise<boolean> {
     try {
       const response = await this.request("GET", "/health");

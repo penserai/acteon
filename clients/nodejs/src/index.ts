@@ -226,3 +226,5 @@ export {
 } from "./a2a.js";
 
 export * from "./platform.js";
+
+export { type PrincipalIdentity, type CredentialIdentity, parseCredentialIdentity } from "./models.js";

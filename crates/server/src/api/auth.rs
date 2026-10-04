@@ -103,3 +103,23 @@ pub async fn logout(State(state): State<AppState>, headers: HeaderMap) -> impl I
         ),
     }
 }
+
+/// Inspect the current authenticated credential's stable principal binding.
+#[utoipa::path(
+    get, path = "/v1/auth/identity", tag = "Auth",
+    summary = "Inspect current identity",
+    responses((status = 200, description = "Authenticated identity", body = acteon_core::CredentialIdentity),
+        (status = 401, description = "Missing or invalid credential", body = ErrorResponse))
+)]
+pub async fn identity(
+    axum::extract::Extension(identity): axum::extract::Extension<
+        crate::auth::identity::CallerIdentity,
+    >,
+) -> Json<acteon_core::CredentialIdentity> {
+    Json(acteon_core::CredentialIdentity {
+        credential_id: identity.id,
+        auth_method: identity.auth_method,
+        role: identity.role.to_string(),
+        principal: identity.principal,
+    })
+}

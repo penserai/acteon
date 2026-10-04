@@ -21,6 +21,7 @@ export const platformOperations = {
   approvals_reject: {"name": "approvals_reject", "method": "POST", "path": "/v1/approvals/{namespace}/{tenant}/{id}/reject", "parameters": ["namespace", "tenant", "id"], "response": "json"},
   audit_get_audit_by_action: {"name": "audit_get_audit_by_action", "method": "GET", "path": "/v1/audit/{action_id}", "parameters": ["action_id"], "response": "json"},
   audit_query_audit: {"name": "audit_query_audit", "method": "GET", "path": "/v1/audit", "parameters": [], "response": "json"},
+  auth_identity: {"name": "auth_identity", "method": "GET", "path": "/v1/auth/identity", "parameters": [], "response": "json"},
   auth_login: {"name": "auth_login", "method": "POST", "path": "/v1/auth/login", "parameters": [], "response": "json"},
   auth_logout: {"name": "auth_logout", "method": "POST", "path": "/v1/auth/logout", "parameters": [], "response": "json"},
   bus_ack_subscription: {"name": "bus_ack_subscription", "method": "POST", "path": "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/ack", "parameters": ["namespace", "tenant", "id"], "response": "json"},

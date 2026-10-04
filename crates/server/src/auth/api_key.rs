@@ -11,6 +11,7 @@ use super::role::Role;
 #[derive(Debug, Clone)]
 pub struct ApiKeyEntry {
     pub name: String,
+    pub principal: Option<acteon_core::PrincipalIdentity>,
     pub role: Role,
     pub grants: Vec<Grant>,
 }
@@ -18,20 +19,27 @@ pub struct ApiKeyEntry {
 /// Build an in-memory lookup from `sha256_hex(raw_key) -> ApiKeyEntry`.
 ///
 /// The config stores pre-computed SHA-256 hashes of the raw keys.
-pub fn build_api_key_table(configs: &[ApiKeyConfig]) -> HashMap<String, ApiKeyEntry> {
+pub fn build_api_key_table(
+    configs: &[ApiKeyConfig],
+) -> Result<HashMap<String, ApiKeyEntry>, String> {
     let mut map = HashMap::new();
     for cfg in configs {
-        let role = Role::from_str_loose(&cfg.role).unwrap_or(Role::Viewer);
+        let role = Role::from_str_loose(&cfg.role)
+            .ok_or_else(|| format!("invalid role for API key '{}'", cfg.name))?;
+        if map.contains_key(cfg.key_hash.expose_secret()) {
+            return Err("duplicate API key hash".into());
+        }
         map.insert(
             cfg.key_hash.expose_secret().to_string(),
             ApiKeyEntry {
                 name: cfg.name.clone(),
+                principal: cfg.principal.clone(),
                 role,
                 grants: cfg.grants.clone(),
             },
         );
     }
-    map
+    Ok(map)
 }
 
 /// Hash a raw API key to the lookup format (lowercase hex SHA-256).
@@ -50,6 +58,7 @@ pub fn authenticate_api_key(
     let hash = hash_api_key(raw_key);
     table.get(&hash).map(|entry| CallerIdentity {
         id: entry.name.clone(),
+        principal: entry.principal.clone(),
         role: entry.role,
         grants: entry.grants.clone(),
         auth_method: "api_key".to_owned(),

@@ -25,6 +25,7 @@ pub mod fingerprint;
 pub mod group;
 pub mod key;
 pub mod outcome;
+pub mod principal;
 pub mod provider_health;
 pub mod quota;
 pub mod recurring;
@@ -112,6 +113,7 @@ pub use fingerprint::compute_fingerprint;
 pub use group::{EventGroup, GroupState, GroupedEvent};
 pub use key::ActionKey;
 pub use outcome::{ActionError, ActionOutcome, ProviderResponse, ResponseStatus};
+pub use principal::{CredentialIdentity, PrincipalIdentity, PrincipalIdentityError, PrincipalKind};
 pub use provider_health::{ListProviderHealthResponse, ProviderHealthStatus};
 pub use quota::{
     MAX_POLICIES_PER_BUCKET, MAX_QUOTA_IDENTIFIER_LEN, MAX_WINDOW_SECONDS, OverageBehavior,

@@ -1,3 +1,4 @@
+import { useIdentity } from '../../api/hooks/useIdentity'
 import { useConfig } from '../../api/hooks/useConfig'
 import { Badge } from '../../components/ui/Badge'
 import { Skeleton } from '../../components/ui/Skeleton'
@@ -5,6 +6,7 @@ import styles from './Settings.module.css'
 
 export function SettingsAuth() {
   const { data: config, isLoading } = useConfig()
+  const { data: identity, error: identityError } = useIdentity()
 
   if (isLoading) {
     return (
@@ -50,6 +52,19 @@ export function SettingsAuth() {
             </div>
           )}
         </div>
+      </div>
+
+      <div className={styles.card}>
+        <h3 className={styles.cardTitle}>Your Identity</h3>
+        {identityError ? <p className={styles.description}>Identity could not be loaded.</p> : identity ? (
+          <div className={styles.grid}>
+            <div className={styles.row}><span className={styles.label}>Credential</span><span>{identity.credential_id || 'Anonymous'}</span></div>
+            <div className={styles.row}><span className={styles.label}>Role</span><span>{identity.role}</span></div>
+            <div className={styles.row}><span className={styles.label}>Principal</span><span>{identity.principal?.id ?? 'Not configured'}</span></div>
+            {identity.principal && <div className={styles.row}><span className={styles.label}>Kind</span><span>{identity.principal.kind}</span></div>}
+          </div>
+        ) : <Skeleton className="h-16" />}
+        <p className={styles.description}>A stable principal identifies the same actor across credential rotation. Roles and scoped grants determine access.</p>
       </div>
 
       <div className={styles.card}>
