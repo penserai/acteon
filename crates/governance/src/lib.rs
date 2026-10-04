@@ -719,7 +719,7 @@ impl AuthorityCoordinator {
             let was_settled = record.status == AttemptStatus::Settled;
             record.status = status;
             if evidence.is_some() {
-                record.evidence = evidence.clone();
+                record.evidence.clone_from(&evidence);
             }
             if !was_settled
                 && status == AttemptStatus::Settled
