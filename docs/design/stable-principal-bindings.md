@@ -29,6 +29,16 @@ changes its semantic digest. Do not silently adopt the old request. Use a new ke
 or operator reconciliation. Existing credential-name audit/quota filters retain
 their semantics until separately versioned principal-aware controls ship.
 
+### Downgrade boundary
+
+All replicas processing bound work must use a principal-aware reader. Older chain
+readers can discard unknown principal metadata when rewriting a record; identity
+retention is not certified across that downgrade. Stop admission and drain/park
+bound chains before reverting. Bound receipt digests also differ from the legacy
+caller digest, so older receipt validation refuses them instead of safely replaying
+them. Unbound legacy records retain their previous wire/digest behavior. Complete
+versioned execution-context rollout/rollback remains a separate phase gate.
+
 ## Session and reload rules
 
 JWT claims record the principal at issuance. After signature, expiry, and token

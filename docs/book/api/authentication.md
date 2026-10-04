@@ -191,6 +191,10 @@ narrower replacement credential cannot use a receipt to bypass its grants.
 Enabling a binding on an old unbound request changes its semantic caller; use a
 new idempotency key or explicitly reconcile the old work.
 
+Use principal-aware server versions on every replica processing bound work.
+Drain or park bound work before downgrading: older chain readers can discard
+principal metadata, and older receipt readers cannot validate bound digests.
+
 JWT sessions are bound to the principal at issuance. Changing or removing a
 user's binding invalidates its existing sessions; log in again after an
 intentional binding migration. Role/grant reloads under the same binding apply
