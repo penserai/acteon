@@ -267,7 +267,7 @@ Redis contract: one passed, zero ignored. This does not complete Phase 2:
 server/gateway coverage, lifecycle publication, workforce mandates, delegated
 lineage, public APIs/SDKs/UI and reconciliation remain open.
 
-## Current credential authority (in progress)
+## Current credential authority (merged internal library slice)
 
 [Credential-specific ceilings](current-credential-authority.md) now share the
 coordinator's publication/revocation protocol and effect-start CAS. Signed
@@ -281,8 +281,27 @@ including the explicitly executed independent-client Redis contract. Provider
 backoff/revocation and missing-credential profile tests exercise the executor
 integration. Required workspace checks pass with 3,415 tests, UI lint/build, strict public
 documentation build and changed design links. Focused Rust 1.88 Clippy and both
-explicitly executed credential/provider Redis contracts pass. Review and PR
-evidence remain pending. Server auth
+explicitly executed credential/provider Redis contracts pass. PR #416 merged at `aaff9523` after adversarial review and successful current-head
+CI run `37199915869`. Its integration job explicitly executed the credential Redis
+contract: one passed, zero ignored. Server auth
 publication/resolution, public APIs/SDKs/UI, workforce mandates and delegated
 lineage remain open; coordinator format 6/context format 2 require reviewed
 migration and compatible readers.
+
+## Credential configuration snapshots (in progress)
+
+[Atomic configuration snapshots](credential-configuration-snapshots.md) prevent
+partial per-credential reloads and stale replicas restoring old grants. One scope
+CAS publishes every credential, retires omitted IDs, binds the source version and
+full fingerprint, and advances generation/control history. Current equal versions
+observe; conflicting or older versions fail. Ownership survives retirement and
+prevents individual overwrite or cross-source adoption. Freshness references bind
+the coordinator incarnation; disabled credentials can have empty deny-all ceilings.
+
+Ten focused contracts and both controlled snapshot/start orderings pass, including
+an explicitly executed independent-client Redis test with zero ignored. Required
+workspace checks pass with 3,425 tests, UI lint/build, strict public documentation
+build and changed design links. Focused Rust 1.88 Clippy passes. Review and PR
+evidence remain pending. Coordinator format 7 requires reviewed migration/parking.
+Server auth publication, keyed fingerprinting, authentication-result binding,
+public scope/API/SDK/UI surfaces and complete effect coverage remain open.

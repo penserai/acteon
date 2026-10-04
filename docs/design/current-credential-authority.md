@@ -1,7 +1,7 @@
 # Current credential authority at effect starts
 
-**Status:** internal library implementation on the working branch; local checks
-passed, review and CI pending.
+**Status:** internal library implementation merged in PR #416; host integration
+and the remaining phase gates are open.
 
 ## Problem and decision
 
@@ -120,3 +120,8 @@ ACTEON_GOVERNANCE_REDIS_URL=redis://127.0.0.1:6379 \
   independent_redis_credential_authority_passes_the_contract -- --ignored
 cargo test -p acteon-executor --test governed_provider
 ```
+
+The [configuration snapshot follow-up](credential-configuration-snapshots.md)
+adds atomic multi-credential publication and source-version freshness in format 7.
+It also allows empty ceilings when execution is disabled. Enabled credentials and
+ordinary permits continue to require complete nonempty effects.
