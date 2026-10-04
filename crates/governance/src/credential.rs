@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::context::{AcceptedEffect, RootContextAdmission, VerifiedExecutionContext};
 use crate::permit::{
     ExecutionPermit, PermitDenial, PermitIssuanceCeiling, PermittedAttempt, matches_effect,
-    valid_effects,
+    valid_issuance, within_issuance,
 };
 use crate::{
     AuthorityChange, AuthorityCoordinator, AuthorityStamp, CONTROL_BYTE_RESERVE,
@@ -39,10 +39,12 @@ pub struct CredentialReference {
 
 impl AuthorityCoordinator {
     pub(crate) fn valid_credential(&self, credential: &CredentialAuthority) -> bool {
-        self.valid_permit(&credential.ceiling) && valid_text(&credential.auth_method)
+        self.valid_execution_ceiling(&credential.ceiling, !credential.execution_enabled)
+            && valid_text(&credential.auth_method)
     }
     pub(crate) fn valid_credential_history(&self, state: &CoordinatorSnapshot) -> bool {
         let mut reconstructed = BTreeMap::<String, CredentialRecord>::new();
+        let mut configurations = BTreeMap::new();
         let mut events: Vec<_> = state.changes.values().collect();
         events.sort_by_key(|e| e.generation);
         for event in events {
@@ -50,7 +52,11 @@ impl AuthorityCoordinator {
                 AuthorityChange::PublishCredential { credential } => {
                     let policy = &credential.ceiling;
                     let old = reconstructed.get(&policy.id);
-                    if !self.valid_credential(credential)
+                    if configurations.values().any(
+                        |r: &crate::configuration::CredentialConfigurationRecord| {
+                            r.owned_credentials.contains(&policy.id)
+                        },
+                    ) || !self.valid_credential(credential)
                         || old.is_some_and(|r| r.revoked)
                         || old.map_or(Some(1), |r| r.authority.ceiling.revision.checked_add(1))
                             != Some(policy.revision)
@@ -81,10 +87,21 @@ impl AuthorityCoordinator {
                     }
                     record.revoked = true;
                 }
+                AuthorityChange::PublishCredentialConfiguration { configuration } => {
+                    match crate::configuration::apply(
+                        self,
+                        configuration,
+                        &mut reconstructed,
+                        &mut configurations,
+                    ) {
+                        Ok(()) => {}
+                        Err(_) => return false,
+                    }
+                }
                 _ => {}
             }
         }
-        reconstructed == state.credentials
+        reconstructed == state.credentials && configurations == state.credential_configurations
     }
 
     /// Trusted publication after authentication/configuration review. Ceiling
@@ -105,13 +122,7 @@ impl AuthorityCoordinator {
         if ![change_id, reason].into_iter().all(valid_text)
             || !self.valid_credential(&credential)
             || expected_revision.checked_add(1) != Some(policy.revision)
-            || !valid_effects(&issuance.effects)
-            || issuance.subjects.is_empty()
-            || issuance.subjects.len() > 16
-            || issuance.valid_from_ms < 0
-            || issuance.limits.max_units == 0
-            || issuance.limits.max_concurrent == 0
-            || issuance.limits.deadline_ms <= issuance.valid_from_ms
+            || !valid_issuance(issuance)
             || now_ms < 0
         {
             return Err(CoordinationError::Invalid("credential publication".into()));
@@ -131,19 +142,7 @@ impl AuthorityCoordinator {
                 }
                 return Ok(old.clone());
             }
-            if !issuance.subjects.contains(&policy.subject)
-                || policy.valid_from_ms < issuance.valid_from_ms
-                || now_ms < issuance.valid_from_ms
-                || now_ms >= issuance.limits.deadline_ms
-                || policy.limits.deadline_ms <= now_ms
-                || policy.limits.deadline_ms > issuance.limits.deadline_ms
-                || policy.limits.max_units > issuance.limits.max_units
-                || policy.limits.max_concurrent > issuance.limits.max_concurrent
-                || policy
-                    .effects
-                    .iter()
-                    .any(|e| !issuance.effects.iter().any(|c| matches_effect(c, e)))
-            {
+            if !within_issuance(policy, issuance, now_ms) {
                 return Err(CoordinationError::PermitDenied(PermitDenial::Effect));
             }
             if state.stamp() != *evaluated_authority {
@@ -151,6 +150,13 @@ impl AuthorityCoordinator {
             }
             if state.revoked_subjects.contains(issuance.issuer.id()) {
                 return Err(CoordinationError::Restricted);
+            }
+            if state
+                .credential_configurations
+                .values()
+                .any(|r| r.owned_credentials.contains(&policy.id))
+            {
+                return Err(CoordinationError::Conflict);
             }
             let old = state.credentials.get(&policy.id);
             if old.is_some_and(|r| r.revoked) {
@@ -212,6 +218,12 @@ fn original<'a>(
                     && credential.ceiling.revision == reference.accepted_revision =>
             {
                 Some(credential)
+            }
+            AuthorityChange::PublishCredentialConfiguration { configuration } => {
+                configuration.credentials.iter().find(|c| {
+                    c.ceiling.id == reference.id
+                        && c.ceiling.revision == reference.accepted_revision
+                })
             }
             _ => None,
         })

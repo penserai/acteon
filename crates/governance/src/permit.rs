@@ -154,6 +154,34 @@ pub fn permitted_attempt_digest(
     Ok(format!("{:x}", Sha256::digest(raw)))
 }
 
+pub(crate) fn valid_issuance(ceiling: &PermitIssuanceCeiling) -> bool {
+    valid_effects(&ceiling.effects)
+        && ceiling.valid_from_ms >= 0
+        && !ceiling.subjects.is_empty()
+        && ceiling.subjects.len() <= MAX_REFERENCES
+        && ceiling.limits.max_units > 0
+        && ceiling.limits.max_concurrent > 0
+        && ceiling.limits.deadline_ms > ceiling.valid_from_ms
+}
+pub(crate) fn within_issuance(
+    policy: &ExecutionPermit,
+    ceiling: &PermitIssuanceCeiling,
+    now_ms: i64,
+) -> bool {
+    ceiling.subjects.contains(&policy.subject)
+        && policy.valid_from_ms >= ceiling.valid_from_ms
+        && now_ms >= ceiling.valid_from_ms
+        && now_ms < ceiling.limits.deadline_ms
+        && policy.limits.deadline_ms > now_ms
+        && policy.limits.deadline_ms <= ceiling.limits.deadline_ms
+        && policy.limits.max_units <= ceiling.limits.max_units
+        && policy.limits.max_concurrent <= ceiling.limits.max_concurrent
+        && policy
+            .effects
+            .iter()
+            .all(|e| ceiling.effects.iter().any(|c| matches_effect(c, e)))
+}
+
 impl AuthorityCoordinator {
     pub(crate) fn valid_permit_history(&self, state: &CoordinatorSnapshot) -> bool {
         if state.changes.keys().any(|id| !valid_text(id)) {
@@ -209,9 +237,16 @@ impl AuthorityCoordinator {
         reconstructed == state.permits
     }
     pub(crate) fn valid_permit(&self, permit: &ExecutionPermit) -> bool {
+        self.valid_execution_ceiling(permit, false)
+    }
+    pub(crate) fn valid_execution_ceiling(
+        &self,
+        permit: &ExecutionPermit,
+        allow_empty: bool,
+    ) -> bool {
         valid_text(&permit.id)
             && permit.revision > 0
-            && valid_effects(&permit.effects)
+            && (valid_effects(&permit.effects) || (allow_empty && permit.effects.is_empty()))
             && permit.valid_from_ms >= 0
             && permit.limits.deadline_ms > permit.valid_from_ms
             && permit.limits.max_units > 0
@@ -240,13 +275,7 @@ impl AuthorityCoordinator {
         if ![change_id, reason].into_iter().all(valid_text)
             || !self.valid_permit(&permit)
             || expected_revision.checked_add(1) != Some(permit.revision)
-            || !valid_effects(&ceiling.effects)
-            || ceiling.valid_from_ms < 0
-            || ceiling.subjects.is_empty()
-            || ceiling.subjects.len() > MAX_REFERENCES
-            || ceiling.limits.max_units == 0
-            || ceiling.limits.max_concurrent == 0
-            || ceiling.limits.deadline_ms <= ceiling.valid_from_ms
+            || !valid_issuance(ceiling)
             || now_ms < 0
         {
             return Err(CoordinationError::Invalid("permit publication".into()));
@@ -268,19 +297,7 @@ impl AuthorityCoordinator {
                 }
                 return Ok(existing.clone());
             }
-            if !ceiling.subjects.contains(&permit.subject)
-                || permit.valid_from_ms < ceiling.valid_from_ms
-                || now_ms < ceiling.valid_from_ms
-                || now_ms >= ceiling.limits.deadline_ms
-                || permit.limits.deadline_ms <= now_ms
-                || permit.limits.deadline_ms > ceiling.limits.deadline_ms
-                || permit.limits.max_units > ceiling.limits.max_units
-                || permit.limits.max_concurrent > ceiling.limits.max_concurrent
-                || permit
-                    .effects
-                    .iter()
-                    .any(|e| !ceiling.effects.iter().any(|c| matches_effect(c, e)))
-            {
+            if !within_issuance(&permit, ceiling, now_ms) {
                 return Err(CoordinationError::PermitDenied(PermitDenial::Effect));
             }
             if state.stamp() != *evaluated_authority {

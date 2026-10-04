@@ -169,14 +169,15 @@ replay, revocation, and durable pending control events.
 
 ## Resource format compatibility
 
-Coordinator format 6 stores complete exact resource sets, root accounting,
+Coordinator format 7 stores complete exact resource sets, root accounting,
 immutable result evidence references and
-current permits and credential-specific ceilings. Formats 1–5 are refused.
+current permits, credential-specific ceilings and configuration heads. Formats 1–6
+are refused.
 No automatic deletion/recreation or permissive migration is performed. The earlier
 substrate is not wired into live gateway effects, but any standalone adopter must
 stop admission and explicitly review/migrate retained records before upgrade.
 Unknown/uncertain attempts retain their reconciliation obligations. Rolling back
-to an older reader is unsupported for format-6 state. Signed context format 2 adds credential
+to an older reader is unsupported for format-7 state. Signed context format 2 adds credential
 references, but recovery still requires a compatible coordinator.
 
 ## Retained result evidence
@@ -196,3 +197,14 @@ CAS. `capture_credentialed_root` seals its revision; every permitted attempt che
 it automatically. Required credential mode on the durable provider adapter refuses
 actor-only contexts. Server authentication/resolution and reload publication remain
 integration work; this is not a public enforce profile.
+
+## Atomic credential configurations
+
+[Configuration snapshots](../../docs/design/credential-configuration-snapshots.md)
+publish a complete scope projection with a monotonic source revision and trusted
+security fingerprint. Credential changes, omitted-ID retirement, source ownership
+and pending control history share one CAS. Equal/current snapshots observe;
+older or conflicting snapshots cannot restore grants. Source-owned credentials
+cannot be overwritten individually. Freshness references do not establish auth
+or effect authority. Server startup/reload and authenticated-request binding are
+required host integration, not enabled by this primitive alone.
