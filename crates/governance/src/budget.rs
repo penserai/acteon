@@ -75,8 +75,7 @@ impl AuthorityCoordinator {
                 return Err(CoordinationError::DeadlineExceeded);
             }
             if limits.max_concurrent > u64::try_from(state.limits.max_active).unwrap_or(u64::MAX)
-                || state.roots.len() + state.starts.len() + state.changes.len()
-                    >= state.limits.max_records - CONTROL_RECORD_RESERVE
+                || state.record_count() >= state.limits.max_records - CONTROL_RECORD_RESERVE
             {
                 return Err(CoordinationError::Capacity);
             }

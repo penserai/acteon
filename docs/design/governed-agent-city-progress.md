@@ -200,7 +200,7 @@ and changed design links pass. PR #412 merged at `3d0fe750` after adversarial
 review and all current-head CI checks passed. Integration run `37182689055`
 explicitly executed the Redis reservation contract: one passed, zero ignored.
 
-## Actual provider attempt boundary (in progress)
+## Actual provider attempt boundary (merged)
 
 The executor now offers a trusted per-attempt admission/settlement interface.
 Admission runs after semaphore and retry-delay waits, using the actual selected
@@ -218,5 +218,29 @@ lineage, permit publication, governed result retention and full effect coverage
 gates remain open.
 
 Local evidence: required workspace checks pass with 3,378 tests, alongside UI
-lint/build, strict public docs build and changed design links. Review/CI/merge
-evidence for this slice remains pending.
+lint/build, strict public docs build and changed design links. PR #413 merged at
+`fb5f590d` after adversarial review and all current-head CI checks passed.
+Run `37184900637`'s stable test job executed the nine attempt-gate contracts.
+
+## Current execution permits (in progress)
+
+Exact root-profile permit revisions and terminal revocation now share the
+coordinator's CAS/generation and pending control history with effect starts.
+Bounded trusted issuance prevents subject/effect/limit expansion. Sealed root
+provenance binds accepted revisions; registration checks original and current
+complete tuples, input digest, fresh clock and counters after every CAS conflict.
+Later broadening cannot expand an admitted job; current narrowing or revocation
+denies its next fresh effect. Load reconstructs current records from retained
+history. See the [permit ADR](current-execution-permits.md).
+
+Eleven memory contracts pass, including controlled revocation/start and narrowed
+limit races, root-creation interruptions and time refresh after contention.
+The same three permit race orderings pass through independent Redis clients.
+Format 4 refuses earlier coordinator state; migration/rollback require explicit
+review. Production executor adapters, server scope provisioning, governed result
+retention, principal/grant publication, mandates, delegated/represented authority
+and public API/SDK/UI remain open. This does not complete Phase 2.
+
+Local evidence: required workspace checks pass with 3,389 tests. UI lint/build,
+strict public docs build, changed links and all four explicitly executed Redis
+governance contracts pass. PR review, CI and merge evidence remain pending.
