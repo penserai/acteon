@@ -628,3 +628,13 @@ docker compose --profile postgres up -d
 scripts/migrate.sh -c examples/postgres.toml
 cargo run -p acteon-server --features postgres -- -c examples/postgres.toml
 ```
+
+## Replicated authentication configuration
+
+For Redis replicas, optional `[auth.authority]` coordinates an explicit
+`authority_revision` in `auth.toml`. It publishes configuration before installing
+local tables and refuses authentication from stale replicas. Configure a dedicated
+control scope and shared fingerprint key; normal startup connects to existing
+state. See [shared authentication authority](../api/authentication.md#shared-authentication-authority-across-replicas)
+for bootstrap, reload and recovery semantics. This setting governs authentication
+freshness; it does not enable per-effect execution permits.

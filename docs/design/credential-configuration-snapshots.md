@@ -1,7 +1,8 @@
 # Atomic credential configuration snapshots
 
-**Status:** internal coordination primitive on the working branch; required local
-checks pass, PR review and CI pending.
+**Status:** internal coordination primitive merged in PR #417 after adversarial
+review and all exact-head CI checks; full execution-scope host integration remains
+open.
 
 ## Problem
 
@@ -86,6 +87,12 @@ Previously registered attempts remain in flight; a snapshot does not undo an
 external effect, discard uncertainty or refund root units.
 
 ## Required server integration
+
+The [shared authentication authority](shared-authentication-authority.md) slice
+uses a dedicated source-only epoch for real startup/reload publication and private
+authentication binding. It does not yet implement the execution-scope credential
+projection or complete the following gates.
+
 
 The next host slice must:
 

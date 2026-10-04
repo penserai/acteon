@@ -79,6 +79,34 @@ export function SettingsServerConfig() {
       </div>
 
       <div className={styles.card}>
+        <h3 className={styles.cardTitle}>Authentication</h3>
+        <div className={styles.grid}>
+          <div className={styles.row}>
+            <span className={styles.label}>Authentication</span>
+            <span className={styles.value}>{config.auth.enabled ? 'Enabled' : 'Disabled'}</span>
+          </div>
+          <div className={styles.row}>
+            <span className={styles.label}>Configuration Authority</span>
+            <span className={styles.value}>{config.auth.authority ? 'Shared across replicas' : 'Replica local'}</span>
+          </div>
+          {config.auth.authority && <>
+            <div className={styles.row}>
+              <span className={styles.label}>Authority Source</span>
+              <span className={styles.value}>{config.auth.authority.source_id}</span>
+            </div>
+            <div className={styles.row}>
+              <span className={styles.label}>Authority Scope</span>
+              <span className={styles.value}>{config.auth.authority.namespace} / {config.auth.authority.tenant}</span>
+            </div>
+            <div className={styles.row}>
+              <span className={styles.label}>Startup Mode</span>
+              <span className={styles.value}>{config.auth.authority.bootstrap ? 'Bootstrap' : 'Connect to existing authority'}</span>
+            </div>
+          </>}
+        </div>
+      </div>
+
+      <div className={styles.card}>
         <h3 className={styles.cardTitle}>Executor</h3>
         <div className={styles.grid}>
           <div className={styles.row}>

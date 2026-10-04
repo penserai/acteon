@@ -10,6 +10,8 @@ pub struct AuthRefConfig {
     pub config_path: Option<String>,
     /// Whether to watch the auth config file for changes (hot-reload). Defaults to `true`.
     pub watch: Option<bool>,
+    /// Shared freshness guard for authentication tables across replicas.
+    pub authority: Option<AuthAuthorityConfig>,
 }
 
 /// Reference to the rate limit config file from `acteon.toml`.
@@ -34,4 +36,18 @@ pub enum RateLimitErrorBehavior {
     Allow,
     /// Deny requests (fail-closed).
     Deny,
+}
+
+/// Shared auth source identity. This guards request authentication, not provider effects.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthAuthorityConfig {
+    /// Dedicated control scope; must not share an execution coordinator.
+    pub namespace: String,
+    pub tenant: String,
+    /// Stable logical file identity shared by every replica.
+    pub source_id: String,
+    /// Explicit one-time initialization. Normal startup only connects to existing state.
+    #[serde(default)]
+    pub bootstrap: bool,
 }

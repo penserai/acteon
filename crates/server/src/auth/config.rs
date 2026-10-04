@@ -6,6 +6,9 @@ use super::crypto::SecretString;
 #[derive(Debug, Deserialize)]
 pub struct AuthFileConfig {
     pub settings: AuthSettings,
+    /// Explicit monotonic version for shared authentication configuration.
+    #[serde(default)]
+    pub authority_revision: Option<u64>,
     #[serde(default)]
     pub users: Vec<UserConfig>,
     #[serde(default)]
