@@ -16,7 +16,7 @@ use uuid::Uuid;
 use crate::{AuthorityCoordinator, AuthorityStamp, CoordinationError};
 
 pub const CONTEXT_KIND: &str = "governance_execution_context";
-const FORMAT: u32 = 1;
+const FORMAT: u32 = 2;
 const MAX_BYTES: usize = 64 * 1024;
 const MAX_EFFECTS: usize = 128;
 const MAX_RESOURCES: usize = 16;
@@ -84,6 +84,7 @@ struct ContextRecord {
     principal: PrincipalIdentity,
     credential_id: String,
     auth_method: String,
+    credential_authority: Option<crate::credential::CredentialReference>,
     request_digest: String,
     accepted_ceiling_revision: String,
     accepted_effects: Vec<AcceptedEffect>,
@@ -138,6 +139,14 @@ impl VerifiedExecutionContext {
     #[must_use]
     pub fn credential_id(&self) -> &str {
         &self.0.credential_id
+    }
+    #[must_use]
+    pub fn auth_method(&self) -> &str {
+        &self.0.auth_method
+    }
+    #[must_use]
+    pub fn credential_authority(&self) -> Option<&crate::credential::CredentialReference> {
+        self.0.credential_authority.as_ref()
     }
     #[must_use]
     pub fn accepted_ceiling_revision(&self) -> &str {
@@ -253,17 +262,46 @@ impl TrustedContextStore {
     /// an interruption may leave an inert context, never an authorized effect.
     pub async fn capture_permitted_root(
         &self,
+        admission: RootContextAdmission,
+        permits: &[crate::permit::PermitReference],
+        limits: crate::RootBudgetLimits,
+        clock: &dyn acteon_time::Clock,
+    ) -> Result<VerifiedExecutionContext, ContextError> {
+        self.capture_permitted_inner(admission, permits, limits, clock, None)
+            .await
+    }
+    /// Capture authority from the exact authenticated credential as well as
+    /// permits. Credentials for the same actor cannot supply a union of grants.
+    pub async fn capture_credentialed_root(
+        &self,
+        admission: RootContextAdmission,
+        permits: &[crate::permit::PermitReference],
+        credential: crate::credential::CredentialReference,
+        limits: crate::RootBudgetLimits,
+        clock: &dyn acteon_time::Clock,
+    ) -> Result<VerifiedExecutionContext, ContextError> {
+        self.capture_permitted_inner(admission, permits, limits, clock, Some(credential))
+            .await
+    }
+    async fn capture_permitted_inner(
+        &self,
         mut admission: RootContextAdmission,
         permits: &[crate::permit::PermitReference],
         limits: crate::RootBudgetLimits,
         clock: &dyn acteon_time::Clock,
+        credential: Option<crate::credential::CredentialReference>,
     ) -> Result<VerifiedExecutionContext, ContextError> {
         admission.accepted_ceiling_revision = crate::permit::permit_revision_tag(permits)?;
         let state = self.coordinator.snapshot().await?;
         let now_ms = clock.now().timestamp_millis();
         crate::permit::validate_root_admission(&state, &admission, permits, &limits, now_ms)?;
+        if let Some(reference) = &credential {
+            crate::credential::validate_root(&state, &admission, reference, &limits, now_ms)?;
+        }
         let stamp = admission.evaluated_authority.clone();
-        let context = self.capture_root(admission, now_ms).await?;
+        let context = self
+            .capture_root_inner(admission, now_ms, credential)
+            .await?;
         self.coordinator
             .create_root_budget(
                 &context.execution_id().to_string(),
@@ -344,6 +382,10 @@ impl TrustedContextStore {
             || record.execution_id.is_nil()
             || record.handle.0.is_nil()
             || !valid_text(&record.credential_id)
+            || record
+                .credential_authority
+                .as_ref()
+                .is_some_and(|r| r.id != record.credential_id || r.accepted_revision == 0)
             || !valid_text(&record.auth_method)
             || !valid_text(&record.accepted_ceiling_revision)
             || !valid_digest(&record.request_digest)
@@ -380,6 +422,14 @@ impl TrustedContextStore {
         admission: RootContextAdmission,
         now_ms: i64,
     ) -> Result<VerifiedExecutionContext, ContextError> {
+        self.capture_root_inner(admission, now_ms, None).await
+    }
+    async fn capture_root_inner(
+        &self,
+        admission: RootContextAdmission,
+        now_ms: i64,
+        credential_authority: Option<crate::credential::CredentialReference>,
+    ) -> Result<VerifiedExecutionContext, ContextError> {
         let record = ContextRecord {
             schema_version: FORMAT,
             domain: self.domain.clone(),
@@ -391,6 +441,7 @@ impl TrustedContextStore {
             request_digest: admission.binding.request_digest,
             credential_id: admission.credential_id,
             auth_method: admission.auth_method,
+            credential_authority,
             accepted_ceiling_revision: admission.accepted_ceiling_revision,
             accepted_effects: admission.accepted_effects,
             deadline_ms: admission.deadline_ms,

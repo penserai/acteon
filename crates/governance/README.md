@@ -105,7 +105,7 @@ cross-product of unrelated permissions. Existing registrations remain observatio
 
 These are privileged host APIs, not credential authentication or a public enforce
 profile. The executor now has a directly mediated [durable provider adapter](../../docs/design/durable-provider-governance.md)
-on the working branch. Grants/mandates, represented lineage, server enforce
+merged in PR #415. Grants/mandates, represented lineage, server enforce
 profiles and API/SDK/UI provisioning remain open. See the [permit ADR](../../docs/design/current-execution-permits.md).
 
 ```sh
@@ -169,15 +169,15 @@ replay, revocation, and durable pending control events.
 
 ## Resource format compatibility
 
-Coordinator format 5 stores complete exact resource sets, root accounting,
+Coordinator format 6 stores complete exact resource sets, root accounting,
 immutable result evidence references and
-current permits. Formats 1–4 are refused.
+current permits and credential-specific ceilings. Formats 1–5 are refused.
 No automatic deletion/recreation or permissive migration is performed. The earlier
 substrate is not wired into live gateway effects, but any standalone adopter must
 stop admission and explicitly review/migrate retained records before upgrade.
 Unknown/uncertain attempts retain their reconciliation obligations. Rolling back
-to an older reader is unsupported for format-5 state. Signed context format is
-unchanged, but recovery still requires a compatible coordinator.
+to an older reader is unsupported for format-6 state. Signed context format 2 adds credential
+references, but recovery still requires a compatible coordinator.
 
 ## Retained result evidence
 
@@ -186,3 +186,13 @@ Trusted adapters retain evidence before `settle_with_evidence` atomically pins
 its reference and releases capacity. Repeated settlement does not refund units
 or release capacity twice. Earlier formats fail closed; migration and rollback
 require explicit review. Evidence itself is stored by the qualified adapter.
+
+## Current credential ceilings
+
+The [credential authority primitive](../../docs/design/current-credential-authority.md)
+binds a job to one authenticated credential's accepted and current exact ceiling.
+Publication, narrowing, disablement and terminal revocation share the effect-start
+CAS. `capture_credentialed_root` seals its revision; every permitted attempt checks
+it automatically. Required credential mode on the durable provider adapter refuses
+actor-only contexts. Server authentication/resolution and reload publication remain
+integration work; this is not a public enforce profile.

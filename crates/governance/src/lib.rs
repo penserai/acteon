@@ -12,10 +12,11 @@ use serde::{Deserialize, Serialize};
 
 mod budget;
 pub mod context;
+pub mod credential;
 pub mod permit;
 pub use budget::{RootBudget, RootBudgetLimits, RootReservation};
 
-const FORMAT: u32 = 5;
+const FORMAT: u32 = 6;
 const MAX_ATTEMPT_RESOURCES: usize = 16;
 const RETRIES: usize = 32;
 const CONTROL_RECORD_RESERVE: usize = 16;
@@ -57,6 +58,13 @@ pub enum AuthorityChange {
     RevokeSubject { subject: String },
     /// Only publish through the bounded trusted issuance entrypoint.
     PublishPermit { permit: permit::ExecutionPermit },
+    PublishCredential {
+        credential: credential::CredentialAuthority,
+    },
+    RevokeCredential {
+        credential_id: String,
+        expected_revision: u64,
+    },
     RevokePermit {
         permit_id: String,
         expected_revision: u64,
@@ -142,11 +150,16 @@ pub struct CoordinatorSnapshot {
     pub roots: BTreeMap<String, RootBudget>,
     pub changes: BTreeMap<String, ChangeRecord>,
     pub permits: BTreeMap<String, permit::PermitRecord>,
+    pub credentials: BTreeMap<String, credential::CredentialRecord>,
 }
 
 impl CoordinatorSnapshot {
     fn record_count(&self) -> usize {
-        self.roots.len() + self.starts.len() + self.changes.len() + self.permits.len()
+        self.roots.len()
+            + self.starts.len()
+            + self.changes.len()
+            + self.permits.len()
+            + self.credentials.len()
     }
     #[must_use]
     pub fn stamp(&self) -> AuthorityStamp {
@@ -316,6 +329,7 @@ impl AuthorityCoordinator {
             roots: BTreeMap::new(),
             changes: BTreeMap::new(),
             permits: BTreeMap::new(),
+            credentials: BTreeMap::new(),
         };
         let coordinator = Self { store, key };
         let encoded = Self::encode(&initial)?;
@@ -402,12 +416,20 @@ impl AuthorityCoordinator {
                 .any(|r| self.validate_resource_scope(r).is_err())
             || !self.valid_start_accounting(&state)
             || !self.valid_permit_history(&state)
+            || !self.valid_credential_history(&state)
             || state.changes.values().any(|record| match &record.change {
                 AuthorityChange::CloseResource { resource }
                 | AuthorityChange::ReopenResource { resource } => {
                     self.validate_resource_scope(resource).is_err()
                 }
                 AuthorityChange::RevokeSubject { .. } => false,
+                AuthorityChange::PublishCredential { credential } => {
+                    !self.valid_credential(credential)
+                }
+                AuthorityChange::RevokeCredential {
+                    credential_id,
+                    expected_revision,
+                } => !valid_text(credential_id) || *expected_revision == 0,
                 AuthorityChange::PublishPermit { permit } => !self.valid_permit(permit),
                 AuthorityChange::RevokePermit {
                     permit_id,
@@ -567,14 +589,8 @@ impl AuthorityCoordinator {
     }
 
     /// The restriction and pending control event are one authoritative write.
-    pub async fn change(
-        &self,
-        id: &str,
-        change: AuthorityChange,
-        actor: &str,
-        reason: &str,
-    ) -> Result<ChangeRecord, CoordinationError> {
-        match &change {
+    fn validate_change(&self, change: &AuthorityChange) -> Result<(), CoordinationError> {
+        match change {
             AuthorityChange::CloseResource { resource }
             | AuthorityChange::ReopenResource { resource } => {
                 self.validate_resource_scope(resource)?;
@@ -583,7 +599,7 @@ impl AuthorityCoordinator {
                 return Err(CoordinationError::Invalid("subject".into()));
             }
             AuthorityChange::RevokeSubject { .. } => {}
-            AuthorityChange::PublishPermit { .. } => {
+            AuthorityChange::PublishPermit { .. } | AuthorityChange::PublishCredential { .. } => {
                 return Err(CoordinationError::Invalid(
                     "use bounded permit publication".into(),
                 ));
@@ -591,12 +607,27 @@ impl AuthorityCoordinator {
             AuthorityChange::RevokePermit {
                 permit_id,
                 expected_revision,
+            }
+            | AuthorityChange::RevokeCredential {
+                credential_id: permit_id,
+                expected_revision,
             } => {
                 if !valid_text(permit_id) || *expected_revision == 0 {
                     return Err(CoordinationError::Invalid("permit revocation".into()));
                 }
             }
         }
+        Ok(())
+    }
+
+    pub async fn change(
+        &self,
+        id: &str,
+        change: AuthorityChange,
+        actor: &str,
+        reason: &str,
+    ) -> Result<ChangeRecord, CoordinationError> {
+        self.validate_change(&change)?;
         if ![id, actor, reason].into_iter().all(valid_text) {
             return Err(CoordinationError::Invalid("change fields".into()));
         }
@@ -638,7 +669,21 @@ impl AuthorityCoordinator {
                     }
                     record.revoked = true;
                 }
-                AuthorityChange::PublishPermit { .. } => {
+                AuthorityChange::RevokeCredential {
+                    credential_id,
+                    expected_revision,
+                } => {
+                    let record = state
+                        .credentials
+                        .get_mut(credential_id)
+                        .ok_or(CoordinationError::Conflict)?;
+                    if record.authority.ceiling.revision != *expected_revision {
+                        return Err(CoordinationError::Conflict);
+                    }
+                    record.revoked = true;
+                }
+                AuthorityChange::PublishPermit { .. }
+                | AuthorityChange::PublishCredential { .. } => {
                     unreachable!("publication uses its bounded entrypoint")
                 }
             }

@@ -1,6 +1,7 @@
 # Durable governed provider execution
 
-**Status:** library implementation on the working branch; review and CI pending.
+**Status:** library implementation merged in PR #415. Server-wide enforcement
+and the remaining phase gates are open.
 
 ## Decision
 
@@ -130,3 +131,8 @@ ACTEON_GOVERNANCE_REDIS_URL=redis://127.0.0.1:6379 \
 
 These tests establish the exercised library contract. They do not establish
 server coverage, Redis failover safety or completed workforce governance.
+
+The [current credential authority follow-up](current-credential-authority.md)
+extends this historical format-5 slice to coordinator format 6/context format 2.
+Credentialed roots are checked automatically at the permit checkpoint. Hosts can
+require that profile explicitly; public server enforcement remains open.

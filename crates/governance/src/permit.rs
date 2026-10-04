@@ -86,7 +86,7 @@ pub struct PermittedAttempt<'a> {
     pub clock: &'a dyn acteon_time::Clock,
 }
 
-fn matches_effect(accepted: &AcceptedEffect, effect: &AcceptedEffect) -> bool {
+pub(crate) fn matches_effect(accepted: &AcceptedEffect, effect: &AcceptedEffect) -> bool {
     accepted.operation == effect.operation
         && accepted.resources.len() == effect.resources.len()
         && effect
@@ -95,7 +95,7 @@ fn matches_effect(accepted: &AcceptedEffect, effect: &AcceptedEffect) -> bool {
             .all(|r| accepted.resources.contains(r))
 }
 
-fn valid_effects(effects: &[AcceptedEffect]) -> bool {
+pub(crate) fn valid_effects(effects: &[AcceptedEffect]) -> bool {
     !effects.is_empty()
         && effects.len() <= MAX_EFFECTS
         && effects.iter().enumerate().all(|(i, effect)| {
@@ -388,6 +388,7 @@ pub(crate) fn evaluate(
     if !request.context.within_accepted_ceiling(request.effect) {
         return Err(deny(PermitDenial::Effect));
     }
+    crate::credential::evaluate(state, request, now_ms)?;
     let root_id = request.context.execution_id().to_string();
     let root = state
         .roots

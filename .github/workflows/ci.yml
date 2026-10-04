@@ -313,6 +313,10 @@ jobs:
         env:
           ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
         run: cargo test --locked -p acteon-governance --test permits independent_redis_current_permits_pass_the_contract -- --ignored
+      - name: Governance credential authority multi-client Redis contract
+        env:
+          ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
+        run: cargo test --locked -p acteon-governance --test credentials independent_redis_credential_authority_passes_the_contract -- --ignored
       - name: Durable provider multi-client Redis contract
         env:
           ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
