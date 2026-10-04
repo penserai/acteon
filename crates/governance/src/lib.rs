@@ -6,10 +6,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use acteon_core::ResourceRef;
 use acteon_state::{CasResult, KeyKind, StateKey, StateStore};
 use serde::{Deserialize, Serialize};
 
-const FORMAT: u32 = 1;
+const FORMAT: u32 = 2;
 const RETRIES: usize = 32;
 const CONTROL_RECORD_RESERVE: usize = 16;
 const CONTROL_BYTE_RESERVE: usize = 8192;
@@ -43,9 +44,9 @@ impl Default for CoordinatorLimits {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AuthorityChange {
     /// Refuse new starts targeting this exact resource reference.
-    CloseResource { resource: String },
+    CloseResource { resource: ResourceRef },
     /// Remove this resource restriction; other restrictions remain effective.
-    ReopenResource { resource: String },
+    ReopenResource { resource: ResourceRef },
     /// Refuse this subject's subsequent starts.
     RevokeSubject { subject: String },
 }
@@ -64,7 +65,7 @@ pub enum AttemptStatus {
 #[serde(deny_unknown_fields)]
 pub struct StartRecord {
     pub subject: String,
-    pub resource: String,
+    pub resource: ResourceRef,
     /// Digest supplied by a trusted adapter; identical IDs cannot change input.
     pub request_digest: String,
     pub authority: AuthorityStamp,
@@ -102,7 +103,7 @@ pub struct CoordinatorSnapshot {
     pub tenant: String,
     pub limits: CoordinatorLimits,
     pub generation: u64,
-    pub closed_resources: BTreeSet<String>,
+    pub closed_resources: BTreeSet<ResourceRef>,
     pub revoked_subjects: BTreeSet<String>,
     pub starts: BTreeMap<String, StartRecord>,
     pub changes: BTreeMap<String, ChangeRecord>,
@@ -231,6 +232,17 @@ impl AuthorityCoordinator {
         Ok(coordinator)
     }
 
+    fn validate_resource_scope(&self, resource: &ResourceRef) -> Result<(), CoordinationError> {
+        if resource.namespace() != self.key.namespace.as_str()
+            || resource.tenant() != self.key.tenant.as_str()
+        {
+            return Err(CoordinationError::Invalid(
+                "resource scope differs from coordinator".into(),
+            ));
+        }
+        Ok(())
+    }
+
     fn encode(state: &CoordinatorSnapshot) -> Result<String, CoordinationError> {
         let raw =
             serde_json::to_string(state).map_err(|e| CoordinationError::Invalid(e.to_string()))?;
@@ -257,6 +269,21 @@ impl AuthorityCoordinator {
                     .max_active
                     .saturating_add(CONTROL_RECORD_RESERVE)
             || state.limits.max_bytes <= CONTROL_BYTE_RESERVE * 2
+            || state
+                .closed_resources
+                .iter()
+                .any(|r| self.validate_resource_scope(r).is_err())
+            || state
+                .starts
+                .values()
+                .any(|s| self.validate_resource_scope(&s.resource).is_err())
+            || state.changes.values().any(|record| match &record.change {
+                AuthorityChange::CloseResource { resource }
+                | AuthorityChange::ReopenResource { resource } => {
+                    self.validate_resource_scope(resource).is_err()
+                }
+                AuthorityChange::RevokeSubject { .. } => false,
+            })
             || state.generation == 0
             || raw.len() > state.limits.max_bytes
         {
@@ -275,16 +302,14 @@ impl AuthorityCoordinator {
         &self,
         id: &str,
         subject: &str,
-        resource: &str,
+        resource: &ResourceRef,
         request_digest: &str,
         expected_authority: &AuthorityStamp,
     ) -> Result<StartRegistration, CoordinationError> {
-        if ![id, subject, resource, request_digest]
-            .into_iter()
-            .all(valid_text)
-        {
+        if ![id, subject, request_digest].into_iter().all(valid_text) {
             return Err(CoordinationError::Invalid("start fields".into()));
         }
+        self.validate_resource_scope(resource)?;
         let token = uuid::Uuid::new_v4().to_string();
         for _ in 0..RETRIES {
             let (mut state, version) = self.load().await?;
@@ -295,7 +320,7 @@ impl AuthorityCoordinator {
             }
             if let Some(old) = state.starts.get(id) {
                 if old.subject != subject
-                    || old.resource != resource
+                    || old.resource != *resource
                     || old.request_digest != request_digest
                 {
                     return Err(CoordinationError::Conflict);
@@ -322,7 +347,7 @@ impl AuthorityCoordinator {
             }
             let record = StartRecord {
                 subject: subject.into(),
-                resource: resource.into(),
+                resource: resource.clone(),
                 request_digest: request_digest.into(),
                 authority: state.stamp(),
                 token: token.clone(),
@@ -348,12 +373,17 @@ impl AuthorityCoordinator {
         actor: &str,
         reason: &str,
     ) -> Result<ChangeRecord, CoordinationError> {
-        let target = match &change {
+        match &change {
             AuthorityChange::CloseResource { resource }
-            | AuthorityChange::ReopenResource { resource } => resource,
-            AuthorityChange::RevokeSubject { subject } => subject,
-        };
-        if ![id, target, actor, reason].into_iter().all(valid_text) {
+            | AuthorityChange::ReopenResource { resource } => {
+                self.validate_resource_scope(resource)?;
+            }
+            AuthorityChange::RevokeSubject { subject } if !valid_text(subject) => {
+                return Err(CoordinationError::Invalid("subject".into()));
+            }
+            AuthorityChange::RevokeSubject { .. } => {}
+        }
+        if ![id, actor, reason].into_iter().all(valid_text) {
             return Err(CoordinationError::Invalid("change fields".into()));
         }
         for _ in 0..RETRIES {
