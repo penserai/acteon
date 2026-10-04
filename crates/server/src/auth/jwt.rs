@@ -15,6 +15,9 @@ use super::role::Role;
 pub struct Claims {
     /// Subject (username).
     pub sub: String,
+    /// Logical credential enrollment pinned when issued.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority_id: Option<String>,
     /// Actor bound at issuance; old tokens default to legacy unbound identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub principal: Option<acteon_core::PrincipalIdentity>,
@@ -50,12 +53,23 @@ impl JwtManager {
         identity: &CallerIdentity,
         state_store: &Arc<dyn StateStore>,
     ) -> Result<(String, u64), String> {
+        self.issue_token_with_credential(identity, None, state_store)
+            .await
+    }
+
+    pub(super) async fn issue_token_with_credential(
+        &self,
+        identity: &CallerIdentity,
+        authority_id: Option<&str>,
+        state_store: &Arc<dyn StateStore>,
+    ) -> Result<(String, u64), String> {
         let jti = uuid::Uuid::new_v4().to_string();
         #[allow(clippy::cast_possible_truncation)]
         let exp = jsonwebtoken::get_current_timestamp() as usize + self.expiry_seconds as usize;
 
         let claims = Claims {
             sub: identity.id.clone(),
+            authority_id: authority_id.map(str::to_owned),
             principal: identity.principal.clone(),
             jti: jti.clone(),
             role: identity.role.to_string(),
@@ -87,6 +101,14 @@ impl JwtManager {
         token: &str,
         state_store: &Arc<dyn StateStore>,
     ) -> Result<CallerIdentity, String> {
+        Ok(self.validate_token_bound(token, state_store).await?.0)
+    }
+
+    pub(super) async fn validate_token_bound(
+        &self,
+        token: &str,
+        state_store: &Arc<dyn StateStore>,
+    ) -> Result<(CallerIdentity, Option<String>), String> {
         let token_data = decode::<Claims>(token, &self.decoding_key, &Validation::default())
             .map_err(|e| format!("invalid token: {e}"))?;
 
@@ -111,13 +133,16 @@ impl JwtManager {
         let role = Role::from_str_loose(&claims.role)
             .ok_or_else(|| format!("invalid role in token: {}", claims.role))?;
 
-        Ok(CallerIdentity {
-            id: claims.sub,
-            principal: claims.principal,
-            role,
-            grants: claims.grants,
-            auth_method: "jwt".to_owned(),
-        })
+        Ok((
+            CallerIdentity {
+                id: claims.sub,
+                principal: claims.principal,
+                role,
+                grants: claims.grants,
+                auth_method: "jwt".to_owned(),
+            },
+            claims.authority_id,
+        ))
     }
 
     /// Revoke a token by deleting its `jti` from the state store.

@@ -180,6 +180,7 @@ def test_typed_identity_preserves_binding_and_legacy_null(wire):
         client._client = httpx.Client(transport=httpx.MockTransport(handle))
         identity = client.identity()
         assert identity.credential_id == wire["credential_id"]
+        assert identity.authority_id == wire.get("authority_id")
         assert identity.auth_method == wire["auth_method"]
         assert identity.role == wire["role"]
         assert (None if identity.principal is None else vars(identity.principal)) == wire[

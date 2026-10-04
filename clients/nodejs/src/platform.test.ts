@@ -101,6 +101,6 @@ it("typed identity preserves credential, actor, and legacy null", async () => {
       return new Response(JSON.stringify(wire));
     });
     const identity = await new ActeonClient("http://localhost", { apiKey: "local-test" }).identity();
-    expect(identity).toEqual({ credentialId: wire.credential_id, authMethod: wire.auth_method, role: wire.role, principal: wire.principal });
+    expect(identity).toEqual({ credentialId: wire.credential_id, authorityId: wire.authority_id ?? null, authMethod: wire.auth_method, role: wire.role, principal: wire.principal });
   }
 });

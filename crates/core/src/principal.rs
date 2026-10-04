@@ -101,6 +101,9 @@ mod tests {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CredentialIdentity {
     pub credential_id: String,
+    /// Optional logical enrollment ID; inspection metadata, never authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority_id: Option<String>,
     pub auth_method: String,
     pub role: String,
     pub principal: Option<PrincipalIdentity>,

@@ -3731,6 +3731,7 @@ export function parseListSwarmRunsResponse(data: Record<string, unknown>): ListS
 export interface PrincipalIdentity { id: string; kind: "human" | "agent" | "service" | "system"; }
 export interface CredentialIdentity {
   credentialId: string;
+  authorityId?: string | null;
   authMethod: string;
   role: string;
   principal: PrincipalIdentity | null;
@@ -3738,5 +3739,5 @@ export interface CredentialIdentity {
 export function parseCredentialIdentity(data: Record<string, unknown>): CredentialIdentity {
   const principal = data.principal as PrincipalIdentity | null | undefined;
   return { credentialId: data.credential_id as string, authMethod: data.auth_method as string,
-    role: data.role as string, principal: principal ?? null };
+    role: data.role as string, principal: principal ?? null, authorityId: (data.authority_id as string | null | undefined) ?? null };
 }

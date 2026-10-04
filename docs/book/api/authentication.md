@@ -242,6 +242,31 @@ credential still needs its own role and scoped grants. An agent principal does
 not automatically create a registry entry or bind a bus sender; bus identity
 still requires the configured grant's `agent_id`.
 
+A logical credential can also have an optional `authority_id`, for example
+`authority_id = "credential/diagnostic-runtime-v1"`. This identifies the enrollment
+across key rotation. It requires a stable principal. Separate credentials for the
+same person or agent may have different authority IDs and policies; their grants
+are evaluated independently.
+
+During API key rotation, two hashes can share an authority ID only when their
+principal, role, and complete grants agree, including any bus `agent_id`.
+Conflicting enrollments are rejected before the authentication tables change.
+User enrollments must have distinct IDs, including from API keys. Keep the ID when
+rotating a secret; use a new ID for a replacement enrollment.
+
+JWTs pin the authority ID at login. Adding, changing, or removing the user's ID
+requires a new login; existing sessions cannot switch to the replacement
+credential. Roll out enrollment-aware servers to every replica before relying
+on this binding; older servers do not enforce the JWT enrollment claim.
+Role and grant changes under the same enrollment still apply on the
+next authenticated request. In shared authority mode, increment
+`authority_revision` when an enrollment changes.
+
+The identity endpoint includes `authority_id` when configured. This is metadata
+resolved from the actual authenticated key or session. Supplying an ID in a
+header or payload grants no authority. Enrollment IDs alone do not establish
+execution permits or publish credential ceilings to execution scopes.
+
 Inspect the current binding with an authenticated request:
 
 ```bash

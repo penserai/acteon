@@ -50,10 +50,19 @@ mod tests {
                 .api_key("test-key")
                 .build()
                 .unwrap();
+            let actual = client.identity().await.unwrap();
             assert_eq!(
-                serde_json::to_value(client.identity().await.unwrap()).unwrap(),
-                wire
+                actual.authority_id.as_deref(),
+                wire.get("authority_id").and_then(serde_json::Value::as_str)
             );
+            let mut expected = wire;
+            if expected
+                .get("authority_id")
+                .is_some_and(serde_json::Value::is_null)
+            {
+                expected.as_object_mut().unwrap().remove("authority_id");
+            }
+            assert_eq!(serde_json::to_value(actual).unwrap(), expected);
             thread.join().unwrap();
         }
     }

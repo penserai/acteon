@@ -311,7 +311,7 @@ reviewed migration/parking. Execution-scope credential projection, public
 scope/API/SDK/UI surfaces and complete effect coverage remain open.
 
 
-## Shared authentication authority (server slice in progress)
+## Shared authentication authority (server slice merged)
 
 [Shared authentication authority](shared-authentication-authority.md) wires the
 source-epoch coordinator into real server startup, auth file watching, login,
@@ -327,7 +327,7 @@ zero ignored. Required full checks passed with 3,432 workspace tests, workspace
 Clippy, all-target compilation, UI lint/build, strict docs, catalog/permission
 checks and changed Markdown links. Focused server Clippy passes on stable and
 Rust 1.88. Public authentication/configuration docs and sanitized UI settings cover
-the configured mode. PR/merge/publication evidence remains pending. This source-only epoch has no credential execution projection and does
+the configured mode. This source-only epoch has no credential execution projection and does
 not enable per-effect permits; qualified effect resolution, credential enrollment,
 root capture, scope mutation stamps and complete execution coverage remain next.
 
@@ -338,7 +338,34 @@ binary startup/watcher contracts now pass for PostgreSQL and DynamoDB Local as
 well as Redis. The memory binary test passed with the Redis feature disabled.
 Updated full checks passed with 3,433 workspace tests, Clippy, all-target
 compilation, UI lint/build and strict documentation. Focused stable/Rust 1.88
-Clippy covers PostgreSQL and DynamoDB features. Updated exact-head review/CI,
-merge and publication remain pending. These
+Clippy covers PostgreSQL and DynamoDB features. PR #418 merged at `e7f1c5f` after exact-head review and successful CI run
+`37219034763`, whose integration job executed all four backend contracts.
+Documentation deployment `37220928565` succeeded and the published authentication
+page includes the configured-backend guidance. These
 contracts qualify auth-source behavior, not backend failover or all execution
 classes. The memory backend remains process-local and ephemeral.
+
+
+## Logical credential enrollment (server slice in progress)
+
+Authentication can resolve an optional logical `authority_id` from the actual
+API key lookup or signed JWT. Middleware carries a privately constructed binding
+alongside the caller and shared configuration observation. IDs require stable
+principals. API key rotation may reuse an ID only with identical complete policy;
+conflicting grants, roles, principals or authentication methods fail validation
+before publication or table replacement. JWT sessions pin the ID and cannot
+silently adopt a replacement enrollment. The identity endpoint, all five SDKs
+and UI expose the optional ID as inspection metadata.
+
+Actual HTTP contracts exercise private key bindings and forged headers, atomic
+rotation rejection, JWT enrollment migration and shared version conflicts. This
+slice does not publish execution-scope credential ceilings, prevent an operator
+from manually reusing an ID after removal, or enable per-effect permits. The next
+integration must retain exact configuration/credential references and validate
+terminal enrollment lifecycle through the execution coordinator.
+
+Local validation passes: 3,438 workspace tests (zero failures; nine backend
+contracts remain explicitly ignored in the default command), workspace Clippy,
+all-target compilation, all five SDK suites, UI lint/build, strict documentation
+and route/catalog checks. PR review, CI and publication evidence follow once
+available. Backend storage is unchanged from the configured-state integration.

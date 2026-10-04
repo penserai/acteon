@@ -11,6 +11,7 @@ type PrincipalIdentity struct {
 	Kind string `json:"kind"`
 }
 type CredentialIdentity struct {
+	AuthorityID  *string            `json:"authority_id,omitempty"`
 	CredentialID string             `json:"credential_id"`
 	AuthMethod   string             `json:"auth_method"`
 	Role         string             `json:"role"`

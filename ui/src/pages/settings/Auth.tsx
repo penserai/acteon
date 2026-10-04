@@ -59,6 +59,7 @@ export function SettingsAuth() {
         {identityError ? <p className={styles.description}>Identity could not be loaded.</p> : identity ? (
           <div className={styles.grid}>
             <div className={styles.row}><span className={styles.label}>Credential</span><span>{identity.credential_id || 'Anonymous'}</span></div>
+            <div className={styles.row}><span className={styles.label}>Authority ID</span><span>{identity.authority_id ?? 'Not configured'}</span></div>
             <div className={styles.row}><span className={styles.label}>Role</span><span>{identity.role}</span></div>
             <div className={styles.row}><span className={styles.label}>Principal</span><span>{identity.principal?.id ?? 'Not configured'}</span></div>
             {identity.principal && <div className={styles.row}><span className={styles.label}>Kind</span><span>{identity.principal.kind}</span></div>}

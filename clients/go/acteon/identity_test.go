@@ -32,6 +32,19 @@ func TestIdentityContracts(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		var wireFields map[string]json.RawMessage
+		if err := json.Unmarshal(wire, &wireFields); err != nil {
+			t.Fatal(err)
+		}
+		if id := wireFields["authority_id"]; string(id) != "null" && len(id) != 0 {
+			var expectedID string
+			if err := json.Unmarshal(id, &expectedID); err != nil {
+				t.Fatal(err)
+			}
+			if actual.AuthorityID == nil || *actual.AuthorityID != expectedID {
+				t.Fatal("logical credential ID lost")
+			}
+		}
 		var expected CredentialIdentity
 		if err := json.Unmarshal(wire, &expected); err != nil {
 			t.Fatal(err)

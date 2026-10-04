@@ -98,8 +98,10 @@ there is no new caller-supplied authority argument or endpoint.
 
 ## Next integration gates
 
-1. Assign stable credential authority IDs with explicit re-enrollment and reject
-   ambiguous identity mappings for the execution profile.
+1. The enrollment slice adds stable credential authority IDs, exact private
+   authentication bindings and ambiguous-policy rejection. Complete terminal
+   re-enrollment lifecycle when publishing execution-scope credentials; the
+   optional ID alone does not install that lifecycle.
 2. Resolve each credential's own grants against complete qualified actual effects,
    including selected provider/endpoint versions, fallbacks and auxiliary effects.
 3. Publish execution-scope credential snapshots from the same verified security
