@@ -254,6 +254,7 @@ struct Runtime {
 /// Authentication and qualification are host prerequisites; no public server
 /// enforce switch is enabled by constructing this object.
 pub struct GovernedProviderExecutor {
+    require_credential_authority: bool,
     runtime: Arc<Runtime>,
     executor: ActionExecutor,
 }
@@ -500,6 +501,7 @@ impl GovernedProviderExecutor {
             delay: Duration::ZERO,
         };
         Ok(Self {
+            require_credential_authority: false,
             runtime: Arc::new(Runtime {
                 state,
                 coordinator,
@@ -513,6 +515,13 @@ impl GovernedProviderExecutor {
                 .clock(clock)
                 .require_attempt_gate(),
         })
+    }
+    /// Refuse execution under actor-only compatibility contexts. Hosts exposing
+    /// credential-governed work must use credentialed capture and this profile.
+    #[must_use]
+    pub fn require_credential_authority(mut self) -> Self {
+        self.require_credential_authority = true;
+        self
     }
     /// Replay/repair known evidence without execution, including after expiry.
     pub async fn inspect(
@@ -562,6 +571,11 @@ impl GovernedProviderExecutor {
             .recover_reference_for_observation(reference)
             .await
             .map_err(|_| GovernedProviderError::Unavailable)?;
+        if self.require_credential_authority && verified.credential_authority().is_none() {
+            return Err(GovernedProviderError::Admission(
+                "CREDENTIAL_AUTHORITY_REQUIRED",
+            ));
+        }
         if permit_revision_tag(permits).map_err(|_| GovernedProviderError::Invalid)?
             != verified.accepted_ceiling_revision()
         {

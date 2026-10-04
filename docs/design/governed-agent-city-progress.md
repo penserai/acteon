@@ -246,7 +246,7 @@ strict public docs build, changed links and all four explicitly executed Redis
 governance contracts pass. PR #414 merged at `1f2737d6` after adversarial review and successful current-head
 CI run `37187992748`.
 
-## Durable provider execution (in progress)
+## Durable provider execution (merged internal library slice)
 
 The [durable provider adapter](durable-provider-governance.md) now connects root
 permits, trusted contexts and atomic attempt reservations to the executor. Stable
@@ -261,6 +261,28 @@ independent-client Redis contract passes separately with zero ignored. Required
 workspace checks pass with 3,403 tests, UI lint/build, strict public documentation
 build and changed design links. Local adversarial review tightened the retained
 start digest binding and verifies valid altered results against evidence pins.
-PR and current-head CI evidence remain pending. This does not complete Phase 2:
+PR #415 merged at `49dc7863` after adversarial review and successful current-head
+CI run `37194958453`. Its integration job explicitly executed the durable provider
+Redis contract: one passed, zero ignored. This does not complete Phase 2:
 server/gateway coverage, lifecycle publication, workforce mandates, delegated
 lineage, public APIs/SDKs/UI and reconciliation remain open.
+
+## Current credential authority (in progress)
+
+[Credential-specific ceilings](current-credential-authority.md) now share the
+coordinator's publication/revocation protocol and effect-start CAS. Signed
+context format 2 binds the accepted credential revision. Original and current
+complete effects, execution eligibility, validity and root limits constrain each
+fresh attempt; two credentials for one actor cannot combine grants. A required
+credential profile refuses actor-only contexts at the durable provider boundary.
+
+Ten focused governance contracts and three controlled race orderings pass,
+including the explicitly executed independent-client Redis contract. Provider
+backoff/revocation and missing-credential profile tests exercise the executor
+integration. Required workspace checks pass with 3,415 tests, UI lint/build, strict public
+documentation build and changed design links. Focused Rust 1.88 Clippy and both
+explicitly executed credential/provider Redis contracts pass. Review and PR
+evidence remain pending. Server auth
+publication/resolution, public APIs/SDKs/UI, workforce mandates and delegated
+lineage remain open; coordinator format 6/context format 2 require reviewed
+migration and compatible readers.

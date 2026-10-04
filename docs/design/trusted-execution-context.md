@@ -75,3 +75,8 @@ An explicitly run independent-client Redis test covers durable capture after a
 lost acknowledgment, recovery/replay, wrong owner and tampering. CI runs it
 against its Redis service. These tests qualify this context contract, not the
 unimplemented full authority lifecycle or backend failover behavior.
+
+The [credential authority follow-up](current-credential-authority.md) introduces
+signed context format 2 with a bound credential revision. Format-1 records require
+explicit migration or parking; older readers/writers cannot drop the new field.
+Actor-only compatibility contexts do not establish current credential authority.

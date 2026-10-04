@@ -1013,3 +1013,162 @@ async fn independent_redis_workers_observe_one_provider_attempt() {
         assert!(peer.delete(&key(&f, kind, id)).await.unwrap());
     }
 }
+
+async fn bind_credential(f: &mut Fixture, provider: Arc<dyn DynProvider>) {
+    use acteon_governance::credential::{CredentialAuthority, CredentialReference};
+    let effects = vec![bound(provider, f.known).effect().clone()];
+    let budget = RootBudgetLimits {
+        max_units: 4,
+        max_concurrent: 2,
+        deadline_ms: 10_000,
+    };
+    let issuance = PermitIssuanceCeiling {
+        issuer: PrincipalIdentity::new("issuer", PrincipalKind::Human).unwrap(),
+        subjects: vec![actor()],
+        effects: effects.clone(),
+        valid_from_ms: 0,
+        limits: budget.clone(),
+    };
+    f.coordinator
+        .publish_credential(
+            "credential-issue",
+            CredentialAuthority {
+                ceiling: ExecutionPermit {
+                    id: "key".into(),
+                    revision: 1,
+                    subject: actor(),
+                    effects: effects.clone(),
+                    valid_from_ms: 0,
+                    limits: budget.clone(),
+                },
+                auth_method: "api_key".into(),
+                execution_enabled: true,
+            },
+            0,
+            &issuance,
+            &f.coordinator.snapshot().await.unwrap().stamp(),
+            "reviewed",
+            100,
+        )
+        .await
+        .unwrap();
+    let context = f
+        .contexts
+        .capture_credentialed_root(
+            RootContextAdmission {
+                handle: ExecutionContextHandle::new(),
+                binding: ContextBinding {
+                    execution_id: uuid::Uuid::new_v4(),
+                    principal: actor(),
+                    request_digest: governed_provider_input_digest(&f.action).unwrap(),
+                },
+                credential_id: "key".into(),
+                auth_method: "api_key".into(),
+                accepted_ceiling_revision: "placeholder".into(),
+                accepted_effects: effects,
+                deadline_ms: 10_000,
+                evaluated_authority: f.coordinator.snapshot().await.unwrap().stamp(),
+            },
+            &references(),
+            CredentialReference {
+                id: "key".into(),
+                accepted_revision: 1,
+            },
+            budget,
+            f.clock.as_ref(),
+        )
+        .await
+        .unwrap();
+    f.reference = context.reference().unwrap();
+}
+
+#[tokio::test]
+async fn credential_revocation_during_durable_backoff_blocks_the_real_provider_retry() {
+    use std::future::Future;
+    use std::task::{Context, Poll, Waker};
+    let provider = Arc::new(Counting::new(Mode::RejectFirst));
+    let mut settings = config();
+    settings.retry_strategy = RetryStrategy::Constant {
+        delay: Duration::from_secs(2),
+    };
+    let mut f = fixture(
+        Arc::new(MemoryStateStore::new()),
+        provider.clone(),
+        true,
+        settings,
+    )
+    .await;
+    bind_credential(&mut f, provider.clone()).await;
+    let driver = f
+        .driver(provider.clone(), None)
+        .require_credential_authority();
+    let refs = references();
+    let principal = actor();
+    let mut execution = Box::pin(driver.execute(&f.reference, &refs, &f.action, &principal));
+    assert!(matches!(
+        execution
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop())),
+        Poll::Pending
+    ));
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    f.coordinator
+        .change(
+            "credential-revoke",
+            AuthorityChange::RevokeCredential {
+                credential_id: "key".into(),
+                expected_revision: 1,
+            },
+            "issuer",
+            "stop",
+        )
+        .await
+        .unwrap();
+    f.clock.advance_to(Duration::from_secs(2)).unwrap();
+    assert!(matches!(
+        execution.await,
+        Err(GovernedProviderError::Admission(_))
+    ));
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        f.coordinator.snapshot().await.unwrap().roots[&f.reference.execution_id().to_string()]
+            .spent_units,
+        1
+    );
+}
+
+#[tokio::test]
+async fn required_credential_profile_refuses_actor_only_contexts() {
+    let provider = Arc::new(Counting::new(Mode::Success));
+    let f = fixture(
+        Arc::new(MemoryStateStore::new()),
+        provider.clone(),
+        false,
+        config(),
+    )
+    .await;
+    let driver = f
+        .driver(provider.clone(), None)
+        .require_credential_authority();
+    assert!(matches!(
+        driver
+            .execute(&f.reference, &references(), &f.action, &actor())
+            .await,
+        Err(GovernedProviderError::Admission(
+            "CREDENTIAL_AUTHORITY_REQUIRED"
+        ))
+    ));
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+    assert!(f.coordinator.snapshot().await.unwrap().starts.is_empty());
+    assert!(
+        f.state
+            .get(&key(
+                &f,
+                OPERATION_KIND,
+                f.reference.execution_id().to_string()
+            ))
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
