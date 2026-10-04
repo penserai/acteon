@@ -108,6 +108,17 @@ struct SealedRecord {
 pub struct VerifiedExecutionContext(ContextRecord);
 
 impl VerifiedExecutionContext {
+    pub fn reference(&self) -> Result<acteon_core::ExecutionContextReference, ContextError> {
+        acteon_core::ExecutionContextReference::new(
+            self.0.handle.0,
+            self.0.execution_id,
+            self.0.namespace.clone(),
+            self.0.tenant.clone(),
+            self.0.principal.clone(),
+            self.0.request_digest.clone(),
+        )
+        .map_err(|_| ContextError::Verification)
+    }
     #[must_use]
     pub fn handle(&self) -> &ExecutionContextHandle {
         &self.0.handle
@@ -210,6 +221,28 @@ fn valid_digest(value: &str) -> bool {
 }
 
 impl TrustedContextStore {
+    /// Expected reference must come from an independently trusted work record.
+    pub async fn recover_reference(
+        &self,
+        reference: &acteon_core::ExecutionContextReference,
+        now_ms: i64,
+    ) -> Result<VerifiedExecutionContext, ContextError> {
+        if reference.namespace() != self.coordinator.key.namespace.as_str()
+            || reference.tenant() != self.coordinator.key.tenant.as_str()
+        {
+            return Err(ContextError::Verification);
+        }
+        self.recover(
+            &ExecutionContextHandle(reference.context_id()),
+            &ContextBinding {
+                execution_id: reference.execution_id(),
+                principal: reference.principal().clone(),
+                request_digest: reference.request_digest().into(),
+            },
+            now_ms,
+        )
+        .await
+    }
     /// Explicit trusted deployment configuration. Retained verification keys
     /// allow rotation without reassigning admitted work to another actor.
     pub fn new(

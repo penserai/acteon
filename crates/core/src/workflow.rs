@@ -130,6 +130,9 @@ pub struct BufferedSignal {
 /// Persistent state of one workflow execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowExecution {
+    /// Internal independently verified root provenance. Not effect authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_context: Option<crate::ExecutionContextReference>,
     /// Unique execution ID.
     pub execution_id: String,
     /// Workflow name (matched to a handler registered on the worker).
@@ -211,6 +214,7 @@ impl WorkflowExecution {
         now: DateTime<Utc>,
     ) -> Self {
         Self {
+            execution_context: None,
             execution_id: uuid::Uuid::new_v4().to_string(),
             workflow: workflow.into(),
             queue: queue.into(),

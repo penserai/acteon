@@ -142,6 +142,7 @@ impl Gateway {
     /// an earlier call persisted its task but lost the index-write response.
     pub async fn enqueue_worker_task(&self, task: WorkerTask) -> Result<WorkerTask, GatewayError> {
         validate_worker_scope(&task, &task.namespace, &task.tenant, &task.task_id)?;
+        self.verify_worker_workflow_context(&task).await?;
         if task.status != WorkerTaskStatus::Pending
             || task.attempt != 0
             || task.lease_token.is_some()
@@ -339,6 +340,11 @@ impl Gateway {
                 continue;
             }
             let mut task = task;
+
+            if let Err(error) = self.verify_worker_workflow_context(&task).await {
+                warn!(%error, task_id, "workflow continuation retained without leasing; context verification failed");
+                continue;
+            }
 
             task.status = WorkerTaskStatus::Leased;
             task.attempt += 1;

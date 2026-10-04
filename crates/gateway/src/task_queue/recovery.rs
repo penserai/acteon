@@ -83,6 +83,7 @@ impl Gateway {
         &self,
         expected: acteon_core::WorkerTask,
     ) -> Result<(), GatewayError> {
+        self.verify_worker_workflow_context(&expected).await?;
         if self
             .get_worker_task(&expected.namespace, &expected.tenant, &expected.task_id)
             .await?
@@ -104,6 +105,7 @@ impl Gateway {
             || current.workflow_execution_id != expected.workflow_execution_id
             || current.chain_id != expected.chain_id
             || current.payload != expected.payload
+            || current.execution_context != expected.execution_context
         {
             return Err(GatewayError::TaskQueue(
                 "continuation task identity mismatch".into(),

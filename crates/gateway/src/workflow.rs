@@ -91,6 +91,54 @@ impl Gateway {
         input: serde_json::Value,
         search_attributes: HashMap<String, serde_json::Value>,
     ) -> Result<WorkflowExecution, GatewayError> {
+        self.start_workflow_inner(
+            namespace,
+            tenant,
+            workflow,
+            queue,
+            input,
+            search_attributes,
+            None,
+        )
+        .await
+    }
+
+    /// Start with an independently authenticated/captured root context. This
+    /// verifies provenance and accepted ceilings, not current effect permits.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn start_workflow_with_context(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        workflow: &str,
+        queue: &str,
+        input: serde_json::Value,
+        search_attributes: HashMap<String, serde_json::Value>,
+        context: &acteon_governance::context::VerifiedExecutionContext,
+    ) -> Result<WorkflowExecution, GatewayError> {
+        self.start_workflow_inner(
+            namespace,
+            tenant,
+            workflow,
+            queue,
+            input,
+            search_attributes,
+            Some(context),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn start_workflow_inner(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        workflow: &str,
+        queue: &str,
+        input: serde_json::Value,
+        search_attributes: HashMap<String, serde_json::Value>,
+        context: Option<&acteon_governance::context::VerifiedExecutionContext>,
+    ) -> Result<WorkflowExecution, GatewayError> {
         if workflow.is_empty() || queue.is_empty() {
             return Err(GatewayError::TaskQueue(
                 "workflow and queue names must not be empty".into(),
@@ -105,6 +153,21 @@ impl Gateway {
             self.clock.now(),
         );
         exec.search_attributes = search_attributes;
+        if let Some(context) = context {
+            exec.execution_id = context.execution_id().to_string();
+            exec.execution_context = Some(
+                context
+                    .reference()
+                    .map_err(|e| GatewayError::TaskQueue(e.to_string()))?,
+            );
+        }
+        self.verify_workflow_context(&exec).await?;
+
+        // Create-only persistence prevents repeated use of a captured root ID
+        // from resetting an existing workflow or creating duplicate history.
+        let task = self.build_continuation_task(&exec);
+        exec.current_task_id = Some(task.task_id.clone());
+        self.persist_workflow(&mut exec, None).await?;
 
         self.append_execution_history(
             namespace,
@@ -122,9 +185,6 @@ impl Gateway {
         // Persist the execution BEFORE the task becomes pollable: a fast
         // worker settling the first continuation must find the record. A
         // publication failure leaves the chosen task ID available for repair.
-        let task = self.build_continuation_task(&exec);
-        exec.current_task_id = Some(task.task_id.clone());
-        self.persist_workflow(&mut exec, None).await?;
         self.enqueue_worker_task(task).await?;
         debug!(
             execution_id = %exec.execution_id,
@@ -164,6 +224,9 @@ impl Gateway {
                     "workflow execution is not active (status: {:?})",
                     parent.status
                 )));
+            }
+            if parent.execution_context.is_some() || self.workflow_context_store.is_some() {
+                return Err(GatewayError::TaskQueue("verified child workflow authority derivation is not implemented; refusing provenance loss".into()));
             }
             // Idempotent replay: the child was already started.
             if let Some(existing) = parent.checkpoint(checkpoint) {
@@ -983,7 +1046,7 @@ impl Gateway {
             "execution_id": exec.execution_id,
             "workflow": exec.workflow,
         });
-        WorkerTask::new_at(
+        let mut task = WorkerTask::new_at(
             exec.namespace.as_str(),
             exec.tenant.as_str(),
             exec.queue.as_str(),
@@ -992,7 +1055,9 @@ impl Gateway {
             self.clock.now(),
         )
         .with_max_attempts(WORKFLOW_TASK_MAX_ATTEMPTS)
-        .for_workflow(exec.execution_id.clone())
+        .for_workflow(exec.execution_id.clone());
+        task.execution_context.clone_from(&exec.execution_context);
+        task
     }
 
     /// Persist the chosen continuation identity under the workflow lock, then

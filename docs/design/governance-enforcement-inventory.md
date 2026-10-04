@@ -21,9 +21,9 @@ must enter, survive deferral, and govern the actual attempt.
 | Full-pipeline chain dispatch | `Gateway::advance_chain` dispatch step path | Trusted ancestry labels and parent Caller | Preserve cryptographically/trust-bound context separate from user metadata; reauthorize child/fallback destinations |
 | Subchain/fan-out | `Gateway::start_sub_chain` / `execute_parallel_group` | Parent IDs and audit Caller | Attenuate authority, share root reservations/deadline, record child lineage before execution |
 | Compensation | Chain configuration and advancement compensation paths | Existing execution/step state | Independently authorized effect with explicit compensator authority; cancellation cannot authorize compensation automatically |
-| Worker queue handoff | `Gateway::enqueue_worker_task`; `task_queue/recovery.rs` | WorkerTask queue, chain/workflow references, lease tokens | Persist source context and destination operation; verify worker claim authority and original root authority at mediated effects |
+| Worker queue handoff | `Gateway::enqueue_worker_task`; `task_queue/recovery.rs` | WorkerTask queue, chain/workflow references, lease tokens; checked root reference for profile-managed workflow tasks | Extend context to standalone/chain workers; verify worker claim authority and original root authority at mediated effects |
 | Worker settlement | `task_queue/handoff.rs` | Terminal record is a CAS-backed result outbox | Keep context through terminal handoff; idempotent parent continuation and reservation settlement |
-| Workflow continuation | `gateway/workflow.rs` | WorkflowExecution and enqueued WorkerTask | Retain root principal and authority at signals, checkpoint recovery, child creation and resumed effects |
+| Workflow continuation | `gateway/workflow.rs`; `workflow_context.rs` | Optional checked root reference in workflow/tasks; library profile verifies scope/input/actor at enqueue, repair and poll | Provision trusted roots at public entrypoints; add represented-party/mandate lineage, attenuated child context and current permit/effect checkpoints |
 | Delayed dispatch | `gateway/scheduled.rs` | Stored Action; dispatch_inner currently receives Caller=None | Scheduled record needs original context; time passage or scheduler identity cannot grant authority |
 | Recurring firing | `background/workers/recurring.rs`; server main recurring consumer | Recurring event and stored configuration; consumer uses dispatch_precounted_action | Persist schedule owner/context; recheck current authority each firing; define migration and ownership transfer |
 | Group flush | `background/workers/group_flush.rs`; server main group consumer | Synthesized Action; dispatch_precounted_action drops caller | Require compatible contributor contexts or explicit aggregator authority; account for resources and retain contributors |
@@ -56,7 +56,8 @@ bus and swarm paths refer to their corresponding crates.
    the Action's original provider field. The current fallback executor receives
    the original Action.
 3. Core Caller and provider DispatchContext are both insufficient authority
-   containers: Caller only has id/auth_method; DispatchContext only holds resolved
+   containers: Caller has credential provenance and optional stable principal;
+   DispatchContext only holds resolved
    attachments. Introduce a distinct trusted execution context.
 4. Delayed, recurring, grouped and timeout work have paths with no Caller. They
    need an explicit migration/service-authority model; inserting the current

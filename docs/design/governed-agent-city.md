@@ -14,6 +14,14 @@ The companion [phased delivery plan](governed-agent-city-implementation-plan.md)
 
 **Acteon is the execution and governance infrastructure for humans, agents, and software operating together. It gives every participant scoped authority, connects them to shared services, coordinates durable work, and lets operators intervene while the system is running.**
 
+The organizational model is an **agent workforce**: people work in teams with
+personal assistants, shared team agents and deterministic services. Acteon
+provides the common infrastructure for this workforce; teams define ownership,
+mandates and accountability. An agent always retains its own authenticated
+identity, even when working for a person or representing a team. See the
+[agent workforce design](agent-workforce.md) for the domain model and delivery
+gates.
+
 Imagine an orderly city. Humans drive alongside autonomous vehicles and robots. Participants choose their destinations and collaborators. The city provides addresses, roads, utilities, buildings, permits, traffic control, and emergency closures. Autonomy operates within enforceable authority.
 
 In Acteon, the participant may be a person, agent, service, scheduled job, or worker. The operation may be a deterministic provider call, an agent delegation, a workflow, a message, or an inference request. The same governance model applies to each.
@@ -23,7 +31,9 @@ The city metaphor explains the product. The implementation uses concrete concept
 | City concept | Platform primitive | Responsibility |
 |---|---|---|
 | Residents and vehicles | Principals | Authenticate an actor and establish its identity |
+| Households and organizations | Teams, memberships and workforce assignments | Establish who belongs, owns agents and may request their work |
 | Permits | Execution permits | Authorize particular operations on particular resources |
+| Authorized representatives | Personal delegation and team mandates | Bind an acting agent to the person or team it represents |
 | Addresses and directories | Resource references and agent registry | Resolve a destination without accepting arbitrary caller-supplied endpoints |
 | Roads | Dispatch, A2A, bus, chains, workflows | Carry work through governed execution paths |
 | Buildings | Providers, agents, tools, topics, datasets | Identify destinations and protected resources |
@@ -44,6 +54,8 @@ The metaphor does not imply that Acteon hosts every agent, supplies physical inf
 4. Preserve authority, deadlines, budgets, and provenance across delegation and asynchronous handoffs.
 5. Make intervention observable, durable, and honest about in-flight external effects.
 6. Deliver every phase as independently useful product functionality, including SDKs, operator UI, public documentation, and recovery tests.
+7. Support personal and team agents with explicit representation, requester
+   authorization, shared accountability and safe membership/offboarding changes.
 
 ### Initial boundaries
 
@@ -143,6 +155,18 @@ A request records both the authenticated actor and any authorized represented ac
 
 The existing agent registry remains the capability and liveness directory for agent principals. Principal records must not copy card contents or heartbeat state. A migration binding maps existing credential identities to stable principals.
 
+Teams are organizational authority subjects, not shared login credentials or an
+additional descriptive agent kind. Model a scoped `TeamRef`, human memberships,
+agent ownership and versioned representation mandates separately. An execution
+records the actual acting principal, initiator, represented human/team, mandate
+lineage and accountable owner. Membership and ownership alone grant no tool
+access. A personal agent uses explicit owner delegation; a team agent uses a
+team-issued mandate and the requester's entitlement to invoke that kind of work.
+Current mandate and relevant membership revisions participate in the same
+authority-change protocol as permits. The root-context substrate currently
+records the actual principal only; these additional representation fields need
+an explicit versioned extension before workforce authority is enforced.
+
 ### Control plane and data plane
 
 Retain and verify the checkout's execution-only role and checked route-permission inventory. Introduce explicit endpoint permissions for permit management, closure management, registry publication, delegation, task observation, cancellation, and reconciliation. Audit every registered route, including bus endpoints that currently use general scope checks.
@@ -158,6 +182,8 @@ Break-glass access is a separate short-lived, attributable capability. It may au
 Persist a versioned `ExecutionContext` alongside durable work:
 
 - authenticated and represented principal references;
+- initiating principal, represented party (principal or team), accountability
+  owner, membership/assignment and mandate references with accepted revisions;
 - root execution ID, parent execution ID, immediate delegator, and ancestry reference;
 - selected permit IDs and immutable accepted revisions;
 - resource references, operation, request digest and definition version;

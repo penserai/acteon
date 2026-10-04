@@ -29,6 +29,7 @@ use crate::metrics::GatewayMetrics;
 /// be supplied. All other fields have sensible defaults (empty rules, empty
 /// providers, default executor config).
 pub struct GatewayBuilder {
+    workflow_context_store: Option<Arc<acteon_governance::context::TrustedContextStore>>,
     clock: Arc<dyn acteon_time::Clock>,
     state: Option<Arc<dyn StateStore>>,
     lock: Option<Arc<dyn DistributedLock>>,
@@ -74,9 +75,22 @@ pub struct GatewayBuilder {
 }
 
 impl GatewayBuilder {
+    /// Require verified root provenance for workflows on this gateway. This
+    /// integrity profile is not current permit/effect enforcement. External
+    /// workers still need governed effect adapters. Do not enable against old
+    /// durable work without explicit migration/parking.
+    #[must_use]
+    pub fn workflow_context_store(
+        mut self,
+        store: Arc<acteon_governance::context::TrustedContextStore>,
+    ) -> Self {
+        self.workflow_context_store = Some(store);
+        self
+    }
     /// Create a new builder with all optional fields set to their defaults.
     pub fn new() -> Self {
         Self {
+            workflow_context_store: None,
             clock: Arc::new(acteon_time::SystemClock::default()),
             state: None,
             lock: None,
@@ -867,6 +881,7 @@ impl GatewayBuilder {
         };
 
         Ok(Gateway {
+            workflow_context_store: self.workflow_context_store,
             clock: self.clock,
             state,
             lock,

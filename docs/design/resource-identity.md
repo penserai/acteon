@@ -17,7 +17,7 @@ encoded independently. A colon or Unicode character in an ID cannot shift scope
 boundaries. Parsing rejects unsupported versions and alternate spellings; no
 normalization changes a resource's identity. Hex is encoding, not encryption.
 
-Kinds cover agents, providers, actions, topics, subscriptions, chains, workflows,
+Kinds cover agents, providers, actions, topics, worker queues, subscriptions, chains, workflows,
 external services, models, skills, endpoint bindings, and routes. A reference is
 neither a URL nor a permission. It must be resolved against trusted registry or
 configuration state. In particular, a fallback check uses the actual selected

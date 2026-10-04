@@ -68,6 +68,10 @@ impl WorkerTaskStatus {
 /// A unit of work delivered to external workers via a named queue.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerTask {
+    /// Internal provenance reference, independently verified before delivery.
+    /// Absent on legacy records; worker HTTP DTOs do not expose it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_context: Option<crate::ExecutionContextReference>,
     /// Unique task ID.
     pub task_id: String,
     /// Namespace the task belongs to.
@@ -153,6 +157,7 @@ impl WorkerTask {
         now: DateTime<Utc>,
     ) -> Self {
         Self {
+            execution_context: None,
             task_id: uuid::Uuid::new_v4().to_string(),
             namespace: namespace.into(),
             tenant: tenant.into(),

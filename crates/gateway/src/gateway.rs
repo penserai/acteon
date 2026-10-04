@@ -296,6 +296,7 @@ pub(crate) type PinnedConfigCache = HashMap<(String, String, String, u64), Arc<C
 /// 3. Execute the verdict (allow, deduplicate, suppress, reroute, throttle, etc.).
 /// 4. Release the lock and return the [`ActionOutcome`].
 pub struct Gateway {
+    pub(crate) workflow_context_store: Option<Arc<acteon_governance::context::TrustedContextStore>>,
     pub(crate) clock: Arc<dyn acteon_time::Clock>,
     // Note: manual `Debug` impl below because trait objects lack `Debug`.
     pub(crate) state: Arc<dyn StateStore>,

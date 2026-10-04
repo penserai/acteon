@@ -308,6 +308,7 @@ dependencies = [
  "acteon-core",
  "acteon-crypto",
  "acteon-executor",
+ "acteon-governance",
  "acteon-llm",
  "acteon-provider",
  "acteon-rules",

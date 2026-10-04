@@ -20,6 +20,7 @@ pub mod context;
 pub mod coverage;
 pub mod enrichment;
 pub mod error;
+pub mod execution_context;
 pub mod execution_history;
 pub mod fingerprint;
 pub mod group;
@@ -30,6 +31,8 @@ pub mod provider_health;
 pub mod quota;
 pub mod recurring;
 pub mod resource;
+
+pub use execution_context::{ExecutionContextReference, ExecutionContextReferenceError};
 pub mod retention;
 pub mod silence;
 pub mod state_machine;

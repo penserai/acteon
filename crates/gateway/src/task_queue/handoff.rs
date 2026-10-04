@@ -239,7 +239,7 @@ impl Gateway {
                     Destination::Dlq => self.deliver_worker_dlq(&task).await,
                 }
             };
-            match self.keep_worker_handoff_lease(&task, token, delivery).await {
+            match Box::pin(self.keep_worker_handoff_lease(&task, token, delivery)).await {
                 Ok(()) => {
                     self.update_worker_handoff(&task, token, Some(destination), false)
                         .await?;
