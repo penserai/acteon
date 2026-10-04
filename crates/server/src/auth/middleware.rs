@@ -132,4 +132,7 @@ fn insert_authenticated(req: &mut Request<Body>, caller: AuthenticatedCaller) {
     if let Some(binding) = caller.binding {
         req.extensions_mut().insert(binding);
     }
+    if let Some(scopes) = caller.scopes {
+        req.extensions_mut().insert(scopes);
+    }
 }

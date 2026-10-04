@@ -8,7 +8,7 @@ use acteon_governance::{
 };
 use hmac::{Hmac, Mac};
 use serde_json::{Value, json};
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 
 use super::config::{AuthFileConfig, Grant};
 use super::crypto::{ExposeSecret, SecretString};
@@ -60,6 +60,11 @@ pub struct AuthAuthority {
     issuance: PermitIssuanceCeiling,
 }
 impl AuthAuthority {
+    pub(super) fn control_scope(&self) -> (&str, &str) {
+        let resource = &self.issuance.effects[0].resources[0];
+        (resource.namespace(), resource.tenant())
+    }
+
     pub fn new(
         coordinator: AuthorityCoordinator,
         config: &AuthAuthorityConfig,
@@ -127,7 +132,10 @@ impl AuthAuthority {
 
     /// Fingerprint decrypted security inputs with a separate shared secret. Raw
     /// secrets, password/key hashes and grant contents are never persisted here.
-    fn configuration(&self, config: &AuthFileConfig) -> Result<CredentialConfiguration, String> {
+    pub(super) fn configuration(
+        &self,
+        config: &AuthFileConfig,
+    ) -> Result<CredentialConfiguration, String> {
         let revision = config
             .authority_revision
             .filter(|r| *r > 0)
@@ -192,8 +200,19 @@ impl AuthAuthority {
     pub(super) async fn publish(
         &self,
         config: &AuthFileConfig,
+        scopes: &super::projection::ScopeReferences,
     ) -> Result<CredentialConfigurationReference, String> {
-        let configuration = self.configuration(config)?;
+        let mut configuration = self.configuration(config)?;
+        if !scopes.is_empty() {
+            let manifest: Vec<_> = scopes.iter().collect();
+            let bytes = serde_json::to_vec(&json!({
+                "format": "acteon.auth.scope_manifest.v1",
+                "authentication": configuration.configuration_fingerprint,
+                "scopes": manifest,
+            }))
+            .map_err(|_| "invalid scope publication manifest")?;
+            configuration.configuration_fingerprint = format!("{:x}", Sha256::digest(bytes));
+        }
         let snapshot = self
             .coordinator
             .snapshot()

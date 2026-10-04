@@ -7,11 +7,12 @@ pub mod identity;
 pub mod jwt;
 pub mod middleware;
 pub mod password;
+pub mod projection;
 pub mod role;
 pub mod route_permissions;
 pub mod watcher;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use acteon_state::StateStore;
@@ -42,6 +43,7 @@ struct AuthTables {
     /// SHA-256 hex hash to `ApiKeyEntry` lookup table.
     api_keys: HashMap<String, ApiKeyEntry>,
     authority_reference: Option<acteon_governance::configuration::CredentialConfigurationReference>,
+    scope_references: projection::ScopeReferences,
 }
 
 /// Central auth provider built once at startup from the decrypted `auth.toml`.
@@ -55,6 +57,7 @@ pub struct AuthProvider {
     /// Hot-reloadable auth tables protected by `RwLock`.
     tables: RwLock<AuthTables>,
     authority: Option<Arc<authority::AuthAuthority>>,
+    projectors: Vec<Arc<projection::CredentialPolicyProjector>>,
     jwt_settings: (SecretString, u64),
 }
 
@@ -62,6 +65,7 @@ pub(super) struct AuthenticatedCaller {
     identity: CallerIdentity,
     binding: Option<authority::AuthenticatedConfiguration>,
     credential: Option<enrollment::AuthenticatedCredential>,
+    scopes: Option<projection::AuthenticatedExecutionConfiguration>,
 }
 
 impl AuthProvider {
@@ -79,6 +83,7 @@ impl AuthProvider {
             state_store,
             tables: RwLock::new(tables),
             authority: None,
+            projectors: Vec::new(),
             jwt_settings: (
                 config.settings.jwt_secret.clone(),
                 config.settings.jwt_expiry_seconds,
@@ -94,11 +99,51 @@ impl AuthProvider {
         state_store: Arc<dyn StateStore>,
         authority: Arc<authority::AuthAuthority>,
     ) -> Result<Self, String> {
+        Self::new_with_scope_projection(config, state_store, authority, Vec::new()).await
+    }
+
+    /// Publish every declared scope before the auth-control epoch and retain
+    /// the exact original references with authentication. This constructor
+    /// does not by itself install gateway root/effect enforcement.
+    pub async fn new_with_scope_projection(
+        config: &AuthFileConfig,
+        state_store: Arc<dyn StateStore>,
+        authority: Arc<authority::AuthAuthority>,
+        projectors: Vec<Arc<projection::CredentialPolicyProjector>>,
+    ) -> Result<Self, String> {
         let mut provider = Self::new(config, state_store)?;
-        let reference = authority.publish(config).await?;
+        let scopes: BTreeSet<_> = projectors.iter().map(|p| p.scope()).collect();
+        if scopes.len() != projectors.len() {
+            return Err("execution scope has conflicting projectors".into());
+        }
+        provider.projectors = projectors;
+        let scope_references = provider.publish_scopes(&authority, config).await?;
+        let reference = authority.publish(config, &scope_references).await?;
         provider.tables.get_mut().authority_reference = Some(reference);
+        provider.tables.get_mut().scope_references = scope_references;
         provider.authority = Some(authority);
         Ok(provider)
+    }
+
+    async fn publish_scopes(
+        &self,
+        authority: &authority::AuthAuthority,
+        config: &AuthFileConfig,
+    ) -> Result<projection::ScopeReferences, String> {
+        // Validate all inputs before any publication. Subsequent storage/CAS
+        // failures can leave restrictive partial publication; never roll back.
+        for projector in &self.projectors {
+            projector.project(authority, config)?;
+        }
+        let mut references = BTreeMap::new();
+        for projector in &self.projectors {
+            let reference = projector
+                .publish(authority, config, chrono::Utc::now().timestamp_millis())
+                .await?;
+            let (namespace, tenant) = projector.scope();
+            references.insert((namespace.into(), tenant.into()), reference);
+        }
+        Ok(references)
     }
 
     /// Build the internal lookup tables from configuration.
@@ -142,6 +187,7 @@ impl AuthProvider {
             users,
             api_keys,
             authority_reference: None,
+            scope_references: BTreeMap::new(),
         })
     }
 
@@ -169,7 +215,12 @@ impl AuthProvider {
         // failure, but cannot authenticate once another snapshot is current.
         let mut tables = self.tables.write().await;
         if let Some(authority) = &self.authority {
-            new_tables.authority_reference = Some(authority.publish(config).await?);
+            new_tables.scope_references = self.publish_scopes(authority, config).await?;
+            new_tables.authority_reference = Some(
+                authority
+                    .publish(config, &new_tables.scope_references)
+                    .await?,
+            );
         }
         *tables = new_tables;
 
@@ -248,10 +299,12 @@ impl AuthProvider {
         identity.role = user.role;
         identity.grants.clone_from(&user.grants);
         let binding = self.bind_identity(&tables, &identity).await?;
+        let scopes = Self::bind_scopes(&tables, credential.as_ref(), binding.as_ref())?;
         Ok(AuthenticatedCaller {
             identity,
             binding,
             credential,
+            scopes,
         })
     }
 
@@ -277,11 +330,32 @@ impl AuthProvider {
         let tables = self.tables.read().await;
         let (identity, credential) = authenticate_api_key_bound(raw_key, &tables.api_keys)?;
         let binding = self.bind_identity(&tables, &identity).await.ok()?;
+        let scopes = Self::bind_scopes(&tables, credential.as_ref(), binding.as_ref()).ok()?;
         Some(AuthenticatedCaller {
             identity,
             binding,
             credential,
+            scopes,
         })
+    }
+
+    fn bind_scopes(
+        tables: &AuthTables,
+        credential: Option<&enrollment::AuthenticatedCredential>,
+        source: Option<&authority::AuthenticatedConfiguration>,
+    ) -> Result<Option<projection::AuthenticatedExecutionConfiguration>, String> {
+        if tables.scope_references.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(projection::AuthenticatedExecutionConfiguration::new(
+            credential
+                .cloned()
+                .ok_or("scope authentication lacks enrollment")?,
+            source
+                .cloned()
+                .ok_or("scope authentication lacks source observation")?,
+            tables.scope_references.clone(),
+        )?))
     }
 
     async fn bind_identity(

@@ -53,6 +53,19 @@ pub struct PermitIssuanceCeiling {
     pub limits: RootBudgetLimits,
 }
 
+impl PermitIssuanceCeiling {
+    /// Validate shape and bounds before a host starts publication. This does
+    /// not establish provenance or authorize the issuer; publication checks
+    /// current authority independently at its CAS boundary.
+    pub fn validate(&self) -> Result<(), CoordinationError> {
+        if valid_issuance(self) {
+            Ok(())
+        } else {
+            Err(CoordinationError::Invalid("publication ceiling".into()))
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 #[serde(rename_all = "snake_case")]
 pub enum PermitDenial {

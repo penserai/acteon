@@ -1,4 +1,5 @@
 pub mod batch;
+pub mod catalog;
 pub mod config;
 pub mod dlq;
 pub mod executor;

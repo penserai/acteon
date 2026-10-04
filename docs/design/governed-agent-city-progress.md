@@ -369,3 +369,33 @@ contracts remain explicitly ignored in the default command), workspace Clippy,
 all-target compilation, all five SDK suites, UI lint/build, strict documentation
 and route/catalog checks. PR review, CI and publication evidence follow once
 available. Backend storage is unchanged from the configured-state integration.
+
+
+## Qualified execution-scope publication (host building block in progress)
+
+[Execution-scope publication](execution-scope-credential-publication.md) implements
+an immutable catalog tied to actual selected provider instances. Qualification
+adds a protected binding-version route, so accepted roots cannot silently adopt
+new destinations or failure contracts. Auxiliary action resources do not become
+primary callable routes. A scope projector resolves each enrollment separately,
+uses independent publication ceilings and fixed deadlines, and publishes through
+the configured coordinator/state backend. Omitted credentials retire terminally.
+
+The auth provider publishes all declared scope snapshots before the control
+epoch and local table replacement, binds the canonical scope manifest to that
+epoch, and retains the original scope references in privately constructed
+middleware evidence. Same-version mismatches and stale bindings are rejected.
+Real HTTP contracts cover result recovery, private binding freshness, lost
+acknowledgments and partial two-scope publication followed by identical retry.
+
+Adversarial review also rejects execution projection into the authentication
+control scope before writes and isolates unrelated actors in a shared auth file
+without expanding the scope publisher's independently authorized subjects.
+
+Required local checks pass: 3,448 workspace tests, zero failures, nine backend
+contracts ignored by the default command; workspace Clippy, all-target check,
+UI lint/build, strict docs and catalog/route checks. Final-head CI and merge remain
+pending in PR #420. This host building block has not installed production scope
+configuration/startup, root capture or gateway effect enforcement; configured
+backend projection contracts, public controls/SDKs/UI and workforce lineage
+remain required. It does not close the complete execution or city phases.
