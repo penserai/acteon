@@ -214,6 +214,9 @@ impl CredentialPolicyProjector {
         authority: &AuthAuthority,
         config: &AuthFileConfig,
     ) -> Result<CredentialConfiguration, String> {
+        if authority.control_scope() == self.scope() {
+            return Err("execution projection must not share the auth control scope".into());
+        }
         super::AuthProvider::build_tables(config)?;
         let source = authority.configuration(config)?;
         let definitions = self.catalog.definitions(&self.namespace, &self.tenant);
@@ -243,9 +246,6 @@ impl CredentialPolicyProjector {
             let id = id.ok_or("execution scope projection requires enrolled credentials")?;
             let principal =
                 principal.ok_or("execution scope projection requires stable principals")?;
-            if !self.issuance.subjects.contains(principal) {
-                return Err("credential principal exceeds publication ceiling".into());
-            }
             let role = Role::from_str_loose(role).ok_or("invalid credential role")?;
             let effects = if role.has_permission(Permission::Dispatch) {
                 definitions
@@ -260,6 +260,14 @@ impl CredentialPolicyProjector {
             } else {
                 Vec::new()
             };
+            if !self.issuance.subjects.contains(principal) {
+                if effects.is_empty() {
+                    // A shared auth file can contain actors belonging only to
+                    // other scopes. Do not enroll them under this publisher.
+                    continue;
+                }
+                return Err("credential principal exceeds publication ceiling".into());
+            }
             let credential = CredentialAuthority {
                 ceiling: ExecutionPermit {
                     id: id.into(),

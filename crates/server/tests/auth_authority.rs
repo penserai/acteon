@@ -1007,6 +1007,35 @@ async fn projection_fixture_for(
 }
 
 #[tokio::test]
+async fn projection_isolates_unrelated_scope_actors_without_enlarging_issuance() {
+    let (projector, scope, auth, mut cfg) = projection_fixture().await;
+    let mut unrelated = configuration(1).api_keys.remove(0);
+    unrelated.authority_id = Some("credential/other-team".into());
+    unrelated.name = "other-team".into();
+    unrelated.key_hash = SecretString::new(hash_api_key("other-team-key").into());
+    unrelated.principal =
+        Some(PrincipalIdentity::new("other-team-agent", PrincipalKind::Agent).unwrap());
+    unrelated.grants[0].namespaces = vec!["secondary".into()];
+    cfg.api_keys.push(unrelated);
+
+    let projected = projector.project(&auth, &cfg).unwrap();
+    assert_eq!(projected.credentials.len(), 1);
+    projector.publish(&auth, &cfg, 1).await.unwrap();
+    let before = serde_json::to_value(scope.snapshot().await.unwrap()).unwrap();
+    assert!(before["credentials"].get("credential/other-team").is_none());
+
+    // A matching grant cannot turn the auth file into an issuance whitelist.
+    cfg.authority_revision = Some(2);
+    cfg.api_keys[1].grants[0].namespaces = vec!["prod".into()];
+    assert!(projector.project(&auth, &cfg).is_err());
+    assert!(projector.publish(&auth, &cfg, 2).await.is_err());
+    assert_eq!(
+        serde_json::to_value(scope.snapshot().await.unwrap()).unwrap(),
+        before
+    );
+}
+
+#[tokio::test]
 async fn qualified_projection_keeps_credentials_separate_and_retires_omissions() {
     let (projector, scope, auth, mut cfg) = projection_fixture().await;
     let mut read_only = configuration(1).api_keys.remove(0);
@@ -1315,4 +1344,76 @@ async fn partial_multi_scope_publication_is_restrictive_and_identical_retry_conv
         json!({"first":true,"second":true})
     );
     task.abort();
+}
+
+#[tokio::test]
+async fn projection_cannot_poison_its_authentication_control_scope() {
+    use acteon_core::{ResourceKind, ResourceRef};
+    use acteon_executor::{catalog::QualifiedProviderCatalog, governed::BoundProvider};
+    use acteon_governance::{RootBudgetLimits, permit::PermitIssuanceCeiling};
+    use acteon_server::auth::projection::CredentialPolicyProjector;
+    let state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let control = coordinator(state.clone()).await;
+    let authority = authority(control.clone());
+    let mut cfg = configuration(1);
+    cfg.api_keys[0].authority_id = Some("credential/diagnostics".into());
+    let existing = AuthProvider::new_with_authority(&cfg, state.clone(), authority.clone())
+        .await
+        .unwrap();
+    let before = serde_json::to_value(control.snapshot().await.unwrap()).unwrap();
+    let target: Arc<dyn acteon_provider::DynProvider> =
+        Arc::new(acteon_provider::LogProvider::new("read"));
+    let bound = BoundProvider::new_trusted(
+        target,
+        &ResourceRef::new(
+            ResourceKind::Endpoint,
+            "auth-control",
+            "deployment",
+            "wrong-place",
+        )
+        .unwrap(),
+        "execute",
+        "opaque-v1",
+        vec![],
+    )
+    .unwrap();
+    let catalog = QualifiedProviderCatalog::new_trusted(vec![bound]).unwrap();
+    let effects = catalog
+        .definitions("auth-control", "deployment")
+        .into_iter()
+        .map(|d| d.effect)
+        .collect();
+    let limits = RootBudgetLimits {
+        max_units: 5,
+        max_concurrent: 2,
+        deadline_ms: 4_102_444_800_000,
+    };
+    let issuance = PermitIssuanceCeiling {
+        issuer: PrincipalIdentity::new("scope-publisher", PrincipalKind::System).unwrap(),
+        subjects: vec![cfg.api_keys[0].principal.clone().unwrap()],
+        effects,
+        valid_from_ms: 0,
+        limits: limits.clone(),
+    };
+    let projector = Arc::new(
+        CredentialPolicyProjector::new_trusted(control.clone(), catalog, issuance, 0, limits)
+            .await
+            .unwrap(),
+    );
+    assert!(projector.publish(&authority, &cfg, 1).await.is_err());
+    assert!(
+        AuthProvider::new_with_scope_projection(&cfg, state, authority, vec![projector])
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        serde_json::to_value(control.snapshot().await.unwrap()).unwrap(),
+        before
+    );
+    assert!(
+        existing
+            .authenticate_api_key("key-original")
+            .await
+            .is_some()
+    );
 }

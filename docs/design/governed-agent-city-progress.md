@@ -388,10 +388,14 @@ middleware evidence. Same-version mismatches and stale bindings are rejected.
 Real HTTP contracts cover result recovery, private binding freshness, lost
 acknowledgments and partial two-scope publication followed by identical retry.
 
-Required local checks pass: 3,446 workspace tests, zero failures, nine backend
+Adversarial review also rejects execution projection into the authentication
+control scope before writes and isolates unrelated actors in a shared auth file
+without expanding the scope publisher's independently authorized subjects.
+
+Required local checks pass: 3,448 workspace tests, zero failures, nine backend
 contracts ignored by the default command; workspace Clippy, all-target check,
-UI lint/build, strict docs and catalog/route checks. PR review and CI remain
-pending. This host building block has not installed production scope
+UI lint/build, strict docs and catalog/route checks. Final-head CI and merge remain
+pending in PR #420. This host building block has not installed production scope
 configuration/startup, root capture or gateway effect enforcement; configured
 backend projection contracts, public controls/SDKs/UI and workforce lineage
 remain required. It does not close the complete execution or city phases.

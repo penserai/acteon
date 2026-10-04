@@ -60,6 +60,11 @@ pub struct AuthAuthority {
     issuance: PermitIssuanceCeiling,
 }
 impl AuthAuthority {
+    pub(super) fn control_scope(&self) -> (&str, &str) {
+        let resource = &self.issuance.effects[0].resources[0];
+        (resource.namespace(), resource.tenant())
+    }
+
     pub fn new(
         coordinator: AuthorityCoordinator,
         config: &AuthAuthorityConfig,

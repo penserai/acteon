@@ -32,6 +32,11 @@ to keyed fingerprints, never plaintext state or inspection responses.
 
 Resolve each enrollment's own grants against that catalog. Preserve every grant
 dimension and dispatch-role restrictions. Never union policies for one actor.
+Actors outside a scope's independent issuance ceiling are omitted when their
+grants resolve to no executable effects there. If their grants do resolve to an
+effect, publication fails rather than expanding that ceiling. Managed actors
+with no executable effects retain disabled records. Historical retirement still
+requires independent authorization over the previous records.
 Dynamic destinations, internal retries and auxiliary effects require specific
 resolvers; an enabled scope must reject unqualified paths. Initial static
 adapters are a delivery step, not the completion criterion for all execution.
@@ -44,6 +49,8 @@ For each scope, derive one complete credential configuration snapshot from the
 same validated inputs, with terminal lifecycle enforced by its coordinator.
 
 Publish target-scope snapshots before acknowledging the new auth-control epoch.
+Execution projectors must reject the authentication control scope before writing
+any state; the control scope remains dedicated to authentication epochs.
 Only replace local authentication tables after every required target snapshot
 and the auth-control epoch have been published. The control epoch fingerprint
 binds the complete, canonically ordered scope-reference manifest, so replicas
