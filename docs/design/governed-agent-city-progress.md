@@ -69,3 +69,21 @@ identity, checked effect coverage, retention/emergency admission-stop design,
 backend failover assumptions, and operational bounds. Context propagation and
 per-retry enforcement remain Phase 1/2 integration gates. Neither a substrate
 unit test nor a Redis test certifies the full city vision.
+
+
+## Canonical resource identity slice (in progress)
+
+`ResourceRef` supplies exact validated kind/scope/ID identity and a versioned,
+strict canonical encoding. Coordinator attempts and restrictions now store typed
+references and reject foreign scope; format-1 prototype rows are not silently
+migrated. See [resource identity ADR](resource-identity.md).
+
+Targeted core/governance tests, the independent Redis contract, core OpenAPI
+compilation, full workspace lint/tests/all-target checks, UI lint/build, and
+strict documentation build pass locally. Current-head CI/release evidence remains pending. Actual
+resource resolution and per-effect enforcement are not implemented by this type.
+
+The executor slice merged as PR #406 at `e9fc89f6`; its publication verification
+is tracked separately from implementation. Coordinator PR #407 merged at `854643c5` after all current-head checks passed.
+Its integration-job log confirms the independent Redis contract executed and
+passed rather than being left ignored.

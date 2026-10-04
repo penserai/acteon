@@ -39,9 +39,10 @@ creates a new incarnation and requires fresh authority evaluation.
 Every eligibility-changing principal, grant, or permit update must eventually
 participate in this coordinator protocol. A permit stored independently and
 revoked without changing this authority state cannot establish strict revocation.
-The current exact-string restrictions are internal prototype inputs; canonical
-resource references and complete authority evaluation remain required integration
-work.
+Resource restrictions use validated exact `ResourceRef` identities and must
+match the coordinator namespace and tenant. Complete authority evaluation and
+authenticated management remain required integration work. These internal
+restriction toggles do not yet represent overlapping public closure lifecycles.
 
 Independent adapters cannot safely share an attempt ID unless subject, resource,
 and semantic request digest agree. The adapter must compute the digest and must
@@ -73,3 +74,14 @@ ACTEON_GOVERNANCE_REDIS_URL=redis://127.0.0.1:6379 \
 The Redis contract uses a unique prefix and deletes only its own coordinator key.
 It exercises independent client connections, both race orderings, response loss,
 replay, revocation, and durable pending control events.
+
+
+## Resource format compatibility
+
+Coordinator format 2 stores typed resource references. Format 1 string-resource
+records are refused; names are not sufficient to infer a resource kind safely.
+No automatic deletion/recreation or permissive migration is performed. The earlier
+substrate is not wired into live gateway effects, but any standalone adopter must
+stop admission and explicitly review/migrate retained records before upgrade.
+Unknown/uncertain attempts retain their reconciliation obligations. Rolling back
+to a format-1 reader also fails closed on format-2 state.

@@ -1,3 +1,4 @@
+use acteon_core::{ResourceKind, ResourceRef};
 use std::sync::Arc;
 
 use acteon_governance::{
@@ -7,6 +8,10 @@ use acteon_governance::{
 use acteon_state::testing::faults::{FaultStore, FaultTiming, WriteOperation};
 use acteon_state::{KeyKind, StateKey, StateStore};
 use acteon_state_memory::MemoryStateStore;
+
+fn resource(id: &str) -> ResourceRef {
+    ResourceRef::new(ResourceKind::Provider, "city", "tenant", id).unwrap()
+}
 
 // Deliberately pin the epoch to exercise stale evaluation, while using this
 // test domain's incarnation. The ABA test below pins the full old stamp.
@@ -20,7 +25,7 @@ async fn start(
 ) -> Result<StartRegistration, CoordinationError> {
     let mut stamp = c.snapshot().await?.stamp();
     stamp.generation = generation;
-    c.register_start(id, subject, resource, digest, &stamp)
+    c.register_start(id, subject, &crate::resource(resource), digest, &stamp)
         .await
 }
 
@@ -58,7 +63,7 @@ async fn contract(store: Arc<dyn StateStore>, peer_store: Arc<dyn StateStore>) {
     b.change(
         "close",
         AuthorityChange::CloseResource {
-            resource: "building".into(),
+            resource: resource("building"),
         },
         "human",
         "maintenance",
@@ -93,7 +98,7 @@ async fn contract(store: Arc<dyn StateStore>, peer_store: Arc<dyn StateStore>) {
     b.change(
         "reopen",
         AuthorityChange::ReopenResource {
-            resource: "building".into(),
+            resource: resource("building"),
         },
         "human",
         "maintenance complete",
@@ -129,7 +134,7 @@ async fn contract(store: Arc<dyn StateStore>, peer_store: Arc<dyn StateStore>) {
     a.change(
         "close",
         AuthorityChange::CloseResource {
-            resource: "building".into(),
+            resource: resource("building"),
         },
         "human",
         "maintenance",
@@ -141,7 +146,7 @@ async fn contract(store: Arc<dyn StateStore>, peer_store: Arc<dyn StateStore>) {
             .await
             .unwrap()
             .closed_resources
-            .contains("building")
+            .contains(&resource("building"))
     );
 }
 
@@ -176,7 +181,7 @@ async fn close_wins_while_start_is_paused_before_registration_cas_contract(
     b.change(
         "close",
         AuthorityChange::CloseResource {
-            resource: "building".into(),
+            resource: resource("building"),
         },
         "human",
         "maintenance",
@@ -216,7 +221,7 @@ async fn start_wins_even_if_registration_ack_follows_close_contract(
     b.change(
         "close",
         AuthorityChange::CloseResource {
-            resource: "building".into(),
+            resource: resource("building"),
         },
         "human",
         "maintenance",
@@ -278,7 +283,7 @@ async fn response_loss_keeps_restriction_and_pending_outbox_and_never_restarts_e
         a.change(
             "lost-close",
             AuthorityChange::CloseResource {
-                resource: "building".into()
+                resource: resource("building")
             },
             "human",
             "maintenance"
@@ -287,7 +292,7 @@ async fn response_loss_keeps_restriction_and_pending_outbox_and_never_restarts_e
         .is_err()
     );
     let snapshot = b.snapshot().await.unwrap();
-    assert!(snapshot.closed_resources.contains("building"));
+    assert!(snapshot.closed_resources.contains(&resource("building")));
     assert!(snapshot.changes["lost-close"].pending);
     assert!(matches!(
         start(
@@ -343,7 +348,7 @@ async fn concurrent_starts_do_not_exceed_capacity_and_uncertainty_retains_it() {
     a.change(
         "close",
         AuthorityChange::CloseResource {
-            resource: "building".into(),
+            resource: resource("building"),
         },
         "human",
         "capacity is not permission",
@@ -459,15 +464,15 @@ async fn old_incarnation_cannot_register_or_observe_a_recreated_attempt() {
     assert_ne!(stamp.incarnation, new_stamp.incarnation);
     assert_eq!(stamp.generation, new_stamp.generation);
     assert!(matches!(
-        new.register_start("same", "agent", "building", "digest", &stamp)
+        new.register_start("same", "agent", &resource("building"), "digest", &stamp)
             .await,
         Err(CoordinationError::StaleAuthority)
     ));
-    new.register_start("same", "agent", "building", "digest", &new_stamp)
+    new.register_start("same", "agent", &resource("building"), "digest", &new_stamp)
         .await
         .unwrap();
     assert!(matches!(
-        old.register_start("same", "agent", "building", "digest", &stamp)
+        old.register_start("same", "agent", &resource("building"), "digest", &stamp)
             .await,
         Err(CoordinationError::StaleAuthority)
     ));
@@ -507,7 +512,7 @@ async fn settled_history_cannot_consume_reserved_control_records() {
     c.change(
         "emergency",
         AuthorityChange::CloseResource {
-            resource: "building".into(),
+            resource: resource("building"),
         },
         "operator",
         "stop",
@@ -519,6 +524,115 @@ async fn settled_history_cannot_consume_reserved_control_records() {
             .await
             .unwrap()
             .closed_resources
-            .contains("building")
+            .contains(&resource("building"))
+    );
+}
+
+#[tokio::test]
+async fn exact_resource_kind_and_scope_are_enforced() {
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let (c, peer) = pair(store.clone(), store).await;
+    let stamp = c.snapshot().await.unwrap().stamp();
+    for foreign in [
+        ResourceRef::new(ResourceKind::Provider, "other", "tenant", "building").unwrap(),
+        ResourceRef::new(ResourceKind::Provider, "city", "tenant.prod", "building").unwrap(),
+    ] {
+        assert!(matches!(
+            c.register_start("foreign", "agent", &foreign, "digest", &stamp)
+                .await,
+            Err(CoordinationError::Invalid(_))
+        ));
+        assert!(matches!(
+            c.change(
+                "foreign-close",
+                AuthorityChange::CloseResource { resource: foreign },
+                "operator",
+                "stop"
+            )
+            .await,
+            Err(CoordinationError::Invalid(_))
+        ));
+    }
+    peer.change(
+        "close-provider",
+        AuthorityChange::CloseResource {
+            resource: resource("building"),
+        },
+        "operator",
+        "stop",
+    )
+    .await
+    .unwrap();
+    let stamp = c.snapshot().await.unwrap().stamp();
+    assert!(matches!(
+        c.register_start("provider", "agent", &resource("building"), "digest", &stamp)
+            .await,
+        Err(CoordinationError::Restricted)
+    ));
+    let agent = ResourceRef::new(ResourceKind::Agent, "city", "tenant", "building").unwrap();
+    assert!(matches!(
+        c.register_start("agent", "agent", &agent, "digest", &stamp)
+            .await
+            .unwrap(),
+        StartRegistration::New(_)
+    ));
+    // Resource IDs are opaque and bounded by bytes, not by their hex spelling.
+    let long_id =
+        ResourceRef::new(ResourceKind::Provider, "city", "tenant", "a".repeat(1024)).unwrap();
+    assert!(matches!(
+        c.register_start("long", "agent", &long_id, "digest", &stamp)
+            .await
+            .unwrap(),
+        StartRegistration::New(_)
+    ));
+}
+
+#[tokio::test]
+async fn old_string_resource_format_is_not_silently_migrated() {
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let (c, _) = pair(store.clone(), store.clone()).await;
+    let key = StateKey::new(
+        "city",
+        "tenant",
+        KeyKind::Custom(COORDINATOR_KIND.into()),
+        "authority",
+    );
+    let mut value = serde_json::to_value(c.snapshot().await.unwrap()).unwrap();
+    value["schema_version"] = 1.into();
+    store.set(&key, &value.to_string(), None).await.unwrap();
+    assert!(
+        AuthorityCoordinator::connect(store, "city", "tenant")
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn retained_control_events_cannot_cross_scope_on_restart() {
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let (c, _) = pair(store.clone(), store.clone()).await;
+    c.change(
+        "event",
+        AuthorityChange::CloseResource {
+            resource: resource("building"),
+        },
+        "operator",
+        "stop",
+    )
+    .await
+    .unwrap();
+    let key = StateKey::new(
+        "city",
+        "tenant",
+        KeyKind::Custom(COORDINATOR_KIND.into()),
+        "authority",
+    );
+    let mut value = serde_json::to_value(c.snapshot().await.unwrap()).unwrap();
+    value["changes"]["event"]["change"]["resource"]["tenant"] = "foreign".into();
+    store.set(&key, &value.to_string(), None).await.unwrap();
+    assert!(
+        AuthorityCoordinator::connect(store, "city", "tenant")
+            .await
+            .is_err()
     );
 }

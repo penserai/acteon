@@ -28,6 +28,7 @@ pub mod outcome;
 pub mod provider_health;
 pub mod quota;
 pub mod recurring;
+pub mod resource;
 pub mod retention;
 pub mod silence;
 pub mod state_machine;
@@ -121,6 +122,9 @@ pub use recurring::{
     CronValidationError, DEFAULT_MIN_INTERVAL_SECONDS, OverlapPolicy, RecurringAction,
     RecurringActionTemplate, next_occurrence, occurrences_between, validate_cron_expr,
     validate_min_interval, validate_timezone,
+};
+pub use resource::{
+    MAX_RESOURCE_ID_BYTES, MAX_RESOURCE_SCOPE_BYTES, ResourceKind, ResourceRef, ResourceRefError,
 };
 pub use retention::RetentionPolicy;
 pub use silence::{MatchOp, Silence, SilenceMatcher};
