@@ -812,6 +812,19 @@ mod tests {
         format!("http://{addr}")
     }
 
+    // The worker detaches delivery tasks, so joining its receive loop does
+    // not prove delivery completed. Wait for settlement before test teardown.
+    async fn wait_for_deliveries(metrics: &PushDeliveryMetrics, expected: u64) {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while metrics.snapshot().deliveries_succeeded < expected {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("push deliveries did not settle before the deadline");
+        assert_eq!(metrics.snapshot().deliveries_succeeded, expected);
+    }
+
     #[test]
     fn backoff_doubles_then_caps() {
         assert_eq!(backoff(0), Duration::from_secs(1));
@@ -909,10 +922,12 @@ mod tests {
         let cfg = TaskPushNotificationConfig::new("cfg-1", "task-1", "agents", "demo", &url);
         save_config(&store, &cfg).await;
         let (tx, rx) = broadcast::channel::<StreamEvent>(8);
-        let worker = PushDeliveryWorker::new(store, http, rx).with_ssrf_enforcement(false);
+        let metrics = Arc::new(PushDeliveryMetrics::default());
+        let worker = PushDeliveryWorker::with_metrics(store, http, rx, Arc::clone(&metrics))
+            .with_ssrf_enforcement(false);
         let handle = tokio::spawn(worker.run());
         tx.send(mk_event("task-1")).unwrap();
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        wait_for_deliveries(&metrics, 1).await;
         drop(tx);
         let _ = handle.await;
         assert_eq!(hits.load(Ordering::Relaxed), 1, "expected one POST");
@@ -993,10 +1008,12 @@ mod tests {
             save_config(&store, &cfg).await;
         }
         let (tx, rx) = broadcast::channel::<StreamEvent>(8);
-        let worker = PushDeliveryWorker::new(store, http, rx).with_ssrf_enforcement(false);
+        let metrics = Arc::new(PushDeliveryMetrics::default());
+        let worker = PushDeliveryWorker::with_metrics(store, http, rx, Arc::clone(&metrics))
+            .with_ssrf_enforcement(false);
         let handle = tokio::spawn(worker.run());
         tx.send(mk_event("task-1")).unwrap();
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        wait_for_deliveries(&metrics, 3).await;
         drop(tx);
         let _ = handle.await;
         assert_eq!(
