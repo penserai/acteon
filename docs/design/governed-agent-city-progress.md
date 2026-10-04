@@ -222,7 +222,7 @@ lint/build, strict public docs build and changed design links. PR #413 merged at
 `fb5f590d` after adversarial review and all current-head CI checks passed.
 Run `37184900637`'s stable test job executed the nine attempt-gate contracts.
 
-## Current execution permits (in progress)
+## Current execution permits (merged internal library slice)
 
 Exact root-profile permit revisions and terminal revocation now share the
 coordinator's CAS/generation and pending control history with effect starts.
@@ -243,4 +243,24 @@ and public API/SDK/UI remain open. This does not complete Phase 2.
 
 Local evidence: required workspace checks pass with 3,389 tests. UI lint/build,
 strict public docs build, changed links and all four explicitly executed Redis
-governance contracts pass. PR review, CI and merge evidence remain pending.
+governance contracts pass. PR #414 merged at `1f2737d6` after adversarial review and successful current-head
+CI run `37187992748`.
+
+## Durable provider execution (in progress)
+
+The [durable provider adapter](durable-provider-governance.md) now connects root
+permits, trusted contexts and atomic attempt reservations to the executor. Stable
+root/ordinal IDs prevent competing workers from sending the same attempt.
+Immutable result evidence is retained before format-5 settlement; recovery can
+repair accounting and return the saved result without a second provider call.
+Unknown outcomes retain capacity. Backoff survives restart and fresh authority
+checks block revoked retries. Historical inspection does not authorize new effects.
+
+Fourteen focused contracts pass, including a real loopback HTTP invocation; the
+independent-client Redis contract passes separately with zero ignored. Required
+workspace checks pass with 3,403 tests, UI lint/build, strict public documentation
+build and changed design links. Local adversarial review tightened the retained
+start digest binding and verifies valid altered results against evidence pins.
+PR and current-head CI evidence remain pending. This does not complete Phase 2:
+server/gateway coverage, lifecycle publication, workforce mandates, delegated
+lineage, public APIs/SDKs/UI and reconciliation remain open.

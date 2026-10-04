@@ -20,6 +20,38 @@ The city describes the shared environment. The workforce describes the people
 and organizations operating within it. Both use the same roads, services,
 permits, traffic control and closures.
 
+## How a workforce is organized
+
+The primary organizational unit is a team. A team brings together human members,
+their assigned personal agents, team-owned agents and service integrations.
+Humans can belong to several teams, and teams can collaborate on work. Each job
+still selects an explicit represented party and authority lineage.
+
+For example, a Reliability workforce can include Maya, her personal assistant,
+a shared incident investigator and a deterministic telemetry service. Maya's
+assistant helps her prepare and request work. The investigator represents
+Reliability when performing its mandated diagnostic service. The telemetry
+service performs defined operations under its own identity and permits. Their
+different degrees of autonomy do not change the execution boundary.
+
+| Workforce relationship | Example | What Acteon records |
+|---|---|---|
+| Human belongs to a team | Maya joins Reliability | Membership and scoped team role |
+| Human owns a personal agent | Maya maintains her assistant | Owner and separate agent principal |
+| Agent is assigned to team work | Maya's assistant helps with an incident | Assignment and its validity |
+| Agent represents a team | Investigator diagnoses for Reliability | Team mandate and acting agent |
+| Teams collaborate | Reliability requests a Release operation | Explicit invocation and delegation edge |
+| Human operates directly | Maya approves or executes a permitted step | Human actor and applicable team authority |
+
+Teams may later be grouped into departments or nested teams. The first version
+uses direct membership and explicit collaboration between teams; organizational
+hierarchy must not introduce implicit permission inheritance.
+
+In the city metaphor, teams are organizations operating in the city, personal
+agents are individual assistants, and team agents are authorized representatives.
+Acteon supplies the shared infrastructure and enforces the operating rules.
+Teams choose their workforce, duties and collaborators within those rules.
+
 ## Domain model
 
 ```mermaid

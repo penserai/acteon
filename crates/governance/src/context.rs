@@ -225,6 +225,29 @@ fn valid_digest(value: &str) -> bool {
 }
 
 impl TrustedContextStore {
+    /// Verify historical provenance for inspection/reconciliation, including
+    /// after expiry. It never establishes current effect authority. Every fresh
+    /// permitted attempt still checks deadline and coordinator incarnation.
+    pub async fn recover_reference_for_observation(
+        &self,
+        reference: &acteon_core::ExecutionContextReference,
+    ) -> Result<VerifiedExecutionContext, ContextError> {
+        if reference.namespace() != self.coordinator.key.namespace.as_str()
+            || reference.tenant() != self.coordinator.key.tenant.as_str()
+        {
+            return Err(ContextError::Verification);
+        }
+        self.recover_inner(
+            &ExecutionContextHandle(reference.context_id()),
+            &ContextBinding {
+                execution_id: reference.execution_id(),
+                principal: reference.principal().clone(),
+                request_digest: reference.request_digest().into(),
+            },
+            None,
+        )
+        .await
+    }
     /// Capture a root under current exact permits and create its immutable budget.
     /// Context publication and budget allocation are separate recoverable writes:
     /// an interruption may leave an inert context, never an authorized effect.
@@ -441,12 +464,21 @@ impl TrustedContextStore {
         binding: &ContextBinding,
         now_ms: i64,
     ) -> Result<VerifiedExecutionContext, ContextError> {
+        self.recover_inner(handle, binding, Some(now_ms)).await
+    }
+
+    async fn recover_inner(
+        &self,
+        handle: &ExecutionContextHandle,
+        binding: &ContextBinding,
+        now_ms: Option<i64>,
+    ) -> Result<VerifiedExecutionContext, ContextError> {
         let encoded = self
             .store
             .get(&self.key(handle))
             .await?
             .ok_or(ContextError::Missing)?;
-        if encoded.len() > MAX_BYTES || now_ms < 0 {
+        if encoded.len() > MAX_BYTES || now_ms.is_some_and(|now| now < 0) {
             return Err(ContextError::Verification);
         }
         let sealed: SealedRecord =
@@ -470,16 +502,18 @@ impl TrustedContextStore {
             || record.execution_id != binding.execution_id
             || record.principal != binding.principal
             || record.request_digest != binding.request_digest
-            || now_ms < record.admitted_at_ms
+            || now_ms.is_some_and(|now| now < record.admitted_at_ms)
         {
             return Err(ContextError::Verification);
         }
-        if now_ms >= record.deadline_ms {
-            return Err(ContextError::Expired);
-        }
-        let current = self.coordinator.snapshot().await?.stamp();
-        if current.incarnation != record.authority.incarnation {
-            return Err(ContextError::Incarnation);
+        if let Some(now) = now_ms {
+            if now >= record.deadline_ms {
+                return Err(ContextError::Expired);
+            }
+            let current = self.coordinator.snapshot().await?.stamp();
+            if current.incarnation != record.authority.incarnation {
+                return Err(ContextError::Incarnation);
+            }
         }
         Ok(VerifiedExecutionContext(record))
     }

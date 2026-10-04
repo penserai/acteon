@@ -2,7 +2,7 @@
 //! Publication is a privileged host boundary; this is not credential authentication.
 use std::collections::{BTreeMap, BTreeSet};
 
-use acteon_core::PrincipalIdentity;
+use acteon_core::{ExecutionContextReference, PrincipalIdentity};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -132,6 +132,26 @@ pub fn permit_revision_tag(references: &[PermitReference]) -> Result<String, Coo
     let raw = serde_json::to_vec(&sorted)
         .map_err(|_| CoordinationError::Invalid("permit references".into()))?;
     Ok(format!("permits-v1:{:x}", Sha256::digest(raw)))
+}
+
+/// Canonical retained-start binding for a permitted effect. This fingerprint
+/// supports observation; it does not establish authority or authorize a send.
+pub fn permitted_attempt_digest(
+    reference: &ExecutionContextReference,
+    effect: &AcceptedEffect,
+    units: u64,
+    permits: &[PermitReference],
+) -> Result<String, CoordinationError> {
+    let mut canonical_effect = effect.clone();
+    canonical_effect.resources.sort();
+    let raw = serde_json::to_vec(&(
+        reference,
+        canonical_effect,
+        units,
+        permit_revision_tag(permits)?,
+    ))
+    .map_err(|_| CoordinationError::Invalid("effect digest".into()))?;
+    Ok(format!("{:x}", Sha256::digest(raw)))
 }
 
 impl AuthorityCoordinator {
@@ -335,16 +355,8 @@ impl AuthorityCoordinator {
             return Err(CoordinationError::StaleAuthority);
         }
         let root_id = request.context.execution_id().to_string();
-        let mut canonical_effect = request.effect.clone();
-        canonical_effect.resources.sort();
-        let raw = serde_json::to_vec(&(
-            reference,
-            canonical_effect,
-            request.units,
-            permit_revision_tag(request.permits)?,
-        ))
-        .map_err(|_| CoordinationError::Invalid("effect digest".into()))?;
-        let digest = format!("{:x}", Sha256::digest(raw));
+        let digest =
+            permitted_attempt_digest(&reference, request.effect, request.units, request.permits)?;
         self.register_attempt_checked(
             AttemptRequest {
                 id: request.id,

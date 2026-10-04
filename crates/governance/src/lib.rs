@@ -15,7 +15,7 @@ pub mod context;
 pub mod permit;
 pub use budget::{RootBudget, RootBudgetLimits, RootReservation};
 
-const FORMAT: u32 = 4;
+const FORMAT: u32 = 5;
 const MAX_ATTEMPT_RESOURCES: usize = 16;
 const RETRIES: usize = 32;
 const CONTROL_RECORD_RESERVE: usize = 16;
@@ -85,6 +85,25 @@ pub struct StartRecord {
     pub authority: AuthorityStamp,
     pub token: String,
     pub status: AttemptStatus,
+    /// Digest-pinned retained evidence. It is not permission to send again.
+    pub evidence: Option<AttemptEvidenceReference>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttemptEvidenceReference {
+    /// Scoped by this coordinator; resolved through a qualified effect adapter.
+    pub id: String,
+    pub digest: String,
+}
+
+fn valid_evidence(evidence: &AttemptEvidenceReference) -> bool {
+    valid_text(&evidence.id)
+        && evidence.digest.len() == 64
+        && evidence
+            .digest
+            .bytes()
+            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
 }
 
 /// Durable control event/outbox, persisted atomically with its restriction.
@@ -230,6 +249,7 @@ impl AuthorityCoordinator {
                 || start.authority.incarnation != state.incarnation
                 || start.authority.generation == 0
                 || start.authority.generation > state.generation
+                || start.evidence.as_ref().is_some_and(|e| !valid_evidence(e))
             {
                 return false;
             }
@@ -532,6 +552,7 @@ impl AuthorityCoordinator {
                 authority: state.stamp(),
                 token: token.clone(),
                 status: AttemptStatus::InFlight,
+                evidence: None,
             };
             state.starts.insert(id.into(), record.clone());
             // Effect admissions cannot consume the reserved control-plane space.
@@ -642,6 +663,31 @@ impl AuthorityCoordinator {
         token: &str,
         status: AttemptStatus,
     ) -> Result<(), CoordinationError> {
+        self.settle_inner(id, token, status, None).await
+    }
+
+    /// Trusted adapter persists evidence first, then pins its immutable reference
+    /// and settles accounting through one CAS. Lost acknowledgment is observation.
+    pub async fn settle_with_evidence(
+        &self,
+        id: &str,
+        token: &str,
+        status: AttemptStatus,
+        evidence: AttemptEvidenceReference,
+    ) -> Result<(), CoordinationError> {
+        if !valid_evidence(&evidence) {
+            return Err(CoordinationError::Invalid("attempt evidence".into()));
+        }
+        self.settle_inner(id, token, status, Some(evidence)).await
+    }
+
+    async fn settle_inner(
+        &self,
+        id: &str,
+        token: &str,
+        status: AttemptStatus,
+        evidence: Option<AttemptEvidenceReference>,
+    ) -> Result<(), CoordinationError> {
         if status == AttemptStatus::InFlight {
             return Err(CoordinationError::Invalid(
                 "settlement cannot restart an effect".into(),
@@ -656,14 +702,27 @@ impl AuthorityCoordinator {
             if record.token != token {
                 return Err(CoordinationError::Conflict);
             }
-            if record.status == status {
-                return Ok(());
-            }
-            if record.status == AttemptStatus::Settled {
+            if let Some(proposed) = &evidence
+                && record
+                    .evidence
+                    .as_ref()
+                    .is_some_and(|prior| prior != proposed)
+            {
                 return Err(CoordinationError::Conflict);
             }
+            if record.status == status && (evidence.is_none() || record.evidence == evidence) {
+                return Ok(());
+            }
+            if record.status == AttemptStatus::Settled && status != AttemptStatus::Settled {
+                return Err(CoordinationError::Conflict);
+            }
+            let was_settled = record.status == AttemptStatus::Settled;
             record.status = status;
-            if status == AttemptStatus::Settled
+            if evidence.is_some() {
+                record.evidence = evidence.clone();
+            }
+            if !was_settled
+                && status == AttemptStatus::Settled
                 && let Some(reservation) = &record.reservation
             {
                 let root = state

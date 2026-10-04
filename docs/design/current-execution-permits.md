@@ -1,7 +1,8 @@
 # Current execution permits and atomic admission
 
-**Status:** internal root-profile policy on the working branch. Production gate
-adapters, server provisioning and public management surfaces remain open.
+**Status:** internal root-profile policy merged in PR #414. The durable provider
+adapter is the next library slice; server provisioning and public management
+surfaces remain open.
 
 ## Decision
 
@@ -101,3 +102,8 @@ interrupted root creation and refreshed deadlines after CAS contention. Controll
 barriers prove revocation-before-start, start-before-revocation and narrowed-limit
 competition. The same three race orderings run through independent Redis clients;
 CI explicitly executes this contract.
+
+The subsequent [durable provider adapter](durable-provider-governance.md) uses
+coordinator format 5, adding immutable attempt evidence references. Format 4
+above describes this permit slice historically; old readers/writers cannot be
+mixed with the newer adapter without a reviewed migration.
