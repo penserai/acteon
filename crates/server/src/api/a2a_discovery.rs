@@ -241,7 +241,7 @@ pub async fn get_agent_card(
     axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path((namespace, tenant, agent_id)): Path<(String, String, String)>,
 ) -> Response {
-    if let Some(resp) = authorize_card_op(&identity, &namespace, &tenant, Permission::AuditRead) {
+    if let Some(resp) = authorize_card_op(&identity, &namespace, &tenant, Permission::Dispatch) {
         return resp;
     }
     let store: Arc<dyn StateStore> = {

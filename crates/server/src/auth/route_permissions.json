@@ -15,7 +15,7 @@
     "name": "a2a_a2a_rest_task_get",
     "method": "GET",
     "path": "/a2a/{namespace}/{tenant}/v1/tasks/{id}",
-    "permission": "AuditRead"
+    "permission": "Dispatch"
   },
   {
     "name": "a2a_a2a_rpc",
@@ -27,7 +27,7 @@
     "name": "a2a_a2a_task_events",
     "method": "GET",
     "path": "/a2a/{namespace}/{tenant}/v1/tasks/{id}/events",
-    "permission": "AuditRead"
+    "permission": "Dispatch"
   },
   {
     "name": "a2a_discovery_delete_agent_card",
@@ -45,7 +45,7 @@
     "name": "a2a_discovery_get_agent_card",
     "method": "GET",
     "path": "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/card",
-    "permission": "AuditRead"
+    "permission": "Dispatch"
   },
   {
     "name": "a2a_discovery_put_agent_card",
@@ -69,25 +69,25 @@
     "name": "a2a_push_rest_get_push_config",
     "method": "GET",
     "path": "/a2a/{namespace}/{tenant}/v1/tasks/{id}/pushNotificationConfigs/{cfgId}",
-    "permission": "AuditRead"
+    "permission": "Dispatch"
   },
   {
     "name": "a2a_push_rest_get_push_dlq",
     "method": "GET",
     "path": "/v1/a2a/{namespace}/{tenant}/push-dlq/{entryId}",
-    "permission": "AuditRead"
+    "permission": "Dispatch"
   },
   {
     "name": "a2a_push_rest_list_push_configs",
     "method": "GET",
     "path": "/a2a/{namespace}/{tenant}/v1/tasks/{id}/pushNotificationConfigs",
-    "permission": "AuditRead"
+    "permission": "Dispatch"
   },
   {
     "name": "a2a_push_rest_list_push_dlq",
     "method": "GET",
     "path": "/v1/a2a/{namespace}/{tenant}/push-dlq",
-    "permission": "AuditRead"
+    "permission": "Dispatch"
   },
   {
     "name": "a2a_push_rest_set_push_config",
@@ -237,31 +237,31 @@
     "name": "bus_get_agent",
     "method": "GET",
     "path": "/v1/bus/agents/{namespace}/{tenant}/{agent_id}",
-    "permission": "AuditRead"
+    "permission": "Dispatch"
   },
   {
     "name": "bus_get_bus_approval",
     "method": "GET",
     "path": "/v1/bus/approvals/{namespace}/{tenant}/{approval_id}",
-    "permission": "AuditRead"
+    "permission": "Dispatch"
   },
   {
     "name": "bus_get_conversation",
     "method": "GET",
     "path": "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}",
-    "permission": "AuditRead"
+    "permission": "Dispatch"
   },
   {
     "name": "bus_get_schema_version",
     "method": "GET",
     "path": "/v1/bus/schemas/{namespace}/{tenant}/{subject}/{version}",
-    "permission": "AuditRead"
+    "permission": "Dispatch"
   },
   {
     "name": "bus_get_subject_versions",
     "method": "GET",
     "path": "/v1/bus/schemas/{namespace}/{tenant}/{subject}",
-    "permission": "AuditRead"
+    "permission": "Dispatch"
   },
   {
     "name": "bus_heartbeat_agent",
@@ -279,7 +279,7 @@
     "name": "bus_list_bus_approvals",
     "method": "GET",
     "path": "/v1/bus/approvals/{namespace}/{tenant}",
-    "permission": "AuditRead"
+    "permission": "Dispatch"
   },
   {
     "name": "bus_list_conversations",
@@ -291,7 +291,7 @@
     "name": "bus_list_schemas",
     "method": "GET",
     "path": "/v1/bus/schemas",
-    "permission": "AuditRead"
+    "permission": "Dispatch"
   },
   {
     "name": "bus_list_subscriptions",
@@ -309,7 +309,7 @@
     "name": "bus_lookup_tool_result",
     "method": "GET",
     "path": "/v1/bus/tool-calls/{namespace}/{tenant}/{call_id}/result",
-    "permission": "AuditRead"
+    "permission": "Dispatch"
   },
   {
     "name": "bus_post_stream_chunk",
@@ -363,7 +363,7 @@
     "name": "bus_replay_conversation_messages",
     "method": "GET",
     "path": "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/messages",
-    "permission": "AuditRead"
+    "permission": "Dispatch"
   },
   {
     "name": "bus_send_to_agent",

@@ -81,12 +81,13 @@ pub(super) fn authorize_bus_op(
         BusOp::Publish => (Permission::Dispatch, "publish"),
         BusOp::Subscribe => (Permission::StreamSubscribe, "subscribe"),
         BusOp::ManageSchema => (Permission::OperationsManage, "schema"),
+        BusOp::SchemaRead => (Permission::Dispatch, "schema"),
         BusOp::ManageAgent => (Permission::OperationsManage, "agent"),
-        BusOp::AgentAccess => (Permission::Dispatch, "agent"),
-        BusOp::AgentRead => (Permission::AuditRead, "agent"),
+        BusOp::AgentAccess | BusOp::AgentRead => (Permission::Dispatch, "agent"),
         BusOp::ManageConversation => (Permission::OperationsManage, "conversation"),
-        BusOp::ConversationAccess => (Permission::Dispatch, "conversation"),
-        BusOp::ConversationRead => (Permission::AuditRead, "conversation"),
+        BusOp::ConversationAccess | BusOp::ConversationRead => {
+            (Permission::Dispatch, "conversation")
+        }
     };
     if !identity.role.has_permission(permission) {
         return Err((
@@ -126,6 +127,8 @@ pub(super) enum BusOp {
     Subscribe,
     /// Schema CRUD + topic-binding CRUD (Phase 3).
     ManageSchema,
+    /// Schema observation keeps the existing dispatch-role ceiling.
+    SchemaRead,
     /// Agent registry mutations. Heartbeat and send use `AgentAccess`;
     /// sending additionally requires Publish on the underlying inbox.
     ManageAgent,
@@ -2695,11 +2698,11 @@ pub async fn list_schemas(
         // Authorize with whatever scope the caller filtered on; when
         // neither namespace nor tenant is given, fall through to caller
         // iteration below — list is a read surface without mutations,
-        // but we still gate on ManageSchema so downstream tools don't
+        // but we still gate on SchemaRead so downstream tools don't
         // accidentally expose schema bodies to low-privilege clients.
         let (ns_filter, t_filter) = (params.namespace.as_deref(), params.tenant.as_deref());
         if let (Some(ns), Some(t)) = (ns_filter, t_filter) {
-            if let Err(resp) = authorize_bus_op(&identity, t, ns, BusOp::ManageSchema) {
+            if let Err(resp) = authorize_bus_op(&identity, t, ns, BusOp::SchemaRead) {
                 return resp;
             }
         } else if !identity.role.has_permission(Permission::Dispatch) {
@@ -2797,7 +2800,7 @@ pub async fn get_subject_versions(
         if state.bus_backend.is_none() {
             return service_unavailable("bus feature not enabled");
         }
-        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageSchema) {
+        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::SchemaRead) {
             return resp;
         }
         let gw = state.gateway.read().await;
@@ -2881,7 +2884,7 @@ pub async fn get_schema_version(
         if state.bus_backend.is_none() {
             return service_unavailable("bus feature not enabled");
         }
-        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageSchema) {
+        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::SchemaRead) {
             return resp;
         }
         let schema =
@@ -7831,8 +7834,7 @@ pub async fn list_bus_approvals(
         if state.bus_backend.is_none() {
             return service_unavailable("bus feature not enabled");
         }
-        if let Err(resp) =
-            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageConversation)
+        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::ConversationRead)
         {
             return resp;
         }
@@ -7935,8 +7937,7 @@ pub async fn get_bus_approval(
         if state.bus_backend.is_none() {
             return service_unavailable("bus feature not enabled");
         }
-        if let Err(resp) =
-            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageConversation)
+        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::ConversationRead)
         {
             return resp;
         }

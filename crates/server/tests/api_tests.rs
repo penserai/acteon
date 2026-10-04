@@ -4326,6 +4326,20 @@ async fn executor_can_heartbeat_self_and_message_peer_without_registry_authority
         StatusCode::OK
     );
     assert_eq!(backend.log_len("operations.acme.agents-inbox"), 1);
+    // Runtime metadata reads remain usable with explicit grants, whether scoped
+    // or unfiltered; they do not grant schema/registry administration.
+    for path in [
+        "/v1/bus/schemas?namespace=operations&tenant=acme",
+        "/v1/bus/schemas",
+        "/v1/bus/agents/operations/acme/peer",
+        "/v1/bus/approvals/operations/acme",
+    ] {
+        assert_eq!(
+            call(app.clone(), "GET", path, serde_json::Value::Null).await,
+            StatusCode::OK
+        );
+    }
+
     assert_eq!(
         call(
             app.clone(),
@@ -4403,4 +4417,32 @@ async fn executor_a2a_submission_creates_a_real_durable_task() {
             .unwrap()
             .is_some()
     );
+}
+
+#[tokio::test]
+async fn viewer_does_not_gain_existing_execution_scoped_bus_or_a2a_reads() {
+    let app = build_app(build_test_state_with_auth_role(
+        "viewer",
+        vec![wildcard_admin_grant()],
+    ));
+    for path in [
+        "/v1/bus/schemas?namespace=operations&tenant=acme",
+        "/v1/bus/agents/operations/acme/peer",
+        "/v1/bus/conversations/operations/acme/thread/messages",
+        "/v1/bus/agents/operations/acme/peer/card",
+        "/a2a/operations/acme/v1/tasks/task",
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .header("Authorization", "Bearer test-raw-key")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{path}");
+    }
 }
