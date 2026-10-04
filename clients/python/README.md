@@ -327,3 +327,13 @@ Apache-2.0
 ## Dispatch outcomes
 
 All clients recognize the server's 17 dispatch variants, including `Grouped`, `StateChanged`, `PendingApproval`, `ChainStarted`, `CircuitOpen`, `RecurringCreated`, `Silenced`, and `Muted`. Single and batch dispatch preserve their fields, including approval capabilities and chain IDs. A pending approval or a started chain is not a completed provider execution; inspect the outcome before advancing an agent workflow.
+
+## Execution-only credentials
+
+Configure runtime API keys or JWT users with `role = "executor"` in the server's
+`auth.toml`, and limit their namespace, tenant, provider and action grants.
+Use the client's existing API-key or bearer-token configuration; the role is
+established by the server, not by client-supplied action fields. Administrative
+methods return HTTP 403 for executor credentials. Keep operator credentials and
+signed human approval URLs in a trusted host.
+See [authentication and role boundaries](https://penserai.github.io/acteon/api/authentication/).

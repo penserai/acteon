@@ -90,7 +90,9 @@ pub async fn dispatch(
         return Ok((
             StatusCode::FORBIDDEN,
             Json(serde_json::json!(ErrorResponse {
-                error: "insufficient permissions: dispatch requires admin or operator role".into(),
+                error:
+                    "insufficient permissions: dispatch requires admin, operator, or executor role"
+                        .into(),
             })),
         ));
     }
@@ -362,7 +364,9 @@ pub async fn dispatch_batch(
         return Ok((
             StatusCode::FORBIDDEN,
             Json(vec![serde_json::json!(ErrorResponse {
-                error: "insufficient permissions: dispatch requires admin or operator role".into(),
+                error:
+                    "insufficient permissions: dispatch requires admin, operator, or executor role"
+                        .into(),
             })]),
         ));
     }

@@ -73,11 +73,16 @@ fn not_found(msg: String) -> Response {
 /// The `Option` shape (rather than `Result`) keeps the function below
 /// clippy's `result_large_err` threshold — axum `Response` is a
 /// sizeable enum.
-fn authorize_card_op(identity: &CallerIdentity, namespace: &str, tenant: &str) -> Option<Response> {
-    if !identity.role.has_permission(Permission::Dispatch) {
-        return Some(forbidden(
-            "card management requires the dispatch permission (admin or operator role)".into(),
-        ));
+fn authorize_card_op(
+    identity: &CallerIdentity,
+    namespace: &str,
+    tenant: &str,
+    permission: Permission,
+) -> Option<Response> {
+    if !identity.role.has_permission(permission) {
+        return Some(forbidden(format!(
+            "card operation requires {permission:?} permission"
+        )));
     }
     if !identity.is_authorized(tenant, namespace, A2A_PROVIDER, "card") {
         return Some(forbidden(format!(
@@ -185,7 +190,9 @@ pub async fn put_agent_card(
     Path((namespace, tenant, agent_id)): Path<(String, String, String)>,
     Json(mut card): Json<AgentCard>,
 ) -> Response {
-    if let Some(resp) = authorize_card_op(&identity, &namespace, &tenant) {
+    if let Some(resp) =
+        authorize_card_op(&identity, &namespace, &tenant, Permission::OperationsManage)
+    {
         return resp;
     }
     if let Some(resp) = check_card_identity(&namespace, &tenant, &agent_id, &card) {
@@ -234,7 +241,7 @@ pub async fn get_agent_card(
     axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path((namespace, tenant, agent_id)): Path<(String, String, String)>,
 ) -> Response {
-    if let Some(resp) = authorize_card_op(&identity, &namespace, &tenant) {
+    if let Some(resp) = authorize_card_op(&identity, &namespace, &tenant, Permission::Dispatch) {
         return resp;
     }
     let store: Arc<dyn StateStore> = {
@@ -254,7 +261,9 @@ pub async fn delete_agent_card(
     axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path((namespace, tenant, agent_id)): Path<(String, String, String)>,
 ) -> Response {
-    if let Some(resp) = authorize_card_op(&identity, &namespace, &tenant) {
+    if let Some(resp) =
+        authorize_card_op(&identity, &namespace, &tenant, Permission::OperationsManage)
+    {
         return resp;
     }
     let store: Arc<dyn StateStore> = {

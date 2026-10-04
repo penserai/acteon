@@ -103,6 +103,18 @@ def main():
                     if time.monotonic() > deadline:
                         raise RuntimeError("Guide server readiness timeout") from None
                     time.sleep(0.1)
+            # Even a correctly scoped runtime credential cannot alter policy.
+            for path, method in [
+                ("/v1/rules/reload", "POST"),
+                ("/v1/quotas", "POST"),
+                ("/v1/bus/agents", "POST"),
+                ("/v1/chains/definitions/research", "PUT"),
+            ]:
+                try:
+                    request(path, {}, method)
+                    raise AssertionError(f"Executor reached administration: {path}")
+                except HTTPError as error:
+                    assert error.code == 403, (path, error.code)
             assert "Executed" in dispatch("search", dedup_key="guide-research")
             assert dispatch("search", dedup_key="guide-research") == "Deduplicated"
             assert "Suppressed" in dispatch("delete_database")
@@ -137,7 +149,7 @@ def main():
             assert quotas["count"] == 1, quotas
             assert quotas["quotas"][0]["max_actions"] == 50, quotas
             print(
-                "Agent guide passed: scoped auth, execution, deduplication, forbidden/unknown suppression, approval, chain completion, static quota loading"
+                "Agent guide passed: execution-only role, scoped auth, control-plane denial, execution, deduplication, forbidden/unknown suppression, approval, chain completion, static quota loading"
             )
         except BaseException:
             log.seek(0)

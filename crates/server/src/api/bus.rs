@@ -73,24 +73,27 @@ pub(super) fn authorize_bus_op(
     action: BusOp,
 ) -> Result<(), axum::response::Response> {
     let (permission, action_verb) = match action {
-        BusOp::StageControl => (Permission::Dispatch, "stage_control"),
-        BusOp::StageReplay => (Permission::Dispatch, "stage_replay"),
+        BusOp::StageControl => (Permission::OperationsManage, "stage_control"),
+        BusOp::StageReplay => (Permission::OperationsManage, "stage_replay"),
         BusOp::StageRead => (Permission::AuditRead, "stage_read"),
-        BusOp::StageManage => (Permission::Dispatch, "stage_manage"),
-        BusOp::Manage => (Permission::Dispatch, "manage"),
+        BusOp::StageManage => (Permission::OperationsManage, "stage_manage"),
+        BusOp::Manage => (Permission::OperationsManage, "manage"),
         BusOp::Publish => (Permission::Dispatch, "publish"),
         BusOp::Subscribe => (Permission::StreamSubscribe, "subscribe"),
-        BusOp::ManageSchema => (Permission::Dispatch, "schema"),
-        BusOp::ManageAgent => (Permission::Dispatch, "agent"),
-        BusOp::ManageConversation => (Permission::Dispatch, "conversation"),
+        BusOp::ManageSchema => (Permission::OperationsManage, "schema"),
+        BusOp::SchemaRead => (Permission::Dispatch, "schema"),
+        BusOp::ManageAgent => (Permission::OperationsManage, "agent"),
+        BusOp::AgentAccess | BusOp::AgentRead => (Permission::Dispatch, "agent"),
+        BusOp::ManageConversation => (Permission::OperationsManage, "conversation"),
+        BusOp::ConversationAccess | BusOp::ConversationRead => {
+            (Permission::Dispatch, "conversation")
+        }
     };
     if !identity.role.has_permission(permission) {
         return Err((
             StatusCode::FORBIDDEN,
             Json(ErrorResponse {
-                error: format!(
-                    "insufficient role for bus.{action_verb}: requires admin or operator"
-                ),
+                error: format!("insufficient role for bus.{action_verb}: requires {permission:?}"),
             }),
         )
             .into_response());
@@ -124,15 +127,22 @@ pub(super) enum BusOp {
     Subscribe,
     /// Schema CRUD + topic-binding CRUD (Phase 3).
     ManageSchema,
-    /// Agent CRUD + heartbeat + send-to-agent (Phase 4). Send also
-    /// flows through [`BusOp::Publish`] on the underlying topic so
-    /// operators can restrict *inbox writes* independently of *agent
-    /// registry ops*.
+    /// Schema observation keeps the existing dispatch-role ceiling.
+    SchemaRead,
+    /// Agent registry mutations. Heartbeat and send use `AgentAccess`;
+    /// sending additionally requires Publish on the underlying inbox.
     ManageAgent,
-    /// Conversation CRUD + transitions + thread reads (Phase 5).
-    /// Appending a message also flows through [`BusOp::Publish`] so
-    /// operators can split read/write ACLs.
+    /// Runtime agent access without registry-management authority.
+    AgentAccess,
+    /// Read registered agent metadata.
+    AgentRead,
+    /// Conversation administration and approval decisions. Runtime messages
+    /// use `ConversationAccess` plus Publish; observation uses `ConversationRead`.
     ManageConversation,
+    /// Append runtime messages without conversation-administration authority.
+    ConversationAccess,
+    /// Observe conversation metadata and history.
+    ConversationRead,
 }
 
 /// Parse a `namespace.tenant.name` Kafka topic string.
@@ -2688,11 +2698,11 @@ pub async fn list_schemas(
         // Authorize with whatever scope the caller filtered on; when
         // neither namespace nor tenant is given, fall through to caller
         // iteration below — list is a read surface without mutations,
-        // but we still gate on ManageSchema so downstream tools don't
+        // but we still gate on SchemaRead so downstream tools don't
         // accidentally expose schema bodies to low-privilege clients.
         let (ns_filter, t_filter) = (params.namespace.as_deref(), params.tenant.as_deref());
         if let (Some(ns), Some(t)) = (ns_filter, t_filter) {
-            if let Err(resp) = authorize_bus_op(&identity, t, ns, BusOp::ManageSchema) {
+            if let Err(resp) = authorize_bus_op(&identity, t, ns, BusOp::SchemaRead) {
                 return resp;
             }
         } else if !identity.role.has_permission(Permission::Dispatch) {
@@ -2790,7 +2800,7 @@ pub async fn get_subject_versions(
         if state.bus_backend.is_none() {
             return service_unavailable("bus feature not enabled");
         }
-        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageSchema) {
+        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::SchemaRead) {
             return resp;
         }
         let gw = state.gateway.read().await;
@@ -2874,7 +2884,7 @@ pub async fn get_schema_version(
         if state.bus_backend.is_none() {
             return service_unavailable("bus feature not enabled");
         }
-        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageSchema) {
+        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::SchemaRead) {
             return resp;
         }
         let schema =
@@ -3860,7 +3870,7 @@ pub async fn get_agent(
         if state.bus_backend.is_none() {
             return service_unavailable("bus feature not enabled");
         }
-        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageAgent) {
+        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::AgentRead) {
             return resp;
         }
         match load_agent(&state, &namespace, &tenant, &agent_id).await {
@@ -4058,8 +4068,24 @@ pub async fn heartbeat_agent(
         if state.bus_backend.is_none() {
             return service_unavailable("bus feature not enabled");
         }
-        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageAgent) {
+        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::AgentAccess) {
             return resp;
+        }
+        // An executor may report only its authenticated, grant-bound identity.
+        if identity.role == crate::auth::role::Role::Executor
+            && identity
+                .bus_agent_id_for_scope(&tenant, &namespace)
+                .ok()
+                .flatten()
+                != Some(agent_id.as_str())
+        {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: "executor heartbeat requires its own grant-bound agent identity".into(),
+                }),
+            )
+                .into_response();
         }
         let key = StateKey::new(
             namespace.clone(),
@@ -4132,11 +4158,11 @@ pub async fn send_to_agent(
         let Some(backend) = state.bus_backend.as_ref() else {
             return service_unavailable("bus feature not enabled");
         };
-        // Two-level auth: caller must hold ManageAgent (so random
+        // Two-level auth: caller must hold AgentAccess (so random
         // publishers can't target arbitrary agents) and Publish on the
         // inbox topic's tenant (reusing the same gate as direct
         // `/v1/bus/publish`).
-        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageAgent) {
+        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::AgentAccess) {
             return resp;
         }
         if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::Publish) {
@@ -4978,8 +5004,7 @@ pub async fn get_conversation(
         if state.bus_backend.is_none() {
             return service_unavailable("bus feature not enabled");
         }
-        if let Err(resp) =
-            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageConversation)
+        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::ConversationRead)
         {
             return resp;
         }
@@ -5269,7 +5294,7 @@ pub async fn append_conversation_message(
             return service_unavailable("bus feature not enabled");
         };
         if let Err(resp) =
-            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageConversation)
+            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ConversationAccess)
         {
             return resp;
         }
@@ -5488,8 +5513,7 @@ pub async fn replay_conversation_messages(
         let Some(backend) = state.bus_backend.clone() else {
             return service_unavailable("bus feature not enabled");
         };
-        if let Err(resp) =
-            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageConversation)
+        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::ConversationRead)
         {
             return resp;
         }
@@ -5993,7 +6017,7 @@ pub async fn post_tool_call(
         // tenant. A registry-only role can't quietly inject tool
         // traffic onto the events topic.
         if let Err(resp) =
-            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageConversation)
+            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ConversationAccess)
         {
             return resp;
         }
@@ -6241,7 +6265,7 @@ pub async fn post_tool_result(
             return service_unavailable("bus feature not enabled");
         };
         if let Err(resp) =
-            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageConversation)
+            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ConversationAccess)
         {
             return resp;
         }
@@ -6466,8 +6490,7 @@ pub async fn lookup_tool_result(
         let Some(backend) = state.bus_backend.clone() else {
             return service_unavailable("bus feature not enabled");
         };
-        if let Err(resp) =
-            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageConversation)
+        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::ConversationRead)
         {
             return resp;
         }
@@ -6811,7 +6834,7 @@ pub async fn post_stream_chunk(
             return service_unavailable("bus feature not enabled");
         };
         if let Err(resp) =
-            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageConversation)
+            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ConversationAccess)
         {
             return resp;
         }
@@ -7014,7 +7037,7 @@ pub async fn post_stream_end(
             return service_unavailable("bus feature not enabled");
         };
         if let Err(resp) =
-            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageConversation)
+            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ConversationAccess)
         {
             return resp;
         }
@@ -7235,8 +7258,7 @@ pub async fn consume_stream(
         };
         // Streaming consume is a read; gate on Subscribe + the
         // conversation-management grant (matches replay/lookup).
-        if let Err(resp) =
-            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageConversation)
+        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::ConversationRead)
         {
             return resp;
         }
@@ -7812,8 +7834,7 @@ pub async fn list_bus_approvals(
         if state.bus_backend.is_none() {
             return service_unavailable("bus feature not enabled");
         }
-        if let Err(resp) =
-            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageConversation)
+        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::ConversationRead)
         {
             return resp;
         }
@@ -7916,8 +7937,7 @@ pub async fn get_bus_approval(
         if state.bus_backend.is_none() {
             return service_unavailable("bus feature not enabled");
         }
-        if let Err(resp) =
-            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageConversation)
+        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::ConversationRead)
         {
             return resp;
         }

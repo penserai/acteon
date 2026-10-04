@@ -6,6 +6,7 @@ pub mod jwt;
 pub mod middleware;
 pub mod password;
 pub mod role;
+pub mod route_permissions;
 pub mod watcher;
 
 use std::collections::HashMap;
@@ -146,9 +147,20 @@ impl AuthProvider {
 
     /// Validate a JWT token and return the caller identity.
     pub async fn validate_jwt(&self, token: &str) -> Result<CallerIdentity, String> {
-        self.jwt_manager
+        let mut identity = self
+            .jwt_manager
             .validate_token(token, &self.state_store)
-            .await
+            .await?;
+        // Claims establish authentication, not a permanent authorization snapshot.
+        // Reloaded roles/grants and removed users apply to existing sessions.
+        let tables = self.tables.read().await;
+        let user = tables
+            .users
+            .get(&identity.id)
+            .ok_or_else(|| "user is no longer authorized".to_owned())?;
+        identity.role = user.role;
+        identity.grants.clone_from(&user.grants);
+        Ok(identity)
     }
 
     /// Revoke a JWT token (logout).

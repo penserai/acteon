@@ -145,7 +145,9 @@ pub async fn replay_action(
         return (
             StatusCode::FORBIDDEN,
             Json(serde_json::json!(ErrorResponse {
-                error: "insufficient permissions: replay requires admin or operator role".into(),
+                error:
+                    "insufficient permissions: replay requires admin, operator, or executor role"
+                        .into(),
             })),
         );
     }
@@ -287,7 +289,9 @@ pub async fn replay_audit(
         return (
             StatusCode::FORBIDDEN,
             Json(serde_json::json!(ErrorResponse {
-                error: "insufficient permissions: replay requires admin or operator role".into(),
+                error:
+                    "insufficient permissions: replay requires admin, operator, or executor role"
+                        .into(),
             })),
         );
     }

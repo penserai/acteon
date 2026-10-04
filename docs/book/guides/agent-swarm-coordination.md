@@ -154,8 +154,8 @@ payload_template = { summary = "{{steps.capture.body}}" }
 ### Caller identity
 
 The local test key belongs to the `researcher` principal and can dispatch only within the
-listed scope. Its `operator` role also grants management permissions: it is a
-**trusted orchestrator credential**, not a credential to give an untrusted agent. Giving another agent a different tenant label in its payload does
+listed scope. Its `executor` role permits action submission without access to
+policy or registry administration. Giving another agent a different tenant label in its payload does
 not establish identity: the server compares that scope with the authenticated
 caller's grants. Create separate keys and grants for separate principals.
 
@@ -168,7 +168,7 @@ jwt_secret = "acteon-policy-demo-local-only-secret"
 [[api_keys]]
 name = "researcher"
 key_hash = "e5522a60c16c993c80c7c251fe4dc4ad5f1de7926c57ec5401d3d42891633ad8"
-role = "operator"
+role = "executor"
 
 [[api_keys.grants]]
 tenants = ["researcher"]
@@ -290,9 +290,9 @@ flow instead.
 
 ## Connect a real agent team
 
-Keep the operator credential in a trusted host or adapter. The current `operator`
-role can manage rules; action grants do not turn it into a dispatch-only role.
-Expose only the intended action-submission tool to an untrusted agent, fix its
+Use a scoped `executor` credential for each agent runtime and keep `operator`
+credentials for trusted administration. Expose the intended action-submission
+tool through a host adapter, fix its
 namespace and tenant in the adapter, and keep management endpoints inaccessible
 to that agent. Network access and credentials must enforce this boundary.
 
