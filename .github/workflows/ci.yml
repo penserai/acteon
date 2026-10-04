@@ -297,6 +297,10 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         if: github.head_ref != 'codex/consolidated-build-deps'
       - run: cargo test --locked -p acteon-state-redis -p acteon-state-postgres --features integration --lib
+      - name: Governance coordinator multi-client Redis contract
+        env:
+          ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
+        run: cargo test --locked -p acteon-governance --test coordinator independent_redis_connections_pass_the_same_contract -- --ignored
       - name: PostgreSQL audit-store conformance
         run: cargo test --locked -p acteon-audit-postgres --features integration --lib
       - name: Start disposable DynamoDB

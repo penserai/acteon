@@ -8,6 +8,7 @@ members = [
     "crates/client",
     "crates/server",
     "crates/gateway",
+    "crates/governance",
     "crates/simulation",
     "crates/executor",
     "crates/provider",
@@ -92,6 +93,7 @@ acteon-time = { path = "crates/time" }
 acteon-client = { path = "crates/client" }
 acteon-server = { path = "crates/server" }
 acteon-gateway = { path = "crates/gateway" }
+acteon-governance = { path = "crates/governance" }
 acteon-simulation = { path = "crates/simulation" }
 acteon-executor = { path = "crates/executor" }
 acteon-http = { path = "crates/http" }

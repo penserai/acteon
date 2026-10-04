@@ -364,6 +364,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "acteon-governance"
+version = "0.1.0"
+dependencies = [
+ "acteon-state",
+ "acteon-state-memory",
+ "acteon-state-redis",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "acteon-http"
 version = "0.1.0"
 dependencies = [
