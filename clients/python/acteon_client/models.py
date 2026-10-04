@@ -4294,6 +4294,7 @@ class CredentialIdentity:
     auth_method: str
     role: str
     principal: PrincipalIdentity | None = None
+    authority_id: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "CredentialIdentity":
@@ -4303,4 +4304,5 @@ class CredentialIdentity:
             data["auth_method"],
             data["role"],
             None if actor is None else PrincipalIdentity(actor["id"], actor["kind"]),
+            data.get("authority_id"),
         )

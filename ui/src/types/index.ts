@@ -1195,6 +1195,7 @@ export interface PrincipalIdentity {
 }
 export interface CredentialIdentity {
   credential_id: string
+  authority_id?: string | null
   auth_method: string
   role: string
   principal: PrincipalIdentity | null

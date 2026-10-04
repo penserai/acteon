@@ -1,5 +1,38 @@
 [
-  {"credential_id":"rotated-key","auth_method":"api_key","role":"executor","principal":{"id":"diagnostic-agent","kind":"agent"}},
-  {"credential_id":"renzo","auth_method":"jwt","role":"operator","principal":{"id":"person-1","kind":"human"}},
-  {"credential_id":"legacy-key","auth_method":"api_key","role":"viewer","principal":null}
+  {
+    "credential_id": "rotated-key",
+    "auth_method": "api_key",
+    "role": "executor",
+    "principal": {
+      "id": "diagnostic-agent",
+      "kind": "agent"
+    },
+    "authority_id": "credential/diagnostic-runtime-v1"
+  },
+  {
+    "credential_id": "renzo",
+    "auth_method": "jwt",
+    "role": "operator",
+    "principal": {
+      "id": "person-1",
+      "kind": "human"
+    },
+    "authority_id": "credential/person-session-v1"
+  },
+  {
+    "credential_id": "legacy-key",
+    "auth_method": "api_key",
+    "role": "viewer",
+    "principal": null
+  },
+  {
+    "credential_id": "bound-without-enrollment",
+    "auth_method": "api_key",
+    "role": "executor",
+    "principal": {
+      "id": "service-1",
+      "kind": "service"
+    },
+    "authority_id": null
+  }
 ]

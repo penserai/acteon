@@ -11,6 +11,7 @@ use super::role::Role;
 #[derive(Debug, Clone)]
 pub struct ApiKeyEntry {
     pub name: String,
+    pub authority_id: Option<String>,
     pub principal: Option<acteon_core::PrincipalIdentity>,
     pub role: Role,
     pub grants: Vec<Grant>,
@@ -33,6 +34,7 @@ pub fn build_api_key_table(
             cfg.key_hash.expose_secret().to_string(),
             ApiKeyEntry {
                 name: cfg.name.clone(),
+                authority_id: cfg.authority_id.clone(),
                 principal: cfg.principal.clone(),
                 role,
                 grants: cfg.grants.clone(),
@@ -55,12 +57,30 @@ pub fn authenticate_api_key(
     raw_key: &str,
     table: &HashMap<String, ApiKeyEntry>,
 ) -> Option<CallerIdentity> {
+    authenticate_api_key_bound(raw_key, table).map(|(identity, _)| identity)
+}
+
+#[allow(clippy::implicit_hasher)]
+pub(super) fn authenticate_api_key_bound(
+    raw_key: &str,
+    table: &HashMap<String, ApiKeyEntry>,
+) -> Option<(
+    CallerIdentity,
+    Option<super::enrollment::AuthenticatedCredential>,
+)> {
     let hash = hash_api_key(raw_key);
-    table.get(&hash).map(|entry| CallerIdentity {
+    let entry = table.get(&hash)?;
+    let identity = CallerIdentity {
         id: entry.name.clone(),
         principal: entry.principal.clone(),
         role: entry.role,
         grants: entry.grants.clone(),
         auth_method: "api_key".to_owned(),
-    })
+    };
+    let binding = super::enrollment::AuthenticatedCredential::from_identity(
+        entry.authority_id.as_deref(),
+        &identity,
+    )
+    .ok()?;
+    Some((identity, binding))
 }

@@ -30,6 +30,8 @@ class IdentityTest {
                 var identity = client.identity();
                 if (failure.get() != null) throw new AssertionError(failure.get());
                 assertEquals(wire.get("credential_id").asText(), identity.credentialId());
+                var authorityId = wire.get("authority_id");
+                assertEquals(authorityId == null || authorityId.isNull() ? null : authorityId.asText(), identity.authorityId());
                 assertEquals(wire.get("auth_method").asText(), identity.authMethod());
                 assertEquals(wire.get("role").asText(), identity.role());
                 if (wire.get("principal").isNull()) assertNull(identity.principal());

@@ -126,6 +126,9 @@ fn unauthorized(message: &str) -> Response {
 
 fn insert_authenticated(req: &mut Request<Body>, caller: AuthenticatedCaller) {
     req.extensions_mut().insert(caller.identity);
+    if let Some(credential) = caller.credential {
+        req.extensions_mut().insert(credential);
+    }
     if let Some(binding) = caller.binding {
         req.extensions_mut().insert(binding);
     }

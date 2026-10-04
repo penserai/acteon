@@ -115,9 +115,11 @@ pub async fn identity(
     axum::extract::Extension(identity): axum::extract::Extension<
         crate::auth::identity::CallerIdentity,
     >,
+    credential: Option<axum::extract::Extension<crate::auth::enrollment::AuthenticatedCredential>>,
 ) -> Json<acteon_core::CredentialIdentity> {
     Json(acteon_core::CredentialIdentity {
         credential_id: identity.id,
+        authority_id: credential.map(|c| c.id().to_owned()),
         auth_method: identity.auth_method,
         role: identity.role.to_string(),
         principal: identity.principal,

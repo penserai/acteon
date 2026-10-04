@@ -174,6 +174,7 @@ fn build_test_state_with_auth_role(role: &str, grants: Vec<Grant>) -> AppState {
     let mut state = build_test_state(vec![]);
 
     let api_key_config = ApiKeyConfig {
+        authority_id: None,
         name: "test-key".to_string(),
         principal: None,
         key_hash: SecretString::new(hash_api_key("test-raw-key").into()),
@@ -2861,6 +2862,7 @@ async fn silence_list_hides_silences_outside_caller_tenant_grants() {
     let mut state = build_test_state(vec![]);
 
     let admin_key = ApiKeyConfig {
+        authority_id: None,
         name: "admin-key".to_string(),
         principal: None,
         key_hash: SecretString::new(hash_api_key("admin-raw-key").into()),
@@ -2874,6 +2876,7 @@ async fn silence_list_hides_silences_outside_caller_tenant_grants() {
         }],
     };
     let limited_key = ApiKeyConfig {
+        authority_id: None,
         name: "limited-key".to_string(),
         principal: None,
         key_hash: SecretString::new(hash_api_key("limited-raw-key").into()),
@@ -3447,6 +3450,7 @@ async fn deleted_silence_no_longer_blocks_new_dispatches() {
 async fn silence_create_requires_silences_manage_permission() {
     // Viewer role lacks SilencesManage.
     let api_key_config = ApiKeyConfig {
+        authority_id: None,
         name: "viewer-key".to_string(),
         principal: None,
         key_hash: SecretString::new(hash_api_key("test-raw-key").into()),
@@ -4185,6 +4189,7 @@ async fn existing_jwt_uses_reloaded_role_and_grants_and_rejects_removed_user() {
             jwt_expiry_seconds: 3600,
         },
         users: vec![UserConfig {
+            authority_id: None,
             username: "human".into(),
             principal: None,
             password_hash: SecretString::new(
@@ -4297,6 +4302,7 @@ async fn executor_can_heartbeat_self_and_message_peer_without_registry_authority
             },
             users: vec![],
             api_keys: vec![ApiKeyConfig {
+                authority_id: None,
                 name: "test-key".into(),
                 principal: None,
                 key_hash: SecretString::new(hash_api_key("test-raw-key").into()),
@@ -4467,6 +4473,7 @@ fn principal_key_config(name: &str, raw: &str, actor: &str) -> AuthFileConfig {
         },
         users: vec![],
         api_keys: vec![ApiKeyConfig {
+            authority_id: None,
             name: name.into(),
             principal: Some(
                 acteon_core::PrincipalIdentity::new(actor, acteon_core::PrincipalKind::Service)
@@ -4582,6 +4589,7 @@ async fn changed_principal_binding_invalidates_existing_jwt_without_retargeting_
     use argon2::password_hash::{PasswordHasher, SaltString};
     let mut config = principal_key_config("unused", "unused", "service");
     config.users.push(UserConfig {
+        authority_id: None,
         username: "human".into(),
         principal: Some(
             acteon_core::PrincipalIdentity::new("person-a", acteon_core::PrincipalKind::Human)
@@ -4649,6 +4657,7 @@ async fn principal_configuration_errors_leave_current_auth_tables_intact() {
     let auth = AuthProvider::new(&config, Arc::new(MemoryStateStore::new())).unwrap();
     let mut conflict = principal_key_config("key", "raw", "actor");
     conflict.api_keys.push(ApiKeyConfig {
+        authority_id: None,
         name: "other".into(),
         key_hash: SecretString::new(hash_api_key("other").into()),
         role: "executor".into(),
@@ -4676,4 +4685,38 @@ async fn principal_configuration_errors_leave_current_auth_tables_intact() {
     let mut duplicate = principal_key_config("other", "raw", "other-actor");
     duplicate.api_keys.append(&mut conflict.api_keys);
     assert!(auth.reload(&duplicate).await.is_err());
+}
+
+#[tokio::test]
+async fn identity_endpoint_reports_only_the_authenticated_enrollment() {
+    let mut state = build_test_state(vec![]);
+    let mut config = principal_key_config("detector-key", "raw-enrolled", "detector");
+    config.api_keys[0].authority_id = Some("credential/detector-v1".into());
+    state.auth = Some(Arc::new(
+        AuthProvider::new(&config, Arc::new(MemoryStateStore::new())).unwrap(),
+    ));
+    let app = build_app(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/auth/identity")
+                .header("X-API-Key", "raw-enrolled")
+                .header("X-Authority-ID", "credential/forged")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["authority_id"], "credential/detector-v1");
+    assert_eq!(body["principal"]["id"], "detector");
+    assert!(
+        !String::from_utf8(bytes.to_vec())
+            .unwrap()
+            .contains("raw-enrolled")
+    );
 }

@@ -35,6 +35,9 @@ fn default_jwt_expiry() -> u64 {
 #[derive(Debug, Deserialize)]
 pub struct UserConfig {
     pub username: String,
+    /// Stable logical credential ID, independent of username and actor.
+    #[serde(default)]
+    pub authority_id: Option<String>,
     /// Optional stable actor binding; kind is descriptive and grants remain required.
     #[serde(default)]
     pub principal: Option<acteon_core::PrincipalIdentity>,
@@ -237,6 +240,9 @@ actions = ["*"]
 #[derive(Debug, Deserialize)]
 pub struct ApiKeyConfig {
     pub name: String,
+    /// Stable logical credential ID; rotating hashes may retain this ID.
+    #[serde(default)]
+    pub authority_id: Option<String>,
     /// Optional stable actor binding, shared by rotating credentials.
     #[serde(default)]
     pub principal: Option<acteon_core::PrincipalIdentity>,

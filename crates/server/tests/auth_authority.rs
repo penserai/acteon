@@ -35,6 +35,7 @@ fn configuration(revision: u64) -> AuthFileConfig {
         },
         users: Vec::new(),
         api_keys: vec![ApiKeyConfig {
+            authority_id: None,
             name: "maya-assistant".into(),
             principal: Some(
                 PrincipalIdentity::new("agent/maya-assistant", PrincipalKind::Agent).unwrap(),
@@ -414,6 +415,7 @@ async fn jwt_sessions_refresh_only_from_current_tables_and_stale_replica_login_i
         .unwrap()
         .to_string();
     cfg.users.push(UserConfig {
+        authority_id: None,
         username: "maya".into(),
         principal: Some(PrincipalIdentity::new("human/maya", PrincipalKind::Human).unwrap()),
         password_hash: SecretString::new(password_hash.into()),
@@ -437,6 +439,141 @@ async fn jwt_sessions_refresh_only_from_current_tables_and_stale_replica_login_i
         a.validate_jwt(&token).await.unwrap().role.to_string(),
         "viewer"
     );
+}
+
+#[tokio::test]
+async fn credential_enrollment_is_resolved_from_the_actual_key() {
+    use acteon_server::auth::enrollment::AuthenticatedCredential;
+    let state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let mut cfg = configuration(1);
+    cfg.api_keys[0].authority_id = Some("credential/inspect".into());
+    let mut second = configuration(1).api_keys.remove(0);
+    second.authority_id = Some("credential/repair".into());
+    second.name = cfg.api_keys[0].name.clone(); // Display names cannot select authority.
+    second.key_hash = SecretString::new(hash_api_key("key-repair").into());
+    second.role = "viewer".into();
+    cfg.api_keys.push(second);
+    let auth = Arc::new(AuthProvider::new(&cfg, state).unwrap());
+    let app = Router::new()
+        .route(
+            "/binding",
+            get(
+                |Extension(identity): Extension<CallerIdentity>,
+                 Extension(binding): Extension<AuthenticatedCredential>| async move {
+                    assert_eq!(identity.principal.as_ref().unwrap(), binding.principal());
+                    assert_eq!(identity.auth_method, binding.auth_method());
+                    Json(json!({"authority_id": binding.id(), "role": identity.role}))
+                },
+            ),
+        )
+        .layer(AuthLayer::new(Some(auth)));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/binding", listener.local_addr().unwrap());
+    let task = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let client = reqwest::Client::new();
+    for (key, id, role) in [
+        ("key-original", "credential/inspect", "operator"),
+        ("key-repair", "credential/repair", "viewer"),
+    ] {
+        let response = client
+            .get(&url)
+            .bearer_auth(key)
+            .header("x-authority-id", "credential/forged")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(
+            response.json::<Value>().await.unwrap(),
+            json!({"authority_id": id, "role": role})
+        );
+    }
+    assert_eq!(
+        client
+            .get(&url)
+            .bearer_auth("credential/inspect")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn rotating_enrollment_requires_one_complete_policy_and_reload_is_atomic() {
+    let state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let mut cfg = configuration(1);
+    cfg.api_keys[0].authority_id = Some("credential/diagnostics".into());
+    let mut rotated = configuration(1).api_keys.remove(0);
+    rotated.authority_id = cfg.api_keys[0].authority_id.clone();
+    rotated.name = "rotated".into();
+    rotated.key_hash = SecretString::new(hash_api_key("key-rotated").into());
+    rotated.grants[0].providers.reverse();
+    cfg.api_keys.push(rotated);
+    let auth = AuthProvider::new(&cfg, state).unwrap();
+    assert!(auth.authenticate_api_key("key-original").await.is_some());
+    assert!(auth.authenticate_api_key("key-rotated").await.is_some());
+    cfg.api_keys[1].grants[0].agent_id = Some("other-bus-identity".into());
+    assert!(auth.reload(&cfg).await.is_err());
+    assert!(auth.authenticate_api_key("key-original").await.is_some());
+    cfg.api_keys[1].grants[0].agent_id = cfg.api_keys[0].grants[0].agent_id.clone();
+    cfg.api_keys[1].role = "viewer".into();
+    assert!(auth.reload(&cfg).await.is_err());
+    cfg.api_keys[1].role = "operator".into();
+    cfg.api_keys.remove(0);
+    auth.reload(&cfg).await.unwrap();
+    assert!(auth.authenticate_api_key("key-original").await.is_none());
+    assert!(auth.authenticate_api_key("key-rotated").await.is_some());
+    cfg.api_keys[0].principal = None;
+    assert!(auth.reload(&cfg).await.is_err());
+    assert!(auth.authenticate_api_key("key-rotated").await.is_some());
+}
+
+#[tokio::test]
+async fn jwt_enrollment_cannot_silently_switch_to_a_replacement() {
+    use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
+    let state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let c = coordinator(state.clone()).await;
+    let mut cfg = configuration(1);
+    let salt = SaltString::encode_b64(b"fixed-test-salt").unwrap();
+    let hash = Argon2::default()
+        .hash_password(b"password", &salt)
+        .unwrap()
+        .to_string();
+    cfg.users.push(UserConfig {
+        authority_id: None,
+        username: "maya".into(),
+        principal: Some(PrincipalIdentity::new("human/maya", PrincipalKind::Human).unwrap()),
+        password_hash: SecretString::new(hash.into()),
+        role: "operator".into(),
+        grants: cfg.api_keys[0].grants.clone(),
+    });
+    let auth = provider(state, c, &cfg).await;
+    let (legacy, _) = auth.login("maya", "password").await.unwrap();
+    cfg.users[0].authority_id = Some("credential/maya-v1".into());
+    assert!(auth.reload(&cfg).await.is_err()); // ID is part of the shared security epoch.
+    assert!(auth.validate_jwt(&legacy).await.is_ok());
+    cfg.authority_revision = Some(2);
+    auth.reload(&cfg).await.unwrap();
+    assert!(auth.validate_jwt(&legacy).await.is_err());
+    let (enrolled, _) = auth.login("maya", "password").await.unwrap();
+    cfg.authority_revision = Some(3);
+    cfg.users[0].role = "viewer".into();
+    auth.reload(&cfg).await.unwrap();
+    assert_eq!(
+        auth.validate_jwt(&enrolled).await.unwrap().role.to_string(),
+        "viewer"
+    );
+    cfg.authority_revision = Some(4);
+    cfg.users[0].authority_id = Some("credential/maya-v2".into());
+    auth.reload(&cfg).await.unwrap();
+    assert!(auth.validate_jwt(&enrolled).await.is_err());
+    let (replacement, _) = auth.login("maya", "password").await.unwrap();
+    assert!(auth.validate_jwt(&replacement).await.is_ok());
 }
 
 mod server_process {
@@ -760,4 +897,26 @@ async fn independent_dynamodb_authentication_replicas_pass_the_contract() {
         .send()
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn invalid_and_cross_method_enrollment_ids_are_refused() {
+    let state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let mut cfg = configuration(1);
+    for id in ["", "*", " credential/one", "credential/one\n"] {
+        cfg.api_keys[0].authority_id = Some(id.into());
+        assert!(AuthProvider::new(&cfg, state.clone()).is_err());
+    }
+    cfg.api_keys[0].authority_id = Some("credential/one".into());
+    cfg.users.push(UserConfig {
+        authority_id: Some("credential/one".into()),
+        username: "same-actor".into(),
+        principal: cfg.api_keys[0].principal.clone(),
+        password_hash: SecretString::new("unused-hash".into()),
+        role: cfg.api_keys[0].role.clone(),
+        grants: cfg.api_keys[0].grants.clone(),
+    });
+    assert!(AuthProvider::new(&cfg, state.clone()).is_err());
+    cfg.users[0].authority_id = Some("credential/user-one".into());
+    assert!(AuthProvider::new(&cfg, state).is_ok());
 }

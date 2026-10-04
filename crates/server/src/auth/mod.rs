@@ -2,6 +2,7 @@ pub mod api_key;
 pub mod authority;
 pub mod config;
 pub mod crypto;
+pub mod enrollment;
 pub mod identity;
 pub mod jwt;
 pub mod middleware;
@@ -17,7 +18,7 @@ use acteon_state::StateStore;
 use tokio::sync::RwLock;
 use tracing::info;
 
-use self::api_key::{ApiKeyEntry, authenticate_api_key, build_api_key_table};
+use self::api_key::{ApiKeyEntry, authenticate_api_key_bound, build_api_key_table};
 use self::config::{AuthFileConfig, Grant};
 use self::crypto::{ExposeSecret, SecretString};
 use self::identity::CallerIdentity;
@@ -28,6 +29,7 @@ use self::role::Role;
 #[derive(Debug, Clone)]
 pub struct UserEntry {
     pub password_hash: SecretString,
+    pub authority_id: Option<String>,
     pub principal: Option<acteon_core::PrincipalIdentity>,
     pub role: Role,
     pub grants: Vec<Grant>,
@@ -59,6 +61,7 @@ pub struct AuthProvider {
 pub(super) struct AuthenticatedCaller {
     identity: CallerIdentity,
     binding: Option<authority::AuthenticatedConfiguration>,
+    credential: Option<enrollment::AuthenticatedCredential>,
 }
 
 impl AuthProvider {
@@ -100,6 +103,7 @@ impl AuthProvider {
 
     /// Build the internal lookup tables from configuration.
     fn build_tables(config: &AuthFileConfig) -> Result<AuthTables, String> {
+        enrollment::validate_enrollments(config)?;
         let mut users = HashMap::new();
         for u in &config.users {
             if users.contains_key(&u.username) {
@@ -111,6 +115,7 @@ impl AuthProvider {
                 u.username.clone(),
                 UserEntry {
                     password_hash: u.password_hash.clone(),
+                    authority_id: u.authority_id.clone(),
                     principal: u.principal.clone(),
                     role,
                     grants: u.grants.clone(),
@@ -201,12 +206,13 @@ impl AuthProvider {
         };
 
         self.bind_identity(&tables, &identity).await?;
+        let authority_id = user.authority_id.clone();
 
         // Drop the read lock before issuing the token (which may also need state access).
         drop(tables);
 
         self.jwt_manager
-            .issue_token(&identity, &self.state_store)
+            .issue_token_with_credential(&identity, authority_id.as_deref(), &self.state_store)
             .await
     }
 
@@ -219,9 +225,9 @@ impl AuthProvider {
         &self,
         token: &str,
     ) -> Result<AuthenticatedCaller, String> {
-        let mut identity = self
+        let (mut identity, authority_id) = self
             .jwt_manager
-            .validate_token(token, &self.state_store)
+            .validate_token_bound(token, &self.state_store)
             .await?;
         // Claims establish authentication, not a permanent authorization snapshot.
         // Reloaded roles/grants and removed users apply to existing sessions.
@@ -234,10 +240,19 @@ impl AuthProvider {
         if identity.principal != user.principal {
             return Err("principal binding changed; login again".into());
         }
+        if authority_id != user.authority_id {
+            return Err("credential enrollment changed; login again".into());
+        }
+        let credential =
+            enrollment::AuthenticatedCredential::from_identity(authority_id.as_deref(), &identity)?;
         identity.role = user.role;
         identity.grants.clone_from(&user.grants);
         let binding = self.bind_identity(&tables, &identity).await?;
-        Ok(AuthenticatedCaller { identity, binding })
+        Ok(AuthenticatedCaller {
+            identity,
+            binding,
+            credential,
+        })
     }
 
     /// Revoke a JWT token (logout).
@@ -260,9 +275,13 @@ impl AuthProvider {
         raw_key: &str,
     ) -> Option<AuthenticatedCaller> {
         let tables = self.tables.read().await;
-        let identity = authenticate_api_key(raw_key, &tables.api_keys)?;
+        let (identity, credential) = authenticate_api_key_bound(raw_key, &tables.api_keys)?;
         let binding = self.bind_identity(&tables, &identity).await.ok()?;
-        Some(AuthenticatedCaller { identity, binding })
+        Some(AuthenticatedCaller {
+            identity,
+            binding,
+            credential,
+        })
     }
 
     async fn bind_identity(

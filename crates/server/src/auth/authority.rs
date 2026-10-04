@@ -139,11 +139,15 @@ impl AuthAuthority {
                 .as_ref()
                 .ok_or("auth authority requires stable principals")?;
             let role = Role::from_str_loose(&user.role).ok_or("invalid auth role")?;
-            users.push(json!({
+            let mut entry = json!({
                 "username": user.username, "principal": principal, "role": role,
                 "password_hash": user.password_hash.expose_secret(),
                 "grants": canonical_grants(&user.grants)?,
-            }));
+            });
+            if let Some(id) = &user.authority_id {
+                entry["authority_id"] = json!(id);
+            }
+            users.push(entry);
         }
         let mut keys = Vec::new();
         for key in &config.api_keys {
@@ -152,10 +156,14 @@ impl AuthAuthority {
                 .as_ref()
                 .ok_or("auth authority requires stable principals")?;
             let role = Role::from_str_loose(&key.role).ok_or("invalid auth role")?;
-            keys.push(json!({
+            let mut entry = json!({
                 "name": key.name, "principal": principal, "role": role,
                 "key_hash": key.key_hash.expose_secret(), "grants": canonical_grants(&key.grants)?,
-            }));
+            });
+            if let Some(id) = &key.authority_id {
+                entry["authority_id"] = json!(id);
+            }
+            keys.push(entry);
         }
         sort_values(&mut users);
         sort_values(&mut keys);
@@ -257,7 +265,7 @@ impl AuthAuthority {
 fn sort_values(values: &mut [Value]) {
     values.sort_by_cached_key(Value::to_string);
 }
-fn canonical_grants(grants: &[Grant]) -> Result<Vec<Value>, String> {
+pub(super) fn canonical_grants(grants: &[Grant]) -> Result<Vec<Value>, String> {
     let mut values = Vec::new();
     for grant in grants {
         let mut value = serde_json::to_value(grant).map_err(|_| "invalid auth grants")?;

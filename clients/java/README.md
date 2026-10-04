@@ -313,3 +313,9 @@ rotation. Roles and grants still apply independently to each credential. Legacy
 credentials return a null principal. Principal metadata does not grant execution
 permits or bind a bus agent automatically. See the
 [authentication guide](https://penserai.github.io/acteon/api/authentication/).
+
+The identity response also exposes the optional `authorityId()` logical enrollment ID configured
+as `authority_id` in `auth.toml`. Keep this ID when rotating a key; separate
+credentials for the same actor retain separate IDs and grants. JWT sessions pin
+the ID at login and require a new login if it changes. This field is inspection
+metadata, not a bearer credential or execution permit.
