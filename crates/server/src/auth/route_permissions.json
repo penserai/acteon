@@ -684,6 +684,24 @@
     "permission": "OperationsManage"
   },
   {
+    "name": "governance_inspect",
+    "method": "GET",
+    "path": "/v1/governance",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "governance_intervene",
+    "method": "POST",
+    "path": "/v1/governance/changes",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "governance_publish_permit",
+    "method": "POST",
+    "path": "/v1/governance/permits",
+    "permission": "OperationsManage"
+  },
+  {
     "name": "groups_flush_group",
     "method": "DELETE",
     "path": "/v1/groups/{group_key}",

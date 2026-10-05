@@ -118,6 +118,7 @@ nav:
     - features/index.md
     - Execution:
       - Execution permits: features/execution-permits.md
+      - Governance management: features/governance.md
       - Durable dispatch admission: features/durable-dispatch.md
       - Chains: features/chains.md
       - Sub-chains: features/sub-chains.md
@@ -184,6 +185,7 @@ nav:
       - Rule testing CLI: features/rule-testing-cli.md
   - Guides:
     - guides/index.md
+    - Governed city: guides/governed-city.md
     - Neural observability: guides/neural-observability-detector.md
     - A2A and agent registry: guides/a2a-agent-registry-tutorial.md
     - Agent swarm coordination: guides/agent-swarm-coordination.md

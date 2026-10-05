@@ -21,6 +21,7 @@ pub mod dlq;
 pub mod embeddings;
 pub mod events;
 pub mod executions;
+pub mod governance;
 pub mod groups;
 pub mod health;
 pub mod openapi;
@@ -187,6 +188,10 @@ pub fn router(state: AppState) -> Router {
         );
 
     let protected = Router::new()
+        // Governance: independently declared authenticated operator authority.
+        .route("/v1/governance", get(governance::inspect))
+        .route("/v1/governance/permits", post(governance::publish_permit))
+        .route("/v1/governance/changes", post(governance::intervene))
         // Dispatch
         .route("/v1/dispatch", post(dispatch::dispatch))
         .route("/v1/dispatch/batch", post(dispatch::dispatch_batch))

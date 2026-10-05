@@ -228,3 +228,5 @@ export {
 export * from "./platform.js";
 
 export { type PrincipalIdentity, type CredentialIdentity, parseCredentialIdentity } from "./models.js";
+
+export * from "./governance.js";

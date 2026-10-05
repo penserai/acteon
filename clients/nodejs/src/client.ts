@@ -1,3 +1,4 @@
+import type { GovernanceScopeView, GovernanceChangeReceipt, PublishGovernancePermitRequest, GovernanceInterventionRequest } from "./governance.js";
 import { platformRequestParts, type PlatformOperation, type PlatformRequestOptions } from "./platform.js";
 /**
  * HTTP client for the Acteon action gateway.
@@ -382,6 +383,17 @@ export class ActeonClient {
     if (!response.ok) throw new HttpError(response.status, await response.text());
     if (response.status === 204) return null;
     return parts.response === "text" ? response.text() : response.json();
+  }
+
+  /** Inspect only the routes and permits within current independent management policy. */
+  async governance(namespace: string, tenant: string): Promise<GovernanceScopeView> {
+    return await this.platformRequest("governance_inspect", { query: { namespace, tenant } }) as GovernanceScopeView;
+  }
+  async publishGovernancePermit(request: PublishGovernancePermitRequest): Promise<GovernanceChangeReceipt> {
+    return await this.platformRequest("governance_publish_permit", { body: request }) as GovernanceChangeReceipt;
+  }
+  async interveneGovernance(request: GovernanceInterventionRequest): Promise<GovernanceChangeReceipt> {
+    return await this.platformRequest("governance_intervene", { body: request }) as GovernanceChangeReceipt;
   }
 
   private readonly baseUrl: string;

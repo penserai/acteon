@@ -111,8 +111,9 @@ plus lease insert is not an atomic shared-budget guarantee.
 
 - Two coordinator instances share a memory StateStore; controlled barriers prove
   start-before-close and close-before-start outcomes.
-- The same tests run against independently connected instances of a durable
-  backend (select Redis first if its CAS contract passes).
+- The coordinator uses the configured `StateStore`. The same tests run against
+  independently connected instances of each supported durable backend
+  (PostgreSQL, Redis and DynamoDB), qualifying their CAS contracts separately.
 - A crash after restriction persistence but before secondary permit/closure
   object write leaves the restriction effective and the intent repairable.
 - Response loss after a successful registration returns/reconciles the same

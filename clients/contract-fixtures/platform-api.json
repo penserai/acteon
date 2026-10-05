@@ -1106,6 +1106,27 @@
       "response": "json"
     },
     {
+      "name": "governance_inspect",
+      "method": "GET",
+      "path": "/v1/governance",
+      "parameters": [],
+      "response": "json"
+    },
+    {
+      "name": "governance_intervene",
+      "method": "POST",
+      "path": "/v1/governance/changes",
+      "parameters": [],
+      "response": "json"
+    },
+    {
+      "name": "governance_publish_permit",
+      "method": "POST",
+      "path": "/v1/governance/permits",
+      "parameters": [],
+      "response": "json"
+    },
+    {
       "name": "groups_flush_group",
       "method": "DELETE",
       "path": "/v1/groups/{group_key}",

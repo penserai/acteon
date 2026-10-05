@@ -43,6 +43,18 @@ pub struct PermitReference {
     pub accepted_revision: u64,
 }
 
+/// Current host-authenticated publication; authorization is checked before
+/// replay and time is resampled after every CAS conflict.
+pub struct EvaluatedPermitPublication<'a> {
+    pub change_id: &'a str,
+    pub permit: ExecutionPermit,
+    pub expected_revision: u64,
+    pub ceiling: &'a PermitIssuanceCeiling,
+    pub evaluated_authority: &'a AuthorityStamp,
+    pub reason: &'a str,
+    pub clock: &'a dyn acteon_time::Clock,
+}
+
 /// Independently evaluated management ceiling supplied by a trusted host.
 /// No Deserialize implementation: public payloads cannot establish issuance rights.
 pub struct PermitIssuanceCeiling {
@@ -285,6 +297,48 @@ impl AuthorityCoordinator {
         reason: &str,
         now_ms: i64,
     ) -> Result<ChangeRecord, CoordinationError> {
+        self.publish_permit_internal(
+            change_id,
+            permit,
+            expected_revision,
+            ceiling,
+            evaluated_authority,
+            reason,
+            now_ms,
+            None,
+        )
+        .await
+    }
+
+    pub async fn publish_permit_evaluated(
+        &self,
+        request: EvaluatedPermitPublication<'_>,
+    ) -> Result<ChangeRecord, CoordinationError> {
+        self.publish_permit_internal(
+            request.change_id,
+            request.permit,
+            request.expected_revision,
+            request.ceiling,
+            request.evaluated_authority,
+            request.reason,
+            request.clock.now().timestamp_millis(),
+            Some(request.clock),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn publish_permit_internal(
+        &self,
+        change_id: &str,
+        permit: ExecutionPermit,
+        expected_revision: u64,
+        ceiling: &PermitIssuanceCeiling,
+        evaluated_authority: &AuthorityStamp,
+        reason: &str,
+        now_ms: i64,
+        clock: Option<&dyn acteon_time::Clock>,
+    ) -> Result<ChangeRecord, CoordinationError> {
         if ![change_id, reason].into_iter().all(valid_text)
             || !self.valid_permit(&permit)
             || expected_revision.checked_add(1) != Some(permit.revision)
@@ -300,6 +354,20 @@ impl AuthorityCoordinator {
             let (mut state, version) = self.load().await?;
             if evaluated_authority.incarnation != state.incarnation {
                 return Err(CoordinationError::StaleAuthority);
+            }
+            let now_ms = clock.map_or(now_ms, |clock| clock.now().timestamp_millis());
+            if clock.is_some() {
+                if state.purpose != crate::ScopePurpose::Execution
+                    || state.revoked_subjects.contains(ceiling.issuer.id())
+                {
+                    return Err(CoordinationError::Restricted);
+                }
+                if state.stamp() != *evaluated_authority {
+                    return Err(CoordinationError::StaleAuthority);
+                }
+                if !within_issuance(&permit, ceiling, now_ms) {
+                    return Err(CoordinationError::PermitDenied(PermitDenial::Effect));
+                }
             }
             if let Some(existing) = state.changes.get(change_id) {
                 if existing.change != change

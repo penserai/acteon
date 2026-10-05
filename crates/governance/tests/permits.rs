@@ -8,8 +8,8 @@ use acteon_governance::permit::{
     permit_revision_tag,
 };
 use acteon_governance::{
-    AttemptStatus, AuthorityChange, AuthorityCoordinator, COORDINATOR_KIND, CoordinationError,
-    CoordinatorLimits, RootBudgetLimits, StartRegistration,
+    AttemptStatus, AuthorityChange, AuthorityCoordinator, AuthorityStamp, COORDINATOR_KIND,
+    CoordinationError, CoordinatorLimits, RootBudgetLimits, StartRegistration,
 };
 use acteon_state::testing::faults::{FaultStore, FaultTiming, WriteOperation};
 use acteon_state::{KeyKind, StateKey, StateStore};
@@ -748,4 +748,140 @@ async fn deadline_is_refreshed_after_budget_cas_contention() {
         Err(CoordinationError::PermitDenied(PermitDenial::Validity))
     ));
     assert_eq!(peer.snapshot().await.unwrap().starts.len(), 1);
+}
+
+#[tokio::test]
+async fn evaluated_publication_checks_current_authority_before_replay() {
+    let coordinator = AuthorityCoordinator::initialize(
+        Arc::new(MemoryStateStore::new()),
+        "city",
+        "tenant",
+        CoordinatorLimits::default(),
+    )
+    .await
+    .unwrap();
+    coordinator
+        .reserve_scope(acteon_governance::ScopePurpose::Execution)
+        .await
+        .unwrap();
+    let policy = ceiling();
+    let time = at(100);
+    let stamp = coordinator.snapshot().await.unwrap().stamp();
+    let publish = |stamp: AuthorityStamp| {
+        let coordinator = coordinator.clone();
+        let time = time.clone();
+        async move {
+            coordinator
+                .publish_permit_evaluated(acteon_governance::permit::EvaluatedPermitPublication {
+                    change_id: "issue",
+                    permit: permit(),
+                    expected_revision: 0,
+                    ceiling: &ceiling(),
+                    evaluated_authority: &stamp,
+                    reason: "reviewed",
+                    clock: &time,
+                })
+                .await
+        }
+    };
+    let record = publish(stamp.clone()).await.unwrap();
+    assert!(matches!(
+        publish(stamp).await,
+        Err(CoordinationError::StaleAuthority)
+    ));
+    assert_eq!(
+        publish(coordinator.snapshot().await.unwrap().stamp())
+            .await
+            .unwrap(),
+        record
+    );
+    coordinator
+        .change(
+            "revoke-issuer",
+            AuthorityChange::RevokeSubject {
+                subject: policy.issuer.id().into(),
+            },
+            "security",
+            "revoked",
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        publish(coordinator.snapshot().await.unwrap().stamp()).await,
+        Err(CoordinationError::Restricted)
+    ));
+}
+
+#[tokio::test]
+async fn evaluated_publication_resamples_expiry_after_same_generation_cas_conflict() {
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let faults = Arc::new(FaultStore::new(store.clone()));
+    let coordinator = AuthorityCoordinator::initialize(
+        faults.clone(),
+        "city",
+        "tenant",
+        CoordinatorLimits::default(),
+    )
+    .await
+    .unwrap();
+    coordinator
+        .reserve_scope(acteon_governance::ScopePurpose::Execution)
+        .await
+        .unwrap();
+    coordinator
+        .change(
+            "existing-event",
+            AuthorityChange::CloseResource {
+                resource: ResourceRef::new(ResourceKind::Endpoint, "city", "tenant", "unrelated")
+                    .unwrap(),
+            },
+            "security",
+            "maintenance",
+        )
+        .await
+        .unwrap();
+    let peer = AuthorityCoordinator::connect(store, "city", "tenant")
+        .await
+        .unwrap();
+    let stamp = coordinator.snapshot().await.unwrap().stamp();
+    let original_stamp = stamp.clone();
+    let clock = at(100);
+    let task_clock = clock.clone();
+    let release = faults
+        .pause_next(
+            KeyKind::Custom(COORDINATOR_KIND.into()),
+            WriteOperation::CompareAndSwap,
+            FaultTiming::Before,
+        )
+        .unwrap();
+    let task = tokio::spawn(async move {
+        coordinator
+            .publish_permit_evaluated(acteon_governance::permit::EvaluatedPermitPublication {
+                change_id: "delayed-issue",
+                permit: permit(),
+                expected_revision: 0,
+                ceiling: &ceiling(),
+                evaluated_authority: &stamp,
+                reason: "reviewed",
+                clock: &task_clock,
+            })
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while faults.consumed() == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    peer.acknowledge_change("existing-event").await.unwrap();
+    assert_eq!(peer.snapshot().await.unwrap().stamp(), original_stamp);
+    clock
+        .advance_to(std::time::Duration::from_millis(6000))
+        .unwrap();
+    release.send(()).unwrap();
+    assert!(task.await.unwrap().is_err());
+    let state = peer.snapshot().await.unwrap();
+    assert!(state.permits.is_empty());
+    assert!(!state.changes.contains_key("delayed-issue"));
 }

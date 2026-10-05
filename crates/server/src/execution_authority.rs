@@ -1,7 +1,7 @@
 //! Production preparation from validated declarations and actual registrations.
 //! Preparation is read-only; publication is a later, explicitly ordered stage.
 mod runtime;
-pub use runtime::{ExecutionAuthorityRuntime, ExecutionRuntimeDependencies};
+pub use runtime::{ExecutionAuthorityRuntime, ExecutionRuntimeDependencies, ManagementError};
 use std::{collections::BTreeMap, sync::Arc};
 
 use acteon_core::Action;
@@ -24,6 +24,39 @@ use crate::{
     config::{ExecutionAuthorityConfig, ExecutionScopeConfig},
     provider_factory::StaticWebhook,
 };
+
+// Resolve intervention footprints before publishing any authority. A valid
+// route count can still exceed the bounded control ceiling.
+fn validate_management_footprints(
+    declaration: &ExecutionScopeConfig,
+    catalog: &QualifiedProviderCatalog,
+) -> Result<(), String> {
+    let definitions = catalog.definitions(&declaration.namespace, &declaration.tenant);
+    for manager in declaration.managers.iter().filter(|m| m.can_intervene) {
+        let resources = definitions
+            .iter()
+            .filter(|d| {
+                manager
+                    .routes
+                    .iter()
+                    .any(|r| r.provider == d.provider && r.action_type == d.action_type)
+            })
+            .flat_map(|d| d.effect.resources.iter().cloned())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        acteon_governance::control::ControlChangeCeiling {
+            actor: manager.principal.clone(),
+            subjects: manager.subjects.clone(),
+            resources,
+            valid_from_ms: manager.valid_from_ms,
+            deadline_ms: manager.limits.deadline_ms,
+        }
+        .validate()
+        .map_err(|_| "execution manager exceeds control footprint capacity")?;
+    }
+    Ok(())
+}
 
 struct Registration {
     actual: Arc<dyn DynProvider>,
@@ -78,6 +111,13 @@ impl ExecutionProviderRegistry {
                 let mut declaration = scope.clone();
                 declaration.subjects.sort_by(|a, b| a.id().cmp(b.id()));
                 declaration.routes.sort();
+                declaration
+                    .managers
+                    .sort_by(|a, b| a.principal.id().cmp(b.principal.id()));
+                for manager in &mut declaration.managers {
+                    manager.subjects.sort_by(|a, b| a.id().cmp(b.id()));
+                    manager.routes.sort();
+                }
                 declaration.permits.sort_by(|a, b| a.id.cmp(&b.id));
                 for permit in &mut declaration.permits {
                     permit.routes.sort();
@@ -134,8 +174,9 @@ impl ExecutionProviderRegistry {
                 issuance
                     .validate()
                     .map_err(|_| "invalid independently declared execution ceiling")?;
+                validate_management_footprints(&declaration, &catalog)?;
                 // Bootstrap is an operational initialization choice, not policy.
-                let bytes = serde_json::to_vec(&serde_json::json!({
+                let mut policy = serde_json::json!({
                     "format": "acteon.execution_scope.policy.v1",
                     "namespace": declaration.namespace, "tenant": declaration.tenant,
                     "issuance": {"issuer": issuance.issuer, "subjects": issuance.subjects,
@@ -144,8 +185,12 @@ impl ExecutionProviderRegistry {
                     "root_max_units": declaration.root_max_units,
                     "root_max_concurrent": declaration.root_max_concurrent,
                     "root_lifetime_ms": declaration.root_lifetime_ms,
-                }))
-                .map_err(|_| "invalid execution deployment policy")?;
+                });
+                if !declaration.managers.is_empty() {
+                    policy["managers"] = serde_json::json!(declaration.managers);
+                }
+                let bytes = serde_json::to_vec(&policy)
+                    .map_err(|_| "invalid execution deployment policy")?;
                 Ok(PreparedExecutionScope {
                     declaration,
                     catalog,

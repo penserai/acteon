@@ -1206,3 +1206,5 @@ export interface PermitReference {
   id: string
   accepted_revision: number
 }
+
+export type * from "./governance"

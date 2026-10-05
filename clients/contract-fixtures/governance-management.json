@@ -1,0 +1,127 @@
+{
+  "scope": {
+    "namespace": "prod",
+    "tenant": "acme",
+    "incarnation": "7210ea64-4013-4f86-a581-fb2028ba6bc5",
+    "generation": 5,
+    "management": {
+      "subjects": [
+        {
+          "id": "agent/maya",
+          "kind": "agent"
+        }
+      ],
+      "can_issue_permits": true,
+      "can_intervene": true,
+      "valid_from_ms": 0,
+      "limits": {
+        "max_units": 5,
+        "max_concurrent": 1,
+        "deadline_ms": 4102444800000
+      }
+    },
+    "routes": [
+      {
+        "route": {
+          "provider": "incident",
+          "action_type": "execute"
+        },
+        "effect": {
+          "operation": "provider.execute",
+          "resources": [
+            {
+              "kind": "endpoint",
+              "namespace": "prod",
+              "tenant": "acme",
+              "id": "incident"
+            }
+          ]
+        },
+        "closed": false
+      }
+    ],
+    "permits": [
+      {
+        "id": "online-maya",
+        "revision": 1,
+        "subject": {
+          "id": "agent/maya",
+          "kind": "agent"
+        },
+        "effects": [
+          {
+            "operation": "provider.execute",
+            "resources": [
+              {
+                "kind": "endpoint",
+                "namespace": "prod",
+                "tenant": "acme",
+                "id": "incident"
+              }
+            ]
+          }
+        ],
+        "valid_from_ms": 0,
+        "limits": {
+          "max_units": 5,
+          "max_concurrent": 1,
+          "deadline_ms": 4102444800000
+        },
+        "revoked": false
+      }
+    ],
+    "closed_resources": [],
+    "revoked_subjects": []
+  },
+  "publication": {
+    "namespace": "prod",
+    "tenant": "acme",
+    "change_id": "issue-online",
+    "expected_revision": 0,
+    "permit": {
+      "id": "online-maya",
+      "revision": 1,
+      "subject": {
+        "id": "agent/maya",
+        "kind": "agent"
+      },
+      "routes": [
+        {
+          "provider": "incident",
+          "action_type": "execute"
+        }
+      ],
+      "valid_from_ms": 0,
+      "limits": {
+        "max_units": 5,
+        "max_concurrent": 1,
+        "deadline_ms": 4102444800000
+      }
+    },
+    "reason": "incident response"
+  },
+  "intervention": {
+    "namespace": "prod",
+    "tenant": "acme",
+    "change_id": "road-closure",
+    "reason": "maintenance",
+    "change": {
+      "kind": "close_resource",
+      "resource": {
+        "kind": "endpoint",
+        "namespace": "prod",
+        "tenant": "acme",
+        "id": "incident"
+      }
+    }
+  },
+  "receipt": {
+    "namespace": "prod",
+    "tenant": "acme",
+    "change_id": "road-closure",
+    "reason": "maintenance",
+    "actor": "operator",
+    "generation": 5,
+    "pending": true
+  }
+}

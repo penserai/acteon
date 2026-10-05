@@ -56,6 +56,17 @@ impl AuthenticatedExecutionConfiguration {
         })
     }
 
+    pub(crate) fn management_scope(
+        &self,
+        namespace: &str,
+        tenant: &str,
+    ) -> Result<ScopedCredentialBinding, String> {
+        if !self.credential.can_manage_scope(namespace, tenant) {
+            return Err("original credential lacks scope management permission".into());
+        }
+        self.scope(namespace, tenant)
+    }
+
     pub fn scope(&self, namespace: &str, tenant: &str) -> Result<ScopedCredentialBinding, String> {
         let configuration = self
             .scopes
@@ -115,7 +126,7 @@ impl ScopedCredentialBinding {
         coordinator: &AuthorityCoordinator,
         now_ms: i64,
     ) -> Result<AuthorityStamp, String> {
-        self.verify_scope(coordinator, now_ms, false).await
+        self.verify_scope(coordinator, now_ms, false, false).await
     }
 
     pub(crate) async fn verify_execution_scope(
@@ -123,7 +134,15 @@ impl ScopedCredentialBinding {
         coordinator: &AuthorityCoordinator,
         now_ms: i64,
     ) -> Result<AuthorityStamp, String> {
-        self.verify_scope(coordinator, now_ms, true).await
+        self.verify_scope(coordinator, now_ms, true, false).await
+    }
+
+    pub(crate) fn verify_management_snapshot(
+        &self,
+        state: &acteon_governance::CoordinatorSnapshot,
+        now_ms: i64,
+    ) -> Result<AuthorityStamp, String> {
+        self.verify_scope_snapshot(state, now_ms, true, true)
     }
 
     async fn verify_scope(
@@ -131,11 +150,22 @@ impl ScopedCredentialBinding {
         coordinator: &AuthorityCoordinator,
         now_ms: i64,
         require_execution: bool,
+        allow_disabled: bool,
     ) -> Result<AuthorityStamp, String> {
         let state = coordinator
             .snapshot()
             .await
             .map_err(|_| "scope authority unavailable")?;
+        self.verify_scope_snapshot(&state, now_ms, require_execution, allow_disabled)
+    }
+
+    fn verify_scope_snapshot(
+        &self,
+        state: &acteon_governance::CoordinatorSnapshot,
+        now_ms: i64,
+        require_execution: bool,
+        allow_disabled: bool,
+    ) -> Result<AuthorityStamp, String> {
         let head = state
             .credential_configurations
             .get(&self.configuration.source_id)
@@ -152,7 +182,7 @@ impl ScopedCredentialBinding {
             || head.digest != self.configuration.digest
             || !head.owned_credentials.contains(&self.reference.id)
             || credential.revoked
-            || !credential.authority.execution_enabled
+            || (!allow_disabled && !credential.authority.execution_enabled)
             || state
                 .revoked_subjects
                 .contains(self.credential.principal().id())

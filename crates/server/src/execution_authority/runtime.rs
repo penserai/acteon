@@ -1,4 +1,6 @@
 //! Shared server installation against the configured backend, without wire proof.
+mod management;
+pub use management::ManagementError;
 use std::{collections::BTreeMap, sync::Arc};
 
 use acteon_core::{Action, ActionOutcome};

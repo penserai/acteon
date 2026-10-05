@@ -23,6 +23,7 @@ pub mod error;
 pub mod execution_context;
 pub mod execution_history;
 pub mod fingerprint;
+pub mod governance;
 pub mod group;
 pub mod key;
 pub mod outcome;
@@ -162,3 +163,5 @@ pub use workflow::{
     WorkflowAwait, WorkflowCheckpoint, WorkflowChildRef, WorkflowDirective, WorkflowExecution,
     WorkflowStatus,
 };
+
+pub use governance::*;

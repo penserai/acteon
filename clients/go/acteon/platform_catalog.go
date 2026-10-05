@@ -114,6 +114,9 @@ const (
 	OpExecutionsResetExecution            PlatformOperation = "executions_reset_execution"
 	OpExecutionsSignalExecution           PlatformOperation = "executions_signal_execution"
 	OpExecutionsUpsertExecutionAttributes PlatformOperation = "executions_upsert_execution_attributes"
+	OpGovernanceInspect                   PlatformOperation = "governance_inspect"
+	OpGovernanceIntervene                 PlatformOperation = "governance_intervene"
+	OpGovernancePublishPermit             PlatformOperation = "governance_publish_permit"
 	OpGroupsFlushGroup                    PlatformOperation = "groups_flush_group"
 	OpGroupsGetGroup                      PlatformOperation = "groups_get_group"
 	OpGroupsListGroups                    PlatformOperation = "groups_list_groups"
@@ -305,6 +308,9 @@ var platformOperations = map[PlatformOperation]platformDescriptor{
 	OpExecutionsResetExecution:            {"POST", "/v1/executions/{execution_id}/reset", []string{"execution_id"}, false},
 	OpExecutionsSignalExecution:           {"POST", "/v1/executions/{execution_id}/signal/{signal_name}", []string{"execution_id", "signal_name"}, false},
 	OpExecutionsUpsertExecutionAttributes: {"PUT", "/v1/executions/{execution_id}/attributes", []string{"execution_id"}, false},
+	OpGovernanceInspect:                   {"GET", "/v1/governance", []string{}, false},
+	OpGovernanceIntervene:                 {"POST", "/v1/governance/changes", []string{}, false},
+	OpGovernancePublishPermit:             {"POST", "/v1/governance/permits", []string{}, false},
 	OpGroupsFlushGroup:                    {"DELETE", "/v1/groups/{group_key}", []string{"group_key"}, false},
 	OpGroupsGetGroup:                      {"GET", "/v1/groups/{group_key}", []string{"group_key"}, false},
 	OpGroupsListGroups:                    {"GET", "/v1/groups", []string{}, false},
