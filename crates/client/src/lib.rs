@@ -405,3 +405,6 @@ mod tests {
 pub mod stream_stage;
 #[cfg(feature = "stream-processing")]
 pub use stream_stage::{HttpStageSubscription, HttpStreamStageSource};
+
+#[cfg(test)]
+mod permit_tests;

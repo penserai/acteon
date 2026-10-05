@@ -1,5 +1,7 @@
 //! Production preparation from validated declarations and actual registrations.
 //! Preparation is read-only; publication is a later, explicitly ordered stage.
+mod runtime;
+pub use runtime::{ExecutionAuthorityRuntime, ExecutionRuntimeDependencies};
 use std::{collections::BTreeMap, sync::Arc};
 
 use acteon_core::Action;
@@ -76,6 +78,10 @@ impl ExecutionProviderRegistry {
                 let mut declaration = scope.clone();
                 declaration.subjects.sort_by(|a, b| a.id().cmp(b.id()));
                 declaration.routes.sort();
+                declaration.permits.sort_by(|a, b| a.id.cmp(&b.id));
+                for permit in &mut declaration.permits {
+                    permit.routes.sort();
+                }
                 for effect in &mut declaration.historical_effects {
                     effect.resources.sort();
                 }

@@ -34,6 +34,20 @@ pub struct ExecutionScopeConfig {
     pub root_max_units: u64,
     pub root_max_concurrent: u64,
     pub root_lifetime_ms: u64,
+    /// Explicit operator-issued permits. Omitting an entry does not revoke it.
+    #[serde(default)]
+    pub permits: Vec<ExecutionPermitDeclaration>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionPermitDeclaration {
+    pub id: String,
+    pub revision: u64,
+    pub subject: PrincipalIdentity,
+    pub routes: Vec<ExecutionRouteConfig>,
+    pub valid_from_ms: i64,
+    pub limits: RootBudgetLimits,
 }
 
 /// A concrete primary action on an actual registered provider. Wildcard routes
@@ -52,6 +66,7 @@ impl ExecutionAuthorityConfig {
         }
         let mut scopes = BTreeSet::new();
         for scope in &self.scopes {
+            scope.validate_permits()?;
             if (scope.namespace.as_str(), scope.tenant.as_str()) == control_scope
                 || !scopes.insert((&scope.namespace, &scope.tenant))
             {
@@ -118,6 +133,42 @@ impl ExecutionAuthorityConfig {
                 }
                 .validate()
                 .map_err(|_| "invalid historical publication ceiling")?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl ExecutionScopeConfig {
+    fn validate_permits(&self) -> Result<(), String> {
+        let mut permit_ids = BTreeSet::new();
+        if self.permits.len() > 128 {
+            return Err("too many deployment permits".into());
+        }
+        for permit in &self.permits {
+            ResourceRef::new(
+                ResourceKind::Action,
+                &self.namespace,
+                &self.tenant,
+                &permit.id,
+            )
+            .map_err(|_| "invalid deployment permit ID")?;
+            if !permit_ids.insert(&permit.id)
+                || permit.revision == 0
+                || !self.subjects.contains(&permit.subject)
+                || permit.routes.is_empty()
+                || permit.routes.len() > 128
+                || permit.routes.iter().any(|r| !self.routes.contains(r))
+                || permit.routes.iter().collect::<BTreeSet<_>>().len() != permit.routes.len()
+                || permit.valid_from_ms < self.valid_from_ms
+                || permit.limits.max_units == 0
+                || permit.limits.max_concurrent == 0
+                || permit.limits.max_units > self.credential_limits.max_units
+                || permit.limits.max_concurrent > self.credential_limits.max_concurrent
+                || permit.limits.deadline_ms > self.credential_limits.deadline_ms
+                || permit.limits.deadline_ms <= permit.valid_from_ms
+            {
+                return Err("deployment permit exceeds independently declared scope bounds".into());
             }
         }
         Ok(())

@@ -65,6 +65,9 @@ pub struct ActeonConfig {
     /// Authentication and authorization configuration.
     #[serde(default)]
     pub auth: AuthRefConfig,
+    /// Opt-in qualified provider execution under explicit permits.
+    #[serde(default)]
+    pub execution_authority: Option<ExecutionAuthorityConfig>,
     /// Rate limiting configuration.
     #[serde(default)]
     pub rate_limit: RateLimitRefConfig,

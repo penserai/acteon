@@ -321,6 +321,8 @@ jobs:
         run: cargo test --locked -p acteon-server --no-default-features --test auth_authority real_memory_server_uses_the_configured_state_backend
       - name: Private final-work admission with memory and no Redis feature
         run: cargo test --locked -p acteon-server --no-default-features --test execution_preparation
+      - name: Governed HTTP dispatch with memory and no Redis feature
+        run: cargo test --locked -p acteon-server --no-default-features --test execution_http
       - name: Server authentication authority and startup Redis contracts
         env:
           ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
@@ -341,6 +343,8 @@ jobs:
         run: cargo test --locked -p acteon-server --features postgres --test auth_authority independent_postgres_authentication_replicas_pass_the_contract -- --ignored
       - name: Root admission multi-client PostgreSQL contract
         run: cargo test --locked -p acteon-server --features postgres --test execution_preparation independent_postgres_root_admission_passes_the_contract -- --ignored
+      - name: Governed HTTP dispatch survives PostgreSQL server restart
+        run: cargo test --locked -p acteon-server --no-default-features --features postgres --test execution_http -- --include-ignored
       - name: PostgreSQL audit-store conformance
         run: cargo test --locked -p acteon-audit-postgres --features integration --lib
       - name: Start disposable DynamoDB

@@ -3,6 +3,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ActeonClient, Error};
 
+/// Explicit reference to an operator-issued permit; this is not authority proof.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PermitReference {
+    pub id: String,
+    pub accepted_revision: u64,
+}
+
 /// Error response from the API.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ErrorResponse {
@@ -75,7 +82,7 @@ impl ActeonClient {
     /// # }
     /// ```
     pub async fn dispatch(&self, action: &Action) -> Result<ActionOutcome, Error> {
-        self.dispatch_inner(action, false).await
+        self.dispatch_inner(action, false, None).await
     }
 
     /// Sign an action with an Ed25519 key, then dispatch it.
@@ -114,7 +121,7 @@ impl ActeonClient {
         let canonical = signed.canonical_bytes();
         signed.signature = Some(key.sign(&canonical));
         signed.signer_id = Some(key.signer_id().to_owned());
-        self.dispatch_inner(&signed, false).await
+        self.dispatch_inner(&signed, false, None).await
     }
 
     /// Sign an action and stamp it with a `kid` for the key rotation
@@ -143,7 +150,7 @@ impl ActeonClient {
         signed.signature = Some(key.sign(&canonical));
         signed.signer_id = Some(key.signer_id().to_owned());
         signed.kid = Some(kid.into());
-        self.dispatch_inner(&signed, false).await
+        self.dispatch_inner(&signed, false, None).await
     }
 
     /// Dispatch a single action in dry-run mode.
@@ -167,7 +174,7 @@ impl ActeonClient {
     /// # }
     /// ```
     pub async fn dispatch_dry_run(&self, action: &Action) -> Result<ActionOutcome, Error> {
-        self.dispatch_inner(action, true).await
+        self.dispatch_inner(action, true, None).await
     }
 
     /// Dispatch a single action with file attachments.
@@ -208,17 +215,47 @@ impl ActeonClient {
     ) -> Result<ActionOutcome, Error> {
         let mut action = action.clone();
         action.attachments = attachments;
-        self.dispatch_inner(&action, false).await
+        self.dispatch_inner(&action, false, None).await
     }
 
-    async fn dispatch_inner(&self, action: &Action, dry_run: bool) -> Result<ActionOutcome, Error> {
+    /// Dispatch with explicit permit references and the configured credentials.
+    pub async fn dispatch_with_permits(
+        &self,
+        action: &Action,
+        permits: &[PermitReference],
+    ) -> Result<ActionOutcome, Error> {
+        self.dispatch_inner(action, false, Some(permits)).await
+    }
+
+    /// Dispatch a batch using explicit permit references for every action.
+    pub async fn dispatch_batch_with_permits(
+        &self,
+        actions: &[Action],
+        permits: &[PermitReference],
+    ) -> Result<Vec<BatchResult>, Error> {
+        self.dispatch_batch_inner(actions, false, Some(permits))
+            .await
+    }
+
+    async fn dispatch_inner(
+        &self,
+        action: &Action,
+        dry_run: bool,
+        permits: Option<&[PermitReference]>,
+    ) -> Result<ActionOutcome, Error> {
         let mut url = format!("{}/v1/dispatch", self.base_url);
         if dry_run {
             url.push_str("?dry_run=true");
         }
 
-        let response = self
-            .add_auth(self.client.post(&url))
+        let mut request = self.add_auth(self.client.post(&url));
+        if let Some(permits) = permits {
+            request = request.header(
+                "x-acteon-execution-permits",
+                serde_json::to_string(permits).map_err(|e| Error::Configuration(e.to_string()))?,
+            );
+        }
+        let response = request
             .json(action)
             .send()
             .await
@@ -231,15 +268,7 @@ impl ActeonClient {
                 .map_err(|e| Error::Deserialization(e.to_string()))?;
             Ok(outcome)
         } else {
-            let error = response
-                .json::<ErrorResponse>()
-                .await
-                .map_err(|e| Error::Deserialization(e.to_string()))?;
-            Err(Error::Api {
-                code: error.code,
-                message: error.message,
-                retryable: error.retryable,
-            })
+            Err(dispatch_error(response).await?)
         }
     }
 
@@ -271,7 +300,7 @@ impl ActeonClient {
     /// # }
     /// ```
     pub async fn dispatch_batch(&self, actions: &[Action]) -> Result<Vec<BatchResult>, Error> {
-        self.dispatch_batch_inner(actions, false).await
+        self.dispatch_batch_inner(actions, false, None).await
     }
 
     /// Dispatch multiple actions in dry-run mode.
@@ -282,21 +311,28 @@ impl ActeonClient {
         &self,
         actions: &[Action],
     ) -> Result<Vec<BatchResult>, Error> {
-        self.dispatch_batch_inner(actions, true).await
+        self.dispatch_batch_inner(actions, true, None).await
     }
 
     async fn dispatch_batch_inner(
         &self,
         actions: &[Action],
         dry_run: bool,
+        permits: Option<&[PermitReference]>,
     ) -> Result<Vec<BatchResult>, Error> {
         let mut url = format!("{}/v1/dispatch/batch", self.base_url);
         if dry_run {
             url.push_str("?dry_run=true");
         }
 
-        let response = self
-            .add_auth(self.client.post(&url))
+        let mut request = self.add_auth(self.client.post(&url));
+        if let Some(permits) = permits {
+            request = request.header(
+                "x-acteon-execution-permits",
+                serde_json::to_string(permits).map_err(|e| Error::Configuration(e.to_string()))?,
+            );
+        }
+        let response = request
             .json(actions)
             .send()
             .await
@@ -309,15 +345,27 @@ impl ActeonClient {
                 .map_err(|e| Error::Deserialization(e.to_string()))?;
             Ok(results)
         } else {
-            let error = response
-                .json::<ErrorResponse>()
-                .await
-                .map_err(|e| Error::Deserialization(e.to_string()))?;
-            Err(Error::Api {
-                code: error.code,
-                message: error.message,
-                retryable: error.retryable,
-            })
+            Err(dispatch_error(response).await?)
         }
+    }
+}
+
+async fn dispatch_error(response: reqwest::Response) -> Result<Error, Error> {
+    let status = response.status().as_u16();
+    let body = response
+        .text()
+        .await
+        .map_err(|e| Error::Connection(e.to_string()))?;
+    if let Ok(error) = serde_json::from_str::<ErrorResponse>(&body) {
+        Ok(Error::Api {
+            code: error.code,
+            message: error.message,
+            retryable: error.retryable,
+        })
+    } else {
+        Ok(Error::Http {
+            status,
+            message: body,
+        })
     }
 }

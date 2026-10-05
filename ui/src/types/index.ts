@@ -737,6 +737,7 @@ export interface WasmTestResponse {
 
 // ---- Config ----
 export interface ConfigResponse {
+  execution_authority_enabled?: boolean
   server: {
     host: string
     port: number
@@ -1199,4 +1200,9 @@ export interface CredentialIdentity {
   auth_method: string
   role: string
   principal: PrincipalIdentity | null
+}
+
+export interface PermitReference {
+  id: string
+  accepted_revision: number
 }

@@ -117,6 +117,7 @@ nav:
   - Capabilities:
     - features/index.md
     - Execution:
+      - Execution permits: features/execution-permits.md
       - Durable dispatch admission: features/durable-dispatch.md
       - Chains: features/chains.md
       - Sub-chains: features/sub-chains.md

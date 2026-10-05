@@ -638,3 +638,13 @@ control scope and shared fingerprint key. The scope is permanently reserved for
 that source; normal startup connects to existing compatible state. See [shared authentication authority](../api/authentication.md#shared-authentication-authority-across-replicas)
 for bootstrap, reload and recovery semantics. This setting governs authentication
 freshness; it does not enable per-effect execution permits.
+
+## Execution authority
+
+The optional `[execution_authority]` deployment profile installs qualified
+provider execution, private credential projection and explicit permits against
+the configured `[state]` backend. It requires shared authentication authority
+and `ACTEON_EXECUTION_AUTHORITY_KEY`. See [Execution permits](../features/execution-permits.md)
+for a complete scope declaration, SDK options, replay behavior and current
+execution-path coverage. The sanitized admin configuration exposes only
+`execution_authority_enabled` for this profile.

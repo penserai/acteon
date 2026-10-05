@@ -323,23 +323,40 @@ public class ActeonClient implements AutoCloseable {
     // Action Dispatch
     // =========================================================================
 
-    /**
-     * Dispatches a single action.
-     */
+    /** Preserve typed API errors and HTTP refusals from dispatch. */
+    private ActeonException dispatchError(HttpResponse<String> response) {
+        try {
+            var data = objectMapper.readTree(response.body());
+            if (data != null && data.hasNonNull("code") && data.hasNonNull("message")) {
+                return new ApiException(data.get("code").asText(), data.get("message").asText(),
+                    data.path("retryable").asBoolean(false));
+            }
+        } catch (IOException ignored) { /* Preserve the HTTP status and raw error. */ }
+        return new HttpException(response.statusCode(), response.body());
+    }
+
+    /** Dispatches a single action. */
     public ActionOutcome dispatch(Action action) throws ActeonException {
+        return dispatch(action, null);
+    }
+
+    /** Dispatch with explicit issued permits and the configured credentials. */
+    public ActionOutcome dispatch(Action action, List<PermitReference> permits) throws ActeonException {
         try {
             String body = objectMapper.writeValueAsString(action);
-            HttpRequest request = requestBuilder("/v1/dispatch")
-                .POST(HttpRequest.BodyPublishers.ofString(body))
-                .build();
+            HttpRequest.Builder builder = requestBuilder("/v1/dispatch")
+                .POST(HttpRequest.BodyPublishers.ofString(body));
+            if (permits != null) {
+                builder.header("x-acteon-execution-permits", objectMapper.writeValueAsString(permits));
+            }
+            HttpRequest request = builder.build();
 
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
             if (response.statusCode() == 200) {
                 return objectMapper.readValue(response.body(), ActionOutcome.class);
             } else {
-                ErrorResponse error = parseResponse(response, ErrorResponse.class);
-                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+                throw dispatchError(response);
             }
         } catch (IOException e) {
             throw new ConnectionException(e.getMessage(), e);
@@ -365,8 +382,7 @@ public class ActeonClient implements AutoCloseable {
             if (response.statusCode() == 200) {
                 return objectMapper.readValue(response.body(), ActionOutcome.class);
             } else {
-                ErrorResponse error = parseResponse(response, ErrorResponse.class);
-                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+                throw dispatchError(response);
             }
         } catch (IOException e) {
             throw new ConnectionException(e.getMessage(), e);
@@ -380,11 +396,19 @@ public class ActeonClient implements AutoCloseable {
      * Dispatches multiple actions in a single request.
      */
     public List<BatchResult> dispatchBatch(List<Action> actions) throws ActeonException {
+        return dispatchBatch(actions, null);
+    }
+
+    /** Dispatch with explicit issued permits and the configured credentials. */
+    public List<BatchResult> dispatchBatch(List<Action> actions, List<PermitReference> permits) throws ActeonException {
         try {
             String body = objectMapper.writeValueAsString(actions);
-            HttpRequest request = requestBuilder("/v1/dispatch/batch")
-                .POST(HttpRequest.BodyPublishers.ofString(body))
-                .build();
+            HttpRequest.Builder builder = requestBuilder("/v1/dispatch/batch")
+                .POST(HttpRequest.BodyPublishers.ofString(body));
+            if (permits != null) {
+                builder.header("x-acteon-execution-permits", objectMapper.writeValueAsString(permits));
+            }
+            HttpRequest request = builder.build();
 
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
@@ -394,8 +418,7 @@ public class ActeonClient implements AutoCloseable {
                     new TypeReference<List<BatchResult>>() {}
                 );
             } else {
-                ErrorResponse error = parseResponse(response, ErrorResponse.class);
-                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+                throw dispatchError(response);
             }
         } catch (IOException e) {
             throw new ConnectionException(e.getMessage(), e);
@@ -424,8 +447,7 @@ public class ActeonClient implements AutoCloseable {
                     new TypeReference<List<BatchResult>>() {}
                 );
             } else {
-                ErrorResponse error = parseResponse(response, ErrorResponse.class);
-                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+                throw dispatchError(response);
             }
         } catch (IOException e) {
             throw new ConnectionException(e.getMessage(), e);

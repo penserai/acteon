@@ -64,6 +64,7 @@ impl TestServer {
             audit: Some(audit),
             analytics: None,
             auth: None,
+            execution_authority: None,
             rate_limiter: None,
             embedding: None,
             embedding_metrics: None,
@@ -388,8 +389,8 @@ fn run_java_client(base_url: &str, project_root: &str) -> ClientTestResult {
     if let Err(e) = compile_output {
         return ClientTestResult {
             language: "Java".to_string(),
-            success: true,
-            output: format!("Skipped (javac not available: {})", e),
+            success: false,
+            output: format!("Unavailable (javac is required: {})", e),
         };
     }
 

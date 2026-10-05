@@ -191,6 +191,7 @@ dependencies = [
  "acteon-core",
  "acteon-crypto",
  "async-trait",
+ "axum 0.8.9",
  "chrono",
  "futures",
  "percent-encoding",

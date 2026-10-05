@@ -38,9 +38,10 @@ export function apiGet<T>(path: string, params?: Record<string, string | number 
   return apiFetch<T>(url.pathname + url.search)
 }
 
-export function apiPost<T>(path: string, body?: unknown): Promise<T> {
+export function apiPost<T>(path: string, body?: unknown, headers?: Record<string, string>): Promise<T> {
   return apiFetch<T>(path, {
     method: 'POST',
+    headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   })
 }

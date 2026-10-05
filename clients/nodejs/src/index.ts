@@ -22,7 +22,7 @@
  * ```
  */
 
-export { ActeonClient, type ActeonClientOptions } from "./client.js";
+export { ActeonClient, type ActeonClientOptions, type PermitReference, type DispatchOptions } from "./client.js";
 export {
   ActeonError,
   ConnectionError,

@@ -257,3 +257,11 @@ match client.dispatch(&action).await {
 | `get_group(key)` | Get group details |
 | `flush_group(key)` | Force flush group |
 | `stream(filter)` | Subscribe to SSE event stream |
+
+## Explicit permits
+
+Use `PermitReference { id, accepted_revision }` with `dispatch_with_permits` or
+`dispatch_batch_with_permits` when the server enables execution authority.
+The client sends references in the permit header, separate from action metadata,
+while retaining its configured credentials. See [Execution permits](../features/execution-permits.md)
+for current backend, route and replay guarantees.

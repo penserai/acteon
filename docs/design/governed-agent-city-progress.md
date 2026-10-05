@@ -26,17 +26,17 @@ Implemented on `feat/governed-executor-boundary`:
 
 Evidence lives in `crates/server/tests/api_tests.rs`, role and route-permission
 unit tests, `scripts/ci/route_permissions.py`, and `scripts/ci/agent_guide.py`.
-These verify endpoint least privilege and existing execution paths. They do not
+These verify endpoint least privilege and existing execution paths. Those first-slice checks do not
 verify per-effect permits, revocation during a chain, closures or mesh execution.
 
 ## Remaining phase gates
 
 | Phase | Current state | Next required evidence |
 |---|---|---|
-| 0: Inventory/coordinator | Exact resources, bounded CAS coordinator, multi-resource starts and atomic root reservations implemented; memory/Redis contracts pass | Complete boundary qualification, retention/emergency stop and backend failover proof |
-| 1: Actors/context | Executor role, stable principals, signed root contexts and selected workflow propagation merged; shared server authentication guard in progress | Remaining deferred propagation, team/mandate lineage, credential enrollment, migration and rollback gates |
-| 2: Permits/checkpoints | Internal current permits/credentials/configuration snapshots and durable direct-provider adapter merged; public server enforcement remains open | Qualified credential projection, authenticated scope stamps, real gateway effect coverage, provisioning/API/SDK/UI and recovery |
-| 3: Closures/intervention | Existing agent lifecycle only | Generic serialized closures, durable intervention, drain/pause/cancel semantics and acknowledgments |
+| 0: Inventory/coordinator | Exact resources, bounded CAS coordinator, multi-resource starts, root reservations and reviewed scope cutover implemented against configured state backends; memory/Redis/PostgreSQL/DynamoDB substrate contracts | Broader effect qualification, operational failover and emergency-stop proof |
+| 1: Actors/context | Executor role, stable principals, credential enrollment, signed root contexts, shared authentication and private scope projection merged | Remaining deferred propagation, teams, memberships, mandates and delegated lineage |
+| 2: Permits/checkpoints | Current permits/credentials/configuration snapshots, qualified static-webhook adapter and common gateway mediation merged; standalone runtime plus SDK/UI integration on working branch | Complete public runtime review, broader effect coverage, governance management API/SDK/UI, deferred execution and recovery |
+| 3: Closures/intervention | Internal serialized resource restrictions and durable control events; existing public agent lifecycle | Public generic closures, intervention, drain/pause/cancel semantics and acknowledgments |
 | 4: Autonomous mesh | Existing registry and submitted A2A tasks only | Real target resolution/invocation, attenuation, lineage, recovery and safe peer retry |
 | 5: Production/federation | Not implemented | Verified backend and peer capability matrix, trust/revocation protocol and failure tests |
 
@@ -452,3 +452,44 @@ HTTP dispatch coverage: public handler wiring, production startup installation,
 deferred/delegated work, adapter coverage and the workforce
 management surfaces remain outstanding. The production server profile is not
 yet installed.
+
+## Standalone server runtime integration (working branch)
+
+`feat/server-execution-authority` installs the qualified execution mediator,
+credential projection and explicit deployment permits into the standalone
+server. Authority coordination, signed contexts, root budgets, replay bindings
+and provider records all use the same configured `StateStore`; this is not a
+Redis-only subsystem. The runtime accepts only private middleware authentication
+and exact explicit permit revisions for selected provider work.
+
+Current local runtime evidence: `execution_http` passes with memory and no Redis
+feature, and with PostgreSQL and no Redis feature. The PostgreSQL test restarts
+the actual server and verifies that replay returns the saved outcome with no
+second network send. Both also verify unauthenticated denial, missing permits,
+changed-input replay conflicts, an unissued-permit refusal followed by a valid
+retry of the same action ID, and batch execution. CI now explicitly schedules
+these HTTP contracts. These checks are local evidence; this branch has not yet
+been reviewed, merged or published.
+
+Replay markers are reserved after successful final-work admission. The initial
+HTTP conflict check reads an existing marker without creating one, so an invalid
+permit cannot poison a subsequent authorized retry. Admission or replay storage
+failures prevent provider execution. Batch scope verification follows the size
+and grant checks to bound backend work.
+
+All five SDKs now expose typed explicit permit options for single and batch
+dispatch, with shared wire-fixture tests and HTTP refusal preservation. The UI
+accepts permit IDs and revisions separately; configuration exposes an enabled
+flag without authority details or secrets.
+
+Open work remains: governed durable
+receipt responses, deferred execution, approvals, shared child funding and peer
+invocation must retain private authority and lineage. Teams, memberships,
+personal agents, team representatives, mandates and public governance management
+remain required. The selected-provider integration does not establish complete
+coverage of auxiliary effects or the whole workforce vision.
+
+Startup preflights local authentication tables before installing authority;
+explicit permits publish only after authentication scope projections and rule
+loading succeed. The PostgreSQL HTTP test also verifies that a failed startup
+with invalid credentials leaves both control and execution scopes absent.

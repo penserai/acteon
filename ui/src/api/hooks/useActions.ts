@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiPost } from '../client'
-import type { DispatchRequest, DispatchResponse } from '../../types'
+import type { DispatchRequest, DispatchResponse, PermitReference } from '../../types'
 
 /**
  * Parse a raw `ActionOutcome` enum from the server into a structured response.
@@ -46,9 +46,11 @@ export function useDispatch() {
     mutationFn: async ({
       request,
       dryRun,
+      permits,
     }: {
       request: DispatchRequest
       dryRun?: boolean
+      permits?: PermitReference[]
     }): Promise<DispatchResponse> => {
       const actionId = crypto.randomUUID()
       const raw = await apiPost<unknown>(
@@ -57,6 +59,9 @@ export function useDispatch() {
           id: actionId,
           created_at: new Date().toISOString(),
           ...request,
+        },
+        permits === undefined ? undefined : {
+          'x-acteon-execution-permits': JSON.stringify(permits),
         },
       )
       return parseOutcome(actionId, raw)

@@ -968,3 +968,13 @@ Cancel an active swarm execution run.
 | `GET` | `/v1/recurring` | List recurring actions |
 | `POST` | `/v1/auth/login` | Login |
 | `POST` | `/v1/auth/logout` | Logout |
+
+## Explicit execution permits
+
+When the execution-authority deployment profile is enabled, single and batch
+`POST /v1/dispatch` requests select issued permits through
+`x-acteon-execution-permits`, for example:
+`[{"id":"maya-incident","accepted_revision":1}]`. Ordinary authentication and
+grants still apply. See [Execution permits](../features/execution-permits.md) for
+configuration, typed SDK methods, refusal handling and supported execution paths.
+Dry runs can omit references.

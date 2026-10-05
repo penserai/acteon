@@ -220,3 +220,24 @@ established by the server, not by client-supplied action fields. Administrative
 methods return HTTP 403 for executor credentials. Keep operator credentials and
 signed human approval URLs in a trusted host.
 See [authentication and role boundaries](https://penserai.github.io/acteon/api/authentication/).
+
+## Execution permits
+
+When the server enables execution authority, effectful dispatch requires explicit
+references to permits already issued to the authenticated principal. These
+options select permits; the server checks current credentials, scope, revisions,
+qualified effects and budget before execution. They do not issue permits or
+replace authentication. Existing dispatch methods omit the header by default.
+
+```rust
+use acteon_client::PermitReference;
+let permits = [PermitReference { id: "maya-incident".into(), accepted_revision: 1 }];
+let outcome = client.dispatch_with_permits(&action, &permits).await?;
+let batch = client.dispatch_batch_with_permits(&[action], &permits).await?;
+```
+
+The same references apply to every action in a batch. Dry runs can omit them.
+Missing/invalid headers, authorization denials and conflicting replay requests
+preserve their HTTP status in the client's HTTP error type. Permit admission
+refusals can also be returned as a `Failed` action outcome; inspect the outcome.
+Do not generate a new action ID merely to bypass a replay conflict.

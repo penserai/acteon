@@ -12,7 +12,7 @@ import { Badge } from '../components/ui/Badge'
 import { JsonViewer } from '../components/ui/JsonViewer'
 import { useToast } from '../components/ui/useToast'
 import { formatBytes } from '../lib/format'
-import type { Attachment, DispatchRequest, DispatchResponse } from '../types'
+import type { Attachment, DispatchRequest, DispatchResponse, PermitReference } from '../types'
 import shared from '../styles/shared.module.css'
 import styles from './Dispatch.module.css'
 
@@ -124,6 +124,8 @@ export function Dispatch() {
   const [payload, setPayload] = useState('{\n  \n}')
   const [dedupKey, setDedupKey] = useState('')
   const [dryRun, setDryRun] = useState(false)
+  const [permitRows, setPermitRows] = useState<{ id: string; revision: string }[]>([])
+  const [permitError, setPermitError] = useState('')
   const [result, setResult] = useState<DispatchResponse | null>(null)
   const [payloadError, setPayloadError] = useState('')
   const [attachments, setAttachments] = useState<{ id: string; name: string; file: File; base64: string }[]>([])
@@ -214,6 +216,20 @@ export function Dispatch() {
       return
     }
 
+    const permits: PermitReference[] = permitRows.map(row => ({
+      id: row.id.trim(), accepted_revision: Number(row.revision),
+    }))
+    if (permits.some(p => !p.id || !Number.isSafeInteger(p.accepted_revision) || p.accepted_revision <= 0)
+      || new Set(permits.map(p => p.id)).size !== permits.length) {
+      setPermitError('Provide unique permit IDs and positive integer revisions.')
+      return
+    }
+    if (!dryRun && config.data?.execution_authority_enabled && permits.length === 0) {
+      setPermitError('This server requires an issued permit for dispatch.')
+      return
+    }
+    setPermitError('')
+
     const flatAttachments: Attachment[] = attachments.map((a) => ({
       id: a.id,
       name: a.name,
@@ -232,7 +248,7 @@ export function Dispatch() {
       attachments: flatAttachments.length > 0 ? flatAttachments : undefined,
     }
 
-    dispatch.mutate({ request, dryRun }, {
+    dispatch.mutate({ request, dryRun, permits: permits.length ? permits : undefined }, {
       onSuccess: (res) => {
         setResult(res)
         toast('success', 'Action dispatched', `ID: ${res.action_id}`)
@@ -287,6 +303,24 @@ export function Dispatch() {
               className={styles.textarea}
             />
             {payloadError && <p className={styles.errorText}>{payloadError}</p>}
+          </div>
+
+          <div>
+            <label className={shared.textareaLabel}>Execution permits</label>
+            <p>Use the ID and revision of each permit issued to your identity.</p>
+            {permitRows.map((row, index) => (
+              <div key={index} className={styles.attachmentFields}>
+                <Input id={`permit-id-${index}`} label="Permit ID" value={row.id}
+                  onChange={e => setPermitRows(rows => rows.map((r, i) => i === index ? { ...r, id: e.target.value } : r))} />
+                <Input id={`permit-revision-${index}`} label="Revision" type="number" min="1" step="1" value={row.revision}
+                  onChange={e => setPermitRows(rows => rows.map((r, i) => i === index ? { ...r, revision: e.target.value } : r))} />
+                <button type="button" className={styles.removeAttachment} aria-label={`Remove permit ${index + 1}`}
+                  onClick={() => setPermitRows(rows => rows.filter((_, i) => i !== index))}><X className="h-3.5 w-3.5" /></button>
+              </div>
+            ))}
+            <button type="button" className={styles.attachButton} disabled={permitRows.length >= 16}
+              onClick={() => setPermitRows(rows => [...rows, { id: '', revision: '1' }])}>Add permit</button>
+            {permitError && <p className={styles.errorText}>{permitError}</p>}
           </div>
 
           <Input label="Dedup Key" value={dedupKey} onChange={(e) => setDedupKey(e.target.value)} placeholder="Optional" />

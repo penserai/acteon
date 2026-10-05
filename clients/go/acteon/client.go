@@ -238,9 +238,45 @@ func (c *Client) FetchSigningKeys(ctx context.Context) (*SigningKeysResponse, er
 	return &out, nil
 }
 
+// PermitReference selects an explicitly issued permit; it grants no authority itself.
+type PermitReference struct {
+	ID               string `json:"id"`
+	AcceptedRevision uint64 `json:"accepted_revision"`
+}
+
+func dispatchResponseError(status int, body []byte) error {
+	var errorResponse ErrorResponse
+	if err := json.Unmarshal(body, &errorResponse); err == nil && errorResponse.Code != "" {
+		return &APIError{Code: errorResponse.Code, Message: errorResponse.Message, Retryable: errorResponse.Retryable}
+	}
+	return &HTTPError{Status: status, Message: string(body)}
+}
+
+func permitRequestOpts(permits []PermitReference) (requestOpts, error) {
+	if permits == nil {
+		return requestOpts{}, nil
+	}
+	encoded, err := json.Marshal(permits)
+	if err != nil {
+		return requestOpts{}, err
+	}
+	return requestOpts{extraHeaders: map[string]string{
+		"x-acteon-execution-permits": string(encoded),
+	}}, nil
+}
+
 // Dispatch dispatches a single action.
 func (c *Client) Dispatch(ctx context.Context, action *Action) (*ActionOutcome, error) {
-	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/dispatch", action)
+	return c.DispatchWithPermits(ctx, action, nil)
+}
+
+// DispatchWithPermits dispatches with explicit permit references and normal authentication.
+func (c *Client) DispatchWithPermits(ctx context.Context, action *Action, permits []PermitReference) (*ActionOutcome, error) {
+	opts, err := permitRequestOpts(permits)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.doRequestExt(ctx, http.MethodPost, "/v1/dispatch", action, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -259,11 +295,7 @@ func (c *Client) Dispatch(ctx context.Context, action *Action) (*ActionOutcome, 
 		return &outcome, nil
 	}
 
-	var errResp ErrorResponse
-	if err := json.Unmarshal(body, &errResp); err != nil {
-		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to parse error response"}
-	}
-	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+	return nil, dispatchResponseError(resp.StatusCode, body)
 }
 
 // DispatchDryRun dispatches a single action in dry-run mode.
@@ -288,16 +320,21 @@ func (c *Client) DispatchDryRun(ctx context.Context, action *Action) (*ActionOut
 		return &outcome, nil
 	}
 
-	var errResp ErrorResponse
-	if err := json.Unmarshal(body, &errResp); err != nil {
-		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to parse error response"}
-	}
-	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+	return nil, dispatchResponseError(resp.StatusCode, body)
 }
 
 // DispatchBatch dispatches multiple actions in a single request.
 func (c *Client) DispatchBatch(ctx context.Context, actions []*Action) ([]BatchResult, error) {
-	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/dispatch/batch", actions)
+	return c.DispatchBatchWithPermits(ctx, actions, nil)
+}
+
+// DispatchBatchWithPermits uses explicit permit references for every action.
+func (c *Client) DispatchBatchWithPermits(ctx context.Context, actions []*Action, permits []PermitReference) ([]BatchResult, error) {
+	opts, err := permitRequestOpts(permits)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.doRequestExt(ctx, http.MethodPost, "/v1/dispatch/batch", actions, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -316,11 +353,7 @@ func (c *Client) DispatchBatch(ctx context.Context, actions []*Action) ([]BatchR
 		return results, nil
 	}
 
-	var errResp ErrorResponse
-	if err := json.Unmarshal(body, &errResp); err != nil {
-		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to parse error response"}
-	}
-	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+	return nil, dispatchResponseError(resp.StatusCode, body)
 }
 
 // DispatchBatchDryRun dispatches multiple actions in dry-run mode.
@@ -345,11 +378,7 @@ func (c *Client) DispatchBatchDryRun(ctx context.Context, actions []*Action) ([]
 		return results, nil
 	}
 
-	var errResp ErrorResponse
-	if err := json.Unmarshal(body, &errResp); err != nil {
-		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to parse error response"}
-	}
-	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+	return nil, dispatchResponseError(resp.StatusCode, body)
 }
 
 // ListRules lists all loaded rules.

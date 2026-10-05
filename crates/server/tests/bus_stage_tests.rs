@@ -93,6 +93,7 @@ async fn seeded_server(identity: CallerIdentity, quarantine: bool) -> TestServer
         audit: None,
         analytics: None,
         auth: None,
+        execution_authority: None,
         rate_limiter: None,
         embedding: None,
         embedding_metrics: None,

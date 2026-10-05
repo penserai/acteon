@@ -1,7 +1,8 @@
 """HTTP client for the Acteon action gateway."""
 
+import json
 from collections.abc import AsyncIterator, Iterator
-from typing import Any, Optional
+from typing import Any, NoReturn, Optional
 from urllib.parse import quote
 
 import httpx
@@ -57,6 +58,7 @@ from .models import (
     ListSwarmRunsResponse,
     ListTemplatesResponse,
     ListTimeIntervalsResponse,
+    PermitReference,
     PluginInvocationRequest,
     PluginInvocationResponse,
     QuotaPolicy,
@@ -96,6 +98,28 @@ from .platform import _AsyncPlatformMixin, _PlatformMixin
 from .platform_catalog import PlatformOperation
 from .queues import _AsyncQueuesClientMixin, _QueuesClientMixin
 from .workflows import _AsyncWorkflowsClientMixin, _WorkflowsClientMixin
+
+
+def _raise_dispatch_error(response: httpx.Response) -> NoReturn:
+    try:
+        data = response.json()
+    except ValueError:
+        data = None
+    if (
+        isinstance(data, dict)
+        and isinstance(data.get("code"), str)
+        and isinstance(data.get("message"), str)
+    ):
+        raise ApiError(
+            code=data["code"], message=data["message"], retryable=data.get("retryable", False)
+        )
+    raise HttpError(response.status_code, response.text)
+
+
+def _permit_headers(permits: list[PermitReference] | None) -> dict[str, str] | None:
+    if permits is None:
+        return None
+    return {"x-acteon-execution-permits": json.dumps([p.to_dict() for p in permits])}
 
 
 class ActeonClient(
@@ -267,32 +291,37 @@ class ActeonClient(
     # Action Dispatch
     # =========================================================================
 
-    def dispatch(self, action: Action, *, dry_run: bool = False) -> ActionOutcome:
+    def dispatch(
+        self, action: Action, *, dry_run: bool = False, permits: list[PermitReference] | None = None
+    ) -> ActionOutcome:
         """Dispatch a single action.
 
         Args:
             action: The action to dispatch.
             dry_run: When True, evaluates rules without executing the action.
+            permits: Explicit references to permits already issued to the caller.
 
         Returns:
             The outcome of the action.
 
         Raises:
             ConnectionError: If unable to connect to the server.
-            ApiError: If the server returns an error.
+            ApiError: If the server returns an API error.
+            HttpError: If dispatch is refused with an HTTP error.
         """
         params: dict[str, Any] | None = {"dry_run": "true"} if dry_run else None
-        response = self._request("POST", "/v1/dispatch", json=action.to_dict(), params=params)
+        response = self._request(
+            "POST",
+            "/v1/dispatch",
+            json=action.to_dict(),
+            params=params,
+            extra_headers=_permit_headers(permits),
+        )
 
         if response.status_code == 200:
             return ActionOutcome.from_dict(response.json())
         else:
-            data = response.json()
-            raise ApiError(
-                code=data.get("code", "UNKNOWN"),
-                message=data.get("message", "Unknown error"),
-                retryable=data.get("retryable", False),
-            )
+            _raise_dispatch_error(response)
 
     def dispatch_dry_run(self, action: Action) -> ActionOutcome:
         """Dispatch a single action in dry-run mode.
@@ -307,23 +336,32 @@ class ActeonClient(
 
         Raises:
             ConnectionError: If unable to connect to the server.
-            ApiError: If the server returns an error.
+            ApiError: If the server returns an API error.
+            HttpError: If dispatch is refused with an HTTP error.
         """
         return self.dispatch(action, dry_run=True)
 
-    def dispatch_batch(self, actions: list[Action], *, dry_run: bool = False) -> list[BatchResult]:
+    def dispatch_batch(
+        self,
+        actions: list[Action],
+        *,
+        dry_run: bool = False,
+        permits: list[PermitReference] | None = None,
+    ) -> list[BatchResult]:
         """Dispatch multiple actions in a single request.
 
         Args:
             actions: List of actions to dispatch.
             dry_run: When True, evaluates rules without executing any actions.
+            permits: Permit references applied to every action in the batch.
 
         Returns:
             List of results, one per action.
 
         Raises:
             ConnectionError: If unable to connect to the server.
-            ApiError: If the server returns a batch-level error.
+            ApiError: If the server returns a batch-level API error.
+            HttpError: If the batch is refused with an HTTP error.
         """
         params: dict[str, Any] | None = {"dry_run": "true"} if dry_run else None
         response = self._request(
@@ -331,17 +369,13 @@ class ActeonClient(
             "/v1/dispatch/batch",
             json=[a.to_dict() for a in actions],
             params=params,
+            extra_headers=_permit_headers(permits),
         )
 
         if response.status_code == 200:
             return [BatchResult.from_dict(r) for r in response.json()]
         else:
-            data = response.json()
-            raise ApiError(
-                code=data.get("code", "UNKNOWN"),
-                message=data.get("message", "Unknown error"),
-                retryable=data.get("retryable", False),
-            )
+            _raise_dispatch_error(response)
 
     def dispatch_batch_dry_run(self, actions: list[Action]) -> list[BatchResult]:
         """Dispatch multiple actions in dry-run mode.
@@ -356,7 +390,8 @@ class ActeonClient(
 
         Raises:
             ConnectionError: If unable to connect to the server.
-            ApiError: If the server returns a batch-level error.
+            ApiError: If the server returns a batch-level API error.
+            HttpError: If the batch is refused with an HTTP error.
         """
         return self.dispatch_batch(actions, dry_run=True)
 
@@ -2684,24 +2719,31 @@ class AsyncActeonClient(
         except ValueError as e:
             raise ConnectionError(f"malformed signing keys response: {e}") from e
 
-    async def dispatch(self, action: Action, *, dry_run: bool = False) -> ActionOutcome:
+    async def dispatch(
+        self, action: Action, *, dry_run: bool = False, permits: list[PermitReference] | None = None
+    ) -> ActionOutcome:
         params: dict[str, Any] | None = {"dry_run": "true"} if dry_run else None
-        response = await self._request("POST", "/v1/dispatch", json=action.to_dict(), params=params)
+        response = await self._request(
+            "POST",
+            "/v1/dispatch",
+            json=action.to_dict(),
+            params=params,
+            extra_headers=_permit_headers(permits),
+        )
         if response.status_code == 200:
             return ActionOutcome.from_dict(response.json())
         else:
-            data = response.json()
-            raise ApiError(
-                code=data.get("code", "UNKNOWN"),
-                message=data.get("message", "Unknown error"),
-                retryable=data.get("retryable", False),
-            )
+            _raise_dispatch_error(response)
 
     async def dispatch_dry_run(self, action: Action) -> ActionOutcome:
         return await self.dispatch(action, dry_run=True)
 
     async def dispatch_batch(
-        self, actions: list[Action], *, dry_run: bool = False
+        self,
+        actions: list[Action],
+        *,
+        dry_run: bool = False,
+        permits: list[PermitReference] | None = None,
     ) -> list[BatchResult]:
         params: dict[str, Any] | None = {"dry_run": "true"} if dry_run else None
         response = await self._request(
@@ -2709,16 +2751,12 @@ class AsyncActeonClient(
             "/v1/dispatch/batch",
             json=[a.to_dict() for a in actions],
             params=params,
+            extra_headers=_permit_headers(permits),
         )
         if response.status_code == 200:
             return [BatchResult.from_dict(r) for r in response.json()]
         else:
-            data = response.json()
-            raise ApiError(
-                code=data.get("code", "UNKNOWN"),
-                message=data.get("message", "Unknown error"),
-                retryable=data.get("retryable", False),
-            )
+            _raise_dispatch_error(response)
 
     async def dispatch_batch_dry_run(self, actions: list[Action]) -> list[BatchResult]:
         return await self.dispatch_batch(actions, dry_run=True)

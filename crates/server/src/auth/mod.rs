@@ -69,6 +69,12 @@ pub(super) struct AuthenticatedCaller {
 }
 
 impl AuthProvider {
+    /// Check local credential tables before publishing any execution policies.
+    /// This performs no backend reads or writes.
+    pub fn validate_configuration(config: &AuthFileConfig) -> Result<(), String> {
+        Self::build_tables(config).map(|_| ())
+    }
+
     /// Build the auth provider from a decrypted config and a state store reference.
     pub fn new(config: &AuthFileConfig, state_store: Arc<dyn StateStore>) -> Result<Self, String> {
         let jwt_manager = JwtManager::new(
