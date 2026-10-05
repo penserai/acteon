@@ -394,8 +394,8 @@ without expanding the scope publisher's independently authorized subjects.
 
 Required local checks pass: 3,448 workspace tests, zero failures, nine backend
 contracts ignored by the default command; workspace Clippy, all-target check,
-UI lint/build, strict docs and catalog/route checks. Final-head CI and merge remain
-pending in PR #420. This host building block has not installed production scope
+UI lint/build, strict docs and catalog/route checks. PR #420 passed final-head CI,
+merged, and its GitHub source was verified. This host building block has not installed production scope
 configuration/startup, root capture or gateway effect enforcement; configured
 backend projection contracts, public controls/SDKs/UI and workforce lineage
 remain required. It does not close the complete execution or city phases.

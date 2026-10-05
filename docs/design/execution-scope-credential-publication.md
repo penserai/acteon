@@ -1,7 +1,7 @@
 # Execution-scope credential publication
 
-Status: implementation in progress following merged logical credential enrollment
-(PR #419). The branch implements a qualified provider catalog, credential policy
+Status: host building block merged in PR #420 following logical credential enrollment
+(PR #419). The implementation provides a qualified provider catalog, credential policy
 projection, ordered auth-provider publication and private original scope
 bindings. Production configuration/startup and the gateway effect path are not
 installed yet; this is not an enabled server execution profile.
@@ -127,7 +127,13 @@ remain required rather than being inferred from these internal contracts.
 
 Implementation notes for production wiring: obtain client identity/material once
 and use those exact loaded values for both construction and keyed qualification,
-rather than hashing a path then re-reading a potentially changed file. Disable
+rather than hashing a path then re-reading a potentially changed file. The next
+slice introduces `LoadedTlsClientConfig` and makes server HTTP client construction
+reuse that snapshot. Its opaque keyed fingerprint includes the loaded identity,
+CA bundle and certificate-verification policy. A real mTLS contract removes the
+source files before connecting and verifies the exact client certificate at the
+server. Provider-factory qualification must still incorporate this fingerprint
+alongside the actual destination, headers and reviewed transport behavior. Disable
 unregistered transport retries for the qualified adapter. Publication ceilings
 must independently authorize historical removals; do not borrow prior policies
 from state to enlarge them. Profile configuration must bind all declared scopes,
