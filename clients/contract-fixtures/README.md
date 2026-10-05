@@ -30,3 +30,8 @@ bodies, response envelopes, and HTTP failures.
 missing from non-Rust SDKs, plus the bare-string deduplication outcome in batches.
 Rust round-trips these through `acteon_core::ActionOutcome`; Python, TypeScript,
 Go, and Java verify every field and the single/batch outcome discriminator.
+
+`execution-permits.json` defines the explicit permit-reference header payload.
+All five SDKs verify single/batch request construction, retained credentials and
+legacy header omission. Refusal tests preserve HTTP statuses instead of treating
+server error envelopes as transport or deserialization failures.

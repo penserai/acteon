@@ -178,6 +178,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cli.allow_unauthenticated_remote,
     )?;
 
+    if config.execution_authority.is_some() {
+        if !config.auth.enabled || config.auth.authority.is_none() {
+            return Err(
+                "execution authority requires enabled shared authentication authority".into(),
+            );
+        }
+        if config.llm_guardrail.enabled
+            || config.embedding.enabled
+            || !config.enrichments.is_empty()
+        {
+            return Err(
+                "execution authority does not yet qualify guardrail, embedding or enrichment calls"
+                    .into(),
+            );
+        }
+    }
+
     // Initialize tracing subscriber (with optional OpenTelemetry layer).
     // Must happen after config is loaded so we know whether OTel is enabled,
     // but before any tracing calls.
@@ -259,6 +276,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if config.auth.authority.is_some() && !config.auth.enabled {
         return Err("auth authority requires authentication to be enabled".into());
     }
+
+    // Validate credentials before an execution runtime can publish permits.
+    let prepared_auth = if config.auth.enabled {
+        let auth_master_key = master_key
+            .as_ref()
+            .ok_or("authentication master key unavailable")?;
+        let auth_path = config.auth.config_path.as_deref().unwrap_or("auth.toml");
+
+        // Resolve relative to the config file's directory.
+        let auth_path = if Path::new(auth_path).is_relative() {
+            Path::new(&cli.config)
+                .parent()
+                .unwrap_or(Path::new("."))
+                .join(auth_path)
+        } else {
+            Path::new(auth_path).to_path_buf()
+        };
+
+        let auth_contents = std::fs::read_to_string(&auth_path)
+            .map_err(|e| format!("failed to read auth config at {}: {e}", auth_path.display()))?;
+        let mut auth_config: acteon_server::auth::config::AuthFileConfig =
+            toml::from_str(&auth_contents)
+                .map_err(|e| format!("failed to parse auth config: {e}"))?;
+
+        decrypt_auth_config(&mut auth_config, auth_master_key)?;
+
+        AuthProvider::validate_configuration(&auth_config)?;
+        if config.auth.authority.is_some() && auth_config.authority_revision.is_none_or(|r| r == 0)
+        {
+            return Err("shared authentication requires a positive authority_revision".into());
+        }
+        Some((auth_path, auth_config))
+    } else {
+        None
+    };
 
     // Build the rate limiter if enabled.
     let rate_limiter = if config.rate_limit.enabled {
@@ -393,7 +445,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut builder = GatewayBuilder::new()
         .state(Arc::clone(&store))
         .lock(Arc::clone(&lock))
-        .executor_config(exec_config)
+        .executor_config(exec_config.clone())
         .dlq_enabled(config.executor.dlq_enabled)
         .group_manager(Arc::clone(&group_manager))
         .external_url(external_url);
@@ -1607,6 +1659,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .max_attachments_per_action(config.attachments.max_attachments_per_action);
 
     let mut gateway = builder.build()?;
+    let execution_runtime = if let Some(execution_config) = &config.execution_authority {
+        let control = config.auth.authority.as_ref().unwrap();
+        let key = acteon_server::auth::crypto::SecretString::new(
+            std::env::var("ACTEON_EXECUTION_AUTHORITY_KEY")
+                .map_err(|_| "ACTEON_EXECUTION_AUTHORITY_KEY is required for execution authority")?
+                .into(),
+        );
+        let prepared = execution_providers.prepare(
+            execution_config,
+            (&control.namespace, &control.tenant),
+            key.expose_secret().as_bytes(),
+        )?;
+        let runtime = Arc::new(
+            acteon_server::execution_authority::ExecutionAuthorityRuntime::install(
+                &execution_providers,
+                prepared,
+                acteon_server::execution_authority::ExecutionRuntimeDependencies {
+                    state: store.clone(),
+                    executor: exec_config.clone(),
+                    clock: Arc::new(acteon_time::SystemClock::default()),
+                    encryptor: payload_encryptor.clone(),
+                    signing_key: zeroize::Zeroizing::new(key.expose_secret().as_bytes().to_vec()),
+                },
+            )
+            .await?,
+        );
+        gateway.install_provider_execution_mediator(runtime.mediator());
+        Some(runtime)
+    } else {
+        None
+    };
 
     // Publish authentication only after actual provider construction and gateway
     // validation. A failed runtime definition must not expose new auth tables.
@@ -1616,25 +1699,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .ok_or("ACTEON_AUTH_KEY environment variable is required when auth is enabled")?
             .clone();
 
-        let auth_path = config.auth.config_path.as_deref().unwrap_or("auth.toml");
-
-        // Resolve relative to the config file's directory.
-        let auth_path = if Path::new(auth_path).is_relative() {
-            Path::new(&cli.config)
-                .parent()
-                .unwrap_or(Path::new("."))
-                .join(auth_path)
-        } else {
-            Path::new(auth_path).to_path_buf()
-        };
-
-        let auth_contents = std::fs::read_to_string(&auth_path)
-            .map_err(|e| format!("failed to read auth config at {}: {e}", auth_path.display()))?;
-        let mut auth_config: acteon_server::auth::config::AuthFileConfig =
-            toml::from_str(&auth_contents)
-                .map_err(|e| format!("failed to parse auth config: {e}"))?;
-
-        decrypt_auth_config(&mut auth_config, &auth_master_key)?;
+        let (auth_path, auth_config) =
+            prepared_auth.ok_or("authentication configuration was not prepared")?;
 
         let provider = if let Some(authority_config) = &config.auth.authority {
             let fingerprint_key = acteon_server::auth::crypto::SecretString::new(
@@ -1663,10 +1729,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 authority_config,
                 fingerprint_key,
             )?);
-            Arc::new(
-                AuthProvider::new_with_authority(&auth_config, Arc::clone(&store), authority)
+            if let Some(runtime) = &execution_runtime {
+                Arc::new(
+                    AuthProvider::new_with_scope_projection(
+                        &auth_config,
+                        store.clone(),
+                        authority,
+                        runtime.projectors(),
+                    )
                     .await?,
-            )
+                )
+            } else {
+                Arc::new(
+                    AuthProvider::new_with_authority(&auth_config, Arc::clone(&store), authority)
+                        .await?,
+                )
+            }
         } else {
             Arc::new(AuthProvider::new(&auth_config, Arc::clone(&store))?)
         };
@@ -1701,6 +1779,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             tracing::warn!(directory = %dir, "rules directory does not exist");
         }
+    }
+
+    // Invalid credentials or scope projections must not mint deployment permits.
+    // Publish only after authentication and rule configuration have succeeded.
+    if let Some(runtime) = &execution_runtime {
+        runtime.publish_deployment_permits().await?;
     }
 
     // Load quota policies from state store on startup.
@@ -2781,6 +2865,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         audit: audit_store,
         analytics: analytics_store,
         auth: auth_provider,
+        execution_authority: execution_runtime,
         rate_limiter,
         embedding: embedding_bridge
             .as_ref()

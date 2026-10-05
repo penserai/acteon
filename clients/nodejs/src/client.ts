@@ -264,6 +264,37 @@ import {
 /**
  * Configuration options for the Acteon client.
  */
+/** Explicit reference to an issued permit; the server validates current authority. */
+export interface PermitReference {
+  id: string;
+  acceptedRevision: number;
+}
+
+export interface DispatchOptions {
+  dryRun?: boolean;
+  permits?: PermitReference[];
+}
+
+async function dispatchError(response: Response): Promise<never> {
+  const body = await response.text();
+  let data: Record<string, unknown> | undefined;
+  try { data = JSON.parse(body); } catch { /* preserve non-JSON HTTP errors */ }
+  if (data && typeof data.code === "string" && typeof data.message === "string") {
+    throw new ApiError(data.code, data.message, data.retryable === true);
+  }
+  throw new HttpError(response.status, body);
+}
+
+function permitHeaders(permits?: PermitReference[]): Record<string, string> | undefined {
+  if (permits === undefined) return undefined;
+  return { "x-acteon-execution-permits": JSON.stringify(permits.map(p => {
+    if (!Number.isSafeInteger(p.acceptedRevision) || p.acceptedRevision <= 0) {
+      throw new RangeError("Permit revision must be a positive safe integer");
+    }
+    return { id: p.id, accepted_revision: p.acceptedRevision };
+  })) };
+}
+
 export interface ActeonClientOptions {
   /** Request timeout in milliseconds. Default: 30000. */
   timeout?: number;
@@ -532,25 +563,20 @@ export class ActeonClient {
    */
   async dispatch(
     action: Action,
-    options?: { dryRun?: boolean }
+    options?: DispatchOptions
   ): Promise<ActionOutcome> {
     const params =
       options?.dryRun ? new URLSearchParams({ dry_run: "true" }) : undefined;
     const response = await this.request("POST", "/v1/dispatch", {
       body: actionToRequest(action),
       params,
+      extraHeaders: permitHeaders(options?.permits),
     });
 
-    const data = (await response.json()) as Record<string, unknown>;
-
     if (response.ok) {
-      return parseActionOutcome(data);
+      return parseActionOutcome((await response.json()) as Record<string, unknown>);
     } else {
-      throw new ApiError(
-        (data.code as string) ?? "UNKNOWN",
-        (data.message as string) ?? "Unknown error",
-        (data.retryable as boolean) ?? false
-      );
+      return dispatchError(response);
     }
   }
 
@@ -569,25 +595,21 @@ export class ActeonClient {
    */
   async dispatchBatch(
     actions: Action[],
-    options?: { dryRun?: boolean }
+    options?: DispatchOptions
   ): Promise<BatchResult[]> {
     const params =
       options?.dryRun ? new URLSearchParams({ dry_run: "true" }) : undefined;
     const response = await this.request("POST", "/v1/dispatch/batch", {
       body: actions.map(actionToRequest),
       params,
+      extraHeaders: permitHeaders(options?.permits),
     });
 
     if (response.ok) {
       const data = (await response.json()) as unknown[];
       return data.map((item) => parseBatchResult(item as Record<string, unknown>));
     } else {
-      const data = (await response.json()) as Record<string, unknown>;
-      throw new ApiError(
-        (data.code as string) ?? "UNKNOWN",
-        (data.message as string) ?? "Unknown error",
-        (data.retryable as boolean) ?? false
-      );
+      return dispatchError(response);
     }
   }
 

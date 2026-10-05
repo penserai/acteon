@@ -8,6 +8,17 @@ from datetime import UTC, datetime
 from typing import Any, Optional
 
 
+@dataclass(frozen=True)
+class PermitReference:
+    """Explicit issued permit reference; the server checks current authority."""
+
+    id: str
+    accepted_revision: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"id": self.id, "accepted_revision": self.accepted_revision}
+
+
 @dataclass
 class Attachment:
     """An attachment with explicit metadata and base64-encoded data.

@@ -226,3 +226,23 @@ This starts an in-memory server and runs live smoke tests using the Rust, Python
 | Node.js | Node.js 18+, `npm install` in `clients/nodejs` |
 | Go | Go 1.22+ |
 | Java | Java 21+ and Gradle |
+
+## Governed dispatch
+
+All five SDKs support explicit issued permits for single and batch dispatch.
+For example, in Python:
+
+```python
+from acteon_client import PermitReference
+permits = [PermitReference("maya-incident", 1)]
+outcome = client.dispatch(action, permits=permits)
+```
+
+The async client accepts the same options. TypeScript uses
+`{ permits: [{ id: "maya-incident", acceptedRevision: 1 }] }`; Go supplies
+`[]acteon.PermitReference` to `DispatchWithPermits`; Java supplies
+`List<PermitReference>` to the overloaded `dispatch`; Rust uses
+`dispatch_with_permits`. See [Execution permits](../features/execution-permits.md)
+for the batch methods, server configuration and failure semantics. References
+select operator-issued permits and never replace authentication or issue new
+permissions.

@@ -93,6 +93,8 @@ pub struct AppState {
     pub analytics: Option<Arc<dyn AnalyticsStore>>,
     /// Optional auth provider (None when auth is disabled).
     pub auth: Option<Arc<AuthProvider>>,
+    /// Trusted execution installation; all state uses the configured backend.
+    pub execution_authority: Option<Arc<crate::execution_authority::ExecutionAuthorityRuntime>>,
     /// Optional rate limiter (None when rate limiting is disabled).
     pub rate_limiter: Option<Arc<RateLimiter>>,
     /// Optional embedding support for similarity testing (None when embedding is disabled).

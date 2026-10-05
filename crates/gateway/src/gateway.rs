@@ -416,6 +416,14 @@ impl std::fmt::Debug for Gateway {
 }
 
 impl Gateway {
+    /// Trusted startup boundary. Install before exposing the gateway to callers.
+    /// This replaces execution entirely, with no legacy fallback on refusal.
+    pub fn install_provider_execution_mediator(
+        &mut self,
+        mediator: Arc<dyn ProviderExecutionMediator>,
+    ) {
+        self.provider_execution = mediator;
+    }
     /// Returns the WASM plugin runtime, if configured.
     pub fn wasm_runtime(&self) -> Option<&dyn acteon_wasm_runtime::WasmPluginRuntime> {
         self.wasm_runtime.as_deref()

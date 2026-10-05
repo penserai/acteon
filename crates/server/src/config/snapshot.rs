@@ -24,6 +24,8 @@ fn truncate(s: &str, max: usize) -> String {
 /// the snapshot is safe to expose via the admin API.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct ConfigSnapshot {
+    /// Whether dispatch requires explicit execution permits.
+    pub execution_authority_enabled: bool,
     /// Server bind and networking settings.
     pub server: ServerSnapshot,
     /// Admin UI configuration.
@@ -69,6 +71,7 @@ pub struct ConfigSnapshot {
 impl From<&ActeonConfig> for ConfigSnapshot {
     fn from(cfg: &ActeonConfig) -> Self {
         Self {
+            execution_authority_enabled: cfg.execution_authority.is_some(),
             server: ServerSnapshot::from(&cfg.server),
             ui: UiSnapshot::from(&cfg.ui),
             state: StateSnapshot::from(&cfg.state),

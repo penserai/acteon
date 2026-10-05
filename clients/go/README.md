@@ -315,3 +315,23 @@ as `authority_id` in `auth.toml`. Keep this ID when rotating a key; separate
 credentials for the same actor retain separate IDs and grants. JWT sessions pin
 the ID at login and require a new login if it changes. This field is inspection
 metadata, not a bearer credential or execution permit.
+
+## Execution permits
+
+When the server enables execution authority, effectful dispatch requires explicit
+references to permits already issued to the authenticated principal. These
+options select permits; the server checks current credentials, scope, revisions,
+qualified effects and budget before execution. They do not issue permits or
+replace authentication. Existing dispatch methods omit the header by default.
+
+```go
+permits := []acteon.PermitReference{{ID: "maya-incident", AcceptedRevision: 1}}
+outcome, err := client.DispatchWithPermits(ctx, action, permits)
+batch, err := client.DispatchBatchWithPermits(ctx, []*acteon.Action{action}, permits)
+```
+
+The same references apply to every action in a batch. Dry runs can omit them.
+Missing/invalid headers, authorization denials and conflicting replay requests
+preserve their HTTP status in the client's HTTP error type. Permit admission
+refusals can also be returned as a `Failed` action outcome; inspect the outcome.
+Do not generate a new action ID merely to bypass a replay conflict.

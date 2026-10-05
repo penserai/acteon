@@ -191,6 +191,7 @@ impl Fixture {
             audit: None,
             analytics: None,
             auth: None,
+            execution_authority: None,
             rate_limiter: None,
             embedding: None,
             embedding_metrics: None,

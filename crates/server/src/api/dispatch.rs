@@ -13,6 +13,38 @@ use crate::error::ServerError;
 use super::AppState;
 use super::schemas::ErrorResponse;
 
+const EXECUTION_PERMITS_HEADER: &str = "x-acteon-execution-permits";
+fn execution_permits(
+    headers: &axum::http::HeaderMap,
+    enabled: bool,
+    required: bool,
+) -> Result<Vec<acteon_governance::permit::PermitReference>, String> {
+    let values: Vec<_> = headers.get_all(EXECUTION_PERMITS_HEADER).iter().collect();
+    if !required && values.is_empty() {
+        return Ok(Vec::new());
+    }
+    if !enabled {
+        return if values.is_empty() {
+            Ok(Vec::new())
+        } else {
+            Err("permit-based execution is not configured".into())
+        };
+    }
+    if values.len() != 1 || values[0].as_bytes().len() > 8192 {
+        return Err("one bounded execution-permits header is required".into());
+    }
+    let permits = values[0]
+        .to_str()
+        .ok()
+        .and_then(|value| {
+            serde_json::from_str::<Vec<acteon_governance::permit::PermitReference>>(value).ok()
+        })
+        .ok_or("invalid execution-permits header")?;
+    acteon_governance::permit::permit_revision_tag(&permits)
+        .map_err(|_| "invalid execution permit references")?;
+    Ok(permits)
+}
+
 /// Maximum number of actions allowed in a single batch dispatch request.
 ///
 /// Prevents resource exhaustion from a single oversized request that could
@@ -67,6 +99,7 @@ pub struct DurableDispatchResponse {
     request_body(content = Action, description = "Action to dispatch"),
     params(
         ("dry_run" = Option<bool>, Query, description = "Evaluate rules without executing the action"),
+        ("x-acteon-execution-permits" = Option<String>, Header, description = "When execution authority is configured, JSON array of explicit permit references with id and accepted_revision; required for effectful dispatch"),
         ("durable" = Option<bool>, Query, description = "Persist admission using dedup_key; returns a receipt wrapper and cannot combine with dry_run")
     ),
     responses(
@@ -83,8 +116,43 @@ pub async fn dispatch(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
     Query(query): Query<DispatchQuery>,
+    authentication: Option<
+        axum::Extension<crate::auth::projection::AuthenticatedExecutionConfiguration>,
+    >,
+    headers: axum::http::HeaderMap,
     Json(action): Json<Action>,
 ) -> Result<impl IntoResponse, ServerError> {
+    let permits = match execution_permits(
+        &headers,
+        state.execution_authority.is_some(),
+        !query.dry_run,
+    ) {
+        Ok(permits) => permits,
+        Err(error) => {
+            return Ok((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!(ErrorResponse { error })),
+            ));
+        }
+    };
+    if let Some(runtime) = &state.execution_authority {
+        if query.durable {
+            return Ok((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!(ErrorResponse {
+                    error: "governed durable receipt integration is not yet installed".into(),
+                })),
+            ));
+        }
+        let Some(axum::Extension(proof)) = &authentication else {
+            return Err(ServerError::Unauthorized(
+                "private execution authentication is required".into(),
+            ));
+        };
+        runtime.verify_request(&action, proof).await.map_err(|_| {
+            ServerError::Forbidden("execution scope is not currently authorized".into())
+        })?;
+    }
     // Check role permission.
     if !identity.role.has_permission(Permission::Dispatch) {
         return Ok((
@@ -174,7 +242,13 @@ pub async fn dispatch(
             acteon_state::KeyKind::Custom("action_replay".into()),
             action.id.to_string(),
         );
-        let marker = if query.durable {
+        let marker = if let Some(runtime) = &state.execution_authority {
+            runtime
+                .request_marker(&action, &authentication.as_ref().unwrap().0, &permits)
+                .map_err(|_| {
+                    ServerError::Forbidden("execution request binding unavailable".into())
+                })?
+        } else if query.durable {
             use sha2::{Digest, Sha256};
             format!(
                 "durable:{}",
@@ -185,15 +259,29 @@ pub async fn dispatch(
         } else {
             "1".into()
         };
-        if let Ok(false) = gw
-            .state_store()
-            .check_and_set(
-                &replay_key,
-                &marker,
-                Some(std::time::Duration::from_secs(ttl)),
-            )
-            .await
-            && !(query.durable
+        // Governed dispatch reserves ownership at final-work admission, after
+        // permit validation. Here only reject an already established conflict.
+        let claimed = if state.execution_authority.is_some() {
+            gw.state_store()
+                .get(&replay_key)
+                .await
+                .map(|value| value.is_none())
+        } else {
+            gw.state_store()
+                .check_and_set(
+                    &replay_key,
+                    &marker,
+                    Some(std::time::Duration::from_secs(ttl)),
+                )
+                .await
+        };
+        if state.execution_authority.is_some() && claimed.is_err() {
+            return Err(ServerError::Config(
+                "governed replay protection unavailable".into(),
+            ));
+        }
+        if matches!(claimed, Ok(false))
+            && !((query.durable || state.execution_authority.is_some())
                 && gw
                     .state_store()
                     .get(&replay_key)
@@ -289,6 +377,20 @@ pub async fn dispatch(
     }
     let result = if query.dry_run {
         gw.dispatch_dry_run(action, Some(&caller)).await
+    } else if let Some(runtime) = &state.execution_authority {
+        runtime
+            .dispatch(
+                &gw,
+                action,
+                &caller,
+                &authentication.as_ref().unwrap().0,
+                &permits,
+                state
+                    .replay_protection
+                    .filter(|(enabled, _)| *enabled)
+                    .map(|(_, ttl)| ttl),
+            )
+            .await
     } else {
         gw.dispatch(action, Some(&caller)).await
     };
@@ -325,7 +427,8 @@ pub async fn dispatch(
     description = "Dispatches multiple actions through the gateway pipeline and returns an array of outcomes or errors. Pass ?dry_run=true to evaluate rules without executing.",
     request_body(content = Vec<Action>, description = "Actions to dispatch"),
     params(
-        ("dry_run" = Option<bool>, Query, description = "Evaluate rules without executing any actions")
+        ("dry_run" = Option<bool>, Query, description = "Evaluate rules without executing any actions"),
+        ("x-acteon-execution-permits" = Option<String>, Header, description = "JSON array of explicit id and accepted_revision permit references; required for effectful dispatch when execution authority is configured")
     ),
     responses(
         (status = 200, description = "Array of dispatch outcomes", body = Vec<serde_json::Value>)
@@ -336,8 +439,25 @@ pub async fn dispatch_batch(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
     Query(query): Query<DispatchQuery>,
+    authentication: Option<
+        axum::Extension<crate::auth::projection::AuthenticatedExecutionConfiguration>,
+    >,
+    headers: axum::http::HeaderMap,
     Json(actions): Json<Vec<Action>>,
 ) -> Result<impl IntoResponse, ServerError> {
+    let permits = match execution_permits(
+        &headers,
+        state.execution_authority.is_some(),
+        !query.dry_run,
+    ) {
+        Ok(permits) => permits,
+        Err(error) => {
+            return Ok((
+                StatusCode::BAD_REQUEST,
+                Json(vec![serde_json::json!(ErrorResponse { error })]),
+            ));
+        }
+    };
     if query.durable {
         return Ok((
             StatusCode::BAD_REQUEST,
@@ -388,6 +508,19 @@ pub async fn dispatch_batch(
                     ),
                 })]),
             ));
+        }
+    }
+
+    if let Some(runtime) = &state.execution_authority {
+        let Some(axum::Extension(proof)) = &authentication else {
+            return Err(ServerError::Unauthorized(
+                "private execution authentication is required".into(),
+            ));
+        };
+        for action in &actions {
+            runtime.verify_request(action, proof).await.map_err(|_| {
+                ServerError::Forbidden("execution scope is not currently authorized".into())
+            })?;
         }
     }
 
@@ -468,6 +601,21 @@ pub async fn dispatch_batch(
         if query.dry_run {
             gw.dispatch_batch_dry_run(passing_actions, Some(&caller))
                 .await
+        } else if let Some(runtime) = &state.execution_authority {
+            futures::future::join_all(passing_actions.into_iter().map(|action| {
+                runtime.dispatch(
+                    &gw,
+                    action,
+                    &caller,
+                    &authentication.as_ref().unwrap().0,
+                    &permits,
+                    state
+                        .replay_protection
+                        .filter(|(enabled, _)| *enabled)
+                        .map(|(_, ttl)| ttl),
+                )
+            }))
+            .await
         } else {
             gw.dispatch_batch(passing_actions, Some(&caller)).await
         }
