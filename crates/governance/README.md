@@ -167,18 +167,46 @@ It exercises independent client connections, both race orderings, response loss,
 replay, revocation, and durable pending control events.
 
 
+## Scope ownership
+
+A trusted host reserves a virgin coordinator for execution or for one
+specified authentication-control source. Reservations are permanent, recorded in control history, shared through the
+configured state backend, and fence concurrent conflicting claims. Loading
+rejects disagreement between ownership metadata and the reservation event.
+Authentication-control scopes refuse execution permits, credentials, roots,
+starts and destination closures. They retain source publication and principal
+revocation so offboarding still invalidates authentication. Execution scope
+publication and admission require the reserved execution purpose in the server
+integration. Existing unclaimed records require explicit migration; startup
+never adopts them automatically.
+
 ## Resource format compatibility
 
-Coordinator format 7 stores complete exact resource sets, root accounting,
+Coordinator format 8 adds permanent scope ownership to complete exact resource sets, root accounting,
 immutable result evidence references and
-current permits, credential-specific ceilings and configuration heads. Formats 1–6
+current permits, credential-specific ceilings and configuration heads. Formats 1–7
 are refused.
 No automatic deletion/recreation or permissive migration is performed. The earlier
 substrate is not wired into live gateway effects, but any standalone adopter must
 stop admission and explicitly review/migrate retained records before upgrade.
 Unknown/uncertain attempts retain their reconciliation obligations. Rolling back
-to an older reader is unsupported for format-7 state. Signed context format 2 adds credential
+to an older reader is unsupported for format-8 state. Signed context format 2 adds credential
 references, but recovery still requires a compatible coordinator.
+
+## Reviewed protocol cutover
+
+`AuthorityCoordinator::plan_scope_upgrade` prepares a read-only, privately
+constructed plan for protocol 7 or unclaimed protocol 8. Its report digest binds
+the original bytes and backend version to the proposed ownership and audit
+inputs. `ScopeUpgradePlan::apply` uses CAS and rejects stale review; exact replay
+or a lost acknowledgement observes the original cutover. All existing authority
+and reconciliation records remain intact, with the same incarnation and one
+additional reservation event. Classification must fit the full retained state;
+a control scope cannot adopt execution records. Normal startup does not migrate.
+
+Operators can use `acteon-server -c acteon.toml scope-upgrade` to preview and
+`--review-digest` to apply through the configured persistent backend. Stop or
+drain legacy workers first; format fencing does not cancel registered effects.
 
 ## Retained result evidence
 

@@ -120,13 +120,25 @@ password/key hashes, signing secret, role/grant contents or raw credentials.
 
 On the first reviewed startup only, set `bootstrap = true` to initialize the
 dedicated control coordinator. Then set it to `false` for normal startup.
+The first publication permanently reserves that scope for the specified auth
+source and records the reservation in control history. Execution permits,
+credentials, roots and effect starts cannot share it. Principal revocation
+remains available for offboarding.
+
+Coordinator protocol 8 requires ownership metadata and its matching reservation
+history. Older records require a reviewed migration that fences old writers and
+preserves outstanding reconciliation obligations. Bootstrap never overwrites
+existing records or silently adopts unclaimed work.
+
 Missing, deleted or unsupported state fails closed in normal operation. Keep
 this scope separate from execution coordinators and other auth sources; resetting
 it is recovery work, not an ordinary reload operation. The memory backend is
 process-local and loses authority state on restart; shared replicas and durable
 restart use a persistent backend.
 
-A reload publishes the whole source version before installing its local tables.
+Startup constructs providers and validates the gateway before publishing auth
+configuration. A failed runtime configuration therefore leaves shared authority
+unchanged. A reload publishes the whole source version before installing its local tables.
 Increment `authority_revision` for changes to roles, grants, principal bindings,
 credentials or JWT settings. Equivalent reordered definitions can reuse the
 current version. Different content at that version conflicts, and an older
@@ -152,6 +164,43 @@ The [server configuration page](../admin-ui/index.md) displays whether shared
 configuration authority is configured. All five SDKs continue using their
 existing authentication headers and the generic `config_get_config` operation;
 no client-supplied authority reference is accepted.
+
+### Upgrade an existing authority scope
+
+`scope-upgrade` uses the state backend in your configuration and leaves the
+authority record unchanged during preview. It supports protocol 7 and existing
+unclaimed protocol 8 scopes. Stop admission and stop or drain old workers before
+cutover; previously registered effects and unresolved work retain their
+reconciliation obligations.
+
+Preview the dedicated authentication scope:
+
+```bash
+acteon-server -c acteon.toml scope-upgrade \
+  --namespace auth-control --tenant deployment \
+  --purpose authentication-control --source-id workforce-auth \
+  --actor ops/operator --reason "Reviewed protocol cutover"
+```
+
+Review the reported ownership, authority stamps and retained record counts.
+Apply with the returned `plan.review_digest`, keeping the other arguments the same:
+
+```bash
+acteon-server -c acteon.toml scope-upgrade \
+  --namespace auth-control --tenant deployment \
+  --purpose authentication-control --source-id workforce-auth \
+  --actor ops/operator --reason "Reviewed protocol cutover" \
+  --review-digest REVIEW_DIGEST
+```
+
+The digest binds the observed record and backend CAS version, purpose and audit
+inputs. Any intervening write requires a new preview. The cutover preserves the
+incarnation, permits, credentials, closures, revocations, budgets, spending and
+unresolved attempts, and adds one scope reservation event. It refuses incompatible
+classification, malformed records and missing authority. It never bootstraps or
+recreates state. For a standalone execution-authority scope, use `--purpose
+execution` and omit `--source-id`; this command does not enable per-effect gateway
+mediation.
 
 ## Execution and administration roles
 

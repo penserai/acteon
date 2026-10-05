@@ -5,6 +5,7 @@ pub mod dlq;
 pub mod executor;
 pub mod gate;
 pub mod governed;
+pub mod mediation;
 pub mod retry;
 
 pub use config::ExecutorConfig;
@@ -15,3 +16,9 @@ pub use gate::{
     ProviderAttemptOutcome, RegisteredProviderAttempt,
 };
 pub use retry::RetryStrategy;
+
+pub use mediation::{
+    GovernedProviderMediator, LegacyProviderMediator, ProviderExecutionAdmission,
+    ProviderExecutionAuthority, ProviderExecutionMediator, ProviderInvocation,
+    ProviderInvocationOrigin,
+};

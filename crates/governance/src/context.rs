@@ -4,6 +4,9 @@
 //! API. Creating a root requires independently authenticated actor and evaluated
 //! ceilings. Recovery verifies recorded provenance; it never authorizes an
 //! effect. Every effect still requires current authority evaluation/registration.
+mod admission;
+pub use admission::ROOT_ADMISSION_KIND;
+
 use std::{collections::BTreeMap, sync::Arc};
 
 use acteon_core::{PrincipalIdentity, ResourceRef};
@@ -459,7 +462,14 @@ impl TrustedContextStore {
             Err(ContextError::Missing) => {}
             Err(error) => return Err(error),
         }
-        if self.coordinator.snapshot().await?.stamp() != record.authority {
+        let state = self.coordinator.snapshot().await?;
+        if matches!(
+            state.purpose,
+            crate::ScopePurpose::AuthenticationControl { .. }
+        ) {
+            return Err(ContextError::Invalid);
+        }
+        if state.stamp() != record.authority {
             return Err(ContextError::Coordination(
                 CoordinationError::StaleAuthority,
             ));

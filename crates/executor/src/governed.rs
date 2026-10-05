@@ -531,6 +531,9 @@ impl Runtime {
 }
 
 impl GovernedProviderExecutor {
+    pub(crate) fn bound_provider(&self) -> &BoundProvider {
+        &self.runtime.bound
+    }
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         state: Arc<dyn StateStore>,

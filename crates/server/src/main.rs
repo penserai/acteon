@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
@@ -49,12 +49,35 @@ struct Cli {
     command: Option<Commands>,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum UpgradePurpose {
+    Execution,
+    AuthenticationControl,
+}
+
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Encrypt a value for use in auth.toml. Reads plaintext from stdin.
     Encrypt,
     /// Run database migrations for configured state and audit backends, then exit.
     Migrate,
+    /// Preview an authority protocol cutover; apply only with its reviewed digest.
+    ScopeUpgrade {
+        #[arg(long)]
+        namespace: String,
+        #[arg(long)]
+        tenant: String,
+        #[arg(long, value_enum)]
+        purpose: UpgradePurpose,
+        #[arg(long)]
+        source_id: Option<String>,
+        #[arg(long)]
+        actor: String,
+        #[arg(long)]
+        reason: String,
+        #[arg(long)]
+        review_digest: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -71,6 +94,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
             .init();
         return run_encrypt();
+    }
+
+    if matches!(&cli.command, Some(Commands::ScopeUpgrade { .. }))
+        && !Path::new(&cli.config).exists()
+    {
+        return Err("scope upgrade requires an existing backend configuration file".into());
     }
 
     // Load configuration from TOML file, or use defaults if the file does not exist.
@@ -90,6 +119,57 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
             .init();
         return run_migrate(&config).await;
+    }
+
+    if let Some(Commands::ScopeUpgrade {
+        namespace,
+        tenant,
+        purpose,
+        source_id,
+        actor,
+        reason,
+        review_digest,
+    }) = cli.command
+    {
+        tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+            )
+            .init();
+        let purpose = match (purpose, source_id) {
+            (UpgradePurpose::Execution, None) => acteon_governance::ScopePurpose::Execution,
+            (UpgradePurpose::AuthenticationControl, Some(source_id)) => {
+                acteon_governance::ScopePurpose::AuthenticationControl { source_id }
+            }
+            _ => {
+                return Err(
+                    "authentication-control needs --source-id; execution must omit it".into(),
+                );
+            }
+        };
+        let (store, _lock) = acteon_server::state_factory::create_state(&config.state).await?;
+        let plan = acteon_governance::AuthorityCoordinator::plan_scope_upgrade(
+            store, &namespace, &tenant, purpose, &actor, &reason,
+        )
+        .await?;
+        let status = if let Some(digest) = review_digest {
+            if plan.apply(&digest).await? {
+                "applied"
+            } else {
+                "reconciled"
+            }
+        } else {
+            "preview"
+        };
+        println!(
+            "{}",
+            serde_json::to_string_pretty(
+                &serde_json::json!({"status": status, "plan": plan.report()})
+            )?
+        );
+        return Ok(());
     }
 
     config.server.validate_exposure(
@@ -172,86 +252,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|raw| parse_master_key(&raw).map_err(|e| format!("invalid ACTEON_AUTH_KEY: {e}")))
         .transpose()?;
 
+    if config.auth.enabled && master_key.is_none() {
+        return Err("ACTEON_AUTH_KEY environment variable is required when auth is enabled".into());
+    }
+
     if config.auth.authority.is_some() && !config.auth.enabled {
         return Err("auth authority requires authentication to be enabled".into());
     }
-
-    // Build the auth provider if enabled.
-    let (auth_provider, _auth_watcher_handle) = if config.auth.enabled {
-        let auth_master_key = master_key
-            .as_ref()
-            .ok_or("ACTEON_AUTH_KEY environment variable is required when auth is enabled")?
-            .clone();
-
-        let auth_path = config.auth.config_path.as_deref().unwrap_or("auth.toml");
-
-        // Resolve relative to the config file's directory.
-        let auth_path = if Path::new(auth_path).is_relative() {
-            Path::new(&cli.config)
-                .parent()
-                .unwrap_or(Path::new("."))
-                .join(auth_path)
-        } else {
-            Path::new(auth_path).to_path_buf()
-        };
-
-        let auth_contents = std::fs::read_to_string(&auth_path)
-            .map_err(|e| format!("failed to read auth config at {}: {e}", auth_path.display()))?;
-        let mut auth_config: acteon_server::auth::config::AuthFileConfig =
-            toml::from_str(&auth_contents)
-                .map_err(|e| format!("failed to parse auth config: {e}"))?;
-
-        decrypt_auth_config(&mut auth_config, &auth_master_key)?;
-
-        let provider = if let Some(authority_config) = &config.auth.authority {
-            let fingerprint_key = acteon_server::auth::crypto::SecretString::new(
-                std::env::var("ACTEON_AUTH_AUTHORITY_KEY")
-                    .map_err(|_| "ACTEON_AUTH_AUTHORITY_KEY is required for shared auth authority")?
-                    .into(),
-            );
-            let coordinator = if authority_config.bootstrap {
-                acteon_governance::AuthorityCoordinator::initialize(
-                    Arc::clone(&store),
-                    &authority_config.namespace,
-                    &authority_config.tenant,
-                    acteon_governance::CoordinatorLimits::default(),
-                )
-                .await?
-            } else {
-                acteon_governance::AuthorityCoordinator::connect(
-                    Arc::clone(&store),
-                    &authority_config.namespace,
-                    &authority_config.tenant,
-                )
-                .await?
-            };
-            let authority = Arc::new(acteon_server::auth::authority::AuthAuthority::new(
-                coordinator,
-                authority_config,
-                fingerprint_key,
-            )?);
-            Arc::new(
-                AuthProvider::new_with_authority(&auth_config, Arc::clone(&store), authority)
-                    .await?,
-            )
-        } else {
-            Arc::new(AuthProvider::new(&auth_config, Arc::clone(&store))?)
-        };
-        info!("auth provider initialized");
-
-        // Spawn the auth watcher for hot-reload.
-        let watcher_handle = if config.auth.watch.unwrap_or(true) {
-            let watcher =
-                AuthWatcher::new(Arc::clone(&provider), auth_path.clone(), auth_master_key);
-            Some(watcher.spawn())
-        } else {
-            None
-        };
-
-        (Some(provider), watcher_handle)
-    } else {
-        (None, None)
-    };
 
     // Build the rate limiter if enabled.
     let rate_limiter = if config.rate_limit.enabled {
@@ -731,17 +738,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::sync::Arc<acteon_swarm_provider::SwarmRunRegistry>,
     > = None;
 
+    let mut execution_providers =
+        acteon_server::execution_authority::ExecutionProviderRegistry::default();
+
     // Register providers from config.
     for provider_cfg in &config.providers {
+        let mut qualified_webhook = None;
         let provider: std::sync::Arc<dyn acteon_provider::DynProvider> = match provider_cfg
             .provider_type
             .as_str()
         {
-            "webhook" => acteon_server::provider_factory::StaticWebhook::build(
-                provider_cfg,
-                loaded_outbound_tls.clone(),
-            )?
-            .provider(),
+            "webhook" => {
+                let factory = acteon_server::provider_factory::StaticWebhook::build(
+                    provider_cfg,
+                    loaded_outbound_tls.clone(),
+                )?;
+                let actual = factory.provider();
+                qualified_webhook = Some(factory);
+                actual
+            }
             "log" => std::sync::Arc::new(acteon_provider::LogProvider::new(&provider_cfg.name)),
             "governed-model" => {
                 let model = &provider_cfg.model;
@@ -1540,6 +1555,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .into());
             }
         };
+        execution_providers.register(Arc::clone(&provider), qualified_webhook)?;
         builder = builder.provider(provider);
     }
     if !config.providers.is_empty() {
@@ -1591,6 +1607,84 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .max_attachments_per_action(config.attachments.max_attachments_per_action);
 
     let mut gateway = builder.build()?;
+
+    // Publish authentication only after actual provider construction and gateway
+    // validation. A failed runtime definition must not expose new auth tables.
+    let (auth_provider, _auth_watcher_handle) = if config.auth.enabled {
+        let auth_master_key = master_key
+            .as_ref()
+            .ok_or("ACTEON_AUTH_KEY environment variable is required when auth is enabled")?
+            .clone();
+
+        let auth_path = config.auth.config_path.as_deref().unwrap_or("auth.toml");
+
+        // Resolve relative to the config file's directory.
+        let auth_path = if Path::new(auth_path).is_relative() {
+            Path::new(&cli.config)
+                .parent()
+                .unwrap_or(Path::new("."))
+                .join(auth_path)
+        } else {
+            Path::new(auth_path).to_path_buf()
+        };
+
+        let auth_contents = std::fs::read_to_string(&auth_path)
+            .map_err(|e| format!("failed to read auth config at {}: {e}", auth_path.display()))?;
+        let mut auth_config: acteon_server::auth::config::AuthFileConfig =
+            toml::from_str(&auth_contents)
+                .map_err(|e| format!("failed to parse auth config: {e}"))?;
+
+        decrypt_auth_config(&mut auth_config, &auth_master_key)?;
+
+        let provider = if let Some(authority_config) = &config.auth.authority {
+            let fingerprint_key = acteon_server::auth::crypto::SecretString::new(
+                std::env::var("ACTEON_AUTH_AUTHORITY_KEY")
+                    .map_err(|_| "ACTEON_AUTH_AUTHORITY_KEY is required for shared auth authority")?
+                    .into(),
+            );
+            let coordinator = if authority_config.bootstrap {
+                acteon_governance::AuthorityCoordinator::initialize(
+                    Arc::clone(&store),
+                    &authority_config.namespace,
+                    &authority_config.tenant,
+                    acteon_governance::CoordinatorLimits::default(),
+                )
+                .await?
+            } else {
+                acteon_governance::AuthorityCoordinator::connect(
+                    Arc::clone(&store),
+                    &authority_config.namespace,
+                    &authority_config.tenant,
+                )
+                .await?
+            };
+            let authority = Arc::new(acteon_server::auth::authority::AuthAuthority::new(
+                coordinator,
+                authority_config,
+                fingerprint_key,
+            )?);
+            Arc::new(
+                AuthProvider::new_with_authority(&auth_config, Arc::clone(&store), authority)
+                    .await?,
+            )
+        } else {
+            Arc::new(AuthProvider::new(&auth_config, Arc::clone(&store))?)
+        };
+        info!("auth provider initialized");
+
+        // Spawn the auth watcher for hot-reload.
+        let watcher_handle = if config.auth.watch.unwrap_or(true) {
+            let watcher =
+                AuthWatcher::new(Arc::clone(&provider), auth_path.clone(), auth_master_key);
+            Some(watcher.spawn())
+        } else {
+            None
+        };
+
+        (Some(provider), watcher_handle)
+    } else {
+        (None, None)
+    };
 
     if config.executor.dlq_enabled {
         info!("dead-letter queue enabled");

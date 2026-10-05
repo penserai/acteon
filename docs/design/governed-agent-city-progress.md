@@ -416,3 +416,39 @@ and nine default backend exclusions. Production scope declarations, catalog
 installation, original-binding root admission and gateway effect enforcement
 remain the next delivery gate. Other adapters and workforce lineage remain
 required for complete platform coverage.
+
+## Production execution authority (implementation in progress)
+
+The working implementation prepares execution scopes from actual registered
+providers, publishes a fingerprint of the independently declared policy, and
+admits roots from the original private authentication proof with explicit
+permits. Durable admission pins the first identity, input, deadline and budget
+across retries and partial-write recovery. Scope purpose is permanently reserved
+through the configured state backend; reviewed `scope-upgrade` previews and CAS
+application preserve prior accounting and uncertain attempts.
+
+All selected-provider gateway calls now use one execution interface, including
+reroutes, fallbacks and approval notifications. Its strict governed adapter
+retains credential-required durable executors, checks actual provider instance
+identity and requires explicit host-created invocation authority. The server
+can produce this authority from private authentication and durable admission.
+Refusals have no legacy execution fallback. Uncertain outcomes keep their
+reservations and require reconciliation rather than automatic resend.
+
+`dispatch_with_execution_admission` now carries a borrowed private admission
+adapter explicitly to the final selected work. Real webhook delivery covers
+direct, modified, deduplicated, throttled, rerouted and fallback actions. The
+entry point refuses the legacy executor, and unauthenticated requests are
+refused before operational state changes. Requests missing permits cannot
+consume deduplication or throttle slots before a valid retry. Approval
+notifications/retries receive no inherited request authority. Tests also cover
+forged metadata, changed work under one operation key and revocation on replay.
+
+Focused contracts verify actor/input/instance substitution refusal, credential
+revocation before a send, completed replay without another send, and uncertain
+work without resend. Server admission and cutover contracts have run against
+memory, Redis, PostgreSQL and DynamoDB. These results do not establish public
+HTTP dispatch coverage: public handler wiring, production startup installation,
+deferred/delegated work, adapter coverage and the workforce
+management surfaces remain outstanding. The production server profile is not
+yet installed.

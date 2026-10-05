@@ -319,10 +319,16 @@ jobs:
         run: cargo test --locked -p acteon-governance --test configurations independent_redis_configuration_snapshots_pass_the_contract -- --ignored
       - name: Server authentication with memory and no Redis feature
         run: cargo test --locked -p acteon-server --no-default-features --test auth_authority real_memory_server_uses_the_configured_state_backend
+      - name: Private final-work admission with memory and no Redis feature
+        run: cargo test --locked -p acteon-server --no-default-features --test execution_preparation
       - name: Server authentication authority and startup Redis contracts
         env:
           ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
         run: cargo test --locked -p acteon-server --test auth_authority authentication -- --ignored
+      - name: Root admission multi-client Redis contract
+        env:
+          ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
+        run: cargo test --locked -p acteon-server --test execution_preparation independent_redis_root_admission_passes_the_contract -- --ignored
       - name: Governance credential authority multi-client Redis contract
         env:
           ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
@@ -333,6 +339,8 @@ jobs:
         run: cargo test --locked -p acteon-executor --test governed_provider independent_redis_workers_observe_one_provider_attempt -- --ignored
       - name: Server authentication authority and startup PostgreSQL contract
         run: cargo test --locked -p acteon-server --features postgres --test auth_authority independent_postgres_authentication_replicas_pass_the_contract -- --ignored
+      - name: Root admission multi-client PostgreSQL contract
+        run: cargo test --locked -p acteon-server --features postgres --test execution_preparation independent_postgres_root_admission_passes_the_contract -- --ignored
       - name: PostgreSQL audit-store conformance
         run: cargo test --locked -p acteon-audit-postgres --features integration --lib
       - name: Start disposable DynamoDB
@@ -346,6 +354,13 @@ jobs:
           AWS_EC2_METADATA_DISABLED: 'true'
       - name: Server authentication authority and startup DynamoDB contract
         run: cargo test --locked -p acteon-server --features dynamodb --test auth_authority independent_dynamodb_authentication_replicas_pass_the_contract -- --ignored
+        env:
+          DYNAMODB_ENDPOINT: http://127.0.0.1:8000
+          AWS_ACCESS_KEY_ID: acteonlocaltest
+          AWS_SECRET_ACCESS_KEY: acteon-local-test
+          AWS_EC2_METADATA_DISABLED: 'true'
+      - name: Root admission multi-client DynamoDB contract
+        run: cargo test --locked -p acteon-server --features dynamodb --test execution_preparation independent_dynamodb_root_admission_passes_the_contract -- --ignored
         env:
           DYNAMODB_ENDPOINT: http://127.0.0.1:8000
           AWS_ACCESS_KEY_ID: acteonlocaltest

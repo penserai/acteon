@@ -8,6 +8,10 @@ use acteon_executor::governed::{
     OPERATION_KIND, ProviderFailureContract, RESULT_KIND, governed_provider_input_digest,
 };
 use acteon_executor::{ExecutorConfig, RetryStrategy};
+use acteon_executor::{
+    GovernedProviderMediator, ProviderExecutionAuthority, ProviderExecutionMediator,
+    ProviderInvocation, ProviderInvocationOrigin,
+};
 use acteon_governance::context::{
     ContextBinding, ContextSigningKey, ExecutionContextHandle, RootContextAdmission,
     TrustedContextStore,
@@ -111,14 +115,9 @@ fn config() -> ExecutorConfig {
     }
 }
 fn bound(provider: Arc<dyn DynProvider>, known: bool) -> BoundProvider {
-    let binding = BoundProvider::new_trusted(
-        provider.clone(),
-        &endpoint(),
-        "work",
-        "definition-v1",
-        vec![],
-    )
-    .unwrap();
+    let selected = provider.clone();
+    let binding =
+        BoundProvider::new_trusted(provider, &endpoint(), "work", "definition-v1", vec![]).unwrap();
     let binding = if known {
         binding
             .with_failure_contract(Arc::new(KnownRateLimit))
@@ -129,7 +128,7 @@ fn bound(provider: Arc<dyn DynProvider>, known: bool) -> BoundProvider {
     let catalog =
         acteon_executor::catalog::QualifiedProviderCatalog::new_trusted(vec![binding]).unwrap();
     let probe = Action::new("city", "tenant", "original", "work", serde_json::json!({}));
-    catalog.resolve(&probe, &provider).unwrap().clone()
+    catalog.resolve(&probe, &selected).unwrap().clone()
 }
 struct Fixture {
     state: Arc<dyn StateStore>,
@@ -1257,4 +1256,186 @@ async fn an_accepted_root_cannot_adopt_a_new_binding_or_failure_contract() {
         assert_eq!(root.spent_units, 0);
         assert_eq!(root.active_attempts, 0);
     }
+}
+
+async fn mediated(
+    mediator: &GovernedProviderMediator,
+    action: &Action,
+    selected: &Arc<dyn DynProvider>,
+    authority: Option<&ProviderExecutionAuthority>,
+) -> ActionOutcome {
+    mediator
+        .execute(ProviderInvocation {
+            action,
+            selected,
+            authority,
+            context: None,
+            origin: ProviderInvocationOrigin::Dispatch,
+        })
+        .await
+}
+fn mediation_code(outcome: ActionOutcome) -> String {
+    let ActionOutcome::Failed(error) = outcome else {
+        panic!("expected refusal")
+    };
+    assert!(!error.retryable);
+    error.code
+}
+
+#[tokio::test]
+async fn strict_mediator_requires_authority_exact_instance_actor_and_credential() {
+    let provider = Arc::new(Counting::new(Mode::Success));
+    let selected: Arc<dyn DynProvider> = provider.clone();
+    let mut f = fixture(
+        Arc::new(MemoryStateStore::new()),
+        selected.clone(),
+        false,
+        config(),
+    )
+    .await;
+    let mediator = GovernedProviderMediator::new(vec![f.driver(selected.clone(), None)]).unwrap();
+    assert_eq!(
+        mediation_code(mediated(&mediator, &f.action, &selected, None).await),
+        "EXECUTION_AUTHORITY_REQUIRED"
+    );
+    // Even a signed actor-only context cannot enter the credential profile.
+    let actor_only =
+        ProviderExecutionAuthority::new_trusted(f.reference.clone(), actor(), references());
+    assert_eq!(
+        mediation_code(mediated(&mediator, &f.action, &selected, Some(&actor_only)).await),
+        "GOVERNED_EXECUTION_REFUSED"
+    );
+    bind_credential(&mut f, selected.clone()).await;
+    let authority =
+        ProviderExecutionAuthority::new_trusted(f.reference.clone(), actor(), references());
+    let substitute: Arc<dyn DynProvider> = Arc::new(Counting::new(Mode::Success));
+    assert_eq!(
+        mediation_code(mediated(&mediator, &f.action, &substitute, Some(&authority)).await),
+        "PROVIDER_UNQUALIFIED"
+    );
+    let wrong_actor = ProviderExecutionAuthority::new_trusted(
+        f.reference.clone(),
+        PrincipalIdentity::new("other", PrincipalKind::Agent).unwrap(),
+        references(),
+    );
+    assert_eq!(
+        mediation_code(mediated(&mediator, &f.action, &selected, Some(&wrong_actor)).await),
+        "GOVERNED_EXECUTION_REFUSED"
+    );
+    let mut altered = f.action.clone();
+    altered.payload = serde_json::json!({"different":"work"});
+    assert_eq!(
+        mediation_code(mediated(&mediator, &altered, &selected, Some(&authority)).await),
+        "GOVERNED_EXECUTION_REFUSED"
+    );
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        mediation_code(
+            mediator
+                .execute(ProviderInvocation {
+                    action: &f.action,
+                    selected: &selected,
+                    authority: Some(&authority),
+                    context: Some(&acteon_provider::DispatchContext::default()),
+                    origin: ProviderInvocationOrigin::Dispatch,
+                })
+                .await
+        ),
+        "GOVERNED_CONTEXT_UNSUPPORTED"
+    );
+    for _ in 0..2 {
+        assert!(matches!(
+            mediated(&mediator, &f.action, &selected, Some(&authority)).await,
+            ActionOutcome::Executed(_)
+        ));
+    }
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn strict_mediator_preserves_uncertain_work_without_automatic_resend() {
+    let provider = Arc::new(Counting::new(Mode::Connection));
+    let selected: Arc<dyn DynProvider> = provider.clone();
+    let mut f = fixture(
+        Arc::new(MemoryStateStore::new()),
+        selected.clone(),
+        false,
+        config(),
+    )
+    .await;
+    bind_credential(&mut f, selected.clone()).await;
+    let authority =
+        ProviderExecutionAuthority::new_trusted(f.reference.clone(), actor(), references());
+    let mediator = GovernedProviderMediator::new(vec![f.driver(selected.clone(), None)]).unwrap();
+    for _ in 0..2 {
+        assert_eq!(
+            mediation_code(mediated(&mediator, &f.action, &selected, Some(&authority)).await),
+            "GOVERNED_RECONCILIATION_REQUIRED"
+        );
+    }
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    let snapshot = f.coordinator.snapshot().await.unwrap();
+    let root = &snapshot.roots[&f.reference.execution_id().to_string()];
+    assert_eq!(root.active_attempts, 1);
+    assert_eq!(root.spent_units, 1);
+}
+
+#[tokio::test]
+async fn strict_mediator_rejects_ambiguous_routes() {
+    let provider: Arc<dyn DynProvider> = Arc::new(Counting::new(Mode::Success));
+    let f = fixture(
+        Arc::new(MemoryStateStore::new()),
+        provider.clone(),
+        false,
+        config(),
+    )
+    .await;
+    assert!(GovernedProviderMediator::new(vec![]).is_err());
+    assert!(
+        GovernedProviderMediator::new(vec![
+            f.driver(provider.clone(), None),
+            f.driver(provider, None)
+        ])
+        .is_err()
+    );
+}
+
+#[tokio::test]
+async fn strict_mediator_observes_current_revocation_before_any_attempt() {
+    let provider = Arc::new(Counting::new(Mode::Success));
+    let selected: Arc<dyn DynProvider> = provider.clone();
+    let mut f = fixture(
+        Arc::new(MemoryStateStore::new()),
+        selected.clone(),
+        false,
+        config(),
+    )
+    .await;
+    bind_credential(&mut f, selected.clone()).await;
+    let authority =
+        ProviderExecutionAuthority::new_trusted(f.reference.clone(), actor(), references());
+    let mediator = GovernedProviderMediator::new(vec![f.driver(selected.clone(), None)]).unwrap();
+    f.coordinator
+        .change(
+            "stop-credential",
+            AuthorityChange::RevokeCredential {
+                credential_id: "key".into(),
+                expected_revision: 1,
+            },
+            "issuer",
+            "offboarding",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        mediation_code(mediated(&mediator, &f.action, &selected, Some(&authority)).await),
+        "GOVERNED_EXECUTION_REFUSED"
+    );
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+    let snapshot = f.coordinator.snapshot().await.unwrap();
+    assert!(snapshot.starts.is_empty());
+    assert_eq!(
+        snapshot.roots[&f.reference.execution_id().to_string()].spent_units,
+        0
+    );
 }

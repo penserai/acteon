@@ -16,7 +16,13 @@ use super::config::AuthFileConfig;
 use super::enrollment::AuthenticatedCredential;
 use super::role::{Permission, Role};
 
-pub(super) type ScopeReferences = BTreeMap<(String, String), CredentialConfigurationReference>;
+#[derive(Debug, Clone)]
+pub(super) struct PublishedScopeBinding {
+    pub reference: CredentialConfigurationReference,
+    pub policy_fingerprint: Option<String>,
+}
+
+pub(super) type ScopeReferences = BTreeMap<(String, String), PublishedScopeBinding>;
 
 /// Original scope references captured with the actual authenticated credential.
 /// Private construction and no deserializer prevent request labels from minting
@@ -37,8 +43,8 @@ impl AuthenticatedExecutionConfiguration {
         if credential.principal() != source.principal()
             || credential.auth_method() != source.auth_method()
             || scopes.values().any(|r| {
-                r.revision != source.reference().revision
-                    || r.source_id != source.reference().source_id
+                r.reference.revision != source.reference().revision
+                    || r.reference.source_id != source.reference().source_id
             })
         {
             return Err("execution configuration binding differs from authentication".into());
@@ -60,10 +66,11 @@ impl AuthenticatedExecutionConfiguration {
             tenant: tenant.into(),
             credential: self.credential.clone(),
             source: self.source.clone(),
-            configuration: configuration.clone(),
+            configuration: configuration.reference.clone(),
+            policy_fingerprint: configuration.policy_fingerprint.clone(),
             reference: CredentialReference {
                 id: self.credential.id().into(),
-                accepted_revision: configuration.revision,
+                accepted_revision: configuration.reference.revision,
             },
         })
     }
@@ -78,10 +85,15 @@ pub struct ScopedCredentialBinding {
     credential: AuthenticatedCredential,
     source: AuthenticatedConfiguration,
     configuration: CredentialConfigurationReference,
+    policy_fingerprint: Option<String>,
     reference: CredentialReference,
 }
 
 impl ScopedCredentialBinding {
+    pub(crate) fn matches_deployment_policy(&self, fingerprint: &str) -> bool {
+        self.policy_fingerprint.as_deref() == Some(fingerprint)
+    }
+
     #[must_use]
     pub fn credential_reference(&self) -> &CredentialReference {
         &self.reference
@@ -103,6 +115,23 @@ impl ScopedCredentialBinding {
         coordinator: &AuthorityCoordinator,
         now_ms: i64,
     ) -> Result<AuthorityStamp, String> {
+        self.verify_scope(coordinator, now_ms, false).await
+    }
+
+    pub(crate) async fn verify_execution_scope(
+        &self,
+        coordinator: &AuthorityCoordinator,
+        now_ms: i64,
+    ) -> Result<AuthorityStamp, String> {
+        self.verify_scope(coordinator, now_ms, true).await
+    }
+
+    async fn verify_scope(
+        &self,
+        coordinator: &AuthorityCoordinator,
+        now_ms: i64,
+        require_execution: bool,
+    ) -> Result<AuthorityStamp, String> {
         let state = coordinator
             .snapshot()
             .await
@@ -115,7 +144,8 @@ impl ScopedCredentialBinding {
             .credentials
             .get(&self.reference.id)
             .ok_or("scope credential missing")?;
-        if state.namespace != self.namespace
+        if (require_execution && state.purpose != acteon_governance::ScopePurpose::Execution)
+            || state.namespace != self.namespace
             || state.tenant != self.tenant
             || state.incarnation != self.configuration.incarnation
             || head.revision != self.configuration.revision
@@ -149,6 +179,7 @@ pub struct CredentialPolicyProjector {
     issuance: PermitIssuanceCeiling,
     valid_from_ms: i64,
     limits: RootBudgetLimits,
+    deployment_policy_fingerprint: Option<String>,
 }
 
 impl CredentialPolicyProjector {
@@ -169,6 +200,12 @@ impl CredentialPolicyProjector {
             .snapshot()
             .await
             .map_err(|_| "scope authority unavailable")?;
+        if matches!(
+            scope.purpose,
+            acteon_governance::ScopePurpose::AuthenticationControl { .. }
+        ) {
+            return Err("authentication-control scope cannot host execution projection".into());
+        }
         let definitions = catalog.definitions(&scope.namespace, &scope.tenant);
         if definitions.is_empty()
             || valid_from_ms < 0
@@ -198,7 +235,17 @@ impl CredentialPolicyProjector {
             issuance,
             valid_from_ms,
             limits,
+            deployment_policy_fingerprint: None,
         })
+    }
+
+    pub(super) fn deployment_policy_fingerprint(&self) -> Option<&str> {
+        self.deployment_policy_fingerprint.as_deref()
+    }
+
+    pub(crate) fn with_deployment_policy_fingerprint(mut self, fingerprint: String) -> Self {
+        self.deployment_policy_fingerprint = Some(fingerprint);
+        self
     }
 
     #[must_use]
@@ -284,15 +331,21 @@ impl CredentialPolicyProjector {
             credential.execution_enabled = !credential.ceiling.effects.is_empty();
             credentials.entry(id.to_owned()).or_insert(credential);
         }
-        let bytes = serde_json::to_vec(&json!({
+        let mut fingerprint = json!({
             "format": "acteon.auth.execution_projection.v1",
             "auth_fingerprint": source.configuration_fingerprint,
             "namespace": self.namespace, "tenant": self.tenant,
             "catalog": self.catalog.fingerprint(),
             "issuer": self.issuance.issuer,
             "valid_from_ms": self.valid_from_ms, "limits": self.limits,
-        }))
-        .map_err(|_| "invalid execution projection")?;
+        });
+        if let Some(policy) = &self.deployment_policy_fingerprint {
+            fingerprint
+                .as_object_mut()
+                .ok_or("invalid execution projection")?
+                .insert("deployment_policy".into(), json!(policy));
+        }
+        let bytes = serde_json::to_vec(&fingerprint).map_err(|_| "invalid execution projection")?;
         Ok(CredentialConfiguration {
             source_id: source.source_id,
             revision: source.revision,
@@ -315,6 +368,14 @@ impl CredentialPolicyProjector {
             .snapshot()
             .await
             .map_err(|_| "scope authority unavailable")?;
+        if matches!(
+            snapshot.purpose,
+            acteon_governance::ScopePurpose::AuthenticationControl { .. }
+        ) || (self.deployment_policy_fingerprint.is_some()
+            && snapshot.purpose != acteon_governance::ScopePurpose::Execution)
+        {
+            return Err("scope purpose does not permit execution projection".into());
+        }
         let expected = snapshot
             .credential_configurations
             .get(&configuration.source_id)
