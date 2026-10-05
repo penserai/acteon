@@ -139,3 +139,62 @@ test.describe('Navigation', () => {
     await expect(cmdKButton).toBeVisible()
   })
 })
+
+test('governance keeps scoped operator authority and confirms closures', async ({ page }) => {
+  const { readFileSync } = await import('node:fs')
+  const fixture = JSON.parse(readFileSync(new URL('../../clients/contract-fixtures/governance-management.json', import.meta.url), 'utf8'))
+  const scope = structuredClone(fixture.scope)
+  const resource = scope.routes[0].effect.resources[0]
+  // Exercise a realistic long endpoint identity on both desktop and mobile.
+  resource.id = 'endpoint/' + '0123456789abcdef'.repeat(8)
+  scope.closed_resources = []
+  scope.routes[0].closed = false
+  await page.addInitScript(() => localStorage.setItem('acteon-token', 'operator-key'))
+  const changes: Record<string, unknown>[] = []
+  await page.route('**/v1/governance**', async route => {
+    const request = route.request()
+    expect(request.headers()['authorization']).toBe('Bearer operator-key')
+    if (request.method() === 'GET') {
+      const url = new URL(request.url())
+      expect(url.searchParams.get('namespace')).toBe('prod')
+      expect(url.searchParams.get('tenant')).toBe('acme')
+      await route.fulfill({ json: scope })
+      return
+    }
+    const body = request.postDataJSON()
+    expect(body.namespace).toBe('prod')
+    expect(body.tenant).toBe('acme')
+    expect(body.reason).toBe('Scheduled maintenance')
+    expect(body.change.resource).toEqual(resource)
+    changes.push(body)
+    scope.routes[0].closed = body.change.kind === 'close_resource'
+    scope.closed_resources = scope.routes[0].closed ? [resource] : []
+    await route.fulfill({ json: { ...fixture.receipt, change_id: body.change_id, reason: body.reason } })
+  })
+  await page.goto('/governance')
+  await page.getByLabel('Namespace', { exact: true }).fill('prod')
+  await page.getByLabel('Tenant', { exact: true }).fill('acme')
+  await page.getByRole('button', { name: 'Inspect scope', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Governed routes' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Issue a permit' })).toBeVisible()
+  const widths = await page.evaluate(() => ({ content: document.documentElement.scrollWidth, viewport: document.documentElement.clientWidth }))
+  expect(widths.content).toBeLessThanOrEqual(widths.viewport)
+  await page.getByRole('button', { name: 'Close', exact: true }).first().click()
+  await expect(page.getByRole('button', { name: 'Apply change' })).toBeDisabled()
+  expect(changes).toHaveLength(0)
+  await page.getByLabel('Reason', { exact: true }).fill('Scheduled maintenance')
+  await page.getByRole('button', { name: 'Apply change' }).click()
+  await expect(page.getByRole('status').filter({ hasText: 'Control recorded' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Reopen', exact: true })).toBeVisible()
+  expect(changes).toHaveLength(1)
+  expect((changes[0].change as { kind: string }).kind).toBe('close_resource')
+  await page.getByRole('button', { name: 'Reopen', exact: true }).click()
+  await page.getByLabel('Reason', { exact: true }).fill('Scheduled maintenance')
+  await page.getByRole('button', { name: 'Apply change' }).click()
+  await expect(page.getByRole('button', { name: 'Reopen', exact: true })).toHaveCount(0)
+  expect(changes).toHaveLength(2)
+  expect((changes[1].change as { kind: string }).kind).toBe('reopen_resource')
+  expect(changes[0].change_id).not.toBe(changes[1].change_id)
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  await page.screenshot({ path: test.info().outputPath('governance.png'), fullPage: true, animations: 'disabled' })
+})

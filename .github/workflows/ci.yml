@@ -327,6 +327,13 @@ jobs:
         run: cargo test --locked -p acteon-server --no-default-features --test execution_preparation
       - name: Governed HTTP dispatch with memory and no Redis feature
         run: cargo test --locked -p acteon-server --no-default-features --test execution_http
+      - name: Current authenticated governance management
+        run: cargo test --locked -p acteon-server --no-default-features --test execution_management
+      - name: Run the documented governed city with no Redis dependency
+        run: |
+          python3 -m venv /tmp/acteon-city-ci
+          /tmp/acteon-city-ci/bin/pip install -e clients/python
+          /tmp/acteon-city-ci/bin/python examples/governed-city/run.py --server target/debug/acteon-server --output /tmp/governed-city-results.json
       - name: Server authentication authority and startup Redis contracts
         env:
           ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379

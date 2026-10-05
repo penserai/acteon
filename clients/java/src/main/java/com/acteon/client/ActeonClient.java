@@ -239,6 +239,23 @@ public class ActeonClient implements AutoCloseable {
     // Health
     // =========================================================================
 
+    public Governance.ScopeView governance(String namespace, String tenant) throws ActeonException {
+        var node = platformRequest(PlatformOperation.GOVERNANCE_INSPECT, null,
+            Map.of("namespace", List.of(namespace), "tenant", List.of(tenant)), null);
+        try { return objectMapper.treeToValue(node, Governance.ScopeView.class); }
+        catch (IOException e) { throw new ConnectionException("Malformed governance response", e); }
+    }
+    public Governance.ChangeReceipt publishGovernancePermit(Governance.PublishPermitRequest request) throws ActeonException {
+        var node = platformRequest(PlatformOperation.GOVERNANCE_PUBLISH_PERMIT, null, null, request);
+        try { return objectMapper.treeToValue(node, Governance.ChangeReceipt.class); }
+        catch (IOException e) { throw new ConnectionException("Malformed governance response", e); }
+    }
+    public Governance.ChangeReceipt interveneGovernance(Governance.InterventionRequest request) throws ActeonException {
+        var node = platformRequest(PlatformOperation.GOVERNANCE_INTERVENE, null, null, request);
+        try { return objectMapper.treeToValue(node, Governance.ChangeReceipt.class); }
+        catch (IOException e) { throw new ConnectionException("Malformed governance response", e); }
+    }
+
     /** Inspect this credential's stable principal binding. */
     public CredentialIdentity identity() throws ActeonException {
         var node = platformRequest(PlatformOperation.AUTH_IDENTITY, null, null, null);

@@ -77,6 +77,8 @@ membership or confer authority. Scope declarations explicitly provide issuance
 bounds. Choose validity and root limits appropriate to the operation rather than
 copying the example's long validity horizon into production.
 
+Manage issued permits and resource closures through [governance management](governance.md).
+
 ## Dispatch with explicit references
 
 Send `x-acteon-execution-permits` as a JSON array of `id` and

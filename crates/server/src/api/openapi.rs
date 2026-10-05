@@ -67,6 +67,7 @@ use acteon_core::{
     ),
     tags(
         (name = "Health", description = "Service health and metrics"),
+        (name = "Governance", description = "Authenticated permits and resource intervention"),
         (name = "Dispatch", description = "Action dispatch through the gateway pipeline"),
         (name = "Rules", description = "Rule management and lifecycle"),
         (name = "Audit", description = "Audit trail query and lookup"),
@@ -91,6 +92,9 @@ use acteon_core::{
         (name = "bus", description = "Agentic message bus (Kafka-backed topics, publish, subscribe)")
     ),
     paths(
+        super::governance::inspect,
+        super::governance::publish_permit,
+        super::governance::intervene,
         super::auth::identity,
         super::health::health,
         super::health::metrics,

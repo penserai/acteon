@@ -31,13 +31,19 @@ impl Server {
         Self::start_with_role(webhook, state, "executor")
     }
     fn start_with_role(webhook: &str, state: &str, role: &str) -> Self {
+        Self::configured(webhook, state, role, false)
+    }
+    fn governance(webhook: &str, state: &str) -> Self {
+        Self::configured(webhook, state, "executor", true)
+    }
+    fn configured(webhook: &str, state: &str, role: &str, management: bool) -> Self {
         let directory =
             std::env::temp_dir().join(format!("acteon-execution-http-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&directory).unwrap();
         let socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = socket.local_addr().unwrap().port();
         drop(socket);
-        let config = format!(
+        let mut config = format!(
             r#"
 [server]
 host = "127.0.0.1"
@@ -85,6 +91,24 @@ valid_from_ms = 0
 limits = {{max_units=5,max_concurrent=2,deadline_ms=4102444800000}}
 "#
         );
+        if management {
+            config = config.replace(
+                "subjects = [{id=\"agent/maya\",kind=\"agent\"}]",
+                "subjects = [{id=\"agent/maya\",kind=\"agent\"},{id=\"operator\",kind=\"human\"}]",
+            );
+            config.push_str(
+                r#"
+[[execution_authority.scopes.managers]]
+principal = {id="operator",kind="human"}
+subjects = [{id="agent/maya",kind="agent"}]
+routes = [{provider="incident",action_type="execute"}]
+valid_from_ms = 0
+limits = {max_units=5,max_concurrent=2,deadline_ms=4102444800000}
+can_issue_permits = true
+can_intervene = true
+"#,
+            );
+        }
         fs::write(directory.join("acteon.toml"), config).unwrap();
         fs::write(
             directory.join("auth.toml"),
@@ -109,6 +133,38 @@ actions = ["execute"]
             ),
         )
         .unwrap();
+        if management {
+            use std::io::Write;
+            let mut auth = fs::OpenOptions::new()
+                .append(true)
+                .open(directory.join("auth.toml"))
+                .unwrap();
+            for (name, principal, role, namespace) in [
+                ("operator", "operator", "operator", "prod"),
+                ("imposter", "operator", "executor", "prod"),
+                ("foreign", "operator", "operator", "other"),
+                ("unlisted", "unlisted", "operator", "prod"),
+            ] {
+                writeln!(
+                    auth,
+                    r#"
+[[api_keys]]
+name = {name:?}
+authority_id = "credential/{name}"
+principal = {{id={principal:?},kind="human"}}
+key_hash = {:?}
+role = {role:?}
+[[api_keys.grants]]
+namespaces = [{namespace:?}]
+tenants = ["acme"]
+providers = ["audit"]
+actions = ["read"]
+"#,
+                    acteon_server::auth::api_key::hash_api_key(&format!("{name}-secret"))
+                )
+                .unwrap();
+            }
+        }
         let child = Self::launch(&directory);
         Self {
             child,
@@ -141,7 +197,7 @@ actions = ["execute"]
         self.child = Self::launch(&self.directory);
     }
     async fn ready(&mut self, client: &reqwest::Client) {
-        tokio::time::timeout(Duration::from_secs(15), async {
+        tokio::time::timeout(Duration::from_secs(60), async {
             loop {
                 assert!(
                     self.child.try_wait().unwrap().is_none(),
@@ -411,4 +467,335 @@ async fn invalid_authentication_is_rejected_before_execution_scope_publication()
             .unwrap();
     }
     pool.close().await;
+}
+
+#[tokio::test]
+async fn authenticated_operator_controls_real_execution_without_dispatch_authority() {
+    governance_http_contract("backend = 'memory'", false).await;
+}
+
+#[cfg(feature = "postgres")]
+#[tokio::test]
+#[ignore = "requires DATABASE_URL; actual governance controls survive restart"]
+async fn postgres_governance_controls_survive_server_restart() {
+    let url = std::env::var("DATABASE_URL").unwrap();
+    let prefix = format!("gov_http_{}_", uuid::Uuid::new_v4().simple());
+    governance_http_contract(
+        &format!("backend = 'postgres'\nurl = {url:?}\nprefix = {prefix:?}"),
+        true,
+    )
+    .await;
+    let pool = sqlx::PgPool::connect(&url).await.unwrap();
+    for suffix in ["state", "locks", "timeout_index", "chain_ready_index"] {
+        sqlx::query(&format!("DROP TABLE public.{prefix}{suffix}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    pool.close().await;
+}
+
+async fn governance_http_contract(state: &str, restart: bool) {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let received = calls.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let webhook = format!("http://{}/incident", listener.local_addr().unwrap());
+    let router = Router::new().route(
+        "/incident",
+        post(move |Json(_): Json<Value>| {
+            let received = received.clone();
+            async move {
+                received.fetch_add(1, Ordering::SeqCst);
+                Json(json!({"ok": true}))
+            }
+        }),
+    );
+    let receiver = tokio::spawn(axum::serve(listener, router).into_future());
+    let mut server = Server::governance(&webhook, state);
+    let client = reqwest::Client::new();
+    server.ready(&client).await;
+    let inspect_url = format!("{}/v1/governance?namespace=prod&tenant=acme", server.url);
+    for credential in [
+        "maya-secret",
+        "imposter-secret",
+        "foreign-secret",
+        "unlisted-secret",
+    ] {
+        assert_eq!(
+            client
+                .get(&inspect_url)
+                .bearer_auth(credential)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            403
+        );
+    }
+    let snapshot = client
+        .get(&inspect_url)
+        .bearer_auth("operator-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(snapshot.status(), 200);
+    let view: acteon_core::GovernanceScopeView = snapshot.json().await.unwrap();
+    assert_eq!(view.routes.len(), 1);
+    assert_eq!(view.permits.len(), 1);
+    let resource = view.routes[0].effect.resources[0].clone();
+    let issue = json!({"namespace":"prod", "tenant":"acme", "change_id":"issue-online", "expected_revision":0,
+        "permit":{"id":"online-maya", "revision":1, "subject":{"id":"agent/maya","kind":"agent"},
+            "routes":[{"provider":"incident","action_type":"execute"}], "valid_from_ms":0,
+            "limits":{"max_units":5,"max_concurrent":1,"deadline_ms":4102444800000_i64}}, "reason":"incident response"});
+    for credential in [
+        "maya-secret",
+        "imposter-secret",
+        "foreign-secret",
+        "unlisted-secret",
+    ] {
+        assert_eq!(
+            client
+                .post(format!("{}/v1/governance/permits", server.url))
+                .bearer_auth(credential)
+                .json(&issue)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            403
+        );
+    }
+    let issued = client
+        .post(format!("{}/v1/governance/permits", server.url))
+        .bearer_auth("operator-secret")
+        .json(&issue)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(issued.status(), 200);
+    let receipt: acteon_core::GovernanceChangeReceipt = issued.json().await.unwrap();
+    assert_eq!(receipt.actor, "operator");
+    assert!(receipt.pending);
+    let replay: acteon_core::GovernanceChangeReceipt = client
+        .post(format!("{}/v1/governance/permits", server.url))
+        .bearer_auth("operator-secret")
+        .json(&issue)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(receipt, replay);
+    let mut oversized = issue.clone();
+    oversized["change_id"] = json!("oversized");
+    oversized["permit"]["id"] = json!("oversized");
+    oversized["permit"]["limits"]["max_units"] = json!(6);
+    assert_eq!(
+        client
+            .post(format!("{}/v1/governance/permits", server.url))
+            .bearer_auth("operator-secret")
+            .json(&oversized)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+    let send = |credential: &'static str| {
+        client
+            .post(format!("{}/v1/dispatch", server.url))
+            .bearer_auth(credential)
+            .header(
+                "x-acteon-execution-permits",
+                r#"[{"id":"online-maya","accepted_revision":1}]"#,
+            )
+            .json(&Action::new(
+                "prod",
+                "acme",
+                "incident",
+                "execute",
+                json!({"ticket":42}),
+            ))
+    };
+    assert_eq!(send("operator-secret").send().await.unwrap().status(), 403);
+    let outcome: Value = send("maya-secret")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(outcome.get("Executed").is_some(), "{outcome}");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let close = json!({"namespace":"prod", "tenant":"acme", "change_id":"road-closure", "reason":"maintenance", "change":{"kind":"close_resource","resource":resource}});
+    for credential in [
+        "maya-secret",
+        "imposter-secret",
+        "foreign-secret",
+        "unlisted-secret",
+    ] {
+        assert_eq!(
+            client
+                .post(format!("{}/v1/governance/changes", server.url))
+                .bearer_auth(credential)
+                .json(&close)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            403
+        );
+    }
+    assert_eq!(
+        client
+            .post(format!("{}/v1/governance/changes", server.url))
+            .bearer_auth("operator-secret")
+            .json(&close)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    if restart {
+        server.restart();
+        server.ready(&client).await;
+    }
+    let closed: acteon_core::GovernanceScopeView = client
+        .get(&inspect_url)
+        .bearer_auth("operator-secret")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(closed.routes[0].closed);
+    assert!(closed.closed_resources.contains(&resource));
+    let blocked: Value = client
+        .post(format!("{}/v1/dispatch", server.url))
+        .bearer_auth("maya-secret")
+        .header(
+            "x-acteon-execution-permits",
+            r#"[{"id":"online-maya","accepted_revision":1}]"#,
+        )
+        .json(&Action::new(
+            "prod",
+            "acme",
+            "incident",
+            "execute",
+            json!({"ticket":43}),
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(blocked.get("Failed").is_some(), "{blocked}");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let reopen = json!({"namespace":"prod", "tenant":"acme", "change_id":"road-reopen", "reason":"maintenance complete", "change":{"kind":"reopen_resource","resource":resource}});
+    assert_eq!(
+        client
+            .post(format!("{}/v1/governance/changes", server.url))
+            .bearer_auth("operator-secret")
+            .json(&reopen)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    let outcome: Value = client
+        .post(format!("{}/v1/dispatch", server.url))
+        .bearer_auth("maya-secret")
+        .header(
+            "x-acteon-execution-permits",
+            r#"[{"id":"online-maya","accepted_revision":1}]"#,
+        )
+        .json(&Action::new(
+            "prod",
+            "acme",
+            "incident",
+            "execute",
+            json!({"ticket":44}),
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(outcome.get("Executed").is_some(), "{outcome}");
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    let revoke = json!({"namespace":"prod", "tenant":"acme", "change_id":"permit-revoked", "reason":"incident resolved", "change":{"kind":"revoke_permit","permit_id":"online-maya","expected_revision":1}});
+    assert_eq!(
+        client
+            .post(format!("{}/v1/governance/changes", server.url))
+            .bearer_auth("operator-secret")
+            .json(&revoke)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    let blocked: Value = client
+        .post(format!("{}/v1/dispatch", server.url))
+        .bearer_auth("maya-secret")
+        .header(
+            "x-acteon-execution-permits",
+            r#"[{"id":"online-maya","accepted_revision":1}]"#,
+        )
+        .json(&Action::new(
+            "prod",
+            "acme",
+            "incident",
+            "execute",
+            json!({"ticket":45}),
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(blocked.get("Failed").is_some(), "{blocked}");
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    let revoke_credential = json!({"namespace":"prod", "tenant":"acme", "change_id":"credential-revoked", "reason":"offboarding", "change":{"kind":"revoke_credential","credential_id":"credential/maya","expected_revision":1}});
+    assert_eq!(
+        client
+            .post(format!("{}/v1/governance/changes", server.url))
+            .bearer_auth("operator-secret")
+            .json(&revoke_credential)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    assert_eq!(
+        client
+            .post(format!("{}/v1/dispatch", server.url))
+            .bearer_auth("maya-secret")
+            .header(
+                "x-acteon-execution-permits",
+                r#"[{"id":"maya-incident","accepted_revision":1}]"#
+            )
+            .json(&Action::new(
+                "prod",
+                "acme",
+                "incident",
+                "execute",
+                json!({"ticket":46})
+            ))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    receiver.abort();
 }

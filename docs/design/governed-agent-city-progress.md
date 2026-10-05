@@ -500,7 +500,7 @@ explicit permits publish only after authentication scope projections and rule
 loading succeed. The PostgreSQL HTTP test also verifies that a failed startup
 with invalid credentials leaves both control and execution scopes absent.
 
-## Evaluated control-write boundary (integration in progress)
+## Evaluated control-write boundary (merged)
 
 A bounded, independently evaluated control ceiling now guards intervention
 writes and their idempotent replay within the coordinator CAS loop. Current
@@ -520,5 +520,43 @@ unclaimed and authentication-control scopes. Public adapters remain unimplemente
 Required local checks pass: 3,503 workspace tests, zero failures and twelve
 explicit default exclusions; all twelve targeted control tests pass with backend
 exclusions enabled. Formatting, workspace Clippy, all-target compilation,
-UI lint/build and strict documentation build also pass. Review/merge/publication
-of this control slice remain pending; this does not complete the city objective.
+UI lint/build and strict documentation build also pass. PR [#425](https://github.com/penserai/acteon/pull/425) merged as
+`95595c81f4428a3184a50d671a73056671effb2b` after adversarial review of
+`6d952df6e93a02bdd4e5b361e639df87d0caf4b3` and successful final-head CI
+`37301063111`. Its integration job `111733626575` explicitly ran all twelve
+control tests, including independent PostgreSQL and Redis contracts. The merge
+tree matches the reviewed tree. Documentation deployment `37303111920` succeeded
+for that merge; the public execution-permit guide returned HTTP 200 with its
+permit header and title verified. This does not complete the city objective.
+
+
+## Authenticated governance management (implementation under validation)
+
+The working tree adds authenticated scope inspection, bounded permit issuance,
+and resource close/reopen plus permit/credential/subject revocation through three
+public HTTP operations. Independent deployment managers constrain each actor's
+subjects, qualified routes, issuance bounds and intervention rights. Private
+middleware authentication and current authority are rechecked; caller labels
+and wire payloads cannot create management authority. State uses the configured
+`StateStore`, including memory without the Redis feature and PostgreSQL restart
+coverage.
+
+All five SDKs have typed methods and shared wire/refusal contracts; the operator
+UI exposes scope inspection, issuance and reasoned closure/reopening/revocation.
+The governed-city guide and runnable simulation use a real server, native Python
+SDK and HTTP webhook receiver: two authorized sends, zero unauthorized sends
+across replay, closure, reopening, permit revocation and credential offboarding.
+No model or autonomous peer invocation is claimed by this scenario.
+
+Local validation passes: 3,509 workspace tests across 100 suites with zero
+failures (twelve backend-dependent tests excluded by the default invocation),
+six explicitly enabled PostgreSQL HTTP tests, both evaluated-publication replay
+and CAS-expiry tests, nine neural-observability example tests, all five SDK
+suites, desktop/mobile governance browser checks, workspace Clippy, all-target
+compilation, UI lint/build and strict documentation build. The CI workflow now
+runs the real governed-city scenario and rejects guide/configuration drift.
+Review, final-head CI, merge and publication remain pending for this slice.
+Independent overlapping closure records, pause/drain/cancel acknowledgments,
+deferred context propagation, shared child funding, teams/memberships/mandates,
+personal and team agents, and autonomous registry-backed A2A invocation remain
+required to complete the objective.

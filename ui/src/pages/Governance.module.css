@@ -1,0 +1,11 @@
+@reference "../index.css";
+.content { @apply space-y-6; }
+.scope { @apply grid gap-3 items-end; grid-template-columns: repeat(2, minmax(0, 1fr)) auto; }
+.card { @apply border rounded-lg p-4 space-y-3; border-color: var(--border-default); background: var(--bg-surface); }
+.row { @apply flex flex-wrap justify-between items-center gap-3 border-b pb-3; border-color: var(--border-default); }
+.identity { @apply min-w-0 space-y-1; overflow-wrap: anywhere; }
+.muted { @apply text-sm; color: var(--text-muted); }
+.grid { @apply grid grid-cols-2 gap-3; }
+.error { @apply text-sm; color: var(--text-error, #ef4444); overflow-wrap: anywhere; }
+.actions { @apply flex flex-wrap gap-2; }
+@media (max-width: 640px) { .scope, .grid { grid-template-columns: minmax(0, 1fr); } }

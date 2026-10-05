@@ -72,7 +72,7 @@ Discovery UI, resource DTOs, and SDK scaffolding may be prepared early. Real del
 2. **Canonical resource identity.** Define tenant-scoped resource references and a versioned encoding. Separate provider identity, actual endpoint binding, action type, agent, skill, and route. Validate malformed identifiers and prevent prefix/wildcard ambiguity.
 3. **Authority coordinator.** Prototype a non-expiring bounded authoritative record with an incarnation, generation, restrictions, attempt registrations, and pending control intents. CAS registration and authority mutation share one linearization point. Only trusted bootstrap may create missing coordinator state; missing or unsupported state fails closed.
 4. **Atomic reservation contract.** Specify either coordinator-integrated root accounting or a recoverable multi-record reservation protocol. A separate counter decrement followed by attempt insertion is insufficient. Enumerate every crash state before choosing the layout.
-5. **Backend qualification.** Run independent clients against memory and a real durable backend, initially Redis if its contract passes. Establish durability/failover assumptions, contention behavior, and recovery requirements. Do not infer backend parity from a shared trait.
+5. **Backend qualification.** Use Acteon's configured `Arc<dyn StateStore>` for all authoritative governance state; do not introduce a Redis-only store. Run independent clients against each supported durable backend (PostgreSQL, Redis and DynamoDB), with memory for local simulation. Establish durability/failover assumptions, contention behavior, and recovery requirements. Qualify each backend's versioned-read and CAS behavior; do not infer backend parity from a shared trait.
 
 ### Acceptance evidence
 

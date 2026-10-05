@@ -10,6 +10,7 @@ import httpx
 from .a2a import _A2AClientMixin, _AsyncA2AClientMixin
 from .bus import _AsyncBusClientMixin, _BusClientMixin
 from .errors import ApiError, ConnectionError, HttpError
+from .governance import _AsyncGovernanceMixin, _GovernanceMixin
 from .models import (
     Action,
     ActionOutcome,
@@ -123,7 +124,12 @@ def _permit_headers(permits: list[PermitReference] | None) -> dict[str, str] | N
 
 
 class ActeonClient(
-    _PlatformMixin, _A2AClientMixin, _BusClientMixin, _QueuesClientMixin, _WorkflowsClientMixin
+    _GovernanceMixin,
+    _PlatformMixin,
+    _A2AClientMixin,
+    _BusClientMixin,
+    _QueuesClientMixin,
+    _WorkflowsClientMixin,
 ):
     """HTTP client for the Acteon action gateway.
 
@@ -2595,6 +2601,7 @@ class ActeonClient(
 
 
 class AsyncActeonClient(
+    _AsyncGovernanceMixin,
     _AsyncPlatformMixin,
     _AsyncA2AClientMixin,
     _AsyncBusClientMixin,

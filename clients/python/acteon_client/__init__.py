@@ -51,6 +51,57 @@ from .errors import (
     NonRetryableError,
     RetryableError,
 )
+from .governance import (
+    GovernanceChangeReceipt as GovernanceChangeReceipt,
+)
+from .governance import (
+    GovernanceCredentialRevocation as GovernanceCredentialRevocation,
+)
+from .governance import (
+    GovernanceEffect as GovernanceEffect,
+)
+from .governance import (
+    GovernanceIntervention as GovernanceIntervention,
+)
+from .governance import (
+    GovernanceInterventionRequest as GovernanceInterventionRequest,
+)
+from .governance import (
+    GovernanceLimits as GovernanceLimits,
+)
+from .governance import (
+    GovernanceManagementBounds as GovernanceManagementBounds,
+)
+from .governance import (
+    GovernancePermitDeclaration as GovernancePermitDeclaration,
+)
+from .governance import (
+    GovernancePermitRevocation as GovernancePermitRevocation,
+)
+from .governance import (
+    GovernancePermitView as GovernancePermitView,
+)
+from .governance import (
+    GovernanceResource as GovernanceResource,
+)
+from .governance import (
+    GovernanceResourceChange as GovernanceResourceChange,
+)
+from .governance import (
+    GovernanceRoute as GovernanceRoute,
+)
+from .governance import (
+    GovernanceRouteView as GovernanceRouteView,
+)
+from .governance import (
+    GovernanceScopeView as GovernanceScopeView,
+)
+from .governance import (
+    GovernanceSubjectRevocation as GovernanceSubjectRevocation,
+)
+from .governance import (
+    PublishGovernancePermitRequest as PublishGovernancePermitRequest,
+)
 from .models import (
     Action,
     ActionOutcome,
@@ -300,3 +351,24 @@ __all__ = [
 ]
 
 from .platform_catalog import PlatformOperation as PlatformOperation
+
+__all__ += [
+    "GovernanceResource",
+    "GovernanceLimits",
+    "GovernanceRoute",
+    "GovernanceEffect",
+    "GovernancePermitDeclaration",
+    "PublishGovernancePermitRequest",
+    "GovernanceResourceChange",
+    "GovernanceSubjectRevocation",
+    "GovernancePermitRevocation",
+    "GovernanceCredentialRevocation",
+    "GovernanceIntervention",
+    "GovernanceInterventionRequest",
+    "GovernanceChangeReceipt",
+    "GovernancePermitView",
+    "GovernanceRouteView",
+    "GovernanceScopeView",
+]
+
+__all__ += ["GovernanceManagementBounds"]

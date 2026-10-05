@@ -17,6 +17,8 @@ pub struct AuthenticatedCredential {
     id: String,
     principal: PrincipalIdentity,
     auth_method: String,
+    role: Role,
+    grants: Vec<super::config::Grant>,
 }
 impl AuthenticatedCredential {
     pub(super) fn from_identity(
@@ -37,7 +39,17 @@ impl AuthenticatedCredential {
             id: id.into(),
             principal: principal.clone(),
             auth_method: identity.auth_method.clone(),
+            role: identity.role,
+            grants: identity.grants.clone(),
         }))
+    }
+    pub(super) fn can_manage_scope(&self, namespace: &str, tenant: &str) -> bool {
+        self.role
+            .has_permission(super::role::Permission::OperationsManage)
+            && self.grants.iter().any(|grant| {
+                super::config::tenant_matches(&grant.tenants, tenant)
+                    && grant.namespaces.iter().any(|n| n == "*" || n == namespace)
+            })
     }
     #[must_use]
     pub fn id(&self) -> &str {

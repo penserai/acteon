@@ -19,6 +19,7 @@ export interface NavItem {
 export const MAIN_NAV_ITEMS: NavItem[] = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard', shortcut: '1', end: true },
   { to: '/alerting', icon: BellRing, label: 'Alerting', shortcut: '6' },
+  { to: '/governance', icon: ShieldCheck, label: 'Governance' },
   { to: '/dispatch', icon: Send, label: 'Dispatch' },
   { to: '/rules', icon: BookOpen, label: 'Rules', shortcut: '2' },
   { to: '/playground', icon: FlaskConical, label: 'Rule Playground' },

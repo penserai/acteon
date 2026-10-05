@@ -37,6 +37,9 @@ pub struct ExecutionScopeConfig {
     /// Explicit operator-issued permits. Omitting an entry does not revoke it.
     #[serde(default)]
     pub permits: Vec<ExecutionPermitDeclaration>,
+    /// Independent authenticated management rights; omitted means no public management.
+    #[serde(default)]
+    pub managers: Vec<ExecutionManagerConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,6 +51,20 @@ pub struct ExecutionPermitDeclaration {
     pub routes: Vec<ExecutionRouteConfig>,
     pub valid_from_ms: i64,
     pub limits: RootBudgetLimits,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionManagerConfig {
+    pub principal: PrincipalIdentity,
+    pub subjects: Vec<PrincipalIdentity>,
+    pub routes: Vec<ExecutionRouteConfig>,
+    pub valid_from_ms: i64,
+    pub limits: RootBudgetLimits,
+    #[serde(default)]
+    pub can_issue_permits: bool,
+    #[serde(default)]
+    pub can_intervene: bool,
 }
 
 /// A concrete primary action on an actual registered provider. Wildcard routes
@@ -67,6 +84,7 @@ impl ExecutionAuthorityConfig {
         let mut scopes = BTreeSet::new();
         for scope in &self.scopes {
             scope.validate_permits()?;
+            scope.validate_managers()?;
             if (scope.namespace.as_str(), scope.tenant.as_str()) == control_scope
                 || !scopes.insert((&scope.namespace, &scope.tenant))
             {
@@ -140,6 +158,43 @@ impl ExecutionAuthorityConfig {
 }
 
 impl ExecutionScopeConfig {
+    fn validate_managers(&self) -> Result<(), String> {
+        if self.managers.len() > 16 {
+            return Err("too many execution managers".into());
+        }
+        let mut actors = BTreeSet::new();
+        for manager in &self.managers {
+            if !actors.insert(manager.principal.id())
+                || !self.subjects.contains(&manager.principal)
+                || manager.subjects.is_empty()
+                || manager.subjects.len() > 16
+                || manager
+                    .subjects
+                    .iter()
+                    .map(PrincipalIdentity::id)
+                    .collect::<BTreeSet<_>>()
+                    .len()
+                    != manager.subjects.len()
+                || manager.subjects.iter().any(|s| !self.subjects.contains(s))
+                || manager.routes.len() > 128
+                || manager.routes.iter().collect::<BTreeSet<_>>().len() != manager.routes.len()
+                || manager.routes.iter().any(|r| !self.routes.contains(r))
+                || (!manager.can_issue_permits && !manager.can_intervene)
+                || (manager.can_issue_permits && manager.routes.is_empty())
+                || manager.valid_from_ms < self.valid_from_ms
+                || manager.limits.deadline_ms <= manager.valid_from_ms
+                || manager.limits.deadline_ms > self.credential_limits.deadline_ms
+                || manager.limits.max_units == 0
+                || manager.limits.max_units > self.credential_limits.max_units
+                || manager.limits.max_concurrent == 0
+                || manager.limits.max_concurrent > self.credential_limits.max_concurrent
+            {
+                return Err("execution management exceeds independently declared bounds".into());
+            }
+        }
+        Ok(())
+    }
+
     fn validate_permits(&self) -> Result<(), String> {
         let mut permit_ids = BTreeSet::new();
         if self.permits.len() > 128 {
