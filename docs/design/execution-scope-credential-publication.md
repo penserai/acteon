@@ -127,13 +127,18 @@ remain required rather than being inferred from these internal contracts.
 
 Implementation notes for production wiring: obtain client identity/material once
 and use those exact loaded values for both construction and keyed qualification,
-rather than hashing a path then re-reading a potentially changed file. The next
-slice introduces `LoadedTlsClientConfig` and makes server HTTP client construction
+rather than hashing a path then re-reading a potentially changed file. PR #421
+introduced `LoadedTlsClientConfig` and makes server HTTP client construction
 reuse that snapshot. Its opaque keyed fingerprint includes the loaded identity,
 CA bundle and certificate-verification policy. A real mTLS contract removes the
 source files before connecting and verifies the exact client certificate at the
-server. Provider-factory qualification must still incorporate this fingerprint
-alongside the actual destination, headers and reviewed transport behavior. Disable
+server. The static webhook factory now incorporates this fingerprint alongside
+the actual destination, canonical headers, outbound policy and reviewed transport
+behavior. Server startup uses that factory for its actual webhook instance.
+Its host-only binding method creates scope/action qualifications tied to that
+same instance; production scope declarations and catalog installation remain
+required. The adapter disables redirects, proxies and transport retries.
+Other adapters still require complete qualification of their actual effects. Disable
 unregistered transport retries for the qualified adapter. Publication ceilings
 must independently authorize historical removals; do not borrow prior policies
 from state to enlarge them. Profile configuration must bind all declared scopes,

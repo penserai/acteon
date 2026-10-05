@@ -131,12 +131,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                  This setting MUST NOT be used in production."
             );
         }
-        Some(acteon_crypto::tls::LoadedTlsClientConfig::load(
-            config.tls.client.cert_path.as_deref(),
-            config.tls.client.key_path.as_deref(),
-            config.tls.client.ca_bundle_path.as_deref(),
-            config.tls.client.danger_accept_invalid_certs,
-        )?)
+        Some(std::sync::Arc::new(
+            acteon_crypto::tls::LoadedTlsClientConfig::load(
+                config.tls.client.cert_path.as_deref(),
+                config.tls.client.key_path.as_deref(),
+                config.tls.client.ca_bundle_path.as_deref(),
+                config.tls.client.danger_accept_invalid_certs,
+            )?,
+        ))
     } else {
         None
     };
@@ -735,30 +737,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .provider_type
             .as_str()
         {
-            "webhook" => {
-                let url = provider_cfg.url.as_deref().ok_or_else(|| {
-                    format!(
-                        "provider '{}': webhook type requires a 'url' field",
-                        provider_cfg.name
-                    )
-                })?;
-                let policy = acteon_http::OutboundPolicy {
-                    internal_hosts: provider_cfg.internal_hosts.clone(),
-                };
-                policy.validate_url(url)?;
-                let webhook_client = acteon_http::GuardedClient::from_builder(
-                    http_builder()?.timeout(Duration::from_secs(30)),
-                    policy,
-                    false,
-                )?;
-                let mut wp =
-                    acteon_provider::webhook::WebhookProvider::new(&provider_cfg.name, url)
-                        .with_client(webhook_client);
-                if !provider_cfg.headers.is_empty() {
-                    wp = wp.with_headers(provider_cfg.headers.clone());
-                }
-                std::sync::Arc::new(wp)
-            }
+            "webhook" => acteon_server::provider_factory::StaticWebhook::build(
+                provider_cfg,
+                loaded_outbound_tls.clone(),
+            )?
+            .provider(),
             "log" => std::sync::Arc::new(acteon_provider::LogProvider::new(&provider_cfg.name)),
             "governed-model" => {
                 let model = &provider_cfg.model;

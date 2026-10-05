@@ -30,6 +30,13 @@ flowchart LR
 
 The gateway looks up the provider by the action's `provider` field and dispatches accordingly. All providers — whether built-in or user-written — implement the same `Provider` trait and participate uniformly in circuit breaking, health checks, per-provider metrics, and tenant quotas.
 
+Configured webhooks post to their fixed destination using startup-loaded TLS
+material and a 30-second HTTP timeout. They disable redirects, proxies and
+automatic transport retries; Acteon's executor handles configured retries.
+Header names are case insensitive, so configure each name once. Invalid header
+values and duplicate names with different casing are rejected at startup.
+Transport failure diagnostics omit the configured URL to protect query credentials.
+
 ## Provider Traits
 
 Acteon defines two provider traits:

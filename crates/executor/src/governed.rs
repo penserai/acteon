@@ -183,7 +183,10 @@ impl BoundProvider {
         Arc::ptr_eq(&self.provider, provider)
     }
 
-    pub(crate) fn qualify_for_catalog(mut self) -> Result<Self, GovernedProviderError> {
+    /// Protect the complete trusted binding definition with a version route.
+    /// Qualification is idempotent. The host remains responsible for reviewing
+    /// the provider's immutable settings and failure contract before calling.
+    pub fn qualify_for_catalog(mut self) -> Result<Self, GovernedProviderError> {
         if self.catalog_version.is_none() {
             self.refresh_catalog_version()?;
         }
