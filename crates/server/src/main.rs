@@ -123,23 +123,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Build a shared HTTP client with TLS config for all outbound calls.
-    let http_builder = || -> Result<reqwest::ClientBuilder, acteon_crypto::tls::TlsError> {
-        if config.tls.enabled {
-            if config.tls.client.danger_accept_invalid_certs {
-                warn!(
-                    "TLS certificate verification is DISABLED (danger_accept_invalid_certs = true). \
+    let loaded_outbound_tls = if config.tls.enabled {
+        if config.tls.client.danger_accept_invalid_certs {
+            warn!(
+                "TLS certificate verification is DISABLED (danger_accept_invalid_certs = true). \
                  All outbound HTTPS connections will accept any certificate. \
                  This setting MUST NOT be used in production."
-                );
-            }
-            acteon_crypto::tls::reqwest_client_builder(
-                config.tls.client.cert_path.as_deref(),
-                config.tls.client.key_path.as_deref(),
-                config.tls.client.ca_bundle_path.as_deref(),
-                config.tls.client.danger_accept_invalid_certs,
-            )
-        } else {
-            Ok(reqwest::Client::builder())
+            );
+        }
+        Some(acteon_crypto::tls::LoadedTlsClientConfig::load(
+            config.tls.client.cert_path.as_deref(),
+            config.tls.client.key_path.as_deref(),
+            config.tls.client.ca_bundle_path.as_deref(),
+            config.tls.client.danger_accept_invalid_certs,
+        )?)
+    } else {
+        None
+    };
+    let http_builder = || -> Result<reqwest::ClientBuilder, acteon_crypto::tls::TlsError> {
+        match &loaded_outbound_tls {
+            Some(loaded) => loaded.client_builder(),
+            None => Ok(reqwest::Client::builder()),
         }
     };
     let shared_http_client = http_builder()?.build()?;

@@ -38,6 +38,13 @@ Set `tls.server.client_ca_path` to a PEM file containing the CA certificate(s) t
 
 When TLS is enabled, a shared `reqwest::Client` is built with the client TLS configuration and injected into all HTTP-based providers (webhook, Twilio, Teams, Discord). This ensures outbound calls use the configured client certificates and CA bundle.
 
+The server loads outbound HTTP certificate, key and CA files once at startup.
+Clients built during that startup use the same loaded material, including guarded
+webhook clients. Replacing these files does not rotate running clients; restart
+Acteon to load the new material. Supply the client certificate and key together.
+A custom CA bundle trusts every certificate in that bundle and replaces the
+built-in public roots.
+
 ## Backend TLS
 
 ### PostgreSQL
