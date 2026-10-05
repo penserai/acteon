@@ -395,16 +395,26 @@ Public values do not establish representation or caller authority.
 
 ```python
 from acteon_client import (
-    ActeonClient, TeamRef, WorkforceTeam, PutWorkforceTeam, WorkforceChangeRequest,
+    ActeonClient,
+    TeamRef,
+    WorkforceTeam,
+    PutWorkforceTeam,
+    WorkforceChangeRequest,
 )
 
 with ActeonClient("http://localhost:8080", api_key="operator-key") as client:
     roster = client.workforce("prod", "acme")
-    receipt = client.change_workforce(WorkforceChangeRequest(
-        "prod", "acme", "enroll-reliability-1",
-        PutWorkforceTeam(WorkforceTeam(TeamRef("prod", "acme", "reliability"), 1, "Reliability")),
-        "Establish incident response",
-    ))
+    receipt = client.change_workforce(
+        WorkforceChangeRequest(
+            "prod",
+            "acme",
+            "enroll-reliability-1",
+            PutWorkforceTeam(
+                WorkforceTeam(TeamRef("prod", "acme", "reliability"), 1, "Reliability")
+            ),
+            "Establish incident response",
+        )
+    )
 ```
 
 `AsyncActeonClient` provides the same methods with `await`.
