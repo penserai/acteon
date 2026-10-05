@@ -2,7 +2,8 @@
 //!
 //! Exact root-profile permits share this coordinator with effect registration.
 //! Trusted adapters still authenticate identity, grants and representation.
-//! No existing gateway execution path is wired to these primitives yet.
+//! Qualified gateway/server execution profiles use these primitives; effect
+//! coverage remains explicitly bounded by each trusted adapter.
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -13,6 +14,7 @@ use serde::{Deserialize, Serialize};
 mod budget;
 pub mod configuration;
 pub mod context;
+pub mod control;
 pub mod credential;
 pub mod permit;
 mod scope;
@@ -659,12 +661,26 @@ impl AuthorityCoordinator {
         actor: &str,
         reason: &str,
     ) -> Result<ChangeRecord, CoordinationError> {
+        self.change_internal(id, change, actor, reason, None).await
+    }
+
+    async fn change_internal(
+        &self,
+        id: &str,
+        change: AuthorityChange,
+        actor: &str,
+        reason: &str,
+        authorization: Option<&control::ControlChangeAuthorization<'_>>,
+    ) -> Result<ChangeRecord, CoordinationError> {
         self.validate_change(&change)?;
         if ![id, actor, reason].into_iter().all(valid_text) {
             return Err(CoordinationError::Invalid("change fields".into()));
         }
         for _ in 0..RETRIES {
             let (mut state, version) = self.load().await?;
+            if let Some(authorization) = authorization {
+                authorization.validate(self, &state, &change)?;
+            }
             if let Some(old) = state.changes.get(id) {
                 if old.change != change || old.actor != actor || old.reason != reason {
                     return Err(CoordinationError::Conflict);
