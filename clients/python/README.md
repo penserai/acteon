@@ -365,6 +365,7 @@ replace authentication. Existing dispatch methods omit the header by default.
 
 ```python
 from acteon_client import PermitReference
+
 permits = [PermitReference("maya-incident", 1)]
 outcome = client.dispatch(action, permits=permits)
 batch = client.dispatch_batch([action], permits=permits)
