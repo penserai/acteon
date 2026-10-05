@@ -145,3 +145,92 @@ from state to enlarge them. Profile configuration must bind all declared scopes,
 and gateway enforcement must refuse a missing original binding rather than
 assuming an undeclared scope is a legacy path. Scope removal and deployment
 migration need explicit lifecycle handling before advertising a turnkey profile.
+
+## Production integration working branch
+
+The working integration defines bounded scope declarations, retains actual
+registered webhook factories, and prepares every declared catalog before any
+publication. Preparation rejects missing, unsupported, duplicate or mismatched
+provider registrations. The canonical deployment-policy fingerprint includes
+independent publication authority and root allocation limits; the scope
+projector includes it in the credential configuration fingerprint. A root-limit
+change therefore requires a new reviewed security revision even when provider
+settings and credential ceilings remain unchanged.
+
+The private authentication proof retains the prepared policy fingerprint as
+well as the original source reference. Root admission rejects a proof for a
+different runtime policy, resolves the actual selected provider, computes the
+semantic input digest, and derives the actor from authentication. It captures a
+credentialed root with explicitly selected current permits and the evaluated
+scope stamp. Missing permits do not allocate a root. This host boundary remains
+unwired from public dispatch until the common mediator and scope fencing exist.
+A signed, non-expiring admission record in the configured state backend pins
+the first context handle, execution ID, exact credential and permit revisions,
+effect, budget limits and deadline. Concurrent retries converge on that record.
+Recovery verifies the original work and rechecks current authority before
+publishing a missing context or budget. It preserves existing spending and
+cannot extend the deadline. Retained signing keys support recovery after
+rotation; record modification and transplantation fail closed. This is not an
+aggregate team budget or an exactly-once effect guarantee.
+
+Authentication publication and watcher startup follow actual provider
+construction and gateway validation. A real configured-backend process contract
+proves that failed runtime construction leaves the existing authority record
+and a live replica's authentication intact. This is startup ordering evidence,
+not provider-attempt enforcement.
+
+Coordinator format 8 adds mandatory scope ownership metadata. Trusted hosts
+reserve virgin scopes permanently for execution or one authentication source;
+conflicting claims serialize through CAS, and retained reservation history must
+agree with ownership metadata. Control scopes refuse execution
+state while retaining source publication and principal revocation. Older
+coordinator protocols are refused without recreation. Existing installations
+require a reviewed cutover that fences old writers and preserves outstanding
+reconciliation obligations. The explicit `scope-upgrade` command previews a
+protocol-7 or unclaimed protocol-8 record and applies only its reviewed digest
+through CAS. It preserves existing accounting, provenance and uncertain work,
+and refuses incompatible classification or malformed history. Normal startup
+never invokes this cutover.
+
+The gateway now has one selected-provider execution interface in place of its
+raw executor field. Direct execution, modifications, deduplication, throttling,
+reroutes, circuit fallbacks and synthesized approval notifications/retries pass
+the actual selected provider instance and resolved dispatch context to that
+interface. An installed mediator's refusal never falls through to legacy
+execution. The default adapter retains the existing executor and its shared
+concurrency, clock, retries and DLQ behavior. This interface does not itself
+establish authentication or qualification. The strict `GovernedProviderMediator`
+retains credential-required durable executors and accepts only explicit
+host-created `ProviderExecutionAuthority`. It checks the actual selected instance
+and refuses unsupported attachment contexts. Uncertain attempts remain reserved
+for reconciliation and never trigger an automatic resend through the gateway.
+`PreparedExecutionScope::capture_provider_authority` constructs this capability
+from the original private authentication proof and durable root admission.
+The gateway's `dispatch_with_execution_admission` takes a borrowed trusted
+admission adapter and propagates it explicitly through direct, modified,
+deduplicated, throttled, rerouted and fallback calls. Admission runs on the final
+actual selected work. The server's `AuthenticatedProviderAdmission` retains the
+original private authentication binding and stable operation identity, and
+constructs invocation authority through durable capture. No caller labels,
+task-local state or automatically inherited background identity establish proof.
+This entry point requires an authority-enforcing mediator; using it with the
+legacy executor is refused before effects. The strict mediator also refuses
+dispatches missing private admission before deduplication/throttle state changes.
+For an authenticated request, deduplication and throttle conditions are applied
+after admission of the actual selected work; missing permits therefore cannot
+consume slots before a valid retry. The provider attempt gate still performs
+current authority checks after these operational conditions and before sends.
+Approval notifications and retries receive no inherited request capability.
+Real webhook contracts verify all six immediate paths and completed replay,
+changed-work refusal, revocation and refused notification inheritance. Public
+HTTP handlers and production startup still need to install these building blocks.
+LLM and other effects
+outside selected-provider execution require their own mediated boundaries.
+
+Before enabling the server profile, install the prepared root-admission path
+on public HTTP dispatch and the durable governed adapter at startup,
+and reject missing provenance on every enabled
+execution path. Rules, deferred work, transformations, peer calls and delegated
+work require their corresponding protected context propagation; preparing a
+static catalog does not establish that coverage. Public configuration,
+provisioning, SDK/UI support and full workforce delivery remain required.

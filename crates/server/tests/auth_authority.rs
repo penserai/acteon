@@ -337,7 +337,7 @@ async fn lost_reload_acknowledgment_preserves_safe_tables_and_reconciles() {
                 .to_string(),
             "executor"
         );
-        assert_eq!(c.snapshot().await.unwrap().changes.len(), 2);
+        assert_eq!(c.snapshot().await.unwrap().changes.len(), 3);
     }
 }
 #[tokio::test]
@@ -600,6 +600,17 @@ mod server_process {
             role: &str,
             raw_key: &str,
         ) -> Self {
+            Self::start_with_runtime(state_config, bootstrap, revision, role, raw_key, "")
+        }
+
+        fn start_with_runtime(
+            state_config: &str,
+            bootstrap: bool,
+            revision: u64,
+            role: &str,
+            raw_key: &str,
+            runtime_config: &str,
+        ) -> Self {
             let directory =
                 std::env::temp_dir().join(format!("acteon-auth-process-{}", uuid::Uuid::new_v4()));
             fs::create_dir(&directory).unwrap();
@@ -624,6 +635,7 @@ namespace = "auth-control"
 tenant = "deployment"
 source_id = "workforce-auth"
 bootstrap = {bootstrap}
+{runtime_config}
 "#
             );
             fs::write(directory.join("acteon.toml"), config).unwrap();
@@ -777,6 +789,35 @@ actions = ["execute"]
         a.wait_role(&client, "key-original", "operator").await;
         let mut b = Server::start(state_config, false, 1, "operator", "key-original");
         b.wait_role(&client, "key-original", "operator").await;
+        let authority_key = StateKey::new(
+            "auth-control",
+            "deployment",
+            KeyKind::Custom(COORDINATOR_KIND.into()),
+            "authority",
+        );
+        let before_invalid_runtime = state.get(&authority_key).await.unwrap();
+        let mut invalid_runtime = Server::start_with_runtime(
+            state_config,
+            false,
+            2,
+            "executor",
+            "key-rotated",
+            "\n[[providers]]\nname = 'invalid-runtime'\ntype = 'webhook'\n",
+        );
+        invalid_runtime.wait_refused().await;
+        assert!(
+            invalid_runtime
+                .log()
+                .contains("webhook requires a destination"),
+            "{}",
+            invalid_runtime.log()
+        );
+        assert_eq!(
+            state.get(&authority_key).await.unwrap(),
+            before_invalid_runtime
+        );
+        a.wait_role(&client, "key-original", "operator").await;
+        drop(invalid_runtime);
         tokio::time::timeout(Duration::from_secs(5), async {
             while !b.log().contains("auth watcher started") {
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1395,14 +1436,8 @@ async fn projection_cannot_poison_its_authentication_control_scope() {
         valid_from_ms: 0,
         limits: limits.clone(),
     };
-    let projector = Arc::new(
-        CredentialPolicyProjector::new_trusted(control.clone(), catalog, issuance, 0, limits)
-            .await
-            .unwrap(),
-    );
-    assert!(projector.publish(&authority, &cfg, 1).await.is_err());
     assert!(
-        AuthProvider::new_with_scope_projection(&cfg, state, authority, vec![projector])
+        CredentialPolicyProjector::new_trusted(control.clone(), catalog, issuance, 0, limits)
             .await
             .is_err()
     );

@@ -8,6 +8,7 @@ pub mod bus_reconciler;
 pub mod bus_sessions;
 pub mod config;
 pub mod error;
+pub mod execution_authority;
 pub mod file_watcher;
 pub mod provider_factory;
 pub mod quotas_loader;

@@ -15,9 +15,13 @@ pub mod configuration;
 pub mod context;
 pub mod credential;
 pub mod permit;
+mod scope;
+mod upgrade;
 pub use budget::{RootBudget, RootBudgetLimits, RootReservation};
+pub use scope::ScopePurpose;
+pub use upgrade::{ScopeUpgradePlan, ScopeUpgradeReport};
 
-const FORMAT: u32 = 7;
+const FORMAT: u32 = 8;
 const MAX_ATTEMPT_RESOURCES: usize = 16;
 const RETRIES: usize = 32;
 const CONTROL_RECORD_RESERVE: usize = 16;
@@ -51,6 +55,8 @@ impl Default for CoordinatorLimits {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AuthorityChange {
+    /// Only created by trusted virgin-scope reservation, never generic change.
+    ReserveScope { purpose: ScopePurpose },
     /// Refuse new starts targeting this exact resource reference.
     CloseResource { resource: ResourceRef },
     /// Remove this resource restriction; other restrictions remain effective.
@@ -144,6 +150,7 @@ pub struct AuthorityStamp {
 pub struct CoordinatorSnapshot {
     schema_version: u32,
     pub incarnation: String,
+    pub purpose: ScopePurpose,
     pub namespace: String,
     pub tenant: String,
     pub limits: CoordinatorLimits,
@@ -324,6 +331,7 @@ impl AuthorityCoordinator {
         );
         let initial = CoordinatorSnapshot {
             schema_version: FORMAT,
+            purpose: ScopePurpose::Unclaimed,
             incarnation: uuid::Uuid::new_v4().to_string(),
             namespace: namespace.into(),
             tenant: tenant.into(),
@@ -392,6 +400,11 @@ impl AuthorityCoordinator {
     }
 
     fn encode(state: &CoordinatorSnapshot) -> Result<String, CoordinationError> {
+        if !Self::valid_scope_purpose(state) {
+            return Err(CoordinationError::Invalid(
+                "scope purpose forbids this state".into(),
+            ));
+        }
         let raw =
             serde_json::to_string(state).map_err(|e| CoordinationError::Invalid(e.to_string()))?;
         if raw.len() > state.limits.max_bytes {
@@ -404,9 +417,14 @@ impl AuthorityCoordinator {
         let (raw, version) = self.store.get_versioned(&self.key).await?.ok_or_else(|| {
             CoordinationError::Invalid("coordinator disappeared; refusing recreation".into())
         })?;
+        Ok((self.decode(&raw)?, version))
+    }
+
+    fn decode(&self, raw: &str) -> Result<CoordinatorSnapshot, CoordinationError> {
         let state: CoordinatorSnapshot =
-            serde_json::from_str(&raw).map_err(|e| CoordinationError::Invalid(e.to_string()))?;
-        if state.schema_version != FORMAT
+            serde_json::from_str(raw).map_err(|e| CoordinationError::Invalid(e.to_string()))?;
+        if !Self::valid_scope_purpose(&state)
+            || state.schema_version != FORMAT
             || state.namespace != self.key.namespace.as_str()
             || state.tenant != self.key.tenant.as_str()
             || uuid::Uuid::parse_str(&state.incarnation).map_or(true, |id| id.is_nil())
@@ -425,6 +443,7 @@ impl AuthorityCoordinator {
             || !self.valid_permit_history(&state)
             || !self.valid_credential_history(&state)
             || state.changes.values().any(|record| match &record.change {
+                AuthorityChange::ReserveScope { purpose } => !purpose.valid(),
                 AuthorityChange::CloseResource { resource }
                 | AuthorityChange::ReopenResource { resource } => {
                     self.validate_resource_scope(resource).is_err()
@@ -458,7 +477,7 @@ impl AuthorityCoordinator {
         {
             return Err(CoordinationError::Invalid("format, scope, or size".into()));
         }
-        Ok((state, version))
+        Ok(state)
     }
 
     pub async fn snapshot(&self) -> Result<CoordinatorSnapshot, CoordinationError> {
@@ -608,7 +627,8 @@ impl AuthorityCoordinator {
                 return Err(CoordinationError::Invalid("subject".into()));
             }
             AuthorityChange::RevokeSubject { .. } => {}
-            AuthorityChange::PublishPermit { .. }
+            AuthorityChange::ReserveScope { .. }
+            | AuthorityChange::PublishPermit { .. }
             | AuthorityChange::PublishCredential { .. }
             | AuthorityChange::PublishCredentialConfiguration { .. } => {
                 return Err(CoordinationError::Invalid(
@@ -694,7 +714,8 @@ impl AuthorityCoordinator {
                     }
                     record.revoked = true;
                 }
-                AuthorityChange::PublishPermit { .. }
+                AuthorityChange::ReserveScope { .. }
+                | AuthorityChange::PublishPermit { .. }
                 | AuthorityChange::PublishCredential { .. }
                 | AuthorityChange::PublishCredentialConfiguration { .. } => {
                     unreachable!("publication uses its bounded entrypoint")

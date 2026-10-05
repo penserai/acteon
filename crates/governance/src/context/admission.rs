@@ -1,0 +1,257 @@
+//! Non-expiring first-admission identity with signed, bounded recovery data.
+use acteon_state::{KeyKind, StateKey};
+use hmac::{Hmac, Mac};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+use super::{
+    ContextError, ContextRecord, FORMAT, MAX_BYTES, RootContextAdmission, SealedRecord,
+    TrustedContextStore, VerifiedExecutionContext,
+};
+use crate::{RootBudgetLimits, credential::CredentialReference, permit::PermitReference};
+
+pub const ROOT_ADMISSION_KIND: &str = "governance_root_admission";
+const ADMISSION_FORMAT: u32 = 1;
+const SIGNING_DOMAIN: &[u8] = b"acteon.root_admission.v1\0";
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AdmissionRecord {
+    format: u32,
+    context: ContextRecord,
+    limits: RootBudgetLimits,
+}
+
+impl TrustedContextStore {
+    /// Pin first admission in the configured state backend before publishing
+    /// its context and budget. A lost acknowledgement reuses the same identity
+    /// and deadline. Recovery rechecks exact current permits and credentials;
+    /// it never resets spending or establishes authority to send an effect.
+    /// The key names one operation within this scope and signing domain.
+    pub async fn capture_idempotent_credentialed_root(
+        &self,
+        admission_key: &str,
+        mut admission: RootContextAdmission,
+        permits: &[PermitReference],
+        credential: CredentialReference,
+        limits: RootBudgetLimits,
+        clock: &dyn acteon_time::Clock,
+    ) -> Result<VerifiedExecutionContext, ContextError> {
+        if admission_key.is_empty()
+            || admission_key.len() > 512
+            || admission_key.trim() != admission_key
+            || admission_key.chars().any(char::is_control)
+        {
+            return Err(ContextError::Invalid);
+        }
+        admission.accepted_ceiling_revision = crate::permit::permit_revision_tag(permits)?;
+        let now_ms = clock.now().timestamp_millis();
+        let state = self.coordinator.snapshot().await?;
+        let proposed = self.admission_record(&admission, credential.clone(), limits, now_ms);
+        self.validate(&proposed.context)?;
+        let (key, key_id) = self.root_admission_key(admission_key)?;
+        let encoded = self.seal_admission(&proposed, &key_id)?;
+        let stored = if let Some(value) = self.store.get(&key).await? {
+            value
+        } else {
+            crate::permit::validate_root_admission(
+                &state,
+                &admission,
+                permits,
+                &proposed.limits,
+                now_ms,
+            )?;
+            crate::credential::validate_root(
+                &state,
+                &admission,
+                &credential,
+                &proposed.limits,
+                now_ms,
+            )?;
+            if self.store.check_and_set(&key, &encoded, None).await? {
+                encoded
+            } else {
+                self.store.get(&key).await?.ok_or(ContextError::Missing)?
+            }
+        };
+        let original = self.open_admission(&stored, &key_id)?;
+        Self::match_admission(&original, &proposed)?;
+        let record = &original.context;
+        if now_ms < record.admitted_at_ms || now_ms >= record.deadline_ms {
+            return Err(ContextError::Expired);
+        }
+        if record.authority.incarnation != state.incarnation {
+            return Err(ContextError::Incarnation);
+        }
+        // Use the original ceilings, not the retry's newly computed deadline.
+        admission.handle = record.handle.clone();
+        admission.binding.execution_id = record.execution_id;
+        admission.deadline_ms = record.deadline_ms;
+        crate::permit::validate_root_admission(
+            &state,
+            &admission,
+            permits,
+            &original.limits,
+            now_ms,
+        )?;
+        crate::credential::validate_root(
+            &state,
+            &admission,
+            &credential,
+            &original.limits,
+            now_ms,
+        )?;
+        let context = match self
+            .recover(&record.handle, &admission.binding, now_ms)
+            .await
+        {
+            Ok(existing) => {
+                // Authority generation can change; every other original fact is immutable.
+                let mut expected = record.clone();
+                expected.authority = existing.0.authority.clone();
+                Self::check_replay(existing, &expected)?
+            }
+            Err(ContextError::Missing) => {
+                self.capture_root_inner(admission.clone(), record.admitted_at_ms, Some(credential))
+                    .await?
+            }
+            Err(error) => return Err(error),
+        };
+        self.coordinator
+            .create_root_budget(
+                &context.execution_id().to_string(),
+                context.principal().id(),
+                original.limits,
+                &admission.evaluated_authority,
+                clock.now().timestamp_millis(),
+            )
+            .await?;
+        Ok(context)
+    }
+
+    fn admission_record(
+        &self,
+        admission: &RootContextAdmission,
+        credential: CredentialReference,
+        limits: RootBudgetLimits,
+        now_ms: i64,
+    ) -> AdmissionRecord {
+        AdmissionRecord {
+            format: ADMISSION_FORMAT,
+            context: ContextRecord {
+                schema_version: FORMAT,
+                domain: self.domain.clone(),
+                namespace: self.coordinator.key.namespace.as_str().into(),
+                tenant: self.coordinator.key.tenant.as_str().into(),
+                handle: admission.handle.clone(),
+                execution_id: admission.binding.execution_id,
+                principal: admission.binding.principal.clone(),
+                credential_id: admission.credential_id.clone(),
+                auth_method: admission.auth_method.clone(),
+                credential_authority: Some(credential),
+                request_digest: admission.binding.request_digest.clone(),
+                accepted_ceiling_revision: admission.accepted_ceiling_revision.clone(),
+                accepted_effects: admission.accepted_effects.clone(),
+                deadline_ms: limits.deadline_ms,
+                admitted_at_ms: now_ms,
+                authority: admission.evaluated_authority.clone(),
+            },
+            limits,
+        }
+    }
+
+    fn root_admission_key(&self, admission_key: &str) -> Result<(StateKey, String), ContextError> {
+        let bytes = serde_json::to_vec(&(self.domain.as_str(), admission_key))
+            .map_err(|_| ContextError::Invalid)?;
+        let key_id = format!("{:x}", Sha256::digest(bytes));
+        let key = StateKey::new(
+            self.coordinator.key.namespace.as_str(),
+            self.coordinator.key.tenant.as_str(),
+            KeyKind::Custom(ROOT_ADMISSION_KIND.into()),
+            &key_id,
+        );
+        Ok((key, key_id))
+    }
+
+    fn match_admission(
+        original: &AdmissionRecord,
+        proposed: &AdmissionRecord,
+    ) -> Result<(), ContextError> {
+        let mut expected = original.context.clone();
+        // Candidate allocation and clock are irrelevant after first acceptance.
+        expected.handle = proposed.context.handle.clone();
+        expected.execution_id = proposed.context.execution_id;
+        expected.admitted_at_ms = proposed.context.admitted_at_ms;
+        expected.deadline_ms = proposed.context.deadline_ms;
+        expected.authority = proposed.context.authority.clone();
+        if expected != proposed.context
+            || original.limits.max_units != proposed.limits.max_units
+            || original.limits.max_concurrent != proposed.limits.max_concurrent
+        {
+            return Err(ContextError::Conflict);
+        }
+        Ok(())
+    }
+
+    fn seal_admission(
+        &self,
+        record: &AdmissionRecord,
+        key_id: &str,
+    ) -> Result<String, ContextError> {
+        let payload = serde_json::to_string(record).map_err(|_| ContextError::Invalid)?;
+        let mut mac = Hmac::<Sha256>::new_from_slice(
+            self.keys
+                .get(&self.active_key)
+                .ok_or(ContextError::Invalid)?,
+        )
+        .map_err(|_| ContextError::Invalid)?;
+        mac.update(SIGNING_DOMAIN);
+        mac.update(key_id.as_bytes());
+        mac.update(payload.as_bytes());
+        let encoded = serde_json::to_string(&SealedRecord {
+            schema_version: ADMISSION_FORMAT,
+            key_id: self.active_key.clone(),
+            payload,
+            tag: mac.finalize().into_bytes().to_vec(),
+        })
+        .map_err(|_| ContextError::Invalid)?;
+        if encoded.len() > MAX_BYTES {
+            return Err(ContextError::Invalid);
+        }
+        Ok(encoded)
+    }
+
+    fn open_admission(&self, encoded: &str, key_id: &str) -> Result<AdmissionRecord, ContextError> {
+        if encoded.len() > MAX_BYTES {
+            return Err(ContextError::Verification);
+        }
+        let sealed: SealedRecord =
+            serde_json::from_str(encoded).map_err(|_| ContextError::Verification)?;
+        if sealed.schema_version != ADMISSION_FORMAT || sealed.tag.len() != 32 {
+            return Err(ContextError::Verification);
+        }
+        let mut mac = Hmac::<Sha256>::new_from_slice(
+            self.keys
+                .get(&sealed.key_id)
+                .ok_or(ContextError::Verification)?,
+        )
+        .map_err(|_| ContextError::Verification)?;
+        mac.update(SIGNING_DOMAIN);
+        mac.update(key_id.as_bytes());
+        mac.update(sealed.payload.as_bytes());
+        mac.verify_slice(&sealed.tag)
+            .map_err(|_| ContextError::Verification)?;
+        let record: AdmissionRecord =
+            serde_json::from_str(&sealed.payload).map_err(|_| ContextError::Verification)?;
+        self.validate(&record.context)?;
+        if record.format != ADMISSION_FORMAT
+            || record.context.credential_authority.is_none()
+            || record.limits.max_units == 0
+            || record.limits.max_concurrent == 0
+            || record.limits.deadline_ms != record.context.deadline_ms
+        {
+            return Err(ContextError::Verification);
+        }
+        Ok(record)
+    }
+}

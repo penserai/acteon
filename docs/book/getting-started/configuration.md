@@ -634,7 +634,7 @@ cargo run -p acteon-server --features postgres -- -c examples/postgres.toml
 Optional `[auth.authority]` uses the configured state backend to coordinate an explicit
 `authority_revision` in `auth.toml`. It publishes configuration before installing
 local tables and refuses authentication from stale replicas. Configure a dedicated
-control scope and shared fingerprint key; normal startup connects to existing
-state. See [shared authentication authority](../api/authentication.md#shared-authentication-authority-across-replicas)
+control scope and shared fingerprint key. The scope is permanently reserved for
+that source; normal startup connects to existing compatible state. See [shared authentication authority](../api/authentication.md#shared-authentication-authority-across-replicas)
 for bootstrap, reload and recovery semantics. This setting governs authentication
 freshness; it does not enable per-effect execution permits.

@@ -111,9 +111,23 @@ impl AuthAuthority {
         })
     }
 
+    pub(super) async fn reserve_control_scope(&self) -> Result<(), String> {
+        self.coordinator
+            .reserve_scope(acteon_governance::ScopePurpose::AuthenticationControl {
+                source_id: self.source_id.clone(),
+            })
+            .await
+            .map_err(|_| "auth control scope is already owned or contains unclaimed work")?;
+        Ok(())
+    }
+
     fn validate_control_scope(&self, snapshot: &CoordinatorSnapshot) -> Result<(), String> {
         let resource = &self.issuance.effects[0].resources[0];
-        if snapshot.namespace != resource.namespace()
+        if snapshot.purpose
+            != (acteon_governance::ScopePurpose::AuthenticationControl {
+                source_id: self.source_id.clone(),
+            })
+            || snapshot.namespace != resource.namespace()
             || snapshot.tenant != resource.tenant()
             || !snapshot.credentials.is_empty()
             || !snapshot.permits.is_empty()
@@ -204,7 +218,12 @@ impl AuthAuthority {
     ) -> Result<CredentialConfigurationReference, String> {
         let mut configuration = self.configuration(config)?;
         if !scopes.is_empty() {
-            let manifest: Vec<_> = scopes.iter().collect();
+            // Preserve the manifest wire format. The scope reference digest already
+            // commits to the prepared policy; the private proof is not wire data.
+            let manifest: Vec<_> = scopes
+                .iter()
+                .map(|(scope, binding)| (scope, &binding.reference))
+                .collect();
             let bytes = serde_json::to_vec(&json!({
                 "format": "acteon.auth.scope_manifest.v1",
                 "authentication": configuration.configuration_fingerprint,

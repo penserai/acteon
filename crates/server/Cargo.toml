@@ -91,6 +91,7 @@ acteon-bus = { workspace = true, optional = true }
 acteon-executor = { workspace = true }
 acteon-gateway = { workspace = true }
 acteon-governance = { workspace = true }
+acteon-time = { workspace = true }
 acteon-llm = { workspace = true }
 acteon-embedding = { workspace = true }
 acteon-crypto = { workspace = true, features = ["tls", "signing"] }
@@ -140,7 +141,6 @@ uuid = { workspace = true }
 sqlx = { workspace = true }
 acteon-audit = { workspace = true }
 acteon-audit-memory = { workspace = true }
-acteon-time = { workspace = true }
 axum-test = { workspace = true }
 proptest = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }

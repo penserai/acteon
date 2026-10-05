@@ -585,3 +585,413 @@ async fn lost_publication_ack_is_reconciled_without_duplicate_control_events() {
         assert_eq!(settled.generation, 5);
     }
 }
+
+async fn durable_admission(f: &Fixture, deadline_ms: i64) -> RootContextAdmission {
+    RootContextAdmission {
+        handle: ExecutionContextHandle::new(),
+        binding: ContextBinding {
+            execution_id: uuid::Uuid::new_v4(),
+            principal: actor(),
+            request_digest: "a".repeat(64),
+        },
+        credential_id: "broad".into(),
+        auth_method: "api_key".into(),
+        accepted_ceiling_revision: String::new(),
+        accepted_effects: vec![effect("read")],
+        deadline_ms,
+        evaluated_authority: f.coordinator.snapshot().await.unwrap().stamp(),
+    }
+}
+async fn durable_capture(
+    f: &Fixture,
+    key: &str,
+    now_ms: i64,
+    deadline_ms: i64,
+) -> Result<VerifiedExecutionContext, acteon_governance::context::ContextError> {
+    f.contexts
+        .capture_idempotent_credentialed_root(
+            key,
+            durable_admission(f, deadline_ms).await,
+            &refs(),
+            CredentialReference {
+                id: "broad".into(),
+                accepted_revision: 1,
+            },
+            RootBudgetLimits {
+                deadline_ms,
+                ..limits()
+            },
+            &clock(now_ms),
+        )
+        .await
+}
+
+#[tokio::test]
+async fn durable_root_replay_preserves_identity_deadline_and_spending_across_replicas() {
+    let f = fixture(Arc::new(MemoryStateStore::new())).await;
+    let first = durable_capture(&f, "operation", 100, 5_000).await.unwrap();
+    start(
+        &f.coordinator,
+        &first,
+        "spent-attempt",
+        &effect("read"),
+        100,
+    )
+    .await
+    .unwrap();
+    let peer_coordinator = AuthorityCoordinator::connect(f.state.clone(), "city", "tenant")
+        .await
+        .unwrap();
+    let peer = Fixture {
+        state: f.state.clone(),
+        coordinator: peer_coordinator.clone(),
+        contexts: TrustedContextStore::new(
+            f.state.clone(),
+            peer_coordinator,
+            "domain".into(),
+            "k".into(),
+            vec![ContextSigningKey::new("k".into(), vec![1; 32]).unwrap()],
+        )
+        .unwrap(),
+    };
+    let recovered = durable_capture(&peer, "operation", 200, 12_000)
+        .await
+        .unwrap();
+    assert_eq!(first.reference().unwrap(), recovered.reference().unwrap());
+    assert_eq!(recovered.deadline_ms(), 5_000);
+    let snapshot = peer.coordinator.snapshot().await.unwrap();
+    assert_eq!(snapshot.roots.len(), 1);
+    assert_eq!(
+        snapshot.roots[&first.execution_id().to_string()].spent_units,
+        1
+    );
+    assert_eq!(
+        snapshot.roots[&first.execution_id().to_string()].active_attempts,
+        1
+    );
+    assert!(
+        durable_capture(&peer, "operation", 5_000, 8_000)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn interrupted_root_admission_recovers_every_write_boundary_without_reallocation() {
+    use acteon_governance::{
+        COORDINATOR_KIND,
+        context::{CONTEXT_KIND, ROOT_ADMISSION_KIND},
+    };
+    use acteon_state::testing::faults::{FaultStore, FaultTiming, WriteOperation};
+    for (kind, operation) in [
+        (ROOT_ADMISSION_KIND, WriteOperation::CheckAndSet),
+        (CONTEXT_KIND, WriteOperation::CheckAndSet),
+        (COORDINATOR_KIND, WriteOperation::CompareAndSwap),
+    ] {
+        for timing in [FaultTiming::Before, FaultTiming::After] {
+            let faults = Arc::new(FaultStore::new(Arc::new(MemoryStateStore::new())));
+            let f = fixture(faults.clone()).await;
+            let first = durable_admission(&f, 5_000).await;
+            faults
+                .fail_next(KeyKind::Custom(kind.into()), operation, timing)
+                .unwrap();
+            assert!(
+                f.contexts
+                    .capture_idempotent_credentialed_root(
+                        "operation",
+                        first.clone(),
+                        &refs(),
+                        CredentialReference {
+                            id: "broad".into(),
+                            accepted_revision: 1
+                        },
+                        RootBudgetLimits {
+                            deadline_ms: 5_000,
+                            ..limits()
+                        },
+                        &clock(100)
+                    )
+                    .await
+                    .is_err()
+            );
+            assert_eq!(faults.consumed(), 1);
+            // A control change during interrupted publication must not prevent
+            // safe recovery of unchanged broad authority, or revive narrow authority.
+            f.coordinator
+                .change(
+                    "unrelated-revocation",
+                    AuthorityChange::RevokeCredential {
+                        credential_id: "narrow".into(),
+                        expected_revision: 1,
+                    },
+                    "issuer",
+                    "stop narrow credential",
+                )
+                .await
+                .unwrap();
+            let recovered = durable_capture(&f, "operation", 200, 6_000).await.unwrap();
+            if kind != ROOT_ADMISSION_KIND || timing == FaultTiming::After {
+                assert_eq!(recovered.execution_id(), first.binding.execution_id);
+                assert_eq!(recovered.deadline_ms(), 5_000);
+            }
+            assert_eq!(f.coordinator.snapshot().await.unwrap().roots.len(), 1);
+            let again = durable_capture(&f, "operation", 300, 7_000).await.unwrap();
+            assert_eq!(recovered.reference().unwrap(), again.reference().unwrap());
+        }
+    }
+}
+
+#[tokio::test]
+async fn concurrent_root_admission_converges_and_conflicting_input_cannot_reuse_the_key() {
+    use acteon_state::testing::faults::{FaultStore, FaultTiming, WriteOperation};
+    let faults = Arc::new(FaultStore::new(Arc::new(MemoryStateStore::new())));
+    let f = Arc::new(fixture(faults.clone()).await);
+    let release = faults
+        .pause_next(
+            KeyKind::Custom(acteon_governance::context::ROOT_ADMISSION_KIND.into()),
+            WriteOperation::CheckAndSet,
+            FaultTiming::After,
+        )
+        .unwrap();
+    let first_worker = f.clone();
+    let first = tokio::spawn(async move {
+        durable_capture(&first_worker, "operation", 100, 5_000)
+            .await
+            .unwrap()
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while faults.consumed() == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let second = durable_capture(&f, "operation", 100, 5_000).await.unwrap();
+    release.send(()).unwrap();
+    assert_eq!(
+        first.await.unwrap().reference().unwrap(),
+        second.reference().unwrap()
+    );
+    let mut changed = durable_admission(&f, 6_000).await;
+    changed.binding.request_digest = "b".repeat(64);
+    assert!(
+        f.contexts
+            .capture_idempotent_credentialed_root(
+                "operation",
+                changed,
+                &refs(),
+                CredentialReference {
+                    id: "broad".into(),
+                    accepted_revision: 1
+                },
+                RootBudgetLimits {
+                    deadline_ms: 6_000,
+                    ..limits()
+                },
+                &clock(200)
+            )
+            .await
+            .is_err()
+    );
+    f.coordinator
+        .change(
+            "revoke-root-credential",
+            AuthorityChange::RevokeCredential {
+                credential_id: "broad".into(),
+                expected_revision: 1,
+            },
+            "issuer",
+            "stop",
+        )
+        .await
+        .unwrap();
+    assert!(durable_capture(&f, "operation", 300, 7_000).await.is_err());
+    assert_eq!(f.coordinator.snapshot().await.unwrap().roots.len(), 1);
+}
+
+#[tokio::test]
+async fn admission_integrity_key_binding_and_retained_signing_keys_are_enforced() {
+    use sha2::{Digest, Sha256};
+    let f = fixture(Arc::new(MemoryStateStore::new())).await;
+    let first = durable_capture(&f, "operation", 100, 5_000).await.unwrap();
+    let key_for = |operation: &str| {
+        StateKey::new(
+            "city",
+            "tenant",
+            KeyKind::Custom(acteon_governance::context::ROOT_ADMISSION_KIND.into()),
+            format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&("domain", operation)).unwrap())
+            ),
+        )
+    };
+    let original_key = key_for("operation");
+    let encoded = f.state.get(&original_key).await.unwrap().unwrap();
+    // A correctly signed record cannot be transplanted to a different operation.
+    f.state
+        .set(&key_for("transplanted"), &encoded, None)
+        .await
+        .unwrap();
+    assert!(
+        durable_capture(&f, "transplanted", 200, 6_000)
+            .await
+            .is_err()
+    );
+    let peer = Fixture {
+        state: f.state.clone(),
+        coordinator: f.coordinator.clone(),
+        contexts: TrustedContextStore::new(
+            f.state.clone(),
+            f.coordinator.clone(),
+            "domain".into(),
+            "new".into(),
+            vec![
+                ContextSigningKey::new("new".into(), vec![2; 32]).unwrap(),
+                ContextSigningKey::new("k".into(), vec![1; 32]).unwrap(),
+            ],
+        )
+        .unwrap(),
+    };
+    assert_eq!(
+        durable_capture(&peer, "operation", 200, 12_000)
+            .await
+            .unwrap()
+            .reference()
+            .unwrap(),
+        first.reference().unwrap()
+    );
+    let mut tampered: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+    let tag = tampered["tag"][0].as_u64().unwrap();
+    tampered["tag"][0] = serde_json::json!((tag + 1) % 256);
+    f.state
+        .set(&original_key, &tampered.to_string(), None)
+        .await
+        .unwrap();
+    assert!(
+        durable_capture(&peer, "operation", 300, 7_000)
+            .await
+            .is_err()
+    );
+    assert_eq!(f.coordinator.snapshot().await.unwrap().roots.len(), 1);
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // Preserve and inspect the complete admitted-work cutover contract.
+async fn explicit_cutover_preserves_original_provenance_accounting_and_uncertain_work() {
+    for protocol in [7, 8] {
+        let f = fixture(Arc::new(MemoryStateStore::new())).await;
+        let saved = capture(&f, "broad", 1, vec![effect("read")]).await.unwrap();
+        let started = start(&f.coordinator, &saved, "in-doubt", &effect("read"), 100)
+            .await
+            .unwrap();
+        let token = match started {
+            StartRegistration::New(record) => record.token,
+            StartRegistration::Existing(_) => panic!("new start required"),
+        };
+        f.coordinator
+            .settle(
+                "in-doubt",
+                &token,
+                acteon_governance::AttemptStatus::Uncertain,
+            )
+            .await
+            .unwrap();
+        f.coordinator
+            .change(
+                "close-other",
+                AuthorityChange::CloseResource {
+                    resource: effect("other").resources[0].clone(),
+                },
+                "operator",
+                "close another road",
+            )
+            .await
+            .unwrap();
+        let original = serde_json::to_value(f.coordinator.snapshot().await.unwrap()).unwrap();
+        let mut source = original.clone();
+        source["schema_version"] = protocol.into();
+        if protocol == 7 {
+            source.as_object_mut().unwrap().remove("purpose");
+        }
+        let key = StateKey::new(
+            "city",
+            "tenant",
+            KeyKind::Custom(acteon_governance::COORDINATOR_KIND.into()),
+            "authority",
+        );
+        f.state.set(&key, &source.to_string(), None).await.unwrap();
+        let before = f.state.get_versioned(&key).await.unwrap();
+        assert!(
+            AuthorityCoordinator::plan_scope_upgrade(
+                f.state.clone(),
+                "city",
+                "tenant",
+                acteon_governance::ScopePurpose::AuthenticationControl {
+                    source_id: "auth-source".into()
+                },
+                "operator",
+                "wrong scope classification"
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(f.state.get_versioned(&key).await.unwrap(), before);
+        let plan = AuthorityCoordinator::plan_scope_upgrade(
+            f.state.clone(),
+            "city",
+            "tenant",
+            acteon_governance::ScopePurpose::Execution,
+            "operator",
+            "reviewed cutover",
+        )
+        .await
+        .unwrap();
+        assert_eq!(f.state.get_versioned(&key).await.unwrap(), before);
+        assert_eq!(plan.report().unsettled_starts, 1);
+        assert_eq!(plan.report().from_protocol, protocol);
+        assert!(plan.apply("unreviewed").await.is_err());
+        assert_eq!(f.state.get_versioned(&key).await.unwrap(), before);
+        assert!(plan.apply(&plan.report().review_digest).await.unwrap());
+        assert!(!plan.apply(&plan.report().review_digest).await.unwrap());
+        let peer = AuthorityCoordinator::connect(f.state.clone(), "city", "tenant")
+            .await
+            .unwrap();
+        let migrated = serde_json::to_value(peer.snapshot().await.unwrap()).unwrap();
+        for field in [
+            "incarnation",
+            "namespace",
+            "tenant",
+            "limits",
+            "closed_resources",
+            "revoked_subjects",
+            "starts",
+            "roots",
+            "permits",
+            "credentials",
+            "credential_configurations",
+        ] {
+            assert_eq!(migrated[field], original[field], "{field}");
+        }
+        for (id, event) in original["changes"].as_object().unwrap() {
+            assert_eq!(migrated["changes"][id], *event);
+        }
+        assert_eq!(
+            migrated["generation"].as_u64().unwrap(),
+            original["generation"].as_u64().unwrap() + 1
+        );
+        let recovered = f
+            .contexts
+            .recover_reference(&saved.reference().unwrap(), 200)
+            .await
+            .unwrap();
+        assert_eq!(recovered.reference().unwrap(), saved.reference().unwrap());
+        let roots = peer.snapshot().await.unwrap().roots;
+        assert_eq!(roots[&saved.execution_id().to_string()].spent_units, 1);
+        assert_eq!(roots[&saved.execution_id().to_string()].active_attempts, 1);
+        assert!(
+            start(&peer, &recovered, "outside-permit", &effect("other"), 200)
+                .await
+                .is_err()
+        );
+    }
+}

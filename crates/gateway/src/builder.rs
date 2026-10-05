@@ -36,6 +36,7 @@ pub struct GatewayBuilder {
     rules: Vec<Rule>,
     providers: ProviderRegistry,
     executor_config: ExecutorConfig,
+    provider_execution: Option<Arc<dyn acteon_executor::ProviderExecutionMediator>>,
     environment: HashMap<String, String>,
     audit: Option<Arc<dyn AuditStore>>,
     audit_ttl_seconds: Option<u64>,
@@ -97,6 +98,7 @@ impl GatewayBuilder {
             rules: Vec::new(),
             providers: ProviderRegistry::new(),
             executor_config: ExecutorConfig::default(),
+            provider_execution: None,
             environment: HashMap::new(),
             audit: None,
             audit_ttl_seconds: None,
@@ -182,6 +184,18 @@ impl GatewayBuilder {
     #[must_use]
     pub fn executor_config(mut self, config: ExecutorConfig) -> Self {
         self.executor_config = config;
+        self
+    }
+
+    /// Install the common selected-provider execution boundary. The host
+    /// implementation must authenticate original provenance and mediate all
+    /// attempts. Its refusal never invokes the compatibility executor.
+    #[must_use]
+    pub fn provider_execution_mediator(
+        mut self,
+        mediator: Arc<dyn acteon_executor::ProviderExecutionMediator>,
+    ) -> Self {
+        self.provider_execution = Some(mediator);
         self
     }
 
@@ -887,7 +901,9 @@ impl GatewayBuilder {
             lock,
             engine,
             providers: self.providers,
-            executor,
+            provider_execution: self.provider_execution.unwrap_or_else(|| {
+                Arc::new(acteon_executor::LegacyProviderMediator::new(executor))
+            }),
             environment: self.environment,
             metrics: Arc::new(GatewayMetrics::default()),
             audit,

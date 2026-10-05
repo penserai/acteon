@@ -17,7 +17,10 @@ use acteon_core::{
     StepResult, StreamEvent, StreamEventType, compute_fingerprint, outcome_category,
     sanitize_outcome,
 };
-use acteon_executor::{ActionExecutor, DeadLetterEntry, DeadLetterSink};
+use acteon_executor::{
+    DeadLetterEntry, DeadLetterSink, ProviderExecutionAdmission, ProviderExecutionMediator,
+    ProviderInvocation, ProviderInvocationOrigin,
+};
 use acteon_provider::ProviderRegistry;
 use acteon_rules::{EvalContext, RuleEngine, RuleVerdict};
 use acteon_state::{DistributedLock, KeyKind, StateKey, StateStore};
@@ -125,6 +128,18 @@ pub(crate) enum DispatchOrigin {
     Chain,
     Precounted,
     Scheduled,
+}
+
+enum ProviderDispatchCondition {
+    Dedup {
+        key: StateKey,
+        ttl: Option<Duration>,
+    },
+    Throttle {
+        key: StateKey,
+        max_count: u64,
+        window_seconds: u64,
+    },
 }
 
 const CHAIN_ANCESTRY_LABEL: &str = "acteon.chain.ancestry";
@@ -303,7 +318,7 @@ pub struct Gateway {
     pub(crate) lock: Arc<dyn DistributedLock>,
     pub(crate) engine: RuleEngine,
     pub(crate) providers: ProviderRegistry,
-    pub(crate) executor: ActionExecutor,
+    pub(crate) provider_execution: Arc<dyn ProviderExecutionMediator>,
     pub(crate) environment: HashMap<String, String>,
     pub(crate) metrics: Arc<GatewayMetrics>,
     pub(crate) audit: Option<Arc<dyn AuditStore>>,
@@ -609,6 +624,34 @@ impl Gateway {
             .await
     }
 
+    /// Dispatch with private host admission for final selected provider work.
+    /// Rule modifications and routing happen before admission. This proof is
+    /// passed explicitly and is not inherited by background or child work.
+    pub async fn dispatch_with_execution_admission(
+        &self,
+        action: Action,
+        caller: Option<&Caller>,
+        execution_admission: &dyn ProviderExecutionAdmission,
+    ) -> Result<ActionOutcome, GatewayError> {
+        if !self.provider_execution.requires_authority() {
+            return Ok(ActionOutcome::Failed(acteon_core::ActionError {
+                code: "EXECUTION_MEDIATOR_REQUIRED".into(),
+                message: "Execution admission requires an authority-enforcing mediator".into(),
+                retryable: false,
+                attempts: 0,
+            }));
+        }
+        self.dispatch_pipeline(
+            action,
+            caller,
+            false,
+            DispatchOrigin::External,
+            None,
+            Some(execution_admission),
+        )
+        .await
+    }
+
     /// Dispatch in dry-run mode: evaluates rules and returns the verdict without
     /// executing, recording state, or emitting audit records.
     pub async fn dispatch_dry_run(
@@ -651,7 +694,7 @@ impl Gateway {
         dry_run: bool,
         origin: DispatchOrigin,
     ) -> Result<ActionOutcome, GatewayError> {
-        self.dispatch_pipeline(action, caller, dry_run, origin, None)
+        self.dispatch_pipeline(action, caller, dry_run, origin, None, None)
             .await
     }
 
@@ -663,7 +706,17 @@ impl Gateway {
         dry_run: bool,
         origin: DispatchOrigin,
         admission: Option<&crate::admission::DispatchAttempt>,
+        execution_admission: Option<&dyn ProviderExecutionAdmission>,
     ) -> Result<ActionOutcome, GatewayError> {
+        if !dry_run && self.provider_execution.requires_authority() && execution_admission.is_none()
+        {
+            return Ok(ActionOutcome::Failed(acteon_core::ActionError {
+                code: "EXECUTION_AUTHORITY_REQUIRED".into(),
+                message: "Private execution admission is required".into(),
+                retryable: false,
+                attempts: 0,
+            }));
+        }
         // Chain causality labels are gateway-owned. Strip caller-supplied
         // values at the public boundary so an action cannot forge a parent
         // relationship or bypass ancestry/depth checks. Trusted redispatches
@@ -1050,9 +1103,10 @@ impl Gateway {
 
         // 4. Handle the verdict.
         let outcome = match &verdict {
-            RuleVerdict::Allow(_) => self.execute_action(&action).await,
+            RuleVerdict::Allow(_) => self.execute_action(&action, execution_admission).await,
             RuleVerdict::Deduplicate { ttl_seconds } => {
-                self.handle_dedup(&action, *ttl_seconds).await?
+                self.handle_dedup(&action, *ttl_seconds, execution_admission)
+                    .await?
             }
             RuleVerdict::Suppress(rule) | RuleVerdict::Deny(rule) => {
                 self.metrics.increment_suppressed();
@@ -1061,19 +1115,28 @@ impl Gateway {
             RuleVerdict::Reroute {
                 rule: _,
                 target_provider,
-            } => self.handle_reroute(&action, target_provider).await?,
+            } => {
+                self.handle_reroute(&action, target_provider, execution_admission)
+                    .await?
+            }
             RuleVerdict::Throttle {
                 rule,
                 max_count,
                 window_seconds,
             } => {
-                self.handle_throttle(&action, rule, *max_count, *window_seconds)
-                    .await?
+                self.handle_throttle(
+                    &action,
+                    rule,
+                    *max_count,
+                    *window_seconds,
+                    execution_admission,
+                )
+                .await?
             }
             RuleVerdict::Modify { rule: _, changes } => {
                 let mut modified = action.clone();
                 json_patch::merge(&mut modified.payload, changes);
-                self.execute_action(&modified).await
+                self.execute_action(&modified, execution_admission).await
             }
             RuleVerdict::StateMachine {
                 rule: _,
@@ -1128,7 +1191,7 @@ impl Gateway {
                     .await?
             }
             RuleVerdict::Schedule { .. } if origin == DispatchOrigin::Scheduled => {
-                self.execute_action(&action).await
+                self.execute_action(&action, execution_admission).await
             }
             RuleVerdict::Schedule {
                 rule: _,
@@ -1741,6 +1804,8 @@ impl Gateway {
         action: &Action,
         registry: &CircuitBreakerRegistry,
         target_name: &str,
+        execution_admission: Option<&dyn ProviderExecutionAdmission>,
+        condition: Option<&ProviderDispatchCondition>,
     ) -> ActionOutcome {
         let target = self
             .providers
@@ -1753,7 +1818,16 @@ impl Gateway {
             "circuit open, rerouting to fallback provider"
         );
         let exec_start = self.clock.monotonic();
-        let result = self.executor.execute(action, target.as_ref()).await;
+        let result = self
+            .invoke_provider(
+                action,
+                &target,
+                None,
+                ProviderInvocationOrigin::Fallback,
+                execution_admission,
+                condition,
+            )
+            .await;
         let latency_us = u64::try_from(
             self.clock
                 .monotonic()
@@ -1804,8 +1878,22 @@ impl Gateway {
     /// is open, the request is rejected immediately. If a fallback provider is
     /// configured, the gateway walks the fallback chain recursively until it
     /// finds a healthy provider or exhausts the chain.
-    #[instrument(name = "gateway.execute_action", skip(self, action), fields(provider = %action.provider))]
-    async fn execute_action(&self, action: &Action) -> ActionOutcome {
+    #[instrument(name = "gateway.execute_action", skip(self, action, execution_admission), fields(provider = %action.provider))]
+    async fn execute_action(
+        &self,
+        action: &Action,
+        execution_admission: Option<&dyn ProviderExecutionAdmission>,
+    ) -> ActionOutcome {
+        self.execute_action_condition(action, execution_admission, None)
+            .await
+    }
+
+    async fn execute_action_condition(
+        &self,
+        action: &Action,
+        execution_admission: Option<&dyn ProviderExecutionAdmission>,
+        condition: Option<&ProviderDispatchCondition>,
+    ) -> ActionOutcome {
         // Check circuit breaker before executing — walk the fallback chain.
         if let Some(ref registry) = self.circuit_breakers
             && let Some(cb) = registry.get(action.provider.as_str())
@@ -1821,7 +1909,13 @@ impl Gateway {
                 {
                     Ok(target_name) => {
                         return self
-                            .execute_on_fallback(action, registry, target_name)
+                            .execute_on_fallback(
+                                action,
+                                registry,
+                                target_name,
+                                execution_admission,
+                                condition,
+                            )
                             .await;
                     }
                     Err(fallback_chain) => {
@@ -1845,7 +1939,9 @@ impl Gateway {
             });
         };
 
-        let (result, latency_us) = self.execute_provider(action, provider.as_ref()).await;
+        let (result, latency_us) = self
+            .execute_provider(action, &provider, execution_admission, condition)
+            .await;
 
         // Record per-provider metrics.
         match &result {
@@ -1888,12 +1984,101 @@ impl Gateway {
         result
     }
 
+    async fn invoke_provider(
+        &self,
+        action: &Action,
+        selected: &Arc<dyn acteon_provider::DynProvider>,
+        context: Option<&acteon_provider::DispatchContext>,
+        origin: ProviderInvocationOrigin,
+        execution_admission: Option<&dyn ProviderExecutionAdmission>,
+        condition: Option<&ProviderDispatchCondition>,
+    ) -> ActionOutcome {
+        let authority = if let Some(admission) = execution_admission {
+            match admission
+                .admit(ProviderInvocation {
+                    action,
+                    selected,
+                    context,
+                    origin,
+                    authority: None,
+                })
+                .await
+            {
+                Ok(authority) => Some(authority),
+                Err(error) => return ActionOutcome::Failed(error),
+            }
+        } else {
+            None
+        };
+        if let Some(condition) = condition {
+            match self.check_provider_condition(condition).await {
+                Ok(Some(outcome)) => return outcome,
+                Ok(None) => {}
+                Err(_) => {
+                    return ActionOutcome::Failed(acteon_core::ActionError {
+                        code: "DISPATCH_CONDITION_UNAVAILABLE".into(),
+                        message: "Provider dispatch condition could not be verified".into(),
+                        retryable: false,
+                        attempts: 0,
+                    });
+                }
+            }
+        }
+        self.provider_execution
+            .execute(ProviderInvocation {
+                action,
+                selected,
+                context,
+                origin,
+                authority: authority.as_ref(),
+            })
+            .await
+    }
+
+    async fn check_provider_condition(
+        &self,
+        condition: &ProviderDispatchCondition,
+    ) -> Result<Option<ActionOutcome>, GatewayError> {
+        match condition {
+            ProviderDispatchCondition::Dedup { key, ttl } => {
+                if self.state.check_and_set(key, "1", *ttl).await? {
+                    Ok(None)
+                } else {
+                    self.metrics.increment_deduplicated();
+                    Ok(Some(ActionOutcome::Deduplicated))
+                }
+            }
+            ProviderDispatchCondition::Throttle {
+                key,
+                max_count,
+                window_seconds,
+            } => {
+                let used = self
+                    .state
+                    .increment(key, 1, Some(Duration::from_secs(*window_seconds)))
+                    .await?;
+                let used = u64::try_from(used)
+                    .map_err(|_| GatewayError::Configuration("negative throttle counter".into()))?;
+                if used <= *max_count {
+                    Ok(None)
+                } else {
+                    self.metrics.increment_throttled();
+                    Ok(Some(ActionOutcome::Throttled {
+                        retry_after: Duration::from_secs(*window_seconds),
+                    }))
+                }
+            }
+        }
+    }
+
     /// Resolve attachments (if any) and execute the provider, returning the
     /// outcome along with the execution latency in microseconds.
     async fn execute_provider(
         &self,
         action: &Action,
-        provider: &dyn acteon_provider::DynProvider,
+        provider: &Arc<dyn acteon_provider::DynProvider>,
+        execution_admission: Option<&dyn ProviderExecutionAdmission>,
+        condition: Option<&ProviderDispatchCondition>,
     ) -> (ActionOutcome, u64) {
         // Resolve attachments and use context-aware execution if applicable.
         let dispatch_ctx = if !action.attachments.is_empty() && provider.supports_attachments() {
@@ -1919,13 +2104,16 @@ impl Gateway {
         };
 
         let exec_start = self.clock.monotonic();
-        let result = if let Some(ref ctx) = dispatch_ctx {
-            self.executor
-                .execute_with_context(action, provider, ctx)
-                .await
-        } else {
-            self.executor.execute(action, provider).await
-        };
+        let result = self
+            .invoke_provider(
+                action,
+                provider,
+                dispatch_ctx.as_ref(),
+                ProviderInvocationOrigin::Dispatch,
+                execution_admission,
+                condition,
+            )
+            .await;
         let latency_us = u64::try_from(
             self.clock
                 .monotonic()
@@ -1937,11 +2125,12 @@ impl Gateway {
     }
 
     /// Handle the deduplication verdict: check state, execute only if new.
-    #[instrument(name = "gateway.handle_dedup", skip(self, action))]
+    #[instrument(name = "gateway.handle_dedup", skip(self, action, execution_admission))]
     async fn handle_dedup(
         &self,
         action: &Action,
         ttl_seconds: Option<u64>,
+        execution_admission: Option<&dyn ProviderExecutionAdmission>,
     ) -> Result<ActionOutcome, GatewayError> {
         let dedup_key = action
             .dedup_key
@@ -1956,10 +2145,19 @@ impl Gateway {
         );
 
         let ttl = ttl_seconds.map(Duration::from_secs);
+        if execution_admission.is_some() {
+            let condition = ProviderDispatchCondition::Dedup {
+                key: state_key,
+                ttl,
+            };
+            return Ok(self
+                .execute_action_condition(action, execution_admission, Some(&condition))
+                .await);
+        }
         let is_new = self.state.check_and_set(&state_key, "1", ttl).await?;
 
         if is_new {
-            Ok(self.execute_action(action).await)
+            Ok(self.execute_action(action, execution_admission).await)
         } else {
             self.metrics.increment_deduplicated();
             Ok(ActionOutcome::Deduplicated)
@@ -1967,11 +2165,12 @@ impl Gateway {
     }
 
     /// Handle the reroute verdict: execute with the target provider.
-    #[instrument(name = "gateway.handle_reroute", skip(self, action), fields(%target_provider))]
+    #[instrument(name = "gateway.handle_reroute", skip(self, action, execution_admission), fields(%target_provider))]
     async fn handle_reroute(
         &self,
         action: &Action,
         target_provider: &str,
+        execution_admission: Option<&dyn ProviderExecutionAdmission>,
     ) -> Result<ActionOutcome, GatewayError> {
         let provider = self
             .providers
@@ -1979,7 +2178,16 @@ impl Gateway {
             .ok_or_else(|| GatewayError::ProviderNotFound(target_provider.to_owned()))?;
 
         let exec_start = self.clock.monotonic();
-        let result = self.executor.execute(action, provider.as_ref()).await;
+        let result = self
+            .invoke_provider(
+                action,
+                &provider,
+                None,
+                ProviderInvocationOrigin::Reroute,
+                execution_admission,
+                None,
+            )
+            .await;
         let latency_us = u64::try_from(
             self.clock
                 .monotonic()
@@ -2024,13 +2232,14 @@ impl Gateway {
     /// (scoped to namespace+tenant via [`StateKey`]). If the counter is within
     /// `max_count`, the action executes; otherwise it is throttled. On state
     /// store errors the method fails closed before provider execution.
-    #[instrument(name = "gateway.handle_throttle", skip(self, action), fields(%rule, %max_count, %window_seconds))]
+    #[instrument(name = "gateway.handle_throttle", skip(self, action, execution_admission), fields(%rule, %max_count, %window_seconds))]
     async fn handle_throttle(
         &self,
         action: &Action,
         rule: &str,
         max_count: u64,
         window_seconds: u64,
+        execution_admission: Option<&dyn ProviderExecutionAdmission>,
     ) -> Result<ActionOutcome, GatewayError> {
         let key = StateKey::new(
             action.namespace.as_str(),
@@ -2039,6 +2248,16 @@ impl Gateway {
             rule,
         );
         let ttl = Some(Duration::from_secs(window_seconds));
+        if execution_admission.is_some() {
+            let condition = ProviderDispatchCondition::Throttle {
+                key,
+                max_count,
+                window_seconds,
+            };
+            return Ok(self
+                .execute_action_condition(action, execution_admission, Some(&condition))
+                .await);
+        }
 
         // A missing counter cannot authorize another effect.
         let new_count = self.state.increment(&key, 1, ttl).await?;
@@ -2046,7 +2265,7 @@ impl Gateway {
             .map_err(|_| GatewayError::Configuration("negative throttle counter".into()))?;
 
         if used <= max_count {
-            Ok(self.execute_action(action).await)
+            Ok(self.execute_action(action, execution_admission).await)
         } else {
             self.metrics.increment_throttled();
             Ok(ActionOutcome::Throttled {
@@ -2443,8 +2662,14 @@ impl Gateway {
                 notification_payload,
             );
             let result = self
-                .executor
-                .execute(&notification, provider.as_ref())
+                .invoke_provider(
+                    &notification,
+                    &provider,
+                    None,
+                    ProviderInvocationOrigin::ApprovalNotification,
+                    None,
+                    None,
+                )
                 .await;
             if let ActionOutcome::Failed(err) = &result {
                 error!(
@@ -4279,7 +4504,7 @@ impl Gateway {
                 }
             }
         } else {
-            self.execute_action(&step_action).await
+            self.execute_action(&step_action, None).await
         };
         let step_duration = self.clock.monotonic().saturating_sub(step_start);
         let now = self.clock.now();
@@ -5364,7 +5589,7 @@ impl Gateway {
                 let sub_name = sub_step.name.clone();
                 async move {
                     let start = self.clock.monotonic();
-                    let outcome = self.execute_action(&sub_action).await;
+                    let outcome = self.execute_action(&sub_action, None).await;
                     (
                         sub_name,
                         outcome,
@@ -7413,22 +7638,22 @@ impl Gateway {
             RuleVerdict::Reroute {
                 rule: _,
                 target_provider,
-            } => self.handle_reroute(action, target_provider).await?,
+            } => self.handle_reroute(action, target_provider, None).await?,
             RuleVerdict::Throttle {
                 rule,
                 max_count,
                 window_seconds,
             } => {
-                self.handle_throttle(action, rule, *max_count, *window_seconds)
+                self.handle_throttle(action, rule, *max_count, *window_seconds, None)
                     .await?
             }
             RuleVerdict::Modify { rule: _, changes } => {
                 let mut modified = action.clone();
                 json_patch::merge(&mut modified.payload, changes);
-                self.execute_action(&modified).await
+                self.execute_action(&modified, None).await
             }
             // Allow, RequestApproval (human already approved), dedup, state machine, group => execute
-            _ => self.execute_action(action).await,
+            _ => self.execute_action(action, None).await,
         };
 
         // Durably record the execution OUTCOME. Previously this path emitted no
@@ -7664,8 +7889,14 @@ impl Gateway {
             notification_payload,
         );
         let result = self
-            .executor
-            .execute(&notification, provider.as_ref())
+            .invoke_provider(
+                &notification,
+                &provider,
+                None,
+                ProviderInvocationOrigin::ApprovalRetry,
+                None,
+                None,
+            )
             .await;
 
         if let ActionOutcome::Failed(err) = &result {

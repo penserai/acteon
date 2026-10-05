@@ -135,13 +135,22 @@ impl AuthProvider {
         for projector in &self.projectors {
             projector.project(authority, config)?;
         }
+        authority.reserve_control_scope().await?;
         let mut references = BTreeMap::new();
         for projector in &self.projectors {
             let reference = projector
                 .publish(authority, config, chrono::Utc::now().timestamp_millis())
                 .await?;
             let (namespace, tenant) = projector.scope();
-            references.insert((namespace.into(), tenant.into()), reference);
+            references.insert(
+                (namespace.into(), tenant.into()),
+                projection::PublishedScopeBinding {
+                    reference,
+                    policy_fingerprint: projector
+                        .deployment_policy_fingerprint()
+                        .map(str::to_owned),
+                },
+            );
         }
         Ok(references)
     }
