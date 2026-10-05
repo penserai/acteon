@@ -664,6 +664,7 @@ dependencies = [
  "utoipa-axum",
  "utoipa-swagger-ui",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]

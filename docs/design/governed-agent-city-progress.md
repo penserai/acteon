@@ -399,3 +399,20 @@ merged, and its GitHub source was verified. This host building block has not ins
 configuration/startup, root capture or gateway effect enforcement; configured
 backend projection contracts, public controls/SDKs/UI and workforce lineage
 remain required. It does not close the complete execution or city phases.
+
+## Static webhook qualification
+
+Server startup constructs static webhooks through the same factory that can
+produce their protected route bindings. The private keyed revision covers the
+actual destination, canonical headers, network policy, loaded TLS snapshot,
+timeout and transport behavior. Bindings carry their version resource before
+catalog insertion. Redirects, proxies and transport retries are disabled; URL
+query credentials are stripped from transport failure diagnostics.
+
+Five focused contracts cover actual POST delivery, instance provenance,
+configuration changes, canonical inputs, refused redirects and query secrecy
+on transport failure. The workspace suite passes with 3,456 tests, zero failures
+and nine default backend exclusions. Production scope declarations, catalog
+installation, original-binding root admission and gateway effect enforcement
+remain the next delivery gate. Other adapters and workforce lineage remain
+required for complete platform coverage.

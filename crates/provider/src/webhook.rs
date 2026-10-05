@@ -84,9 +84,9 @@ impl Provider for WebhookProvider {
             if e.is_timeout() {
                 ProviderError::Timeout(std::time::Duration::from_secs(0))
             } else if e.is_connect() {
-                ProviderError::Connection(e.to_string())
+                ProviderError::Connection(e.without_url().to_string())
             } else {
-                ProviderError::ExecutionFailed(e.to_string())
+                ProviderError::ExecutionFailed(e.without_url().to_string())
             }
         })?;
 
@@ -96,7 +96,7 @@ impl Provider for WebhookProvider {
         while let Some(chunk) = response
             .chunk()
             .await
-            .map_err(|e| ProviderError::ExecutionFailed(e.to_string()))?
+            .map_err(|e| ProviderError::ExecutionFailed(e.without_url().to_string()))?
         {
             if bytes.len().saturating_add(chunk.len()) > 1_048_576 {
                 return Err(ProviderError::ExecutionFailed(
@@ -122,7 +122,7 @@ impl Provider for WebhookProvider {
             .map_err(|e| ProviderError::Configuration(e.to_string()))?
             .send()
             .await
-            .map_err(|e| ProviderError::Connection(e.to_string()))?;
+            .map_err(|e| ProviderError::Connection(e.without_url().to_string()))?;
         Ok(())
     }
 }
