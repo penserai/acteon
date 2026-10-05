@@ -38,7 +38,7 @@ fn auth() -> AuthFileConfig {
         r#"
 authority_revision = 1
 [settings]
-jwt_secret = "jwt-signing-key-at-least-32-bytes"
+jwt_secret = {:?}
 [[api_keys]]
 name = "operator"
 authority_id = "credential/operator"
@@ -51,6 +51,7 @@ tenants = ["acme"]
 providers = ["audit"]
 actions = ["read"]
 "#,
+        "t".repeat(32),
         acteon_server::auth::api_key::hash_api_key("operator-secret")
     ))
     .unwrap()

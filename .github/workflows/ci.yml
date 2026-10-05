@@ -334,6 +334,11 @@ jobs:
           python3 -m venv /tmp/acteon-city-ci
           /tmp/acteon-city-ci/bin/pip install -e clients/python
           /tmp/acteon-city-ci/bin/python examples/governed-city/run.py --server target/debug/acteon-server --output /tmp/governed-city-results.json
+      - name: Save governed city runtime evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: governed-city-evidence
+          path: /tmp/governed-city-results.json
       - name: Server authentication authority and startup Redis contracts
         env:
           ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379

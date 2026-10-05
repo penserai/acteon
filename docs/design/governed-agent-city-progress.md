@@ -548,7 +548,7 @@ SDK and HTTP webhook receiver: two authorized sends, zero unauthorized sends
 across replay, closure, reopening, permit revocation and credential offboarding.
 No model or autonomous peer invocation is claimed by this scenario.
 
-Local validation passes: 3,509 workspace tests across 100 suites with zero
+Local validation passes: 3,510 workspace tests across 100 suites with zero
 failures (twelve backend-dependent tests excluded by the default invocation),
 six explicitly enabled PostgreSQL HTTP tests, both evaluated-publication replay
 and CAS-expiry tests, nine neural-observability example tests, all five SDK

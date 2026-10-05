@@ -151,6 +151,7 @@ test('governance keeps scoped operator authority and confirms closures', async (
   scope.routes[0].closed = false
   await page.addInitScript(() => localStorage.setItem('acteon-token', 'operator-key'))
   const changes: Record<string, unknown>[] = []
+  const publications: Record<string, unknown>[] = []
   await page.route('**/v1/governance**', async route => {
     const request = route.request()
     expect(request.headers()['authorization']).toBe('Bearer operator-key')
@@ -165,6 +166,21 @@ test('governance keeps scoped operator authority and confirms closures', async (
     expect(body.namespace).toBe('prod')
     expect(body.tenant).toBe('acme')
     expect(body.reason).toBe('Scheduled maintenance')
+    if (request.url().endsWith('/permits')) {
+      publications.push(body)
+      expect(body.expected_revision).toBe(0)
+      expect(body.permit).toEqual({
+        id: 'new-maya', revision: 1, subject: { id: 'agent/maya', kind: 'agent' },
+        routes: [{ provider: 'incident', action_type: 'execute' }], valid_from_ms: 0,
+        limits: { max_units: 2, max_concurrent: 1, deadline_ms: new Date('2030-01-01T12:00').getTime() },
+      })
+      if (publications.length === 1) {
+        await route.fulfill({ status: 503, json: { error: 'governance_unavailable' } })
+      } else {
+        await route.fulfill({ json: { ...fixture.receipt, change_id: body.change_id, reason: body.reason } })
+      }
+      return
+    }
     expect(body.change.resource).toEqual(resource)
     changes.push(body)
     scope.routes[0].closed = body.change.kind === 'close_resource'
@@ -196,5 +212,18 @@ test('governance keeps scoped operator authority and confirms closures', async (
   expect((changes[1].change as { kind: string }).kind).toBe('reopen_resource')
   expect(changes[0].change_id).not.toBe(changes[1].change_id)
   await expect(page.getByRole('dialog')).toHaveCount(0)
+  await page.getByLabel('Permit ID', { exact: true }).fill('new-maya')
+  await page.getByLabel('Subject', { exact: true }).selectOption('agent/maya')
+  await page.getByLabel('Route', { exact: true }).selectOption({ index: 1 })
+  await page.getByLabel('Deadline', { exact: true }).fill('2030-01-01T12:00')
+  await page.getByLabel('Maximum calls per root', { exact: true }).fill('2')
+  await page.getByLabel('Issuance reason', { exact: true }).fill('Scheduled maintenance')
+  await page.getByRole('button', { name: 'Issue permit', exact: true }).click()
+  await expect(page.getByRole('alert')).toBeVisible()
+  expect(publications).toHaveLength(1)
+  await page.getByRole('button', { name: 'Issue permit', exact: true }).click()
+  await expect(page.getByLabel('Permit ID', { exact: true })).toHaveValue('')
+  expect(publications).toHaveLength(2)
+  expect(publications[0].change_id).toBe(publications[1].change_id)
   await page.screenshot({ path: test.info().outputPath('governance.png'), fullPage: true, animations: 'disabled' })
 })

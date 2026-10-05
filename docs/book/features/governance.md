@@ -55,6 +55,8 @@ routes. Inspect actual resource references before selecting a closure.
 
 Changing management declarations changes the prepared security policy. Increase
 `authority_revision` in the shared authentication file when deploying that change.
+Manager intervention footprints must fit the bounded control ceiling; startup
+rejects oversized resolved footprints before publishing authority.
 A replica with old policy or old credential observations refuses management
 instead of attaching a fresh authority stamp to an old decision.
 

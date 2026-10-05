@@ -25,6 +25,39 @@ use crate::{
     provider_factory::StaticWebhook,
 };
 
+// Resolve intervention footprints before publishing any authority. A valid
+// route count can still exceed the bounded control ceiling.
+fn validate_management_footprints(
+    declaration: &ExecutionScopeConfig,
+    catalog: &QualifiedProviderCatalog,
+) -> Result<(), String> {
+    let definitions = catalog.definitions(&declaration.namespace, &declaration.tenant);
+    for manager in declaration.managers.iter().filter(|m| m.can_intervene) {
+        let resources = definitions
+            .iter()
+            .filter(|d| {
+                manager
+                    .routes
+                    .iter()
+                    .any(|r| r.provider == d.provider && r.action_type == d.action_type)
+            })
+            .flat_map(|d| d.effect.resources.iter().cloned())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        acteon_governance::control::ControlChangeCeiling {
+            actor: manager.principal.clone(),
+            subjects: manager.subjects.clone(),
+            resources,
+            valid_from_ms: manager.valid_from_ms,
+            deadline_ms: manager.limits.deadline_ms,
+        }
+        .validate()
+        .map_err(|_| "execution manager exceeds control footprint capacity")?;
+    }
+    Ok(())
+}
+
 struct Registration {
     actual: Arc<dyn DynProvider>,
     webhook: Option<StaticWebhook>,
@@ -141,6 +174,7 @@ impl ExecutionProviderRegistry {
                 issuance
                     .validate()
                     .map_err(|_| "invalid independently declared execution ceiling")?;
+                validate_management_footprints(&declaration, &catalog)?;
                 // Bootstrap is an operational initialization choice, not policy.
                 let mut policy = serde_json::json!({
                     "format": "acteon.execution_scope.policy.v1",

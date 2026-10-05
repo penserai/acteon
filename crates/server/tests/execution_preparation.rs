@@ -1182,3 +1182,42 @@ async fn private_admission_governs_real_gateway_calls_after_modification_and_rou
     assert!(f.coordinator.snapshot().await.unwrap().roots.is_empty());
     server.abort();
 }
+
+#[test]
+fn manager_intervention_footprints_must_fit_before_authority_publication() {
+    let (registry, _) = registry();
+    let mut config = configuration();
+    let scope = &mut config.scopes[0];
+    scope.routes = (0..128)
+        .map(|i| acteon_server::config::ExecutionRouteConfig {
+            provider: "incident".into(),
+            action_type: format!("execute-{i}"),
+        })
+        .collect();
+    scope
+        .managers
+        .push(acteon_server::config::ExecutionManagerConfig {
+            principal: scope.subjects[0].clone(),
+            subjects: scope.subjects.clone(),
+            routes: scope.routes.clone(),
+            valid_from_ms: scope.valid_from_ms,
+            limits: scope.credential_limits.clone(),
+            can_issue_permits: true,
+            can_intervene: false,
+        });
+    registry
+        .prepare(&config, ("auth-control", "deployment"), &[8; 32])
+        .unwrap();
+    config.scopes[0].managers[0].can_intervene = true;
+    assert_eq!(
+        registry
+            .prepare(&config, ("auth-control", "deployment"), &[8; 32])
+            .err()
+            .as_deref(),
+        Some("execution manager exceeds control footprint capacity"),
+    );
+    config.scopes[0].managers[0].routes.truncate(1);
+    registry
+        .prepare(&config, ("auth-control", "deployment"), &[8; 32])
+        .unwrap();
+}
