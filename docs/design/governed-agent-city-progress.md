@@ -35,7 +35,7 @@ verify per-effect permits, revocation during a chain, closures or mesh execution
 |---|---|---|
 | 0: Inventory/coordinator | Exact resources, bounded CAS coordinator, multi-resource starts, root reservations and reviewed scope cutover implemented against configured state backends; memory/Redis/PostgreSQL/DynamoDB substrate contracts | Broader effect qualification, operational failover and emergency-stop proof |
 | 1: Actors/context | Executor role, stable principals, credential enrollment, signed root contexts, shared authentication and private scope projection merged | Remaining deferred propagation, teams, memberships, mandates and delegated lineage |
-| 2: Permits/checkpoints | Current permits/credentials/configuration snapshots, qualified static-webhook adapter and common gateway mediation merged; standalone runtime plus SDK/UI integration on working branch | Complete public runtime review, broader effect coverage, governance management API/SDK/UI, deferred execution and recovery |
+| 2: Permits/checkpoints | Current permits/credentials/configuration snapshots, qualified static-webhook adapter and common gateway mediation merged; standalone runtime plus SDK/UI integration merged | Broader effect coverage, governance management API/SDK/UI, deferred execution and recovery |
 | 3: Closures/intervention | Internal serialized resource restrictions and durable control events; existing public agent lifecycle | Public generic closures, intervention, drain/pause/cancel semantics and acknowledgments |
 | 4: Autonomous mesh | Existing registry and submitted A2A tasks only | Real target resolution/invocation, attenuation, lineage, recovery and safe peer retry |
 | 5: Production/federation | Not implemented | Verified backend and peer capability matrix, trust/revocation protocol and failure tests |
@@ -417,7 +417,7 @@ installation, original-binding root admission and gateway effect enforcement
 remain the next delivery gate. Other adapters and workforce lineage remain
 required for complete platform coverage.
 
-## Production execution authority (implementation in progress)
+## Production execution authority (merged as PR #423)
 
 The working implementation prepares execution scopes from actual registered
 providers, publishes a fingerprint of the independently declared policy, and
@@ -447,13 +447,12 @@ forged metadata, changed work under one operation key and revocation on replay.
 Focused contracts verify actor/input/instance substitution refusal, credential
 revocation before a send, completed replay without another send, and uncertain
 work without resend. Server admission and cutover contracts have run against
-memory, Redis, PostgreSQL and DynamoDB. These results do not establish public
-HTTP dispatch coverage: public handler wiring, production startup installation,
-deferred/delegated work, adapter coverage and the workforce
-management surfaces remain outstanding. The production server profile is not
-yet installed.
+memory, Redis, PostgreSQL and DynamoDB. PR #423 established library admission and gateway mediation. Its backend
+contracts alone did not establish public HTTP dispatch coverage. The standalone
+server integration below now supplies public immediate dispatch; deferred and
+delegated work, broader adapters and workforce management remain outstanding.
 
-## Standalone server runtime integration (working branch)
+## Standalone server runtime integration (merged as PR #424)
 
 `feat/server-execution-authority` installs the qualified execution mediator,
 credential projection and explicit deployment permits into the standalone
@@ -468,8 +467,15 @@ the actual server and verifies that replay returns the saved outcome with no
 second network send. Both also verify unauthenticated denial, missing permits,
 changed-input replay conflicts, an unissued-permit refusal followed by a valid
 retry of the same action ID, and batch execution. CI now explicitly schedules
-these HTTP contracts. These checks are local evidence; this branch has not yet
-been reviewed, merged or published.
+these HTTP contracts. PR #424 merged at
+`681431408fc28382ac4a3efe1086c1ff58537866` after adversarial review of exact head
+`d61d7bba577e4e3818199e4a38a7533c8d9dec32` and all 28 final-head checks completed
+(25 success, three expected skips). The merged tree matches the reviewed head.
+Integration run `37290238915` executed the memory HTTP suite and all four
+PostgreSQL-enabled HTTP tests, including restart replay and invalid-startup
+publication refusal. Deploy Documentation run `37293384388` succeeded for that
+merge; an actual HTTP fetch of the public execution-permits page verified its
+permit header, PostgreSQL/DynamoDB guidance, SDK method and signing-key instructions.
 
 Replay markers are reserved after successful final-work admission. The initial
 HTTP conflict check reads an existing marker without creating one, so an invalid
@@ -493,3 +499,26 @@ Startup preflights local authentication tables before installing authority;
 explicit permits publish only after authentication scope projections and rule
 loading succeed. The PostgreSQL HTTP test also verifies that a failed startup
 with invalid credentials leaves both control and execution scopes absent.
+
+## Evaluated control-write boundary (integration in progress)
+
+A bounded, independently evaluated control ceiling now guards intervention
+writes and their idempotent replay within the coordinator CAS loop. Current
+scope stamps, actor revocation, complete policy resources/subjects and host time
+are checked before accepting a change. This supports closures/reopening and
+permit/credential/subject revocation without a Redis dependency or schema change.
+See the [control-write ADR](evaluated-governance-control.md).
+
+This is a prerequisite for public management adapters, not a public governance
+API or closure lifecycle. Private authenticated management projection, server
+routes, SDK/UI integration, overlapping named closures, intervention recovery,
+teams/mandates, deferred authority and autonomous mesh remain required.
+
+Local evaluated-control evidence: all twelve targeted tests pass, including explicitly
+executed independent PostgreSQL and Redis contracts. Execution management refuses
+unclaimed and authentication-control scopes. Public adapters remain unimplemented.
+Required local checks pass: 3,503 workspace tests, zero failures and twelve
+explicit default exclusions; all twelve targeted control tests pass with backend
+exclusions enabled. Formatting, workspace Clippy, all-target compilation,
+UI lint/build and strict documentation build also pass. Review/merge/publication
+of this control slice remain pending; this does not complete the city objective.

@@ -317,6 +317,10 @@ jobs:
         env:
           ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
         run: cargo test --locked -p acteon-governance --test configurations independent_redis_configuration_snapshots_pass_the_contract -- --ignored
+      - name: Evaluated governance control multi-client backend contracts
+        env:
+          ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
+        run: cargo test --locked -p acteon-governance --test control -- --include-ignored
       - name: Server authentication with memory and no Redis feature
         run: cargo test --locked -p acteon-server --no-default-features --test auth_authority real_memory_server_uses_the_configured_state_backend
       - name: Private final-work admission with memory and no Redis feature
