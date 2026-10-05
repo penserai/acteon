@@ -42,6 +42,7 @@ function lazyPage<Name extends string>(
 // the user actually navigates there. Dashboard stays eager because it's the
 // index/landing page — the first paint would otherwise show a spinner.
 
+const Workforce = lazyPage(() => import('./pages/Workforce'), 'Workforce')
 const Governance = lazyPage(() => import('./pages/Governance'), 'Governance')
 const Dispatch = lazyPage(() => import('./pages/Dispatch'), 'Dispatch')
 const Rules = lazyPage(() => import('./pages/Rules'), 'Rules')
@@ -98,6 +99,7 @@ function App() {
         <Route element={<AppShell />}>
           <Route index element={<Dashboard />} />
           <Route path="alerting" element={<Alerting />} />
+          <Route path="workforce" element={<Workforce />} />
           <Route path="governance" element={<Governance />} />
           <Route path="dispatch" element={<Dispatch />} />
           <Route path="rules" element={<Rules />} />

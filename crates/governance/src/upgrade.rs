@@ -106,7 +106,7 @@ fn digest(raw: &str) -> String {
 }
 
 impl AuthorityCoordinator {
-    /// Read-only preparation for protocol 7 or unclaimed protocol 8. Preserve
+    /// Read-only preparation for protocol 7/8 or unclaimed current protocol. Preserve
     /// incarnation, all authority history, roots, spending and reconciliation
     /// records. Scope purpose classification must match the complete state.
     pub async fn plan_scope_upgrade(
@@ -144,7 +144,10 @@ impl AuthorityCoordinator {
                 CoordinationError::Invalid("authority missing; cutover cannot bootstrap".into())
             })?;
         let (mut state, from_protocol) = coordinator.decode_upgrade_source(&raw)?;
-        if state.purpose != ScopePurpose::Unclaimed || state.changes.contains_key("scope-purpose") {
+        let claim = state.purpose == ScopePurpose::Unclaimed;
+        if (!claim && (state.purpose != purpose || from_protocol == FORMAT))
+            || (claim && state.changes.contains_key("scope-purpose"))
+        {
             return Err(CoordinationError::Conflict);
         }
         let original_authority = state.stamp();
@@ -154,10 +157,21 @@ impl AuthorityCoordinator {
             .checked_add(1)
             .ok_or(CoordinationError::Capacity)?;
         state.changes.insert(
-            "scope-purpose".into(),
+            if claim {
+                "scope-purpose".into()
+            } else {
+                format!("scope-protocol-{FORMAT}")
+            },
             ChangeRecord {
-                change: AuthorityChange::ReserveScope {
-                    purpose: purpose.clone(),
+                change: if claim {
+                    AuthorityChange::ReserveScope {
+                        purpose: purpose.clone(),
+                    }
+                } else {
+                    AuthorityChange::UpgradeProtocol {
+                        from_protocol,
+                        to_protocol: FORMAT,
+                    }
                 },
                 actor: actor.into(),
                 reason: reason.into(),
@@ -169,15 +183,8 @@ impl AuthorityCoordinator {
         // Run the same full reconstruction and accounting checks as every load.
         coordinator.decode(&proposed)?;
         let original_digest = digest(&raw);
-        let review_inputs = serde_json::to_string(&(
-            "acteon.scope_upgrade.review.v1",
-            namespace,
-            tenant,
-            version,
-            &original_digest,
-            digest(&proposed),
-        ))
-        .map_err(|_| CoordinationError::Invalid("cutover review inputs".into()))?;
+        let review_digest =
+            review_cutover(namespace, tenant, version, &original_digest, &proposed)?;
         let report = ScopeUpgradeReport {
             namespace: namespace.into(),
             tenant: tenant.into(),
@@ -200,7 +207,7 @@ impl AuthorityCoordinator {
                 .filter(|s| s.status != crate::AttemptStatus::Settled)
                 .count(),
             retained_changes: state.changes.len() - 1,
-            review_digest: digest(&review_inputs),
+            review_digest,
         };
         Ok(ScopeUpgradePlan {
             coordinator,
@@ -212,12 +219,14 @@ impl AuthorityCoordinator {
     }
 }
 
-// Exact protocol-7 shape. Required ownership remains mandatory for ordinary
-// protocol-8 decoding; this compatibility reader exists only in explicit cutover.
+// Exact pre-workforce shape. Protocol 8 purpose is read separately. This
+// compatibility reader is reachable only through explicit reviewed cutover.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LegacyScope {
     schema_version: u32,
+    #[serde(default)]
+    purpose: Option<ScopePurpose>,
     incarnation: String,
     namespace: String,
     tenant: String,
@@ -241,16 +250,29 @@ impl AuthorityCoordinator {
         let value: serde_json::Value = serde_json::from_str(raw)
             .map_err(|_| CoordinationError::Invalid("invalid source authority".into()))?;
         match value["schema_version"].as_u64() {
-            Some(7) => {
-                let legacy: LegacyScope = serde_json::from_str(raw).map_err(|_| {
-                    CoordinationError::Invalid("invalid protocol-7 authority".into())
-                })?;
-                if legacy.schema_version != 7 || raw.len() > legacy.limits.max_bytes {
+            Some(source_version @ (7 | 8)) => {
+                let legacy: LegacyScope = serde_json::from_str(raw)
+                    .map_err(|_| CoordinationError::Invalid("invalid legacy authority".into()))?;
+                if u64::from(legacy.schema_version) != source_version
+                    || raw.len() > legacy.limits.max_bytes
+                {
                     return Err(CoordinationError::Invalid("source protocol or size".into()));
                 }
+                let purpose = if source_version == 8 {
+                    legacy.purpose.clone().ok_or_else(|| {
+                        CoordinationError::Invalid("protocol-8 purpose missing".into())
+                    })?
+                } else {
+                    if legacy.purpose.is_some() {
+                        return Err(CoordinationError::Invalid(
+                            "protocol-7 purpose must be absent".into(),
+                        ));
+                    }
+                    ScopePurpose::Unclaimed
+                };
                 let state = crate::CoordinatorSnapshot {
                     schema_version: FORMAT,
-                    purpose: ScopePurpose::Unclaimed,
+                    purpose,
                     incarnation: legacy.incarnation,
                     namespace: legacy.namespace,
                     tenant: legacy.tenant,
@@ -264,14 +286,38 @@ impl AuthorityCoordinator {
                     permits: legacy.permits,
                     credentials: legacy.credentials,
                     credential_configurations: legacy.credential_configurations,
+                    workforce: crate::workforce::WorkforceState::default(),
                 };
                 let encoded = Self::encode(&state)?;
-                Ok((self.decode(&encoded)?, 7))
+                Ok((
+                    self.decode(&encoded)?,
+                    u32::try_from(source_version)
+                        .map_err(|_| CoordinationError::Invalid("source version".into()))?,
+                ))
             }
             Some(version) if version == u64::from(FORMAT) => Ok((self.decode(raw)?, FORMAT)),
             _ => Err(CoordinationError::Invalid(
-                "cutover supports only protocol 7 or unclaimed 8".into(),
+                "cutover supports protocol 7/8 or unclaimed current protocol".into(),
             )),
         }
     }
+}
+
+fn review_cutover(
+    namespace: &str,
+    tenant: &str,
+    version: u64,
+    original_digest: &str,
+    proposed: &str,
+) -> Result<String, CoordinationError> {
+    let inputs = serde_json::to_string(&(
+        "acteon.scope_upgrade.review.v1",
+        namespace,
+        tenant,
+        version,
+        original_digest,
+        digest(proposed),
+    ))
+    .map_err(|_| CoordinationError::Invalid("cutover review inputs".into()))?;
+    Ok(digest(&inputs))
 }

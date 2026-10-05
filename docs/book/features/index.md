@@ -22,6 +22,8 @@ connect it to the rest of your flow.
 | Capability | What it enables |
 |---|---|
 | [Authentication](../api/authentication.md) and [scoped grants](api-key-scoping.md) | Control which callers can operate within each namespace and tenant |
+| [Agent workforce](workforce.md) | Organize humans and agents with explicit representation mandates and current relationship checks |
+| [Execution permits](execution-permits.md) and [governance management](governance.md) | Bound qualified effects and intervene through current resource and participant controls |
 | [Suppression](suppression.md), [deduplication](deduplication.md), and [throttling](throttling.md) | Block unwanted work, recognize duplicates, and bound dispatch rates |
 | [Rerouting](rerouting.md), [payload modification](modification.md), and [templates](payload-templates.md) | Select integrations and shape requests before execution |
 | [Human approvals](approvals.md) and [tenant quotas](tenant-quotas.md) | Require authorization for sensitive work and limit usage |

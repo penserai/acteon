@@ -99,6 +99,7 @@ from .platform import _AsyncPlatformMixin, _PlatformMixin
 from .platform_catalog import PlatformOperation
 from .queues import _AsyncQueuesClientMixin, _QueuesClientMixin
 from .workflows import _AsyncWorkflowsClientMixin, _WorkflowsClientMixin
+from .workforce import _AsyncWorkforceMixin, _WorkforceMixin
 
 
 def _raise_dispatch_error(response: httpx.Response) -> NoReturn:
@@ -124,6 +125,7 @@ def _permit_headers(permits: list[PermitReference] | None) -> dict[str, str] | N
 
 
 class ActeonClient(
+    _WorkforceMixin,
     _GovernanceMixin,
     _PlatformMixin,
     _A2AClientMixin,
@@ -2601,6 +2603,7 @@ class ActeonClient(
 
 
 class AsyncActeonClient(
+    _AsyncWorkforceMixin,
     _AsyncGovernanceMixin,
     _AsyncPlatformMixin,
     _AsyncA2AClientMixin,

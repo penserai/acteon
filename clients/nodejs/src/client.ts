@@ -1,3 +1,4 @@
+import type { WorkforceScopeView, WorkforceChangeRequest } from "./workforce.js";
 import type { GovernanceScopeView, GovernanceChangeReceipt, PublishGovernancePermitRequest, GovernanceInterventionRequest } from "./governance.js";
 import { platformRequestParts, type PlatformOperation, type PlatformRequestOptions } from "./platform.js";
 /**
@@ -386,6 +387,13 @@ export class ActeonClient {
   }
 
   /** Inspect only the routes and permits within current independent management policy. */
+  async workforce(namespace: string, tenant: string): Promise<WorkforceScopeView> {
+    return await this.platformRequest("workforce_inspect", { query: { namespace, tenant } }) as WorkforceScopeView;
+  }
+  async changeWorkforce(request: WorkforceChangeRequest): Promise<GovernanceChangeReceipt> {
+    return await this.platformRequest("workforce_change", { body: request }) as GovernanceChangeReceipt;
+  }
+
   async governance(namespace: string, tenant: string): Promise<GovernanceScopeView> {
     return await this.platformRequest("governance_inspect", { query: { namespace, tenant } }) as GovernanceScopeView;
   }

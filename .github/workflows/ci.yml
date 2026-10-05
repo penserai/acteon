@@ -321,6 +321,10 @@ jobs:
         env:
           ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
         run: cargo test --locked -p acteon-governance --test control -- --include-ignored
+      - name: Workforce authority multi-client state backend contracts
+        env:
+          ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
+        run: cargo test --locked -p acteon-governance --test workforce -- --include-ignored
       - name: Server authentication with memory and no Redis feature
         run: cargo test --locked -p acteon-server --no-default-features --test auth_authority real_memory_server_uses_the_configured_state_backend
       - name: Private final-work admission with memory and no Redis feature
@@ -334,11 +338,14 @@ jobs:
           python3 -m venv /tmp/acteon-city-ci
           /tmp/acteon-city-ci/bin/pip install -e clients/python
           /tmp/acteon-city-ci/bin/python examples/governed-city/run.py --server target/debug/acteon-server --output /tmp/governed-city-results.json
+          /tmp/acteon-city-ci/bin/python examples/agent-workforce/run.py --server target/debug/acteon-server --output /tmp/agent-workforce-results.json
       - name: Save governed city runtime evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: governed-city-evidence
-          path: /tmp/governed-city-results.json
+          path: |
+            /tmp/governed-city-results.json
+            /tmp/agent-workforce-results.json
       - name: Server authentication authority and startup Redis contracts
         env:
           ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
@@ -359,6 +366,8 @@ jobs:
         run: cargo test --locked -p acteon-server --features postgres --test auth_authority independent_postgres_authentication_replicas_pass_the_contract -- --ignored
       - name: Root admission multi-client PostgreSQL contract
         run: cargo test --locked -p acteon-server --features postgres --test execution_preparation independent_postgres_root_admission_passes_the_contract -- --ignored
+      - name: Authenticated workforce admission with PostgreSQL and no Redis feature
+        run: cargo test --locked -p acteon-server --no-default-features --features postgres --test execution_preparation independent_postgres_authenticated_workforce_passes_the_contract -- --ignored
       - name: Governed HTTP dispatch survives PostgreSQL server restart
         run: cargo test --locked -p acteon-server --no-default-features --features postgres --test execution_http -- --include-ignored
       - name: PostgreSQL audit-store conformance

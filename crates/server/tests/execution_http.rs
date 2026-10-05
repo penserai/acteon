@@ -37,6 +37,18 @@ impl Server {
         Self::configured(webhook, state, "executor", true)
     }
     fn configured(webhook: &str, state: &str, role: &str, management: bool) -> Self {
+        Self::configured_with_workforce(webhook, state, role, management, false)
+    }
+    fn workforce(webhook: &str, state: &str) -> Self {
+        Self::configured_with_workforce(webhook, state, "executor", true, true)
+    }
+    fn configured_with_workforce(
+        webhook: &str,
+        state: &str,
+        role: &str,
+        management: bool,
+        workforce: bool,
+    ) -> Self {
         let directory =
             std::env::temp_dir().join(format!("acteon-execution-http-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&directory).unwrap();
@@ -108,6 +120,13 @@ can_issue_permits = true
 can_intervene = true
 "#,
             );
+        }
+        if workforce {
+            config = config.replace(
+                "subjects = [{id=\"agent/maya\",kind=\"agent\"}]",
+                "subjects = [{id=\"agent/maya\",kind=\"agent\"},{id=\"operator\",kind=\"human\"}]",
+            );
+            config.push_str("workforce = {teams=[{domain='prod',tenant='acme',id='reliability'}],job_classes=['execute'],can_manage_roster=true,can_issue_mandates=true}\n");
         }
         fs::write(directory.join("acteon.toml"), config).unwrap();
         fs::write(
@@ -798,4 +817,260 @@ async fn governance_http_contract(state: &str, restart: bool) {
     );
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     receiver.abort();
+}
+
+#[tokio::test]
+async fn workforce_management_controls_real_represented_agent_operations() {
+    workforce_http_contract("backend = 'memory'", false).await;
+}
+
+async fn workforce_http_contract(state: &str, restart: bool) {
+    use acteon_core::workforce::WorkforceScopeView;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = calls.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let webhook = format!("http://{}/incident", listener.local_addr().unwrap());
+    let receiver = tokio::spawn(
+        axum::serve(
+            listener,
+            Router::new().route(
+                "/incident",
+                post(move |Json(_): Json<Value>| {
+                    let counter = counter.clone();
+                    async move {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                        Json(json!({"accepted":true}))
+                    }
+                }),
+            ),
+        )
+        .into_future(),
+    );
+    let client = reqwest::Client::new();
+    let mut server = Server::workforce(&webhook, state);
+    server.ready(&client).await;
+    let changes_url = format!("{}/v1/workforce/changes", server.url);
+    let inspect_url = format!("{}/v1/workforce?namespace=prod&tenant=acme", server.url);
+    let team = json!({"domain":"prod","tenant":"acme","id":"reliability"});
+    let actor = json!({"id":"agent/maya","kind":"agent"});
+    let limits = json!({"max_units":5,"max_concurrent":1,"deadline_ms":4102444800000_i64});
+    let routes = json!([{"provider":"incident","action_type":"execute"}]);
+    let change = |id: &str, body: Value| json!({"namespace":"prod","tenant":"acme","change_id":id,"reason":"reviewed","change":body});
+    let put_team = change(
+        "put-reliability",
+        json!({"kind":"put_team","team":{"team":team,"revision":1,"name":"Reliability"}}),
+    );
+    for key in [
+        "maya-secret",
+        "imposter-secret",
+        "foreign-secret",
+        "unlisted-secret",
+    ] {
+        assert_eq!(
+            client
+                .get(&inspect_url)
+                .bearer_auth(key)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            403
+        );
+        assert_eq!(
+            client
+                .post(&changes_url)
+                .bearer_auth(key)
+                .json(&put_team)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            403
+        );
+    }
+    let empty: WorkforceScopeView = client
+        .get(&inspect_url)
+        .bearer_auth("operator-secret")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(empty.teams.is_empty());
+    assert!(empty.management.can_manage_roster);
+    for forbidden in [
+        change(
+            "foreign-team",
+            json!({"kind":"put_team","team":{"team":{"domain":"prod","tenant":"acme","id":"release"},"revision":1,"name":"Release"}}),
+        ),
+        change(
+            "wrong-actor",
+            json!({"kind":"put_ownership","ownership":{"agent":{"id":"other-agent","kind":"agent"},"revision":1,"owner":{"kind":"team","team":team}}}),
+        ),
+    ] {
+        assert_eq!(
+            client
+                .post(&changes_url)
+                .bearer_auth("operator-secret")
+                .json(&forbidden)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            403
+        );
+    }
+    for body in [
+        put_team.clone(),
+        change(
+            "owner",
+            json!({"kind":"put_ownership","ownership":{"agent":actor,"revision":1,"owner":{"kind":"team","team":team}}}),
+        ),
+        change(
+            "mandate",
+            json!({"kind":"put_mandate","mandate":{
+                "id":"standing-duty","revision":1,"represented":{"kind":"team","team":team},"actor":actor,
+                "job_class":"execute","eligible_initiators":[actor],"ownership":{"id":"agent/maya","accepted_revision":1},
+                "dependencies":[],"routes":routes,"valid_from_ms":0,"limits":limits
+            }}),
+        ),
+        change(
+            "permit",
+            json!({"kind":"publish_represented_permit","permit":{
+            "id":"represented-permit","revision":1,"subject":actor,"routes":routes,"valid_from_ms":0,"limits":limits
+        },"mandate":{"id":"standing-duty","accepted_revision":1}}),
+        ),
+    ] {
+        let response = client
+            .post(&changes_url)
+            .bearer_auth("operator-secret")
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        let status = response.status();
+        let value: Value = response.json().await.unwrap();
+        assert_eq!(status, 200, "{value}");
+        assert_eq!(value["actor"], "operator");
+    }
+    let view: WorkforceScopeView = client
+        .get(&inspect_url)
+        .bearer_auth("operator-secret")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(view.teams.len(), 1);
+    assert_eq!(view.mandates.len(), 1);
+    assert_eq!(view.permit_bindings.len(), 1);
+    let generation = view.generation;
+    let replay: Value = client
+        .post(&changes_url)
+        .bearer_auth("operator-secret")
+        .json(&put_team)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(replay["generation"].as_u64().unwrap() < generation);
+    let view: WorkforceScopeView = client
+        .get(&inspect_url)
+        .bearer_auth("operator-secret")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(view.generation, generation);
+    let action = Action::new(
+        "prod",
+        "acme",
+        "incident",
+        "execute",
+        json!({"initiator":"forged-human","represented":"release","job_class":"override"}),
+    );
+    let dispatch_url = format!("{}/v1/dispatch", server.url);
+    let dispatch = |action: &Action| {
+        client
+            .post(&dispatch_url)
+            .bearer_auth("maya-secret")
+            .header(
+                "x-acteon-execution-permits",
+                r#"[{"id":"represented-permit","accepted_revision":1}]"#,
+            )
+            .json(action)
+    };
+    for _ in 0..2 {
+        let response = dispatch(&action).send().await.unwrap();
+        let status = response.status();
+        let outcome: Value = response.json().await.unwrap();
+        assert_eq!(status, 200, "{outcome}");
+        assert!(outcome.get("Executed").is_some(), "{outcome}");
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let revoke = change(
+        "revoke-standing",
+        json!({"kind":"revoke_mandate","id":"standing-duty","expected_revision":1}),
+    );
+    assert_eq!(
+        client
+            .post(&changes_url)
+            .bearer_auth("operator-secret")
+            .json(&revoke)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    if restart {
+        server.restart();
+        server.ready(&client).await;
+    }
+    let next = Action::new("prod", "acme", "incident", "execute", json!({"ticket":43}));
+    let refused: acteon_core::ActionOutcome =
+        dispatch(&next).send().await.unwrap().json().await.unwrap();
+    assert!(
+        matches!(&refused, acteon_core::ActionOutcome::Failed(error) if error.code == "EXECUTION_ADMISSION_REFUSED" && !error.retryable),
+        "{refused:?}"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let revoked: WorkforceScopeView = client
+        .get(&inspect_url)
+        .bearer_auth("operator-secret")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(revoked.mandates[0].revoked);
+    receiver.abort();
+}
+
+#[cfg(feature = "postgres")]
+#[tokio::test]
+#[ignore = "requires DATABASE_URL; actual workforce controls survive server restart"]
+async fn postgres_workforce_controls_survive_server_restart() {
+    let url = std::env::var("DATABASE_URL").unwrap();
+    let prefix = format!("workforce_http_{}_", uuid::Uuid::new_v4().simple());
+    workforce_http_contract(
+        &format!("backend = 'postgres'\nurl = {url:?}\nprefix = {prefix:?}"),
+        true,
+    )
+    .await;
+    let pool = sqlx::PgPool::connect(&url).await.unwrap();
+    for suffix in ["state", "locks", "timeout_index", "chain_ready_index"] {
+        sqlx::query(&format!("DROP TABLE public.{prefix}{suffix}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    pool.close().await;
 }

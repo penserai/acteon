@@ -5,7 +5,7 @@
 //! ceilings. Recovery verifies recorded provenance; it never authorizes an
 //! effect. Every effect still requires current authority evaluation/registration.
 mod admission;
-pub use admission::ROOT_ADMISSION_KIND;
+pub use admission::{IdempotentRootAdmission, ROOT_ADMISSION_KIND};
 
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -19,7 +19,7 @@ use uuid::Uuid;
 use crate::{AuthorityCoordinator, AuthorityStamp, CoordinationError};
 
 pub const CONTEXT_KIND: &str = "governance_execution_context";
-const FORMAT: u32 = 2;
+const FORMAT: u32 = 3;
 const MAX_BYTES: usize = 64 * 1024;
 const MAX_EFFECTS: usize = 128;
 const MAX_RESOURCES: usize = 16;
@@ -88,6 +88,8 @@ struct ContextRecord {
     credential_id: String,
     auth_method: String,
     credential_authority: Option<crate::credential::CredentialReference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    representation: Option<crate::workforce::RepresentationBinding>,
     request_digest: String,
     accepted_ceiling_revision: String,
     accepted_effects: Vec<AcceptedEffect>,
@@ -146,6 +148,10 @@ impl VerifiedExecutionContext {
     #[must_use]
     pub fn auth_method(&self) -> &str {
         &self.0.auth_method
+    }
+    #[must_use]
+    pub fn representation(&self) -> Option<&crate::workforce::RepresentationBinding> {
+        self.0.representation.as_ref()
     }
     #[must_use]
     pub fn credential_authority(&self) -> Option<&crate::credential::CredentialReference> {
@@ -270,7 +276,7 @@ impl TrustedContextStore {
         limits: crate::RootBudgetLimits,
         clock: &dyn acteon_time::Clock,
     ) -> Result<VerifiedExecutionContext, ContextError> {
-        self.capture_permitted_inner(admission, permits, limits, clock, None)
+        self.capture_permitted_inner(admission, permits, limits, clock, None, None)
             .await
     }
     /// Capture authority from the exact authenticated credential as well as
@@ -283,9 +289,48 @@ impl TrustedContextStore {
         limits: crate::RootBudgetLimits,
         clock: &dyn acteon_time::Clock,
     ) -> Result<VerifiedExecutionContext, ContextError> {
-        self.capture_permitted_inner(admission, permits, limits, clock, Some(credential))
+        self.capture_permitted_inner(admission, permits, limits, clock, Some(credential), None)
             .await
     }
+    pub async fn capture_represented_permitted_root(
+        &self,
+        admission: RootContextAdmission,
+        permits: &[crate::permit::PermitReference],
+        limits: crate::RootBudgetLimits,
+        clock: &dyn acteon_time::Clock,
+        representation: &crate::workforce::VerifiedRepresentation,
+    ) -> Result<VerifiedExecutionContext, ContextError> {
+        self.capture_permitted_inner(
+            admission,
+            permits,
+            limits,
+            clock,
+            None,
+            Some(representation),
+        )
+        .await
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub async fn capture_represented_credentialed_root(
+        &self,
+        admission: RootContextAdmission,
+        permits: &[crate::permit::PermitReference],
+        credential: crate::credential::CredentialReference,
+        limits: crate::RootBudgetLimits,
+        clock: &dyn acteon_time::Clock,
+        representation: &crate::workforce::VerifiedRepresentation,
+    ) -> Result<VerifiedExecutionContext, ContextError> {
+        self.capture_permitted_inner(
+            admission,
+            permits,
+            limits,
+            clock,
+            Some(credential),
+            Some(representation),
+        )
+        .await
+    }
+    #[allow(clippy::too_many_arguments)]
     async fn capture_permitted_inner(
         &self,
         mut admission: RootContextAdmission,
@@ -293,17 +338,29 @@ impl TrustedContextStore {
         limits: crate::RootBudgetLimits,
         clock: &dyn acteon_time::Clock,
         credential: Option<crate::credential::CredentialReference>,
+        representation: Option<&crate::workforce::VerifiedRepresentation>,
     ) -> Result<VerifiedExecutionContext, ContextError> {
+        if representation.is_some_and(|r| !r.binds(&admission, &limits)) {
+            return Err(ContextError::Verification);
+        }
+        let representation = representation.map(|r| r.binding.clone());
         admission.accepted_ceiling_revision = crate::permit::permit_revision_tag(permits)?;
         let state = self.coordinator.snapshot().await?;
         let now_ms = clock.now().timestamp_millis();
-        crate::permit::validate_root_admission(&state, &admission, permits, &limits, now_ms)?;
+        crate::permit::validate_root_admission_represented(
+            &state,
+            &admission,
+            permits,
+            &limits,
+            now_ms,
+            representation.as_ref(),
+        )?;
         if let Some(reference) = &credential {
             crate::credential::validate_root(&state, &admission, reference, &limits, now_ms)?;
         }
         let stamp = admission.evaluated_authority.clone();
         let context = self
-            .capture_root_inner(admission, now_ms, credential)
+            .capture_root_inner(admission, now_ms, credential, representation)
             .await?;
         self.coordinator
             .create_root_budget(
@@ -378,7 +435,12 @@ impl TrustedContextStore {
     }
 
     fn validate(&self, record: &ContextRecord) -> Result<(), ContextError> {
-        if record.schema_version != FORMAT
+        if (!matches!(record.schema_version, 2 | 3))
+            || (record.schema_version == 2 && record.representation.is_some())
+            || record
+                .representation
+                .as_ref()
+                .is_some_and(|r| !crate::workforce::binding_shape_valid(r, &record.tenant))
             || record.domain != self.domain
             || record.namespace != self.coordinator.key.namespace.as_str()
             || record.tenant != self.coordinator.key.tenant.as_str()
@@ -425,13 +487,14 @@ impl TrustedContextStore {
         admission: RootContextAdmission,
         now_ms: i64,
     ) -> Result<VerifiedExecutionContext, ContextError> {
-        self.capture_root_inner(admission, now_ms, None).await
+        self.capture_root_inner(admission, now_ms, None, None).await
     }
     async fn capture_root_inner(
         &self,
         admission: RootContextAdmission,
         now_ms: i64,
         credential_authority: Option<crate::credential::CredentialReference>,
+        representation: Option<crate::workforce::RepresentationBinding>,
     ) -> Result<VerifiedExecutionContext, ContextError> {
         let record = ContextRecord {
             schema_version: FORMAT,
@@ -445,6 +508,7 @@ impl TrustedContextStore {
             credential_id: admission.credential_id,
             auth_method: admission.auth_method,
             credential_authority,
+            representation,
             accepted_ceiling_revision: admission.accepted_ceiling_revision,
             accepted_effects: admission.accepted_effects,
             deadline_ms: admission.deadline_ms,
@@ -510,6 +574,13 @@ impl TrustedContextStore {
     ) -> Result<VerifiedExecutionContext, ContextError> {
         let mut original = existing.0.clone();
         original.admitted_at_ms = proposed.admitted_at_ms;
+        if matches!(original.schema_version, 2 | 3)
+            && matches!(proposed.schema_version, 2 | 3)
+            && original.representation.is_none()
+            && proposed.representation.is_none()
+        {
+            original.schema_version = proposed.schema_version;
+        }
         if original != *proposed {
             return Err(ContextError::Conflict);
         }
@@ -544,7 +615,7 @@ impl TrustedContextStore {
         }
         let sealed: SealedRecord =
             serde_json::from_str(&encoded).map_err(|_| ContextError::Verification)?;
-        if sealed.schema_version != FORMAT || sealed.tag.len() != 32 {
+        if !matches!(sealed.schema_version, 2 | 3) || sealed.tag.len() != 32 {
             return Err(ContextError::Verification);
         }
         let secret = self
@@ -559,6 +630,9 @@ impl TrustedContextStore {
         let record: ContextRecord =
             serde_json::from_str(&sealed.payload).map_err(|_| ContextError::Verification)?;
         self.validate(&record)?;
+        if record.schema_version != sealed.schema_version {
+            return Err(ContextError::Verification);
+        }
         if record.handle != *handle
             || record.execution_id != binding.execution_id
             || record.principal != binding.principal

@@ -19,11 +19,12 @@ pub mod credential;
 pub mod permit;
 mod scope;
 mod upgrade;
+pub mod workforce;
 pub use budget::{RootBudget, RootBudgetLimits, RootReservation};
 pub use scope::ScopePurpose;
 pub use upgrade::{ScopeUpgradePlan, ScopeUpgradeReport};
 
-const FORMAT: u32 = 8;
+const FORMAT: u32 = 9;
 const MAX_ATTEMPT_RESOURCES: usize = 16;
 const RETRIES: usize = 32;
 const CONTROL_RECORD_RESERVE: usize = 16;
@@ -57,6 +58,16 @@ impl Default for CoordinatorLimits {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AuthorityChange {
+    /// Written only by the reviewed protocol-cutover plan.
+    UpgradeProtocol {
+        from_protocol: u32,
+        to_protocol: u32,
+    },
+    /// Workforce relationship plus its current-time evaluation, in the same CAS as starts.
+    Workforce {
+        mutation: Box<workforce::WorkforceMutation>,
+        recorded_at_ms: i64,
+    },
     /// Only created by trusted virgin-scope reservation, never generic change.
     ReserveScope { purpose: ScopePurpose },
     /// Refuse new starts targeting this exact resource reference.
@@ -165,6 +176,7 @@ pub struct CoordinatorSnapshot {
     pub permits: BTreeMap<String, permit::PermitRecord>,
     pub credentials: BTreeMap<String, credential::CredentialRecord>,
     pub credential_configurations: BTreeMap<String, configuration::CredentialConfigurationRecord>,
+    pub workforce: workforce::WorkforceState,
 }
 
 impl CoordinatorSnapshot {
@@ -175,6 +187,7 @@ impl CoordinatorSnapshot {
             + self.permits.len()
             + self.credentials.len()
             + self.credential_configurations.len()
+            + self.workforce.record_count()
     }
     #[must_use]
     pub fn stamp(&self) -> AuthorityStamp {
@@ -347,6 +360,7 @@ impl AuthorityCoordinator {
             permits: BTreeMap::new(),
             credentials: BTreeMap::new(),
             credential_configurations: BTreeMap::new(),
+            workforce: workforce::WorkforceState::default(),
         };
         let coordinator = Self { store, key };
         let encoded = Self::encode(&initial)?;
@@ -444,7 +458,13 @@ impl AuthorityCoordinator {
             || !self.valid_start_accounting(&state)
             || !self.valid_permit_history(&state)
             || !self.valid_credential_history(&state)
+            || !self.valid_workforce_history(&state)
             || state.changes.values().any(|record| match &record.change {
+                AuthorityChange::UpgradeProtocol {
+                    from_protocol,
+                    to_protocol,
+                } => !matches!(from_protocol, 7 | 8) || *to_protocol != FORMAT,
+                AuthorityChange::Workforce { recorded_at_ms, .. } => *recorded_at_ms < 0,
                 AuthorityChange::ReserveScope { purpose } => !purpose.valid(),
                 AuthorityChange::CloseResource { resource }
                 | AuthorityChange::ReopenResource { resource } => {
@@ -629,7 +649,9 @@ impl AuthorityCoordinator {
                 return Err(CoordinationError::Invalid("subject".into()));
             }
             AuthorityChange::RevokeSubject { .. } => {}
-            AuthorityChange::ReserveScope { .. }
+            AuthorityChange::UpgradeProtocol { .. }
+            | AuthorityChange::Workforce { .. }
+            | AuthorityChange::ReserveScope { .. }
             | AuthorityChange::PublishPermit { .. }
             | AuthorityChange::PublishCredential { .. }
             | AuthorityChange::PublishCredentialConfiguration { .. } => {
@@ -730,7 +752,9 @@ impl AuthorityCoordinator {
                     }
                     record.revoked = true;
                 }
-                AuthorityChange::ReserveScope { .. }
+                AuthorityChange::UpgradeProtocol { .. }
+                | AuthorityChange::Workforce { .. }
+                | AuthorityChange::ReserveScope { .. }
                 | AuthorityChange::PublishPermit { .. }
                 | AuthorityChange::PublishCredential { .. }
                 | AuthorityChange::PublishCredentialConfiguration { .. } => {

@@ -45,6 +45,7 @@ pub mod time_intervals;
 pub mod trace_context;
 pub mod verify;
 pub mod workflows;
+pub mod workforce;
 
 use std::sync::Arc;
 
@@ -189,6 +190,8 @@ pub fn router(state: AppState) -> Router {
 
     let protected = Router::new()
         // Governance: independently declared authenticated operator authority.
+        .route("/v1/workforce", get(workforce::inspect))
+        .route("/v1/workforce/changes", post(workforce::change))
         .route("/v1/governance", get(governance::inspect))
         .route("/v1/governance/permits", post(governance::publish_permit))
         .route("/v1/governance/changes", post(governance::intervene))

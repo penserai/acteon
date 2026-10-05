@@ -192,7 +192,9 @@ public enum PlatformOperation {
     WORKFLOWS_RECORD_CHECKPOINT("POST", "/v1/workflows/executions/{execution_id}/checkpoints", false, new String[]{"execution_id"}),
     WORKFLOWS_SIGNAL_WORKFLOW("POST", "/v1/workflows/executions/{execution_id}/signal/{signal_name}", false, new String[]{"execution_id", "signal_name"}),
     WORKFLOWS_START_CHILD_WORKFLOW("POST", "/v1/workflows/executions/{execution_id}/children", false, new String[]{"execution_id"}),
-    WORKFLOWS_START_WORKFLOW("POST", "/v1/workflows/start", false, new String[]{});
+    WORKFLOWS_START_WORKFLOW("POST", "/v1/workflows/start", false, new String[]{}),
+    WORKFORCE_CHANGE("POST", "/v1/workforce/changes", false, new String[]{}),
+    WORKFORCE_INSPECT("GET", "/v1/workforce", false, new String[]{});
     final String method;
     final String path;
     final boolean text;

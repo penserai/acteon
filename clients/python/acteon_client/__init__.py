@@ -201,6 +201,35 @@ from .workflows import (
 
 __version__ = "0.1.0"
 from .models import CredentialIdentity, PrincipalIdentity
+from .workforce import AgentOwnership as AgentOwnership
+from .workforce import DisbandWorkforceTeam as DisbandWorkforceTeam
+from .workforce import HumanRepresentation as HumanRepresentation
+from .workforce import PublishRepresentedPermit as PublishRepresentedPermit
+from .workforce import PutAgentOwnership as PutAgentOwnership
+from .workforce import PutWorkforceAssignment as PutWorkforceAssignment
+from .workforce import PutWorkforceMandate as PutWorkforceMandate
+from .workforce import PutWorkforceMembership as PutWorkforceMembership
+from .workforce import PutWorkforceTeam as PutWorkforceTeam
+from .workforce import RemoveWorkforceAssignment as RemoveWorkforceAssignment
+from .workforce import RemoveWorkforceMembership as RemoveWorkforceMembership
+from .workforce import RepresentedParty as RepresentedParty
+from .workforce import RevokeWorkforceMandate as RevokeWorkforceMandate
+from .workforce import TeamRef as TeamRef
+from .workforce import TeamRepresentation as TeamRepresentation
+from .workforce import TeamRole as TeamRole
+from .workforce import WorkforceAssignment as WorkforceAssignment
+from .workforce import WorkforceChange as WorkforceChange
+from .workforce import WorkforceChangeRequest as WorkforceChangeRequest
+from .workforce import WorkforceDependency as WorkforceDependency
+from .workforce import WorkforceEntry as WorkforceEntry
+from .workforce import WorkforceManagementBounds as WorkforceManagementBounds
+from .workforce import WorkforceMandateDeclaration as WorkforceMandateDeclaration
+from .workforce import WorkforceMandateView as WorkforceMandateView
+from .workforce import WorkforceMembership as WorkforceMembership
+from .workforce import WorkforcePermitBindingView as WorkforcePermitBindingView
+from .workforce import WorkforceReference as WorkforceReference
+from .workforce import WorkforceScopeView as WorkforceScopeView
+from .workforce import WorkforceTeam as WorkforceTeam
 
 __all__ = [
     "CredentialIdentity",
@@ -372,3 +401,35 @@ __all__ += [
 ]
 
 __all__ += ["GovernanceManagementBounds"]
+
+__all__ += [
+    "TeamRef",
+    "HumanRepresentation",
+    "TeamRepresentation",
+    "RepresentedParty",
+    "TeamRole",
+    "WorkforceReference",
+    "WorkforceDependency",
+    "WorkforceTeam",
+    "WorkforceMembership",
+    "AgentOwnership",
+    "WorkforceAssignment",
+    "WorkforceMandateDeclaration",
+    "WorkforceMandateView",
+    "WorkforceChange",
+    "WorkforceChangeRequest",
+    "PutWorkforceTeam",
+    "DisbandWorkforceTeam",
+    "PutWorkforceMembership",
+    "RemoveWorkforceMembership",
+    "PutAgentOwnership",
+    "PutWorkforceAssignment",
+    "RemoveWorkforceAssignment",
+    "PutWorkforceMandate",
+    "RevokeWorkforceMandate",
+    "PublishRepresentedPermit",
+    "WorkforceEntry",
+    "WorkforceManagementBounds",
+    "WorkforcePermitBindingView",
+    "WorkforceScopeView",
+]

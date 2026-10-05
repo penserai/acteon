@@ -1208,3 +1208,5 @@ export interface PermitReference {
 }
 
 export type * from "./governance"
+
+export type * from "./workforce"

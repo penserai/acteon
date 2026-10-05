@@ -46,13 +46,25 @@ impl IntoResponse for GovernanceApiError {
             .into_response()
     }
 }
-fn authentication(
+pub(super) fn authentication(
     proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
 ) -> Result<AuthenticatedExecutionConfiguration, GovernanceApiError> {
     proof.map(|p| p.0).ok_or(GovernanceApiError(
         StatusCode::UNAUTHORIZED,
         "private_authentication_required",
     ))
+}
+
+pub(super) fn runtime(
+    state: &AppState,
+) -> Result<&crate::execution_authority::ExecutionAuthorityRuntime, GovernanceApiError> {
+    state
+        .execution_authority
+        .as_deref()
+        .ok_or(GovernanceApiError(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "governance_not_configured",
+        ))
 }
 
 #[utoipa::path(get, path = "/v1/governance", tag = "Governance", params(GovernanceQuery),

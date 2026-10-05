@@ -97,7 +97,8 @@ pub enum PermitDenial {
     Limits,
 }
 
-/// Root-only context profile. Delegated/represented authority is not synthesized.
+/// Root context profile with current permits and pinned workforce representation.
+/// Delegated lineage is not synthesized.
 pub struct PermittedAttempt<'a> {
     pub id: &'a str,
     pub context: &'a VerifiedExecutionContext,
@@ -111,7 +112,9 @@ pub struct PermittedAttempt<'a> {
     pub clock: &'a dyn acteon_time::Clock,
 }
 
-pub(crate) fn matches_effect(accepted: &AcceptedEffect, effect: &AcceptedEffect) -> bool {
+/// Compare exact validated effect tuples without wildcard or prefix expansion.
+/// Matching alone does not establish current execution authority.
+pub fn matches_effect(accepted: &AcceptedEffect, effect: &AcceptedEffect) -> bool {
     accepted.operation == effect.operation
         && accepted.resources.len() == effect.resources.len()
         && effect
@@ -225,38 +228,35 @@ impl AuthorityCoordinator {
             {
                 return false;
             }
-            match &event.change {
-                AuthorityChange::PublishPermit { permit } => {
-                    let prior = reconstructed.get(&permit.id);
-                    if !self.valid_permit(permit)
-                        || prior.is_some_and(|p| p.revoked)
-                        || prior.map_or(Some(1), |p| p.permit.revision.checked_add(1))
-                            != Some(permit.revision)
-                        || prior.is_some_and(|p| p.permit.subject != permit.subject)
-                    {
-                        return false;
-                    }
-                    reconstructed.insert(
-                        permit.id.clone(),
-                        PermitRecord {
-                            permit: permit.clone(),
-                            revoked: false,
-                        },
-                    );
+            if let Some(permit) = crate::workforce::published_permit(&event.change) {
+                let prior = reconstructed.get(&permit.id);
+                if !self.valid_permit(permit)
+                    || prior.is_some_and(|p| p.revoked)
+                    || prior.map_or(Some(1), |p| p.permit.revision.checked_add(1))
+                        != Some(permit.revision)
+                    || prior.is_some_and(|p| p.permit.subject != permit.subject)
+                {
+                    return false;
                 }
-                AuthorityChange::RevokePermit {
-                    permit_id,
-                    expected_revision,
-                } => {
-                    let Some(record) = reconstructed.get_mut(permit_id) else {
-                        return false;
-                    };
-                    if record.permit.revision != *expected_revision {
-                        return false;
-                    }
-                    record.revoked = true;
+                reconstructed.insert(
+                    permit.id.clone(),
+                    PermitRecord {
+                        permit: permit.clone(),
+                        revoked: false,
+                    },
+                );
+            } else if let AuthorityChange::RevokePermit {
+                permit_id,
+                expected_revision,
+            } = &event.change
+            {
+                let Some(record) = reconstructed.get_mut(permit_id) else {
+                    return false;
+                };
+                if record.permit.revision != *expected_revision {
+                    return false;
                 }
-                _ => {}
+                record.revoked = true;
             }
         }
         reconstructed == state.permits
@@ -368,6 +368,9 @@ impl AuthorityCoordinator {
                 if !within_issuance(&permit, ceiling, now_ms) {
                     return Err(CoordinationError::PermitDenied(PermitDenial::Effect));
                 }
+            }
+            if crate::workforce::has_representation(&state.workforce, &permit.id) {
+                return Err(CoordinationError::Restricted);
             }
             if let Some(existing) = state.changes.get(change_id) {
                 if existing.change != change
@@ -495,18 +498,14 @@ pub(crate) fn evaluate(
     if root.owner_subject != request.context.principal().id() {
         return Err(deny(PermitDenial::Subject));
     }
+    crate::workforce::evaluate_effect(state, request, root, now_ms)?;
     for reference in request.permits {
         let original = state
             .changes
             .values()
-            .find_map(|event| match &event.change {
-                AuthorityChange::PublishPermit { permit }
-                    if permit.id == reference.id
-                        && permit.revision == reference.accepted_revision =>
-                {
-                    Some(permit)
-                }
-                _ => None,
+            .filter_map(|event| crate::workforce::published_permit(&event.change))
+            .find(|permit| {
+                permit.id == reference.id && permit.revision == reference.accepted_revision
             })
             .ok_or_else(|| deny(PermitDenial::Missing))?;
         if original.subject != *request.context.principal()
@@ -560,12 +559,13 @@ pub(crate) fn evaluate(
     Ok(())
 }
 
-pub(crate) fn validate_root_admission(
+pub(crate) fn validate_root_admission_represented(
     state: &CoordinatorSnapshot,
     admission: &crate::context::RootContextAdmission,
     references: &[PermitReference],
     limits: &RootBudgetLimits,
     now_ms: i64,
+    representation: Option<&crate::workforce::RepresentationBinding>,
 ) -> Result<(), CoordinationError> {
     if state.stamp() != admission.evaluated_authority {
         return Err(CoordinationError::StaleAuthority);
@@ -584,6 +584,17 @@ pub(crate) fn validate_root_admission(
     {
         return Err(CoordinationError::PermitDenied(PermitDenial::Limits));
     }
+    crate::workforce::evaluate_root(state, admission, references, limits, now_ms, representation)?;
+    validate_root_permits(state, admission, references, limits, now_ms)
+}
+
+fn validate_root_permits(
+    state: &CoordinatorSnapshot,
+    admission: &crate::context::RootContextAdmission,
+    references: &[PermitReference],
+    limits: &RootBudgetLimits,
+    now_ms: i64,
+) -> Result<(), CoordinationError> {
     for reference in references {
         let record = state
             .permits
@@ -618,4 +629,57 @@ pub(crate) fn validate_root_admission(
         }
     }
     Ok(())
+}
+
+impl AuthorityCoordinator {
+    /// Intersect a trusted deployment root ceiling with exact current permits
+    /// and the required mandate. This projection is not an execution proof;
+    /// admission and effect registration must still check current authority.
+    pub async fn attenuate_permitted_root_limits(
+        &self,
+        admission: &crate::context::RootContextAdmission,
+        references: &[PermitReference],
+        ceiling: RootBudgetLimits,
+        now_ms: i64,
+    ) -> Result<RootBudgetLimits, CoordinationError> {
+        permit_revision_tag(references)?;
+        let state = self.snapshot().await?;
+        if state.purpose != crate::ScopePurpose::Execution
+            || state.stamp() != admission.evaluated_authority
+        {
+            return Err(CoordinationError::StaleAuthority);
+        }
+        if state
+            .revoked_subjects
+            .contains(admission.binding.principal.id())
+        {
+            return Err(CoordinationError::Restricted);
+        }
+        let mut limits = ceiling;
+        for reference in references {
+            let permit = &state
+                .permits
+                .get(&reference.id)
+                .ok_or(CoordinationError::PermitDenied(PermitDenial::Missing))?
+                .permit;
+            intersect_limits(&mut limits, &permit.limits);
+        }
+        if let Some(mandate) = crate::workforce::required_mandate_limits(&state, references)? {
+            intersect_limits(&mut limits, mandate);
+        }
+        if now_ms < 0
+            || limits.max_units == 0
+            || limits.max_concurrent == 0
+            || limits.deadline_ms <= now_ms
+        {
+            return Err(CoordinationError::PermitDenied(PermitDenial::Limits));
+        }
+        validate_root_permits(&state, admission, references, &limits, now_ms)?;
+        Ok(limits)
+    }
+}
+fn intersect_limits(limits: &mut RootBudgetLimits, ceiling: &RootBudgetLimits) {
+    limits.max_units = limits.max_units.min(ceiling.max_units);
+    limits.max_concurrent = limits.max_concurrent.min(ceiling.max_concurrent);
+    limits.deadline_ms = limits.deadline_ms.min(ceiling.deadline_ms);
 }

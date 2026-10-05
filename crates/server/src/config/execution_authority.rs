@@ -2,7 +2,7 @@
 //! These are trusted operator inputs, never an HTTP authorization payload.
 use std::collections::BTreeSet;
 
-use acteon_core::{PrincipalIdentity, ResourceKind, ResourceRef};
+use acteon_core::{PrincipalIdentity, ResourceKind, ResourceRef, TeamRef};
 use acteon_governance::{RootBudgetLimits, context::AcceptedEffect};
 use serde::{Deserialize, Serialize};
 
@@ -65,6 +65,20 @@ pub struct ExecutionManagerConfig {
     pub can_issue_permits: bool,
     #[serde(default)]
     pub can_intervene: bool,
+    /// Omitted means no workforce management, even for a permit issuer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workforce: Option<WorkforceManagerConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkforceManagerConfig {
+    pub teams: Vec<TeamRef>,
+    pub job_classes: Vec<String>,
+    #[serde(default)]
+    pub can_manage_roster: bool,
+    #[serde(default)]
+    pub can_issue_mandates: bool,
 }
 
 /// A concrete primary action on an actual registered provider. Wildcard routes
@@ -164,6 +178,7 @@ impl ExecutionScopeConfig {
         }
         let mut actors = BTreeSet::new();
         for manager in &self.managers {
+            self.validate_workforce_manager(manager)?;
             if !actors.insert(manager.principal.id())
                 || !self.subjects.contains(&manager.principal)
                 || manager.subjects.is_empty()
@@ -179,7 +194,9 @@ impl ExecutionScopeConfig {
                 || manager.routes.len() > 128
                 || manager.routes.iter().collect::<BTreeSet<_>>().len() != manager.routes.len()
                 || manager.routes.iter().any(|r| !self.routes.contains(r))
-                || (!manager.can_issue_permits && !manager.can_intervene)
+                || (!manager.can_issue_permits
+                    && !manager.can_intervene
+                    && manager.workforce.is_none())
                 || (manager.can_issue_permits && manager.routes.is_empty())
                 || manager.valid_from_ms < self.valid_from_ms
                 || manager.limits.deadline_ms <= manager.valid_from_ms
@@ -191,6 +208,31 @@ impl ExecutionScopeConfig {
             {
                 return Err("execution management exceeds independently declared bounds".into());
             }
+        }
+        Ok(())
+    }
+
+    fn validate_workforce_manager(&self, manager: &ExecutionManagerConfig) -> Result<(), String> {
+        let Some(workforce) = &manager.workforce else {
+            return Ok(());
+        };
+        if workforce.teams.len() > 128
+            || workforce.teams.iter().collect::<BTreeSet<_>>().len() != workforce.teams.len()
+            || workforce.teams.iter().any(|t| t.tenant() != self.tenant)
+            || workforce.job_classes.len() > 128
+            || workforce.job_classes.iter().collect::<BTreeSet<_>>().len()
+                != workforce.job_classes.len()
+            || workforce
+                .job_classes
+                .iter()
+                .any(|c| !manager.routes.iter().any(|r| r.action_type == *c))
+            || (!workforce.can_manage_roster
+                && !workforce.can_issue_mandates
+                && !manager.can_issue_permits)
+            || ((workforce.can_issue_mandates || manager.can_issue_permits)
+                && workforce.job_classes.is_empty())
+        {
+            return Err("workforce management exceeds independently declared bounds".into());
         }
         Ok(())
     }
@@ -286,5 +328,51 @@ mod tests {
         config.validate(("auth-control", "deployment")).unwrap();
         config.scopes[0].historical_effects[0].operation.clear();
         assert!(config.validate(("auth-control", "deployment")).is_err());
+    }
+    #[test]
+    fn workforce_rights_are_explicit_scoped_and_canonical() {
+        let mut configuration = declaration();
+        let scope = &mut configuration.scopes[0];
+        let mut manager: ExecutionManagerConfig = serde_json::from_value(serde_json::json!({
+            "principal":scope.subjects[0], "subjects":scope.subjects,"routes":scope.routes,
+            "valid_from_ms":scope.valid_from_ms, "limits":scope.credential_limits,
+            "can_issue_permits":true,"can_intervene":false
+        }))
+        .unwrap();
+        assert!(
+            serde_json::to_value(&manager)
+                .unwrap()
+                .get("workforce")
+                .is_none()
+        );
+        manager.workforce = Some(WorkforceManagerConfig {
+            teams: vec![TeamRef::new("prod", "acme", "reliability").unwrap()],
+            job_classes: vec!["execute".into()],
+            can_manage_roster: true,
+            can_issue_mandates: true,
+        });
+        scope.managers.push(manager);
+        configuration
+            .validate(("auth-control", "deployment"))
+            .unwrap();
+        for variation in 0..4 {
+            let mut invalid = configuration.clone();
+            let workforce = invalid.scopes[0].managers[0].workforce.as_mut().unwrap();
+            match variation {
+                0 => workforce.teams[0] = TeamRef::new("prod", "foreign", "reliability").unwrap(),
+                1 => workforce.job_classes = vec!["undeclared".into()],
+                2 => workforce.teams.push(workforce.teams[0].clone()),
+                _ => workforce.job_classes.clear(),
+            }
+            assert!(invalid.validate(("auth-control", "deployment")).is_err());
+        }
+        let manager = &mut configuration.scopes[0].managers[0];
+        manager.can_issue_permits = false;
+        manager.routes.clear();
+        manager.workforce.as_mut().unwrap().can_issue_mandates = false;
+        manager.workforce.as_mut().unwrap().job_classes.clear();
+        configuration
+            .validate(("auth-control", "deployment"))
+            .unwrap();
     }
 }

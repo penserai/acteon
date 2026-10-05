@@ -971,6 +971,13 @@ Cancel an active swarm execution run.
 
 ## Explicit execution permits
 
+Independently authorized operators inspect and change workforce relationships
+through `GET /v1/workforce?namespace=...&tenant=...` and
+`POST /v1/workforce/changes`. These endpoints use typed team, membership,
+ownership, assignment, mandate and represented-permit declarations. See
+[Agent workforce](../features/workforce.md) for all change kinds and current
+authority checks.
+
 When the execution-authority deployment profile is enabled, single and batch
 `POST /v1/dispatch` requests select issued permits through
 `x-acteon-execution-permits`, for example:

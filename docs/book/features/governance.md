@@ -133,5 +133,6 @@ These controls govern the qualified immediate execution profile. They do not
 cancel already started external operations or supply compensation. Closure state
 is per exact resource; independently overlapping named closures, drain/pause,
 external cancellation acknowledgments and intervention reconciliation remain
-separate work. Teams, representation mandates, shared delegated funding and
-protected deferred execution are also separate platform capabilities.
+separate work. [Agent workforce](workforce.md) supplies teams and representation
+mandates for this immediate execution profile. Shared delegated funding and
+protected deferred execution remain separate platform capabilities.

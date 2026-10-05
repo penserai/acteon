@@ -125,7 +125,7 @@ source and records the reservation in control history. Execution permits,
 credentials, roots and effect starts cannot share it. Principal revocation
 remains available for offboarding.
 
-Coordinator protocol 8 requires ownership metadata and its matching reservation
+Coordinator protocol 9 requires ownership metadata and its matching reservation
 history. Older records require a reviewed migration that fences old writers and
 preserves outstanding reconciliation obligations. Bootstrap never overwrites
 existing records or silently adopts unclaimed work.
@@ -168,8 +168,10 @@ no client-supplied authority reference is accepted.
 ### Upgrade an existing authority scope
 
 `scope-upgrade` uses the state backend in your configuration and leaves the
-authority record unchanged during preview. It supports protocol 7 and existing
-unclaimed protocol 8 scopes. Stop admission and stop or drain old workers before
+authority record unchanged during preview. It upgrades protocol 7 and protocol 8
+records to protocol 9, and classifies existing unclaimed protocol 9 scopes.
+An already classified protocol 8 scope must retain its original purpose.
+Stop admission and stop or drain old workers before
 cutover; previously registered effects and unresolved work retain their
 reconciliation obligations.
 
@@ -196,7 +198,10 @@ acteon-server -c acteon.toml scope-upgrade \
 The digest binds the observed record and backend CAS version, purpose and audit
 inputs. Any intervening write requires a new preview. The cutover preserves the
 incarnation, permits, credentials, closures, revocations, budgets, spending and
-unresolved attempts, and adds one scope reservation event. It refuses incompatible
+unresolved attempts. A legacy upgrade records an audited protocol-cutover event;
+an unclaimed scope also records its explicit purpose reservation. Protocol 9 adds
+empty workforce state without inventing teams, mandates or represented authority.
+It refuses incompatible
 classification, malformed records and missing authority. It never bootstraps or
 recreates state. For a standalone execution-authority scope, use `--purpose
 execution` and omit `--source-id`; this command does not enable per-effect gateway

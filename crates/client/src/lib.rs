@@ -65,6 +65,8 @@ mod platform;
 mod platform_catalog;
 pub use platform_catalog::PlatformOperation;
 pub mod gcp;
+pub mod workforce;
+pub use workforce::*;
 pub mod governance;
 pub use governance::*;
 pub mod stream;

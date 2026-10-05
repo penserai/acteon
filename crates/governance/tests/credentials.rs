@@ -910,6 +910,7 @@ async fn explicit_cutover_preserves_original_provenance_accounting_and_uncertain
         let original = serde_json::to_value(f.coordinator.snapshot().await.unwrap()).unwrap();
         let mut source = original.clone();
         source["schema_version"] = protocol.into();
+        source.as_object_mut().unwrap().remove("workforce");
         if protocol == 7 {
             source.as_object_mut().unwrap().remove("purpose");
         }

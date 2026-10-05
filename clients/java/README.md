@@ -4,7 +4,7 @@ Java client for the Acteon action gateway.
 
 ## Complete platform API
 
-The generated operation catalog exposes all 191 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, and stream windows. Use an authenticated client and a configured, existing stage for this example:
+The generated operation catalog exposes all 193 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, and stream windows. Use an authenticated client and a configured, existing stage for this example:
 
 ```java
 var status = client.platformRequest(PlatformOperation.BUS_STAGES_STATUS,
@@ -347,3 +347,26 @@ Missing/invalid headers, authorization denials and conflicting replay requests
 preserve their HTTP status in the client's HTTP error type. Permit admission
 refusals can also be returned as a `Failed` action outcome; inspect the outcome.
 Do not generate a new action ID merely to bypass a replay conflict.
+
+## Agent workforce
+
+Typed workforce methods inspect teams, memberships, ownership, assignments and
+mandates, and submit all ten workforce changes. They require independently
+declared workforce management bounds and current operator authentication.
+Public values do not establish representation or caller authority.
+
+```java
+var roster = client.workforce("prod", "acme");
+var receipt = client.changeWorkforce(new Workforce.ChangeRequest(
+    "prod", "acme", "enroll-reliability-1",
+    new Workforce.PutTeam(new Workforce.Team(
+        new Workforce.TeamRef("prod", "acme", "reliability"), 1, "Reliability")),
+    "Establish incident response"));
+```
+
+Import `com.acteon.client.models.Workforce` for the typed models.
+
+Preserve the exact request and change ID after a lost acknowledgment. Mutations
+retain HTTP refusal status and are not automatically retried. See the
+[workforce model and API](https://penserai.github.io/acteon/features/workforce/)
+for represented permits, dependencies, revisions and intervention semantics.

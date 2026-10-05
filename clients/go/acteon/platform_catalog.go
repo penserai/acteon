@@ -195,6 +195,8 @@ const (
 	OpWorkflowsSignalWorkflow             PlatformOperation = "workflows_signal_workflow"
 	OpWorkflowsStartChildWorkflow         PlatformOperation = "workflows_start_child_workflow"
 	OpWorkflowsStartWorkflow              PlatformOperation = "workflows_start_workflow"
+	OpWorkforceChange                     PlatformOperation = "workforce_change"
+	OpWorkforceInspect                    PlatformOperation = "workforce_inspect"
 )
 
 var platformOperations = map[PlatformOperation]platformDescriptor{
@@ -389,4 +391,6 @@ var platformOperations = map[PlatformOperation]platformDescriptor{
 	OpWorkflowsSignalWorkflow:             {"POST", "/v1/workflows/executions/{execution_id}/signal/{signal_name}", []string{"execution_id", "signal_name"}, false},
 	OpWorkflowsStartChildWorkflow:         {"POST", "/v1/workflows/executions/{execution_id}/children", []string{"execution_id"}, false},
 	OpWorkflowsStartWorkflow:              {"POST", "/v1/workflows/start", []string{}, false},
+	OpWorkforceChange:                     {"POST", "/v1/workforce/changes", []string{}, false},
+	OpWorkforceInspect:                    {"GET", "/v1/workforce", []string{}, false},
 }

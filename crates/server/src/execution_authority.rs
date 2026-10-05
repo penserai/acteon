@@ -114,10 +114,10 @@ impl ExecutionProviderRegistry {
                 declaration
                     .managers
                     .sort_by(|a, b| a.principal.id().cmp(b.principal.id()));
-                for manager in &mut declaration.managers {
-                    manager.subjects.sort_by(|a, b| a.id().cmp(b.id()));
-                    manager.routes.sort();
-                }
+                declaration
+                    .managers
+                    .iter_mut()
+                    .for_each(canonicalize_manager);
                 declaration.permits.sort_by(|a, b| a.id.cmp(&b.id));
                 for permit in &mut declaration.permits {
                     permit.routes.sort();
@@ -377,34 +377,77 @@ impl PreparedExecutionScope {
             .ok_or("root deadline overflow")?
             .min(self.declaration.credential_limits.deadline_ms);
         let source = request.authentication.authentication_source();
-        contexts
-            .capture_idempotent_credentialed_root(
-                request.admission_key,
-                RootContextAdmission {
-                    handle: request.handle,
-                    binding: ContextBinding {
-                        execution_id: request.execution_id,
-                        principal: source.principal().clone(),
-                        request_digest,
-                    },
-                    credential_id: request.authentication.credential_reference().id.clone(),
-                    auth_method: source.auth_method().into(),
-                    accepted_ceiling_revision: String::new(), // Derived from exact permits by the store.
-                    accepted_effects: vec![definition.effect],
-                    deadline_ms,
-                    evaluated_authority: stamp,
-                },
+        let mut admission = RootContextAdmission {
+            handle: request.handle,
+            binding: ContextBinding {
+                execution_id: request.execution_id,
+                principal: source.principal().clone(),
+                request_digest,
+            },
+            credential_id: request.authentication.credential_reference().id.clone(),
+            auth_method: source.auth_method().into(),
+            accepted_ceiling_revision: String::new(), // Derived from exact permits by the store.
+            accepted_effects: vec![definition.effect],
+            deadline_ms,
+            evaluated_authority: stamp,
+        };
+        let limits = coordinator
+            .attenuate_permitted_root_limits(
+                &admission,
                 request.permits,
-                request.authentication.credential_reference().clone(),
                 acteon_governance::RootBudgetLimits {
                     max_units: self.declaration.root_max_units,
                     max_concurrent: self.declaration.root_max_concurrent,
                     deadline_ms,
                 },
-                clock,
+                now_ms,
             )
             .await
-            .map_err(|e| format!("root admission denied: {e}"))
+            .map_err(|e| format!("root limits denied: {e}"))?;
+        admission.deadline_ms = limits.deadline_ms;
+        // The initiator is the actual private authentication principal. A public
+        // dispatch cannot claim another human's identity or delegated authority.
+        // Provider jobs use the prepared route's exact action type as job class.
+        let representation = coordinator
+            .evaluate_permit_representation(
+                acteon_governance::workforce::WorkforcePermitAdmission {
+                    permits: request.permits,
+                    initiator: source.principal(),
+                    job_class: &definition.action_type,
+                    admission: &admission,
+                    limits: &limits,
+                    clock,
+                },
+            )
+            .await
+            .map_err(|e| format!("workforce admission denied: {e}"))?;
+        let captured = if let Some(proof) = representation {
+            contexts
+                .capture_idempotent_represented_credentialed_root(
+                    acteon_governance::context::IdempotentRootAdmission {
+                        admission_key: request.admission_key,
+                        admission,
+                        permits: request.permits,
+                        credential: request.authentication.credential_reference().clone(),
+                        limits,
+                        clock,
+                    },
+                    &proof,
+                )
+                .await
+        } else {
+            contexts
+                .capture_idempotent_credentialed_root(
+                    request.admission_key,
+                    admission,
+                    request.permits,
+                    request.authentication.credential_reference().clone(),
+                    limits,
+                    clock,
+                )
+                .await
+        };
+        captured.map_err(|e| format!("root admission denied: {e}"))
     }
 
     #[must_use]
@@ -454,5 +497,14 @@ impl PreparedExecutionScope {
         )
         .await?
         .with_deployment_policy_fingerprint(self.policy_fingerprint.clone()))
+    }
+}
+
+fn canonicalize_manager(manager: &mut crate::config::ExecutionManagerConfig) {
+    manager.subjects.sort_by(|a, b| a.id().cmp(b.id()));
+    manager.routes.sort();
+    if let Some(workforce) = &mut manager.workforce {
+        workforce.teams.sort();
+        workforce.job_classes.sort();
     }
 }

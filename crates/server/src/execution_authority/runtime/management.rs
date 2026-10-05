@@ -1,4 +1,5 @@
 //! Management from original private authentication and independent deployment policy.
+mod workforce;
 use super::{ExecutionAuthorityRuntime, InstalledScope};
 use crate::{
     auth::projection::AuthenticatedExecutionConfiguration, config::ExecutionManagerConfig,

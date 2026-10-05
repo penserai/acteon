@@ -591,3 +591,68 @@ async fn independent_redis_context_capture_and_recovery() {
         .await
         .unwrap();
 }
+
+#[tokio::test]
+async fn legacy_actor_contexts_replay_without_gaining_workforce_representation() {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    let (store, _, contexts, admission) = fixture().await;
+    contexts.capture_root(admission.clone(), 100).await.unwrap();
+    let storage_key = record_key(&admission.handle);
+    let original = store.get(&storage_key).await.unwrap().unwrap();
+    let mut envelope: serde_json::Value = serde_json::from_str(&original).unwrap();
+    let mut payload: serde_json::Value =
+        serde_json::from_str(envelope["payload"].as_str().unwrap()).unwrap();
+    payload["schema_version"] = 2.into();
+    envelope["schema_version"] = 2.into();
+    let seal = |envelope: &mut serde_json::Value, payload: &serde_json::Value| {
+        let encoded = payload.to_string();
+        let mut mac = Hmac::<Sha256>::new_from_slice(&[1; 32]).unwrap();
+        mac.update(encoded.as_bytes());
+        envelope["payload"] = encoded.into();
+        envelope["tag"] = serde_json::to_value(mac.finalize().into_bytes().to_vec()).unwrap();
+    };
+    seal(&mut envelope, &payload);
+    store
+        .set(&storage_key, &envelope.to_string(), None)
+        .await
+        .unwrap();
+    let recovered = contexts
+        .recover(&admission.handle, &admission.binding, 200)
+        .await
+        .unwrap();
+    assert_eq!(recovered.principal(), &admission.binding.principal);
+    assert!(recovered.representation().is_none());
+    let replay = contexts.capture_root(admission.clone(), 100).await.unwrap();
+    assert_eq!(replay.execution_id(), recovered.execution_id());
+    assert!(replay.representation().is_none());
+    envelope["schema_version"] = 3.into();
+    store
+        .set(&storage_key, &envelope.to_string(), None)
+        .await
+        .unwrap();
+    assert!(matches!(
+        contexts
+            .recover(&admission.handle, &admission.binding, 200)
+            .await,
+        Err(ContextError::Verification)
+    ));
+    envelope["schema_version"] = 2.into();
+    payload["representation"] = serde_json::json!({
+        "mandate": {"id": "invented-mandate", "accepted_revision": 1},
+        "initiator": {"id": "maya", "kind": "human"},
+        "represented": {"kind": "human", "principal": {"id": "maya", "kind": "human"}},
+        "job_class": "diagnose", "ownership": null, "dependencies": []
+    });
+    seal(&mut envelope, &payload);
+    store
+        .set(&storage_key, &envelope.to_string(), None)
+        .await
+        .unwrap();
+    assert!(matches!(
+        contexts
+            .recover(&admission.handle, &admission.binding, 200)
+            .await,
+        Err(ContextError::Verification)
+    ));
+}

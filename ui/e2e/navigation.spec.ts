@@ -227,3 +227,64 @@ test('governance keeps scoped operator authority and confirms closures', async (
   expect(publications[0].change_id).toBe(publications[1].change_id)
   await page.screenshot({ path: test.info().outputPath('governance.png'), fullPage: true, animations: 'disabled' })
 })
+
+test('workforce preserves a reviewed request through manual retry and offboarding', async ({ page }) => {
+  const { readFileSync } = await import('node:fs')
+  const fixture = JSON.parse(readFileSync(new URL('../../clients/contract-fixtures/workforce-management.json', import.meta.url), 'utf8'))
+  const view = structuredClone(fixture.scope)
+  view.management.limits.max_units = 2
+  view.management.limits.deadline_ms = 4000000000000
+  const changes: Record<string, unknown>[] = []
+  let failOnce = true
+  await page.addInitScript(() => localStorage.setItem('acteon-token', 'workforce-ui-key'))
+  await page.route('**/v1/workforce**', async route => {
+    expect(route.request().headers()['authorization']).toBe('Bearer workforce-ui-key')
+    if (route.request().method() === 'GET') {
+      const url = new URL(route.request().url())
+      expect(url.searchParams.get('namespace')).toBe('prod')
+      expect(url.searchParams.get('tenant')).toBe('acme')
+      await route.fulfill({ json: view }); return
+    }
+    const body = route.request().postDataJSON()
+    changes.push(body)
+    if (failOnce) { failOnce = false; await route.fulfill({ status: 503, json: { error: 'unavailable' } }); return }
+    if (body.change.kind === 'put_team') view.teams[0].value = body.change.team
+    if (body.change.kind === 'remove_membership') view.memberships[0].revoked = true
+    await route.fulfill({ json: { ...fixture.receipt, change_id: body.change_id, reason: body.reason, generation: 20 } })
+  })
+  await page.goto('/workforce')
+  await page.getByLabel('Namespace', { exact: true }).fill('prod')
+  await page.getByLabel('Tenant', { exact: true }).fill('acme')
+  await page.getByRole('button', { name: 'Inspect workforce' }).click()
+  await expect(page.getByRole('heading', { name: 'Teams', exact: true })).toBeVisible()
+  await page.getByLabel('Team', { exact: true }).selectOption(JSON.stringify(fixture.scope.management.teams[0]))
+  await page.getByLabel('Team name', { exact: true }).fill('Reliability Operations')
+  await page.getByRole('button', { name: 'Review workforce record' }).click()
+  await page.getByLabel('Reason', { exact: true }).fill('Rename the incident response team')
+  await page.getByRole('button', { name: 'Apply change', exact: true }).click()
+  await expect(page.getByRole('alert').filter({ hasText: '503' })).toBeVisible()
+  await expect(page.getByLabel('Reason', { exact: true })).toBeDisabled()
+  expect(changes).toHaveLength(1)
+  await page.getByRole('button', { name: 'Retry same change', exact: true }).click()
+  await expect(page.getByRole('status').filter({ hasText: 'Workforce change recorded' })).toBeVisible()
+  expect(changes).toHaveLength(2)
+  expect(changes[1]).toEqual(changes[0])
+  expect(changes[0]).toMatchObject({ namespace: 'prod', tenant: 'acme', change: {
+    kind: 'put_team', team: { team: fixture.scope.management.teams[0], revision: 2, name: 'Reliability Operations' } } })
+  await page.getByLabel('Mandate', { exact: true }).selectOption('maya-team')
+  await page.getByLabel('Permit ID', { exact: true }).fill('bounded-permit')
+  await page.getByRole('button', { name: 'Review represented permit' }).click()
+  await page.getByLabel('Reason', { exact: true }).fill('Authorize bounded incident work')
+  await page.getByRole('button', { name: 'Apply change', exact: true }).click()
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  expect(changes[2]).toMatchObject({ change: { kind: 'publish_represented_permit',
+    permit: { subject: { id: 'agent/maya', kind: 'agent' }, limits: { max_units: 2, max_concurrent: 1, deadline_ms: 4000000000000 } },
+    mandate: { id: 'maya-team', accepted_revision: 1 } } })
+  await page.getByRole('button', { name: 'Remove membership', exact: true }).click()
+  await page.getByLabel('Reason', { exact: true }).fill('End this team assignment')
+  await page.getByRole('button', { name: 'Apply change', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Removed', exact: true })).toBeDisabled()
+  expect(changes[3]).toMatchObject({ change: { kind: 'remove_membership', id: 'maya-reliability', expected_revision: 1 } })
+  await page.screenshot({ path: test.info().outputPath('workforce.png'), fullPage: true, animations: 'disabled' })
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+})
