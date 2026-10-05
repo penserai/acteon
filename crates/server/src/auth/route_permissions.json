@@ -1180,5 +1180,17 @@
     "method": "POST",
     "path": "/v1/workflows/start",
     "permission": "OperationsManage"
+  },
+  {
+    "name": "workforce_change",
+    "method": "POST",
+    "path": "/v1/workforce/changes",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "workforce_inspect",
+    "method": "GET",
+    "path": "/v1/workforce",
+    "permission": "OperationsManage"
   }
 ]

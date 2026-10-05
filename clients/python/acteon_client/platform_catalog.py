@@ -194,6 +194,8 @@ class PlatformOperation(StrEnum):
     WORKFLOWS_SIGNAL_WORKFLOW = "workflows_signal_workflow"
     WORKFLOWS_START_CHILD_WORKFLOW = "workflows_start_child_workflow"
     WORKFLOWS_START_WORKFLOW = "workflows_start_workflow"
+    WORKFORCE_CHANGE = "workforce_change"
+    WORKFORCE_INSPECT = "workforce_inspect"
 
 
 OPERATIONS = {
@@ -928,4 +930,6 @@ OPERATIONS = {
         "json",
     ),
     PlatformOperation.WORKFLOWS_START_WORKFLOW: ("POST", "/v1/workflows/start", (), "json"),
+    PlatformOperation.WORKFORCE_CHANGE: ("POST", "/v1/workforce/changes", (), "json"),
+    PlatformOperation.WORKFORCE_INSPECT: ("GET", "/v1/workforce", (), "json"),
 }

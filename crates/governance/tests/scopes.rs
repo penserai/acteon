@@ -461,6 +461,7 @@ async fn malformed_legacy_cutovers_never_rewrite_or_bootstrap_authority() {
         publish(&c, "auth-source").await.unwrap();
         let mut value = serde_json::to_value(c.snapshot().await.unwrap()).unwrap();
         value["schema_version"] = 7.into();
+        value.as_object_mut().unwrap().remove("workforce");
         value.as_object_mut().unwrap().remove("purpose");
         let mut raw = value.to_string();
         match mutation {

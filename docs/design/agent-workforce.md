@@ -1,8 +1,11 @@
 # Agent workforce: people, teams and their agents
 
-**Status:** proposed organizational model for the [governed-city design](governed-agent-city.md).
-Existing stable principal bindings identify the actual actor. They do not yet
-implement teams, agent ownership or representation mandates.
+**Status:** implementation in progress for the [governed-city design](governed-agent-city.md).
+The current working tree implements scoped teams, memberships, agent ownership,
+assignments, representation mandates and permit bindings, with authenticated
+management APIs, all five client SDKs and an operator UI. This is not publication
+evidence. Shared funding, descendant delegation and autonomous discovery remain
+separate phases; later sections describe the full target model.
 
 ## Product definition
 
@@ -141,6 +144,21 @@ owns an issuance ceiling and mandate; verified representation derives a bounded
 permit for that actor. Team ownership or membership is never a wildcard subject
 match. Direct human team work uses a membership-backed permit and records the
 represented team through the same model, without treating the human as an agent.
+
+## State persistence
+
+Workforce authority uses Acteon's configured `StateStore`: teams, memberships,
+ownership, assignments, mandates and represented permit bindings participate in
+the governance coordinator's versioned compare-and-set protocol. Signed execution
+contexts and admission records use the same backend. Redis is an optional backend,
+not a separate workforce registry or a deployment prerequisite.
+
+Backend qualification must demonstrate independent replicas observing the same
+revocations, preserving original context across reconnects, and refusing effects
+after offboarding. A backend that cannot provide the required coordination
+semantics must fail qualification rather than substitute process-local authority.
+The first implementation is scoped to one coordinator namespace and tenant;
+cross-scope organization changes require an explicit coordination protocol.
 
 ## Personal agents
 

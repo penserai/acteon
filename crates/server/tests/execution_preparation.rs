@@ -748,6 +748,7 @@ async fn legacy_control_fixture(state: &Arc<dyn StateStore>) -> (acteon_state::S
         .unwrap();
     let mut legacy = serde_json::to_value(coordinator.snapshot().await.unwrap()).unwrap();
     legacy["schema_version"] = 7.into();
+    legacy.as_object_mut().unwrap().remove("workforce");
     legacy.as_object_mut().unwrap().remove("purpose");
     let key = StateKey::new(
         "legacy-control",
@@ -1204,6 +1205,7 @@ fn manager_intervention_footprints_must_fit_before_authority_publication() {
             limits: scope.credential_limits.clone(),
             can_issue_permits: true,
             can_intervene: false,
+            workforce: None,
         });
     registry
         .prepare(&config, ("auth-control", "deployment"), &[8; 32])
@@ -1220,4 +1222,337 @@ fn manager_intervention_footprints_must_fit_before_authority_publication() {
     registry
         .prepare(&config, ("auth-control", "deployment"), &[8; 32])
         .unwrap();
+}
+
+#[tokio::test]
+async fn authenticated_provider_jobs_pin_representation_and_refuse_revoked_mandates() {
+    let state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    authenticated_workforce_contract(state.clone(), state).await;
+}
+
+async fn authenticated_workforce_contract(state: Arc<dyn StateStore>, peer: Arc<dyn StateStore>) {
+    use acteon_core::{
+        AgentOwnership, RepresentedParty, TeamRef, WorkforceReference, WorkforceTeam,
+    };
+    use acteon_governance::context::{
+        ContextSigningKey, ExecutionContextHandle, TrustedContextStore,
+    };
+    use acteon_governance::permit::{ExecutionPermit, PermitReference, PermittedAttempt};
+    use acteon_governance::workforce::{
+        RepresentationMandate, WorkforceManagementAuthorization, WorkforceManagementCeiling,
+        WorkforceMutation,
+    };
+    use acteon_governance::{CoordinationError, RootBudgetLimits};
+    let (registry, actual) = registry();
+    let config = configuration();
+    let original = registry
+        .prepare(&config, ("auth-control", "deployment"), &[8; 32])
+        .unwrap();
+    let control = AuthorityCoordinator::initialize(
+        state.clone(),
+        "auth-control",
+        "deployment",
+        CoordinatorLimits::default(),
+    )
+    .await
+    .unwrap();
+    let scope = AuthorityCoordinator::initialize(
+        state.clone(),
+        "prod",
+        "acme",
+        CoordinatorLimits::default(),
+    )
+    .await
+    .unwrap();
+    let authority = AuthAuthority::new(
+        control,
+        &AuthAuthorityConfig {
+            namespace: "auth-control".into(),
+            tenant: "deployment".into(),
+            source_id: "deployment-auth".into(),
+            bootstrap: false,
+        },
+        SecretString::new("shared-security-fingerprint-key-32-bytes".into()),
+    )
+    .unwrap();
+    let auth = AuthFileConfig {
+        authority_revision: Some(1),
+        settings: AuthSettings {
+            jwt_secret: SecretString::new("jwt-signing-key-at-least-32-bytes".into()),
+            jwt_expiry_seconds: 3600,
+        },
+        users: Vec::new(),
+        api_keys: vec![ApiKeyConfig {
+            authority_id: Some("credential/maya".into()),
+            name: "maya".into(),
+            principal: Some(config.scopes[0].subjects[0].clone()),
+            key_hash: SecretString::new(hash_api_key("maya-secret").into()),
+            role: "executor".into(),
+            grants: vec![Grant {
+                namespaces: vec!["prod".into()],
+                tenants: vec!["acme".into()],
+                providers: vec!["incident".into()],
+                actions: vec!["execute".into()],
+                agent_id: None,
+            }],
+        }],
+    };
+    let authority = Arc::new(authority);
+    let projector = Arc::new(original[0].projector(scope.clone()).await.unwrap());
+    let provider = Arc::new(
+        AuthProvider::new_with_scope_projection(
+            &auth,
+            state.clone(),
+            authority.clone(),
+            vec![projector],
+        )
+        .await
+        .unwrap(),
+    );
+    let old_binding = authenticated_binding(provider).await;
+
+    let actor = config.scopes[0].subjects[0].clone();
+    let manager = PrincipalIdentity::new("workforce-manager", PrincipalKind::Human).unwrap();
+    let team = TeamRef::new("prod", "acme", "reliability").unwrap();
+    let effect = original[0].catalog().definitions("prod", "acme")[0]
+        .effect
+        .clone();
+    let limits = RootBudgetLimits {
+        max_units: 5,
+        max_concurrent: 1,
+        deadline_ms: 4_102_444_800_000,
+    };
+    let ceiling = WorkforceManagementCeiling {
+        actor: manager,
+        teams: vec![team.clone()],
+        principals: vec![actor.clone()],
+        job_classes: vec!["execute".into()],
+        effects: vec![effect.clone()],
+        valid_from_ms: 0,
+        limits: limits.clone(),
+        can_manage_roster: true,
+        can_issue_mandates: true,
+        can_issue_permits: true,
+    };
+    let clock = acteon_time::SystemClock::default();
+    let mandate_ref = WorkforceReference {
+        id: "standing-investigation".into(),
+        accepted_revision: 1,
+    };
+    let grant_deadline = chrono::Utc::now().timestamp_millis() + 30_000;
+    let mandate = RepresentationMandate {
+        id: mandate_ref.id.clone(),
+        revision: 1,
+        represented: RepresentedParty::Team { team: team.clone() },
+        actor: actor.clone(),
+        job_class: "execute".into(),
+        eligible_initiators: vec![actor.clone()],
+        ownership: Some(WorkforceReference {
+            id: actor.id().into(),
+            accepted_revision: 1,
+        }),
+        dependencies: vec![],
+        effects: vec![effect.clone()],
+        valid_from_ms: 0,
+        limits: RootBudgetLimits {
+            max_units: 2,
+            max_concurrent: 1,
+            deadline_ms: grant_deadline,
+        },
+    };
+    let permit = ExecutionPermit {
+        id: "standing-investigation-permit".into(),
+        revision: 1,
+        subject: actor.clone(),
+        effects: vec![effect.clone()],
+        valid_from_ms: 0,
+        limits: RootBudgetLimits {
+            max_units: 1,
+            max_concurrent: 1,
+            deadline_ms: grant_deadline,
+        },
+    };
+    let mutations = vec![
+        WorkforceMutation::PutTeam {
+            team: WorkforceTeam {
+                team: team.clone(),
+                revision: 1,
+                name: "Reliability".into(),
+            },
+        },
+        WorkforceMutation::PutOwnership {
+            ownership: AgentOwnership {
+                agent: actor.clone(),
+                revision: 1,
+                owner: RepresentedParty::Team { team: team.clone() },
+            },
+        },
+        WorkforceMutation::PutMandate { mandate },
+        WorkforceMutation::PublishRepresentedPermit {
+            permit: permit.clone(),
+            mandate: mandate_ref.clone(),
+        },
+    ];
+    for (index, mutation) in mutations.into_iter().enumerate() {
+        scope
+            .change_workforce(
+                &format!("setup-{index}"),
+                mutation,
+                "reviewed",
+                WorkforceManagementAuthorization {
+                    ceiling: &ceiling,
+                    evaluated_authority: &scope.snapshot().await.unwrap().stamp(),
+                    clock: &clock,
+                },
+            )
+            .await
+            .unwrap();
+    }
+    let contexts = TrustedContextStore::new(
+        state.clone(),
+        scope.clone(),
+        "test-execution".into(),
+        "key-v1".into(),
+        vec![ContextSigningKey::new("key-v1".into(), vec![9; 32]).unwrap()],
+    )
+    .unwrap();
+    let action = Action::new(
+        "prod",
+        "acme",
+        "incident",
+        "execute",
+        json!({
+            "initiator": {"id": "another-human", "kind": "human"},
+            "represented": {"kind": "team", "team": "release"},
+            "job_class": "override", "mandate": "forged"
+        }),
+    );
+    let permits = vec![PermitReference {
+        id: permit.id,
+        accepted_revision: 1,
+    }];
+    let request = || RootExecutionRequest {
+        admission_key: "represented-incident",
+        handle: ExecutionContextHandle::new(),
+        execution_id: uuid::Uuid::new_v4(),
+        action: &action,
+        selected: &actual,
+        authentication: &old_binding,
+        permits: &permits,
+    };
+    let admitted = original[0]
+        .capture_root(request(), &scope, &contexts, &clock)
+        .await
+        .unwrap();
+    assert_eq!(admitted.principal(), &actor);
+    let accepted_limits = scope.snapshot().await.unwrap().roots
+        [&admitted.execution_id().to_string()]
+        .limits
+        .clone();
+    assert_eq!(accepted_limits.max_units, 1);
+    assert_eq!(accepted_limits.max_concurrent, 1);
+    assert_eq!(accepted_limits.deadline_ms, grant_deadline);
+    let peer_contexts = TrustedContextStore::new(
+        peer.clone(),
+        AuthorityCoordinator::connect(peer, "prod", "acme")
+            .await
+            .unwrap(),
+        "test-execution".into(),
+        "key-v1".into(),
+        vec![ContextSigningKey::new("key-v1".into(), vec![9; 32]).unwrap()],
+    )
+    .unwrap();
+    let recovered = peer_contexts
+        .recover_reference(
+            &admitted.reference().unwrap(),
+            chrono::Utc::now().timestamp_millis(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(recovered.representation(), admitted.representation());
+    let represented = admitted.representation().unwrap();
+    assert_eq!(represented.initiator, actor);
+    assert_eq!(represented.represented, RepresentedParty::Team { team });
+    assert_eq!(represented.job_class, "execute");
+    assert_eq!(represented.mandate, mandate_ref);
+    let retry = original[0]
+        .capture_root(request(), &scope, &contexts, &clock)
+        .await
+        .unwrap();
+    assert_eq!(retry.execution_id(), admitted.execution_id());
+    assert_eq!(retry.representation(), admitted.representation());
+    assert_eq!(
+        scope.snapshot().await.unwrap().roots[&retry.execution_id().to_string()].limits,
+        accepted_limits
+    );
+    assert_eq!(scope.snapshot().await.unwrap().roots.len(), 1);
+    scope
+        .change_workforce(
+            "revoke-mandate",
+            WorkforceMutation::RevokeMandate {
+                id: mandate_ref.id,
+                expected_revision: 1,
+            },
+            "withdraw standing duty",
+            WorkforceManagementAuthorization {
+                ceiling: &ceiling,
+                evaluated_authority: &scope.snapshot().await.unwrap().stamp(),
+                clock: &clock,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        original[0]
+            .capture_root(request(), &scope, &contexts, &clock)
+            .await
+            .is_err()
+    );
+    let digest = acteon_executor::governed::governed_provider_input_digest(&action).unwrap();
+    assert!(matches!(
+        scope
+            .register_permitted_attempt(PermittedAttempt {
+                id: "after-revocation",
+                context: &admitted,
+                permits: &permits,
+                effect: &effect,
+                request_digest: &digest,
+                units: 1,
+                clock: &clock,
+            })
+            .await,
+        Err(CoordinationError::Restricted)
+    ));
+    assert_eq!(
+        scope.snapshot().await.unwrap().roots[&admitted.execution_id().to_string()].spent_units,
+        0
+    );
+}
+
+#[cfg(feature = "postgres")]
+#[tokio::test]
+#[ignore = "requires DATABASE_URL; independent PostgreSQL clients"]
+async fn independent_postgres_authenticated_workforce_passes_the_contract() {
+    use acteon_state_postgres::{PostgresConfig, PostgresStateStore};
+    let config = PostgresConfig {
+        url: std::env::var("DATABASE_URL").unwrap(),
+        table_prefix: format!("workforce_admission_{}_", uuid::Uuid::new_v4().simple()),
+        ..Default::default()
+    };
+    authenticated_workforce_contract(
+        Arc::new(PostgresStateStore::new(config.clone()).await.unwrap()),
+        Arc::new(PostgresStateStore::new(config.clone()).await.unwrap()),
+    )
+    .await;
+    let pool = sqlx::PgPool::connect(&config.url).await.unwrap();
+    for suffix in ["state", "locks", "timeout_index", "chain_ready_index"] {
+        sqlx::query(&format!(
+            "DROP TABLE public.{}{suffix}",
+            config.table_prefix
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    pool.close().await;
 }

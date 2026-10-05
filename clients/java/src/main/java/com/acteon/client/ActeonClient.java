@@ -239,6 +239,17 @@ public class ActeonClient implements AutoCloseable {
     // Health
     // =========================================================================
 
+    public Workforce.ScopeView workforce(String namespace, String tenant) throws ActeonException {
+        var node = platformRequest(PlatformOperation.WORKFORCE_INSPECT, null, Map.of("namespace",List.of(namespace),"tenant",List.of(tenant)), null);
+        try { return objectMapper.treeToValue(node, Workforce.ScopeView.class); }
+        catch (IOException e) { throw new ConnectionException("Malformed workforce response",e); }
+    }
+    public Governance.ChangeReceipt changeWorkforce(Workforce.ChangeRequest request) throws ActeonException {
+        var node = platformRequest(PlatformOperation.WORKFORCE_CHANGE, null, null, request);
+        try { return objectMapper.treeToValue(node, Governance.ChangeReceipt.class); }
+        catch (IOException e) { throw new ConnectionException("Malformed workforce response",e); }
+    }
+
     public Governance.ScopeView governance(String namespace, String tenant) throws ActeonException {
         var node = platformRequest(PlatformOperation.GOVERNANCE_INSPECT, null,
             Map.of("namespace", List.of(namespace), "tenant", List.of(tenant)), null);

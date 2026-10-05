@@ -2,7 +2,7 @@
 
 Use Acteon's SDKs to connect agents, services, and workers to the same execution and governance platform. Start with the typed helpers for dispatch, rules, audit, approvals, and bus operations. Use the complete **platform operation API** for controls that do not yet have a dedicated helper in your language.
 
-The current source tree provides a generated catalog for **191 finite HTTP operations** in Rust, Python, TypeScript, Go, and Java. It includes receipt sessions, managed-stage recovery, workflow and execution controls, inference profiles, stream windows, and operator APIs. Six streaming or polymorphic RPC routes use the existing streaming and A2A clients instead. Server configuration, authorization, and optional build features still determine which operations are available on your deployment.
+The current source tree provides a generated catalog for **193 finite HTTP operations** in Rust, Python, TypeScript, Go, and Java. It includes receipt sessions, managed-stage recovery, workflow and execution controls, inference profiles, stream windows, and operator APIs. Six streaming or polymorphic RPC routes use the existing streaming and A2A clients instead. Server configuration, authorization, and optional build features still determine which operations are available on your deployment.
 
 ## Choose the right interface
 
@@ -123,3 +123,12 @@ All clients recognize the server's 17 dispatch variants, including `Grouped`, `S
 ## Governance management
 
 All five SDKs expose native typed scope inspection, permit publication, and intervention methods. See [governance management](../features/governance.md) for method names and authority requirements. The shared governance fixture checks request bodies, authentication, typed responses, and HTTP refusal preservation; actual authority enforcement is tested separately against the server and configured state backend.
+
+## Workforce management
+
+Every SDK supplies typed workforce inspection and all ten mutation variants.
+Rust and Python use `workforce`/`change_workforce`; TypeScript and Java use
+`workforce`/`changeWorkforce`; Go uses `Workforce`/`ChangeWorkforce`. Python
+supports both synchronous and asynchronous clients. The shared wire contract
+verifies all variants, scoped authentication, nested record decoding and HTTP
+refusals without mutation retries. See [Agent workforce](../features/workforce.md).

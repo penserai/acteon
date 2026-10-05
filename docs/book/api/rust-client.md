@@ -4,7 +4,7 @@ The `acteon-client` crate provides a native Rust HTTP client for the Acteon API.
 
 ## Complete platform API
 
-The generated operation catalog exposes all 191 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, and stream windows. Use an authenticated client and a configured, existing stage for this example:
+The generated operation catalog exposes all 193 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, and stream windows. Use an authenticated client and a configured, existing stage for this example:
 
 ```rust
 let status = client.platform_request(
@@ -273,3 +273,28 @@ Use `PermitReference { id, accepted_revision }` with `dispatch_with_permits` or
 The client sends references in the permit header, separate from action metadata,
 while retaining its configured credentials. See [Execution permits](../features/execution-permits.md)
 for current backend, route and replay guarantees.
+
+## Agent workforce
+
+Typed workforce methods inspect teams, memberships, ownership, assignments and
+mandates, and submit all ten workforce changes. They require independently
+declared workforce management bounds and current operator authentication.
+Public values do not establish representation or caller authority.
+
+```rust
+use acteon_client::{WorkforceChange, WorkforceChangeRequest, WorkforceTeam, TeamRef};
+
+let roster = client.workforce("prod", "acme").await?;
+let receipt = client.change_workforce(&WorkforceChangeRequest {
+    namespace: "prod".into(), tenant: "acme".into(),
+    change_id: "enroll-reliability-1".into(), reason: "Establish incident response".into(),
+    change: WorkforceChange::PutTeam { team: WorkforceTeam {
+        team: TeamRef::new("prod", "acme", "reliability")?, revision: 1, name: "Reliability".into(),
+    } },
+}).await?;
+```
+
+Preserve the exact request and change ID after a lost acknowledgment. Mutations
+retain HTTP refusal status and are not automatically retried. See the
+[workforce model and API](https://penserai.github.io/acteon/features/workforce/)
+for represented permits, dependencies, revisions and intervention semantics.

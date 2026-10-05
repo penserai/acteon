@@ -119,6 +119,7 @@ nav:
     - Execution:
       - Execution permits: features/execution-permits.md
       - Governance management: features/governance.md
+      - Agent workforce: features/workforce.md
       - Durable dispatch admission: features/durable-dispatch.md
       - Chains: features/chains.md
       - Sub-chains: features/sub-chains.md
@@ -186,6 +187,7 @@ nav:
   - Guides:
     - guides/index.md
     - Governed city: guides/governed-city.md
+    - Agent workforce: guides/agent-workforce.md
     - Neural observability: guides/neural-observability-detector.md
     - A2A and agent registry: guides/a2a-agent-registry-tutorial.md
     - Agent swarm coordination: guides/agent-swarm-coordination.md

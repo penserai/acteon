@@ -1,0 +1,466 @@
+{
+  "scope": {
+    "namespace": "prod",
+    "tenant": "acme",
+    "incarnation": "7210ea64-4013-4f86-a581-fb2028ba6bc5",
+    "generation": 12,
+    "management": {
+      "teams": [
+        {
+          "domain": "prod",
+          "tenant": "acme",
+          "id": "reliability"
+        }
+      ],
+      "principals": [
+        {
+          "id": "maya",
+          "kind": "human"
+        },
+        {
+          "id": "agent/maya",
+          "kind": "agent"
+        }
+      ],
+      "job_classes": [
+        "execute"
+      ],
+      "can_manage_roster": true,
+      "can_issue_mandates": true,
+      "can_issue_permits": true,
+      "valid_from_ms": 0,
+      "limits": {
+        "max_units": 5,
+        "max_concurrent": 1,
+        "deadline_ms": 4102444800000
+      }
+    },
+    "routes": [
+      {
+        "route": {
+          "provider": "incident",
+          "action_type": "execute"
+        },
+        "effect": {
+          "operation": "provider.execute",
+          "resources": [
+            {
+              "kind": "endpoint",
+              "namespace": "prod",
+              "tenant": "acme",
+              "id": "incident"
+            }
+          ]
+        },
+        "closed": false
+      }
+    ],
+    "teams": [
+      {
+        "value": {
+          "team": {
+            "domain": "prod",
+            "tenant": "acme",
+            "id": "reliability"
+          },
+          "revision": 1,
+          "name": "Reliability"
+        },
+        "revoked": false
+      }
+    ],
+    "memberships": [
+      {
+        "value": {
+          "id": "maya-reliability",
+          "revision": 1,
+          "team": {
+            "domain": "prod",
+            "tenant": "acme",
+            "id": "reliability"
+          },
+          "human": {
+            "id": "maya",
+            "kind": "human"
+          },
+          "roles": [
+            "requester"
+          ],
+          "valid_from_ms": 0,
+          "deadline_ms": 4102444800000
+        },
+        "revoked": false
+      }
+    ],
+    "ownership": [
+      {
+        "value": {
+          "agent": {
+            "id": "agent/maya",
+            "kind": "agent"
+          },
+          "revision": 1,
+          "owner": {
+            "kind": "human",
+            "principal": {
+              "id": "maya",
+              "kind": "human"
+            }
+          }
+        },
+        "revoked": false
+      }
+    ],
+    "assignments": [
+      {
+        "value": {
+          "id": "maya-duty",
+          "revision": 1,
+          "team": {
+            "domain": "prod",
+            "tenant": "acme",
+            "id": "reliability"
+          },
+          "agent": {
+            "id": "agent/maya",
+            "kind": "agent"
+          },
+          "job_classes": [
+            "execute"
+          ],
+          "valid_from_ms": 0,
+          "deadline_ms": 4102444800000
+        },
+        "revoked": false
+      }
+    ],
+    "mandates": [
+      {
+        "value": {
+          "id": "maya-team",
+          "revision": 1,
+          "represented": {
+            "kind": "team",
+            "team": {
+              "domain": "prod",
+              "tenant": "acme",
+              "id": "reliability"
+            }
+          },
+          "actor": {
+            "id": "agent/maya",
+            "kind": "agent"
+          },
+          "job_class": "execute",
+          "eligible_initiators": [
+            {
+              "id": "agent/maya",
+              "kind": "agent"
+            }
+          ],
+          "ownership": {
+            "id": "agent/maya",
+            "accepted_revision": 1
+          },
+          "dependencies": [
+            {
+              "kind": "membership",
+              "reference": {
+                "id": "maya-reliability",
+                "accepted_revision": 1
+              }
+            },
+            {
+              "kind": "assignment",
+              "reference": {
+                "id": "maya-duty",
+                "accepted_revision": 1
+              }
+            }
+          ],
+          "valid_from_ms": 0,
+          "limits": {
+            "max_units": 5,
+            "max_concurrent": 1,
+            "deadline_ms": 4102444800000
+          },
+          "effects": [
+            {
+              "operation": "provider.execute",
+              "resources": [
+                {
+                  "kind": "endpoint",
+                  "namespace": "prod",
+                  "tenant": "acme",
+                  "id": "incident"
+                }
+              ]
+            }
+          ]
+        },
+        "revoked": false
+      }
+    ],
+    "permit_bindings": [
+      {
+        "permit_id": "represented-maya",
+        "permit_revision": 1,
+        "mandate": {
+          "id": "maya-team",
+          "accepted_revision": 1
+        }
+      }
+    ]
+  },
+  "changes": [
+    {
+      "namespace": "prod",
+      "tenant": "acme",
+      "change_id": "wire-0",
+      "change": {
+        "kind": "put_team",
+        "team": {
+          "team": {
+            "domain": "prod",
+            "tenant": "acme",
+            "id": "reliability"
+          },
+          "revision": 1,
+          "name": "Reliability"
+        }
+      },
+      "reason": "reviewed"
+    },
+    {
+      "namespace": "prod",
+      "tenant": "acme",
+      "change_id": "wire-1",
+      "change": {
+        "kind": "disband_team",
+        "team": {
+          "domain": "prod",
+          "tenant": "acme",
+          "id": "reliability"
+        },
+        "expected_revision": 1
+      },
+      "reason": "reviewed"
+    },
+    {
+      "namespace": "prod",
+      "tenant": "acme",
+      "change_id": "wire-2",
+      "change": {
+        "kind": "put_membership",
+        "membership": {
+          "id": "maya-reliability",
+          "revision": 1,
+          "team": {
+            "domain": "prod",
+            "tenant": "acme",
+            "id": "reliability"
+          },
+          "human": {
+            "id": "maya",
+            "kind": "human"
+          },
+          "roles": [
+            "requester"
+          ],
+          "valid_from_ms": 0,
+          "deadline_ms": 4102444800000
+        }
+      },
+      "reason": "reviewed"
+    },
+    {
+      "namespace": "prod",
+      "tenant": "acme",
+      "change_id": "wire-3",
+      "change": {
+        "kind": "remove_membership",
+        "id": "maya-reliability",
+        "expected_revision": 1
+      },
+      "reason": "reviewed"
+    },
+    {
+      "namespace": "prod",
+      "tenant": "acme",
+      "change_id": "wire-4",
+      "change": {
+        "kind": "put_ownership",
+        "ownership": {
+          "agent": {
+            "id": "agent/maya",
+            "kind": "agent"
+          },
+          "revision": 1,
+          "owner": {
+            "kind": "human",
+            "principal": {
+              "id": "maya",
+              "kind": "human"
+            }
+          }
+        }
+      },
+      "reason": "reviewed"
+    },
+    {
+      "namespace": "prod",
+      "tenant": "acme",
+      "change_id": "wire-5",
+      "change": {
+        "kind": "put_assignment",
+        "assignment": {
+          "id": "maya-duty",
+          "revision": 1,
+          "team": {
+            "domain": "prod",
+            "tenant": "acme",
+            "id": "reliability"
+          },
+          "agent": {
+            "id": "agent/maya",
+            "kind": "agent"
+          },
+          "job_classes": [
+            "execute"
+          ],
+          "valid_from_ms": 0,
+          "deadline_ms": 4102444800000
+        }
+      },
+      "reason": "reviewed"
+    },
+    {
+      "namespace": "prod",
+      "tenant": "acme",
+      "change_id": "wire-6",
+      "change": {
+        "kind": "remove_assignment",
+        "id": "maya-duty",
+        "expected_revision": 1
+      },
+      "reason": "reviewed"
+    },
+    {
+      "namespace": "prod",
+      "tenant": "acme",
+      "change_id": "wire-7",
+      "change": {
+        "kind": "put_mandate",
+        "mandate": {
+          "id": "maya-team",
+          "revision": 1,
+          "represented": {
+            "kind": "team",
+            "team": {
+              "domain": "prod",
+              "tenant": "acme",
+              "id": "reliability"
+            }
+          },
+          "actor": {
+            "id": "agent/maya",
+            "kind": "agent"
+          },
+          "job_class": "execute",
+          "eligible_initiators": [
+            {
+              "id": "agent/maya",
+              "kind": "agent"
+            }
+          ],
+          "ownership": {
+            "id": "agent/maya",
+            "accepted_revision": 1
+          },
+          "dependencies": [
+            {
+              "kind": "membership",
+              "reference": {
+                "id": "maya-reliability",
+                "accepted_revision": 1
+              }
+            },
+            {
+              "kind": "assignment",
+              "reference": {
+                "id": "maya-duty",
+                "accepted_revision": 1
+              }
+            }
+          ],
+          "routes": [
+            {
+              "provider": "incident",
+              "action_type": "execute"
+            }
+          ],
+          "valid_from_ms": 0,
+          "limits": {
+            "max_units": 5,
+            "max_concurrent": 1,
+            "deadline_ms": 4102444800000
+          }
+        }
+      },
+      "reason": "reviewed"
+    },
+    {
+      "namespace": "prod",
+      "tenant": "acme",
+      "change_id": "wire-8",
+      "change": {
+        "kind": "revoke_mandate",
+        "id": "maya-team",
+        "expected_revision": 1
+      },
+      "reason": "reviewed"
+    },
+    {
+      "namespace": "prod",
+      "tenant": "acme",
+      "change_id": "wire-9",
+      "change": {
+        "kind": "publish_represented_permit",
+        "permit": {
+          "id": "represented-maya",
+          "revision": 1,
+          "subject": {
+            "id": "agent/maya",
+            "kind": "agent"
+          },
+          "routes": [
+            {
+              "provider": "incident",
+              "action_type": "execute"
+            }
+          ],
+          "valid_from_ms": 0,
+          "limits": {
+            "max_units": 5,
+            "max_concurrent": 1,
+            "deadline_ms": 4102444800000
+          }
+        },
+        "mandate": {
+          "id": "maya-team",
+          "accepted_revision": 1
+        }
+      },
+      "reason": "reviewed"
+    }
+  ],
+  "receipt": {
+    "namespace": "prod",
+    "tenant": "acme",
+    "change_id": "road-closure",
+    "reason": "maintenance",
+    "actor": "operator",
+    "generation": 5,
+    "pending": true
+  }
+}

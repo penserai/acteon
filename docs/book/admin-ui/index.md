@@ -32,6 +32,14 @@ View server configuration, manage providers and circuit breakers, and toggle dar
 
 ## Quick Start
 
+The **Workforce** page manages teams, human memberships, agent ownership, duty
+assignments, representation mandates and represented permits. The **Governance**
+page manages effect permits and resource or participant interventions. Both use
+current server-side operator authorization and independent deployment bounds;
+the UI cannot create authority from its displayed values. See
+[Agent workforce](../features/workforce.md) and
+[governance management](../features/governance.md).
+
 The packaged container includes the UI, served by the Acteon server. For a source
 deployment, build the static assets as described below. Advanced capabilities may
 be exposed through the API or CLI before they have a dedicated UI view.

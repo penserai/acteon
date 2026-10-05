@@ -35,8 +35,8 @@ verify per-effect permits, revocation during a chain, closures or mesh execution
 |---|---|---|
 | 0: Inventory/coordinator | Exact resources, bounded CAS coordinator, multi-resource starts, root reservations and reviewed scope cutover implemented against configured state backends; memory/Redis/PostgreSQL/DynamoDB substrate contracts | Broader effect qualification, operational failover and emergency-stop proof |
 | 1: Actors/context | Executor role, stable principals, credential enrollment, signed root contexts, shared authentication and private scope projection merged | Remaining deferred propagation, teams, memberships, mandates and delegated lineage |
-| 2: Permits/checkpoints | Current permits/credentials/configuration snapshots, qualified static-webhook adapter and common gateway mediation merged; standalone runtime plus SDK/UI integration merged | Broader effect coverage, governance management API/SDK/UI, deferred execution and recovery |
-| 3: Closures/intervention | Internal serialized resource restrictions and durable control events; existing public agent lifecycle | Public generic closures, intervention, drain/pause/cancel semantics and acknowledgments |
+| 2: Permits/checkpoints | Current permits/credentials/configuration snapshots, qualified static-webhook adapter and common gateway mediation merged; standalone runtime and authenticated governance management with SDK/UI merged | Broader effect coverage, workforce representation, deferred execution and recovery |
+| 3: Closures/intervention | Serialized resource restrictions, durable control events and authenticated public close/reopen/revocation | Overlapping named closures, intervention recovery, drain/pause/cancel semantics and acknowledgments |
 | 4: Autonomous mesh | Existing registry and submitted A2A tasks only | Real target resolution/invocation, attenuation, lineage, recovery and safe peer retry |
 | 5: Production/federation | Not implemented | Verified backend and peer capability matrix, trust/revocation protocol and failure tests |
 
@@ -530,9 +530,9 @@ for that merge; the public execution-permit guide returned HTTP 200 with its
 permit header and title verified. This does not complete the city objective.
 
 
-## Authenticated governance management (implementation under validation)
+## Authenticated governance management (merged and published)
 
-The working tree adds authenticated scope inspection, bounded permit issuance,
+PR #426 adds authenticated scope inspection, bounded permit issuance,
 and resource close/reopen plus permit/credential/subject revocation through three
 public HTTP operations. Independent deployment managers constrain each actor's
 subjects, qualified routes, issuance bounds and intervention rights. Private
@@ -555,8 +555,106 @@ and CAS-expiry tests, nine neural-observability example tests, all five SDK
 suites, desktop/mobile governance browser checks, workspace Clippy, all-target
 compilation, UI lint/build and strict documentation build. The CI workflow now
 runs the real governed-city scenario and rejects guide/configuration drift.
-Review, final-head CI, merge and publication remain pending for this slice.
+PR [#426](https://github.com/penserai/acteon/pull/426) merged as
+`de655dadb6f243883bb426fb5d9044a923af2087` after adversarial self-review of
+`66078bbcf34131bc8dc81577f66bda27368828d2`. All 25 final-head checks succeeded;
+three expected checks were skipped. Merge and reviewed trees match. CI
+`37318088861`, integration job `111789821803`, explicitly ran the current private
+management tests, the no-Redis city simulation and six PostgreSQL HTTP tests.
+The downloaded city artifact confirms two authorized HTTP sends and zero
+unauthorized sends. Documentation deployment `37321725077` succeeded for the
+merge commit; both public governance management and governed-city guides returned
+HTTP 200 with their endpoint, configuration, SDK and result markers verified.
+Review/publication evidence is recorded in the PR.
 Independent overlapping closure records, pause/drain/cancel acknowledgments,
 deferred context propagation, shared child funding, teams/memberships/mandates,
 personal and team agents, and autonomous registry-backed A2A invocation remain
 required to complete the objective.
+
+## Workforce authority integration (working branch, not published)
+
+The `feat/workforce-authority` branch adds versioned teams, direct memberships,
+agent ownership, duty assignments and representation mandates to the configured
+state backend's coordinator. Team identities remain descriptive organizational
+references, not shared authentication principals. Ownership and roster membership
+alone issue no execution permits. Represented permits and their mandate bindings
+are published together through one coordinator CAS.
+
+Signed contexts retain the actual actor, authenticated initiator, represented
+party, exact job class, mandate revision and explicit ownership/membership/
+assignment dependencies. Provider admission resolves required representation
+from permit history and the actual prepared route; payload fields cannot select
+another initiator, team, job class or mandate. This first provider adapter uses
+the qualified route's exact action type as job class. Delegated initiators still
+require a separate verified handoff protocol.
+
+The coordinator format advances from 8 to 9 through explicit reviewed cutover,
+preserving incarnation, history and accounting. Signed format-2 actor contexts
+remain readable without gaining representation; new contexts use format 3.
+Startup does not silently add workforce authority to legacy records.
+
+Current targeted evidence includes independent PostgreSQL and Redis clients,
+membership offboarding while standing team work continues, ownership transfer,
+team disbanding, management expiry during CAS conflict, lost acknowledgments,
+offboarding before effect registration, exact job/initiator checks and input-bound
+proofs. Authenticated server admission retains one original context on replay
+and denies the next effect after mandate revocation without spending budget.
+Revoking a human also denies jobs with an explicit ownership or membership
+dependency on that human, without disabling independent standing team work.
+Manager ceilings independently bound job classes as well as teams, principals,
+effects, validity and spending.
+
+Local broad regression evidence: 3,521 workspace tests across 101 suites passed
+(fourteen backend-dependent tests excluded by that invocation), all-target
+compilation, UI lint/build and strict documentation build. Following the final
+human-dependency revocation fix, workspace Clippy and all 26 explicitly enabled
+workforce/context tests passed. Nine server preparation tests passed with
+PostgreSQL enabled and Redis disabled, including independent-client authenticated
+workforce context recovery and the existing reviewed-cutover/admission contract.
+These are working-tree results, not final-head CI or publication evidence.
+
+The working tree now also includes authenticated public workforce management,
+independent deployment bounds, all five client SDKs, the operator UI and a real
+HTTP workforce guide/simulation. Final-head checks, adversarial review and
+publication remain required. Registry integration is a later phase. Shared team/descendant funding, deferred lineage,
+autonomous A2A invocation, overlapping closures and federation qualification
+remain gates for the full objective. These core tests do not establish those
+remaining guarantees.
+
+
+### Working-tree workforce management and real HTTP qualification
+
+The public slice now includes independent workforce deployment bounds, scoped
+authenticated inspection and mutation routes, ten typed management changes,
+all five native SDKs and an operator UI. The shared fixture exercises every
+change variant; real server contracts separately establish authorization.
+
+Admission now intersects the deployment root ceiling, all selected exact permit
+ceilings and the required mandate. The server test admits a one-call permit
+under a two-call mandate and five-call deployment ceiling, preserves its original
+context and limits on retry, and refuses work after mandate revocation. A focused
+coordinator test also checks concurrency and deadline intersection, wrong actor,
+wrong effects, expiration, revocation and absence of root allocation by the
+projection itself. Current actor revocation also prevents issuance of a new
+represented permit without publishing any binding or authority event.
+
+The new `examples/agent-workforce/run.py` uses typed SDK management and dispatch
+against an actual server and HTTP receiver. Its run produced eight authorized
+webhook deliveries and zero unauthorized deliveries. A retry adds no delivery;
+removing Maya's Reliability membership stops human and personal-agent work while
+an active Release membership cannot replace it. Standing investigator and service
+mandates continue independently. A resource closure, mandate revocation and team
+disbandment each stop the expected subsequent calls. It makes no model calls and
+is not autonomous mesh qualification. CI now runs both public city scenarios and
+uploads their evidence.
+
+Desktop and mobile browser tests also check that a represented permit fits both
+mandate and manager budgets, and that an unavailable mutation is retried manually
+with its original exact request and change ID. Full Python, TypeScript, Go and
+Java SDK tests, UI lint/build, workspace Clippy and strict documentation build
+passed locally. The final broad Rust run passed 3,532 tests across 101 suites
+with fourteen backend-dependent tests excluded by that invocation; 27 separately
+enabled governance/backend tests and 22 real server tests passed, the latter with
+PostgreSQL enabled and Redis disabled. All-target compilation passed. Reviewed-head
+CI, PR merge and public publication still require verification; this paragraph
+does not claim shipping.

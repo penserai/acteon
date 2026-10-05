@@ -885,3 +885,106 @@ async fn evaluated_publication_resamples_expiry_after_same_generation_cas_confli
     assert!(state.permits.is_empty());
     assert!(!state.changes.contains_key("delayed-issue"));
 }
+
+#[tokio::test]
+async fn root_limit_projection_intersects_all_permits_without_granting_authority() {
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let coordinator =
+        AuthorityCoordinator::initialize(store, "city", "tenant", CoordinatorLimits::default())
+            .await
+            .unwrap();
+    coordinator
+        .reserve_scope(acteon_governance::ScopePurpose::Execution)
+        .await
+        .unwrap();
+    publish(&coordinator, permit(), "issue").await.unwrap();
+    let mut narrower = permit();
+    narrower.id = "narrower".into();
+    narrower.limits = RootBudgetLimits {
+        max_units: 3,
+        max_concurrent: 1,
+        deadline_ms: 1500,
+    };
+    publish(&coordinator, narrower, "issue-narrower")
+        .await
+        .unwrap();
+    let mut references = refs();
+    references.push(PermitReference {
+        id: "narrower".into(),
+        accepted_revision: 1,
+    });
+    let mut admission = RootContextAdmission {
+        handle: ExecutionContextHandle::new(),
+        binding: ContextBinding {
+            execution_id: uuid::Uuid::new_v4(),
+            principal: actor(),
+            request_digest: "a".repeat(64),
+        },
+        credential_id: "key".into(),
+        auth_method: "api_key".into(),
+        accepted_ceiling_revision: "placeholder".into(),
+        accepted_effects: permit().effects,
+        deadline_ms: 3000,
+        evaluated_authority: coordinator.snapshot().await.unwrap().stamp(),
+    };
+    let ceiling = RootBudgetLimits {
+        max_units: 50,
+        max_concurrent: 10,
+        deadline_ms: 3000,
+    };
+    let limits = coordinator
+        .attenuate_permitted_root_limits(&admission, &references, ceiling.clone(), 100)
+        .await
+        .unwrap();
+    assert_eq!(
+        limits,
+        RootBudgetLimits {
+            max_units: 3,
+            max_concurrent: 1,
+            deadline_ms: 1500
+        }
+    );
+    assert_eq!(coordinator.snapshot().await.unwrap().roots.len(), 0); // Projection allocated no root.
+    admission.binding.principal = PrincipalIdentity::new("other", PrincipalKind::Agent).unwrap();
+    assert!(matches!(
+        coordinator
+            .attenuate_permitted_root_limits(&admission, &references, ceiling.clone(), 100)
+            .await,
+        Err(CoordinationError::PermitDenied(PermitDenial::Subject))
+    ));
+    admission.binding.principal = actor();
+    admission.accepted_effects = vec![effect("ungranted", "c")];
+    assert!(matches!(
+        coordinator
+            .attenuate_permitted_root_limits(&admission, &references, ceiling.clone(), 100)
+            .await,
+        Err(CoordinationError::PermitDenied(PermitDenial::Effect))
+    ));
+    admission.accepted_effects = permit().effects;
+    assert!(matches!(
+        coordinator
+            .attenuate_permitted_root_limits(&admission, &references, ceiling.clone(), 1500)
+            .await,
+        Err(CoordinationError::PermitDenied(PermitDenial::Limits))
+    ));
+    coordinator
+        .change(
+            "revoke-narrower",
+            AuthorityChange::RevokePermit {
+                permit_id: "narrower".into(),
+                expected_revision: 1,
+            },
+            "issuer",
+            "stop",
+        )
+        .await
+        .unwrap();
+    // Refresh the stamp to exercise permit revocation rather than stale evaluation.
+    admission.evaluated_authority = coordinator.snapshot().await.unwrap().stamp();
+    assert!(matches!(
+        coordinator
+            .attenuate_permitted_root_limits(&admission, &references, ceiling, 100)
+            .await,
+        Err(CoordinationError::PermitDenied(PermitDenial::Revoked))
+    ));
+}

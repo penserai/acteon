@@ -191,5 +191,7 @@ export const platformOperations = {
   workflows_signal_workflow: {"name": "workflows_signal_workflow", "method": "POST", "path": "/v1/workflows/executions/{execution_id}/signal/{signal_name}", "parameters": ["execution_id", "signal_name"], "response": "json"},
   workflows_start_child_workflow: {"name": "workflows_start_child_workflow", "method": "POST", "path": "/v1/workflows/executions/{execution_id}/children", "parameters": ["execution_id"], "response": "json"},
   workflows_start_workflow: {"name": "workflows_start_workflow", "method": "POST", "path": "/v1/workflows/start", "parameters": [], "response": "json"},
+  workforce_change: {"name": "workforce_change", "method": "POST", "path": "/v1/workforce/changes", "parameters": [], "response": "json"},
+  workforce_inspect: {"name": "workforce_inspect", "method": "GET", "path": "/v1/workforce", "parameters": [], "response": "json"},
 } as const;
 export type PlatformOperation = keyof typeof platformOperations;

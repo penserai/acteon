@@ -255,3 +255,175 @@ async fn old_replica_cannot_apply_newly_narrowed_management_policy() {
     assert!(!state.changes.contains_key("stale-request"));
     assert!(state.revoked_subjects.is_empty());
 }
+
+fn workforce_config() -> ExecutionAuthorityConfig {
+    let mut declaration = config();
+    declaration.scopes[0].managers[0].workforce =
+        Some(acteon_server::config::WorkforceManagerConfig {
+            teams: vec![acteon_core::TeamRef::new("prod", "acme", "reliability").unwrap()],
+            job_classes: vec!["execute".into()],
+            can_manage_roster: true,
+            can_issue_mandates: true,
+        });
+    declaration
+}
+fn team_change(id: &str) -> acteon_core::workforce::WorkforceChangeRequest {
+    serde_json::from_value(json!({"namespace":"prod","tenant":"acme","change_id":id,"reason":"reviewed",
+        "change":{"kind":"put_team","team":{"team":{"domain":"prod","tenant":"acme","id":"reliability"},"revision":1,"name":"Reliability"}}})).unwrap()
+}
+
+#[tokio::test]
+async fn ordinary_governance_management_does_not_grant_workforce_management() {
+    let state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let registry = registry();
+    let runtime = runtime(&registry, &config(), state.clone()).await;
+    let provider = Arc::new(
+        AuthProvider::new_with_scope_projection(
+            &auth(),
+            state.clone(),
+            authority(state.clone()).await,
+            runtime.projectors(),
+        )
+        .await
+        .unwrap(),
+    );
+    let original = proof(provider).await;
+    runtime
+        .inspect_governance("prod", "acme", &original)
+        .await
+        .unwrap();
+    assert!(matches!(
+        runtime.inspect_workforce("prod", "acme", &original).await,
+        Err(ManagementError::Forbidden)
+    ));
+    assert!(matches!(
+        runtime
+            .change_workforce(team_change("not-authorized"), &original)
+            .await,
+        Err(ManagementError::Forbidden)
+    ));
+    assert!(
+        AuthorityCoordinator::connect(state, "prod", "acme")
+            .await
+            .unwrap()
+            .snapshot()
+            .await
+            .unwrap()
+            .workforce
+            .teams
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn workforce_proof_does_not_survive_current_role_offboarding() {
+    let state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let registry = registry();
+    let runtime = runtime(&registry, &workforce_config(), state.clone()).await;
+    let mut tables = auth();
+    let provider = Arc::new(
+        AuthProvider::new_with_scope_projection(
+            &tables,
+            state.clone(),
+            authority(state.clone()).await,
+            runtime.projectors(),
+        )
+        .await
+        .unwrap(),
+    );
+    let original = proof(provider.clone()).await;
+    runtime
+        .inspect_workforce("prod", "acme", &original)
+        .await
+        .unwrap();
+    tables.authority_revision = Some(2);
+    tables.api_keys[0].role = "viewer".into();
+    provider.reload(&tables).await.unwrap();
+    assert!(matches!(
+        runtime
+            .change_workforce(team_change("offboarded"), &original)
+            .await,
+        Err(ManagementError::Forbidden)
+    ));
+    assert!(
+        AuthorityCoordinator::connect(state, "prod", "acme")
+            .await
+            .unwrap()
+            .snapshot()
+            .await
+            .unwrap()
+            .workforce
+            .teams
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn old_replica_cannot_manage_a_team_after_deployment_bounds_narrow() {
+    let state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let registry = registry();
+    let original_config = workforce_config();
+    let old = runtime(&registry, &original_config, state.clone()).await;
+    let authority = authority(state.clone()).await;
+    let mut tables = auth();
+    let provider = Arc::new(
+        AuthProvider::new_with_scope_projection(
+            &tables,
+            state.clone(),
+            authority.clone(),
+            old.projectors(),
+        )
+        .await
+        .unwrap(),
+    );
+    let original = proof(provider).await;
+    let mut narrowed = original_config.clone();
+    narrowed.scopes[0].bootstrap = false;
+    narrowed.scopes[0].managers[0]
+        .workforce
+        .as_mut()
+        .unwrap()
+        .teams = vec![acteon_core::TeamRef::new("prod", "acme", "release").unwrap()];
+    let current = runtime(&registry, &narrowed, state.clone()).await;
+    tables.authority_revision = Some(2);
+    let provider = Arc::new(
+        AuthProvider::new_with_scope_projection(
+            &tables,
+            state.clone(),
+            authority,
+            current.projectors(),
+        )
+        .await
+        .unwrap(),
+    );
+    let now = proof(provider).await;
+    for (runtime, authentication) in [(&old, &original), (&old, &now), (&current, &now)] {
+        assert!(matches!(
+            runtime
+                .change_workforce(team_change("narrowed"), authentication)
+                .await,
+            Err(ManagementError::Forbidden)
+        ));
+    }
+    assert_eq!(
+        current
+            .inspect_workforce("prod", "acme", &now)
+            .await
+            .unwrap()
+            .management
+            .teams[0]
+            .id(),
+        "release"
+    );
+    assert!(
+        AuthorityCoordinator::connect(state, "prod", "acme")
+            .await
+            .unwrap()
+            .snapshot()
+            .await
+            .unwrap()
+            .workforce
+            .teams
+            .is_empty()
+    );
+}

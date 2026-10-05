@@ -193,6 +193,8 @@ pub enum PlatformOperation {
     WorkflowsSignalWorkflow,
     WorkflowsStartChildWorkflow,
     WorkflowsStartWorkflow,
+    WorkforceChange,
+    WorkforceInspect,
 }
 #[rustfmt::skip]
 impl PlatformOperation {
@@ -390,6 +392,8 @@ impl PlatformOperation {
             Self::WorkflowsSignalWorkflow => ("POST", "/v1/workflows/executions/{execution_id}/signal/{signal_name}", &["execution_id", "signal_name"], false),
             Self::WorkflowsStartChildWorkflow => ("POST", "/v1/workflows/executions/{execution_id}/children", &["execution_id"], false),
             Self::WorkflowsStartWorkflow => ("POST", "/v1/workflows/start", &[], false),
+            Self::WorkforceChange => ("POST", "/v1/workforce/changes", &[], false),
+            Self::WorkforceInspect => ("GET", "/v1/workforce", &[], false),
         }
     }
 }

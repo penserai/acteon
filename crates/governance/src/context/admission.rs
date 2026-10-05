@@ -22,6 +22,15 @@ struct AdmissionRecord {
     limits: RootBudgetLimits,
 }
 
+pub struct IdempotentRootAdmission<'a> {
+    pub admission_key: &'a str,
+    pub admission: RootContextAdmission,
+    pub permits: &'a [PermitReference],
+    pub credential: CredentialReference,
+    pub limits: RootBudgetLimits,
+    pub clock: &'a dyn acteon_time::Clock,
+}
+
 impl TrustedContextStore {
     /// Pin first admission in the configured state backend before publishing
     /// its context and budget. A lost acknowledgement reuses the same identity
@@ -31,12 +40,50 @@ impl TrustedContextStore {
     pub async fn capture_idempotent_credentialed_root(
         &self,
         admission_key: &str,
-        mut admission: RootContextAdmission,
+        admission: RootContextAdmission,
         permits: &[PermitReference],
         credential: CredentialReference,
         limits: RootBudgetLimits,
         clock: &dyn acteon_time::Clock,
     ) -> Result<VerifiedExecutionContext, ContextError> {
+        self.capture_idempotent_inner(
+            IdempotentRootAdmission {
+                admission_key,
+                admission,
+                permits,
+                credential,
+                limits,
+                clock,
+            },
+            None,
+        )
+        .await
+    }
+    pub async fn capture_idempotent_represented_credentialed_root(
+        &self,
+        request: IdempotentRootAdmission<'_>,
+        representation: &crate::workforce::VerifiedRepresentation,
+    ) -> Result<VerifiedExecutionContext, ContextError> {
+        self.capture_idempotent_inner(request, Some(representation))
+            .await
+    }
+    async fn capture_idempotent_inner(
+        &self,
+        request: IdempotentRootAdmission<'_>,
+        representation: Option<&crate::workforce::VerifiedRepresentation>,
+    ) -> Result<VerifiedExecutionContext, ContextError> {
+        let IdempotentRootAdmission {
+            admission_key,
+            mut admission,
+            permits,
+            credential,
+            limits,
+            clock,
+        } = request;
+        if representation.is_some_and(|r| !r.binds(&admission, &limits)) {
+            return Err(ContextError::Verification);
+        }
+        let representation = representation.map(|r| r.binding.clone());
         if admission_key.is_empty()
             || admission_key.len() > 512
             || admission_key.trim() != admission_key
@@ -47,19 +94,26 @@ impl TrustedContextStore {
         admission.accepted_ceiling_revision = crate::permit::permit_revision_tag(permits)?;
         let now_ms = clock.now().timestamp_millis();
         let state = self.coordinator.snapshot().await?;
-        let proposed = self.admission_record(&admission, credential.clone(), limits, now_ms);
+        let proposed = self.admission_record(
+            &admission,
+            credential.clone(),
+            limits,
+            now_ms,
+            representation,
+        );
         self.validate(&proposed.context)?;
         let (key, key_id) = self.root_admission_key(admission_key)?;
         let encoded = self.seal_admission(&proposed, &key_id)?;
         let stored = if let Some(value) = self.store.get(&key).await? {
             value
         } else {
-            crate::permit::validate_root_admission(
+            crate::permit::validate_root_admission_represented(
                 &state,
                 &admission,
                 permits,
                 &proposed.limits,
                 now_ms,
+                proposed.context.representation.as_ref(),
             )?;
             crate::credential::validate_root(
                 &state,
@@ -87,12 +141,13 @@ impl TrustedContextStore {
         admission.handle = record.handle.clone();
         admission.binding.execution_id = record.execution_id;
         admission.deadline_ms = record.deadline_ms;
-        crate::permit::validate_root_admission(
+        crate::permit::validate_root_admission_represented(
             &state,
             &admission,
             permits,
             &original.limits,
             now_ms,
+            original.context.representation.as_ref(),
         )?;
         crate::credential::validate_root(
             &state,
@@ -101,8 +156,23 @@ impl TrustedContextStore {
             &original.limits,
             now_ms,
         )?;
+        self.restore_admitted_context(admission, record, credential, original.limits, clock)
+            .await
+    }
+    async fn restore_admitted_context(
+        &self,
+        admission: RootContextAdmission,
+        record: &ContextRecord,
+        credential: CredentialReference,
+        limits: RootBudgetLimits,
+        clock: &dyn acteon_time::Clock,
+    ) -> Result<VerifiedExecutionContext, ContextError> {
         let context = match self
-            .recover(&record.handle, &admission.binding, now_ms)
+            .recover(
+                &record.handle,
+                &admission.binding,
+                clock.now().timestamp_millis(),
+            )
             .await
         {
             Ok(existing) => {
@@ -112,8 +182,13 @@ impl TrustedContextStore {
                 Self::check_replay(existing, &expected)?
             }
             Err(ContextError::Missing) => {
-                self.capture_root_inner(admission.clone(), record.admitted_at_ms, Some(credential))
-                    .await?
+                self.capture_root_inner(
+                    admission.clone(),
+                    record.admitted_at_ms,
+                    Some(credential),
+                    record.representation.clone(),
+                )
+                .await?
             }
             Err(error) => return Err(error),
         };
@@ -121,7 +196,7 @@ impl TrustedContextStore {
             .create_root_budget(
                 &context.execution_id().to_string(),
                 context.principal().id(),
-                original.limits,
+                limits,
                 &admission.evaluated_authority,
                 clock.now().timestamp_millis(),
             )
@@ -135,6 +210,7 @@ impl TrustedContextStore {
         credential: CredentialReference,
         limits: RootBudgetLimits,
         now_ms: i64,
+        representation: Option<crate::workforce::RepresentationBinding>,
     ) -> AdmissionRecord {
         AdmissionRecord {
             format: ADMISSION_FORMAT,
@@ -149,6 +225,7 @@ impl TrustedContextStore {
                 credential_id: admission.credential_id.clone(),
                 auth_method: admission.auth_method.clone(),
                 credential_authority: Some(credential),
+                representation,
                 request_digest: admission.binding.request_digest.clone(),
                 accepted_ceiling_revision: admission.accepted_ceiling_revision.clone(),
                 accepted_effects: admission.accepted_effects.clone(),
@@ -184,6 +261,13 @@ impl TrustedContextStore {
         expected.admitted_at_ms = proposed.context.admitted_at_ms;
         expected.deadline_ms = proposed.context.deadline_ms;
         expected.authority = proposed.context.authority.clone();
+        if expected.representation.is_none()
+            && proposed.context.representation.is_none()
+            && matches!(expected.schema_version, 2 | 3)
+            && matches!(proposed.context.schema_version, 2 | 3)
+        {
+            expected.schema_version = proposed.context.schema_version;
+        }
         if expected != proposed.context
             || original.limits.max_units != proposed.limits.max_units
             || original.limits.max_concurrent != proposed.limits.max_concurrent

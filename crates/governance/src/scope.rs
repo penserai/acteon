@@ -104,7 +104,8 @@ impl AuthorityCoordinator {
         match &state.purpose {
             ScopePurpose::Unclaimed | ScopePurpose::Execution => true,
             ScopePurpose::AuthenticationControl { source_id } => {
-                state.starts.is_empty()
+                state.workforce.record_count() == 0
+                    && state.starts.is_empty()
                     && state.roots.is_empty()
                     && state.permits.is_empty()
                     && state.credentials.is_empty()
@@ -119,7 +120,8 @@ impl AuthorityCoordinator {
                                 && configuration.credentials.is_empty()
                         }
                         AuthorityChange::ReserveScope { purpose } => purpose == &state.purpose,
-                        AuthorityChange::RevokeSubject { .. } => true,
+                        AuthorityChange::RevokeSubject { .. }
+                        | AuthorityChange::UpgradeProtocol { .. } => true,
                         _ => false,
                     })
             }

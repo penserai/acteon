@@ -165,3 +165,9 @@ pub use workflow::{
 };
 
 pub use governance::*;
+
+pub mod workforce;
+pub use workforce::{
+    AgentOwnership, RepresentedParty, TeamRef, TeamRole, WorkforceAssignment, WorkforceMembership,
+    WorkforceReference, WorkforceTeam,
+};
