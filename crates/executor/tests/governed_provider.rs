@@ -1088,7 +1088,6 @@ async fn independent_provider_contract(state: Arc<dyn StateStore>, peer: Arc<dyn
         )
         .await
         .unwrap();
-    f.clock.advance_to(Duration::from_secs(20)).unwrap();
     let proof = finality_proof(
         pending,
         ProviderFinality::Completed {
@@ -1104,19 +1103,24 @@ async fn independent_provider_contract(state: Arc<dyn StateStore>, peer: Arc<dyn
             .unwrap()
             .status,
     );
-    completed(
-        &observer
-            .reconcile(&f.reference, &actor(), &proof)
-            .await
-            .unwrap()
-            .status,
-    );
     provider.release.add_permits(1);
     completed(
         &tokio::time::timeout(Duration::from_secs(5), task)
             .await
             .unwrap()
             .unwrap()
+            .unwrap()
+            .status,
+    );
+    // Expire authority only after the late worker has returned. Advancing the
+    // manual clock while it is blocked also expires its provider timeout;
+    // remote backend awaits can then return the earlier uncertain receipt.
+    // Historical replay must still preserve the accepted finality after expiry.
+    f.clock.advance_to(Duration::from_secs(20)).unwrap();
+    completed(
+        &observer
+            .reconcile(&f.reference, &actor(), &proof)
+            .await
             .unwrap()
             .status,
     );
