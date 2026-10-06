@@ -1394,3 +1394,24 @@ permission borrowing, grant retirement during resolution, delayed expiry,
 offboarding, unaccepted grants, and narrowed current intent. This remains an
 unmerged draft pending final checks and adversarial review; durable A2A runtime
 and transport work remains in the implementation plan.
+
+
+### Service delegation published; durable runtime adapter in progress
+
+PR #431 merged on October 6, 2026 as
+`e12def7624596ef75c9d9efd6dbad40f92063c23`. Its reviewed head completed all
+28 checks: 25 passed and three intentionally skipped. Documentation deployment
+37521925732 succeeded; the public governance article returned HTTP 200 and its
+normalized content matched the reviewed strict build. Earlier draft entries
+above record implementation history.
+
+The next platform slice connects accepted recipient contexts to the existing
+governed provider executor and task engine through `AgentProviderRuntime`.
+Twelve focused contracts cover actual provider invocations, shared sponsorship,
+restart, lost acknowledgments, concurrent resumes, ambiguous outcomes, forged
+terminal projections, revocation, and acceptance while a sender holds the sole
+concurrent slot. Admission does not reserve execution capacity; actual starts
+still enforce the shared limit atomically. This slice remains under verification
+and does not expose an HTTP/A2A runtime or new SDK wire APIs. Qualified network
+handoff, intervention acknowledgments, other runtime families, and the remaining
+city/workforce phases remain required.

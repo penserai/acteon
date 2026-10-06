@@ -308,3 +308,80 @@ fn check_service_source(
     }
     Err(CoordinationError::Restricted)
 }
+
+impl AuthorityCoordinator {
+    /// Verify the original signed recipient/plan binding for runtime recovery.
+    /// This allows observation after retirement, not a new effect: current
+    /// credential, permit, grant and budget checks still run at every start.
+    pub async fn verify_service_runtime_binding(
+        &self,
+        context: &VerifiedExecutionContext,
+        binding_digest: &str,
+        direct_effects: &[AcceptedEffect],
+    ) -> Result<(), CoordinationError> {
+        let state = self.snapshot().await?;
+        let reference = context
+            .reference()
+            .map_err(|_| CoordinationError::Restricted)?;
+        if reference.namespace() != state.namespace
+            || reference.tenant() != state.tenant
+            || context.authority_stamp().incarnation != state.incarnation
+            || !context.matches_service_runtime(&state, binding_digest, direct_effects)
+        {
+            return Err(CoordinationError::Restricted);
+        }
+        context.validate_budget_binding(&state)
+    }
+}
+
+impl AuthorityCoordinator {
+    /// Validate admitted work for queueing without reserving concurrency or
+    /// authorizing execution. Registration always rechecks start availability.
+    pub async fn check_queued_effect_authority(
+        &self,
+        context: &VerifiedExecutionContext,
+        permits: &[PermitReference],
+        effect: &AcceptedEffect,
+        clock: &dyn Clock,
+    ) -> Result<(), CoordinationError> {
+        let state = self.snapshot().await?;
+        let now = clock.now().timestamp_millis();
+        if context.credential_authority().is_none() {
+            return Err(CoordinationError::Restricted);
+        }
+        context.validate_inheritance(&state, permits, now)?;
+        let reference = context
+            .reference()
+            .map_err(|_| CoordinationError::Restricted)?;
+        crate::permit::evaluate_with_availability(
+            &state,
+            &PermittedAttempt {
+                id: "queued-effect-authority",
+                context,
+                permits,
+                effect,
+                request_digest: reference.request_digest(),
+                units: 1,
+                clock,
+            },
+            now,
+            crate::budget::Availability::Admission,
+        )?;
+        let resources = context
+            .effect_registration_resources(effect)
+            .map_err(|_| CoordinationError::Restricted)?;
+        if resources.iter().any(|r| state.closed_resources.contains(r)) {
+            return Err(CoordinationError::Restricted);
+        }
+        crate::budget::check_root_availability(
+            &state,
+            &RootReservation {
+                root_id: context.execution_id().to_string(),
+                units: 1,
+            },
+            now,
+            crate::budget::Availability::Admission,
+        )?;
+        Ok(())
+    }
+}

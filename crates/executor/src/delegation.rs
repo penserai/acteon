@@ -155,6 +155,14 @@ impl ApprovedPeerBinding {
         Ok(binding)
     }
     #[must_use]
+    pub fn target(&self) -> &PrincipalIdentity {
+        &self.target
+    }
+    #[must_use]
+    pub fn agent_resource(&self) -> &ResourceRef {
+        &self.agent_resource
+    }
+    #[must_use]
     pub fn service_plan(&self) -> Option<&ApprovedServicePlan> {
         self.service.as_ref()
     }

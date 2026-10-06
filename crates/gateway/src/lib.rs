@@ -1,4 +1,5 @@
 pub mod admission;
+pub mod agent_runtime;
 pub(crate) mod audit_helpers;
 pub mod background;
 pub mod builder;
