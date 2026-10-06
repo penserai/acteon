@@ -169,6 +169,21 @@ impl AgentProviderRuntime {
             || accepted.initial_task.namespace != accepted.reference.namespace()
             || accepted.initial_task.tenant != accepted.reference.tenant()
             || accepted.initial_task.status.state != TaskState::Submitted
+            || accepted.initial_task.context_id
+                != accepted
+                    .initial_task
+                    .history
+                    .first()
+                    .and_then(|m| m.context_id.clone())
+            || accepted
+                .initial_task
+                .metadata
+                .get(GOVERNED_TASK_METADATA_KEY)
+                != Some(
+                    &serde_json::json!({"execution_id": accepted.reference.execution_id(), "binding_digest": self.binding.digest()}),
+                )
+            || accepted.initial_task.chain_id.is_some()
+            || !accepted.initial_task.artifacts.is_empty()
             || accepted.initial_task.history.len() != 1
             || accepted.initial_task.history[0].task_id.as_deref()
                 != Some(accepted.initial_task.id.as_str())
@@ -294,7 +309,24 @@ impl AgentProviderRuntime {
         {
             return Err(AgentRuntimeError::Conflict);
         }
-        self.materialize(&original).await
+        let task = self.materialize(&original).await?;
+        if !task.status.state.is_terminal() {
+            return Ok(task);
+        }
+        let execution = self
+            .executor
+            .inspect(&original.reference, self.binding.target())
+            .await?
+            .ok_or(AgentRuntimeError::Conflict)?;
+        if !matches!(&execution.status, GovernedProviderStatus::Completed { outcome } if task.status.state == terminal_state(outcome))
+        {
+            return Err(AgentRuntimeError::Conflict);
+        }
+        let scope = TaskScope::new(original.reference.namespace(), original.reference.tenant());
+        Ok(self
+            .project_execution(&scope, &original.initial_task, task, execution)
+            .await?
+            .task)
     }
 
     async fn materialize(&self, accepted: &Acceptance) -> Result<Task, AgentRuntimeError> {
@@ -307,22 +339,8 @@ impl AgentProviderRuntime {
                     .get_task(&scope, &accepted.initial_task.id)
                     .await?
                     .ok_or(AgentRuntimeError::Missing)?;
-                if task.chain_id.is_some()
-                    || task.metadata.get(GOVERNED_TASK_METADATA_KEY)
-                        != accepted
-                            .initial_task
-                            .metadata
-                            .get(GOVERNED_TASK_METADATA_KEY)
-                    || task.history.first().map(serde_json::to_value).transpose()?
-                        != accepted
-                            .initial_task
-                            .history
-                            .first()
-                            .map(serde_json::to_value)
-                            .transpose()?
-                {
-                    return Err(AgentRuntimeError::Conflict);
-                }
+                TaskEngine::validate_governed_projection(&task, &accepted.initial_task)
+                    .map_err(TaskEngineError::from)?;
                 Ok(task)
             }
             Err(error) => Err(error.into()),
@@ -339,6 +357,9 @@ impl AgentProviderRuntime {
             .await?
             .ok_or(AgentRuntimeError::Missing)?;
         let accepted = self.decode(&raw)?;
+        if accepted.reference.execution_id() != task_id {
+            return Err(AgentRuntimeError::Conflict);
+        }
         self.verify(&accepted).await?;
         let scope = TaskScope::new(accepted.reference.namespace(), accepted.reference.tenant());
         let mut task = self.materialize(&accepted).await?;
@@ -358,13 +379,19 @@ impl AgentProviderRuntime {
             {
                 return Err(AgentRuntimeError::Conflict);
             }
-            return Ok(AgentTaskReceipt {
-                task,
-                execution: previous,
-            });
+            return match previous {
+                Some(execution) if task.status.state.is_terminal() => {
+                    self.project_execution(&scope, &accepted.initial_task, task, execution)
+                        .await
+                }
+                execution => Ok(AgentTaskReceipt { task, execution }),
+            };
         }
         if task.status.state == TaskState::Submitted {
-            task = self.tasks.start_governed_task(&scope, &task.id).await?;
+            task = self
+                .tasks
+                .start_governed_task(&scope, &accepted.initial_task)
+                .await?;
         }
         if task.status.state.is_terminal() {
             let latest = self
@@ -379,10 +406,14 @@ impl AgentProviderRuntime {
             }) {
                 return Err(AgentRuntimeError::Conflict);
             }
-            return Ok(AgentTaskReceipt {
-                task,
-                execution: latest,
-            });
+            return self
+                .project_execution(
+                    &scope,
+                    &accepted.initial_task,
+                    task,
+                    latest.ok_or(AgentRuntimeError::Conflict)?,
+                )
+                .await;
         }
         let execution = match previous {
             Some(receipt)
@@ -406,6 +437,17 @@ impl AgentProviderRuntime {
                     .await?
             }
         };
+        self.project_execution(&scope, &accepted.initial_task, task, execution)
+            .await
+    }
+
+    async fn project_execution(
+        &self,
+        scope: &TaskScope,
+        expected: &Task,
+        mut task: Task,
+        execution: GovernedProviderReceipt,
+    ) -> Result<AgentTaskReceipt, AgentRuntimeError> {
         if let GovernedProviderStatus::Completed { outcome } = &execution.status {
             let value = serde_json::to_value(outcome)?;
             let inline =
@@ -413,17 +455,22 @@ impl AgentProviderRuntime {
             let result = if inline {
                 value
             } else {
-                serde_json::json!({"execution_id":task_id,"result_in_governed_history":true})
+                serde_json::json!({"execution_id":expected.id,"result_in_governed_history":true})
             };
             let next = terminal_state(outcome);
+            let artifact = Artifact::new("governed-result", vec![TaskPart::data(result)]);
+            if task.status.state == next
+                && task.artifacts.len() == 1
+                && serde_json::to_value(&task.artifacts[0])? == serde_json::to_value(&artifact)?
+            {
+                return Ok(AgentTaskReceipt {
+                    task,
+                    execution: Some(execution),
+                });
+            }
             task = self
                 .tasks
-                .project_governed_result(
-                    &scope,
-                    &task.id,
-                    next,
-                    Artifact::new("governed-result", vec![TaskPart::data(result)]),
-                )
+                .project_governed_result(scope, expected, next, artifact)
                 .await?;
         }
         Ok(AgentTaskReceipt {

@@ -414,6 +414,11 @@ queued work while its sender holds the sponsor's last concurrent slot. Every
 actual provider start still uses the governed executor's atomic authority and
 shared-budget reservation. Revocation or closure between acceptance and start
 refuses execution. Known results and terminal task state are projected together.
+Recovery rejects copied acceptance records and substituted task identities.
+Terminal result artifacts are checked against execution evidence and repaired
+from that evidence without another provider call. The reaper also checks the
+acceptance journal, so removing a projection's metadata cannot certify an
+uncertain outcome.
 
 This is a trusted Rust host adapter for one qualified provider operation.
 Agent-specific HTTP/A2A configuration, authenticated network envelopes, transport

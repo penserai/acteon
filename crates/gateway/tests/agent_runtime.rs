@@ -280,10 +280,16 @@ impl Fixture {
             &self.bound,
         )
     }
+    async fn new(ambiguous: bool) -> Self {
+        Self::new_with_state(
+            Arc::new(FaultStore::new(Arc::new(MemoryStateStore::new()))),
+            ambiguous,
+        )
+        .await
+    }
     // Keep the complete source/recipient authority fixture in one setup routine.
     #[allow(clippy::too_many_lines)]
-    async fn new(ambiguous: bool) -> Self {
-        let state = Arc::new(FaultStore::new(Arc::new(MemoryStateStore::new())));
+    async fn new_with_state(state: Arc<FaultStore>, ambiguous: bool) -> Self {
         let coordinator = AuthorityCoordinator::initialize(
             state.clone(),
             "city",
@@ -867,5 +873,217 @@ async fn queue_admission_still_refuses_current_revocation_and_exhausted_units() 
                 .unwrap()
                 .is_none()
         );
+    }
+}
+
+#[tokio::test]
+async fn copied_acceptance_and_substituted_task_identity_are_refused() {
+    let f = Fixture::new(false).await;
+    let runtime = f.runtime();
+    let task = f.accept(&runtime).await;
+    let acceptance_key = StateKey::new(
+        "city",
+        "tenant",
+        KeyKind::Custom(ACCEPTANCE_KIND.into()),
+        &task.id,
+    );
+    let copied_id = uuid::Uuid::new_v4();
+    let copied_key = StateKey::new(
+        "city",
+        "tenant",
+        KeyKind::Custom(ACCEPTANCE_KIND.into()),
+        copied_id.to_string(),
+    );
+    let raw = f.state.get(&acceptance_key).await.unwrap().unwrap();
+    f.state.set(&copied_key, &raw, None).await.unwrap();
+    assert!(Box::pin(runtime.resume(copied_id)).await.is_err());
+    let mut forged_acceptance: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    forged_acceptance["initial_task"]["metadata"]["acteon_governed_execution"]["execution_id"] =
+        serde_json::json!(copied_id);
+    f.state
+        .set(&acceptance_key, &forged_acceptance.to_string(), None)
+        .await
+        .unwrap();
+    assert!(
+        Box::pin(runtime.resume(f.child.execution_id()))
+            .await
+            .is_err()
+    );
+    f.state.set(&acceptance_key, &raw, None).await.unwrap();
+    let key = StateKey::new("city", "tenant", KeyKind::A2aTask, &task.id);
+    for field in ["id", "namespace", "tenant", "contextId"] {
+        let mut forged = serde_json::to_value(&task).unwrap();
+        forged[field] = serde_json::json!("substituted");
+        f.state.set(&key, &forged.to_string(), None).await.unwrap();
+        assert!(
+            Box::pin(runtime.resume(f.child.execution_id()))
+                .await
+                .is_err(),
+            "{field}"
+        );
+        assert!(
+            runtime
+                .accept(&f.child, &permits("worker"), &f.message)
+                .await
+                .is_err(),
+            "{field}"
+        );
+    }
+    assert_eq!(f.counter.calls.load(Ordering::SeqCst), 0);
+    assert!(f.coordinator.snapshot().await.unwrap().starts.is_empty());
+}
+
+#[tokio::test]
+async fn terminal_result_is_repaired_from_execution_evidence_on_resume_and_accept_replay() {
+    let f = Fixture::new(false).await;
+    let runtime = f.runtime();
+    let task = f.accept(&runtime).await;
+    let original = Box::pin(runtime.resume(f.child.execution_id()))
+        .await
+        .unwrap()
+        .task;
+    let key = StateKey::new("city", "tenant", KeyKind::A2aTask, &task.id);
+    for accept_replay in [false, true] {
+        let mut forged = original.clone();
+        forged.artifacts[0].parts = vec![acteon_core::TaskPart::data(
+            serde_json::json!({"forged":true}),
+        )];
+        f.state
+            .set(&key, &serde_json::to_string(&forged).unwrap(), None)
+            .await
+            .unwrap();
+        let repaired = if accept_replay {
+            f.accept(&runtime).await
+        } else {
+            Box::pin(runtime.resume(f.child.execution_id()))
+                .await
+                .unwrap()
+                .task
+        };
+        assert_eq!(
+            serde_json::to_value(&repaired.artifacts).unwrap(),
+            serde_json::to_value(&original.artifacts).unwrap()
+        );
+    }
+    assert_eq!(f.counter.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn removing_projection_metadata_does_not_let_the_reaper_certify_uncertain_work() {
+    let f = Fixture::new(true).await;
+    let runtime = f.runtime();
+    let task = f.accept(&runtime).await;
+    let mut unresolved = Box::pin(runtime.resume(f.child.execution_id()))
+        .await
+        .unwrap()
+        .task;
+    unresolved.metadata.clear();
+    let key = StateKey::new("city", "tenant", KeyKind::A2aTask, &task.id);
+    f.state
+        .set(&key, &serde_json::to_string(&unresolved).unwrap(), None)
+        .await
+        .unwrap();
+    let later = f.clock.now() + chrono::Duration::days(8);
+    assert!(
+        TaskEngine::new(f.state.clone())
+            .fail_if_stale(&TaskScope::new("city", "tenant"), &task.id, later)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(f.counter.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        f.coordinator.snapshot().await.unwrap().roots[&f.parent.execution_id().to_string()]
+            .active_attempts,
+        1
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires ACTEON_GOVERNANCE_REDIS_URL; isolated UUID prefix"]
+async fn independent_redis_runtime_recovers_lost_acceptance_and_known_or_uncertain_results() {
+    use acteon_state_redis::{RedisConfig, RedisStateStore};
+    for ambiguous in [false, true] {
+        let settings = RedisConfig {
+            url: std::env::var("ACTEON_GOVERNANCE_REDIS_URL").unwrap(),
+            prefix: format!("agent-runtime-{}", uuid::Uuid::new_v4()),
+            ..Default::default()
+        };
+        let primary: Arc<dyn StateStore> = Arc::new(RedisStateStore::new(&settings).unwrap());
+        let peer: Arc<dyn StateStore> = Arc::new(RedisStateStore::new(&settings).unwrap());
+        let f = Fixture::new_with_state(Arc::new(FaultStore::new(primary)), ambiguous).await;
+        let coordinator = AuthorityCoordinator::connect(peer.clone(), "city", "tenant")
+            .await
+            .unwrap();
+        let contexts = Arc::new(
+            TrustedContextStore::new(
+                peer.clone(),
+                coordinator.clone(),
+                "city-domain".into(),
+                "key".into(),
+                vec![ContextSigningKey::new("key".into(), vec![7; 32]).unwrap()],
+            )
+            .unwrap(),
+        );
+        let replacement = Fixture::create_runtime(
+            peer.clone(),
+            coordinator.clone(),
+            contexts.clone(),
+            f.clock.clone(),
+            &f.card,
+            &f.bound,
+        );
+        let runtime = f.runtime();
+        f.state
+            .fail_next(
+                KeyKind::Custom(ACCEPTANCE_KIND.into()),
+                WriteOperation::CheckAndSet,
+                FaultTiming::After,
+            )
+            .unwrap();
+        assert!(
+            runtime
+                .accept(&f.child, &permits("worker"), &f.message)
+                .await
+                .is_err()
+        );
+        let recovered = contexts
+            .recover_reference_for_observation(&f.child.reference().unwrap())
+            .await
+            .unwrap();
+        let task = replacement
+            .accept(&recovered, &permits("worker"), &f.message)
+            .await
+            .unwrap();
+        assert_eq!(task.id, f.child.execution_id().to_string());
+        Box::pin(runtime.resume(f.child.execution_id()))
+            .await
+            .unwrap();
+        let replay = Box::pin(replacement.resume(f.child.execution_id()))
+            .await
+            .unwrap();
+        let expected = if ambiguous {
+            TaskState::Working
+        } else {
+            TaskState::Completed
+        };
+        assert_eq!(replay.task.status.state, expected);
+        assert_eq!(f.counter.calls.load(Ordering::SeqCst), 1);
+        let snapshot = coordinator.snapshot().await.unwrap();
+        assert_eq!(snapshot.roots.len(), 2);
+        assert_eq!(
+            snapshot.roots[&f.parent.execution_id().to_string()].spent_units,
+            1
+        );
+        assert_eq!(
+            snapshot.roots[&f.parent.execution_id().to_string()].active_attempts,
+            u64::from(ambiguous)
+        );
+        if ambiguous {
+            assert!(matches!(
+                replay.execution.unwrap().status,
+                GovernedProviderStatus::ReconciliationRequired { .. }
+            ));
+        }
     }
 }

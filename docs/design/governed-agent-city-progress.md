@@ -1415,3 +1415,18 @@ still enforce the shared limit atomically. This slice remains under verification
 and does not expose an HTTP/A2A runtime or new SDK wire APIs. Qualified network
 handoff, intervention acknowledgments, other runtime families, and the remaining
 city/workforce phases remain required.
+
+
+#### Runtime adversarial review corrections
+
+PR #432 adds the provider runtime adapter. Review identified copied acceptance
+keys, substituted task projection identities, unverified terminal artifacts,
+and stale reaping after removal of projection metadata. Recovery now binds the
+requested ID and validates projection identity at every governed CAS retry;
+terminal artifacts are repaired from qualified execution evidence. The reaper
+checks the durable acceptance journal as well as the projection marker.
+Fifteen ordinary contracts and one independent-client Redis contract exercise
+these boundaries, including lost acceptance acknowledgment and both known and
+uncertain outcomes. Redis uses an isolated UUID prefix and the contract is wired
+into CI. This verifies this adapter on memory and Redis; it does not establish
+network A2A or all-backend qualification.

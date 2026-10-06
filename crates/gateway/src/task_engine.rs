@@ -511,6 +511,17 @@ impl TaskEngine {
             if task
                 .metadata
                 .contains_key(crate::agent_runtime::GOVERNED_TASK_METADATA_KEY)
+                || (task.is_stale_at(now)
+                    && self
+                        .state
+                        .get(&StateKey::new(
+                            scope.namespace.as_str(),
+                            scope.tenant.as_str(),
+                            KeyKind::Custom(crate::agent_runtime::ACCEPTANCE_KIND.into()),
+                            task_id,
+                        ))
+                        .await?
+                        .is_some())
                 || !task.is_stale_at(now)
             {
                 // Recorded progress or reached a terminal state since
@@ -933,16 +944,57 @@ impl TaskEngine {
         Ok(task)
     }
 
+    /// Check every read and CAS retry against the immutable acceptance identity.
+    pub(crate) fn validate_governed_projection(
+        task: &Task,
+        expected: &Task,
+    ) -> Result<(), TaskValidationError> {
+        task.validate()?;
+        if task.id != expected.id
+            || task.namespace != expected.namespace
+            || task.tenant != expected.tenant
+            || task.context_id != expected.context_id
+            || task.chain_id.is_some()
+            || task
+                .metadata
+                .get(crate::agent_runtime::GOVERNED_TASK_METADATA_KEY)
+                != expected
+                    .metadata
+                    .get(crate::agent_runtime::GOVERNED_TASK_METADATA_KEY)
+            || task
+                .history
+                .first()
+                .map(serde_json::to_value)
+                .transpose()
+                .map_err(|_| TaskValidationError::PartDataInvalid)?
+                != expected
+                    .history
+                    .first()
+                    .map(serde_json::to_value)
+                    .transpose()
+                    .map_err(|_| TaskValidationError::PartDataInvalid)?
+            || task
+                .artifacts
+                .iter()
+                .any(|artifact| artifact.artifact_id != "governed-result")
+        {
+            return Err(TaskValidationError::IdentityMismatch);
+        }
+        Ok(())
+    }
+
     /// Idempotent runtime projection; only its governed executor can start effects.
     pub(crate) async fn start_governed_task(
         &self,
         scope: &TaskScope,
-        task_id: &str,
+        expected: &Task,
     ) -> Result<Task, TaskEngineError> {
+        let task_id = expected.id.as_str();
         let key = scope.task_key(task_id);
         let mut transitioned = false;
         let task = self
             .cas_mutate(&key, task_id, "governed_working", |task, now| {
+                Self::validate_governed_projection(task, expected)?;
                 if task.status.state.is_terminal() {
                     transitioned = false;
                     return Ok(());
@@ -981,15 +1033,17 @@ impl TaskEngine {
     pub(crate) async fn project_governed_result(
         &self,
         scope: &TaskScope,
-        task_id: &str,
+        expected: &Task,
         next: TaskState,
         artifact: Artifact,
     ) -> Result<Task, TaskEngineError> {
+        let task_id = expected.id.as_str();
         let key = scope.task_key(task_id);
         let mut transitioned = false;
         let artifact_id = artifact.artifact_id.clone();
         let task = self
             .cas_mutate(&key, task_id, "governed_result", |task, now| {
+                Self::validate_governed_projection(task, expected)?;
                 transitioned = task.status.state != next;
                 if transitioned {
                     task.transition_to_at(next, None, now)?;
