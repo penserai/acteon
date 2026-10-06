@@ -261,6 +261,25 @@ pub(crate) fn reserve_root(
     reservation: &RootReservation,
     now_ms: i64,
 ) -> Result<(), CoordinationError> {
+    let path = check_root_reservation(state, reservation, now_ms)?;
+    for id in path {
+        let budget = state
+            .roots
+            .get_mut(&id)
+            .ok_or(CoordinationError::Conflict)?;
+        budget.spent_units += reservation.units;
+        budget.active_attempts += 1;
+    }
+    Ok(())
+}
+
+/// Advisory capacity check using the same constraints as atomic reservation.
+/// This does not reserve capacity or establish permission for an effect.
+pub(crate) fn check_root_reservation(
+    state: &crate::CoordinatorSnapshot,
+    reservation: &RootReservation,
+    now_ms: i64,
+) -> Result<Vec<String>, CoordinationError> {
     let path = budget_path(state, &reservation.root_id)?;
     // Check every ancestor before mutating any counter.
     for id in &path {
@@ -282,15 +301,7 @@ pub(crate) fn reserve_root(
             return Err(CoordinationError::BudgetExhausted);
         }
     }
-    for id in path {
-        let budget = state
-            .roots
-            .get_mut(&id)
-            .ok_or(CoordinationError::Conflict)?;
-        budget.spent_units += reservation.units;
-        budget.active_attempts += 1;
-    }
-    Ok(())
+    Ok(path)
 }
 
 pub(crate) fn release_concurrency(

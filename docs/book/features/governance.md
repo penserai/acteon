@@ -261,3 +261,49 @@ external cancellation acknowledgments and intervention reconciliation remain
 separate work. [Agent workforce](workforce.md) supplies teams and representation
 mandates for this immediate execution profile. Shared delegated funding and
 protected deferred execution remain separate platform capabilities.
+
+
+### Host integration: approved peer discovery
+
+Rust hosts can compose the existing individual agent registry with independently
+credentialed participant contexts through `acteon_executor::delegation`.
+`ApprovedPeerBinding::new_trusted` pins a reviewed card, skill, endpoint,
+transport, recipient principal and complete `agent.invoke` effect. Each effect
+includes the peer's scope-local Agent resource. The registry agent ID and
+recipient principal are an explicit host mapping; card descriptions cannot
+establish that identity.
+
+`ApprovedPeerRegistry` reads the existing agent and card records through the
+configured `StateStore`. Discovery checks current administrative state, online
+status and the exact approved card digest. Changed cards need renewed host
+approval. The candidate contains bounded descriptive data, the binding digest
+and the observed authority revision. Treat descriptions as untrusted data.
+
+```rust
+let candidates = registry.discover_candidates("diagnose", PeerCandidateQuery {
+    coordinator: &coordinator,
+    parent: &verified_parent,
+    parent_permits: &parent_permits,
+    recipients: &trusted_recipient_resolver,
+    clock: clock.as_ref(),
+}).await?;
+```
+
+Discovery checks the source before calling the trusted resolver, which supplies
+each recipient's independently verified,
+credentialed context and permit references. Discovery checks the complete effect
+against both participants' original accepted ceilings and current credentials,
+permits, workforce relationships, closures, cancellation fences, deadlines and
+available budgets. Both contexts belong to the same scope. Self-delegation and
+cycles through a participant already funding the parent branch are refused.
+Backend failures, corrupt records and stale authority fail the query; ordinarily
+denied candidates are omitted.
+
+Discovery is advisory and writes no reservations, children or start leases.
+The returned revision describes the observation; it is not authority to invoke
+a peer. Cross-participant child admission must preserve both authority sources
+and establish shared sponsorship before a transport adapter can register a send.
+That admission and real A2A runtime handoff remain subsequent implementation work.
+This host integration currently has no HTTP discovery route or model-callable
+runtime tool. HTTPS URL syntax approval also requires a separately qualified
+transport with network confinement, endpoint authentication and protocol checks.

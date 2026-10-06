@@ -1327,3 +1327,29 @@ Cross-replica trust-root cutover, atomic authentication-source fencing, UI final
 acceptance, a qualified external journal, autonomous registry-driven A2A and
 cross-principal delegation remain required for the full city objective. The
 current feature batch is still local, unmerged and unpublished.
+
+
+## Published descendants and finality management
+
+PR #428 merged on October 6, 2026 as `565a22a20ed19a22569089d959ac95be66488a72`.
+The reviewed head passed 25 checks with three intentional skips. Provider and
+qualified-handoff contracts ran successfully on Redis, PostgreSQL and DynamoDB.
+The documentation deployment succeeded and all seven changed public articles
+matched the reviewed strict build. Earlier unreleased sections above are retained
+as implementation history; the scope of PR #428 is now published.
+
+## Phase 4: approved registry candidates (in progress)
+
+`ApprovedPeerRegistry` reads the existing individual agent/card records through
+StateStore under operator-approved card/skill/endpoint/actor/effect bindings.
+`discover_delegation_eligibility` checks independently credentialed source and
+recipient contexts against one coordinator snapshot. Candidate discovery is
+read-only, bounded and advisory. Changes to cards require renewed qualification;
+backend errors and stale authority abort rather than return partial candidates.
+
+Memory contracts and independent Redis clients exercise authority refusal,
+registry redirection, resolver identity substitution, stale liveness and controlled
+read-barrier expiry. This slice supplies host integration, not an HTTP route or
+an A2A invocation. Cross-principal child admission, shared sponsorship, runtime
+binding, transport qualification and actual peer invocation remain required for
+the autonomous mesh phase. All later workforce/federation phases remain active.

@@ -1,6 +1,7 @@
 pub mod batch;
 pub mod catalog;
 pub mod config;
+pub mod delegation;
 pub mod dlq;
 pub mod executor;
 pub mod gate;

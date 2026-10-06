@@ -16,6 +16,7 @@ pub mod configuration;
 pub mod context;
 pub mod control;
 pub mod credential;
+pub mod delegation;
 pub mod permit;
 pub mod reconciliation;
 mod scope;
