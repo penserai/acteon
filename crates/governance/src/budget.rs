@@ -19,6 +19,9 @@ pub struct RootBudgetLimits {
 pub struct RootBudget {
     /// Root owner is checked as an additional revocation ancestor.
     pub owner_subject: String,
+    /// Immutable admitted recipient context; protects sponsored IDs from rebinding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accepted_context: Option<acteon_core::ExecutionContextReference>,
     pub limits: RootBudgetLimits,
     /// Units are spent once per registered attempt, including retries. Known
     /// settlement releases concurrency, not spent call units.
@@ -87,6 +90,7 @@ impl AuthorityCoordinator {
             }
             let root = RootBudget {
                 owner_subject: owner_subject.into(),
+                accepted_context: None,
                 limits: limits.clone(),
                 spent_units: 0,
                 active_attempts: 0,
@@ -179,6 +183,7 @@ impl AuthorityCoordinator {
             }
             let child = RootBudget {
                 owner_subject: admission.parent.principal().id().into(),
+                accepted_context: None,
                 limits: admission.limits.clone(),
                 spent_units: 0,
                 active_attempts: 0,

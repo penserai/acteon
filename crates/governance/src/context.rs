@@ -6,8 +6,11 @@
 //! effect. Every effect still requires current authority evaluation/registration.
 mod admission;
 mod children;
+mod delegated;
 pub use admission::{IdempotentRootAdmission, ROOT_ADMISSION_KIND};
 pub use children::{CHILD_ADMISSION_KIND, ChildContextAdmission};
+pub(crate) use delegated::delegated_effect_check;
+pub use delegated::{DelegatedContextAdmission, DelegatingRootAdmission};
 
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -21,7 +24,7 @@ use uuid::Uuid;
 use crate::{AuthorityCoordinator, AuthorityStamp, CoordinationError};
 
 pub const CONTEXT_KIND: &str = "governance_execution_context";
-const FORMAT: u32 = 4;
+const FORMAT: u32 = 5;
 const MAX_BYTES: usize = 64 * 1024;
 const MAX_EFFECTS: usize = 128;
 const MAX_RESOURCES: usize = 16;
@@ -94,6 +97,10 @@ struct ContextRecord {
     representation: Option<crate::workforce::RepresentationBinding>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     lineage: Option<children::ChildLineage>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    delegation_grants: Vec<crate::delegation_policy::DelegationGrantReference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    delegated_from: Option<Box<delegated::DelegatedLineage>>,
     request_digest: String,
     accepted_ceiling_revision: String,
     accepted_effects: Vec<AcceptedEffect>,
@@ -134,6 +141,7 @@ impl VerifiedExecutionContext {
             return Err(CoordinationError::StaleAuthority);
         }
         self.validate_budget_binding(state)?;
+        delegated::validate_lineage_provenance(self, state, now_ms)?;
         let root = state
             .roots
             .get(&self.execution_id().to_string())
@@ -330,7 +338,7 @@ impl TrustedContextStore {
         limits: crate::RootBudgetLimits,
         clock: &dyn acteon_time::Clock,
     ) -> Result<VerifiedExecutionContext, ContextError> {
-        self.capture_permitted_inner(admission, permits, limits, clock, None, None)
+        self.capture_permitted_inner(admission, permits, limits, clock, None, None, Vec::new())
             .await
     }
     /// Capture authority from the exact authenticated credential as well as
@@ -343,8 +351,16 @@ impl TrustedContextStore {
         limits: crate::RootBudgetLimits,
         clock: &dyn acteon_time::Clock,
     ) -> Result<VerifiedExecutionContext, ContextError> {
-        self.capture_permitted_inner(admission, permits, limits, clock, Some(credential), None)
-            .await
+        self.capture_permitted_inner(
+            admission,
+            permits,
+            limits,
+            clock,
+            Some(credential),
+            None,
+            Vec::new(),
+        )
+        .await
     }
     pub async fn capture_represented_permitted_root(
         &self,
@@ -361,6 +377,7 @@ impl TrustedContextStore {
             clock,
             None,
             Some(representation),
+            Vec::new(),
         )
         .await
     }
@@ -381,6 +398,7 @@ impl TrustedContextStore {
             clock,
             Some(credential),
             Some(representation),
+            Vec::new(),
         )
         .await
     }
@@ -393,6 +411,7 @@ impl TrustedContextStore {
         clock: &dyn acteon_time::Clock,
         credential: Option<crate::credential::CredentialReference>,
         representation: Option<&crate::workforce::VerifiedRepresentation>,
+        delegation_grants: Vec<crate::delegation_policy::DelegationGrantReference>,
     ) -> Result<VerifiedExecutionContext, ContextError> {
         if representation.is_some_and(|r| !r.binds(&admission, &limits)) {
             return Err(ContextError::Verification);
@@ -412,9 +431,23 @@ impl TrustedContextStore {
         if let Some(reference) = &credential {
             crate::credential::validate_root(&state, &admission, reference, &limits, now_ms)?;
         }
+        delegated::validate_grants(
+            &state,
+            &admission.binding.principal,
+            &admission.accepted_effects,
+            &delegation_grants,
+            None,
+            now_ms,
+        )?;
         let stamp = admission.evaluated_authority.clone();
         let context = self
-            .capture_root_inner(admission, now_ms, credential, representation)
+            .capture_root_inner(
+                admission,
+                now_ms,
+                credential,
+                representation,
+                delegation_grants,
+            )
             .await?;
         self.coordinator
             .create_root_budget(
@@ -489,9 +522,18 @@ impl TrustedContextStore {
     }
 
     fn validate(&self, record: &ContextRecord) -> Result<(), ContextError> {
-        if (!matches!(record.schema_version, 2..=4))
+        self.validate_depth(record, 0)
+    }
+    fn validate_depth(&self, record: &ContextRecord, depth: usize) -> Result<(), ContextError> {
+        if depth >= crate::MAX_BUDGET_DEPTH {
+            return Err(ContextError::Verification);
+        }
+        if (!matches!(record.schema_version, 2..=5))
             || (record.schema_version == 2 && record.representation.is_some())
             || (record.schema_version < 4 && record.lineage.is_some())
+            || (record.schema_version < 5
+                && (!record.delegation_grants.is_empty() || record.delegated_from.is_some()))
+            || !delegated::valid_record_shape(record)
             || record
                 .lineage
                 .as_ref()
@@ -522,6 +564,9 @@ impl TrustedContextStore {
         {
             return Err(ContextError::Verification);
         }
+        if let Some(d) = &record.delegated_from {
+            self.validate_depth(&d.source, depth + 1)?;
+        }
         for effect in &record.accepted_effects {
             if !valid_text(&effect.operation)
                 || effect.resources.is_empty()
@@ -546,7 +591,8 @@ impl TrustedContextStore {
         admission: RootContextAdmission,
         now_ms: i64,
     ) -> Result<VerifiedExecutionContext, ContextError> {
-        self.capture_root_inner(admission, now_ms, None, None).await
+        self.capture_root_inner(admission, now_ms, None, None, Vec::new())
+            .await
     }
     async fn capture_root_inner(
         &self,
@@ -554,6 +600,7 @@ impl TrustedContextStore {
         now_ms: i64,
         credential_authority: Option<crate::credential::CredentialReference>,
         representation: Option<crate::workforce::RepresentationBinding>,
+        delegation_grants: Vec<crate::delegation_policy::DelegationGrantReference>,
     ) -> Result<VerifiedExecutionContext, ContextError> {
         let record = ContextRecord {
             schema_version: FORMAT,
@@ -569,6 +616,8 @@ impl TrustedContextStore {
             credential_authority,
             representation,
             lineage: None,
+            delegation_grants,
+            delegated_from: None,
             accepted_ceiling_revision: admission.accepted_ceiling_revision,
             accepted_effects: admission.accepted_effects,
             deadline_ms: admission.deadline_ms,
@@ -625,8 +674,12 @@ impl TrustedContextStore {
     ) -> Result<VerifiedExecutionContext, ContextError> {
         let mut original = existing.0.clone();
         original.admitted_at_ms = proposed.admitted_at_ms;
-        if matches!(original.schema_version, 2..=4)
-            && matches!(proposed.schema_version, 2..=4)
+        if matches!(original.schema_version, 2..=5)
+            && matches!(proposed.schema_version, 2..=5)
+            && original.delegation_grants.is_empty()
+            && proposed.delegation_grants.is_empty()
+            && original.delegated_from.is_none()
+            && proposed.delegated_from.is_none()
             && original.lineage.is_none()
             && proposed.lineage.is_none()
             && (original.schema_version != 2 || proposed.representation.is_none())
@@ -666,7 +719,7 @@ impl TrustedContextStore {
         }
         let sealed: SealedRecord =
             serde_json::from_str(encoded).map_err(|_| ContextError::Verification)?;
-        if !matches!(sealed.schema_version, 2..=4) || sealed.tag.len() != 32 {
+        if !matches!(sealed.schema_version, 2..=5) || sealed.tag.len() != 32 {
             return Err(ContextError::Verification);
         }
         let mut mac = self.mac(&sealed.key_id)?;

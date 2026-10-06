@@ -17,6 +17,7 @@ pub mod context;
 pub mod control;
 pub mod credential;
 pub mod delegation;
+pub mod delegation_policy;
 pub mod permit;
 pub mod reconciliation;
 mod scope;
@@ -86,6 +87,13 @@ pub enum AuthorityChange {
     RevokeSubject { subject: String },
     /// Only publish through the bounded trusted issuance entrypoint.
     PublishPermit { permit: permit::ExecutionPermit },
+    PublishDelegationGrant {
+        grant: delegation_policy::DelegationGrant,
+    },
+    RevokeDelegationGrant {
+        grant_id: String,
+        expected_revision: u64,
+    },
     PublishCredentialConfiguration {
         configuration: configuration::CredentialConfiguration,
     },
@@ -379,6 +387,7 @@ impl AuthorityCoordinator {
                     && (!root.cancelled || state.changes.values().any(|record| {
                         matches!(&record.change, AuthorityChange::CancelExecution { execution_id } if execution_id == id)
                     }))
+                    && root.accepted_context.as_ref().is_none_or(|r| r.namespace() == state.namespace && r.tenant() == state.tenant && r.execution_id().to_string() == *id && r.principal().id() == root.owner_subject && state.budget_parents.contains_key(id))
                     && valid_text(&root.owner_subject)
                     && root.limits.max_units > 0
                     && root.limits.max_concurrent > 0
@@ -528,6 +537,7 @@ impl AuthorityCoordinator {
             || !self.valid_start_accounting(&state)
             || !self.valid_permit_history(&state)
             || !self.valid_credential_history(&state)
+            || !self.valid_delegation_history(&state)
             || !self.valid_workforce_history(&state)
             || state.changes.values().any(|record| match &record.change {
                 AuthorityChange::UpgradeProtocol {
@@ -558,6 +568,13 @@ impl AuthorityCoordinator {
                     credential_id,
                     expected_revision,
                 } => !valid_text(credential_id) || *expected_revision == 0,
+                AuthorityChange::PublishDelegationGrant { grant } => {
+                    !self.valid_delegation_grant(grant)
+                }
+                AuthorityChange::RevokeDelegationGrant {
+                    grant_id,
+                    expected_revision,
+                } => !valid_text(grant_id) || *expected_revision == 0,
                 AuthorityChange::PublishPermit { permit } => !self.valid_permit(permit),
                 AuthorityChange::RevokePermit {
                     permit_id,
@@ -755,7 +772,9 @@ impl AuthorityCoordinator {
             | AuthorityChange::ReserveScope { .. }
             | AuthorityChange::PublishPermit { .. }
             | AuthorityChange::PublishCredential { .. }
-            | AuthorityChange::PublishCredentialConfiguration { .. } => {
+            | AuthorityChange::PublishCredentialConfiguration { .. }
+            | AuthorityChange::PublishDelegationGrant { .. }
+            | AuthorityChange::RevokeDelegationGrant { .. } => {
                 return Err(CoordinationError::Invalid(
                     "use bounded permit publication".into(),
                 ));
@@ -865,7 +884,9 @@ impl AuthorityCoordinator {
                 | AuthorityChange::ReserveScope { .. }
                 | AuthorityChange::PublishPermit { .. }
                 | AuthorityChange::PublishCredential { .. }
-                | AuthorityChange::PublishCredentialConfiguration { .. } => {
+                | AuthorityChange::PublishCredentialConfiguration { .. }
+                | AuthorityChange::PublishDelegationGrant { .. }
+                | AuthorityChange::RevokeDelegationGrant { .. } => {
                     unreachable!("publication uses its bounded entrypoint")
                 }
             }

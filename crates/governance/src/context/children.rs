@@ -20,13 +20,13 @@ pub const CHILD_ADMISSION_KIND: &str = "governance_child_admission";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ChildLineage {
-    parent: ExecutionContextReference,
-    root_execution_id: Uuid,
-    depth: usize,
-    limits: RootBudgetLimits,
-    admission_digest: String,
+    pub(super) parent: ExecutionContextReference,
+    pub(super) root_execution_id: Uuid,
+    pub(super) depth: usize,
+    pub(super) limits: RootBudgetLimits,
+    pub(super) admission_digest: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    restrictions: Vec<ResourceRef>,
+    pub(super) restrictions: Vec<ResourceRef>,
 }
 impl ChildLineage {
     pub(super) fn valid_shape(&self, record: &ContextRecord) -> bool {
@@ -37,7 +37,12 @@ impl ChildLineage {
             && self.parent.execution_id() != record.execution_id
             && self.parent.namespace() == record.namespace
             && self.parent.tenant() == record.tenant
-            && self.parent.principal() == &record.principal
+            && (self.parent.principal() == &record.principal
+                || record.delegated_from.as_ref().is_some_and(|d| {
+                    d.boundary_execution_id == record.execution_id
+                        && d.source.execution_id == self.parent.execution_id()
+                        && d.source.principal == *self.parent.principal()
+                }))
             && self.limits.deadline_ms == record.deadline_ms
             && self.limits.max_units > 0
             && self.limits.max_concurrent > 0
@@ -115,6 +120,14 @@ impl VerifiedExecutionContext {
         state: &crate::CoordinatorSnapshot,
     ) -> Result<(), CoordinationError> {
         let id = self.execution_id().to_string();
+        if state
+            .roots
+            .get(&id)
+            .and_then(|r| r.accepted_context.as_ref())
+            .is_some_and(|r| self.reference().ok().as_ref() != Some(r))
+        {
+            return Err(CoordinationError::Conflict);
+        }
         let Some(lineage) = &self.0.lineage else {
             return if state.budget_parents.contains_key(&id) {
                 Err(CoordinationError::Conflict)
@@ -127,9 +140,7 @@ impl VerifiedExecutionContext {
             || path.last() != Some(&lineage.root_execution_id.to_string())
             || path.len() != lineage.depth + 1
             || state.roots[&id].limits != lineage.limits
-            || path
-                .iter()
-                .any(|id| state.roots[id].owner_subject != self.principal().id())
+            || !super::delegated::budget_owners_match(self, state, &path)?
         {
             return Err(CoordinationError::Conflict);
         }
@@ -245,7 +256,7 @@ impl TrustedContextStore {
         }
         Ok(resources.into_iter().collect())
     }
-    async fn recover_child_record(
+    pub(super) async fn recover_child_record(
         &self,
         original: &ContextRecord,
         state: &crate::CoordinatorSnapshot,
@@ -276,7 +287,10 @@ impl TrustedContextStore {
             },
         )
     }
-    fn child_admission_key(&self, admission_key: &str) -> Result<(StateKey, String), ContextError> {
+    pub(super) fn child_admission_key(
+        &self,
+        admission_key: &str,
+    ) -> Result<(StateKey, String), ContextError> {
         if !valid_text(admission_key) {
             return Err(ContextError::Invalid);
         }
@@ -293,11 +307,25 @@ impl TrustedContextStore {
             digest,
         ))
     }
-    fn match_child(original: &ContextRecord, proposed: &ContextRecord) -> Result<(), ContextError> {
+    pub(super) fn match_child(
+        original: &ContextRecord,
+        proposed: &ContextRecord,
+    ) -> Result<(), ContextError> {
         if original.lineage.is_none() {
             return Err(ContextError::Verification);
         }
         let mut expected = original.clone();
+        if let Some(d) = &mut expected.delegated_from
+            && d.boundary_execution_id == original.execution_id
+        {
+            d.boundary_execution_id = proposed.execution_id;
+            d.boundary_reference = proposed
+                .delegated_from
+                .as_ref()
+                .ok_or(ContextError::Conflict)?
+                .boundary_reference
+                .clone();
+        }
         expected.handle = proposed.handle.clone();
         expected.execution_id = proposed.execution_id;
         expected.admitted_at_ms = proposed.admitted_at_ms;

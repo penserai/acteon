@@ -56,6 +56,7 @@ impl TrustedContextStore {
                 clock,
             },
             None,
+            Vec::new(),
         )
         .await
     }
@@ -64,13 +65,18 @@ impl TrustedContextStore {
         request: IdempotentRootAdmission<'_>,
         representation: &crate::workforce::VerifiedRepresentation,
     ) -> Result<VerifiedExecutionContext, ContextError> {
-        self.capture_idempotent_inner(request, Some(representation))
+        self.capture_idempotent_inner(request, Some(representation), Vec::new())
             .await
     }
-    async fn capture_idempotent_inner(
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one recoverable immutable root acceptance protocol"
+    )]
+    pub(super) async fn capture_idempotent_inner(
         &self,
         request: IdempotentRootAdmission<'_>,
         representation: Option<&crate::workforce::VerifiedRepresentation>,
+        delegation_grants: Vec<crate::delegation_policy::DelegationGrantReference>,
     ) -> Result<VerifiedExecutionContext, ContextError> {
         let IdempotentRootAdmission {
             admission_key,
@@ -94,19 +100,28 @@ impl TrustedContextStore {
         admission.accepted_ceiling_revision = crate::permit::permit_revision_tag(permits)?;
         let now_ms = clock.now().timestamp_millis();
         let state = self.coordinator.snapshot().await?;
-        let proposed = self.admission_record(
+        let mut proposed = self.admission_record(
             &admission,
             credential.clone(),
             limits,
             now_ms,
             representation,
         );
+        proposed.context.delegation_grants = delegation_grants;
         self.validate(&proposed.context)?;
         let (key, key_id) = self.root_admission_key(admission_key)?;
         let encoded = self.seal_admission(&proposed, &key_id)?;
         let stored = if let Some(value) = self.store.get(&key).await? {
             value
         } else {
+            super::delegated::validate_grants(
+                &state,
+                &admission.binding.principal,
+                &admission.accepted_effects,
+                &proposed.context.delegation_grants,
+                None,
+                now_ms,
+            )?;
             crate::permit::validate_root_admission_represented(
                 &state,
                 &admission,
@@ -156,6 +171,14 @@ impl TrustedContextStore {
             &original.limits,
             now_ms,
         )?;
+        super::delegated::validate_grants(
+            &state,
+            &record.principal,
+            &record.accepted_effects,
+            &record.delegation_grants,
+            None,
+            now_ms,
+        )?;
         self.restore_admitted_context(admission, record, credential, original.limits, clock)
             .await
     }
@@ -187,6 +210,7 @@ impl TrustedContextStore {
                     record.admitted_at_ms,
                     Some(credential),
                     record.representation.clone(),
+                    record.delegation_grants.clone(),
                 )
                 .await?
             }
@@ -227,6 +251,8 @@ impl TrustedContextStore {
                 credential_authority: Some(credential),
                 representation,
                 lineage: None,
+                delegation_grants: Vec::new(),
+                delegated_from: None,
                 request_digest: admission.binding.request_digest.clone(),
                 accepted_ceiling_revision: admission.accepted_ceiling_revision.clone(),
                 accepted_effects: admission.accepted_effects.clone(),
@@ -266,8 +292,8 @@ impl TrustedContextStore {
             && proposed.context.lineage.is_none()
             && (expected.schema_version != 2 || proposed.context.representation.is_none())
             && (proposed.context.schema_version != 2 || expected.representation.is_none())
-            && matches!(expected.schema_version, 2..=4)
-            && matches!(proposed.context.schema_version, 2..=4)
+            && matches!(expected.schema_version, 2..=5)
+            && matches!(proposed.context.schema_version, 2..=5)
         {
             expected.schema_version = proposed.context.schema_version;
         }

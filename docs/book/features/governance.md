@@ -307,3 +307,87 @@ That admission and real A2A runtime handoff remain subsequent implementation wor
 This host integration currently has no HTTP discovery route or model-callable
 runtime tool. HTTPS URL syntax approval also requires a separately qualified
 transport with network confinement, endpoint authentication and protocol checks.
+
+
+### Service delegation and shared sponsorship
+
+A service request can authorize an agent to do work that its caller cannot execute
+personally. Trusted runtimes use a `DelegationGrant` to pin the actual source and
+recipient principals, individual agent resource, approved binding digest, skill,
+complete `agent.invoke` ingress effect and qualified effect footprint. The ingress
+resources include every resource in that footprint. Direct execution permissions
+remain separate: the caller needs current authority for the ingress request,
+and the recipient needs its own current credentials, permits and workforce
+relationships for each effect it executes.
+
+Publish and retire these grants through
+`AuthorityCoordinator::publish_delegation_grant` and
+`revoke_delegation_grant`, using independently authenticated management bounds.
+Publication and terminal retirement share the coordinator's StateStore CAS
+boundary with effect starts. Accepted executions keep both the original grant
+revision and the current restriction checks. A later expansion of a grant cannot
+expand an already accepted request. Retirement requires a new grant ID for new
+authority; it cannot resurrect an old execution's rights.
+
+At initial acceptance, `TrustedContextStore::capture_delegating_root` seals the
+selected grant references into the durable root acceptance journal. The host then
+uses `capture_delegated_child` with independently authenticated recipient
+admission for the **actual new input**, its direct effects, complete service intent,
+credential and permit references, qualified binding digest and optional verified
+workforce representation. For represented work, the verified initiator must be
+the immediate source participant. Root requester identity remains available
+separately through `original_requester()`; it cannot supply the recipient's team
+membership or substitute for its actual caller.
+
+The child receives a recipient-owned budget leaf linked to the existing sponsor
+ancestry. Allocation creates no separate recipient funding root and spends no
+attempt units. Each registered effect charges that leaf and every sponsor
+ancestor once, within the same CAS. Known settlement releases their concurrency;
+spent units remain spent. Cancellation, subject revocation, grant retirement and
+closures of the enclosing agent resources apply throughout the branch. The budget
+pins the admitted recipient context reference to prevent execution-ID rebinding.
+
+Onward grants and their complete footprints must fit inside the already accepted
+service intent. This allows a coordinating agent to request another service while
+remaining unable to execute that service's private operations directly. Nested
+starts recheck each source's ingress authority, each ancestor's original and
+current service intent, and the final recipient's direct authority. Same-actor
+workflow continuations preserve the delegation proof and sponsorship.
+
+These are trusted Rust runtime APIs. Registry selection, input qualification,
+agent-specific runtime binding and A2A transport must supply the approved plan
+and independently authenticated recipient acceptance. The existing advisory
+registry preview is separate from child admission. Public delegation routes,
+client tooling and the durable peer transport belong to the mesh integration
+phase.
+
+New contexts use signed format 5. Previously accepted formats 2–4 remain readable;
+new grants cannot be attached to an old acceptance by replay. Upgrade and drain
+older workers before activating the new grant event types, since those workers
+refuse records they cannot understand. Retain the admission journals, context
+verification keys and historical grant publications needed by live descendants
+and reconciliation.
+
+#### Discovering a delegated service
+
+An approved peer can carry an `ApprovedServicePlan` with two exact effect lists:
+its complete downstream intent and the operations that the recipient may perform
+directly. `ApprovedPeerBinding::new_service_trusted` pins both lists together with
+the card, skill, endpoint, transport, and executing principal. Changing the plan
+changes the binding digest and requires a corresponding accepted grant.
+
+For these bindings, `ApprovedPeerRegistry::discover_candidates` checks the
+caller's current ingress permission and an initially accepted service grant
+before resolving private recipient authority. It then reads the current registry
+and rechecks the grant and both participants after those reads. The recipient's
+private effects are checked against its own credential and permits; the caller
+needs the invocation permission and approved service intent, without receiving
+those private permissions. Retirement, narrowed intent, expiry, closures, and
+participant revocation refuse a candidate.
+
+A service candidate includes the selected `accepted_grant` reference. This is
+advisory metadata, not execution authority. The host still authenticates a fresh
+`RootContextAdmission` for the actual recipient input and calls
+`capture_delegated_child`; a discovery context is never reused as the invocation
+or its payer. Discovery creates no context, budget allocation, or effect start.
+Ordinary peer bindings retain their existing intersection-based preview.

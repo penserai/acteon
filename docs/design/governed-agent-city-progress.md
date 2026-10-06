@@ -1353,3 +1353,44 @@ read-barrier expiry. This slice supplies host integration, not an HTTP route or
 an A2A invocation. Cross-principal child admission, shared sponsorship, runtime
 binding, transport qualification and actual peer invocation remain required for
 the autonomous mesh phase. All later workforce/federation phases remain active.
+
+
+## Approved discovery release and cross-principal admission (in progress)
+
+PR #430 merged reviewed head `482c8d5e9f0a0e36fac4f656d93f8b574fb14050` as
+`d290a9f126ac021d549043a17557500f1aefc7f3` on October 6, 2026. All 28 final-head
+checks completed: 25 passed and three intentionally skipped. The integration
+job's first attempt had an intermittent existing scenario replay divergence;
+the exact local feature-enabled CLI suite, nine preserved local replays and one
+unchanged-head integration retry passed. The original failure remains retained
+and its cause is unproven. Documentation deployment 37503322846 succeeded for the
+merge commit; the public governance article returned HTTP 200 and matched the
+reviewed strict-build article hash.
+
+The next branch implements explicit service delegation grants, initial signed
+root grant selection, independently authenticated cross-principal child input
+acceptance and shared sponsor ancestry. Source ingress authority is separate
+from recipient direct effects. Nested service intent cannot expand the accepted
+root's footprint; budget allocation pins recipient context identity. Grant
+publication/terminal retirement and effect starts share the configured StateStore
+coordinator boundary. This work remains unmerged pending complete verification,
+registry service-plan integration and adversarial review.
+
+Public API/SDK/UI surfaces, real agent-specific runtime and A2A transport,
+intervention acknowledgments, production/federation qualification and the other
+remaining city/workforce gates are still required. This is platform authority and
+accounting work, not scenario-specific code, and it does not complete the city
+vision.
+
+### PR #431 service discovery integration (in progress)
+
+The committed delegation foundation is `c3c36317` on PR #431. The next change
+integrates approved service plans into registry discovery: source ingress and
+initially accepted grant intent are checked before private recipient resolution,
+while recipient private operations are checked independently after registry
+reads. The binding digest pins complete intent and direct-operation selection.
+Contracts cover fresh recipient acceptance and shared sponsorship, no caller
+permission borrowing, grant retirement during resolution, delayed expiry,
+offboarding, unaccepted grants, and narrowed current intent. This remains an
+unmerged draft pending final checks and adversarial review; durable A2A runtime
+and transport work remains in the implementation plan.

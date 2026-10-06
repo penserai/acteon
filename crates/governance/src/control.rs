@@ -106,7 +106,9 @@ impl ControlChangeAuthorization<'_> {
             | AuthorityChange::ReserveScope { .. }
             | AuthorityChange::PublishPermit { .. }
             | AuthorityChange::PublishCredential { .. }
-            | AuthorityChange::PublishCredentialConfiguration { .. } => false,
+            | AuthorityChange::PublishCredentialConfiguration { .. }
+            | AuthorityChange::PublishDelegationGrant { .. }
+            | AuthorityChange::RevokeDelegationGrant { .. } => false,
         };
         if !allowed {
             return Err(CoordinationError::Restricted);
