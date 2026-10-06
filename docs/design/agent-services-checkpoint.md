@@ -22,10 +22,18 @@ Implemented so far:
   access governed service tasks. The boundary reads durable acceptance rather
   than trusting display metadata.
 
+- Requester-isolated observation authenticates the original source credential.
+  Agent callers must also present the exact source context returned by admission.
+  Observation repairs known completion receipts without starting provider work.
+- A configurable server driver discovers durable acceptances from the configured
+  state backend and resumes them through governed execution. It retains in-flight
+  and uncertain receipts rather than resending them. Scheduling uses fair cursors
+  and bounded concurrency; backend scans still collect whole scopes.
+
 Remaining before release:
 
-- Complete requester-isolated task observation, cancellation, and a durable
-  worker driver with restart recovery.
+- Complete requester cancellation and ambiguity handling; qualify restart
+  recovery against each supported production backend.
 - Expand focused adversarial and integration tests from admission/isolation to
   full provider execution and peer lifecycle.
 - Complete registry revision fencing and qualified outbound A2A lifecycle work.

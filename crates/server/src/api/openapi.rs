@@ -94,6 +94,7 @@ use acteon_core::{
     ),
     paths(
         super::agent_services::message_send,
+        super::agent_services::task_get,
         super::workforce::inspect,
         super::workforce::change,
         super::governance::inspect,

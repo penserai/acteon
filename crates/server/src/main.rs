@@ -2872,6 +2872,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bus_sessions = Arc::new(acteon_server::bus_sessions::BusSessionRegistry::new(
         config.bus.sessions.clone(),
     )?);
+    let agent_driver_runtime = execution_runtime.clone();
     let state = AppState {
         gateway: Arc::clone(&gateway),
         metrics: gateway_metrics,
@@ -2919,6 +2920,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
 
+    let start_agent_driver = || {
+        agent_driver_runtime
+            .as_ref()
+            .zip(config.execution_authority.as_ref())
+            .map(|(runtime, authority)| runtime.spawn_agent_driver(&authority.agent_driver))
+            .transpose()
+            .map(Option::flatten)
+    };
+    let agent_service_driver;
     // Serve with graceful shutdown on SIGINT / SIGTERM.
     if config.tls.enabled
         && config.tls.server.cert_path.is_some()
@@ -2944,9 +2954,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "acteon-server listening (HTTPS)"
         );
 
+        agent_service_driver = start_agent_driver()?;
         serve_tls(listener, app, tls_config, shutdown_signal()).await?;
     } else {
         info!(address = %addr, "acteon-server listening");
+        agent_service_driver = start_agent_driver()?;
         axum::serve(listener, app)
             .with_graceful_shutdown(shutdown_signal())
             .await?;
@@ -2961,6 +2973,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .is_err()
     {
         tracing::warn!("bus session shutdown timeout exceeded");
+    }
+
+    if let Some(driver) = agent_service_driver {
+        driver
+            .shutdown(Duration::from_secs(config.server.shutdown_timeout_seconds))
+            .await;
     }
 
     // Wait for pending audit tasks to complete (with configurable timeout).

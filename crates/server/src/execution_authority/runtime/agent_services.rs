@@ -10,7 +10,7 @@ use crate::{
         agent_services::{AgentServiceGrantDeclaration, PreparedAgentService},
     },
 };
-use acteon_core::{ExecutionContextReference, Task, TaskMessage};
+use acteon_core::{ExecutionContextReference, PrincipalKind, Task, TaskMessage};
 use acteon_executor::governed::governed_provider_input_digest;
 use acteon_gateway::agent_runtime::AgentProviderRuntime;
 use acteon_governance::{
@@ -38,6 +38,21 @@ pub struct AgentServiceRequest<'a> {
     pub auth_provider: &'a AuthProvider,
     pub parent: Option<AgentServiceParent<'a>>,
 }
+/// Transport receipt; the host retains source provenance separately from model data.
+pub struct AgentServiceAcceptance {
+    pub task: Task,
+    pub source_context: ExecutionContextReference,
+}
+
+pub struct AgentServiceObservation<'a> {
+    pub namespace: &'a str,
+    pub tenant: &'a str,
+    pub agent_id: &'a str,
+    pub task_id: uuid::Uuid,
+    pub authentication: &'a AuthenticatedExecutionConfiguration,
+    pub source_context: Option<&'a ExecutionContextReference>,
+}
+
 /// Opaque references are verified against original private caller authentication.
 pub struct AgentServiceParent<'a> {
     pub context: &'a ExecutionContextReference,
@@ -194,7 +209,7 @@ impl ExecutionAuthorityRuntime {
     pub async fn accept_agent_service(
         &self,
         request: AgentServiceRequest<'_>,
-    ) -> Result<Task, String> {
+    ) -> Result<AgentServiceAcceptance, String> {
         let (scope, agent, runtime) =
             self.service(request.namespace, request.tenant, request.agent_id)?;
         request
@@ -387,14 +402,59 @@ impl ExecutionAuthorityRuntime {
             })
             .await
             .map_err(|_| "recipient admission refused")?;
-        runtime
+        let task = runtime
             .accept(
                 &child,
                 &agent.declaration.recipient_permits,
                 request.message,
             )
             .await
-            .map_err(|_| "service acceptance refused".into())
+            .map_err(|_| "service acceptance refused")?;
+        Ok(AgentServiceAcceptance {
+            task,
+            source_context: parent
+                .reference()
+                .map_err(|_| "source provenance unavailable")?,
+        })
+    }
+
+    /// Observe only the authenticated original source. Shared agents must also
+    /// present the exact job context, so one agent identity cannot join requesters.
+    pub async fn observe_agent_service(
+        &self,
+        request: AgentServiceObservation<'_>,
+    ) -> Result<Task, String> {
+        request
+            .authentication
+            .verify_authentication_current()
+            .await
+            .map_err(|_| "authentication is stale")?;
+        let caller = request
+            .authentication
+            .scope(request.namespace, request.tenant)?;
+        let (_, _, runtime) = self.service(request.namespace, request.tenant, request.agent_id)?;
+        let source = runtime
+            .source_context(request.task_id)
+            .await
+            .map_err(|_| "service task unavailable")?;
+        let reference = source
+            .reference()
+            .map_err(|_| "source provenance unavailable")?;
+        let actor = caller.authentication_source().principal();
+        if source.principal() != actor
+            || source.credential_authority().map(|c| c.id.as_str())
+                != Some(caller.credential_reference().id.as_str())
+            || source.auth_method() != caller.authentication_source().auth_method()
+            || request.source_context.is_some_and(|r| r != &reference)
+            || (actor.kind() == PrincipalKind::Agent && request.source_context != Some(&reference))
+        {
+            return Err("service task unavailable".into());
+        }
+        let observed = runtime
+            .observe(request.task_id)
+            .await
+            .map_err(|_| "service task unavailable")?;
+        Ok(observed.task)
     }
 
     fn service(

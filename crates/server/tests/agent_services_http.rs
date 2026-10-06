@@ -1,4 +1,5 @@
 //! Real binary and middleware, independently authenticated caller and recipient.
+#![recursion_limit = "256"]
 use acteon_core::{AgentCard, AgentCardInterface, Skill};
 use axum::{Json, Router, routing::post};
 use serde_json::{Value, json};
@@ -18,6 +19,7 @@ struct Server {
     process: Child,
     directory: PathBuf,
     url: String,
+    worker_secret: Option<String>,
 }
 impl Drop for Server {
     fn drop(&mut self) {
@@ -27,8 +29,25 @@ impl Drop for Server {
     }
 }
 impl Server {
-    #[allow(clippy::too_many_lines)] // One isolated binary deployment fixture.
     fn start(webhook: &str, worker_secret: Option<&str>, worker_grant: &str) -> Self {
+        Self::configured(
+            webhook,
+            worker_secret,
+            worker_grant,
+            false,
+            "human",
+            json!({"backend":"memory"}),
+        )
+    }
+    #[allow(clippy::too_many_lines)] // One isolated binary deployment fixture.
+    fn configured(
+        webhook: &str,
+        worker_secret: Option<&str>,
+        worker_grant: &str,
+        driver: bool,
+        source_kind: &str,
+        state: Value,
+    ) -> Self {
         let directory =
             std::env::temp_dir().join(format!("acteon-agent-services-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&directory).unwrap();
@@ -42,16 +61,16 @@ impl Server {
             url: "https://agents.example/notifier".into(),
         });
         let limits = json!({"max_units":5,"max_concurrent":2,"deadline_ms":4_102_444_800_000_i64});
-        let human = json!({"id":"alice","kind":"human"});
+        let human = json!({"id":"alice","kind":source_kind});
         let worker = json!({"id":"agent/notifier","kind":"agent"});
         let route = json!({"provider":"incident","action_type":"execute"});
         let configuration = json!({
             "server":{"host":"127.0.0.1","port":port},
-            "state":{"backend":"memory"}, "ui":{"enabled":false},
+            "state":state, "ui":{"enabled":false},
             "auth":{"enabled":true,"config_path":"auth.toml","watch":false,
                 "authority":{"namespace":"auth-control","tenant":"deployment","source_id":"service-auth","bootstrap":true}},
             "providers":[{"name":"incident","type":"webhook","url":webhook,"internal_hosts":["127.0.0.1"]}],
-            "execution_authority":{"scopes":[{
+            "execution_authority":{"agent_driver":{"enabled":driver,"poll_interval_ms":100,"max_parallel":2,"scan_batch_size":4},"scopes":[{
                 "namespace":"prod","tenant":"acme","bootstrap":true,
                 "publisher":{"id":"operator","kind":"human"},"subjects":[human,worker],
                 "routes":[route],"valid_from_ms":0,"credential_limits":limits,
@@ -84,7 +103,7 @@ jwt_secret = "test-jwt-secret-at-least-32-bytes"
 [[api_keys]]
 name = "alice"
 authority_id = "credential/alice"
-principal = {{id="alice",kind="human"}}
+principal = {{id="alice",kind={source_kind:?}}}
 key_hash = {:?}
 role = "executor"
 [[api_keys.grants]]
@@ -119,7 +138,7 @@ actions = ["execute"]
 [[api_keys]]
 name = "legacy-observer"
 authority_id = "credential/observer"
-principal = {{id="alice",kind="human"}}
+principal = {{id="alice",kind={source_kind:?}}}
 key_hash = {:?}
 role = "operator"
 [[api_keys.grants]]
@@ -131,6 +150,14 @@ actions = ["rpc"]
             acteon_server::auth::api_key::hash_api_key("observer-secret")
         )
         .unwrap();
+        Self {
+            process: Self::launch(&directory, worker_secret),
+            directory,
+            url: format!("http://127.0.0.1:{port}"),
+            worker_secret: worker_secret.map(str::to_owned),
+        }
+    }
+    fn launch(directory: &std::path::Path, worker_secret: Option<&str>) -> Child {
         let log = fs::File::create(directory.join("server.log")).unwrap();
         let mut command = Command::new(env!("CARGO_BIN_EXE_acteon-server"));
         command
@@ -151,11 +178,19 @@ actions = ["rpc"]
         if let Some(secret) = worker_secret {
             command.env("ACTEON_TEST_AGENT_RECIPIENT", secret);
         }
-        Self {
-            process: command.spawn().unwrap(),
-            directory,
-            url: format!("http://127.0.0.1:{port}"),
-        }
+        command.spawn().unwrap()
+    }
+    fn restart(&mut self, driver: bool) {
+        self.process.kill().unwrap();
+        self.process.wait().unwrap();
+        let path = self.directory.join("acteon.toml");
+        let mut config: toml::Value = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        config["execution_authority"]["agent_driver"]["enabled"] = toml::Value::Boolean(driver);
+        fs::write(path, toml::to_string(&config).unwrap()).unwrap();
+        self.process = Self::launch(&self.directory, self.worker_secret.as_deref());
+    }
+    fn task_url(&self, id: &str) -> String {
+        format!("{}/a2a/prod/acme/agents/notifier/v1/tasks/{id}", self.url)
     }
     async fn ready(&mut self, client: &reqwest::Client) {
         tokio::time::timeout(Duration::from_secs(30), async {
@@ -374,5 +409,195 @@ async fn authenticated_individual_service_accepts_and_replays_without_effect_sta
         0,
         "acceptance cannot itself start a provider effect"
     );
+    webhook_task.abort();
+}
+
+async fn send_task(server: &Server, client: &reqwest::Client, id: &str) -> (Value, String) {
+    let response = client
+        .post(server.endpoint())
+        .bearer_auth("alice-secret")
+        .json(&message(id))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let source = response.headers()["x-acteon-agent-source-context"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    (response.json().await.unwrap(), source)
+}
+async fn await_completed(server: &Server, client: &reqwest::Client, id: &str) -> Value {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let response = client
+                .get(server.task_url(id))
+                .bearer_auth("alice-secret")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+            let task: Value = response.json().await.unwrap();
+            if task["status"]["state"] == "completed" {
+                return task;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn requester_observation_never_drives_work_and_agent_identity_requires_exact_job() {
+    let (url, calls, webhook_task) = webhook().await;
+    let mut server = Server::configured(
+        &url,
+        Some("notifier-secret"),
+        "incident",
+        false,
+        "agent",
+        json!({"backend":"memory"}),
+    );
+    let client = reqwest::Client::new();
+    server.ready(&client).await;
+    let (task, source) = send_task(&server, &client, "agent-job-one").await;
+    let (other, other_source) = send_task(&server, &client, "agent-job-two").await;
+    let endpoint = server.task_url(task["id"].as_str().unwrap());
+    for (token, context, expected) in [
+        ("alice-secret", None, 404),
+        ("alice-secret", Some(other_source.as_str()), 404),
+        ("observer-secret", Some(source.as_str()), 404),
+        ("notifier-secret", Some(source.as_str()), 404),
+        ("alice-secret", Some(source.as_str()), 200),
+    ] {
+        let mut request = client.get(&endpoint).bearer_auth(token);
+        if let Some(context) = context {
+            request = request.header("x-acteon-agent-source-context", context);
+        }
+        let response = request.send().await.unwrap();
+        assert_eq!(
+            response.status(),
+            expected,
+            "{}",
+            response.text().await.unwrap()
+        );
+        if expected == 200 {
+            let observed: Value = response.json().await.unwrap();
+            assert_eq!(observed["id"], task["id"]);
+            assert_eq!(observed["status"]["state"], "submitted");
+        }
+    }
+    assert_ne!(task["id"], other["id"]);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    webhook_task.abort();
+}
+
+#[tokio::test]
+async fn enabled_driver_executes_once_and_requester_observes_real_result() {
+    let (url, calls, webhook_task) = webhook().await;
+    let mut server = Server::configured(
+        &url,
+        Some("notifier-secret"),
+        "incident",
+        true,
+        "human",
+        json!({"backend":"memory"}),
+    );
+    let client = reqwest::Client::new();
+    server.ready(&client).await;
+    let (task, source) = send_task(&server, &client, "driver-job").await;
+    let completed = await_completed(&server, &client, task["id"].as_str().unwrap()).await;
+    assert_eq!(completed["artifacts"].as_array().unwrap().len(), 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let (replayed, replayed_source) = send_task(&server, &client, "driver-job").await;
+    assert_eq!(replayed["id"], task["id"]);
+    assert_eq!(source, replayed_source);
+    for token in ["observer-secret", "notifier-secret"] {
+        let response = client
+            .get(server.task_url(task["id"].as_str().unwrap()))
+            .bearer_auth(token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 404);
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    webhook_task.abort();
+}
+
+#[cfg(feature = "redis")]
+fn redis_state() -> (Value, acteon_state_redis::RedisConfig) {
+    let config = acteon_state_redis::RedisConfig {
+        url: std::env::var("ACTEON_GOVERNANCE_REDIS_URL").expect("set ACTEON_GOVERNANCE_REDIS_URL"),
+        prefix: format!("agent-services-{}", uuid::Uuid::new_v4()),
+        ..Default::default()
+    };
+    (
+        json!({"backend":"redis","url":config.url,"prefix":config.prefix}),
+        config,
+    )
+}
+
+#[tokio::test]
+#[cfg(feature = "redis")]
+#[ignore = "requires ACTEON_GOVERNANCE_REDIS_URL; real server restart with isolated StateStore prefix"]
+async fn redis_restart_recovers_queued_work_without_requester_resubmission_and_keeps_known_result()
+{
+    let (url, calls, webhook_task) = webhook().await;
+    let (backend, _) = redis_state();
+    let mut server = Server::configured(
+        &url,
+        Some("notifier-secret"),
+        "incident",
+        false,
+        "human",
+        backend,
+    );
+    let client = reqwest::Client::new();
+    server.ready(&client).await;
+    let (task, source) = send_task(&server, &client, "persisted-before-restart").await;
+    assert_eq!(task["status"]["state"], "submitted");
+    let response = client
+        .get(server.task_url(task["id"].as_str().unwrap()))
+        .bearer_auth("alice-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    server.restart(true);
+    server.ready(&client).await;
+    let completed = await_completed(&server, &client, task["id"].as_str().unwrap()).await;
+    assert_eq!(completed["id"], task["id"]);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    server.restart(true);
+    server.ready(&client).await;
+    let recovered = await_completed(&server, &client, task["id"].as_str().unwrap()).await;
+    assert_eq!(recovered["artifacts"], completed["artifacts"]);
+    let (replayed, replayed_source) = send_task(&server, &client, "persisted-before-restart").await;
+    assert_eq!(replayed["id"], task["id"]);
+    assert_eq!(source, replayed_source);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    // Observe accepted work after role offboarding. A GET cannot gain dispatch.
+    let path = server.directory.join("auth.toml");
+    let auth = fs::read_to_string(&path)
+        .unwrap()
+        .replace("authority_revision = 1", "authority_revision = 2")
+        .replacen("role = \"executor\"", "role = \"viewer\"", 1);
+    fs::write(path, auth).unwrap();
+    server.restart(true);
+    server.ready(&client).await;
+    let observed = await_completed(&server, &client, task["id"].as_str().unwrap()).await;
+    assert_eq!(observed["id"], task["id"]);
+    let response = client
+        .post(server.endpoint())
+        .bearer_auth("alice-secret")
+        .json(&message("new-offboarded-job"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 403);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
     webhook_task.abort();
 }

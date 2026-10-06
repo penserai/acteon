@@ -11,7 +11,41 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExecutionAuthorityConfig {
+    #[serde(default)]
+    pub agent_driver: AgentServiceDriverConfig,
     pub scopes: Vec<ExecutionScopeConfig>,
+}
+
+/// Host scheduling controls, separate from agent permits and service identity.
+/// Disabling the driver parks accepted work; it never certifies cancellation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AgentServiceDriverConfig {
+    pub enabled: bool,
+    pub poll_interval_ms: u64,
+    pub max_parallel: usize,
+    pub scan_batch_size: usize,
+}
+impl Default for AgentServiceDriverConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            poll_interval_ms: 500,
+            max_parallel: 4,
+            scan_batch_size: 64,
+        }
+    }
+}
+impl AgentServiceDriverConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        if !(50..=60_000).contains(&self.poll_interval_ms)
+            || !(1..=32).contains(&self.max_parallel)
+            || !(1..=256).contains(&self.scan_batch_size)
+        {
+            return Err("invalid bounded agent driver configuration".into());
+        }
+        Ok(())
+    }
 }
 
 /// Independent publication bounds are explicit, rather than inferred from
@@ -140,6 +174,7 @@ pub struct ExecutionRouteConfig {
 
 impl ExecutionAuthorityConfig {
     pub fn validate(&self, control_scope: (&str, &str)) -> Result<(), String> {
+        self.agent_driver.validate()?;
         if self.scopes.is_empty() || self.scopes.len() > 128 {
             return Err("execution authority requires 1..128 declared scopes".into());
         }

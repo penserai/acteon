@@ -18,7 +18,8 @@ const (
 	OpA2aPushRestListPushConfigs PlatformOperation = "a2a_push_rest_list_push_configs"
 	OpA2aPushRestListPushDlq PlatformOperation = "a2a_push_rest_list_push_dlq"
 	OpA2aPushRestSetPushConfig PlatformOperation = "a2a_push_rest_set_push_config"
-	OpAgentServicesMessageSend            PlatformOperation = "agent_services_message_send"
+	OpAgentServicesMessageSend PlatformOperation = "agent_services_message_send"
+	OpAgentServicesTaskGet PlatformOperation = "agent_services_task_get"
 	OpAnalyticsQueryAnalytics PlatformOperation = "analytics_query_analytics"
 	OpApprovalsApprove PlatformOperation = "approvals_approve"
 	OpApprovalsGetApproval PlatformOperation = "approvals_get_approval"
@@ -218,7 +219,8 @@ var platformOperations = map[PlatformOperation]platformDescriptor{
 	OpA2aPushRestListPushConfigs: {"GET", "/a2a/{namespace}/{tenant}/v1/tasks/{id}/pushNotificationConfigs", []string{"namespace", "tenant", "id"}, false},
 	OpA2aPushRestListPushDlq: {"GET", "/v1/a2a/{namespace}/{tenant}/push-dlq", []string{"namespace", "tenant"}, false},
 	OpA2aPushRestSetPushConfig: {"POST", "/a2a/{namespace}/{tenant}/v1/tasks/{id}/pushNotificationConfigs", []string{"namespace", "tenant", "id"}, false},
-	OpAgentServicesMessageSend:            {"POST", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/message:send", []string{"namespace", "tenant", "agent"}, false},
+	OpAgentServicesMessageSend: {"POST", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/message:send", []string{"namespace", "tenant", "agent"}, false},
+	OpAgentServicesTaskGet: {"GET", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}", []string{"namespace", "tenant", "agent", "id"}, false},
 	OpAnalyticsQueryAnalytics: {"GET", "/v1/analytics", []string{}, false},
 	OpApprovalsApprove: {"POST", "/v1/approvals/{namespace}/{tenant}/{id}/approve", []string{"namespace", "tenant", "id"}, false},
 	OpApprovalsGetApproval: {"GET", "/v1/approvals/{namespace}/{tenant}/{id}", []string{"namespace", "tenant", "id"}, false},

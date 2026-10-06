@@ -1459,3 +1459,21 @@ This is admission progress, not the Phase 4 completion gate. Required work remai
 requester-isolated observation/control, a durable driver and restart recovery,
 registry revision fencing, qualified outbound transport, cancellation ambiguity,
 and a real peer lifecycle. The complete city/workforce objective remains active.
+
+
+### Requester observation and server driver checkpoint
+
+The PR #433 branch adds authenticated requester observation and a configurable
+server driver over the existing durable acceptance journal. Observation checks
+source principal, credential identity, authentication method, and, for agent
+callers, the exact source context returned in the admission response header.
+GET requests cannot start provider work. Known completion receipts can restore a
+missing task projection and artifacts atomically without another provider call.
+
+The driver schedules eligible acceptances through the existing governed runtime,
+with bounded concurrency and fair cursors. Completed, in-flight, and uncertain
+receipts are retained rather than automatically resent. The state backend scan
+API still collects whole scopes, so this does not claim bounded storage scanning
+or production scale qualification. Cancellation, typed wire errors, native SDK
+header retention, UI, registry revision fencing, and the qualified outbound peer
+lifecycle remain before release. PR #433 remains a draft.

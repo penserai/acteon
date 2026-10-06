@@ -1,6 +1,10 @@
 //! Shared server installation against the configured backend, without wire proof.
+mod agent_driver;
 mod agent_services;
-pub use agent_services::{AgentServiceParent, AgentServiceRequest};
+pub use agent_driver::AgentServiceDriver;
+pub use agent_services::{
+    AgentServiceAcceptance, AgentServiceObservation, AgentServiceParent, AgentServiceRequest,
+};
 mod management;
 pub use management::{ManagementError, TrustedReconciliationInstallation};
 use std::{collections::BTreeMap, sync::Arc};

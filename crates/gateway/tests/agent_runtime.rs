@@ -1087,3 +1087,68 @@ async fn independent_redis_runtime_recovers_lost_acceptance_and_known_or_uncerta
         }
     }
 }
+
+#[tokio::test]
+async fn observation_retains_original_source_without_starting_even_after_source_revocation() {
+    let f = Fixture::new(false).await;
+    let runtime = f.runtime();
+    let task = f.accept(&runtime).await;
+    let source = runtime
+        .source_context(f.child.execution_id())
+        .await
+        .unwrap();
+    assert_eq!(source.reference().unwrap(), f.parent.reference().unwrap());
+    f.coordinator
+        .change(
+            "source-offboard",
+            AuthorityChange::RevokeSubject {
+                subject: "caller".into(),
+            },
+            "operator",
+            "offboard",
+        )
+        .await
+        .unwrap();
+    let observed = runtime.observe(f.child.execution_id()).await.unwrap();
+    assert_eq!(observed.task.id, task.id);
+    assert_eq!(observed.task.status.state, TaskState::Submitted);
+    assert!(observed.execution.is_none());
+    assert_eq!(f.counter.calls.load(Ordering::SeqCst), 0);
+    assert!(
+        Box::pin(runtime.resume(f.child.execution_id()))
+            .await
+            .is_err()
+    );
+    assert_eq!(f.counter.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn observation_rejects_fake_terminal_projection_and_repairs_known_result_without_execution() {
+    let f = Fixture::new(false).await;
+    let runtime = f.runtime();
+    let task = f.accept(&runtime).await;
+    let key = StateKey::new("city", "tenant", KeyKind::A2aTask, &task.id);
+    let mut fake = task.clone();
+    fake.status.state = TaskState::Completed;
+    f.state
+        .set(&key, &serde_json::to_string(&fake).unwrap(), None)
+        .await
+        .unwrap();
+    assert!(runtime.observe(f.child.execution_id()).await.is_err());
+    assert_eq!(f.counter.calls.load(Ordering::SeqCst), 0);
+    f.state
+        .set(&key, &serde_json::to_string(&task).unwrap(), None)
+        .await
+        .unwrap();
+    let original = Box::pin(runtime.resume(f.child.execution_id()))
+        .await
+        .unwrap();
+    f.state.delete(&key).await.unwrap();
+    let observed = runtime.observe(f.child.execution_id()).await.unwrap();
+    assert_eq!(observed.task.status.state, TaskState::Completed);
+    assert_eq!(
+        serde_json::to_value(&observed.task.artifacts).unwrap(),
+        serde_json::to_value(&original.task.artifacts).unwrap()
+    );
+    assert_eq!(f.counter.calls.load(Ordering::SeqCst), 1);
+}

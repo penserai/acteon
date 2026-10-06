@@ -367,9 +367,24 @@ impl AgentProviderRuntime {
         }
     }
 
-    /// Recover original accepted work. Provider execution retains its existing
-    /// immutable operation/attempt journal and coordinator start checkpoint.
-    pub async fn resume(&self, task_id: uuid::Uuid) -> Result<AgentTaskReceipt, AgentRuntimeError> {
+    /// Recover the immediate requester from the immutable signed acceptance.
+    /// Hosts must authenticate observation before returning any task contents.
+    pub async fn source_context(
+        &self,
+        task_id: uuid::Uuid,
+    ) -> Result<VerifiedExecutionContext, AgentRuntimeError> {
+        let accepted = self.load_acceptance(task_id).await?;
+        let context = self
+            .dependencies
+            .contexts
+            .recover_reference_for_observation(&accepted.reference)
+            .await?;
+        context
+            .immediate_service_source()
+            .ok_or(AgentRuntimeError::Conflict)
+    }
+
+    async fn load_acceptance(&self, task_id: uuid::Uuid) -> Result<Acceptance, AgentRuntimeError> {
         let raw = self
             .dependencies
             .state
@@ -381,6 +396,56 @@ impl AgentProviderRuntime {
             return Err(AgentRuntimeError::Conflict);
         }
         self.verify(&accepted).await?;
+        Ok(accepted)
+    }
+
+    /// Read and repair evidence without invoking a provider or reserving capacity.
+    /// Current revocation can deny a start without hiding already accepted work.
+    pub async fn observe(
+        &self,
+        task_id: uuid::Uuid,
+    ) -> Result<AgentTaskReceipt, AgentRuntimeError> {
+        let accepted = self.load_acceptance(task_id).await?;
+        let scope = TaskScope::new(accepted.reference.namespace(), accepted.reference.tenant());
+        let task = self.materialize(&accepted).await?;
+        let execution = self
+            .executor
+            .inspect(&accepted.reference, self.binding.target())
+            .await?;
+        if task.status.state.is_terminal()
+            && !execution.as_ref().is_some_and(|receipt| matches!(&receipt.status,
+                GovernedProviderStatus::Completed { outcome } if task.status.state == terminal_state(outcome))) {
+            return Err(AgentRuntimeError::Conflict);
+        }
+        match execution {
+            Some(execution) => {
+                self.project_execution(&scope, &accepted.initial_task, task, execution)
+                    .await
+            }
+            None if task.status.state.is_terminal() => Err(AgentRuntimeError::Conflict),
+            None => Ok(AgentTaskReceipt {
+                task,
+                execution: None,
+            }),
+        }
+    }
+
+    /// Routing hint for a trusted recovery driver. Full qualification is repeated
+    /// by observation/resume before any projection or provider operation.
+    pub fn acceptance_task_id(&self, raw: &str) -> Result<uuid::Uuid, AgentRuntimeError> {
+        let accepted = self.decode(raw)?;
+        Ok(accepted.reference.execution_id())
+    }
+
+    #[must_use]
+    pub fn binding_digest(&self) -> &str {
+        self.binding.digest()
+    }
+
+    /// Recover original accepted work. Provider execution retains its existing
+    /// immutable operation/attempt journal and coordinator start checkpoint.
+    pub async fn resume(&self, task_id: uuid::Uuid) -> Result<AgentTaskReceipt, AgentRuntimeError> {
+        let accepted = self.load_acceptance(task_id).await?;
         let scope = TaskScope::new(accepted.reference.namespace(), accepted.reference.tenant());
         let mut task = self.materialize(&accepted).await?;
         let previous = self

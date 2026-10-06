@@ -102,6 +102,12 @@
     "permission": "Dispatch"
   },
   {
+    "name": "agent_services_task_get",
+    "method": "GET",
+    "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}",
+    "permission": "AuditRead"
+  },
+  {
     "name": "analytics_query_analytics",
     "method": "GET",
     "path": "/v1/analytics",

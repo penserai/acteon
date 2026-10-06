@@ -3,8 +3,9 @@
 pub mod agent_services;
 mod runtime;
 pub use runtime::{
-    AgentServiceParent, AgentServiceRequest, ExecutionAuthorityRuntime,
-    ExecutionRuntimeDependencies, ManagementError, TrustedReconciliationInstallation,
+    AgentServiceAcceptance, AgentServiceDriver, AgentServiceObservation, AgentServiceParent,
+    AgentServiceRequest, ExecutionAuthorityRuntime, ExecutionRuntimeDependencies, ManagementError,
+    TrustedReconciliationInstallation,
 };
 use std::{collections::BTreeMap, sync::Arc};
 

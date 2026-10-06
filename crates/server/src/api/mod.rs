@@ -229,6 +229,10 @@ pub fn router(state: AppState) -> Router {
                 .layer(DefaultBodyLimit::max(a2a::A2A_MAX_BODY_BYTES)),
         )
         .route(
+            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}",
+            get(agent_services::task_get),
+        )
+        .route(
             "/a2a/{namespace}/{tenant}/v1/tasks/{id}",
             get(a2a::a2a_rest_task_get).post(a2a::a2a_rest_task_cancel),
         )

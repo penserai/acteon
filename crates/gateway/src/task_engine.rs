@@ -1089,6 +1089,12 @@ impl TaskEngine {
                 Self::validate_governed_projection(task, expected)?;
                 transitioned = task.status.state != next;
                 if transitioned {
+                    // A missing projection is rebuilt as Submitted. A durable,
+                    // qualified completion receipt authorizes repairing both
+                    // transitions in this CAS without starting another effect.
+                    if task.status.state == TaskState::Submitted {
+                        task.transition_to_at(TaskState::Working, None, now)?;
+                    }
                     task.transition_to_at(next, None, now)?;
                 }
                 task.upsert_artifact_at(artifact.clone(), false, now)?;
