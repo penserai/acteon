@@ -66,6 +66,28 @@ impl VerifiedExecutionContext {
     pub fn original_requester(&self) -> &PrincipalIdentity {
         original_actor(&self.0)
     }
+    pub(crate) fn matches_service_runtime(
+        &self,
+        state: &CoordinatorSnapshot,
+        binding_digest: &str,
+        direct_effects: &[AcceptedEffect],
+    ) -> bool {
+        let Some(lineage) = &self.0.delegated_from else {
+            return false;
+        };
+        let Some(grant) = delegation_policy::original(state, &lineage.grant) else {
+            return false;
+        };
+        grant.binding_digest == binding_digest
+            && grant.target == self.0.principal
+            && grant.source == lineage.source.principal
+            && self.credential_authority().is_some()
+            && direct_effects.len() == self.0.accepted_effects.len()
+            && valid_effects(direct_effects)
+            && direct_effects
+                .iter()
+                .all(|effect| self.within_accepted_ceiling(effect))
+    }
     /// Read-only qualification of an onward service against sealed ancestor intent.
     pub(crate) fn check_service_intent(
         &self,
@@ -285,6 +307,7 @@ pub(crate) fn delegated_effect_check(
     state: &CoordinatorSnapshot,
     request: &PermittedAttempt<'_>,
     now: i64,
+    availability: crate::budget::Availability,
 ) -> Result<(), CoordinationError> {
     let context = request.context;
     let Some(d) = &context.0.delegated_from else {
@@ -299,18 +322,19 @@ pub(crate) fn delegated_effect_check(
     )?;
     let (original, current) = grant_pair(state, &d.grant, now)?;
     for grant in [original, &current] {
-        if !crate::budget::current_limits_allow(
+        if !crate::budget::current_limits_allow_with_availability(
             state,
             &context.execution_id().to_string(),
             &grant.limits,
             request.units,
+            availability,
         )? {
             return Err(CoordinationError::Restricted);
         }
     }
     let source = VerifiedExecutionContext((*d.source).clone());
     source.validate_inheritance(state, &d.source_permits, now)?;
-    crate::permit::evaluate(
+    crate::permit::evaluate_with_availability(
         state,
         &PermittedAttempt {
             id: request.id,
@@ -322,6 +346,7 @@ pub(crate) fn delegated_effect_check(
             clock: request.clock,
         },
         now,
+        availability,
     )
 }
 
@@ -593,7 +618,7 @@ fn check_admission(
         &lineage.limits,
         now,
     )?;
-    crate::permit::evaluate(
+    crate::permit::evaluate_with_availability(
         state,
         &PermittedAttempt {
             id: "delegated-admission",
@@ -605,6 +630,7 @@ fn check_admission(
             clock,
         },
         now,
+        crate::budget::Availability::Admission,
     )?;
     if lineage
         .restrictions
@@ -620,13 +646,14 @@ fn check_admission(
     {
         return Err(CoordinationError::Restricted);
     }
-    crate::budget::check_root_reservation(
+    crate::budget::check_root_availability(
         state,
         &RootReservation {
             root_id: source.execution_id().to_string(),
             units: 1,
         },
         now,
+        crate::budget::Availability::Admission,
     )?;
     Ok(())
 }

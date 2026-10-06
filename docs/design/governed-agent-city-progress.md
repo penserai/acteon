@@ -1394,3 +1394,39 @@ permission borrowing, grant retirement during resolution, delayed expiry,
 offboarding, unaccepted grants, and narrowed current intent. This remains an
 unmerged draft pending final checks and adversarial review; durable A2A runtime
 and transport work remains in the implementation plan.
+
+
+### Service delegation published; durable runtime adapter in progress
+
+PR #431 merged on October 6, 2026 as
+`e12def7624596ef75c9d9efd6dbad40f92063c23`. Its reviewed head completed all
+28 checks: 25 passed and three intentionally skipped. Documentation deployment
+37521925732 succeeded; the public governance article returned HTTP 200 and its
+normalized content matched the reviewed strict build. Earlier draft entries
+above record implementation history.
+
+The next platform slice connects accepted recipient contexts to the existing
+governed provider executor and task engine through `AgentProviderRuntime`.
+Twelve focused contracts cover actual provider invocations, shared sponsorship,
+restart, lost acknowledgments, concurrent resumes, ambiguous outcomes, forged
+terminal projections, revocation, and acceptance while a sender holds the sole
+concurrent slot. Admission does not reserve execution capacity; actual starts
+still enforce the shared limit atomically. This slice remains under verification
+and does not expose an HTTP/A2A runtime or new SDK wire APIs. Qualified network
+handoff, intervention acknowledgments, other runtime families, and the remaining
+city/workforce phases remain required.
+
+
+#### Runtime adversarial review corrections
+
+PR #432 adds the provider runtime adapter. Review identified copied acceptance
+keys, substituted task projection identities, unverified terminal artifacts,
+and stale reaping after removal of projection metadata. Recovery now binds the
+requested ID and validates projection identity at every governed CAS retry;
+terminal artifacts are repaired from qualified execution evidence. The reaper
+checks the durable acceptance journal as well as the projection marker.
+Fifteen ordinary contracts and one independent-client Redis contract exercise
+these boundaries, including lost acceptance acknowledgment and both known and
+uncertain outcomes. Redis uses an isolated UUID prefix and the contract is wired
+into CI. This verifies this adapter on memory and Redis; it does not establish
+network A2A or all-backend qualification.

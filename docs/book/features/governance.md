@@ -391,3 +391,37 @@ advisory metadata, not execution authority. The host still authenticates a fresh
 `capture_delegated_child`; a discovery context is never reused as the invocation
 or its payer. Discovery creates no context, budget allocation, or effect start.
 Ordinary peer bindings retain their existing intersection-based preview.
+
+
+### Durable individual-agent task execution
+
+`AgentProviderRuntime` connects an authenticated recipient context to a qualified
+provider operation and the existing task engine. The host supplies the approved
+service binding, provider, signed context, and permits. Task messages cannot
+choose an executing principal, provider, endpoint, or service plan. The signed
+input digest must match the message mapped to that provider operation.
+
+Acceptance persists an immutable journal through the configured StateStore. The
+recipient execution ID becomes the task ID, so a lost acknowledgment or runtime
+replacement recovers the same work. A task projection can be reconstructed from
+that journal; execution evidence determines whether the operation is already
+complete, still running, or requires reconciliation. An ambiguous provider result
+remains unresolved across restart and stale-task reaping.
+
+Acceptance checks current authority, cancellation, deadlines, and remaining
+units without reserving an execution slot. This allows a recipient to acknowledge
+queued work while its sender holds the sponsor's last concurrent slot. Every
+actual provider start still uses the governed executor's atomic authority and
+shared-budget reservation. Revocation or closure between acceptance and start
+refuses execution. Known results and terminal task state are projected together.
+Recovery rejects copied acceptance records and substituted task identities.
+Terminal result artifacts are checked against execution evidence and repaired
+from that evidence without another provider call. The reaper also checks the
+acceptance journal, so removing a projection's metadata cannot certify an
+uncertain outcome.
+
+This is a trusted Rust host adapter for one qualified provider operation.
+Agent-specific HTTP/A2A configuration, authenticated network envelopes, transport
+qualification, cancellation acknowledgment, and adapters for other runtime
+families remain separate integration work. No new client SDK wire API is exposed
+by this adapter.

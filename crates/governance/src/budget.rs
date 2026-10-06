@@ -278,12 +278,29 @@ pub(crate) fn reserve_root(
     Ok(())
 }
 
+/// Admission validates authority and remaining units without reserving a slot.
+/// The external-effect registration path always uses Start.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Availability {
+    Start,
+    Admission,
+}
+
 /// Advisory capacity check using the same constraints as atomic reservation.
 /// This does not reserve capacity or establish permission for an effect.
 pub(crate) fn check_root_reservation(
     state: &crate::CoordinatorSnapshot,
     reservation: &RootReservation,
     now_ms: i64,
+) -> Result<Vec<String>, CoordinationError> {
+    check_root_availability(state, reservation, now_ms, Availability::Start)
+}
+
+pub(crate) fn check_root_availability(
+    state: &crate::CoordinatorSnapshot,
+    reservation: &RootReservation,
+    now_ms: i64,
+    availability: Availability,
 ) -> Result<Vec<String>, CoordinationError> {
     let path = budget_path(state, &reservation.root_id)?;
     // Check every ancestor before mutating any counter.
@@ -295,7 +312,9 @@ pub(crate) fn check_root_reservation(
         if now_ms >= budget.limits.deadline_ms {
             return Err(CoordinationError::DeadlineExceeded);
         }
-        if budget.active_attempts >= budget.limits.max_concurrent {
+        if availability == Availability::Start
+            && budget.active_attempts >= budget.limits.max_concurrent
+        {
             return Err(CoordinationError::ConcurrencyExhausted);
         }
         if budget
@@ -333,6 +352,16 @@ pub(crate) fn current_limits_allow(
     limits: &RootBudgetLimits,
     units: u64,
 ) -> Result<bool, CoordinationError> {
+    current_limits_allow_with_availability(state, leaf, limits, units, Availability::Start)
+}
+
+pub(crate) fn current_limits_allow_with_availability(
+    state: &crate::CoordinatorSnapshot,
+    leaf: &str,
+    limits: &RootBudgetLimits,
+    units: u64,
+    availability: Availability,
+) -> Result<bool, CoordinationError> {
     Ok(budget_path(state, leaf)?.iter().all(|id| {
         let budget = &state.roots[id];
         !budget.cancelled
@@ -340,6 +369,7 @@ pub(crate) fn current_limits_allow(
                 .spent_units
                 .checked_add(units)
                 .is_some_and(|n| n <= limits.max_units)
-            && budget.active_attempts < limits.max_concurrent
+            && (availability == Availability::Admission
+                || budget.active_attempts < limits.max_concurrent)
     }))
 }

@@ -317,6 +317,7 @@ pub(crate) fn evaluate(
     state: &CoordinatorSnapshot,
     request: &PermittedAttempt<'_>,
     now_ms: i64,
+    availability: crate::budget::Availability,
 ) -> Result<(), CoordinationError> {
     let context: &VerifiedExecutionContext = request.context;
     let Some(reference) = context.credential_authority() else {
@@ -350,11 +351,12 @@ pub(crate) fn evaluate(
     if now_ms < policy.ceiling.valid_from_ms || now_ms >= policy.ceiling.limits.deadline_ms {
         return Err(CoordinationError::PermitDenied(PermitDenial::Validity));
     }
-    if !crate::budget::current_limits_allow(
+    if !crate::budget::current_limits_allow_with_availability(
         state,
         &context.execution_id().to_string(),
         &policy.ceiling.limits,
         request.units,
+        availability,
     )? {
         return Err(CoordinationError::PermitDenied(PermitDenial::Limits));
     }

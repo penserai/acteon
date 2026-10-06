@@ -505,7 +505,25 @@ impl TaskEngine {
                 return Ok(None);
             };
             let mut task: Task = serde_json::from_str(&raw)?;
-            if !task.is_stale_at(now) {
+            // Governed work may have an unresolved external attempt. Its
+            // runtime projects qualified execution evidence; elapsed time alone
+            // cannot prove failure or release its retained capacity.
+            if task
+                .metadata
+                .contains_key(crate::agent_runtime::GOVERNED_TASK_METADATA_KEY)
+                || (task.is_stale_at(now)
+                    && self
+                        .state
+                        .get(&StateKey::new(
+                            scope.namespace.as_str(),
+                            scope.tenant.as_str(),
+                            KeyKind::Custom(crate::agent_runtime::ACCEPTANCE_KIND.into()),
+                            task_id,
+                        ))
+                        .await?
+                        .is_some())
+                || !task.is_stale_at(now)
+            {
                 // Recorded progress or reached a terminal state since
                 // the scan — no longer a zombie, leave it untouched.
                 return Ok(None);
@@ -923,6 +941,139 @@ impl TaskEngine {
                 last_chunk: false,
             },
         );
+        Ok(task)
+    }
+
+    /// Check every read and CAS retry against the immutable acceptance identity.
+    pub(crate) fn validate_governed_projection(
+        task: &Task,
+        expected: &Task,
+    ) -> Result<(), TaskValidationError> {
+        task.validate()?;
+        if task.id != expected.id
+            || task.namespace != expected.namespace
+            || task.tenant != expected.tenant
+            || task.context_id != expected.context_id
+            || task.chain_id.is_some()
+            || task
+                .metadata
+                .get(crate::agent_runtime::GOVERNED_TASK_METADATA_KEY)
+                != expected
+                    .metadata
+                    .get(crate::agent_runtime::GOVERNED_TASK_METADATA_KEY)
+            || task
+                .history
+                .first()
+                .map(serde_json::to_value)
+                .transpose()
+                .map_err(|_| TaskValidationError::PartDataInvalid)?
+                != expected
+                    .history
+                    .first()
+                    .map(serde_json::to_value)
+                    .transpose()
+                    .map_err(|_| TaskValidationError::PartDataInvalid)?
+            || task
+                .artifacts
+                .iter()
+                .any(|artifact| artifact.artifact_id != "governed-result")
+        {
+            return Err(TaskValidationError::IdentityMismatch);
+        }
+        Ok(())
+    }
+
+    /// Idempotent runtime projection; only its governed executor can start effects.
+    pub(crate) async fn start_governed_task(
+        &self,
+        scope: &TaskScope,
+        expected: &Task,
+    ) -> Result<Task, TaskEngineError> {
+        let task_id = expected.id.as_str();
+        let key = scope.task_key(task_id);
+        let mut transitioned = false;
+        let task = self
+            .cas_mutate(&key, task_id, "governed_working", |task, now| {
+                Self::validate_governed_projection(task, expected)?;
+                if task.status.state.is_terminal() {
+                    transitioned = false;
+                    return Ok(());
+                }
+                if !matches!(task.status.state, TaskState::Submitted | TaskState::Working) {
+                    return Err(TaskValidationError::IllegalTransition {
+                        from: task.status.state,
+                        to: TaskState::Working,
+                    });
+                }
+                transitioned = task.status.state != TaskState::Working;
+                if transitioned {
+                    task.transition_to_at(TaskState::Working, None, now)?;
+                }
+                Ok(())
+            })
+            .await?;
+        if transitioned {
+            self.emit_stream(
+                &scope.namespace,
+                &scope.tenant,
+                task_id,
+                acteon_core::StreamEventType::TaskTransitioned {
+                    task_id: task_id.into(),
+                    from: TaskState::Submitted,
+                    to: TaskState::Working,
+                },
+            );
+        }
+        Ok(task)
+    }
+
+    /// Atomically project known governed completion and its result artifact.
+    /// This host-only helper does not authorize execution. Same-result concurrent
+    /// observers may repair/replay the projection without a second transition.
+    pub(crate) async fn project_governed_result(
+        &self,
+        scope: &TaskScope,
+        expected: &Task,
+        next: TaskState,
+        artifact: Artifact,
+    ) -> Result<Task, TaskEngineError> {
+        let task_id = expected.id.as_str();
+        let key = scope.task_key(task_id);
+        let mut transitioned = false;
+        let artifact_id = artifact.artifact_id.clone();
+        let task = self
+            .cas_mutate(&key, task_id, "governed_result", |task, now| {
+                Self::validate_governed_projection(task, expected)?;
+                transitioned = task.status.state != next;
+                if transitioned {
+                    task.transition_to_at(next, None, now)?;
+                }
+                task.upsert_artifact_at(artifact.clone(), false, now)?;
+                Ok(())
+            })
+            .await?;
+        self.emit_stream(
+            &scope.namespace,
+            &scope.tenant,
+            task_id,
+            acteon_core::StreamEventType::TaskArtifactUpdated {
+                task_id: task_id.into(),
+                artifact_id,
+                last_chunk: true,
+            },
+        );
+        if transitioned {
+            self.emit_stream(
+                &scope.namespace,
+                &scope.tenant,
+                task_id,
+                acteon_core::StreamEventType::TaskTransitioned {
+                    task_id: task_id.into(),
+                    from: TaskState::Working,
+                    to: next,
+                },
+            );
+        }
         Ok(task)
     }
 

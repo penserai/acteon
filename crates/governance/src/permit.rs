@@ -509,6 +509,15 @@ pub(crate) fn evaluate(
     request: &PermittedAttempt<'_>,
     now_ms: i64,
 ) -> Result<(), CoordinationError> {
+    evaluate_with_availability(state, request, now_ms, crate::budget::Availability::Start)
+}
+
+pub(crate) fn evaluate_with_availability(
+    state: &CoordinatorSnapshot,
+    request: &PermittedAttempt<'_>,
+    now_ms: i64,
+    availability: crate::budget::Availability,
+) -> Result<(), CoordinationError> {
     let deny = |reason| CoordinationError::PermitDenied(reason);
     request.context.validate_budget_binding(state)?;
     if now_ms >= request.context.deadline_ms() {
@@ -517,8 +526,8 @@ pub(crate) fn evaluate(
     if !request.context.within_accepted_ceiling(request.effect) {
         return Err(deny(PermitDenial::Effect));
     }
-    crate::context::delegated_effect_check(state, request, now_ms)?;
-    crate::credential::evaluate(state, request, now_ms)?;
+    crate::context::delegated_effect_check(state, request, now_ms, availability)?;
+    crate::credential::evaluate(state, request, now_ms, availability)?;
     let root_id = request.context.execution_id().to_string();
     let root = state
         .roots
@@ -527,7 +536,7 @@ pub(crate) fn evaluate(
     if root.owner_subject != request.context.principal().id() {
         return Err(deny(PermitDenial::Subject));
     }
-    crate::workforce::evaluate_effect(state, request, root, now_ms)?;
+    crate::workforce::evaluate_effect(state, request, root, now_ms, availability)?;
     for reference in request.permits {
         let original = state
             .changes
@@ -576,7 +585,13 @@ pub(crate) fn evaluate(
         {
             return Err(deny(PermitDenial::Effect));
         }
-        if !crate::budget::current_limits_allow(state, &root_id, &permit.limits, request.units)? {
+        if !crate::budget::current_limits_allow_with_availability(
+            state,
+            &root_id,
+            &permit.limits,
+            request.units,
+            availability,
+        )? {
             return Err(deny(PermitDenial::Limits));
         }
     }

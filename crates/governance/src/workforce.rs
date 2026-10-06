@@ -1015,6 +1015,7 @@ pub(crate) fn evaluate_effect(
     request: &crate::permit::PermittedAttempt<'_>,
     root: &crate::RootBudget,
     now: i64,
+    availability: crate::budget::Availability,
 ) -> Result<(), CoordinationError> {
     match (
         required_mandate(state, request.permits)?,
@@ -1031,11 +1032,12 @@ pub(crate) fn evaluate_effect(
                 now,
             )?;
             let mandate = &state.workforce.mandates[&required.id].value;
-            if !crate::budget::current_limits_allow(
+            if !crate::budget::current_limits_allow_with_availability(
                 state,
                 &request.context.execution_id().to_string(),
                 &mandate.limits,
                 request.units,
+                availability,
             )? {
                 return Err(CoordinationError::Restricted);
             }

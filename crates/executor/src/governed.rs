@@ -165,6 +165,18 @@ impl BoundProvider {
         Ok(self)
     }
     #[must_use]
+    pub fn provider_name(&self) -> &str {
+        &self.binding.provider
+    }
+    #[must_use]
+    pub fn action_type(&self) -> &str {
+        &self.action_type
+    }
+    #[must_use]
+    pub fn catalog_version(&self) -> Option<&ResourceRef> {
+        self.catalog_version.as_ref()
+    }
+    #[must_use]
     pub fn effect(&self) -> &AcceptedEffect {
         &self.binding.effect
     }

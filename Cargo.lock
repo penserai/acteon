@@ -337,6 +337,7 @@ dependencies = [
  "acteon-rules-yaml",
  "acteon-state",
  "acteon-state-memory",
+ "acteon-state-redis",
  "acteon-time",
  "acteon-wasm-runtime",
  "async-trait",

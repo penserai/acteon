@@ -1085,6 +1085,8 @@ fn validate_working_ttl(ttl_ms: i64) -> Result<(), TaskValidationError> {
 /// Validation failures across the A2A task model.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum TaskValidationError {
+    #[error("task does not match its expected identity")]
+    IdentityMismatch,
     #[error("{0} must not be empty")]
     EmptyId(&'static str),
     #[error("{0} exceeds 120 characters")]
