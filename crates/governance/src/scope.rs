@@ -104,7 +104,8 @@ impl AuthorityCoordinator {
         match &state.purpose {
             ScopePurpose::Unclaimed | ScopePurpose::Execution => true,
             ScopePurpose::AuthenticationControl { source_id } => {
-                state.workforce.record_count() == 0
+                state.budget_parents.is_empty()
+                    && state.workforce.record_count() == 0
                     && state.starts.is_empty()
                     && state.roots.is_empty()
                     && state.permits.is_empty()

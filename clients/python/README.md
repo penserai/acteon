@@ -423,3 +423,64 @@ Preserve the exact request and change ID after a lost acknowledgment. Mutations
 retain HTTP refusal status and are not automatically retried. See the
 [workforce model and API](https://penserai.github.io/acteon/features/workforce/)
 for represented permits, dependencies, revisions and intervention semantics.
+
+
+### Pending provider work
+
+`ProviderPending` means a governed provider attempt is still in flight, needs
+reconciliation, or awaits a retry under its original identity. Preserve its
+execution ID, attempt count and state. It is not a completed failure: do not
+resend the action as fresh work. Chain details expose the durable `wait_state`
+(`waitState` in Node and Java), and `waiting_provider` remains an active status.
+Completed receipts can repair workflow results after revocation or expiry;
+starting another effect still requires current authority.
+
+### Retained provider history
+
+Inspect a governed provider execution using independently authorized history management credentials:
+
+```python
+history = client.provider_execution_history("prod", "acme", execution_id)
+# The async client exposes the same method with await.
+```
+
+The response includes the signed participant, receipt state, observed authority generation, optional verified operation metadata and binding, cancellation fence, and per-attempt evidence. Nested outcomes use the SDK’s existing outcome model. Original results and accepted reconciliation remain separate. A completed receipt may contain a failed outcome. Null evidence means no verified result is available; it does not prove that no effect occurred. Reading history never starts, retries, reconciles, or resumes execution.
+
+The server requires `can_read_history` and current scope management authority; the execution ID is a reference, not authorization. A scope may retain this access after every live provider is removed.
+
+Provider execution history preserves an optional reconciliation `acceptance`
+record with the original operator principal, evaluated authority incarnation and
+generation, and `accepted_at_ms`. This is distinct from the proof's
+`resolved_at_ms` recording time. Legacy adapter settlements may omit acceptance;
+a client must not infer the operator from the execution owner. Reading this
+metadata grants no execution or reconciliation authority.
+
+
+Governance management bounds also preserve the independent `can_reconcile`
+capability; absence means denied. It authorizes qualified finality management,
+subject to the server's exact resource ceiling and trusted verifier installation.
+History access and permit-issuing permissions do not imply this capability.
+Typed correlation and acceptance methods use current reconciliation authority and
+never automatically retry acceptance. Only trusted server installations with a
+qualified verifier can accept evidence. The server installs operator-qualified
+sources through `[[reconciliation_sources]]`; source declarations do not grant
+management permission. See the governance guide for dedicated keys, exact binding
+digests and coordinated key retirement.
+
+```python
+from acteon_client import ProviderReconciliationRequest
+
+correlation = client.provider_reconciliation_correlation("prod", "acme", execution_id, 0)
+# evidence_base64 comes from the independently qualified finality source.
+receipt = client.accept_provider_reconciliation(
+    "prod", "acme", execution_id, 0,
+    ProviderReconciliationRequest(proof_base64=evidence_base64),
+)
+```
+
+The async client exposes the same methods with `await`.
+
+These methods preserve the completed or definitive no-effect receipt. Correlation
+is not a permit; proof bytes must come from the qualified source. After a lost
+acknowledgment, replay the exact proof under current authority rather than changing
+its content or verifier revision.

@@ -123,6 +123,7 @@ pub enum ActionOutcome {
     Rerouted { original_provider: String, new_provider: String, response: ProviderResponse },
     Throttled { retry_after: Duration },
     Failed(ActionError),
+    ProviderPending(ProviderWorkPending),
     Grouped { group_id: String, group_size: usize, notify_at: DateTime<Utc> },
     StateChanged { fingerprint: String, previous_state: String, new_state: String, notify: bool },
     PendingApproval { approval_id: String, expires_at: DateTime<Utc>, approve_url: String, reject_url: String, notification_sent: bool },
@@ -157,6 +158,7 @@ graph LR
 | `Failed` | Provider returned an error after all retries | All retry attempts exhausted |
 | `Grouped` | Action was added to an event group | Matches a `group` rule |
 | `StateChanged` | Event transitioned to a new state | Matches a `state_machine` rule |
+| `ProviderPending` | Provider work is in flight or needs reconciliation | Inspect the retained receipt; do not resend as a fresh action |
 | `PendingApproval` | Waiting for human approval | Matches a `require_approval` rule |
 | `ChainStarted` | Multi-step chain initiated | Matches a `chain` rule |
 

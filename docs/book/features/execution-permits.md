@@ -79,6 +79,85 @@ copying the example's long validity horizon into production.
 
 Manage issued permits and resource closures through [governance management](governance.md).
 
+## Retire execution while retaining history
+
+An execution scope can become a history-only scope after its live routes have
+been retired. This mode uses the same configured state backend and the existing
+scope identity. It needs no registered provider and creates no executable
+credential effects.
+
+For the existing scope declaration, set these fields:
+
+```toml
+bootstrap = false
+history_only = true
+routes = []
+chains = []
+permits = []
+```
+
+Retain the original namespace, tenant, publisher, subjects and reviewed finite
+bounds. Set `historical_effects` to the exact previously reviewed effect
+footprints, including their operations and concrete resources. Capture those
+footprints from the qualified deployment or the bounded governance route view
+before removing the routes. These are retained publication bounds; the server
+does not turn them into executable routes or infer new authority from stored
+operation labels.
+
+Every manager in this scope must have `can_read_history = true`, an explicit
+subject allowlist and `routes = []`. Disable `can_issue_permits` and
+`can_intervene`, and remove workforce management declarations. Keep ordinary
+credential namespace/tenant grants for the enrolled reader, with `operator` or
+`admin` role. Increase the shared authentication `authority_revision` when
+publishing this policy change; old replicas and captured proofs cannot use the
+new read policy.
+
+Retain the execution signing key and the payload encryption key when encryption
+is enabled. History-only startup connects to an existing scope and refuses
+bootstrap, live routes, chains, deployment permits and governance/workforce write
+grants. Reading a receipt neither revives an old permit nor releases an
+unresolved attempt's charges. See [historical receipts](durable-executions.md#historical-receipts)
+for the evidence contract.
+
+## Retire providers while retaining finality management
+
+Use `reconciliation_only = true` when unresolved attempts still need qualified
+finality acceptance after live providers have been removed. This is separate from
+`history_only`, which continues to reject all write management.
+
+```toml
+bootstrap = false
+history_only = false
+reconciliation_only = true
+routes = []
+chains = []
+permits = []
+```
+
+Keep the existing scope identity, subjects, finite bounds, `historical_effects`,
+execution signing key and any payload encryption key as described above. Startup
+connects to existing state and refuses to create a new scope. Managers may hold
+`can_read_history`, `can_reconcile`, or both, with explicit subject allowlists.
+Reconciliation requires the complete `reconciliation_resources` ceiling and an
+operator-qualified source declaration for the original binding digest. Disable
+permit issuance, interventions and workforce management, and keep manager routes
+empty. See [finality-source configuration](governance.md#configure-an-external-finality-source).
+
+Increase the shared authentication `authority_revision` when publishing this
+policy change. The retained scope projects no executable credential effects and
+installs no provider drivers. Old authentication observations are refused; a new
+management observation can accept qualified finality and replay the accepted
+proof while preserving the original audit. Receipt acceptance settles the
+existing attempt's concurrency charge without dispatching or retrying work.
+Retirement does not itself prove that an external effect stopped. A qualified
+source must establish completion or irrevocable absence before settlement.
+
+| Scope mode | Live provider work | History access | Qualified finality acceptance |
+|---|---|---|---|
+| Ordinary execution | Requires credentials and permits | Requires explicit read grant | Requires independent reconciliation grant and source |
+| `history_only` | Disabled | Requires explicit read grant | Disabled |
+| `reconciliation_only` | Disabled | Requires explicit read grant | Requires independent reconciliation grant and source |
+
 ## Dispatch with explicit references
 
 Send `x-acteon-execution-permits` as a JSON array of `id` and
@@ -127,13 +206,41 @@ force another send. SDK HTTP errors retain status and response text.
 
 This profile qualifies static webhook routes for single and batch dispatch,
 including immediate rule modifications and selected routing. Unqualified
-providers and unsupported private contexts refuse execution. Deferred workflow,
-approval and child execution still need explicit retained-authority integration;
-they must not inherit a request's permit implicitly. The `durable=true` receipt
+providers and unsupported private contexts refuse execution. Explicit deployment
+chain declarations and matching chain/provider permits admit a qualified plan
+before root work becomes discoverable. Sequential provider steps and flat
+parallel provider groups inherit bounded child authority from that plan; workers
+recover pinned definitions and preserve original provider receipt identities.
+See [provider receipt recovery](durable-executions.md#provider-receipt-recovery).
+
+Sub-chain, deferred worker and approval execution still need their own qualified
+retained-authority adapters; they must not inherit a request's permit implicitly. The `durable=true` receipt
 API is currently rejected in this profile even though provider execution itself
 uses durable records.
 
 The profile currently rejects guardrail, embedding and enrichment configurations
 because their auxiliary calls are not qualified by this runtime. Complete mesh,
-team mandates and auxiliary-effect governance remain separate implementation
+deferred workforce execution and auxiliary-effect governance remain separate implementation
 work; enabling this profile does not establish those capabilities.
+
+
+### Independent reconciliation evidence
+
+The qualified provider host supports finality verification separately from
+execution admission. `ProviderReconciliationVerifier` and the built-in
+`HmacFinalityVerifier` authenticate provider-specific finality for an existing
+registered attempt. A signed receipt must correlate the full attempt and cover
+its entire effect footprint; installing a verifier is a trusted host qualification
+step. Receipt keys are dedicated to the finality source and are never supplied
+through action metadata.
+
+The original uncertain evidence remains immutable. A separate attestation records
+the accepted resolution, and a coordinator CAS pins both references and the prior
+unresolved state while releasing concurrency once. Completion observation can
+therefore repair after expiry or cancellation without granting a fresh provider
+start. A no-effect resolution remains terminal for the original operation.
+
+See [Durable Executions](durable-executions.md#reconciliation-from-independent-finality-receipts)
+for the Rust host interface and recovery behavior. Authenticated management
+adapters and independently permitted remote probes remain separate integration
+work; the platform does not accept an arbitrary operator assertion as finality.

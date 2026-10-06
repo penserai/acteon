@@ -10,6 +10,7 @@ mod execution_authority;
 mod executor;
 mod llm;
 mod providers;
+mod reconciliation;
 mod server;
 mod signing;
 mod snapshot;
@@ -32,6 +33,7 @@ pub use execution_authority::*;
 pub use executor::*;
 pub use llm::*;
 pub use providers::*;
+pub use reconciliation::*;
 pub use server::*;
 pub use signing::*;
 pub use snapshot::*;
@@ -68,6 +70,9 @@ pub struct ActeonConfig {
     /// Opt-in qualified provider execution under explicit permits.
     #[serde(default)]
     pub execution_authority: Option<ExecutionAuthorityConfig>,
+    /// Independently qualified external finality sources; empty disables reconciliation.
+    #[serde(default)]
+    pub reconciliation_sources: Vec<ReconciliationSourceConfig>,
     /// Rate limiting configuration.
     #[serde(default)]
     pub rate_limit: RateLimitRefConfig,

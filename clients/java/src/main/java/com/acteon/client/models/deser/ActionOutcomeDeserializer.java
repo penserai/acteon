@@ -75,6 +75,10 @@ public class ActionOutcomeDeserializer extends StdDeserializer<ActionOutcome> {
         JsonNode payload = node.get(variant);
 
         switch (variant) {
+            case "ProviderPending":
+                outcome.setType(OutcomeType.PROVIDER_PENDING);
+                outcome.setPending(mapper.treeToValue(payload, com.acteon.client.models.ProviderWorkPending.class));
+                return outcome;
             case "Executed":
                 outcome.setType(OutcomeType.EXECUTED);
                 outcome.setResponse(mapper.treeToValue(payload, ProviderResponse.class));

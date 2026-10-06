@@ -67,6 +67,7 @@ async fn wait_for_fault(faults: &FaultStore) {
     .expect("control request did not reach CAS barrier");
 }
 
+#[allow(clippy::too_many_lines)] // Keep the ordered multi-client contract in one test scenario.
 async fn contract(store: Arc<dyn StateStore>, peer: Arc<dyn StateStore>) {
     let faults = Arc::new(FaultStore::new(store));
     let a = coordinator(faults.clone()).await;
@@ -705,4 +706,31 @@ async fn intervention_does_not_allow_permit_publication() {
     );
     assert!(c.snapshot().await.unwrap().permits.is_empty());
     assert_eq!(c.snapshot().await.unwrap().generation, snapshot.generation);
+}
+
+#[tokio::test]
+async fn resource_controller_cannot_cancel_execution_instances() {
+    let c = coordinator(Arc::new(MemoryStateStore::new())).await;
+    let policy = ceiling();
+    let time = clock();
+    let stamp = c.snapshot().await.unwrap().stamp();
+    assert!(matches!(
+        c.change_evaluated(
+            "cancel-out-of-scope",
+            AuthorityChange::CancelExecution {
+                execution_id: "some-execution".into(),
+            },
+            "stop work",
+            authorization(&policy, &stamp, &time),
+        )
+        .await,
+        Err(CoordinationError::Restricted)
+    ));
+    assert!(
+        !c.snapshot()
+            .await
+            .unwrap()
+            .changes
+            .contains_key("cancel-out-of-scope")
+    );
 }

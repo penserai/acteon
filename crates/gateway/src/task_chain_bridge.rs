@@ -54,7 +54,8 @@ pub fn project_chain_status_to_task_state(status: &ChainStatus) -> TaskState {
         | ChainStatus::WaitingParallel
         | ChainStatus::WaitingTimer
         | ChainStatus::WaitingSignal
-        | ChainStatus::WaitingWorker => TaskState::Working,
+        | ChainStatus::WaitingWorker
+        | ChainStatus::WaitingProvider => TaskState::Working,
         ChainStatus::Completed => TaskState::Completed,
         ChainStatus::Failed | ChainStatus::TimedOut => TaskState::Failed,
         ChainStatus::Cancelled => TaskState::Canceled,
@@ -372,7 +373,8 @@ fn chain_status_word(status: &ChainStatus) -> &'static str {
         | ChainStatus::WaitingParallel
         | ChainStatus::WaitingTimer
         | ChainStatus::WaitingSignal
-        | ChainStatus::WaitingWorker => "settled",
+        | ChainStatus::WaitingWorker
+        | ChainStatus::WaitingProvider => "settled",
     }
 }
 

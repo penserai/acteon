@@ -1,0 +1,54 @@
+{
+  "correlation": {
+    "context": {
+      "context_id": "74000000-0000-4000-8000-000000000001",
+      "execution_id": "73000000-0000-4000-8000-000000000001",
+      "namespace": "prod",
+      "tenant": "acme",
+      "principal": {
+        "id": "agent/maya",
+        "kind": "agent"
+      },
+      "request_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "action_id": "74000000-0000-4000-8000-000000000002",
+    "attempt_id": "74000000-0000-4000-8000-000000000003",
+    "ordinal": 0,
+    "token": "retained-attempt-token",
+    "binding_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "request": {
+    "proof_base64": "b3BhcXVlLXByb29m"
+  },
+  "receipt": {
+    "execution_id": "73000000-0000-4000-8000-000000000001",
+    "attempts": 1,
+    "status": {
+      "state": "completed",
+      "outcome": {
+        "Executed": {
+          "status": "success",
+          "body": {
+            "ticket": "INC-42"
+          },
+          "headers": {}
+        }
+      }
+    }
+  },
+  "no_effect_receipt": {
+    "execution_id": "73000000-0000-4000-8000-000000000001",
+    "attempts": 1,
+    "status": {
+      "state": "completed",
+      "outcome": {
+        "Failed": {
+          "code": "RECONCILED_NO_EFFECT",
+          "message": "source fenced delivery",
+          "retryable": false,
+          "attempts": 1
+        }
+      }
+    }
+  }
+}

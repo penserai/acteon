@@ -1,6 +1,6 @@
 //! Shared server installation against the configured backend, without wire proof.
 mod management;
-pub use management::ManagementError;
+pub use management::{ManagementError, TrustedReconciliationInstallation};
 use std::{collections::BTreeMap, sync::Arc};
 
 use acteon_core::{Action, ActionOutcome};
@@ -31,10 +31,45 @@ pub struct ExecutionRuntimeDependencies {
     pub encryptor: Option<Arc<acteon_crypto::PayloadEncryptor>>,
     pub signing_key: zeroize::Zeroizing<Vec<u8>>,
 }
+impl ExecutionRuntimeDependencies {
+    fn handoffs(
+        &self,
+        namespace: &str,
+        tenant: &str,
+    ) -> Result<Arc<acteon_executor::plan::handoff::PlanHandoffStore>, String> {
+        let mut store = acteon_executor::plan::handoff::PlanHandoffStore::new(
+            self.state.clone(),
+            namespace,
+            tenant,
+        )
+        .map_err(|_| "invalid plan handoff scope")?;
+        if let Some(encryptor) = &self.encryptor {
+            store = store.with_encryptor(encryptor.clone());
+        }
+        Ok(Arc::new(store))
+    }
+
+    fn history(
+        &self,
+        coordinator: &AuthorityCoordinator,
+        contexts: Arc<TrustedContextStore>,
+    ) -> acteon_executor::governed::history::HistoricalProviderStore {
+        acteon_executor::governed::history::HistoricalProviderStore::new(
+            self.state.clone(),
+            coordinator.clone(),
+            contexts,
+            self.encryptor.clone(),
+        )
+    }
+}
+
 struct InstalledScope {
     prepared: PreparedExecutionScope,
     coordinator: AuthorityCoordinator,
     contexts: Arc<TrustedContextStore>,
+    handoffs: Arc<acteon_executor::plan::handoff::PlanHandoffStore>,
+    history: acteon_executor::governed::history::HistoricalProviderStore,
+    reconciliation: Option<acteon_executor::governed::reconciliation::ProviderReconciliationStore>,
 }
 pub struct ExecutionAuthorityRuntime {
     state: Arc<dyn StateStore>,
@@ -42,6 +77,7 @@ pub struct ExecutionAuthorityRuntime {
     projectors: Vec<Arc<CredentialPolicyProjector>>,
     mediator: Arc<dyn ProviderExecutionMediator>,
     clock: Arc<dyn Clock>,
+    encryptor: Option<Arc<acteon_crypto::PayloadEncryptor>>,
 }
 impl ExecutionAuthorityRuntime {
     /// Prepare must already have validated the entire deployment. Qualification,
@@ -118,12 +154,17 @@ impl ExecutionAuthorityRuntime {
                     .map_err(|_| "invalid execution driver")?,
                 );
             }
+            let handoffs = dependencies.handoffs(&declaration.namespace, &declaration.tenant)?;
+            let history = dependencies.history(&coordinator, contexts.clone());
             scopes.insert(
                 (declaration.namespace.clone(), declaration.tenant.clone()),
                 InstalledScope {
                     prepared,
                     coordinator,
                     contexts,
+                    handoffs,
+                    history,
+                    reconciliation: None,
                 },
             );
         }
@@ -131,8 +172,13 @@ impl ExecutionAuthorityRuntime {
             state: dependencies.state,
             scopes,
             projectors,
-            mediator: Arc::new(GovernedProviderMediator::new(executors)?),
+            mediator: Arc::new(if executors.is_empty() {
+                GovernedProviderMediator::deny_all()
+            } else {
+                GovernedProviderMediator::new(executors)?
+            }),
             clock: dependencies.clock,
+            encryptor: dependencies.encryptor,
         })
     }
     fn preflight(
@@ -201,7 +247,7 @@ impl ExecutionAuthorityRuntime {
             let definitions = prepared
                 .catalog()
                 .definitions(&declaration.namespace, &declaration.tenant);
-            let effects = permit
+            let mut effects = permit
                 .routes
                 .iter()
                 .map(|route| {
@@ -215,6 +261,14 @@ impl ExecutionAuthorityRuntime {
                         .ok_or("permit route is not qualified")
                 })
                 .collect::<Result<Vec<_>, _>>()?;
+            for name in &permit.chains {
+                let chain = declaration
+                    .chains
+                    .iter()
+                    .find(|chain| chain.name == *name && chain.subjects.contains(&permit.subject))
+                    .ok_or("permit chain is not declared")?;
+                effects.push(chain.effect(&declaration.namespace, &declaration.tenant)?);
+            }
             let change = format!(
                 "deployment-permit/{:x}",
                 Sha256::digest(
@@ -247,6 +301,52 @@ impl ExecutionAuthorityRuntime {
                 .map_err(|_| "deployment permit publication refused")?;
         }
         Ok(())
+    }
+    /// Host-owned chain admission. The job ID and admission identity must be
+    /// retained by the authoritative chain work record before work is indexed.
+    /// Saving the accepted plan does not start a provider effect.
+    pub async fn admit_chain_job(
+        &self,
+        job_id: uuid::Uuid,
+        request: super::RootPlanRequest<'_>,
+    ) -> Result<super::CapturedChainPlan, String> {
+        let scope = self
+            .scopes
+            .get(&(
+                request.action.namespace.as_str().into(),
+                request.action.tenant.as_str().into(),
+            ))
+            .ok_or("execution scope is not declared")?;
+        scope
+            .prepared
+            .admit_pinned_chain_job(
+                job_id,
+                request,
+                &scope.coordinator,
+                &scope.contexts,
+                &scope.handoffs,
+                self.clock.as_ref(),
+            )
+            .await
+    }
+    /// Historical host recovery from an authoritative owned work record. Wire
+    /// references alone are not ownership proof. Current child admission and
+    /// effect registration remain mandatory before any new provider invocation.
+    pub async fn recover_chain_job(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        job_id: uuid::Uuid,
+    ) -> Result<acteon_executor::plan::handoff::RecoveredPlanJob, String> {
+        let scope = self
+            .scopes
+            .get(&(namespace.into(), tenant.into()))
+            .ok_or("execution scope is not declared")?;
+        scope
+            .handoffs
+            .recover(job_id, scope.prepared.catalog().clone(), &scope.contexts)
+            .await
+            .map_err(|_| "accepted plan handoff cannot be recovered".to_string())
     }
     #[must_use]
     pub fn mediator(&self) -> Arc<dyn ProviderExecutionMediator> {
@@ -371,6 +471,7 @@ impl ExecutionAuthorityRuntime {
                     "execution replay binding unavailable".into(),
                 )
             })?;
+        let admission = admission.with_chain_handoffs(&scope.handoffs);
         let admission = ReplayBoundAdmission {
             inner: admission,
             state: self.state.as_ref(),
@@ -416,5 +517,139 @@ impl ProviderExecutionAdmission for ReplayBoundAdmission<'_> {
             }
         }
         Ok(authority)
+    }
+    async fn admit_chain(
+        &self,
+        job_id: uuid::Uuid,
+        action: &Action,
+        entry: &str,
+        definitions: &BTreeMap<String, acteon_core::ChainConfig>,
+    ) -> Result<(), acteon_core::ActionError> {
+        self.inner
+            .admit_chain(job_id, action, entry, definitions)
+            .await?;
+        if let Some((key, marker, ttl)) = &self.replay {
+            let denied = || acteon_core::ActionError {
+                code: "EXECUTION_REPLAY_BINDING_REFUSED".into(),
+                message: "Execution replay binding unavailable or conflicting".into(),
+                retryable: false,
+                attempts: 0,
+            };
+            let claimed = self
+                .state
+                .check_and_set(key, marker, Some(*ttl))
+                .await
+                .map_err(|_| denied())?;
+            if !claimed
+                && self.state.get(key).await.map_err(|_| denied())?.as_deref()
+                    != Some(marker.as_str())
+            {
+                return Err(denied());
+            }
+        }
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl acteon_executor::plan::engine::ChainExecutionMediator for ExecutionAuthorityRuntime {
+    async fn cancel_job(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        job_id: uuid::Uuid,
+    ) -> Result<(), acteon_core::ActionError> {
+        use acteon_executor::plan::engine::StoredChainExecution;
+        let scope = self
+            .scopes
+            .get(&(namespace.into(), tenant.into()))
+            .ok_or_else(chain_authority_error)?;
+        let boundary = StoredChainExecution::new_trusted(
+            scope.handoffs.clone(),
+            scope.contexts.clone(),
+            scope.coordinator.clone(),
+            scope.prepared.catalog().clone(),
+            self.mediator.clone(),
+            self.clock.clone(),
+        )?;
+        boundary.cancel_job(namespace, tenant, job_id).await
+    }
+    async fn observe(
+        &self,
+        call: acteon_executor::plan::engine::ChainProviderCall<'_>,
+    ) -> Result<Option<ActionOutcome>, acteon_core::ActionError> {
+        let scope = self
+            .scopes
+            .get(&(call.namespace.into(), call.tenant.into()))
+            .ok_or_else(chain_authority_error)?;
+        let boundary = acteon_executor::plan::engine::StoredChainExecution::new_trusted(
+            scope.handoffs.clone(),
+            scope.contexts.clone(),
+            scope.coordinator.clone(),
+            scope.prepared.catalog().clone(),
+            self.mediator.clone(),
+            self.clock.clone(),
+        )?;
+        boundary.observe(call).await
+    }
+    async fn recover_job(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        job_id: uuid::Uuid,
+    ) -> Result<acteon_executor::plan::handoff::RecoveredPlanJob, acteon_core::ActionError> {
+        self.recover_chain_job(namespace, tenant, job_id)
+            .await
+            .map_err(|_| chain_authority_error())
+    }
+    async fn admit(
+        &self,
+        call: acteon_executor::plan::engine::ChainProviderCall<'_>,
+    ) -> Result<ProviderExecutionAuthority, acteon_core::ActionError> {
+        use acteon_executor::plan::engine::StoredChainExecution;
+        let scope = self
+            .scopes
+            .get(&(call.namespace.into(), call.tenant.into()))
+            .ok_or_else(chain_authority_error)?;
+        let boundary = StoredChainExecution::new_trusted(
+            scope.handoffs.clone(),
+            scope.contexts.clone(),
+            scope.coordinator.clone(),
+            scope.prepared.catalog().clone(),
+            self.mediator.clone(),
+            self.clock.clone(),
+        )?;
+        boundary.admit(call).await
+    }
+    async fn execute(
+        &self,
+        call: acteon_executor::plan::engine::ChainProviderCall<'_>,
+    ) -> ActionOutcome {
+        use acteon_executor::plan::engine::StoredChainExecution;
+        let Some(scope) = self
+            .scopes
+            .get(&(call.namespace.into(), call.tenant.into()))
+        else {
+            return ActionOutcome::Failed(chain_authority_error());
+        };
+        let Ok(boundary) = StoredChainExecution::new_trusted(
+            scope.handoffs.clone(),
+            scope.contexts.clone(),
+            scope.coordinator.clone(),
+            scope.prepared.catalog().clone(),
+            self.mediator.clone(),
+            self.clock.clone(),
+        ) else {
+            return ActionOutcome::Failed(chain_authority_error());
+        };
+        boundary.execute(call).await
+    }
+}
+fn chain_authority_error() -> acteon_core::ActionError {
+    acteon_core::ActionError {
+        code: "CHAIN_EXECUTION_AUTHORITY_REFUSED".into(),
+        message: "Chain work has no verified execution authority".into(),
+        retryable: false,
+        attempts: 0,
     }
 }

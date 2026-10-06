@@ -123,10 +123,17 @@ pub struct GovernancePermitView {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
+// Independent additive permissions retain the established wire/config contract.
+#[allow(clippy::struct_excessive_bools)]
 pub struct GovernanceManagementBounds {
     pub subjects: Vec<PrincipalIdentity>,
     pub can_issue_permits: bool,
     pub can_intervene: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub can_read_history: bool,
+    /// Independent permission to accept qualified finality for retained work.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub can_reconcile: bool,
     pub valid_from_ms: i64,
     pub limits: GovernanceLimits,
 }
@@ -144,4 +151,27 @@ pub struct GovernanceScopeView {
     pub permits: Vec<GovernancePermitView>,
     pub closed_resources: Vec<ResourceRef>,
     pub revoked_subjects: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GovernanceScopeView;
+
+    #[test]
+    fn reconciliation_capability_is_independent_and_preserves_legacy_wire() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../clients/contract-fixtures/governance-management.json"
+        ))
+        .unwrap();
+        let legacy: GovernanceScopeView = serde_json::from_value(fixture["scope"].clone()).unwrap();
+        assert!(!legacy.management.can_reconcile);
+        assert!(!legacy.management.can_read_history);
+        assert_eq!(serde_json::to_value(legacy).unwrap(), fixture["scope"]);
+        let mut permitted = fixture["scope"].clone();
+        permitted["management"]["can_reconcile"] = true.into();
+        let view: GovernanceScopeView = serde_json::from_value(permitted.clone()).unwrap();
+        assert!(view.management.can_reconcile);
+        assert!(!view.management.can_read_history);
+        assert_eq!(serde_json::to_value(view).unwrap(), permitted);
+    }
 }

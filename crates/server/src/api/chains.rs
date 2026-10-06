@@ -122,6 +122,11 @@ pub struct ChainStepStatus {
 /// Full detail response for a chain execution.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ChainDetailResponse {
+    /// Durable wait details, including retained provider receipt identities.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Object>)]
+    pub wait_state: Option<serde_json::Value>,
+
     /// Unique chain execution ID.
     pub chain_id: String,
     /// Namespace the chain belongs to.
@@ -174,6 +179,7 @@ pub(crate) fn parse_status_filter(s: &str) -> Option<ChainStatus> {
         "waiting_timer" => Some(ChainStatus::WaitingTimer),
         "waiting_signal" => Some(ChainStatus::WaitingSignal),
         "waiting_worker" => Some(ChainStatus::WaitingWorker),
+        "waiting_provider" => Some(ChainStatus::WaitingProvider),
         _ => None,
     }
 }
@@ -190,6 +196,7 @@ pub(crate) fn status_to_string(s: &ChainStatus) -> String {
         ChainStatus::WaitingTimer => "waiting_timer".into(),
         ChainStatus::WaitingSignal => "waiting_signal".into(),
         ChainStatus::WaitingWorker => "waiting_worker".into(),
+        ChainStatus::WaitingProvider => "waiting_provider".into(),
     }
 }
 
@@ -328,6 +335,10 @@ pub async fn get_chain(
                 .collect();
 
             let detail = ChainDetailResponse {
+                wait_state: chain_state
+                    .wait_state
+                    .as_ref()
+                    .and_then(|wait| serde_json::to_value(wait).ok()),
                 chain_id: chain_state.chain_id,
                 namespace: chain_state.namespace,
                 tenant: chain_state.tenant,
@@ -401,6 +412,10 @@ pub async fn cancel_chain(
     {
         Ok(chain_state) => {
             let detail = ChainDetailResponse {
+                wait_state: chain_state
+                    .wait_state
+                    .as_ref()
+                    .and_then(|wait| serde_json::to_value(wait).ok()),
                 chain_id: chain_state.chain_id,
                 namespace: chain_state.namespace,
                 tenant: chain_state.tenant,

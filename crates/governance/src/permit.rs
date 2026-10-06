@@ -440,6 +440,28 @@ impl AuthorityCoordinator {
         &self,
         request: PermittedAttempt<'_>,
     ) -> Result<StartRegistration, CoordinationError> {
+        self.register_permitted_attempt_inner(request, None).await
+    }
+
+    /// Trusted adapter seals the immutable work envelope at the same CAS as
+    /// fresh effect admission. Replays cannot attach or alter this provenance.
+    pub async fn register_permitted_attempt_with_operation(
+        &self,
+        request: PermittedAttempt<'_>,
+        operation: &crate::AttemptEvidenceReference,
+    ) -> Result<StartRegistration, CoordinationError> {
+        if operation.id != request.context.execution_id().to_string() {
+            return Err(CoordinationError::Invalid("operation identity".into()));
+        }
+        self.register_permitted_attempt_inner(request, Some(operation))
+            .await
+    }
+
+    async fn register_permitted_attempt_inner(
+        &self,
+        request: PermittedAttempt<'_>,
+        operation: Option<&crate::AttemptEvidenceReference>,
+    ) -> Result<StartRegistration, CoordinationError> {
         let reference = request
             .context
             .reference()
@@ -458,11 +480,15 @@ impl AuthorityCoordinator {
         let root_id = request.context.execution_id().to_string();
         let digest =
             permitted_attempt_digest(&reference, request.effect, request.units, request.permits)?;
+        let resources = request
+            .context
+            .effect_registration_resources(request.effect)
+            .map_err(|_| CoordinationError::Invalid("effect resource bounds".into()))?;
         self.register_attempt_checked(
             AttemptRequest {
                 id: request.id,
                 subject: request.context.principal().id(),
-                resources: &request.effect.resources,
+                resources: &resources,
                 request_digest: &digest,
                 expected_authority: &stamp,
                 reservation: Some(RootReservation {
@@ -472,6 +498,7 @@ impl AuthorityCoordinator {
                 now_ms: request.clock.now().timestamp_millis(),
             },
             Some(&request),
+            operation,
         )
         .await
     }
@@ -483,6 +510,7 @@ pub(crate) fn evaluate(
     now_ms: i64,
 ) -> Result<(), CoordinationError> {
     let deny = |reason| CoordinationError::PermitDenied(reason);
+    request.context.validate_budget_binding(state)?;
     if now_ms >= request.context.deadline_ms() {
         return Err(deny(PermitDenial::Validity));
     }
@@ -547,12 +575,7 @@ pub(crate) fn evaluate(
         {
             return Err(deny(PermitDenial::Effect));
         }
-        if root
-            .spent_units
-            .checked_add(request.units)
-            .is_none_or(|spent| spent > permit.limits.max_units)
-            || root.active_attempts >= permit.limits.max_concurrent
-        {
+        if !crate::budget::current_limits_allow(state, &root_id, &permit.limits, request.units)? {
             return Err(deny(PermitDenial::Limits));
         }
     }

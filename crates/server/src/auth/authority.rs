@@ -4,7 +4,7 @@ use acteon_governance::configuration::{CredentialConfiguration, CredentialConfig
 use acteon_governance::context::AcceptedEffect;
 use acteon_governance::permit::PermitIssuanceCeiling;
 use acteon_governance::{
-    AuthorityCoordinator, AuthorityStamp, CoordinatorSnapshot, RootBudgetLimits,
+    AuthorityCoordinator, AuthorityStamp, CoordinationError, CoordinatorSnapshot, RootBudgetLimits,
 };
 use hmac::{Hmac, Mac};
 use serde_json::{Value, json};
@@ -19,15 +19,61 @@ use crate::config::AuthAuthorityConfig;
 /// Host-created evidence of the exact tables used for authentication. Private
 /// construction and no Deserialize implementation prevent request metadata from
 /// establishing this binding. It is an observation, never a permanent grant.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AuthenticatedConfiguration {
+    coordinator: AuthorityCoordinator,
     reference: CredentialConfigurationReference,
     stamp: AuthorityStamp,
     principal: PrincipalIdentity,
     caller_id: String,
     auth_method: String,
 }
+impl std::fmt::Debug for AuthenticatedConfiguration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthenticatedConfiguration")
+            .field("reference", &self.reference)
+            .field("stamp", &self.stamp)
+            .field("principal", &self.principal)
+            .field("caller_id", &self.caller_id)
+            .field("auth_method", &self.auth_method)
+            .finish_non_exhaustive()
+    }
+}
+
 impl AuthenticatedConfiguration {
+    /// Recheck the original trusted source without refreshing its epoch or role.
+    /// The coordinator is captured by host authentication, never by wire input.
+    pub(crate) async fn verify_current(&self) -> Result<AuthorityStamp, CoordinationError> {
+        let state = self.coordinator.snapshot().await.map_err(|_| {
+            CoordinationError::State(acteon_state::StateError::Backend(
+                "authentication authority unavailable".into(),
+            ))
+        })?;
+        let head = state
+            .credential_configurations
+            .get(&self.reference.source_id)
+            .ok_or_else(|| {
+                CoordinationError::State(acteon_state::StateError::Backend(
+                    "authentication publication unavailable".into(),
+                ))
+            })?;
+        if state.purpose
+            != (acteon_governance::ScopePurpose::AuthenticationControl {
+                source_id: self.reference.source_id.clone(),
+            })
+            || state.revoked_subjects.contains(self.principal.id())
+        {
+            return Err(CoordinationError::Restricted);
+        }
+        if state.incarnation != self.reference.incarnation
+            || head.revision != self.reference.revision
+            || head.digest != self.reference.digest
+        {
+            return Err(CoordinationError::Restricted);
+        }
+        Ok(state.stamp())
+    }
+
     #[must_use]
     pub fn reference(&self) -> &CredentialConfigurationReference {
         &self.reference
@@ -291,6 +337,7 @@ impl AuthAuthority {
             return Err("authentication configuration is stale or principal is disabled".into());
         }
         Ok(AuthenticatedConfiguration {
+            coordinator: self.coordinator.clone(),
             reference: reference.clone(),
             stamp: snapshot.stamp(),
             principal: principal.clone(),

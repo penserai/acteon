@@ -30,6 +30,8 @@ export interface GovernancePermitView {
 export interface GovernanceRouteView { route: GovernanceRoute; effect: GovernanceEffect; closed: boolean; }
 export interface GovernanceManagementBounds {
   subjects: PrincipalIdentity[]; can_issue_permits: boolean; can_intervene: boolean;
+  can_read_history?: boolean;
+  can_reconcile?: boolean;
   valid_from_ms: number; limits: GovernanceLimits;
 }
 export interface GovernanceScopeView {
@@ -37,4 +39,32 @@ export interface GovernanceScopeView {
   namespace: string; tenant: string; incarnation: string; generation: number;
   routes: GovernanceRouteView[]; permits: GovernancePermitView[];
   closed_resources: GovernanceResource[]; revoked_subjects: string[];
+}
+
+export type ProviderHistoryStatus =
+  | { state: 'prepared' }
+  | { state: 'in_flight'; attempt_id: string }
+  | { state: 'awaiting_retry'; not_before_ms: number }
+  | { state: 'completed'; outcome: unknown }
+  | { state: 'reconciliation_required'; attempt_id: string };
+export interface ProviderEvidenceReference { id: string; digest: string; }
+export interface ProviderHistoryReconciliation {
+  prior_status: 'in_flight' | 'settled' | 'uncertain'; execution_id: string; attempt_id: string;
+  original_evidence: ProviderEvidenceReference | null; resolution: ProviderEvidenceReference;
+  verifier_revision: string; proof_digest: string; resolved_at_ms: number; outcome: unknown;
+  acceptance?: { operator: PrincipalIdentity; authority: { incarnation: string; generation: number }; accepted_at_ms: number } | null;
+}
+export interface ProviderHistoryAttempt {
+  attempt_id: string; ordinal: number; ledger_status: 'in_flight' | 'settled' | 'uncertain';
+  original_evidence: ProviderEvidenceReference | null; original_outcome: unknown;
+  reconciliation: ProviderHistoryReconciliation | null;
+}
+export interface ProviderExecutionHistory {
+  subject: PrincipalIdentity;
+  receipt: { execution_id: string; attempts: number; status: ProviderHistoryStatus };
+  observed_authority: { incarnation: string; generation: number };
+  operation_integrity: 'unstarted' | 'sealed' | 'legacy';
+  metadata: { original_action_id: string; max_attempts: number } | null;
+  binding: { provider: string; provider_revision: string; failure_revision: string; effect: GovernanceEffect } | null;
+  cancellation_fenced: boolean; attempts: ProviderHistoryAttempt[];
 }

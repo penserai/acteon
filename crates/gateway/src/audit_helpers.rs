@@ -57,6 +57,7 @@ pub(crate) fn outcome_tag(outcome: &ActionOutcome) -> &'static str {
         ActionOutcome::Rerouted { .. } => "rerouted",
         ActionOutcome::Throttled { .. } => "throttled",
         ActionOutcome::Failed(_) => "failed",
+        ActionOutcome::ProviderPending(_) => "provider_pending",
         ActionOutcome::Grouped { .. } => "grouped",
         ActionOutcome::StateChanged { .. } => "state_changed",
         ActionOutcome::PendingApproval { .. } => "pending_approval",
@@ -220,6 +221,9 @@ pub(crate) fn build_audit_record(
     };
 
     let outcome_details = match outcome {
+        ActionOutcome::ProviderPending(work) => serde_json::json!({
+            "execution_id": work.execution_id, "attempts": work.attempts, "state": work.state,
+        }),
         ActionOutcome::Executed(resp) => serde_json::json!({
             "status": format!("{:?}", resp.status),
         }),

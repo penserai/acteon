@@ -50,6 +50,16 @@ pub struct QualifiedProviderCatalog {
 }
 
 impl QualifiedProviderCatalog {
+    /// Explicit inspection-only catalog. It qualifies no provider or action.
+    /// Normal execution construction still rejects an accidentally empty catalog.
+    #[must_use]
+    pub fn for_history() -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            fingerprint: format!("{:x}", Sha256::digest(b"[]")),
+        }
+    }
+
     pub fn new_trusted(bindings: Vec<BoundProvider>) -> Result<Self, CatalogError> {
         if bindings.is_empty() || bindings.len() > MAX_ENTRIES {
             return Err(CatalogError::Capacity);

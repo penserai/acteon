@@ -8,6 +8,11 @@ import java.util.List;
  * Full detail response for a chain execution.
  */
 public class ChainDetailResponse {
+    @JsonProperty("wait_state")
+    private java.util.Map<String, Object> waitState;
+    public java.util.Map<String, Object> getWaitState() { return waitState; }
+    public void setWaitState(java.util.Map<String, Object> value) { waitState = value; }
+
     @JsonProperty("chain_id")
     private String chainId;
 

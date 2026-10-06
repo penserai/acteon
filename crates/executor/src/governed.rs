@@ -1,5 +1,8 @@
 //! Durable, directly mediated provider execution under exact root permits.
 //! This does not install gateway/server-wide policy or govern provider internals.
+
+pub mod history;
+pub mod reconciliation;
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
@@ -311,6 +314,7 @@ struct Runtime {
     settings: Settings,
     clock: Arc<dyn Clock>,
     encryptor: Option<Arc<PayloadEncryptor>>,
+    reconciler: Option<Arc<dyn reconciliation::ProviderReconciliationVerifier>>,
 }
 /// Direct provider boundary, not the rules/approval/chain dispatch pipeline.
 /// Authentication and qualification are host prerequisites; no public server
@@ -341,6 +345,54 @@ fn result_key(reference: &ExecutionContextReference, ordinal: u32) -> StateKey {
     )
 }
 
+fn validate_evidence(
+    e: &Evidence,
+    op: &Operation,
+    ordinal: u32,
+    token: &str,
+) -> Result<(), GovernedProviderError> {
+    if e.schema != 1
+        || e.context != op.context
+        || e.binding != op.binding
+        || e.ordinal != ordinal
+        || e.token != token
+        || !matches!(
+            e.outcome,
+            ActionOutcome::Executed(_) | ActionOutcome::Failed(_)
+        )
+        || (!e.known && !matches!(e.outcome, ActionOutcome::Failed(_)))
+        || (e.retry_at_ms.is_some() && (!e.known || !matches!(e.outcome, ActionOutcome::Failed(_))))
+        || e.retry_at_ms.is_some_and(|at| at < 0)
+    {
+        return Err(GovernedProviderError::Conflict);
+    }
+    Ok(())
+}
+
+/// Decode retained records identically for execution and read-only history.
+fn decode_record<T: serde::de::DeserializeOwned>(
+    encoded: &str,
+    encryptor: Option<&PayloadEncryptor>,
+) -> Result<(T, String), GovernedProviderError> {
+    if encoded.len() > MAX_BYTES * 2 {
+        return Err(GovernedProviderError::Invalid);
+    }
+    let raw = match encryptor {
+        Some(e) => e
+            .decrypt_str(encoded)
+            .map_err(|_| GovernedProviderError::Unavailable)?,
+        None => encoded.into(),
+    };
+    if raw.len() > MAX_BYTES {
+        return Err(GovernedProviderError::Invalid);
+    }
+    let digest = format!("{:x}", Sha256::digest(raw.as_bytes()));
+    Ok((
+        serde_json::from_str(&raw).map_err(|_| GovernedProviderError::Invalid)?,
+        digest,
+    ))
+}
+
 impl Runtime {
     fn encode<T: Serialize>(&self, value: &T) -> Result<String, GovernedProviderError> {
         let raw = serde_json::to_string(value).map_err(|_| GovernedProviderError::Invalid)?;
@@ -358,23 +410,7 @@ impl Runtime {
         &self,
         encoded: &str,
     ) -> Result<(T, String), GovernedProviderError> {
-        if encoded.len() > MAX_BYTES * 2 {
-            return Err(GovernedProviderError::Invalid);
-        }
-        let raw = match &self.encryptor {
-            Some(e) => e
-                .decrypt_str(encoded)
-                .map_err(|_| GovernedProviderError::Unavailable)?,
-            None => encoded.into(),
-        };
-        if raw.len() > MAX_BYTES {
-            return Err(GovernedProviderError::Invalid);
-        }
-        let digest = format!("{:x}", Sha256::digest(raw.as_bytes()));
-        Ok((
-            serde_json::from_str(&raw).map_err(|_| GovernedProviderError::Invalid)?,
-            digest,
-        ))
+        decode_record(encoded, self.encryptor.as_deref())
     }
     async fn load_operation(
         &self,
@@ -392,7 +428,7 @@ impl Runtime {
         else {
             return Ok(None);
         };
-        let (op, _): (Operation, _) = self.decode(&raw)?;
+        let (op, digest): (Operation, _) = self.decode(&raw)?;
         if op.schema != 1
             || op.context != *reference
             || op.binding != self.bound.binding
@@ -413,7 +449,47 @@ impl Runtime {
         {
             return Err(GovernedProviderError::Conflict);
         }
+        // Delivery identity and retry policy are excluded from the semantic input
+        // digest. New starts additionally pin the original whole envelope.
+        // Legacy starts keep their existing evidence level; never add a seal on read.
+        let snapshot = self
+            .coordinator
+            .snapshot()
+            .await
+            .map_err(|_| GovernedProviderError::Unavailable)?;
+        for ordinal in 0..MAX_ATTEMPTS {
+            if let Some(seal) = snapshot
+                .starts
+                .get(&attempt_id(reference.execution_id(), ordinal))
+                .and_then(|start| start.operation_evidence.as_ref())
+                && (seal.id != reference.execution_id().to_string() || seal.digest != digest)
+            {
+                return Err(GovernedProviderError::Conflict);
+            }
+        }
         Ok(Some(op))
+    }
+    async fn operation_evidence(
+        &self,
+        op: &Operation,
+    ) -> Result<AttemptEvidenceReference, GovernedProviderError> {
+        let key = operation_key(&op.context);
+        let raw = self
+            .state
+            .get(&key)
+            .await
+            .map_err(|_| GovernedProviderError::Unavailable)?
+            .ok_or(GovernedProviderError::Unavailable)?;
+        let (stored, digest): (Operation, _) = self.decode(&raw)?;
+        if serde_json::to_value(&stored).map_err(|_| GovernedProviderError::Invalid)?
+            != serde_json::to_value(op).map_err(|_| GovernedProviderError::Invalid)?
+        {
+            return Err(GovernedProviderError::Conflict);
+        }
+        Ok(AttemptEvidenceReference {
+            id: key.id.clone(),
+            digest,
+        })
     }
     async fn load_evidence(
         &self,
@@ -431,16 +507,7 @@ impl Runtime {
             return Ok(None);
         };
         let (e, digest): (Evidence, _) = self.decode(&raw)?;
-        if e.schema != 1
-            || e.context != op.context
-            || e.binding != op.binding
-            || e.ordinal != ordinal
-            || e.token != token
-            || (e.retry_at_ms.is_some()
-                && (!e.known || !matches!(e.outcome, ActionOutcome::Failed(_))))
-        {
-            return Err(GovernedProviderError::Conflict);
-        }
+        validate_evidence(&e, op, ordinal, token)?;
         Ok(Some((
             e,
             AttemptEvidenceReference {
@@ -466,6 +533,9 @@ impl Runtime {
         if verified.authority_stamp().incarnation != snapshot.incarnation {
             return Err(GovernedProviderError::Conflict);
         }
+        let resources = verified
+            .effect_registration_resources(&op.binding.effect)
+            .map_err(|_| GovernedProviderError::Conflict)?;
         let mut receipt = GovernedProviderReceipt {
             execution_id: op.context.execution_id(),
             attempts: 0,
@@ -480,10 +550,7 @@ impl Runtime {
                 != permitted_attempt_digest(&op.context, &op.binding.effect, 1, &op.permits)
                     .map_err(|_| GovernedProviderError::Conflict)?
                 || start.subject != op.context.principal().id()
-                || start
-                    .resources
-                    .iter()
-                    .ne(op.binding.effect.resources.iter())
+                || start.resources.iter().ne(resources.iter())
                 || start.reservation.as_ref().is_none_or(|r| {
                     r.root_id != op.context.execution_id().to_string() || r.units != 1
                 })
@@ -491,7 +558,31 @@ impl Runtime {
                 return Err(GovernedProviderError::Conflict);
             }
             receipt.attempts = ordinal + 1;
-            let Some((e, reference)) = self.load_evidence(op, ordinal, &start.token).await? else {
+            if start.reconciliation.is_some() {
+                let outcome = self
+                    .observe_resolution(op, ordinal, start, None)
+                    .await?
+                    .ok_or(GovernedProviderError::Unavailable)?;
+                receipt.status = GovernedProviderStatus::Completed { outcome };
+                return Ok(receipt);
+            }
+            let original = self.load_evidence(op, ordinal, &start.token).await?;
+            // Already-known ordinary evidence takes precedence over an
+            // uncommitted finality candidate, including settlement ack loss.
+            if original.as_ref().is_none_or(|(e, _)| !e.known)
+                && let Some(outcome) = self
+                    .observe_resolution(
+                        op,
+                        ordinal,
+                        start,
+                        original.as_ref().map(|(_, reference)| reference),
+                    )
+                    .await?
+            {
+                receipt.status = GovernedProviderStatus::Completed { outcome };
+                return Ok(receipt);
+            }
+            let Some((e, reference)) = original else {
                 receipt.status = if start.status == AttemptStatus::InFlight {
                     GovernedProviderStatus::InFlight { attempt_id: id }
                 } else {
@@ -575,6 +666,7 @@ impl GovernedProviderExecutor {
                 settings,
                 clock: clock.clone(),
                 encryptor,
+                reconciler: None,
             }),
             executor: ActionExecutor::new(execution)
                 .clock(clock)
@@ -809,18 +901,26 @@ impl Gate {
             .await
             .map_err(|_| AttemptGateError::Denied)?;
         let id = attempt_id(self.op.context.execution_id(), ordinal);
+        let envelope = self
+            .runtime
+            .operation_evidence(&self.op)
+            .await
+            .map_err(|_| AttemptGateError::Conflict)?;
         let result = self
             .runtime
             .coordinator
-            .register_permitted_attempt(PermittedAttempt {
-                id: &id,
-                context: &context,
-                permits: &self.op.permits,
-                effect: &self.op.binding.effect,
-                request_digest: self.op.context.request_digest(),
-                units: 1,
-                clock: self.runtime.clock.as_ref(),
-            })
+            .register_permitted_attempt_with_operation(
+                PermittedAttempt {
+                    id: &id,
+                    context: &context,
+                    permits: &self.op.permits,
+                    effect: &self.op.binding.effect,
+                    request_digest: self.op.context.request_digest(),
+                    units: 1,
+                    clock: self.runtime.clock.as_ref(),
+                },
+                &envelope,
+            )
             .await
             .map_err(|error| admission_error(&error))?;
         let StartRegistration::New(record) = result else {

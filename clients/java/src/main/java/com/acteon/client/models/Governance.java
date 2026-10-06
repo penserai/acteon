@@ -37,6 +37,8 @@ public final class Governance {
     public record ManagementBounds(List<PrincipalIdentity> subjects,
         @JsonProperty("can_issue_permits") boolean canIssuePermits,
         @JsonProperty("can_intervene") boolean canIntervene,
+        @JsonInclude(JsonInclude.Include.NON_DEFAULT) @JsonProperty("can_read_history") boolean canReadHistory,
+        @JsonInclude(JsonInclude.Include.NON_DEFAULT) @JsonProperty("can_reconcile") boolean canReconcile,
         @JsonProperty("valid_from_ms") long validFromMs, Limits limits) {}
     public record ScopeView(ManagementBounds management, String namespace, String tenant, String incarnation, long generation,
         List<RouteView> routes, List<PermitView> permits,

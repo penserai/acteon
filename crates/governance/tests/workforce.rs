@@ -722,6 +722,7 @@ async fn claimed_protocol_eight_requires_reviewed_cutover_and_preserves_accounti
     let mut source = serde_json::to_value(&original).unwrap();
     source["schema_version"] = 8.into();
     source.as_object_mut().unwrap().remove("workforce");
+    source.as_object_mut().unwrap().remove("budget_parents");
     let key = StateKey::new(
         "prod",
         "acme",
@@ -745,7 +746,7 @@ async fn claimed_protocol_eight_requires_reviewed_cutover_and_preserves_accounti
     .await
     .unwrap();
     assert_eq!(plan.report().from_protocol, 8);
-    assert_eq!(plan.report().to_protocol, 9);
+    assert_eq!(plan.report().to_protocol, 10);
     let before = store.get_versioned(&key).await.unwrap();
     assert!(plan.apply("unreviewed").await.is_err());
     assert_eq!(store.get_versioned(&key).await.unwrap(), before);
@@ -1057,5 +1058,181 @@ async fn represented_permits_cannot_be_issued_after_actor_revocation() {
     assert_eq!(
         after.workforce.permit_bindings,
         before.workforce.permit_bindings
+    );
+}
+
+#[tokio::test]
+async fn descendants_preserve_representation_and_current_membership_dependencies() {
+    use acteon_governance::context::ChildContextAdmission;
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let c = fixture(store.clone()).await;
+    let permits = issue(&c, true).await;
+    let parent = admit(&c, store.clone(), &permits, personal()).await;
+    let contexts = context_store(store, c.clone());
+    let child = contexts
+        .capture_child(ChildContextAdmission {
+            admission_key: "represented-child",
+            parent: &parent,
+            handle: ExecutionContextHandle::new(),
+            execution_id: uuid::Uuid::new_v4(),
+            request_digest: "b".repeat(64),
+            accepted_effects: effects(),
+            restrictions: vec![],
+            permits: &permits,
+            limits: RootBudgetLimits {
+                max_units: 2,
+                ..limits()
+            },
+            clock: &clock(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(child.principal(), parent.principal());
+    assert_eq!(child.representation(), parent.representation());
+    let grandchild = contexts
+        .capture_child(ChildContextAdmission {
+            admission_key: "represented-grandchild",
+            parent: &child,
+            handle: ExecutionContextHandle::new(),
+            execution_id: uuid::Uuid::new_v4(),
+            request_digest: "a".repeat(64),
+            accepted_effects: effects(),
+            restrictions: vec![],
+            permits: &permits,
+            limits: RootBudgetLimits {
+                max_units: 1,
+                ..limits()
+            },
+            clock: &clock(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(grandchild.root_execution_id(), parent.execution_id());
+    change(
+        &c,
+        "offboard-descendant",
+        WorkforceMutation::RemoveMembership {
+            id: "maya-reliability".into(),
+            expected_revision: 1,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        start(&c, &grandchild, &permits, "revoked-grandchild")
+            .await
+            .is_err()
+    );
+    assert!(
+        contexts
+            .capture_child(ChildContextAdmission {
+                admission_key: "after-offboard",
+                parent: &child,
+                handle: ExecutionContextHandle::new(),
+                execution_id: uuid::Uuid::new_v4(),
+                request_digest: "c".repeat(64),
+                accepted_effects: effects(),
+                restrictions: vec![],
+                permits: &permits,
+                limits: RootBudgetLimits {
+                    max_units: 1,
+                    ..limits()
+                },
+                clock: &clock(),
+            })
+            .await
+            .is_err()
+    );
+    let snapshot = c.snapshot().await.unwrap();
+    assert!(snapshot.starts.is_empty());
+    assert!(snapshot.roots.values().all(|r| r.spent_units == 0));
+}
+
+#[tokio::test]
+async fn protocol_nine_cutover_preserves_workforce_and_live_accounting() {
+    use acteon_state::{KeyKind, StateKey};
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let c = fixture(store.clone()).await;
+    let permits = issue(&c, true).await;
+    let parent = admit(&c, store.clone(), &permits, personal()).await;
+    let StartRegistration::New(first) = start(&c, &parent, &permits, "live-at-cutover")
+        .await
+        .unwrap()
+    else {
+        panic!("new start")
+    };
+    c.settle("live-at-cutover", &first.token, AttemptStatus::Uncertain)
+        .await
+        .unwrap();
+    // Retain an earlier reviewed 7→9 cutover while adding the new 9→10 event.
+    let mut historical = serde_json::to_value(c.snapshot().await.unwrap()).unwrap();
+    let generation = historical["generation"].as_u64().unwrap() + 1;
+    historical["generation"] = generation.into();
+    historical["changes"]["scope-protocol-9"] = serde_json::json!({
+        "change": {"kind":"upgrade_protocol", "from_protocol":7, "to_protocol":9},
+        "actor":"operator", "reason":"previous reviewed cutover",
+        "generation": generation, "pending":false,
+    });
+    let historical_key = StateKey::new(
+        "prod",
+        "acme",
+        KeyKind::Custom(acteon_governance::COORDINATOR_KIND.into()),
+        "authority",
+    );
+    store
+        .set(&historical_key, &historical.to_string(), None)
+        .await
+        .unwrap();
+    let original = c.snapshot().await.unwrap();
+    let mut source = serde_json::to_value(&original).unwrap();
+    source["schema_version"] = 9.into();
+    source.as_object_mut().unwrap().remove("budget_parents");
+    let key = StateKey::new(
+        "prod",
+        "acme",
+        KeyKind::Custom(acteon_governance::COORDINATOR_KIND.into()),
+        "authority",
+    );
+    store.set(&key, &source.to_string(), None).await.unwrap();
+    assert!(
+        AuthorityCoordinator::connect(store.clone(), "prod", "acme")
+            .await
+            .is_err()
+    );
+    let plan = AuthorityCoordinator::plan_scope_upgrade(
+        store.clone(),
+        "prod",
+        "acme",
+        ScopePurpose::Execution,
+        "operator",
+        "reviewed descendant accounting cutover",
+    )
+    .await
+    .unwrap();
+    assert_eq!(plan.report().from_protocol, 9);
+    assert_eq!(plan.report().to_protocol, 10);
+    assert_eq!(plan.report().unsettled_starts, 1);
+    assert!(plan.apply(&plan.report().review_digest).await.unwrap());
+    let recovered = AuthorityCoordinator::connect(store, "prod", "acme")
+        .await
+        .unwrap();
+    let migrated = recovered.snapshot().await.unwrap();
+    assert_eq!(
+        serde_json::to_value(&migrated.workforce).unwrap(),
+        serde_json::to_value(&original.workforce).unwrap()
+    );
+    assert_eq!(migrated.roots, original.roots);
+    assert_eq!(migrated.starts, original.starts);
+    assert_eq!(migrated.permits, original.permits);
+    assert_eq!(migrated.incarnation, original.incarnation);
+    assert!(migrated.budget_parents.is_empty());
+    recovered
+        .settle("live-at-cutover", &first.token, AttemptStatus::Settled)
+        .await
+        .unwrap();
+    assert_eq!(
+        recovered.snapshot().await.unwrap().roots[&parent.execution_id().to_string()]
+            .active_attempts,
+        0
     );
 }

@@ -319,6 +319,8 @@ pub struct Gateway {
     pub(crate) engine: RuleEngine,
     pub(crate) providers: ProviderRegistry,
     pub(crate) provider_execution: Arc<dyn ProviderExecutionMediator>,
+    pub(crate) chain_execution:
+        Option<Arc<dyn acteon_executor::plan::engine::ChainExecutionMediator>>,
     pub(crate) environment: HashMap<String, String>,
     pub(crate) metrics: Arc<GatewayMetrics>,
     pub(crate) audit: Option<Arc<dyn AuditStore>>,
@@ -423,6 +425,13 @@ impl Gateway {
         mediator: Arc<dyn ProviderExecutionMediator>,
     ) {
         self.provider_execution = mediator;
+    }
+    /// Install the trusted durable chain boundary before exposing this gateway.
+    pub fn install_chain_execution_mediator(
+        &mut self,
+        mediator: Arc<dyn acteon_executor::plan::engine::ChainExecutionMediator>,
+    ) {
+        self.chain_execution = Some(mediator);
     }
     /// Returns the WASM plugin runtime, if configured.
     pub fn wasm_runtime(&self) -> Option<&dyn acteon_wasm_runtime::WasmPluginRuntime> {
@@ -1195,7 +1204,7 @@ impl Gateway {
                     }
                     None => None,
                 };
-                self.handle_chain(&action, chain, caller, plan.as_ref())
+                self.handle_chain(&action, chain, caller, plan.as_ref(), execution_admission)
                     .await?
             }
             RuleVerdict::Schedule { .. } if origin == DispatchOrigin::Scheduled => {
@@ -1992,6 +2001,77 @@ impl Gateway {
         result
     }
 
+    async fn execute_planned_chain_action(
+        &self,
+        chain: &ChainState,
+        step_path: &[String],
+        attempt: u32,
+        action: &Action,
+    ) -> ActionOutcome {
+        if !self.provider_execution.requires_authority() {
+            return self.execute_action(action, None).await;
+        }
+        let refused = || {
+            ActionOutcome::Failed(acteon_core::ActionError {
+                code: "CHAIN_EXECUTION_AUTHORITY_REFUSED".into(),
+                message: "Chain lacks qualified execution provenance".into(),
+                retryable: false,
+                attempts: 0,
+            })
+        };
+        let Some(boundary) = &self.chain_execution else {
+            return refused();
+        };
+        let Ok(job_id) = uuid::Uuid::parse_str(&chain.chain_id) else {
+            return refused();
+        };
+        let identity =
+            serde_json::to_vec(&(job_id, step_path, attempt)).expect("typed attempt serializes");
+        let admission = crate::planned_chain::PlannedChainAdmission {
+            boundary: boundary.as_ref(),
+            chain,
+            step_path,
+            logical_attempt: uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, &identity),
+            job_id,
+        };
+        self.execute_action(action, Some(&admission)).await
+    }
+
+    async fn observe_planned_chain_action(
+        &self,
+        chain: &ChainState,
+        step_path: &[String],
+        attempt: u32,
+        action: &Action,
+    ) -> Result<Option<ActionOutcome>, acteon_core::ActionError> {
+        let refused = || acteon_core::ActionError {
+            code: "CHAIN_OBSERVATION_REFUSED".into(),
+            message: "Chain provider evidence could not be verified".into(),
+            retryable: false,
+            attempts: 0,
+        };
+        let boundary = self.chain_execution.as_ref().ok_or_else(refused)?;
+        let selected = self
+            .providers
+            .get(action.provider.as_str())
+            .ok_or_else(refused)?;
+        let job_id = uuid::Uuid::parse_str(&chain.chain_id).map_err(|_| refused())?;
+        let identity = serde_json::to_vec(&(job_id, step_path, attempt)).map_err(|_| refused())?;
+        boundary
+            .observe(acteon_executor::plan::engine::ChainProviderCall {
+                namespace: &chain.namespace,
+                tenant: &chain.tenant,
+                job_id,
+                chain_name: &chain.chain_name,
+                origin: &chain.origin_action,
+                step_path,
+                logical_attempt: uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, &identity),
+                action,
+                selected: &selected,
+            })
+            .await
+    }
+
     async fn invoke_provider(
         &self,
         action: &Action,
@@ -2002,6 +2082,20 @@ impl Gateway {
         condition: Option<&ProviderDispatchCondition>,
     ) -> ActionOutcome {
         let authority = if let Some(admission) = execution_admission {
+            match admission
+                .observe(ProviderInvocation {
+                    action,
+                    selected,
+                    context,
+                    origin,
+                    authority: None,
+                })
+                .await
+            {
+                Ok(Some(outcome)) => return outcome,
+                Ok(None) => {}
+                Err(error) => return ActionOutcome::Failed(error),
+            }
             match admission
                 .admit(ProviderInvocation {
                     action,
@@ -2878,15 +2972,21 @@ impl Gateway {
 
     /// Handle the chain verdict: create chain state and start async execution.
     #[allow(clippy::too_many_lines)]
-    #[instrument(name = "gateway.handle_chain", skip(self, action), fields(%chain_name))]
+    #[instrument(name = "gateway.handle_chain", skip(self, action, execution_admission), fields(%chain_name))]
     pub(crate) async fn handle_chain(
         &self,
         action: &Action,
         chain_name: &str,
         caller: Option<&Caller>,
         admitted: Option<&crate::admission::AdmittedChain>,
+        execution_admission: Option<&dyn ProviderExecutionAdmission>,
     ) -> Result<ActionOutcome, GatewayError> {
-        let mut ancestry = chain_ancestry(action);
+        let governed = self.provider_execution.requires_authority();
+        let mut ancestry = if governed {
+            Vec::new()
+        } else {
+            chain_ancestry(action)
+        };
         if ancestry.iter().any(|ancestor| ancestor == chain_name) {
             return Err(GatewayError::ChainError(format!(
                 "chain dispatch cycle detected: {} -> {chain_name}",
@@ -2900,22 +3000,32 @@ impl Gateway {
         }
         ancestry.push(chain_name.to_owned());
 
-        let parent_chain_id = action.metadata.labels.get(CHAIN_PARENT_ID_LABEL).cloned();
-        let parent_step_index = action
-            .metadata
-            .labels
-            .get(CHAIN_PARENT_STEP_LABEL)
-            .and_then(|value| value.parse::<usize>().ok());
+        let parent_chain_id = if governed {
+            None
+        } else {
+            action.metadata.labels.get(CHAIN_PARENT_ID_LABEL).cloned()
+        };
+        let parent_step_index = (!governed)
+            .then(|| {
+                action
+                    .metadata
+                    .labels
+                    .get(CHAIN_PARENT_STEP_LABEL)
+                    .and_then(|value| value.parse::<usize>().ok())
+            })
+            .flatten();
         let mut origin_action = action.clone();
-        origin_action.metadata.labels.insert(
-            CHAIN_ANCESTRY_LABEL.to_owned(),
-            serde_json::to_string(&ancestry).expect("a string vector always serializes"),
-        );
-        origin_action
-            .metadata
-            .labels
-            .entry(CHAIN_ROOT_ACTION_LABEL.to_owned())
-            .or_insert_with(|| action.id.to_string());
+        if !governed {
+            origin_action.metadata.labels.insert(
+                CHAIN_ANCESTRY_LABEL.to_owned(),
+                serde_json::to_string(&ancestry).expect("a string vector always serializes"),
+            );
+            origin_action
+                .metadata
+                .labels
+                .entry(CHAIN_ROOT_ACTION_LABEL.to_owned())
+                .or_insert_with(|| action.id.to_string());
+        }
 
         let chain_config = match admitted {
             Some(plan) => plan.config.clone(),
@@ -2931,9 +3041,60 @@ impl Gateway {
         }
 
         let chain_id = admitted.map_or_else(
-            || uuid::Uuid::new_v4().to_string(),
+            || {
+                if governed {
+                    let identity = serde_json::to_vec(&(
+                        action.namespace.as_str(),
+                        action.tenant.as_str(),
+                        action.id.to_string(),
+                        chain_name,
+                    ))
+                    .expect("string tuple serializes");
+                    uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, &identity).to_string()
+                } else {
+                    uuid::Uuid::new_v4().to_string()
+                }
+            },
             |plan| plan.chain_id.clone(),
         );
+        if governed {
+            let boundary = self.chain_execution.as_ref().ok_or_else(|| {
+                GatewayError::ChainError(
+                    "configured host has no durable chain execution boundary".into(),
+                )
+            })?;
+            let job_id = uuid::Uuid::parse_str(&chain_id)
+                .map_err(|_| GatewayError::ChainError("invalid admitted chain identity".into()))?;
+            if let Some(admission) = execution_admission {
+                let mut definitions = self
+                    .chains
+                    .read()
+                    .iter()
+                    .map(|(name, definition)| (name.clone(), definition.clone()))
+                    .collect::<std::collections::BTreeMap<_, _>>();
+                definitions.insert(chain_name.to_owned(), chain_config.clone());
+                admission
+                    .admit_chain(job_id, action, chain_name, &definitions)
+                    .await
+                    .map_err(|_| {
+                        GatewayError::ChainError("complete chain plan admission refused".into())
+                    })?;
+            }
+            let job = boundary
+                .recover_job(action.namespace.as_str(), action.tenant.as_str(), job_id)
+                .await
+                .map_err(|_| {
+                    GatewayError::ChainError("chain lacks admitted durable provenance".into())
+                })?;
+            if job.root_definition().name != chain_name
+                || acteon_executor::governed::governed_provider_input_digest(job.origin()).ok()
+                    != acteon_executor::governed::governed_provider_input_digest(action).ok()
+            {
+                return Err(GatewayError::ChainError(
+                    "chain work differs from admitted provenance".into(),
+                ));
+            }
+        }
         let now = self.clock.now();
         let total_steps = chain_config.steps.len();
         let first_step = chain_config.steps[0].name.clone();
@@ -3038,7 +3199,7 @@ impl Gateway {
             .persist_chain_state(&chain_key, &mut chain_state, None)
             .await
         {
-            if admitted.is_none() {
+            if admitted.is_none() && !governed {
                 return Err(error);
             }
             let existing = self
@@ -3160,6 +3321,7 @@ impl Gateway {
         // Check timeout.
         if let Some(expires_at) = chain_state.expires_at
             && self.clock.now() >= expires_at
+            && chain_state.status != ChainStatus::WaitingProvider
         {
             // Stop the work, not just the chain: a parked worker task must
             // not execute after the chain has timed out.
@@ -3201,12 +3363,39 @@ impl Gateway {
         // Resolve the definition pinned at execution start (pinned store /
         // legacy embedded snapshot / pre-pinning registry fallback) so that
         // editing a chain never changes in-flight executions.
-        let chain_config = self.execution_config(&chain_state).await?.ok_or_else(|| {
-            GatewayError::ChainError(format!(
-                "chain configuration not found: {}",
-                chain_state.chain_name
-            ))
-        })?;
+        let chain_config = if self.provider_execution.requires_authority() {
+            let boundary = self
+                .chain_execution
+                .as_ref()
+                .ok_or_else(|| GatewayError::ChainError("chain authority unavailable".into()))?;
+            let job_id = uuid::Uuid::parse_str(chain_id)
+                .map_err(|_| GatewayError::ChainError("invalid chain identity".into()))?;
+            let job = boundary
+                .recover_job(namespace, tenant, job_id)
+                .await
+                .map_err(|_| {
+                    GatewayError::ChainError("chain lacks admitted durable provenance".into())
+                })?;
+            if job.root_definition().name != chain_state.chain_name
+                || acteon_executor::governed::governed_provider_input_digest(job.origin()).ok()
+                    != acteon_executor::governed::governed_provider_input_digest(
+                        &chain_state.origin_action,
+                    )
+                    .ok()
+            {
+                return Err(GatewayError::ChainError(
+                    "chain work differs from admitted provenance".into(),
+                ));
+            }
+            job.root_definition().clone()
+        } else {
+            self.execution_config(&chain_state).await?.ok_or_else(|| {
+                GatewayError::ChainError(format!(
+                    "chain configuration not found: {}",
+                    chain_state.chain_name
+                ))
+            })?
+        };
 
         // Compute the step index map from the effective (pinned) config —
         // the registry cache may reflect a newer definition version.
@@ -4069,7 +4258,8 @@ impl Gateway {
                             | ChainStatus::WaitingParallel
                             | ChainStatus::WaitingTimer
                             | ChainStatus::WaitingSignal
-                            | ChainStatus::WaitingWorker => {
+                            | ChainStatus::WaitingWorker
+                            | ChainStatus::WaitingProvider => {
                                 // Still running — re-schedule poll in 5 seconds.
                                 chain_state.status = ChainStatus::WaitingSubChain;
                                 chain_state.updated_at = self.clock.now();
@@ -4132,11 +4322,22 @@ impl Gateway {
 
         // Use step name + attempt number in the claim key to handle both
         // branching chains and retries.
-        let next_attempt = if step_idx < chain_state.step_attempts.len() {
-            chain_state.step_attempts[step_idx] + 1
-        } else {
-            1
+        let retained_attempt = match &chain_state.wait_state {
+            Some(WaitState::Provider {
+                step_index,
+                attempt,
+                ..
+            }) if *step_index == step_idx => Some(*attempt),
+            _ => None,
         };
+        let next_attempt = retained_attempt.unwrap_or_else(|| {
+            chain_state
+                .step_attempts
+                .get(step_idx)
+                .copied()
+                .unwrap_or(0)
+                + 1
+        });
 
         // Build the synthetic action. A provider step executes it directly;
         // a dispatch step sends it back through the full gateway pipeline.
@@ -4253,7 +4454,7 @@ impl Gateway {
             .check_and_set(&step_dedup_key, "dispatched", Some(dedup_ttl))
             .await?;
 
-        if !is_new {
+        if !is_new && !self.provider_execution.requires_authority() {
             // Step was previously dispatched. Reload chain state to check progress.
             let already_advanced = if let Some(json) = self.state.get(&chain_key).await? {
                 serde_json::from_str::<ChainState>(&json).is_ok_and(|fresh| {
@@ -4435,7 +4636,7 @@ impl Gateway {
         let step_payload = step_action.payload.clone();
 
         // Increment attempt counter before execution (retry-aware).
-        if step_idx < chain_state.step_attempts.len() {
+        if retained_attempt.is_none() && step_idx < chain_state.step_attempts.len() {
             chain_state.step_attempts[step_idx] += 1;
         }
 
@@ -4512,10 +4713,46 @@ impl Gateway {
                 }
             }
         } else {
-            self.execute_action(&step_action, None).await
+            self.execute_planned_chain_action(
+                &chain_state,
+                std::slice::from_ref(&step_config.name),
+                next_attempt,
+                &step_action,
+            )
+            .await
         };
         let step_duration = self.clock.monotonic().saturating_sub(step_start);
         let now = self.clock.now();
+
+        if let ActionOutcome::ProviderPending(work) = &outcome {
+            let next_poll_at = now + chrono::Duration::seconds(5);
+            chain_state.status = ChainStatus::WaitingProvider;
+            chain_state.wait_state = Some(WaitState::Provider {
+                step_index: step_idx,
+                attempt: next_attempt,
+                pending: vec![acteon_core::chain::PendingProviderStep {
+                    step_path: vec![step_config.name.clone()],
+                    provider: step_config.provider.clone(),
+                    work: work.clone(),
+                }],
+                next_poll_at,
+            });
+            chain_state.updated_at = now;
+            self.persist_chain_state(&chain_key, &mut chain_state, None)
+                .await?;
+            self.state
+                .index_chain_ready(&pending_key, next_poll_at.timestamp_millis())
+                .await?;
+            guard
+                .release()
+                .await
+                .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+            return Ok(());
+        }
+        if retained_attempt.is_some() {
+            chain_state.wait_state = None;
+            chain_state.status = ChainStatus::Running;
+        }
 
         let current_attempt = if step_idx < chain_state.step_attempts.len() {
             chain_state.step_attempts[step_idx]
@@ -5511,10 +5748,35 @@ impl Gateway {
 
         // Determine which sub-steps need dispatching (all on first entry,
         // only missing on resumption).
+        let decided = self.provider_execution.requires_authority()
+            && ((matches!(group.join, acteon_core::chain::ParallelJoinPolicy::Any)
+                && chain_state
+                    .parallel_sub_results
+                    .values()
+                    .any(|result| result.success))
+                || (matches!(
+                    group.on_failure,
+                    acteon_core::chain::ParallelFailurePolicy::FailFast
+                ) && chain_state
+                    .parallel_sub_results
+                    .values()
+                    .any(|result| !result.success)));
+        let retained_pending = match &chain_state.wait_state {
+            Some(WaitState::Provider { pending, .. }) => Some(pending),
+            _ => None,
+        };
         let pending_sub_steps: Vec<&ChainStepConfig> = group
             .steps
             .iter()
-            .filter(|s| !chain_state.parallel_sub_results.contains_key(&s.name))
+            .filter(|s| {
+                !chain_state.parallel_sub_results.contains_key(&s.name)
+                    && (!decided
+                        || retained_pending.is_some_and(|pending| {
+                            pending
+                                .iter()
+                                .any(|call| call.step_path.last() == Some(&s.name))
+                        }))
+            })
             .collect();
 
         // --- Per-sub-step dedup keys (only for pending sub-steps) ---
@@ -5573,6 +5835,7 @@ impl Gateway {
         // Resolve payloads and build futures only for pending sub-steps.
         // `sub_payloads` is indexed in parallel with `pending_sub_steps`.
         let mut sub_payloads: Vec<serde_json::Value> = Vec::with_capacity(pending_sub_steps.len());
+        let planned_state = &*chain_state;
         let sub_step_futures: Vec<_> = pending_sub_steps
             .iter()
             .map(|sub_step| {
@@ -5597,7 +5860,14 @@ impl Gateway {
                 let sub_name = sub_step.name.clone();
                 async move {
                     let start = self.clock.monotonic();
-                    let outcome = self.execute_action(&sub_action, None).await;
+                    let outcome = self
+                        .execute_planned_chain_action(
+                            planned_state,
+                            &[step_config.name.clone(), sub_name.clone()],
+                            1,
+                            &sub_action,
+                        )
+                        .await;
                     (
                         sub_name,
                         outcome,
@@ -5671,7 +5941,7 @@ impl Gateway {
                 .map_or(Duration::from_secs(300), Duration::from_secs)
         });
 
-        let Ok(results) = acteon_time::timeout(
+        let group_result = acteon_time::timeout(
             self.clock.as_ref(),
             group_timeout,
             self.execute_parallel_group(
@@ -5681,8 +5951,40 @@ impl Gateway {
                 group.max_concurrency,
             ),
         )
-        .await
-        else {
+        .await;
+        let group_result = if group_result.is_err() && self.provider_execution.requires_authority()
+        {
+            let mut observed = Vec::new();
+            for (sub_step, payload) in pending_sub_steps.iter().zip(&sub_payloads) {
+                let action = Action::new(
+                    namespace,
+                    tenant,
+                    sub_step.provider.as_str(),
+                    &sub_step.action_type,
+                    payload.clone(),
+                );
+                let path = vec![step_config.name.clone(), sub_step.name.clone()];
+                let outcome = match self
+                    .observe_planned_chain_action(chain_state, &path, 1, &action)
+                    .await
+                {
+                    Ok(Some(outcome)) => outcome,
+                    Ok(None) => ActionOutcome::Failed(acteon_core::ActionError {
+                        code: "PARALLEL_TIMEOUT_BEFORE_START".into(),
+                        message: "Parallel deadline passed without a registered provider attempt"
+                            .into(),
+                        retryable: false,
+                        attempts: 0,
+                    }),
+                    Err(error) => return Err(GatewayError::ChainError(error.message)),
+                };
+                observed.push((sub_step.name.clone(), outcome, group_timeout));
+            }
+            Ok(observed)
+        } else {
+            group_result
+        };
+        let Ok(results) = group_result else {
             // Timeout — mark the parent step as failed.
             let now = self.clock.now();
             let parent_result = StepResult {
@@ -5775,7 +6077,16 @@ impl Gateway {
             group.steps.iter().map(|s| (s.name.as_str(), s)).collect();
 
         // Process freshly-dispatched results.
+        let mut pending_provider = Vec::new();
         for (sub_name, outcome, elapsed) in &results {
+            if let ActionOutcome::ProviderPending(work) = outcome {
+                pending_provider.push(acteon_core::chain::PendingProviderStep {
+                    step_path: vec![step_config.name.clone(), sub_name.clone()],
+                    provider: full_config_index[sub_name.as_str()].provider.clone(),
+                    work: work.clone(),
+                });
+                continue;
+            }
             let (success, body, error) = match outcome {
                 ActionOutcome::Executed(resp) => (true, Some(resp.body.clone()), None),
                 ActionOutcome::Failed(err) => (false, None, Some(err.message.clone())),
@@ -5846,6 +6157,29 @@ impl Gateway {
                 all_success = false;
             }
         }
+
+        if !pending_provider.is_empty() {
+            let next_poll_at = now + chrono::Duration::seconds(5);
+            chain_state.status = ChainStatus::WaitingProvider;
+            chain_state.wait_state = Some(WaitState::Provider {
+                step_index: step_idx,
+                attempt: 1,
+                pending: pending_provider,
+                next_poll_at,
+            });
+            chain_state.updated_at = now;
+            self.persist_chain_state(chain_key, chain_state, None)
+                .await?;
+            self.state
+                .index_chain_ready(pending_key, next_poll_at.timestamp_millis())
+                .await?;
+            guard
+                .release()
+                .await
+                .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+            return Ok(());
+        }
+        chain_state.wait_state = None;
 
         let parent_success = match group.join {
             acteon_core::chain::ParallelJoinPolicy::All => all_success,
@@ -6249,6 +6583,31 @@ impl Gateway {
         use futures::stream::StreamExt;
 
         let concurrency = max_concurrency.unwrap_or(futures.len()).max(1);
+
+        if self.provider_execution.requires_authority() {
+            let mut work = futures.into_iter();
+            let mut results = Vec::new();
+            loop {
+                let wave: Vec<_> = work.by_ref().take(concurrency).collect();
+                if wave.is_empty() {
+                    break;
+                }
+                let completed = futures::future::join_all(wave).await;
+                let stop = (matches!(join_policy, ParallelJoinPolicy::Any)
+                    && completed
+                        .iter()
+                        .any(|(_, outcome, _)| matches!(outcome, ActionOutcome::Executed(_))))
+                    || (matches!(failure_policy, ParallelFailurePolicy::FailFast)
+                        && completed
+                            .iter()
+                            .any(|(_, outcome, _)| matches!(outcome, ActionOutcome::Failed(_))));
+                results.extend(completed);
+                if stop {
+                    break;
+                }
+            }
+            return results;
+        }
 
         match (join_policy, failure_policy) {
             (
@@ -6740,6 +7099,7 @@ impl Gateway {
                 ChainStatus::WaitingTimer => "waiting_timer".to_string(),
                 ChainStatus::WaitingSignal => "waiting_signal".to_string(),
                 ChainStatus::WaitingWorker => "waiting_worker".to_string(),
+                ChainStatus::WaitingProvider => "waiting_provider".to_string(),
             });
 
             Ok(acteon_core::DagResponse {
@@ -7137,6 +7497,7 @@ impl Gateway {
                 ChainStatus::WaitingTimer => "waiting_timer",
                 ChainStatus::WaitingSignal => "waiting_signal",
                 ChainStatus::WaitingWorker => "waiting_worker",
+                ChainStatus::WaitingProvider => "waiting_provider",
             };
 
             let mut outcome_details = serde_json::json!({
@@ -7343,6 +7704,21 @@ impl Gateway {
             )));
         }
 
+        // Linearize the authority fence before any worker or workflow projection.
+        // A stale worker may retain its loaded state, but cannot register a new
+        // effect after this coordinator write. Unknown attempts remain charged.
+        if self.provider_execution.requires_authority() {
+            let boundary = self.chain_execution.as_ref().ok_or_else(|| {
+                GatewayError::ChainError("chain cancellation authority unavailable".into())
+            })?;
+            let job_id = uuid::Uuid::parse_str(chain_id)
+                .map_err(|_| GatewayError::ChainError("invalid chain identity".into()))?;
+            boundary
+                .cancel_job(namespace, tenant, job_id)
+                .await
+                .map_err(|_| GatewayError::ChainError("chain cancellation fence refused".into()))?;
+        }
+
         let cancelled_at = self.clock.now();
         // Record notification identity with the terminal transition. A
         // cancelled row without this handoff is legacy state and is never
@@ -7362,7 +7738,9 @@ impl Gateway {
             let _ = self.cancel_worker_task(namespace, tenant, &task_id).await;
         }
         chain_state.status = ChainStatus::Cancelled;
-        chain_state.wait_state = None;
+        if !matches!(chain_state.wait_state, Some(WaitState::Provider { .. })) {
+            chain_state.wait_state = None;
+        }
         chain_state.updated_at = cancelled_at;
         chain_state.cancel_reason.clone_from(&reason);
         chain_state.cancelled_by.clone_from(&cancelled_by);

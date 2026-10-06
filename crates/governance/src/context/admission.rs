@@ -226,6 +226,7 @@ impl TrustedContextStore {
                 auth_method: admission.auth_method.clone(),
                 credential_authority: Some(credential),
                 representation,
+                lineage: None,
                 request_digest: admission.binding.request_digest.clone(),
                 accepted_ceiling_revision: admission.accepted_ceiling_revision.clone(),
                 accepted_effects: admission.accepted_effects.clone(),
@@ -261,10 +262,12 @@ impl TrustedContextStore {
         expected.admitted_at_ms = proposed.context.admitted_at_ms;
         expected.deadline_ms = proposed.context.deadline_ms;
         expected.authority = proposed.context.authority.clone();
-        if expected.representation.is_none()
-            && proposed.context.representation.is_none()
-            && matches!(expected.schema_version, 2 | 3)
-            && matches!(proposed.context.schema_version, 2 | 3)
+        if expected.lineage.is_none()
+            && proposed.context.lineage.is_none()
+            && (expected.schema_version != 2 || proposed.context.representation.is_none())
+            && (proposed.context.schema_version != 2 || expected.representation.is_none())
+            && matches!(expected.schema_version, 2..=4)
+            && matches!(proposed.context.schema_version, 2..=4)
         {
             expected.schema_version = proposed.context.schema_version;
         }

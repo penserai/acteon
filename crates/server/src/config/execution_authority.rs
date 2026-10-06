@@ -24,9 +24,18 @@ pub struct ExecutionScopeConfig {
     pub tenant: String,
     #[serde(default)]
     pub bootstrap: bool,
+    /// Retain verified evidence without any live execution or write-management grant.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub history_only: bool,
+    /// Retained evidence management with qualified finality acceptance, no live work.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reconciliation_only: bool,
     pub publisher: PrincipalIdentity,
     pub subjects: Vec<PrincipalIdentity>,
     pub routes: Vec<ExecutionRouteConfig>,
+    /// Explicit chain start bounds. Provider routes never imply chain rights.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chains: Vec<ExecutionChainDeclaration>,
     #[serde(default)]
     pub historical_effects: Vec<AcceptedEffect>,
     pub valid_from_ms: i64,
@@ -42,6 +51,26 @@ pub struct ExecutionScopeConfig {
     pub managers: Vec<ExecutionManagerConfig>,
 }
 
+/// Chain names and actors explicitly reviewed by the operator. All provider
+/// effects still require their own independent credential and permit bounds.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionChainDeclaration {
+    pub name: String,
+    pub subjects: Vec<PrincipalIdentity>,
+}
+impl ExecutionChainDeclaration {
+    pub(crate) fn effect(&self, namespace: &str, tenant: &str) -> Result<AcceptedEffect, String> {
+        Ok(AcceptedEffect {
+            operation: "chain.start".into(),
+            resources: vec![
+                ResourceRef::new(ResourceKind::Chain, namespace, tenant, &self.name)
+                    .map_err(|_| "invalid concrete chain declaration")?,
+            ],
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExecutionPermitDeclaration {
@@ -49,12 +78,16 @@ pub struct ExecutionPermitDeclaration {
     pub revision: u64,
     pub subject: PrincipalIdentity,
     pub routes: Vec<ExecutionRouteConfig>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chains: Vec<String>,
     pub valid_from_ms: i64,
     pub limits: RootBudgetLimits,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+// Independent additive permissions retain the established wire/config contract.
+#[allow(clippy::struct_excessive_bools)]
 pub struct ExecutionManagerConfig {
     pub principal: PrincipalIdentity,
     pub subjects: Vec<PrincipalIdentity>,
@@ -65,6 +98,16 @@ pub struct ExecutionManagerConfig {
     pub can_issue_permits: bool,
     #[serde(default)]
     pub can_intervene: bool,
+    /// Explicit access to retained provider evidence for declared subjects.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub can_read_history: bool,
+    /// Independent permission to accept qualified finality for retained work.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub can_reconcile: bool,
+    /// Exact independent finality-management footprint, including enclosing
+    /// resources for descendants. Routes alone do not authorize reconciliation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reconciliation_resources: Vec<ResourceRef>,
     /// Omitted means no workforce management, even for a permit issuer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workforce: Option<WorkforceManagerConfig>,
@@ -97,8 +140,11 @@ impl ExecutionAuthorityConfig {
         }
         let mut scopes = BTreeSet::new();
         for scope in &self.scopes {
+            scope.validate_chains()?;
             scope.validate_permits()?;
             scope.validate_managers()?;
+            scope.validate_history_only()?;
+            scope.validate_reconciliation_only()?;
             if (scope.namespace.as_str(), scope.tenant.as_str()) == control_scope
                 || !scopes.insert((&scope.namespace, &scope.tenant))
             {
@@ -118,10 +164,10 @@ impl ExecutionAuthorityConfig {
             if subjects.is_empty()
                 || subjects.len() > 16
                 || subjects.len() != scope.subjects.len()
-                || routes.is_empty()
+                || (routes.is_empty() && !scope.retained_only())
                 || routes.len() > 128
                 || routes.len() != scope.routes.len()
-                || scope.historical_effects.len() + routes.len() > 128
+                || scope.historical_effects.len() + routes.len() + scope.chains.len() > 128
                 || scope.valid_from_ms < 0
                 || scope.credential_limits.deadline_ms <= scope.valid_from_ms
                 || scope.credential_limits.max_units == 0
@@ -172,6 +218,80 @@ impl ExecutionAuthorityConfig {
 }
 
 impl ExecutionScopeConfig {
+    pub(crate) fn retained_only(&self) -> bool {
+        self.history_only || self.reconciliation_only
+    }
+
+    fn validate_reconciliation_only(&self) -> Result<(), String> {
+        if self.reconciliation_only
+            && (self.history_only
+                || self.bootstrap
+                || !self.routes.is_empty()
+                || !self.chains.is_empty()
+                || !self.permits.is_empty()
+                || self.historical_effects.is_empty()
+                || self.managers.is_empty()
+                || self.managers.iter().any(|manager| {
+                    (!manager.can_read_history && !manager.can_reconcile)
+                        || manager.can_issue_permits
+                        || manager.can_intervene
+                        || manager.workforce.is_some()
+                }))
+        {
+            return Err("reconciliation-only scopes require retained effects and evidence managers, with no bootstrap or live work".into());
+        }
+        Ok(())
+    }
+
+    fn validate_history_only(&self) -> Result<(), String> {
+        if self.history_only
+            && (self.bootstrap
+                || !self.routes.is_empty()
+                || !self.chains.is_empty()
+                || !self.permits.is_empty()
+                || self.historical_effects.is_empty()
+                || self.managers.is_empty()
+                || self.managers.iter().any(|manager| {
+                    !manager.can_read_history
+                        || manager.can_issue_permits
+                        || manager.can_intervene
+                        || manager.can_reconcile
+                        || manager.workforce.is_some()
+                }))
+        {
+            return Err("history-only scopes require retained effects and read-only managers, with no bootstrap or live work".into());
+        }
+        Ok(())
+    }
+
+    fn validate_chains(&self) -> Result<(), String> {
+        let mut names = BTreeSet::new();
+        if self.chains.len() > 128 {
+            return Err("too many declared chains".into());
+        }
+        for chain in &self.chains {
+            chain.effect(&self.namespace, &self.tenant)?;
+            if !names.insert(&chain.name)
+                || chain.name.contains('*')
+                || chain.subjects.is_empty()
+                || chain.subjects.len() > 16
+                || chain
+                    .subjects
+                    .iter()
+                    .map(PrincipalIdentity::id)
+                    .collect::<BTreeSet<_>>()
+                    .len()
+                    != chain.subjects.len()
+                || chain
+                    .subjects
+                    .iter()
+                    .any(|subject| !self.subjects.contains(subject))
+            {
+                return Err("chain admission exceeds independently declared bounds".into());
+            }
+        }
+        Ok(())
+    }
     fn validate_managers(&self) -> Result<(), String> {
         if self.managers.len() > 16 {
             return Err("too many execution managers".into());
@@ -196,7 +316,21 @@ impl ExecutionScopeConfig {
                 || manager.routes.iter().any(|r| !self.routes.contains(r))
                 || (!manager.can_issue_permits
                     && !manager.can_intervene
+                    && !manager.can_read_history
+                    && !manager.can_reconcile
                     && manager.workforce.is_none())
+                || manager.reconciliation_resources.len() > 128
+                || manager
+                    .reconciliation_resources
+                    .iter()
+                    .collect::<BTreeSet<_>>()
+                    .len()
+                    != manager.reconciliation_resources.len()
+                || manager
+                    .reconciliation_resources
+                    .iter()
+                    .any(|r| r.namespace() != self.namespace || r.tenant() != self.tenant)
+                || manager.can_reconcile == manager.reconciliation_resources.is_empty()
                 || (manager.can_issue_permits && manager.routes.is_empty())
                 || manager.valid_from_ms < self.valid_from_ms
                 || manager.limits.deadline_ms <= manager.valid_from_ms
@@ -253,8 +387,14 @@ impl ExecutionScopeConfig {
             if !permit_ids.insert(&permit.id)
                 || permit.revision == 0
                 || !self.subjects.contains(&permit.subject)
-                || permit.routes.is_empty()
-                || permit.routes.len() > 128
+                || (permit.routes.is_empty() && permit.chains.is_empty())
+                || permit.routes.len() + permit.chains.len() > 128
+                || permit.chains.iter().collect::<BTreeSet<_>>().len() != permit.chains.len()
+                || permit.chains.iter().any(|name| {
+                    !self.chains.iter().any(|chain| {
+                        chain.name == *name && chain.subjects.contains(&permit.subject)
+                    })
+                })
                 || permit.routes.iter().any(|r| !self.routes.contains(r))
                 || permit.routes.iter().collect::<BTreeSet<_>>().len() != permit.routes.len()
                 || permit.valid_from_ms < self.valid_from_ms

@@ -376,6 +376,7 @@ fn short_outcome(outcome: &ActionOutcome) -> &'static str {
     match outcome {
         ActionOutcome::Executed(_) => "EXECUTED",
         ActionOutcome::Failed(_) => "FAILED",
+        ActionOutcome::ProviderPending(_) => "ProviderPending",
         ActionOutcome::Suppressed { .. } => "SUPPRESSED",
         ActionOutcome::Rerouted { .. } => "REROUTED",
         ActionOutcome::CircuitOpen { .. } => "CIRCUIT_OPEN",

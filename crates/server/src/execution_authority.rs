@@ -1,7 +1,10 @@
 //! Production preparation from validated declarations and actual registrations.
 //! Preparation is read-only; publication is a later, explicitly ordered stage.
 mod runtime;
-pub use runtime::{ExecutionAuthorityRuntime, ExecutionRuntimeDependencies, ManagementError};
+pub use runtime::{
+    ExecutionAuthorityRuntime, ExecutionRuntimeDependencies, ManagementError,
+    TrustedReconciliationInstallation,
+};
 use std::{collections::BTreeMap, sync::Arc};
 
 use acteon_core::Action;
@@ -109,27 +112,7 @@ impl ExecutionProviderRegistry {
             .iter()
             .map(|scope| {
                 let mut declaration = scope.clone();
-                declaration.subjects.sort_by(|a, b| a.id().cmp(b.id()));
-                declaration.routes.sort();
-                declaration
-                    .managers
-                    .sort_by(|a, b| a.principal.id().cmp(b.principal.id()));
-                declaration
-                    .managers
-                    .iter_mut()
-                    .for_each(canonicalize_manager);
-                declaration.permits.sort_by(|a, b| a.id.cmp(&b.id));
-                for permit in &mut declaration.permits {
-                    permit.routes.sort();
-                }
-                for effect in &mut declaration.historical_effects {
-                    effect.resources.sort();
-                }
-                declaration.historical_effects.sort_by(|a, b| {
-                    a.operation
-                        .cmp(&b.operation)
-                        .then(a.resources.cmp(&b.resources))
-                });
+                canonicalize_declaration(&mut declaration);
                 let mut bindings = Vec::new();
                 for route in &declaration.routes {
                     let registration = self
@@ -150,13 +133,20 @@ impl ExecutionProviderRegistry {
                         key,
                     )?);
                 }
-                let catalog = QualifiedProviderCatalog::new_trusted(bindings)
-                    .map_err(|_| "invalid execution scope catalog")?;
+                let catalog = if declaration.retained_only() {
+                    QualifiedProviderCatalog::for_history()
+                } else {
+                    QualifiedProviderCatalog::new_trusted(bindings)
+                        .map_err(|_| "invalid execution scope catalog")?
+                };
                 let mut effects: Vec<_> = catalog
                     .definitions(&declaration.namespace, &declaration.tenant)
                     .into_iter()
                     .map(|d| d.effect)
                     .collect();
+                for chain in &declaration.chains {
+                    effects.push(chain.effect(&declaration.namespace, &declaration.tenant)?);
+                }
                 effects.extend(declaration.historical_effects.clone());
                 effects.sort_by(|a, b| {
                     a.operation
@@ -186,6 +176,15 @@ impl ExecutionProviderRegistry {
                     "root_max_concurrent": declaration.root_max_concurrent,
                     "root_lifetime_ms": declaration.root_lifetime_ms,
                 });
+                if declaration.history_only {
+                    policy["history_only"] = serde_json::json!(true);
+                }
+                if declaration.reconciliation_only {
+                    policy["reconciliation_only"] = serde_json::json!(true);
+                }
+                if !declaration.chains.is_empty() {
+                    policy["chains"] = serde_json::json!(declaration.chains);
+                }
                 if !declaration.managers.is_empty() {
                     policy["managers"] = serde_json::json!(declaration.managers);
                 }
@@ -216,6 +215,29 @@ pub struct RootExecutionRequest<'a> {
     pub permits: &'a [PermitReference],
 }
 
+/// Private authentication and actual original work for a complete chain plan.
+/// Each enclosed chain and provider effect requires explicit current authority.
+pub struct RootPlanRequest<'a> {
+    pub admission_key: &'a str,
+    pub handle: ExecutionContextHandle,
+    pub execution_id: uuid::Uuid,
+    pub action: &'a Action,
+    pub entry: &'a str,
+    pub definitions: &'a BTreeMap<String, acteon_core::ChainConfig>,
+    pub authentication: &'a ScopedCredentialBinding,
+    pub permits: &'a [PermitReference],
+}
+/// Host-only accepted plan and its verified root, ready for durable handoff.
+pub struct CapturedChainPlan {
+    pub invocation: acteon_executor::plan::QualifiedChainInvocation,
+    pub root: VerifiedExecutionContext,
+}
+struct QualifiedRootInput {
+    digest: String,
+    effects: Vec<acteon_governance::context::AcceptedEffect>,
+    job_class: String,
+}
+
 /// Stable trusted request identity retained while rules select the actual work.
 /// Authentication is the original private middleware binding, never metadata.
 pub struct ProviderAdmissionRequest<'a> {
@@ -232,6 +254,7 @@ pub struct AuthenticatedProviderAdmission<'a> {
     coordinator: &'a AuthorityCoordinator,
     contexts: &'a TrustedContextStore,
     clock: &'a dyn acteon_time::Clock,
+    handoffs: Option<&'a acteon_executor::plan::handoff::PlanHandoffStore>,
 }
 
 #[async_trait::async_trait]
@@ -274,6 +297,75 @@ impl ProviderExecutionAdmission for AuthenticatedProviderAdmission<'_> {
             .await
             .map_err(|_| refused())
     }
+    async fn admit_chain(
+        &self,
+        job_id: uuid::Uuid,
+        action: &Action,
+        entry: &str,
+        definitions: &BTreeMap<String, acteon_core::ChainConfig>,
+    ) -> Result<(), acteon_core::ActionError> {
+        let denied = || acteon_core::ActionError {
+            code: "CHAIN_PLAN_ADMISSION_REFUSED".into(),
+            message: "Complete chain plan could not be admitted".into(),
+            retryable: false,
+            attempts: 0,
+        };
+        let handoffs = self.handoffs.ok_or_else(denied)?;
+        // The connected engine currently supports provider, timer, signal and
+        // flat provider-parallel steps. Other adapters remain a delivery gate.
+        let plan = self
+            .scope
+            .qualify_chain_plan(entry, definitions)
+            .map_err(|_| denied())?;
+        for definition in plan.definitions().values() {
+            if definition.on_cancel.is_some() {
+                return Err(denied());
+            }
+            for step in &definition.steps {
+                match step.kind() {
+                    acteon_core::StepKind::Provider
+                    | acteon_core::StepKind::Timer(_)
+                    | acteon_core::StepKind::Signal(_) => {}
+                    acteon_core::StepKind::Parallel(group)
+                        if group.steps.iter().all(|child| {
+                            matches!(child.kind(), acteon_core::StepKind::Provider)
+                        }) => {}
+                    _ => return Err(denied()),
+                }
+            }
+        }
+        self.scope
+            .admit_pinned_chain_job(
+                job_id,
+                RootPlanRequest {
+                    admission_key: self.request.admission_key,
+                    handle: self.request.handle.clone(),
+                    execution_id: self.request.execution_id,
+                    action,
+                    entry,
+                    definitions,
+                    authentication: self.request.authentication,
+                    permits: self.request.permits,
+                },
+                self.coordinator,
+                self.contexts,
+                handoffs,
+                self.clock,
+            )
+            .await
+            .map_err(|_| denied())?;
+        Ok(())
+    }
+}
+
+impl<'a> AuthenticatedProviderAdmission<'a> {
+    pub(crate) fn with_chain_handoffs(
+        mut self,
+        handoffs: &'a acteon_executor::plan::handoff::PlanHandoffStore,
+    ) -> Self {
+        self.handoffs = Some(handoffs);
+        self
+    }
 }
 
 /// Private construction keeps preparation evidence separate from wire metadata.
@@ -285,6 +377,22 @@ pub struct PreparedExecutionScope {
 }
 
 impl PreparedExecutionScope {
+    /// Qualify complete pinned plans against this scope's actual registrations.
+    /// This is preparation metadata; authentication and current permits are
+    /// still required for root admission and every subsequent effect.
+    pub fn qualify_chain_plan(
+        &self,
+        entry: &str,
+        definitions: &BTreeMap<String, acteon_core::ChainConfig>,
+    ) -> Result<acteon_executor::plan::QualifiedChainPlan, acteon_executor::plan::PlanError> {
+        acteon_executor::plan::QualifiedChainPlan::new_trusted(
+            &self.declaration.namespace,
+            &self.declaration.tenant,
+            entry,
+            definitions,
+            self.catalog.clone(),
+        )
+    }
     /// Bind one authenticated request to final-work admission. Borrowing the
     /// proof explicitly prevents automatic inheritance by detached/child work.
     pub fn provider_admission<'a>(
@@ -300,6 +408,7 @@ impl PreparedExecutionScope {
             coordinator,
             contexts,
             clock,
+            handoffs: None,
         }
     }
     /// Produce invocation authority from the original private authentication
@@ -366,6 +475,125 @@ impl PreparedExecutionScope {
             .ok_or("root effect is not qualified")?;
         let request_digest =
             governed_provider_input_digest(request.action).map_err(|_| "invalid root input")?;
+        self.capture_qualified_root(
+            ProviderAdmissionRequest {
+                admission_key: request.admission_key,
+                handle: request.handle,
+                execution_id: request.execution_id,
+                authentication: request.authentication,
+                permits: request.permits,
+            },
+            QualifiedRootInput {
+                digest: request_digest,
+                effects: vec![definition.effect],
+                job_class: definition.action_type,
+            },
+            coordinator,
+            contexts,
+            clock,
+        )
+        .await
+    }
+
+    pub(crate) async fn admit_pinned_chain_job(
+        &self,
+        job_id: uuid::Uuid,
+        request: RootPlanRequest<'_>,
+        coordinator: &AuthorityCoordinator,
+        contexts: &TrustedContextStore,
+        handoffs: &acteon_executor::plan::handoff::PlanHandoffStore,
+        clock: &dyn acteon_time::Clock,
+    ) -> Result<CapturedChainPlan, String> {
+        if job_id.is_nil() {
+            return Err("invalid host chain job identity".into());
+        }
+        let admission_key = format!("acteon.server.chain-root.v1/{job_id}");
+        let origin = request.action;
+        let permits = request.permits;
+        let captured = self
+            .capture_plan_root(
+                RootPlanRequest {
+                    admission_key: &admission_key,
+                    ..request
+                },
+                coordinator,
+                contexts,
+                clock,
+            )
+            .await?;
+        handoffs
+            .persist(
+                job_id,
+                &captured.invocation,
+                origin,
+                &captured.root,
+                permits,
+            )
+            .await
+            .map_err(|_| "accepted plan handoff unavailable or conflicting")?;
+        Ok(captured)
+    }
+
+    /// Admit the complete actual plan using independently declared chain bounds.
+    /// Sub-chains do not acquire authority merely by being referenced by a plan.
+    pub async fn capture_plan_root(
+        &self,
+        request: RootPlanRequest<'_>,
+        coordinator: &AuthorityCoordinator,
+        contexts: &TrustedContextStore,
+        clock: &dyn acteon_time::Clock,
+    ) -> Result<CapturedChainPlan, String> {
+        let plan = Arc::new(
+            self.qualify_chain_plan(request.entry, request.definitions)
+                .map_err(|_| "chain plan is not fully qualified")?,
+        );
+        let principal = request.authentication.authentication_source().principal();
+        for name in plan.definitions().keys() {
+            if !self
+                .declaration
+                .chains
+                .iter()
+                .any(|chain| chain.name == *name && chain.subjects.contains(principal))
+            {
+                return Err("chain plan exceeds independently declared actor bounds".into());
+            }
+        }
+        let invocation = plan
+            .bind_input(request.action)
+            .map_err(|_| "invalid original plan input")?;
+        let root = self
+            .capture_qualified_root(
+                ProviderAdmissionRequest {
+                    admission_key: request.admission_key,
+                    handle: request.handle,
+                    execution_id: request.execution_id,
+                    authentication: request.authentication,
+                    permits: request.permits,
+                },
+                QualifiedRootInput {
+                    digest: invocation.request_digest().into(),
+                    effects: plan.required_effects().to_vec(),
+                    job_class: request.entry.into(),
+                },
+                coordinator,
+                contexts,
+                clock,
+            )
+            .await?;
+        invocation
+            .verify_root(&root)
+            .map_err(|_| "captured root differs from qualified plan")?;
+        Ok(CapturedChainPlan { invocation, root })
+    }
+
+    async fn capture_qualified_root(
+        &self,
+        request: ProviderAdmissionRequest<'_>,
+        input: QualifiedRootInput,
+        coordinator: &AuthorityCoordinator,
+        contexts: &TrustedContextStore,
+        clock: &dyn acteon_time::Clock,
+    ) -> Result<VerifiedExecutionContext, String> {
         let now_ms = clock.now().timestamp_millis();
         let stamp = self
             .verify_authenticated_scope(request.authentication, coordinator, now_ms)
@@ -382,12 +610,12 @@ impl PreparedExecutionScope {
             binding: ContextBinding {
                 execution_id: request.execution_id,
                 principal: source.principal().clone(),
-                request_digest,
+                request_digest: input.digest,
             },
             credential_id: request.authentication.credential_reference().id.clone(),
             auth_method: source.auth_method().into(),
             accepted_ceiling_revision: String::new(), // Derived from exact permits by the store.
-            accepted_effects: vec![definition.effect],
+            accepted_effects: input.effects,
             deadline_ms,
             evaluated_authority: stamp,
         };
@@ -407,13 +635,13 @@ impl PreparedExecutionScope {
         admission.deadline_ms = limits.deadline_ms;
         // The initiator is the actual private authentication principal. A public
         // dispatch cannot claim another human's identity or delegated authority.
-        // Provider jobs use the prepared route's exact action type as job class.
+        // Job class is derived by the qualified host path, never request labels.
         let representation = coordinator
             .evaluate_permit_representation(
                 acteon_governance::workforce::WorkforcePermitAdmission {
                     permits: request.permits,
                     initiator: source.principal(),
-                    job_class: &definition.action_type,
+                    job_class: &input.job_class,
                     admission: &admission,
                     limits: &limits,
                     clock,
@@ -482,21 +710,40 @@ impl PreparedExecutionScope {
             .reserve_scope(acteon_governance::ScopePurpose::Execution)
             .await
             .map_err(|_| "execution scope is already owned or contains unclaimed work")?;
-        Ok(CredentialPolicyProjector::new_trusted(
-            coordinator,
-            self.catalog.clone(),
-            PermitIssuanceCeiling {
-                issuer: self.issuance.issuer.clone(),
-                subjects: self.issuance.subjects.clone(),
-                effects: self.issuance.effects.clone(),
-                valid_from_ms: self.issuance.valid_from_ms,
-                limits: self.issuance.limits.clone(),
-            },
-            self.declaration.valid_from_ms,
-            self.declaration.credential_limits.clone(),
-        )
-        .await?
-        .with_deployment_policy_fingerprint(self.policy_fingerprint.clone()))
+        let issuance = PermitIssuanceCeiling {
+            issuer: self.issuance.issuer.clone(),
+            subjects: self.issuance.subjects.clone(),
+            effects: self.issuance.effects.clone(),
+            valid_from_ms: self.issuance.valid_from_ms,
+            limits: self.issuance.limits.clone(),
+        };
+        let projector = if self.declaration.retained_only() {
+            CredentialPolicyProjector::for_history(
+                coordinator,
+                issuance,
+                self.declaration.valid_from_ms,
+                self.declaration.credential_limits.clone(),
+            )
+            .await?
+        } else {
+            CredentialPolicyProjector::new_trusted(
+                coordinator,
+                self.catalog.clone(),
+                issuance,
+                self.declaration.valid_from_ms,
+                self.declaration.credential_limits.clone(),
+            )
+            .await?
+        };
+        projector
+            .with_deployment_policy_fingerprint(self.policy_fingerprint.clone())
+            .with_chain_admission_bounds(
+                self.declaration
+                    .chains
+                    .iter()
+                    .map(|chain| (chain.name.clone(), chain.subjects.clone()))
+                    .collect(),
+            )
     }
 }
 
@@ -507,4 +754,33 @@ fn canonicalize_manager(manager: &mut crate::config::ExecutionManagerConfig) {
         workforce.teams.sort();
         workforce.job_classes.sort();
     }
+}
+
+fn canonicalize_declaration(declaration: &mut ExecutionScopeConfig) {
+    declaration.subjects.sort_by(|a, b| a.id().cmp(b.id()));
+    declaration.routes.sort();
+    declaration.chains.sort_by(|a, b| a.name.cmp(&b.name));
+    for chain in &mut declaration.chains {
+        chain.subjects.sort_by(|a, b| a.id().cmp(b.id()));
+    }
+    declaration
+        .managers
+        .sort_by(|a, b| a.principal.id().cmp(b.principal.id()));
+    declaration
+        .managers
+        .iter_mut()
+        .for_each(canonicalize_manager);
+    declaration.permits.sort_by(|a, b| a.id.cmp(&b.id));
+    for permit in &mut declaration.permits {
+        permit.routes.sort();
+        permit.chains.sort();
+    }
+    for effect in &mut declaration.historical_effects {
+        effect.resources.sort();
+    }
+    declaration.historical_effects.sort_by(|a, b| {
+        a.operation
+            .cmp(&b.operation)
+            .then(a.resources.cmp(&b.resources))
+    });
 }

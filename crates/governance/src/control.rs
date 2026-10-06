@@ -100,7 +100,8 @@ impl ControlChangeAuthorization<'_> {
                 .credentials
                 .get(credential_id)
                 .is_some_and(|record| self.ceiling.covers_policy(&record.authority.ceiling)),
-            AuthorityChange::UpgradeProtocol { .. }
+            AuthorityChange::CancelExecution { .. }
+            | AuthorityChange::UpgradeProtocol { .. }
             | AuthorityChange::Workforce { .. }
             | AuthorityChange::ReserveScope { .. }
             | AuthorityChange::PublishPermit { .. }

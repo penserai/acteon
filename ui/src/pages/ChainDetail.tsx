@@ -95,7 +95,7 @@ export function ChainDetail() {
     )
   }
 
-  const isActive = ['running', 'waiting_sub_chain', 'waiting_parallel', 'waiting_timer', 'waiting_signal', 'waiting_worker'].includes(chain.status)
+  const isActive = ['running', 'waiting_sub_chain', 'waiting_parallel', 'waiting_timer', 'waiting_signal', 'waiting_worker', 'waiting_provider'].includes(chain.status)
 
   return (
     <div>
@@ -234,6 +234,18 @@ export function ChainDetail() {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {chain.wait_state?.kind === 'provider' && (
+        <div className={styles.stepDetailCard}>
+          <h3 className={styles.stepTitle}>Provider work awaiting reconciliation</h3>
+          <p className="text-sm text-gray-500">
+            {chain.status === 'cancelled'
+              ? 'Cancellation fenced new effects. The original provider receipts remain unresolved and retain their charges.'
+              : 'This execution retains its original provider attempts. Polling observes their evidence without sending the work again.'}
+          </p>
+          <JsonViewer data={chain.wait_state} collapsed />
         </div>
       )}
 

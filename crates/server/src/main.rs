@@ -195,6 +195,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // Resolve every external finality trust root before publishing any authority.
+    let reconciliation_installations = acteon_server::config::prepare_reconciliation_sources(
+        &config.reconciliation_sources,
+        config.execution_authority.as_ref(),
+        |name| std::env::var(name).ok().map(zeroize::Zeroizing::new),
+    )?;
+
     // Initialize tracing subscriber (with optional OpenTelemetry layer).
     // Must happen after config is loaded so we know whether OTel is enabled,
     // but before any tracing calls.
@@ -1671,21 +1678,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             (&control.namespace, &control.tenant),
             key.expose_secret().as_bytes(),
         )?;
-        let runtime = Arc::new(
-            acteon_server::execution_authority::ExecutionAuthorityRuntime::install(
-                &execution_providers,
-                prepared,
-                acteon_server::execution_authority::ExecutionRuntimeDependencies {
-                    state: store.clone(),
-                    executor: exec_config.clone(),
-                    clock: Arc::new(acteon_time::SystemClock::default()),
-                    encryptor: payload_encryptor.clone(),
-                    signing_key: zeroize::Zeroizing::new(key.expose_secret().as_bytes().to_vec()),
-                },
-            )
-            .await?,
-        );
+        let runtime = acteon_server::execution_authority::ExecutionAuthorityRuntime::install(
+            &execution_providers,
+            prepared,
+            acteon_server::execution_authority::ExecutionRuntimeDependencies {
+                state: store.clone(),
+                executor: exec_config.clone(),
+                clock: Arc::new(acteon_time::SystemClock::default()),
+                encryptor: payload_encryptor.clone(),
+                signing_key: zeroize::Zeroizing::new(key.expose_secret().as_bytes().to_vec()),
+            },
+        )
+        .await?;
+        let runtime = Arc::new(if reconciliation_installations.is_empty() {
+            runtime
+        } else {
+            runtime.with_trusted_reconciliation_verifiers(reconciliation_installations)?
+        });
         gateway.install_provider_execution_mediator(runtime.mediator());
+        gateway.install_chain_execution_mediator(runtime.clone());
         Some(runtime)
     } else {
         None

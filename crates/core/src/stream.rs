@@ -240,6 +240,7 @@ pub fn outcome_category(outcome: &ActionOutcome) -> &'static str {
         ActionOutcome::Rerouted { .. } => "rerouted",
         ActionOutcome::Throttled { .. } => "throttled",
         ActionOutcome::Failed(_) => "failed",
+        ActionOutcome::ProviderPending(_) => "provider_pending",
         ActionOutcome::Grouped { .. } => "grouped",
         ActionOutcome::StateChanged { .. } => "state_changed",
         ActionOutcome::PendingApproval { .. } => "pending_approval",

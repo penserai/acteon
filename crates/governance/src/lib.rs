@@ -17,14 +17,18 @@ pub mod context;
 pub mod control;
 pub mod credential;
 pub mod permit;
+pub mod reconciliation;
 mod scope;
 mod upgrade;
 pub mod workforce;
-pub use budget::{RootBudget, RootBudgetLimits, RootReservation};
+pub use budget::{
+    ChildBudgetAdmission, MAX_BUDGET_DEPTH, MAX_ROOT_DESCENDANTS, RootBudget, RootBudgetLimits,
+    RootReservation,
+};
 pub use scope::ScopePurpose;
 pub use upgrade::{ScopeUpgradePlan, ScopeUpgradeReport};
 
-const FORMAT: u32 = 9;
+const FORMAT: u32 = 10;
 const MAX_ATTEMPT_RESOURCES: usize = 16;
 const RETRIES: usize = 32;
 const CONTROL_RECORD_RESERVE: usize = 16;
@@ -70,6 +74,9 @@ pub enum AuthorityChange {
     },
     /// Only created by trusted virgin-scope reservation, never generic change.
     ReserveScope { purpose: ScopePurpose },
+    /// Trusted work host permanently fences this execution and its descendants.
+    /// Generic resource controllers cannot issue this operation.
+    CancelExecution { execution_id: String },
     /// Refuse new starts targeting this exact resource reference.
     CloseResource { resource: ResourceRef },
     /// Remove this resource restriction; other restrictions remain effective.
@@ -118,6 +125,16 @@ pub struct StartRecord {
     pub status: AttemptStatus,
     /// Digest-pinned retained evidence. It is not permission to send again.
     pub evidence: Option<AttemptEvidenceReference>,
+    /// Immutable original operation envelope, captured at fresh registration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_evidence: Option<AttemptEvidenceReference>,
+    /// Separate finality evidence preserves the original uncertain receipt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reconciliation: Option<AttemptReconciliationReference>,
+    /// Host-evaluated operator acceptance, committed with finality. Older
+    /// privileged adapter settlements retain no invented operator identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reconciliation_acceptance: Option<reconciliation::ReconciliationAcceptance>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -126,6 +143,23 @@ pub struct AttemptEvidenceReference {
     /// Scoped by this coordinator; resolved through a qualified effect adapter.
     pub id: String,
     pub digest: String,
+}
+
+/// Immutable finality link; original evidence is never replaced or erased.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttemptReconciliationReference {
+    /// Unresolved state at the finality CAS, retained for lifecycle audit.
+    pub prior_status: AttemptStatus,
+    pub original_evidence: Option<AttemptEvidenceReference>,
+    pub resolution: AttemptEvidenceReference,
+}
+
+/// The privileged adapter requires the proposed original pin to already match.
+/// Evaluated acceptance may additionally retain verified interrupted evidence.
+enum OriginalEvidenceExpectation {
+    Proposed,
+    Observed(Option<AttemptEvidenceReference>),
 }
 
 fn valid_evidence(evidence: &AttemptEvidenceReference) -> bool {
@@ -172,6 +206,8 @@ pub struct CoordinatorSnapshot {
     pub revoked_subjects: BTreeSet<String>,
     pub starts: BTreeMap<String, StartRecord>,
     pub roots: BTreeMap<String, RootBudget>,
+    /// Immutable child-to-parent budget links, coordinated with starts and settlement.
+    pub budget_parents: BTreeMap<String, String>,
     pub changes: BTreeMap<String, ChangeRecord>,
     pub permits: BTreeMap<String, permit::PermitRecord>,
     pub credentials: BTreeMap<String, credential::CredentialRecord>,
@@ -182,6 +218,7 @@ pub struct CoordinatorSnapshot {
 impl CoordinatorSnapshot {
     fn record_count(&self) -> usize {
         self.roots.len()
+            + self.budget_parents.len()
             + self.starts.len()
             + self.changes.len()
             + self.permits.len()
@@ -271,7 +308,7 @@ fn deserialize_resources<'de, D: serde::Deserializer<'de>>(
 
 impl AuthorityCoordinator {
     fn valid_start_accounting(&self, state: &CoordinatorSnapshot) -> bool {
-        let mut totals: BTreeMap<&str, (u64, u64)> = BTreeMap::new();
+        let mut totals: BTreeMap<String, (u64, u64)> = BTreeMap::new();
         for (id, start) in &state.starts {
             if ![
                 id.as_str(),
@@ -291,6 +328,28 @@ impl AuthorityCoordinator {
                 || start.authority.generation == 0
                 || start.authority.generation > state.generation
                 || start.evidence.as_ref().is_some_and(|e| !valid_evidence(e))
+                || start
+                    .operation_evidence
+                    .as_ref()
+                    .is_some_and(|e| !valid_evidence(e))
+                || start
+                    .reconciliation_acceptance
+                    .as_ref()
+                    .is_some_and(|acceptance| {
+                        start.reconciliation.is_none()
+                            || !valid_text(acceptance.operator.id())
+                            || acceptance.accepted_at_ms < 0
+                            || acceptance.authority.incarnation != state.incarnation
+                            || acceptance.authority.generation < start.authority.generation
+                            || acceptance.authority.generation > state.generation
+                    })
+                || start.reconciliation.as_ref().is_some_and(|r| {
+                    start.status != AttemptStatus::Settled
+                        || r.prior_status == AttemptStatus::Settled
+                        || r.original_evidence != start.evidence
+                        || r.resolution.id != *id
+                        || !valid_evidence(&r.resolution)
+                })
             {
                 return false;
             }
@@ -298,29 +357,38 @@ impl AuthorityCoordinator {
                 if reservation.units == 0 || !state.roots.contains_key(&reservation.root_id) {
                     return false;
                 }
-                let total = totals.entry(&reservation.root_id).or_default();
-                let Some(spent) = total.0.checked_add(reservation.units) else {
+                let Ok(path) = budget::budget_path(state, &reservation.root_id) else {
                     return false;
                 };
-                total.0 = spent;
-                if start.status != AttemptStatus::Settled {
-                    total.1 += 1;
+                for budget_id in path {
+                    let total = totals.entry(budget_id).or_default();
+                    let Some(spent) = total.0.checked_add(reservation.units) else {
+                        return false;
+                    };
+                    total.0 = spent;
+                    if start.status != AttemptStatus::Settled {
+                        total.1 += 1;
+                    }
                 }
             }
         }
-        state.roots.iter().all(|(id, root)| {
-            valid_text(id)
-                && valid_text(&root.owner_subject)
-                && root.limits.max_units > 0
-                && root.limits.max_concurrent > 0
-                && root.limits.deadline_ms > 0
-                && root.limits.max_concurrent
-                    <= u64::try_from(state.limits.max_active).unwrap_or(u64::MAX)
-                && root.spent_units <= root.limits.max_units
-                && root.active_attempts <= root.limits.max_concurrent
-                && totals.get(id.as_str()).copied().unwrap_or_default()
-                    == (root.spent_units, root.active_attempts)
-        })
+        budget::valid_budget_links(state)
+            && state.roots.iter().all(|(id, root)| {
+                valid_text(id)
+                    && (!root.cancelled || state.changes.values().any(|record| {
+                        matches!(&record.change, AuthorityChange::CancelExecution { execution_id } if execution_id == id)
+                    }))
+                    && valid_text(&root.owner_subject)
+                    && root.limits.max_units > 0
+                    && root.limits.max_concurrent > 0
+                    && root.limits.deadline_ms > 0
+                    && root.limits.max_concurrent
+                        <= u64::try_from(state.limits.max_active).unwrap_or(u64::MAX)
+                    && root.spent_units <= root.limits.max_units
+                    && root.active_attempts <= root.limits.max_concurrent
+                    && totals.get(id.as_str()).copied().unwrap_or_default()
+                        == (root.spent_units, root.active_attempts)
+            })
     }
     pub async fn initialize(
         store: Arc<dyn StateStore>,
@@ -361,6 +429,7 @@ impl AuthorityCoordinator {
             credentials: BTreeMap::new(),
             credential_configurations: BTreeMap::new(),
             workforce: workforce::WorkforceState::default(),
+            budget_parents: BTreeMap::new(),
         };
         let coordinator = Self { store, key };
         let encoded = Self::encode(&initial)?;
@@ -463,7 +532,14 @@ impl AuthorityCoordinator {
                 AuthorityChange::UpgradeProtocol {
                     from_protocol,
                     to_protocol,
-                } => !matches!(from_protocol, 7 | 8) || *to_protocol != FORMAT,
+                } => !matches!((*from_protocol, *to_protocol), (7 | 8, 9 | 10) | (9, 10)),
+                AuthorityChange::CancelExecution { execution_id } => {
+                    !valid_text(execution_id)
+                        || !state
+                            .roots
+                            .get(execution_id)
+                            .is_some_and(|root| root.cancelled)
+                }
                 AuthorityChange::Workforce { recorded_at_ms, .. } => *recorded_at_ms < 0,
                 AuthorityChange::ReserveScope { purpose } => !purpose.valid(),
                 AuthorityChange::CloseResource { resource }
@@ -534,30 +610,24 @@ impl AuthorityCoordinator {
         &self,
         request: AttemptRequest<'_>,
     ) -> Result<StartRegistration, CoordinationError> {
-        self.register_attempt_checked(request, None).await
+        self.register_attempt_checked(request, None, None).await
     }
 
-    async fn register_attempt_checked(
+    fn validate_attempt_resources(
         &self,
-        request: AttemptRequest<'_>,
-        permit_check: Option<&permit::PermittedAttempt<'_>>,
-    ) -> Result<StartRegistration, CoordinationError> {
-        let AttemptRequest {
-            id,
-            subject,
-            resources,
-            request_digest,
-            expected_authority,
-            reservation,
-            now_ms,
-        } = request;
-        if ![id, subject, request_digest].into_iter().all(valid_text) {
+        request: &AttemptRequest<'_>,
+    ) -> Result<BTreeSet<ResourceRef>, CoordinationError> {
+        if ![request.id, request.subject, request.request_digest]
+            .into_iter()
+            .all(valid_text)
+        {
             return Err(CoordinationError::Invalid("start fields".into()));
         }
-        if resources.is_empty()
-            || resources.len() > MAX_ATTEMPT_RESOURCES
-            || now_ms < 0
-            || reservation
+        if request.resources.is_empty()
+            || request.resources.len() > MAX_ATTEMPT_RESOURCES
+            || request.now_ms < 0
+            || request
+                .reservation
                 .as_ref()
                 .is_some_and(|r| !valid_text(&r.root_id) || r.units == 0)
         {
@@ -565,13 +635,34 @@ impl AuthorityCoordinator {
                 "attempt resources or reservation".into(),
             ));
         }
-        let resource_count = resources.len();
-        let resources: BTreeSet<_> = resources.iter().cloned().collect();
-        if resources.len() != resource_count {
+        let resources: BTreeSet<_> = request.resources.iter().cloned().collect();
+        if resources.len() != request.resources.len() {
             return Err(CoordinationError::Invalid("duplicate resources".into()));
         }
         for resource in &resources {
             self.validate_resource_scope(resource)?;
+        }
+        Ok(resources)
+    }
+
+    async fn register_attempt_checked(
+        &self,
+        request: AttemptRequest<'_>,
+        permit_check: Option<&permit::PermittedAttempt<'_>>,
+        operation_evidence: Option<&AttemptEvidenceReference>,
+    ) -> Result<StartRegistration, CoordinationError> {
+        let resources = self.validate_attempt_resources(&request)?;
+        let AttemptRequest {
+            id,
+            subject,
+            resources: _,
+            request_digest,
+            expected_authority,
+            reservation,
+            now_ms,
+        } = request;
+        if operation_evidence.is_some_and(|e| !valid_evidence(e)) {
+            return Err(CoordinationError::Invalid("operation evidence".into()));
         }
         let token = uuid::Uuid::new_v4().to_string();
         for _ in 0..RETRIES {
@@ -586,6 +677,7 @@ impl AuthorityCoordinator {
                     || old.resources != resources
                     || old.reservation != reservation
                     || old.request_digest != request_digest
+                    || old.operation_evidence.as_ref() != operation_evidence
                 {
                     return Err(CoordinationError::Conflict);
                 }
@@ -626,6 +718,9 @@ impl AuthorityCoordinator {
                 token: token.clone(),
                 status: AttemptStatus::InFlight,
                 evidence: None,
+                operation_evidence: operation_evidence.cloned(),
+                reconciliation: None,
+                reconciliation_acceptance: None,
             };
             state.starts.insert(id.into(), record.clone());
             // Effect admissions cannot consume the reserved control-plane space.
@@ -641,6 +736,11 @@ impl AuthorityCoordinator {
 
     fn validate_change(&self, change: &AuthorityChange) -> Result<(), CoordinationError> {
         match change {
+            AuthorityChange::CancelExecution { execution_id } => {
+                if !valid_text(execution_id) {
+                    return Err(CoordinationError::Invalid("execution identity".into()));
+                }
+            }
             AuthorityChange::CloseResource { resource }
             | AuthorityChange::ReopenResource { resource } => {
                 self.validate_resource_scope(resource)?;
@@ -717,6 +817,13 @@ impl AuthorityCoordinator {
                 .checked_add(1)
                 .ok_or(CoordinationError::Capacity)?;
             match &change {
+                AuthorityChange::CancelExecution { execution_id } => {
+                    state
+                        .roots
+                        .get_mut(execution_id)
+                        .ok_or(CoordinationError::Conflict)?
+                        .cancelled = true;
+                }
                 AuthorityChange::CloseResource { resource } => {
                     state.closed_resources.insert(resource.clone());
                 }
@@ -821,6 +928,15 @@ impl AuthorityCoordinator {
             if record.token != token {
                 return Err(CoordinationError::Conflict);
             }
+            // A late worker cannot repin evidence or turn resolved work uncertain.
+            if record.reconciliation.is_some()
+                && (status != AttemptStatus::Settled
+                    || evidence
+                        .as_ref()
+                        .is_some_and(|e| record.evidence.as_ref() != Some(e)))
+            {
+                return Err(CoordinationError::Conflict);
+            }
             if let Some(proposed) = &evidence
                 && record
                     .evidence
@@ -844,14 +960,103 @@ impl AuthorityCoordinator {
                 && status == AttemptStatus::Settled
                 && let Some(reservation) = &record.reservation
             {
-                let root = state
-                    .roots
-                    .get_mut(&reservation.root_id)
-                    .ok_or(CoordinationError::Conflict)?;
-                root.active_attempts = root
-                    .active_attempts
-                    .checked_sub(1)
-                    .ok_or(CoordinationError::Conflict)?;
+                let reservation = reservation.clone();
+                budget::release_concurrency(&mut state, &reservation)?;
+            }
+            if self.commit(&state, version).await? {
+                return Ok(());
+            }
+        }
+        Err(CoordinationError::Contention)
+    }
+
+    /// Trusted verifier adapter persists finality evidence first. Its original
+    /// reference and new attestation are pinned with one settlement CAS. This
+    /// grants no effect authority and cannot replace a known ordinary result.
+    /// This privileged library entrypoint does not authorize an operator. Public
+    /// management ingress must use `reconcile_attempt_evaluated` after trusted
+    /// authentication, operation ownership and verifier qualification checks.
+    pub async fn reconcile_attempt(
+        &self,
+        id: &str,
+        token: &str,
+        reconciliation: AttemptReconciliationReference,
+    ) -> Result<(), CoordinationError> {
+        self.reconcile_attempt_internal(
+            id,
+            token,
+            reconciliation,
+            None,
+            OriginalEvidenceExpectation::Proposed,
+        )
+        .await
+    }
+
+    async fn reconcile_attempt_internal(
+        &self,
+        id: &str,
+        token: &str,
+        reconciliation: AttemptReconciliationReference,
+        authorization: Option<&reconciliation::ReconciliationAuthorization<'_>>,
+        expected_original: OriginalEvidenceExpectation,
+    ) -> Result<(), CoordinationError> {
+        if reconciliation.prior_status == AttemptStatus::Settled
+            || !valid_evidence(&reconciliation.resolution)
+            || reconciliation.resolution.id != id
+            || reconciliation
+                .original_evidence
+                .as_ref()
+                .is_some_and(|e| !valid_evidence(e))
+        {
+            return Err(CoordinationError::Invalid("reconciliation evidence".into()));
+        }
+        for _ in 0..RETRIES {
+            let (mut state, version) = self.load().await?;
+            let acceptance = if let Some(authorization) = authorization {
+                let accepted_at_ms = authorization.validate_current(self, &state, id).await?;
+                Some(reconciliation::ReconciliationAcceptance {
+                    operator: authorization.ceiling.actor.clone(),
+                    authority: state.stamp(),
+                    accepted_at_ms,
+                })
+            } else {
+                None
+            };
+            let record = state
+                .starts
+                .get_mut(id)
+                .ok_or(CoordinationError::Conflict)?;
+            if record.token != token {
+                return Err(CoordinationError::Conflict);
+            }
+            if let Some(existing) = &record.reconciliation {
+                return if existing == &reconciliation
+                    && record.evidence == reconciliation.original_evidence
+                {
+                    Ok(())
+                } else {
+                    Err(CoordinationError::Conflict)
+                };
+            }
+            let expected = match &expected_original {
+                OriginalEvidenceExpectation::Proposed => &reconciliation.original_evidence,
+                OriginalEvidenceExpectation::Observed(reference) => reference,
+            };
+            if record.status != reconciliation.prior_status
+                || &record.evidence != expected
+                || (record.evidence.is_some()
+                    && record.evidence != reconciliation.original_evidence)
+            {
+                return Err(CoordinationError::Conflict);
+            }
+            record.status = AttemptStatus::Settled;
+            record
+                .evidence
+                .clone_from(&reconciliation.original_evidence);
+            record.reconciliation = Some(reconciliation.clone());
+            record.reconciliation_acceptance = acceptance;
+            if let Some(reservation) = record.reservation.clone() {
+                budget::release_concurrency(&mut state, &reservation)?;
             }
             if self.commit(&state, version).await? {
                 return Ok(());

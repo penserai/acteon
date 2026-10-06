@@ -19,6 +19,7 @@ const STATUS_OPTIONS = [
   { value: 'waiting_timer', label: 'Waiting Timer' },
   { value: 'waiting_signal', label: 'Waiting Signal' },
   { value: 'waiting_worker', label: 'Waiting Worker' },
+  { value: 'waiting_provider', label: 'Provider Reconciliation' },
   { value: 'completed', label: 'Completed' },
   { value: 'failed', label: 'Failed' },
   { value: 'cancelled', label: 'Cancelled' },
