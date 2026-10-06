@@ -52,6 +52,26 @@ impl DelegationEligibility {
 }
 
 impl AuthorityCoordinator {
+    /// Refuse a disallowed source before a host looks up recipient authority.
+    /// This is a read-only preflight; combined eligibility still checks both
+    /// participants again after registry and recipient reads.
+    pub async fn check_delegation_source(
+        &self,
+        context: &VerifiedExecutionContext,
+        permits: &[PermitReference],
+        effect: &AcceptedEffect,
+        clock: &dyn Clock,
+    ) -> Result<(), CoordinationError> {
+        let state = self.snapshot().await?;
+        check_participant(
+            &state,
+            context,
+            permits,
+            effect,
+            clock,
+            clock.now().timestamp_millis(),
+        )
+    }
     /// Evaluate both original accepted ceilings and both current participant
     /// entitlements against this coordinator's configured `StateStore`. This
     /// writes nothing, including when a candidate is refused. Budget availability
@@ -89,37 +109,7 @@ impl AuthorityCoordinator {
             (request.parent, request.parent_permits),
             (request.recipient, request.recipient_permits),
         ] {
-            context.validate_inheritance(&state, permits, now)?;
-            let reference = context
-                .reference()
-                .map_err(|_| CoordinationError::Restricted)?;
-            crate::permit::evaluate(
-                &state,
-                &PermittedAttempt {
-                    id: "delegation-discovery",
-                    context,
-                    permits,
-                    effect: request.effect,
-                    request_digest: reference.request_digest(),
-                    units: 1,
-                    clock: request.clock,
-                },
-                now,
-            )?;
-            let resources = context
-                .effect_registration_resources(request.effect)
-                .map_err(|_| CoordinationError::Restricted)?;
-            if resources.iter().any(|r| state.closed_resources.contains(r)) {
-                return Err(CoordinationError::Restricted);
-            }
-            check_root_reservation(
-                &state,
-                &RootReservation {
-                    root_id: context.execution_id().to_string(),
-                    units: 1,
-                },
-                now,
-            )?;
+            check_participant(&state, context, permits, request.effect, request.clock, now)?;
         }
         Ok(DelegationEligibility {
             authority: state.stamp(),
@@ -127,4 +117,49 @@ impl AuthorityCoordinator {
             checked_at_ms: now,
         })
     }
+}
+
+fn check_participant(
+    state: &crate::CoordinatorSnapshot,
+    context: &VerifiedExecutionContext,
+    permits: &[PermitReference],
+    effect: &AcceptedEffect,
+    clock: &dyn Clock,
+    now: i64,
+) -> Result<(), CoordinationError> {
+    if context.credential_authority().is_none() {
+        return Err(CoordinationError::Restricted);
+    }
+    context.validate_inheritance(state, permits, now)?;
+    let reference = context
+        .reference()
+        .map_err(|_| CoordinationError::Restricted)?;
+    crate::permit::evaluate(
+        state,
+        &PermittedAttempt {
+            id: "delegation-discovery",
+            context,
+            permits,
+            effect,
+            request_digest: reference.request_digest(),
+            units: 1,
+            clock,
+        },
+        now,
+    )?;
+    let resources = context
+        .effect_registration_resources(effect)
+        .map_err(|_| CoordinationError::Restricted)?;
+    if resources.iter().any(|r| state.closed_resources.contains(r)) {
+        return Err(CoordinationError::Restricted);
+    }
+    check_root_reservation(
+        state,
+        &RootReservation {
+            root_id: context.execution_id().to_string(),
+            units: 1,
+        },
+        now,
+    )?;
+    Ok(())
 }

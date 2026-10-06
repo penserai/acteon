@@ -289,7 +289,8 @@ let candidates = registry.discover_candidates("diagnose", PeerCandidateQuery {
 }).await?;
 ```
 
-The trusted resolver supplies each recipient's independently verified,
+Discovery checks the source before calling the trusted resolver, which supplies
+each recipient's independently verified,
 credentialed context and permit references. Discovery checks the complete effect
 against both participants' original accepted ceilings and current credentials,
 permits, workforce relationships, closures, cancellation fences, deadlines and

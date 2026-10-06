@@ -1,5 +1,8 @@
 //! Real `StateStore` registry reads composed with independently credentialed authority.
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 use acteon_core::{Agent, AgentCard, PrincipalIdentity, Skill, bus_agent_card::Interface};
 use acteon_executor::delegation::{
@@ -23,6 +26,7 @@ use fixture::{Fixture, actor, capture, effect, permits};
 struct Resolver {
     context: VerifiedExecutionContext,
     permits: Vec<PermitReference>,
+    calls: AtomicUsize,
 }
 #[async_trait::async_trait]
 impl PeerRecipientResolver for Resolver {
@@ -32,6 +36,7 @@ impl PeerRecipientResolver for Resolver {
         _: &str,
         _: &PrincipalIdentity,
     ) -> Result<Option<RecipientDiscoveryContext>, PeerDiscoveryError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         Ok(Some(RecipientDiscoveryContext {
             context: self.context.clone(),
             permits: self.permits.clone(),
@@ -113,6 +118,7 @@ async fn approved_registry_candidates_require_both_credentials_without_spending(
     let resolver = Resolver {
         context: fixture.recipient.clone(),
         permits: permits("responder"),
+        calls: AtomicUsize::new(0),
     };
     let before = serde_json::to_value(fixture.coordinator.snapshot().await.unwrap()).unwrap();
     let candidates = discover(&registry, &fixture, &resolver).await.unwrap();
@@ -153,6 +159,7 @@ async fn registry_edits_and_resolver_identity_substitution_cannot_redirect_disco
     let forged = Resolver {
         context: fixture.parent.clone(),
         permits: permits("planner"),
+        calls: AtomicUsize::new(0),
     };
     assert!(
         discover(&registry, &fixture, &forged)
@@ -171,6 +178,7 @@ async fn registry_edits_and_resolver_identity_substitution_cannot_redirect_disco
     let forged = Resolver {
         context: uncredentialed,
         permits: permits("responder"),
+        calls: AtomicUsize::new(0),
     };
     assert!(
         discover(&registry, &fixture, &forged)
@@ -181,6 +189,7 @@ async fn registry_edits_and_resolver_identity_substitution_cannot_redirect_disco
     let resolver = Resolver {
         context: fixture.recipient.clone(),
         permits: permits("responder"),
+        calls: AtomicUsize::new(0),
     };
     card.interfaces[0].url = "https://different.example/a2a".into();
     store
@@ -216,6 +225,7 @@ async fn authority_expiry_during_registry_read_is_resampled_before_disclosure() 
             let resolver = Resolver {
                 context: fixture.recipient.clone(),
                 permits: permits("responder"),
+                calls: AtomicUsize::new(0),
             };
             discover(&registry, &fixture, &resolver).await
         })
@@ -264,6 +274,7 @@ async fn independent_redis_clients_discover_only_current_credentialed_peers() {
     let resolver = Resolver {
         context: fixture.recipient.clone(),
         permits: permits("responder"),
+        calls: AtomicUsize::new(0),
     };
     fixture.coordinator =
         acteon_governance::AuthorityCoordinator::connect(peer.clone(), "city", "tenant")
@@ -333,4 +344,43 @@ async fn independent_redis_clients_discover_only_current_credentialed_peers() {
                 .unwrap()
         );
     }
+}
+
+#[tokio::test]
+async fn revoked_source_never_resolves_private_recipient_authority() {
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let fixture = fixture::fixture_with_store(store.clone()).await;
+    let (registry, _) = registry(store, &fixture).await;
+    let resolver = Resolver {
+        context: fixture.recipient.clone(),
+        permits: permits("responder"),
+        calls: AtomicUsize::new(0),
+    };
+    assert_eq!(
+        discover(&registry, &fixture, &resolver)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    resolver.calls.store(0, Ordering::SeqCst);
+    fixture
+        .coordinator
+        .change(
+            "revoke-caller",
+            AuthorityChange::RevokeSubject {
+                subject: "planner".into(),
+            },
+            "operator",
+            "offboard source",
+        )
+        .await
+        .unwrap();
+    assert!(
+        discover(&registry, &fixture, &resolver)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(resolver.calls.load(Ordering::SeqCst), 0);
 }

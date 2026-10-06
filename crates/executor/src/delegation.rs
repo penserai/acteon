@@ -145,6 +145,17 @@ fn card_digest(card: &AgentCard) -> Result<String, PeerDiscoveryError> {
     value_digest(&serde_json::to_value(card).map_err(|_| PeerDiscoveryError::Binding)?)
 }
 
+fn ordinary_denial(error: &CoordinationError) -> bool {
+    matches!(
+        error,
+        CoordinationError::Restricted
+            | CoordinationError::PermitDenied(_)
+            | CoordinationError::BudgetExhausted
+            | CoordinationError::ConcurrencyExhausted
+            | CoordinationError::DeadlineExceeded
+    )
+}
+
 /// Public descriptive fields are untrusted data, including prompt injection.
 /// Deliberately excludes endpoint URLs, credentials and runtime context handles.
 #[derive(Debug, Clone)]
@@ -177,7 +188,9 @@ pub struct RecipientDiscoveryContext {
     pub permits: Vec<PermitReference>,
 }
 
-/// Trusted host/runtime resolution, not model-supplied actor or credential data.
+/// Trusted local host/runtime resolution, not model-supplied identity data.
+/// Resolve retained authentication/context records without invoking or probing
+/// peers. External credential exchange and probes need their own effect permits.
 #[async_trait::async_trait]
 pub trait PeerRecipientResolver: Send + Sync {
     async fn resolve(
@@ -299,6 +312,20 @@ impl ApprovedPeerRegistry {
         }
         let mut candidates = Vec::new();
         for binding in self.bindings.values().filter(|b| b.skill == skill) {
+            match query
+                .coordinator
+                .check_delegation_source(
+                    query.parent,
+                    query.parent_permits,
+                    &binding.effect,
+                    query.clock,
+                )
+                .await
+            {
+                Ok(()) => {}
+                Err(error) if ordinary_denial(&error) => continue,
+                Err(error) => return Err(PeerDiscoveryError::Authority(error)),
+            }
             let Some(recipient) = query
                 .recipients
                 .resolve(&self.namespace, &self.tenant, &binding.target)
@@ -348,6 +375,15 @@ impl ApprovedPeerRegistry {
         let Some(binding) = self.bindings.get(&(agent_id.into(), skill.into())) else {
             return Ok(None);
         };
+        authority
+            .coordinator
+            .check_delegation_source(
+                authority.parent,
+                authority.parent_permits,
+                &binding.effect,
+                authority.clock,
+            )
+            .await?;
         let Some(card) = self.inspect_binding(binding, authority.clock).await? else {
             return Ok(None);
         };
