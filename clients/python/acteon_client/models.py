@@ -140,10 +140,15 @@ class ProviderWorkPending:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ProviderWorkPending":
         state = data["state"]
-        return cls(data["execution_id"], data["attempts"], ProviderWorkState(
-            kind=state["kind"], attempt_id=state.get("attempt_id"),
-            not_before_ms=state.get("not_before_ms"),
-        ))
+        return cls(
+            data["execution_id"],
+            data["attempts"],
+            ProviderWorkState(
+                kind=state["kind"],
+                attempt_id=state.get("attempt_id"),
+                not_before_ms=state.get("not_before_ms"),
+            ),
+        )
 
 
 @dataclass
@@ -217,7 +222,10 @@ class ActionOutcome:
                 return cls(outcome_type="deduplicated")
             raise ValueError(f"Unknown action outcome: {data}")
         if "ProviderPending" in data:
-            return cls(outcome_type="provider_pending", pending=ProviderWorkPending.from_dict(data["ProviderPending"]))
+            return cls(
+                outcome_type="provider_pending",
+                pending=ProviderWorkPending.from_dict(data["ProviderPending"]),
+            )
         elif "Executed" in data:
             resp_data = data["Executed"]
             return cls(

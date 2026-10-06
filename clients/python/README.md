@@ -473,7 +473,10 @@ from acteon_client import ProviderReconciliationRequest
 correlation = client.provider_reconciliation_correlation("prod", "acme", execution_id, 0)
 # evidence_base64 comes from the independently qualified finality source.
 receipt = client.accept_provider_reconciliation(
-    "prod", "acme", execution_id, 0,
+    "prod",
+    "acme",
+    execution_id,
+    0,
     ProviderReconciliationRequest(proof_base64=evidence_base64),
 )
 ```

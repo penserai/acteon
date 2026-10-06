@@ -41,3 +41,14 @@ paths = [
 ]
 regexTarget = "match"
 regexes = ['''key_hash\s*=\s*"e5522a60c16c993c80c7c251fe4dc4ad5f1de7926c57ec5401d3d42891633ad8"''']
+
+[[allowlists]]
+description = "Environment variable references for receipt keys; no credential values"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = [
+    '''crates/server/tests/reconciliation_config\.rs$''',
+    '''docs/book/features/governance\.md$''',
+]
+regexTarget = "match"
+regexes = ['''secret_env"?\s*[:=]\s*"ACTEON_FINALITY_[A-Z0-9_]+"''']
