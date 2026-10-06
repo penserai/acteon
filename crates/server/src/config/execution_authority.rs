@@ -36,6 +36,9 @@ pub struct ExecutionScopeConfig {
     /// Explicit chain start bounds. Provider routes never imply chain rights.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub chains: Vec<ExecutionChainDeclaration>,
+    /// Explicit individual-agent runtime and service delegation declarations.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_services: Vec<crate::execution_authority::agent_services::AgentServiceDeclaration>,
     #[serde(default)]
     pub historical_effects: Vec<AcceptedEffect>,
     pub valid_from_ms: i64,
@@ -80,6 +83,8 @@ pub struct ExecutionPermitDeclaration {
     pub routes: Vec<ExecutionRouteConfig>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub chains: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agents: Vec<String>,
     pub valid_from_ms: i64,
     pub limits: RootBudgetLimits,
 }
@@ -141,6 +146,7 @@ impl ExecutionAuthorityConfig {
         let mut scopes = BTreeSet::new();
         for scope in &self.scopes {
             scope.validate_chains()?;
+            scope.validate_agents()?;
             scope.validate_permits()?;
             scope.validate_managers()?;
             scope.validate_history_only()?;
@@ -228,6 +234,7 @@ impl ExecutionScopeConfig {
                 || self.bootstrap
                 || !self.routes.is_empty()
                 || !self.chains.is_empty()
+                || !self.agent_services.is_empty()
                 || !self.permits.is_empty()
                 || self.historical_effects.is_empty()
                 || self.managers.is_empty()
@@ -248,6 +255,7 @@ impl ExecutionScopeConfig {
             && (self.bootstrap
                 || !self.routes.is_empty()
                 || !self.chains.is_empty()
+                || !self.agent_services.is_empty()
                 || !self.permits.is_empty()
                 || self.historical_effects.is_empty()
                 || self.managers.is_empty()
@@ -260,6 +268,23 @@ impl ExecutionScopeConfig {
                 }))
         {
             return Err("history-only scopes require retained effects and read-only managers, with no bootstrap or live work".into());
+        }
+        Ok(())
+    }
+
+    fn validate_agents(&self) -> Result<(), String> {
+        let mut agents = BTreeSet::new();
+        let mut grants = BTreeSet::new();
+        if self.agent_services.len() > 128 {
+            return Err("too many declared agent services".into());
+        }
+        for service in &self.agent_services {
+            service.validate(self)?;
+            if !agents.insert(&service.card.agent_id)
+                || service.grants.iter().any(|grant| !grants.insert(&grant.id))
+            {
+                return Err("agent service and grant identities must be unique".into());
+            }
         }
         Ok(())
     }
@@ -387,12 +412,24 @@ impl ExecutionScopeConfig {
             if !permit_ids.insert(&permit.id)
                 || permit.revision == 0
                 || !self.subjects.contains(&permit.subject)
-                || (permit.routes.is_empty() && permit.chains.is_empty())
-                || permit.routes.len() + permit.chains.len() > 128
+                || (permit.routes.is_empty()
+                    && permit.chains.is_empty()
+                    && permit.agents.is_empty())
+                || permit.routes.len() + permit.chains.len() + permit.agents.len() > 128
                 || permit.chains.iter().collect::<BTreeSet<_>>().len() != permit.chains.len()
                 || permit.chains.iter().any(|name| {
                     !self.chains.iter().any(|chain| {
                         chain.name == *name && chain.subjects.contains(&permit.subject)
+                    })
+                })
+                || permit.agents.iter().collect::<BTreeSet<_>>().len() != permit.agents.len()
+                || permit.agents.iter().any(|id| {
+                    !self.agent_services.iter().any(|service| {
+                        service.card.agent_id == *id
+                            && service
+                                .grants
+                                .iter()
+                                .any(|grant| grant.source == permit.subject)
                     })
                 })
                 || permit.routes.iter().any(|r| !self.routes.contains(r))

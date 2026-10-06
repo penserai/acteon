@@ -1,4 +1,6 @@
 //! Shared server installation against the configured backend, without wire proof.
+mod agent_services;
+pub use agent_services::{AgentServiceParent, AgentServiceRequest};
 mod management;
 pub use management::{ManagementError, TrustedReconciliationInstallation};
 use std::{collections::BTreeMap, sync::Arc};
@@ -69,6 +71,7 @@ struct InstalledScope {
     contexts: Arc<TrustedContextStore>,
     handoffs: Arc<acteon_executor::plan::handoff::PlanHandoffStore>,
     history: acteon_executor::governed::history::HistoricalProviderStore,
+    agents: BTreeMap<String, Arc<acteon_gateway::agent_runtime::AgentProviderRuntime>>,
     reconciliation: Option<acteon_executor::governed::reconciliation::ProviderReconciliationStore>,
 }
 pub struct ExecutionAuthorityRuntime {
@@ -82,6 +85,8 @@ pub struct ExecutionAuthorityRuntime {
 impl ExecutionAuthorityRuntime {
     /// Prepare must already have validated the entire deployment. Qualification,
     /// context keys and executor settings are checked before backend mutation.
+    // Keep the ordered qualification and authority checks visible together.
+    #[allow(clippy::too_many_lines)]
     pub async fn install(
         registry: &ExecutionProviderRegistry,
         prepared: Vec<PreparedExecutionScope>,
@@ -154,6 +159,22 @@ impl ExecutionAuthorityRuntime {
                     .map_err(|_| "invalid execution driver")?,
                 );
             }
+            let mut agents = BTreeMap::new();
+            for (id, agent) in &prepared.agents {
+                let runtime = acteon_gateway::agent_runtime::AgentProviderRuntime::new_trusted(
+                    acteon_gateway::agent_runtime::AgentRuntimeDependencies {
+                        state: dependencies.state.clone(),
+                        coordinator: coordinator.clone(),
+                        contexts: contexts.clone(),
+                        clock: dependencies.clock.clone(),
+                    },
+                    agent.binding.clone(),
+                    agent.bound.clone(),
+                    dependencies.executor.clone(),
+                )
+                .map_err(|_| "invalid agent runtime")?;
+                agents.insert(id.clone(), Arc::new(runtime));
+            }
             let handoffs = dependencies.handoffs(&declaration.namespace, &declaration.tenant)?;
             let history = dependencies.history(&coordinator, contexts.clone());
             scopes.insert(
@@ -164,6 +185,7 @@ impl ExecutionAuthorityRuntime {
                     contexts,
                     handoffs,
                     history,
+                    agents,
                     reconciliation: None,
                 },
             );
@@ -233,6 +255,8 @@ impl ExecutionAuthorityRuntime {
     pub async fn publish_deployment_permits(&self) -> Result<(), String> {
         for scope in self.scopes.values() {
             Self::publish_permits(&scope.prepared, &scope.coordinator, self.clock.as_ref()).await?;
+            Self::publish_agent_grants(&scope.prepared, &scope.coordinator, self.clock.as_ref())
+                .await?;
         }
         Ok(())
     }
@@ -268,6 +292,21 @@ impl ExecutionAuthorityRuntime {
                     .find(|chain| chain.name == *name && chain.subjects.contains(&permit.subject))
                     .ok_or("permit chain is not declared")?;
                 effects.push(chain.effect(&declaration.namespace, &declaration.tenant)?);
+            }
+            for name in &permit.agents {
+                let agent = prepared
+                    .agents
+                    .get(name)
+                    .ok_or("permit agent is not declared")?;
+                if !agent
+                    .declaration
+                    .grants
+                    .iter()
+                    .any(|grant| grant.source == permit.subject)
+                {
+                    return Err("permit agent source is not declared".into());
+                }
+                effects.push(agent.binding.ingress_effect().clone());
             }
             let change = format!(
                 "deployment-permit/{:x}",

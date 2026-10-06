@@ -40,6 +40,7 @@ pub enum PeerDiscoveryError {
 /// No `Deserialize`: model fields or a published card cannot install approval.
 /// Credential exchange and actual network confinement belong to the subsequent
 /// transport adapter; this object alone grants neither execution nor networking.
+#[derive(Clone)]
 pub struct ApprovedPeerBinding {
     namespace: String,
     tenant: String,
@@ -154,6 +155,12 @@ impl ApprovedPeerBinding {
         binding.service = Some(plan);
         Ok(binding)
     }
+    /// Complete approved invocation footprint; observation supplies no authority.
+    #[must_use]
+    pub fn ingress_effect(&self) -> &AcceptedEffect {
+        &self.effect
+    }
+
     #[must_use]
     pub fn target(&self) -> &PrincipalIdentity {
         &self.target
@@ -211,6 +218,7 @@ impl ApprovedPeerBinding {
 }
 /// Operator-approved service footprint. No deserialization or mutable fields:
 /// agent advertisements cannot extend this intent after approval.
+#[derive(Clone)]
 pub struct ApprovedServicePlan {
     intent: Vec<AcceptedEffect>,
     direct_effects: Vec<AcceptedEffect>,
@@ -271,7 +279,8 @@ fn value_digest(value: &serde_json::Value) -> Result<String, PeerDiscoveryError>
     }
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
-fn card_digest(card: &AgentCard) -> Result<String, PeerDiscoveryError> {
+/// Deterministic complete-card digest; hashing supplies no execution approval.
+pub fn card_digest(card: &AgentCard) -> Result<String, PeerDiscoveryError> {
     value_digest(&serde_json::to_value(card).map_err(|_| PeerDiscoveryError::Binding)?)
 }
 

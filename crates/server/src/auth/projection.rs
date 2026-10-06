@@ -217,6 +217,13 @@ pub struct CredentialPolicyProjector {
     valid_from_ms: i64,
     limits: RootBudgetLimits,
     deployment_policy_fingerprint: Option<String>,
+    agent_subjects: BTreeMap<
+        String,
+        (
+            acteon_governance::context::AcceptedEffect,
+            Vec<acteon_core::PrincipalIdentity>,
+        ),
+    >,
     chain_subjects: BTreeMap<String, Vec<acteon_core::PrincipalIdentity>>,
 }
 
@@ -304,6 +311,7 @@ impl CredentialPolicyProjector {
             valid_from_ms,
             limits,
             deployment_policy_fingerprint: None,
+            agent_subjects: BTreeMap::new(),
             chain_subjects: BTreeMap::new(),
         })
     }
@@ -351,6 +359,58 @@ impl CredentialPolicyProjector {
         self.chain_subjects = bounds;
         Ok(self)
     }
+    pub(crate) fn with_agent_admission_bounds(
+        mut self,
+        bounds: BTreeMap<
+            String,
+            (
+                acteon_governance::context::AcceptedEffect,
+                Vec<acteon_core::PrincipalIdentity>,
+            ),
+        >,
+    ) -> Result<Self, String> {
+        if bounds.len() > 128 {
+            return Err("too many agent admission bounds".into());
+        }
+        for (name, (effect, subjects)) in &bounds {
+            if effect.operation != "agent.invoke"
+                || subjects.is_empty()
+                || subjects.len() > 16
+                || !self.issuance.effects.contains(effect)
+                || !effect.resources.iter().any(|r| {
+                    r.kind() == acteon_core::ResourceKind::Agent && r.id() == name.as_str()
+                })
+                || subjects.iter().any(|s| !self.issuance.subjects.contains(s))
+            {
+                return Err("agent admission exceeds independent publication bounds".into());
+            }
+        }
+        self.agent_subjects = bounds;
+        Ok(self)
+    }
+
+    fn agent_effects(
+        &self,
+        principal: &acteon_core::PrincipalIdentity,
+        grants: &[super::config::Grant],
+    ) -> Vec<acteon_governance::context::AcceptedEffect> {
+        self.agent_subjects
+            .iter()
+            .filter(|(name, (_, subjects))| {
+                subjects.contains(principal)
+                    && grants.iter().any(|grant| {
+                        grant.matches(
+                            &self.tenant,
+                            &self.namespace,
+                            &format!("agent.{name}"),
+                            "invoke",
+                        )
+                    })
+            })
+            .map(|(_, (effect, _))| effect.clone())
+            .collect()
+    }
+
     #[must_use]
     pub fn scope(&self) -> (&str, &str) {
         (&self.namespace, &self.tenant)
@@ -446,6 +506,7 @@ impl CredentialPolicyProjector {
             };
             if role.has_permission(Permission::Dispatch) {
                 effects.extend(self.chain_effects(principal, grants)?);
+                effects.extend(self.agent_effects(principal, grants));
             }
             if !self.issuance.subjects.contains(principal) {
                 if effects.is_empty() {

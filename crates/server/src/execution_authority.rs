@@ -1,9 +1,10 @@
 //! Production preparation from validated declarations and actual registrations.
 //! Preparation is read-only; publication is a later, explicitly ordered stage.
+pub mod agent_services;
 mod runtime;
 pub use runtime::{
-    ExecutionAuthorityRuntime, ExecutionRuntimeDependencies, ManagementError,
-    TrustedReconciliationInstallation,
+    AgentServiceParent, AgentServiceRequest, ExecutionAuthorityRuntime,
+    ExecutionRuntimeDependencies, ManagementError, TrustedReconciliationInstallation,
 };
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -95,6 +96,8 @@ impl ExecutionProviderRegistry {
 
     /// Resolve and validate all scopes before any coordinator is initialized or
     /// any source epoch is published. Unsupported adapters remain unqualified.
+    // Keep the ordered qualification and authority checks visible together.
+    #[allow(clippy::too_many_lines)]
     pub fn prepare(
         &self,
         configuration: &ExecutionAuthorityConfig,
@@ -139,6 +142,34 @@ impl ExecutionProviderRegistry {
                     QualifiedProviderCatalog::new_trusted(bindings)
                         .map_err(|_| "invalid execution scope catalog")?
                 };
+                let mut agents = BTreeMap::new();
+                for service in &declaration.agent_services {
+                    let actual = &self
+                        .entries
+                        .get(&service.route.provider)
+                        .ok_or("agent provider unavailable")?
+                        .actual;
+                    let action = Action::new(
+                        declaration.namespace.as_str(),
+                        declaration.tenant.as_str(),
+                        service.route.provider.as_str(),
+                        &service.route.action_type,
+                        serde_json::Value::Null,
+                    );
+                    let bound = catalog
+                        .resolve(&action, actual)
+                        .map_err(|_| "agent operation is not qualified")?
+                        .clone();
+                    let binding = service.qualify(&bound)?;
+                    agents.insert(
+                        service.card.agent_id.clone(),
+                        agent_services::PreparedAgentService {
+                            declaration: service.clone(),
+                            binding,
+                            bound,
+                        },
+                    );
+                }
                 let mut effects: Vec<_> = catalog
                     .definitions(&declaration.namespace, &declaration.tenant)
                     .into_iter()
@@ -148,6 +179,11 @@ impl ExecutionProviderRegistry {
                     effects.push(chain.effect(&declaration.namespace, &declaration.tenant)?);
                 }
                 effects.extend(declaration.historical_effects.clone());
+                effects.extend(
+                    agents
+                        .values()
+                        .map(|agent| agent.binding.ingress_effect().clone()),
+                );
                 effects.sort_by(|a, b| {
                     a.operation
                         .cmp(&b.operation)
@@ -182,6 +218,9 @@ impl ExecutionProviderRegistry {
                 if declaration.reconciliation_only {
                     policy["reconciliation_only"] = serde_json::json!(true);
                 }
+                if !declaration.agent_services.is_empty() {
+                    policy["agent_services"] = serde_json::json!(declaration.agent_services);
+                }
                 if !declaration.chains.is_empty() {
                     policy["chains"] = serde_json::json!(declaration.chains);
                 }
@@ -194,6 +233,7 @@ impl ExecutionProviderRegistry {
                     declaration,
                     catalog,
                     issuance,
+                    agents,
                     policy_fingerprint: format!("{:x}", Sha256::digest(bytes)),
                 })
             })
@@ -372,6 +412,7 @@ impl<'a> AuthenticatedProviderAdmission<'a> {
 pub struct PreparedExecutionScope {
     declaration: ExecutionScopeConfig,
     catalog: QualifiedProviderCatalog,
+    agents: BTreeMap<String, agent_services::PreparedAgentService>,
     issuance: PermitIssuanceCeiling,
     policy_fingerprint: String,
 }
@@ -743,6 +784,25 @@ impl PreparedExecutionScope {
                     .iter()
                     .map(|chain| (chain.name.clone(), chain.subjects.clone()))
                     .collect(),
+            )?
+            .with_agent_admission_bounds(
+                self.agents
+                    .iter()
+                    .map(|(id, agent)| {
+                        (
+                            id.clone(),
+                            (
+                                agent.binding.ingress_effect().clone(),
+                                agent
+                                    .declaration
+                                    .grants
+                                    .iter()
+                                    .map(|grant| grant.source.clone())
+                                    .collect(),
+                            ),
+                        )
+                    })
+                    .collect(),
             )
     }
 }
@@ -770,10 +830,21 @@ fn canonicalize_declaration(declaration: &mut ExecutionScopeConfig) {
         .managers
         .iter_mut()
         .for_each(canonicalize_manager);
+    declaration
+        .agent_services
+        .sort_by(|a, b| a.card.agent_id.cmp(&b.card.agent_id));
+    for service in &mut declaration.agent_services {
+        service.recipient_permits.sort_by(|a, b| a.id.cmp(&b.id));
+        service.grants.sort_by(|a, b| a.id.cmp(&b.id));
+        for grant in &mut service.grants {
+            grant.source_permits.sort_by(|a, b| a.id.cmp(&b.id));
+        }
+    }
     declaration.permits.sort_by(|a, b| a.id.cmp(&b.id));
     for permit in &mut declaration.permits {
         permit.routes.sort();
         permit.chains.sort();
+        permit.agents.sort();
     }
     for effect in &mut declaration.historical_effects {
         effect.resources.sort();
