@@ -1381,3 +1381,16 @@ intervention acknowledgments, production/federation qualification and the other
 remaining city/workforce gates are still required. This is platform authority and
 accounting work, not scenario-specific code, and it does not complete the city
 vision.
+
+### PR #431 service discovery integration (in progress)
+
+The committed delegation foundation is `c3c36317` on PR #431. The next change
+integrates approved service plans into registry discovery: source ingress and
+initially accepted grant intent are checked before private recipient resolution,
+while recipient private operations are checked independently after registry
+reads. The binding digest pins complete intent and direct-operation selection.
+Contracts cover fresh recipient acceptance and shared sponsorship, no caller
+permission borrowing, grant retirement during resolution, delayed expiry,
+offboarding, unaccepted grants, and narrowed current intent. This remains an
+unmerged draft pending final checks and adversarial review; durable A2A runtime
+and transport work remains in the implementation plan.

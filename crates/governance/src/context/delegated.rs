@@ -66,6 +66,36 @@ impl VerifiedExecutionContext {
     pub fn original_requester(&self) -> &PrincipalIdentity {
         original_actor(&self.0)
     }
+    /// Read-only qualification of an onward service against sealed ancestor intent.
+    pub(crate) fn check_service_intent(
+        &self,
+        state: &CoordinatorSnapshot,
+        grant: &DelegationGrantReference,
+        effects: &[AcceptedEffect],
+        now: i64,
+    ) -> Result<(), CoordinationError> {
+        if !self.0.delegation_grants.contains(grant) || !valid_effects(effects) {
+            return Err(CoordinationError::Restricted);
+        }
+        let (original, current) = grant_pair(state, grant, now)?;
+        for policy in [original, &current] {
+            if policy.source != self.0.principal
+                || !crate::budget::current_limits_allow(
+                    state,
+                    &self.execution_id().to_string(),
+                    &policy.limits,
+                    1,
+                )?
+                || effects.iter().any(|e| !contains(&policy.effects, e))
+            {
+                return Err(CoordinationError::Restricted);
+            }
+        }
+        for effect in effects {
+            intent_check(state, &self.0, effect, self.delegation_depth() + 1, now)?;
+        }
+        Ok(())
+    }
     #[must_use]
     pub fn immediate_delegator(&self) -> Option<&PrincipalIdentity> {
         self.0.delegated_from.as_ref().map(|d| &d.source.principal)

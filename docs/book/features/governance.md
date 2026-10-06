@@ -367,3 +367,27 @@ older workers before activating the new grant event types, since those workers
 refuse records they cannot understand. Retain the admission journals, context
 verification keys and historical grant publications needed by live descendants
 and reconciliation.
+
+#### Discovering a delegated service
+
+An approved peer can carry an `ApprovedServicePlan` with two exact effect lists:
+its complete downstream intent and the operations that the recipient may perform
+directly. `ApprovedPeerBinding::new_service_trusted` pins both lists together with
+the card, skill, endpoint, transport, and executing principal. Changing the plan
+changes the binding digest and requires a corresponding accepted grant.
+
+For these bindings, `ApprovedPeerRegistry::discover_candidates` checks the
+caller's current ingress permission and an initially accepted service grant
+before resolving private recipient authority. It then reads the current registry
+and rechecks the grant and both participants after those reads. The recipient's
+private effects are checked against its own credential and permits; the caller
+needs the invocation permission and approved service intent, without receiving
+those private permissions. Retirement, narrowed intent, expiry, closures, and
+participant revocation refuse a candidate.
+
+A service candidate includes the selected `accepted_grant` reference. This is
+advisory metadata, not execution authority. The host still authenticates a fresh
+`RootContextAdmission` for the actual recipient input and calls
+`capture_delegated_child`; a discovery context is never reused as the invocation
+or its payer. Discovery creates no context, budget allocation, or effect start.
+Ordinary peer bindings retain their existing intersection-based preview.

@@ -11,7 +11,10 @@ use acteon_core::{
 use acteon_governance::{
     AuthorityCoordinator, AuthorityStamp, CoordinationError,
     context::{AcceptedEffect, VerifiedExecutionContext},
-    delegation::DelegationDiscoveryRequest,
+    delegation::{
+        DelegationDiscoveryRequest, ServiceDelegationDiscoveryRequest, ServiceDiscoveryBinding,
+    },
+    delegation_policy::DelegationGrantReference,
     permit::PermitReference,
 };
 use acteon_state::{KeyKind, StateKey, StateStore};
@@ -49,6 +52,7 @@ pub struct ApprovedPeerBinding {
     digest: String,
     effect: AcceptedEffect,
     agent_resource: ResourceRef,
+    service: Option<ApprovedServicePlan>,
 }
 impl ApprovedPeerBinding {
     /// Approval is an independent operator decision. HTTPS syntax validation is
@@ -118,7 +122,70 @@ impl ApprovedPeerBinding {
             digest,
             effect,
             agent_resource: resource,
+            service: None,
         })
+    }
+    /// Pin the complete downstream intent and recipient direct operations into
+    /// approval. A changed plan requires a different binding and accepted grant.
+    pub fn new_service_trusted(
+        card: &AgentCard,
+        target: PrincipalIdentity,
+        skill: &str,
+        endpoint: &str,
+        transport: &str,
+        ingress: AcceptedEffect,
+        plan: ApprovedServicePlan,
+    ) -> Result<Self, PeerDiscoveryError> {
+        let mut binding = Self::new_trusted(card, target, skill, endpoint, transport, ingress)?;
+        if plan
+            .intent
+            .iter()
+            .flat_map(|e| &e.resources)
+            .any(|r| !binding.effect.resources.contains(r))
+        {
+            return Err(PeerDiscoveryError::Binding);
+        }
+        binding.digest = value_digest(&serde_json::json!({
+            "domain": "acteon.approved-service-discovery.v1",
+            "binding": binding.digest,
+            "intent": plan.intent,
+            "direct_effects": plan.direct_effects,
+        }))?;
+        binding.service = Some(plan);
+        Ok(binding)
+    }
+    #[must_use]
+    pub fn service_plan(&self) -> Option<&ApprovedServicePlan> {
+        self.service.as_ref()
+    }
+    fn service_binding(&self) -> Option<ServiceDiscoveryBinding<'_>> {
+        self.service.as_ref().map(|plan| ServiceDiscoveryBinding {
+            target: &self.target,
+            agent_resource: &self.agent_resource,
+            binding_digest: &self.digest,
+            skill: &self.skill,
+            ingress: &self.effect,
+            intent: &plan.intent,
+            direct_effects: &plan.direct_effects,
+        })
+    }
+    async fn check_source(
+        &self,
+        coordinator: &AuthorityCoordinator,
+        parent: &VerifiedExecutionContext,
+        permits: &[PermitReference],
+        clock: &dyn Clock,
+    ) -> Result<(), CoordinationError> {
+        if let Some(binding) = self.service_binding() {
+            coordinator
+                .check_service_delegation_source(parent, permits, binding, clock)
+                .await?;
+            Ok(())
+        } else {
+            coordinator
+                .check_delegation_source(parent, permits, &self.effect, clock)
+                .await
+        }
     }
     #[must_use]
     pub fn digest(&self) -> &str {
@@ -132,6 +199,61 @@ impl ApprovedPeerBinding {
     #[must_use]
     pub fn transport(&self) -> &str {
         &self.transport
+    }
+}
+/// Operator-approved service footprint. No deserialization or mutable fields:
+/// agent advertisements cannot extend this intent after approval.
+pub struct ApprovedServicePlan {
+    intent: Vec<AcceptedEffect>,
+    direct_effects: Vec<AcceptedEffect>,
+}
+impl ApprovedServicePlan {
+    #[must_use]
+    pub fn intent(&self) -> &[AcceptedEffect] {
+        &self.intent
+    }
+    #[must_use]
+    pub fn direct_effects(&self) -> &[AcceptedEffect] {
+        &self.direct_effects
+    }
+    pub fn new_trusted(
+        intent: Vec<AcceptedEffect>,
+        direct_effects: Vec<AcceptedEffect>,
+    ) -> Result<Self, PeerDiscoveryError> {
+        let valid = |effects: &[AcceptedEffect]| {
+            !effects.is_empty()
+                && effects.len() <= 128
+                && effects.iter().enumerate().all(|(i, e)| {
+                    !e.operation.is_empty()
+                        && e.operation.len() <= 1024
+                        && e.operation != "*"
+                        && !e.operation.chars().any(char::is_control)
+                        && !e.resources.is_empty()
+                        && e.resources.len() <= 16
+                        && e.resources
+                            .iter()
+                            .collect::<std::collections::BTreeSet<_>>()
+                            .len()
+                            == e.resources.len()
+                        && !effects[..i]
+                            .iter()
+                            .any(|a| acteon_governance::permit::matches_effect(a, e))
+                })
+        };
+        if !valid(&intent)
+            || !valid(&direct_effects)
+            || direct_effects.iter().any(|e| {
+                !intent
+                    .iter()
+                    .any(|a| acteon_governance::permit::matches_effect(a, e))
+            })
+        {
+            return Err(PeerDiscoveryError::Binding);
+        }
+        Ok(Self {
+            intent,
+            direct_effects,
+        })
     }
 }
 fn value_digest(value: &serde_json::Value) -> Result<String, PeerDiscoveryError> {
@@ -166,6 +288,7 @@ pub struct PeerCandidate {
     pub description: Option<String>,
     pub card_version: String,
     pub binding_digest: String,
+    pub accepted_grant: Option<DelegationGrantReference>,
     pub observed_authority: AuthorityStamp,
     pub checked_at_ms: i64,
 }
@@ -312,12 +435,11 @@ impl ApprovedPeerRegistry {
         }
         let mut candidates = Vec::new();
         for binding in self.bindings.values().filter(|b| b.skill == skill) {
-            match query
-                .coordinator
-                .check_delegation_source(
+            match binding
+                .check_source(
+                    query.coordinator,
                     query.parent,
                     query.parent_permits,
-                    &binding.effect,
                     query.clock,
                 )
                 .await
@@ -375,31 +497,44 @@ impl ApprovedPeerRegistry {
         let Some(binding) = self.bindings.get(&(agent_id.into(), skill.into())) else {
             return Ok(None);
         };
-        authority
-            .coordinator
-            .check_delegation_source(
+        binding
+            .check_source(
+                authority.coordinator,
                 authority.parent,
                 authority.parent_permits,
-                &binding.effect,
                 authority.clock,
             )
             .await?;
         let Some(card) = self.inspect_binding(binding, authority.clock).await? else {
             return Ok(None);
         };
-        let eligibility = authority
-            .coordinator
-            .discover_delegation_eligibility(DelegationDiscoveryRequest {
-                parent: authority.parent,
-                parent_permits: authority.parent_permits,
-                recipient: authority.recipient,
-                recipient_permits: authority.recipient_permits,
-                target: &binding.target,
-                agent_resource: &binding.agent_resource,
-                effect: &binding.effect,
-                clock: authority.clock,
-            })
-            .await?;
+        let eligibility = if let Some(service) = binding.service_binding() {
+            authority
+                .coordinator
+                .discover_service_delegation_eligibility(ServiceDelegationDiscoveryRequest {
+                    parent: authority.parent,
+                    parent_permits: authority.parent_permits,
+                    recipient: authority.recipient,
+                    recipient_permits: authority.recipient_permits,
+                    binding: service,
+                    clock: authority.clock,
+                })
+                .await?
+        } else {
+            authority
+                .coordinator
+                .discover_delegation_eligibility(DelegationDiscoveryRequest {
+                    parent: authority.parent,
+                    parent_permits: authority.parent_permits,
+                    recipient: authority.recipient,
+                    recipient_permits: authority.recipient_permits,
+                    target: &binding.target,
+                    agent_resource: &binding.agent_resource,
+                    effect: &binding.effect,
+                    clock: authority.clock,
+                })
+                .await?
+        };
         Ok(Some(PeerCandidate {
             agent_id: binding.agent_id.clone(),
             target: eligibility.target().clone(),
@@ -411,6 +546,7 @@ impl ApprovedPeerRegistry {
                 .and_then(|s| s.description.clone()),
             card_version: card.version,
             binding_digest: binding.digest.clone(),
+            accepted_grant: eligibility.grant().cloned(),
             observed_authority: eligibility.authority().clone(),
             checked_at_ms: eligibility.checked_at_ms(),
         }))
