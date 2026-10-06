@@ -4,6 +4,7 @@ pub mod a2a_discovery_cache;
 pub mod a2a_push;
 pub mod a2a_push_worker;
 pub mod a2a_ssrf;
+pub mod agent_services;
 pub mod alerting;
 pub mod analytics;
 pub mod approvals;
@@ -221,6 +222,11 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/a2a/{namespace}/{tenant}/v1/message:send",
             post(a2a::a2a_rest_message_send).layer(DefaultBodyLimit::max(a2a::A2A_MAX_BODY_BYTES)),
+        )
+        .route(
+            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/message:send",
+            post(agent_services::message_send)
+                .layer(DefaultBodyLimit::max(a2a::A2A_MAX_BODY_BYTES)),
         )
         .route(
             "/a2a/{namespace}/{tenant}/v1/tasks/{id}",

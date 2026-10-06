@@ -91,6 +91,18 @@ async fn ensure_task_exists(
         let gw = state.gateway.read().await;
         gw.state_store().clone()
     };
+    match acteon_gateway::agent_runtime::is_governed_agent_task(
+        store.as_ref(),
+        &scope.namespace,
+        &scope.tenant,
+        task_id,
+    )
+    .await
+    {
+        Ok(true) => return Err(PushConfigError::TaskNotFound(task_id.into())),
+        Err(_) => return Err(PushConfigError::Internal),
+        Ok(false) => {}
+    }
     match store.get(&task_key).await {
         Ok(Some(_)) => Ok(()),
         Ok(None) => Err(PushConfigError::TaskNotFound(task_id.to_string())),

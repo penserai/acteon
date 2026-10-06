@@ -175,6 +175,17 @@
       "response": "json"
     },
     {
+      "name": "agent_services_message_send",
+      "method": "POST",
+      "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/message:send",
+      "parameters": [
+        "namespace",
+        "tenant",
+        "agent"
+      ],
+      "response": "json"
+    },
+    {
       "name": "analytics_query_analytics",
       "method": "GET",
       "path": "/v1/analytics",

@@ -12,15 +12,22 @@ Implemented so far:
   `agent.invoke` ingress effects.
 - Host admission using authenticated source and recipient proofs and durable
   governed task acceptance through the configured state backend.
-- Grant publication deferred until the existing post-authentication deployment
-  publication stage; recipient authentication precedes source root allocation.
+- Deployment publication preflights every configured recipient key against its
+  actual authenticated principal, current scoped policy, and fixed operation.
+  Failure publishes no deployment permits or grants. Invocation repeats the
+  check before source root allocation.
+- Individual authenticated REST message admission with explicit route permission
+  registration, a bounded request, and a fixed operator-selected runtime.
+- Legacy tenant A2A read, append, cancel, events, and push configuration cannot
+  access governed service tasks. The boundary reads durable acceptance rather
+  than trusting display metadata.
 
 Remaining before release:
 
-- Validate all configured recipient credentials before deployment publication.
-- Wire authenticated agent-specific HTTP routes, task observation, cancellation,
-  and a durable worker driver with restart recovery.
-- Add focused adversarial and integration tests for configuration and admission.
+- Complete requester-isolated task observation, cancellation, and a durable
+  worker driver with restart recovery.
+- Expand focused adversarial and integration tests from admission/isolation to
+  full provider execution and peer lifecycle.
 - Complete registry revision fencing and qualified outbound A2A lifecycle work.
 - Update SDKs, UI, and public documentation when the wire contract is established.
 - Review adversarially, run CI, and verify publication before merging.

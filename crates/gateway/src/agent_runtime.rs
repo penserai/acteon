@@ -38,6 +38,26 @@ pub struct AgentRuntimeDependencies {
     pub clock: Arc<dyn Clock>,
 }
 
+/// Identify accepted governed work from its durable journal, including when a
+/// task projection is missing or its display metadata has been damaged. This
+/// observation supplies no authority to inspect or mutate the task itself.
+pub async fn is_governed_agent_task(
+    state: &dyn StateStore,
+    namespace: &str,
+    tenant: &str,
+    task_id: &str,
+) -> Result<bool, StateError> {
+    state
+        .get(&StateKey::new(
+            namespace,
+            tenant,
+            KeyKind::Custom(ACCEPTANCE_KIND.into()),
+            task_id,
+        ))
+        .await
+        .map(|value| value.is_some())
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum AgentRuntimeError {
     #[error("agent runtime input or binding is invalid")]

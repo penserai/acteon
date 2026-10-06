@@ -93,6 +93,7 @@ use acteon_core::{
         (name = "bus", description = "Agentic message bus (Kafka-backed topics, publish, subscribe)")
     ),
     paths(
+        super::agent_services::message_send,
         super::workforce::inspect,
         super::workforce::change,
         super::governance::inspect,

@@ -4,7 +4,7 @@ Go client for the Acteon action gateway.
 
 ## Complete platform API
 
-The generated operation catalog exposes all 193 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, and stream windows. Use an authenticated client and a configured, existing stage for this example:
+The generated operation catalog exposes all 197 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, and stream windows. Use an authenticated client and a configured, existing stage for this example:
 
 ```go
 status, err := client.PlatformRequest(ctx, acteon.OpBusStagesStatus,

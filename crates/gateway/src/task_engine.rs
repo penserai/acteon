@@ -164,6 +164,7 @@ impl TaskScope {
 /// agents/groups; persistence reads are the source of truth.
 #[derive(Clone)]
 pub struct TaskEngine {
+    legacy_only: bool,
     state: Arc<dyn StateStore>,
     clock: Arc<dyn acteon_time::Clock>,
     /// Optional audit sink. When set, every successful mutation emits
@@ -197,7 +198,31 @@ impl TaskEngine {
             clock: Arc::new(acteon_time::SystemClock::default()),
             audit: None,
             stream_tx: None,
+            legacy_only: false,
         }
+    }
+
+    /// Restrict a tenant-level legacy protocol adapter to legacy tasks. Governed
+    /// services require their own original-requester authorization and lifecycle.
+    #[must_use]
+    pub fn with_legacy_task_access(mut self) -> Self {
+        self.legacy_only = true;
+        self
+    }
+
+    async fn hidden_governed_task(
+        &self,
+        scope: &TaskScope,
+        id: &str,
+    ) -> Result<bool, TaskEngineError> {
+        Ok(self.legacy_only
+            && crate::agent_runtime::is_governed_agent_task(
+                self.state.as_ref(),
+                &scope.namespace,
+                &scope.tenant,
+                id,
+            )
+            .await?)
     }
 
     /// Use the same clock as the gateway and state store.
@@ -378,6 +403,9 @@ impl TaskEngine {
     pub async fn create_task(&self, task: Task) -> Result<Task, TaskEngineError> {
         task.validate()?;
         let scope = TaskScope::new(&task.namespace, &task.tenant);
+        if self.hidden_governed_task(&scope, &task.id).await? {
+            return Err(TaskEngineError::NotFound(task.id));
+        }
         let seed: Vec<&str> = task
             .history
             .iter()
@@ -401,6 +429,9 @@ impl TaskEngine {
         scope: &TaskScope,
         task_id: &str,
     ) -> Result<Option<Task>, TaskEngineError> {
+        if self.hidden_governed_task(scope, task_id).await? {
+            return Ok(None);
+        }
         let key = scope.task_key(task_id);
         let Some(raw) = self.state.get(&key).await? else {
             return Ok(None);
@@ -418,9 +449,18 @@ impl TaskEngine {
             .scan_keys(&scope.namespace, &scope.tenant, KeyKind::A2aTask, None)
             .await?;
         let mut out = Vec::with_capacity(entries.len());
-        for (_, raw) in entries {
+        let key_prefix = scope.task_key("").canonical();
+        for (key, raw) in entries {
+            let Some(id) = key.strip_prefix(&key_prefix) else {
+                warn!("skipping task row outside its canonical scope");
+                continue;
+            };
             match serde_json::from_str::<Task>(&raw) {
-                Ok(t) => out.push(t),
+                Ok(t) => {
+                    if !self.hidden_governed_task(scope, id).await? {
+                        out.push(t);
+                    }
+                }
                 Err(e) => {
                     warn!(error = %e, "skipping malformed task row during list");
                 }
@@ -587,6 +627,9 @@ impl TaskEngine {
         task_id: &str,
         message: TaskMessage,
     ) -> Result<Task, TaskEngineError> {
+        if self.hidden_governed_task(scope, task_id).await? {
+            return Err(TaskEngineError::NotFound(task_id.into()));
+        }
         message.validate_in_task(task_id)?;
         // Step 2: cheap read-only probe before the expensive walk.
         if self
@@ -1094,6 +1137,15 @@ impl TaskEngine {
         F: FnMut(&mut Task, DateTime<Utc>) -> Result<(), TaskValidationError>,
     {
         for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
+            if self
+                .hidden_governed_task(
+                    &TaskScope::new(key.namespace.as_str(), key.tenant.as_str()),
+                    task_id,
+                )
+                .await?
+            {
+                return Err(TaskEngineError::NotFound(task_id.into()));
+            }
             let Some((raw, version)) = self.state.get_versioned(key).await? else {
                 return Err(TaskEngineError::NotFound(task_id.to_string()));
             };
@@ -2810,5 +2862,66 @@ mod tests {
             recv.is_err(),
             "no event should be emitted on failed transition"
         );
+    }
+    #[tokio::test]
+    async fn legacy_task_access_uses_durable_acceptance_even_without_display_metadata() {
+        let state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let trusted = TaskEngine::new(state.clone());
+        let task = Task::new("governed", "prod", "acme");
+        assert!(task.metadata.is_empty());
+        trusted.create_task(task).await.unwrap();
+        let journal = StateKey::new(
+            "prod",
+            "acme",
+            KeyKind::Custom(crate::agent_runtime::ACCEPTANCE_KIND.into()),
+            "governed",
+        );
+        state
+            .set(&journal, "retained acceptance", None)
+            .await
+            .unwrap();
+        let legacy = TaskEngine::new(state.clone()).with_legacy_task_access();
+        let scope = TaskScope::new("prod", "acme");
+        assert!(legacy.get_task(&scope, "governed").await.unwrap().is_none());
+        assert!(legacy.list_tasks(&scope).await.unwrap().is_empty());
+        assert!(matches!(
+            legacy
+                .append_history(
+                    &scope,
+                    "governed",
+                    TaskMessage::text("message", TaskRole::User, "injected")
+                )
+                .await,
+            Err(TaskEngineError::NotFound(_))
+        ));
+        assert!(matches!(
+            legacy
+                .transition_task(&scope, "governed", TaskState::Canceled, None)
+                .await,
+            Err(TaskEngineError::NotFound(_))
+        ));
+        let retained = trusted.get_task(&scope, "governed").await.unwrap().unwrap();
+        assert_eq!(retained.status.state, TaskState::Submitted);
+        assert!(retained.history.is_empty());
+        // A damaged display ID cannot escape the scan's actual storage key.
+        let mut damaged = retained;
+        damaged.id = "display-decoy".into();
+        state
+            .set(
+                &scope.task_key("governed"),
+                &serde_json::to_string(&damaged).unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(legacy.list_tasks(&scope).await.unwrap().is_empty());
+        // Losing the projection cannot permit legacy creation over accepted work.
+        state.delete(&scope.task_key("governed")).await.unwrap();
+        assert!(matches!(
+            legacy
+                .create_task(Task::new("governed", "prod", "acme"))
+                .await,
+            Err(TaskEngineError::NotFound(_))
+        ));
     }
 }

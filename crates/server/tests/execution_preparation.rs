@@ -1765,7 +1765,7 @@ async fn authenticated_chain_root_contract(state: Arc<dyn StateStore>, peer: Arc
         .unwrap(),
     );
     let binding = authenticated_binding(auth_provider).await;
-    runtime.publish_deployment_permits().await.unwrap();
+    runtime.publish_deployment_permits(None).await.unwrap();
     let scope = AuthorityCoordinator::connect(state.clone(), "prod", "acme")
         .await
         .unwrap();
@@ -2004,4 +2004,107 @@ async fn independent_postgres_authenticated_chain_root_contract() {
         .unwrap();
     }
     pool.close().await;
+}
+
+fn agent_service_configuration() -> ExecutionAuthorityConfig {
+    let mut config = configuration();
+    let scope = &mut config.scopes[0];
+    scope.bootstrap = true;
+    let source = scope.subjects[0].clone();
+    let recipient = PrincipalIdentity::new("agent/notifier", PrincipalKind::Agent).unwrap();
+    scope.subjects.push(recipient.clone());
+    let mut card = acteon_core::AgentCard::new("notifier", "prod", "acme", "Notifier", "1");
+    card.skills.push(acteon_core::Skill::new("notify"));
+    card.interfaces.push(acteon_core::AgentCardInterface {
+        kind: "rest".into(),
+        url: "https://agents.example/notifier".into(),
+    });
+    scope.agent_services = serde_json::from_value(json!([{
+        "card":card,"principal":recipient,"skill":"notify","endpoint":"https://agents.example/notifier",
+        "endpoint_id":"notifier-api","route":scope.routes[0],"recipient_key_env":"ACTEON_TEST_AGENT_RECIPIENT",
+        "recipient_permits":[{"id":"worker-provider","accepted_revision":1}],
+        "grants":[{"id":"maya-notifier","revision":1,"source":source,"source_permits":[{"id":"maya-service","accepted_revision":1}],
+            "valid_from_ms":0,"limits":scope.credential_limits,"max_depth":4}]
+    }])).unwrap();
+    scope.permits = serde_json::from_value(json!([
+        {"id":"maya-service","revision":1,"subject":source,"routes":[],"agents":["notifier"],"valid_from_ms":0,"limits":scope.credential_limits},
+        {"id":"worker-provider","revision":1,"subject":recipient,"routes":scope.routes,"valid_from_ms":0,"limits":scope.credential_limits}
+    ])).unwrap();
+    config
+}
+
+#[tokio::test]
+async fn agent_service_publication_requires_private_auth_before_any_permits_or_grants() {
+    use acteon_server::execution_authority::{
+        ExecutionAuthorityRuntime, ExecutionRuntimeDependencies,
+    };
+    let state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let (registry, _) = registry();
+    let config = agent_service_configuration();
+    let prepared = registry
+        .prepare(&config, ("auth-control", "deployment"), &[8; 32])
+        .unwrap();
+    let runtime = ExecutionAuthorityRuntime::install(
+        &registry,
+        prepared,
+        ExecutionRuntimeDependencies {
+            state: state.clone(),
+            executor: acteon_executor::ExecutorConfig::default(),
+            clock: Arc::new(acteon_time::SystemClock::default()),
+            encryptor: None,
+            signing_key: vec![8; 32].into(),
+        },
+    )
+    .await
+    .unwrap();
+    let scope = AuthorityCoordinator::connect(state, "prod", "acme")
+        .await
+        .unwrap();
+    let before = serde_json::to_value(scope.snapshot().await.unwrap()).unwrap();
+    assert!(runtime.publish_deployment_permits(None).await.is_err());
+    let snapshot = scope.snapshot().await.unwrap();
+    assert!(snapshot.permits.is_empty());
+    assert_eq!(
+        serde_json::to_value(&snapshot.changes).unwrap(),
+        before["changes"]
+    );
+    assert!(snapshot.roots.is_empty());
+}
+
+#[test]
+fn agent_service_preparation_rejects_binding_and_independent_bound_substitution() {
+    let (registry, _) = registry();
+    let configuration = agent_service_configuration();
+    let original = registry
+        .prepare(&configuration, ("auth-control", "deployment"), &[8; 32])
+        .unwrap();
+    for variant in 0..8 {
+        let mut config = configuration.clone();
+        let scope = &mut config.scopes[0];
+        match variant {
+            0 => scope.agent_services[0].principal = scope.subjects[0].clone(),
+            1 => scope.agent_services[0].route.provider = "undeclared".into(),
+            2 => scope.agent_services[0].recipient_key_env = "INVALID=VALUE".into(),
+            3 => scope.agent_services[0].grants[0].limits.max_units += 1,
+            4 => scope.agent_services[0].grants[0].revision = 0,
+            5 => scope.agent_services[0].endpoint = "https://unapproved.example".into(),
+            6 => scope.agent_services[0].card.tenant = "another".into(),
+            _ => scope.permits[0].subject = scope.subjects[1].clone(),
+        }
+        assert!(
+            registry
+                .prepare(&config, ("auth-control", "deployment"), &[8; 32])
+                .is_err(),
+            "variant {variant}"
+        );
+    }
+    let mut config = configuration;
+    config.scopes[0].agent_services[0].card.version = "2".into();
+    let changed = registry
+        .prepare(&config, ("auth-control", "deployment"), &[8; 32])
+        .unwrap();
+    assert_ne!(
+        original[0].policy_fingerprint(),
+        changed[0].policy_fingerprint()
+    );
 }

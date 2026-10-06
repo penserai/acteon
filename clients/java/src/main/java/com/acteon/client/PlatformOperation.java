@@ -16,6 +16,7 @@ public enum PlatformOperation {
     A2A_PUSH_REST_LIST_PUSH_CONFIGS("GET", "/a2a/{namespace}/{tenant}/v1/tasks/{id}/pushNotificationConfigs", false, new String[]{"namespace", "tenant", "id"}),
     A2A_PUSH_REST_LIST_PUSH_DLQ("GET", "/v1/a2a/{namespace}/{tenant}/push-dlq", false, new String[]{"namespace", "tenant"}),
     A2A_PUSH_REST_SET_PUSH_CONFIG("POST", "/a2a/{namespace}/{tenant}/v1/tasks/{id}/pushNotificationConfigs", false, new String[]{"namespace", "tenant", "id"}),
+    AGENT_SERVICES_MESSAGE_SEND("POST", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/message:send", false, new String[]{"namespace", "tenant", "agent"}),
     ANALYTICS_QUERY_ANALYTICS("GET", "/v1/analytics", false, new String[]{}),
     APPROVALS_APPROVE("POST", "/v1/approvals/{namespace}/{tenant}/{id}/approve", false, new String[]{"namespace", "tenant", "id"}),
     APPROVALS_GET_APPROVAL("GET", "/v1/approvals/{namespace}/{tenant}/{id}", false, new String[]{"namespace", "tenant", "id"}),

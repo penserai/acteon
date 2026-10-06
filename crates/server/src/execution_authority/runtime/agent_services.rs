@@ -1,7 +1,10 @@
 //! Inbound service admission from original private caller and recipient proofs.
 use super::{ExecutionAuthorityRuntime, InstalledScope};
 use crate::{
-    auth::{AuthProvider, projection::AuthenticatedExecutionConfiguration},
+    auth::{
+        AuthProvider,
+        projection::{AuthenticatedExecutionConfiguration, ScopedCredentialBinding},
+    },
     execution_authority::{
         PreparedExecutionScope,
         agent_services::{AgentServiceGrantDeclaration, PreparedAgentService},
@@ -42,6 +45,74 @@ pub struct AgentServiceParent<'a> {
 }
 
 impl ExecutionAuthorityRuntime {
+    // Preflight all services before any deployment permit or grant is published.
+    // Private authentication enrollment may exist already; it is never a permit.
+    pub(super) async fn validate_agent_credentials(
+        &self,
+        authentication: Option<&AuthProvider>,
+    ) -> Result<(), String> {
+        for scope in self.scopes.values() {
+            for agent in scope.prepared.agents.values() {
+                self.authenticate_agent_recipient(
+                    scope,
+                    agent,
+                    authentication.ok_or("agent services require private authentication")?,
+                )
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn authenticate_agent_recipient(
+        &self,
+        scope: &InstalledScope,
+        agent: &PreparedAgentService,
+        authentication: &AuthProvider,
+    ) -> Result<ScopedCredentialBinding, String> {
+        let secret = zeroize::Zeroizing::new(
+            std::env::var(&agent.declaration.recipient_key_env)
+                .map_err(|_| "recipient authentication unavailable")?,
+        );
+        let recipient = authentication.authenticate_service_key(&secret).await?;
+        recipient
+            .verify_authentication_current()
+            .await
+            .map_err(|_| "recipient authentication is stale")?;
+        let declaration = scope.prepared.declaration();
+        let binding = recipient.scope(&declaration.namespace, &declaration.tenant)?;
+        if binding.authentication_source().principal() != &agent.declaration.principal {
+            return Err("recipient authentication differs from configured agent".into());
+        }
+        scope
+            .prepared
+            .verify_authenticated_scope(
+                &binding,
+                &scope.coordinator,
+                self.clock.now().timestamp_millis(),
+            )
+            .await?;
+        let snapshot = scope
+            .coordinator
+            .snapshot()
+            .await
+            .map_err(|_| "recipient authority unavailable")?;
+        let credential = snapshot
+            .credentials
+            .get(&binding.credential_reference().id)
+            .ok_or("recipient credential missing")?;
+        if !credential
+            .authority
+            .ceiling
+            .effects
+            .iter()
+            .any(|effect| acteon_governance::permit::matches_effect(effect, agent.bound.effect()))
+        {
+            return Err("recipient credential does not cover configured operation".into());
+        }
+        Ok(binding)
+    }
+
     pub(super) async fn publish_agent_grants(
         prepared: &PreparedExecutionScope,
         coordinator: &AuthorityCoordinator,
@@ -155,22 +226,9 @@ impl ExecutionAuthorityRuntime {
         let provider_digest =
             governed_provider_input_digest(&action).map_err(|_| "invalid service input")?;
         let source_digest = format!("{:x}", Sha256::digest(serde_json::to_vec(&serde_json::json!({"domain":"acteon.agent-service-input.v1", "binding":agent.binding.digest(), "input":provider_digest})).map_err(|_| "invalid service input")?));
-        let secret = zeroize::Zeroizing::new(
-            std::env::var(&agent.declaration.recipient_key_env)
-                .map_err(|_| "recipient authentication unavailable")?,
-        );
-        let recipient = request
-            .auth_provider
-            .authenticate_service_key(&secret)
+        let binding = self
+            .authenticate_agent_recipient(scope, agent, request.auth_provider)
             .await?;
-        recipient
-            .verify_authentication_current()
-            .await
-            .map_err(|_| "recipient authentication is stale")?;
-        let binding = recipient.scope(request.namespace, request.tenant)?;
-        if binding.authentication_source().principal() != &agent.declaration.principal {
-            return Err("recipient authentication differs from configured agent".into());
-        }
         let parent = if let Some(parent) = &request.parent {
             let context = scope
                 .contexts

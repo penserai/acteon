@@ -1795,7 +1795,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Invalid credentials or scope projections must not mint deployment permits.
     // Publish only after authentication and rule configuration have succeeded.
     if let Some(runtime) = &execution_runtime {
-        runtime.publish_deployment_permits().await?;
+        runtime
+            .publish_deployment_permits(auth_provider.as_deref())
+            .await?;
     }
 
     // Load quota policies from state store on startup.

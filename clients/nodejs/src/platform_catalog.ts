@@ -14,6 +14,7 @@ export const platformOperations = {
   a2a_push_rest_list_push_configs: {"name": "a2a_push_rest_list_push_configs", "method": "GET", "path": "/a2a/{namespace}/{tenant}/v1/tasks/{id}/pushNotificationConfigs", "parameters": ["namespace", "tenant", "id"], "response": "json"},
   a2a_push_rest_list_push_dlq: {"name": "a2a_push_rest_list_push_dlq", "method": "GET", "path": "/v1/a2a/{namespace}/{tenant}/push-dlq", "parameters": ["namespace", "tenant"], "response": "json"},
   a2a_push_rest_set_push_config: {"name": "a2a_push_rest_set_push_config", "method": "POST", "path": "/a2a/{namespace}/{tenant}/v1/tasks/{id}/pushNotificationConfigs", "parameters": ["namespace", "tenant", "id"], "response": "json"},
+  agent_services_message_send: {"name": "agent_services_message_send", "method": "POST", "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/message:send", "parameters": ["namespace", "tenant", "agent"], "response": "json"},
   analytics_query_analytics: {"name": "analytics_query_analytics", "method": "GET", "path": "/v1/analytics", "parameters": [], "response": "json"},
   approvals_approve: {"name": "approvals_approve", "method": "POST", "path": "/v1/approvals/{namespace}/{tenant}/{id}/approve", "parameters": ["namespace", "tenant", "id"], "response": "json"},
   approvals_get_approval: {"name": "approvals_get_approval", "method": "GET", "path": "/v1/approvals/{namespace}/{tenant}/{id}", "parameters": ["namespace", "tenant", "id"], "response": "json"},

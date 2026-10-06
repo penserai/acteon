@@ -96,6 +96,12 @@
     "permission": "OperationsManage"
   },
   {
+    "name": "agent_services_message_send",
+    "method": "POST",
+    "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/message:send",
+    "permission": "Dispatch"
+  },
+  {
     "name": "analytics_query_analytics",
     "method": "GET",
     "path": "/v1/analytics",

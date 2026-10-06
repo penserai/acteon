@@ -73,7 +73,8 @@ impl AgentServiceDeclaration {
                 &grant.id,
             )
             .map_err(|_| "invalid service grant identity")?;
-            if grant.revision == 0
+            if grant.source == self.principal
+                || grant.revision == 0
                 || !sources.insert(grant.source.id())
                 || !grants.insert(&grant.id)
                 || !scope.subjects.contains(&grant.source)

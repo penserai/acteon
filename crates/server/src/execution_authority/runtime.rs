@@ -252,7 +252,11 @@ impl ExecutionAuthorityRuntime {
     }
     /// Publish independent permits only after authentication configuration and
     /// every scope projection have succeeded, before exposing the listener.
-    pub async fn publish_deployment_permits(&self) -> Result<(), String> {
+    pub async fn publish_deployment_permits(
+        &self,
+        authentication: Option<&crate::auth::AuthProvider>,
+    ) -> Result<(), String> {
+        self.validate_agent_credentials(authentication).await?;
         for scope in self.scopes.values() {
             Self::publish_permits(&scope.prepared, &scope.coordinator, self.clock.as_ref()).await?;
             Self::publish_agent_grants(&scope.prepared, &scope.coordinator, self.clock.as_ref())

@@ -631,7 +631,7 @@ async fn retained_history_remains_authenticated_after_every_live_provider_is_rem
         .await
         .unwrap(),
     );
-    live.publish_deployment_permits().await.unwrap();
+    live.publish_deployment_permits(None).await.unwrap();
     let live_proof = proof(provider).await;
     let binding = live_proof.scope("prod", "acme").unwrap();
     let coordinator = AuthorityCoordinator::connect(state.clone(), "prod", "acme")
@@ -1054,7 +1054,7 @@ async fn history_read_fixture_with_verifier(
     tables.api_keys[0].grants[0].actions = vec!["execute".into()];
     let provider =
         projected_auth_provider(&tables, state.clone(), authority.clone(), &runtime).await;
-    runtime.publish_deployment_permits().await.unwrap();
+    runtime.publish_deployment_permits(None).await.unwrap();
     let proof = proof(provider.clone()).await;
     let binding = proof.scope("prod", "acme").unwrap();
     let coordinator = AuthorityCoordinator::connect(state.clone(), "prod", "acme")

@@ -17,6 +17,7 @@ class PlatformOperation(StrEnum):
     A2A_PUSH_REST_LIST_PUSH_CONFIGS = "a2a_push_rest_list_push_configs"
     A2A_PUSH_REST_LIST_PUSH_DLQ = "a2a_push_rest_list_push_dlq"
     A2A_PUSH_REST_SET_PUSH_CONFIG = "a2a_push_rest_set_push_config"
+    AGENT_SERVICES_MESSAGE_SEND = "agent_services_message_send"
     ANALYTICS_QUERY_ANALYTICS = "analytics_query_analytics"
     APPROVALS_APPROVE = "approvals_approve"
     APPROVALS_GET_APPROVAL = "approvals_get_approval"
@@ -284,6 +285,12 @@ OPERATIONS = {
         "POST",
         "/a2a/{namespace}/{tenant}/v1/tasks/{id}/pushNotificationConfigs",
         ("namespace", "tenant", "id"),
+        "json",
+    ),
+    PlatformOperation.AGENT_SERVICES_MESSAGE_SEND: (
+        "POST",
+        "/a2a/{namespace}/{tenant}/agents/{agent}/v1/message:send",
+        ("namespace", "tenant", "agent"),
         "json",
     ),
     PlatformOperation.ANALYTICS_QUERY_ANALYTICS: ("GET", "/v1/analytics", (), "json"),

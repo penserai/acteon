@@ -1430,3 +1430,32 @@ these boundaries, including lost acceptance acknowledgment and both known and
 uncertain outcomes. Redis uses an isolated UUID prefix and the contract is wired
 into CI. This verifies this adapter on memory and Redis; it does not establish
 network A2A or all-backend qualification.
+
+### Durable runtime released; authenticated service admission underway
+
+PR #432 merged on October 6, 2026 as
+`91674147d449b332f754e3f2db89705cbf475822`. All 28 reviewed-head checks
+completed (25 successful, three intentionally skipped). Documentation deployment
+37532453477 succeeded for that merge; the public governance article matched the
+reviewed strict build. This supersedes the earlier in-progress release status.
+
+Draft PR #433 implements configured individual-agent service admission. Deployment
+publication first authenticates every configured recipient against its own
+principal, scoped credential policy, and qualified operation. Missing, wrong,
+or unqualified recipient credentials prevent listener startup. A source's
+`agent.<id>/invoke` grant does not authorize the recipient's private provider.
+The individual REST endpoint durably accepts and replays the same message with
+no provider effect start; actual starts remain governed executor work.
+
+Review found that tenant-level A2A endpoints could otherwise access governed
+service projections. The legacy adapter and push-config storage now check the
+durable acceptance identity. Isolation also covers damaged display metadata,
+substituted display IDs, and missing projections. Real-server contracts exercise
+legacy get, cancel, continuation, event subscription, and callback configuration.
+Generated route catalogs include the new operation in all five SDKs; native
+service lifecycle helpers and UI still depend on the completed wire contract.
+
+This is admission progress, not the Phase 4 completion gate. Required work remains:
+requester-isolated observation/control, a durable driver and restart recovery,
+registry revision fencing, qualified outbound transport, cancellation ambiguity,
+and a real peer lifecycle. The complete city/workforce objective remains active.
