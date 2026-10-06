@@ -56,7 +56,7 @@ fn selected_instance_and_primary_action_cannot_borrow_qualification() {
     request.action_type = "work".into();
     request.tenant = "other".into();
     assert!(catalog.resolve(&request, &selected).is_err());
-    assert!(catalog.definitions("city", "other").is_empty());
+    assert_eq!(catalog.definitions("city", "other"), Vec::new());
 }
 
 #[test]
@@ -105,4 +105,22 @@ fn metadata_does_not_contain_transport_inputs() {
     let bytes = serde_json::to_string(&catalog.definitions("city", "tenant")).unwrap();
     assert!(!bytes.contains("request-secret"));
     assert!(catalog.clone().resolve(&request, &selected).is_ok());
+}
+
+#[test]
+fn history_catalog_is_explicit_and_cannot_qualify_any_actual_provider() {
+    assert!(matches!(
+        QualifiedProviderCatalog::new_trusted(Vec::new()),
+        Err(CatalogError::Capacity)
+    ));
+    let catalog = QualifiedProviderCatalog::for_history();
+    assert_eq!(catalog.definitions("city", "tenant"), Vec::new());
+    assert!(matches!(
+        catalog.resolve(&action(), &provider("original")),
+        Err(CatalogError::Unqualified)
+    ));
+    assert_eq!(
+        catalog.fingerprint(),
+        QualifiedProviderCatalog::for_history().fingerprint()
+    );
 }

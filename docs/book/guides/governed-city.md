@@ -106,6 +106,40 @@ the API models, typed SDK methods, conflict/replay behavior and the Admin UI.
 See [execution permits](../features/execution-permits.md) for selected-provider
 qualification and execution coverage.
 
+## Keep evidence after shutting down an integration
+
+In an operating deployment, permit revocation and provider retirement can leave
+work that still needs investigation. Give the operator an independent
+`can_read_history = true` management grant with a bounded subject allowlist.
+Issuance and intervention permissions alone do not grant access to these records.
+
+When a pending action or chain reports a provider execution UUID, retain that
+reference. It is distinct from the original action ID. An authorized operator can
+inspect its verified receipt through the typed client:
+
+```python
+history = client.provider_execution_history("prod", "acme", provider_execution_id)
+print(history.subject.id, history.receipt.status.state)
+for attempt in history.attempts:
+    print(attempt.ordinal, attempt.ledger_status, attempt.original_outcome)
+    if attempt.reconciliation is not None:
+        print(attempt.reconciliation.verifier_revision, attempt.reconciliation.outcome)
+```
+
+The signed participant identifies whose work produced the evidence. Original
+provider observations and accepted reconciliation remain separate, so an
+uncertain or failed observation is never silently rewritten as a successful
+send. A completed receipt can contain a failed outcome; missing evidence does
+not establish that no effect happened.
+
+To remove every live provider while retaining this access, use a reviewed
+[history-only deployment](../features/execution-permits.md#retire-execution-while-retaining-history).
+It connects to the existing configured state backend and retains the original
+context keys and reviewed historical effects. Inspection does not start or retry
+work, restore a permit, or release a reserved budget. This operating-deployment
+extension is covered by the retirement contract; the simulation above exercises
+the immediate execution and intervention loop.
+
 This establishes an observable control loop for immediate qualified operations.
 It does not establish team representation, autonomous A2A selection, delegated
 budget conservation or remote cancellation. Those require their own runtime

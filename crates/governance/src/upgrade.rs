@@ -236,6 +236,8 @@ struct LegacyScope {
     revoked_subjects: BTreeSet<String>,
     starts: BTreeMap<String, crate::StartRecord>,
     roots: BTreeMap<String, crate::RootBudget>,
+    #[serde(default)]
+    workforce: Option<crate::workforce::WorkforceState>,
     changes: BTreeMap<String, ChangeRecord>,
     permits: BTreeMap<String, crate::permit::PermitRecord>,
     credentials: BTreeMap<String, crate::credential::CredentialRecord>,
@@ -250,7 +252,7 @@ impl AuthorityCoordinator {
         let value: serde_json::Value = serde_json::from_str(raw)
             .map_err(|_| CoordinationError::Invalid("invalid source authority".into()))?;
         match value["schema_version"].as_u64() {
-            Some(source_version @ (7 | 8)) => {
+            Some(source_version @ (7..=9)) => {
                 let legacy: LegacyScope = serde_json::from_str(raw)
                     .map_err(|_| CoordinationError::Invalid("invalid legacy authority".into()))?;
                 if u64::from(legacy.schema_version) != source_version
@@ -258,9 +260,9 @@ impl AuthorityCoordinator {
                 {
                     return Err(CoordinationError::Invalid("source protocol or size".into()));
                 }
-                let purpose = if source_version == 8 {
+                let purpose = if source_version >= 8 {
                     legacy.purpose.clone().ok_or_else(|| {
-                        CoordinationError::Invalid("protocol-8 purpose missing".into())
+                        CoordinationError::Invalid("legacy purpose missing".into())
                     })?
                 } else {
                     if legacy.purpose.is_some() {
@@ -269,6 +271,18 @@ impl AuthorityCoordinator {
                         ));
                     }
                     ScopePurpose::Unclaimed
+                };
+                let workforce = if source_version == 9 {
+                    legacy.workforce.ok_or_else(|| {
+                        CoordinationError::Invalid("protocol-9 workforce missing".into())
+                    })?
+                } else {
+                    if value.get("workforce").is_some() {
+                        return Err(CoordinationError::Invalid(
+                            "pre-workforce protocol contains workforce state".into(),
+                        ));
+                    }
+                    crate::workforce::WorkforceState::default()
                 };
                 let state = crate::CoordinatorSnapshot {
                     schema_version: FORMAT,
@@ -286,7 +300,8 @@ impl AuthorityCoordinator {
                     permits: legacy.permits,
                     credentials: legacy.credentials,
                     credential_configurations: legacy.credential_configurations,
-                    workforce: crate::workforce::WorkforceState::default(),
+                    workforce,
+                    budget_parents: BTreeMap::new(),
                 };
                 let encoded = Self::encode(&state)?;
                 Ok((
@@ -297,7 +312,7 @@ impl AuthorityCoordinator {
             }
             Some(version) if version == u64::from(FORMAT) => Ok((self.decode(raw)?, FORMAT)),
             _ => Err(CoordinationError::Invalid(
-                "cutover supports protocol 7/8 or unclaimed current protocol".into(),
+                "cutover supports protocol 7/8/9 or unclaimed current protocol".into(),
             )),
         }
     }

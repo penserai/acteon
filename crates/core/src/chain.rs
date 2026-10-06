@@ -322,6 +322,14 @@ impl StepKind<'_> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WaitState {
+    /// Retained provider work. Polling must preserve these attempt identities.
+    Provider {
+        step_index: usize,
+        /// Logical chain attempt, preserved across every receipt poll.
+        attempt: u32,
+        pending: Vec<PendingProviderStep>,
+        next_poll_at: DateTime<Utc>,
+    },
     /// Waiting for a durable timer to fire.
     Timer {
         /// Index of the timer step.
@@ -351,6 +359,14 @@ pub enum WaitState {
         /// When the wait times out, if a timeout is configured.
         timeout_at: Option<DateTime<Utc>>,
     },
+}
+
+/// Observable pending work within a sequential or parallel provider step.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingProviderStep {
+    pub step_path: Vec<String>,
+    pub provider: String,
+    pub work: crate::ProviderWorkPending,
 }
 
 /// Comparison operator for branch conditions.
@@ -1284,6 +1300,8 @@ pub enum ChainStatus {
     WaitingSignal,
     /// Chain is paused waiting for an external worker to complete a task.
     WaitingWorker,
+    /// A provider attempt is in flight or requires durable reconciliation.
+    WaitingProvider,
 }
 
 impl ChainStatus {
@@ -1299,6 +1317,7 @@ impl ChainStatus {
                 | Self::WaitingTimer
                 | Self::WaitingSignal
                 | Self::WaitingWorker
+                | Self::WaitingProvider
         )
     }
 }

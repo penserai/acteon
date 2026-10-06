@@ -901,6 +901,7 @@ impl GatewayBuilder {
             lock,
             engine,
             providers: self.providers,
+            chain_execution: None,
             provider_execution: self.provider_execution.unwrap_or_else(|| {
                 Arc::new(acteon_executor::LegacyProviderMediator::new(executor))
             }),

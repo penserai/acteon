@@ -350,12 +350,12 @@ pub(crate) fn evaluate(
     if now_ms < policy.ceiling.valid_from_ms || now_ms >= policy.ceiling.limits.deadline_ms {
         return Err(CoordinationError::PermitDenied(PermitDenial::Validity));
     }
-    if root
-        .spent_units
-        .checked_add(request.units)
-        .is_none_or(|u| u > policy.ceiling.limits.max_units)
-        || root.active_attempts >= policy.ceiling.limits.max_concurrent
-    {
+    if !crate::budget::current_limits_allow(
+        state,
+        &context.execution_id().to_string(),
+        &policy.ceiling.limits,
+        request.units,
+    )? {
         return Err(CoordinationError::PermitDenied(PermitDenial::Limits));
     }
     Ok(())

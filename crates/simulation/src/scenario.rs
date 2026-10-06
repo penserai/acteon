@@ -224,6 +224,7 @@ fn outcome_name(outcome: &ActionOutcome) -> &'static str {
         ActionOutcome::Suppressed { .. } => "suppressed",
         ActionOutcome::PendingApproval { .. } => "pending_approval",
         ActionOutcome::Failed(_) => "failed",
+        ActionOutcome::ProviderPending(_) => "provider_pending",
         _ => "other",
     }
 }

@@ -7,6 +7,7 @@ import { Button } from '../components/ui/Button'
 import { Badge } from '../components/ui/Badge'
 import { Modal } from '../components/ui/Modal'
 import type { GovernanceChangeReceipt, GovernanceIntervention, GovernanceResource } from '../types'
+import { ProviderHistory } from './ProviderHistory'
 import styles from './Governance.module.css'
 
 const resourceKey = (resource: GovernanceResource) => JSON.stringify(resource)
@@ -29,7 +30,7 @@ export function Governance() {
   const [deadline, setDeadline] = useState('')
   const [issueReason, setIssueReason] = useState('')
   const [issueId, setIssueId] = useState<string | null>(null)
-  const view = query.data
+  const view = query.isError ? undefined : query.data
   const busy = intervention.isPending || publication.isPending
   const resources = [...new Map(view?.routes.flatMap(r => r.effect.resources).map(r => [resourceKey(r), r]) ?? []).values()]
   const begin = (label: string, change: GovernanceIntervention) => {
@@ -60,7 +61,7 @@ export function Governance() {
     } catch (e) { setError((e as Error).message) }
   }
   return <div className={styles.content}>
-    <PageHeader title="Governance" subtitle="Issue permits and control where participants may operate." />
+    <PageHeader title="Governance" subtitle="Control execution authority and inspect retained evidence." />
     <form className={styles.scope} onSubmit={e => { e.preventDefault(); if (!busy) { setScope({ namespace: namespace.trim(), tenant: tenant.trim() }); setReceipt(null); setPending(null); setError(''); setIssueId(null) } }}>
       <Input label="Namespace" value={namespace} onChange={e => setNamespace(e.target.value)} required />
       <Input label="Tenant" value={tenant} onChange={e => setTenant(e.target.value)} required />
@@ -70,6 +71,7 @@ export function Governance() {
     {error && <p className={styles.error} role="alert">{error}</p>}
     {receipt && <div className={styles.card} role="status"><strong>Control recorded</strong><p className={styles.muted}>Generation {receipt.generation} · {receipt.reason}</p><p className={styles.muted}>New execution checks use this authority. Already started effects may still finish.</p></div>}
     {view && <>
+      {view.management.can_read_history && <ProviderHistory key={JSON.stringify([view.namespace, view.tenant])} namespace={view.namespace} tenant={view.tenant} />}
       <section className={styles.card}><h2>Governed routes</h2>
         {view.routes.map(r => <div className={styles.row} key={r.route.provider + r.route.action_type}><div className={styles.identity}><strong>{r.route.provider} / {r.route.action_type}</strong><p className={styles.muted}>{r.effect.operation}</p></div><Badge variant={r.closed ? 'warning' : 'success'}>{r.closed ? 'Closed' : 'Open'}</Badge></div>)}
       </section>

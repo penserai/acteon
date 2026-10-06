@@ -67,6 +67,9 @@ pub struct ChainStepStatus {
 /// Detailed response for a single chain.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ChainDetailResponse {
+    /// Durable wait details; provider waits retain the original receipt identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_state: Option<serde_json::Value>,
     /// Unique chain ID.
     pub chain_id: String,
     /// Human-readable chain name.

@@ -12,6 +12,26 @@ class ActionOutcomeDeserializerTest {
     private static final ObjectMapper MAPPER = JsonMapper.build();
 
     @Test
+    void pendingProviderReceiptIsNotACompletedFailure() throws Exception {
+        for (String state : new String[] {
+                "{\"kind\":\"in_flight\",\"attempt_id\":\"a1\"}",
+                "{\"kind\":\"reconciliation_required\",\"attempt_id\":\"a1\"}",
+                "{\"kind\":\"awaiting_retry\",\"not_before_ms\":1234}"
+        }) {
+            String json = "{\"ProviderPending\":{\"execution_id\":\"00000000-0000-0000-0000-000000000001\",\"attempts\":1,\"state\":" + state + "}}";
+            ActionOutcome outcome = MAPPER.readValue(json, ActionOutcome.class);
+            assertTrue(outcome.isProviderPending());
+            assertEquals(1, outcome.getPending().getAttempts());
+            assertEquals("00000000-0000-0000-0000-000000000001", outcome.getPending().getExecutionId());
+            if (outcome.getPending().getState().getKind().equals("awaiting_retry")) {
+                assertEquals(1234L, outcome.getPending().getState().getNotBeforeMs());
+            } else {
+                assertEquals("a1", outcome.getPending().getState().getAttemptId());
+            }
+        }
+    }
+
+    @Test
     void executedVariantCarriesProviderResponse() throws Exception {
         String json = """
             {

@@ -4,7 +4,9 @@ pub use acteon_core::{
     GovernanceChangeReceipt, GovernanceEffect, GovernanceIntervention,
     GovernanceInterventionRequest, GovernanceLimits, GovernanceManagementBounds,
     GovernancePermitDeclaration, GovernancePermitView, GovernanceRoute, GovernanceRouteView,
-    GovernanceScopeView, PublishGovernancePermitRequest,
+    GovernanceScopeView, ProviderExecutionHistory, ProviderHistoryReceipt,
+    ProviderReconciliationCorrelation, ProviderReconciliationRequest,
+    PublishGovernancePermitRequest,
 };
 
 impl ActeonClient {
@@ -23,6 +25,66 @@ impl ActeonClient {
             .await?;
         serde_json::from_value(value).map_err(|e| Error::Deserialization(e.to_string()))
     }
+    /// Inspect retained evidence under an explicitly granted history permission.
+    pub async fn provider_execution_history(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        execution_id: &str,
+    ) -> Result<ProviderExecutionHistory, Error> {
+        let value = self
+            .platform_request(
+                PlatformOperation::GovernanceProviderHistory,
+                &[("execution_id", execution_id)],
+                &[("namespace", namespace), ("tenant", tenant)],
+                None,
+            )
+            .await?;
+        serde_json::from_value(value).map_err(|e| Error::Deserialization(e.to_string()))
+    }
+
+    /// Correlate retained work under independent reconciliation authority.
+    pub async fn provider_reconciliation_correlation(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        execution_id: &str,
+        ordinal: u32,
+    ) -> Result<ProviderReconciliationCorrelation, Error> {
+        let ordinal = ordinal.to_string();
+        let value = self
+            .platform_request(
+                PlatformOperation::GovernanceReconciliationCorrelation,
+                &[("execution_id", execution_id), ("ordinal", &ordinal)],
+                &[("namespace", namespace), ("tenant", tenant)],
+                None,
+            )
+            .await?;
+        serde_json::from_value(value).map_err(|e| Error::Deserialization(e.to_string()))
+    }
+    /// Accept qualified finality without automatic retry or provider dispatch.
+    pub async fn accept_provider_reconciliation(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        execution_id: &str,
+        ordinal: u32,
+        request: &ProviderReconciliationRequest,
+    ) -> Result<ProviderHistoryReceipt, Error> {
+        let ordinal = ordinal.to_string();
+        let body =
+            serde_json::to_value(request).map_err(|e| Error::Configuration(e.to_string()))?;
+        let value = self
+            .platform_request(
+                PlatformOperation::GovernanceAcceptReconciliation,
+                &[("execution_id", execution_id), ("ordinal", &ordinal)],
+                &[("namespace", namespace), ("tenant", tenant)],
+                Some(&body),
+            )
+            .await?;
+        serde_json::from_value(value).map_err(|e| Error::Deserialization(e.to_string()))
+    }
+
     pub async fn publish_governance_permit(
         &self,
         request: &PublishGovernancePermitRequest,
@@ -160,5 +222,57 @@ mod tests {
             assert_eq!(fixture.calls.lock().unwrap().len(), count + 1);
         }
         server.abort();
+    }
+}
+
+#[cfg(test)]
+mod reconciliation_wire_tests {
+    use super::*;
+    #[test]
+    fn reconciliation_models_preserve_correlation_proof_and_typed_finality() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../clients/contract-fixtures/provider-reconciliation.json"
+        ))
+        .unwrap();
+        let correlation: ProviderReconciliationCorrelation =
+            serde_json::from_value(fixture["correlation"].clone()).unwrap();
+        assert_eq!(
+            serde_json::to_value(correlation).unwrap(),
+            fixture["correlation"]
+        );
+        let request: ProviderReconciliationRequest =
+            serde_json::from_value(fixture["request"].clone()).unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap(), fixture["request"]);
+        let mut untrusted = fixture["request"].clone();
+        untrusted["verifier"] = "request-chosen".into();
+        assert!(serde_json::from_value::<ProviderReconciliationRequest>(untrusted).is_err());
+        let completed: ProviderHistoryReceipt =
+            serde_json::from_value(fixture["receipt"].clone()).unwrap();
+        assert!(matches!(
+            completed.status,
+            acteon_core::ProviderHistoryStatus::Completed {
+                outcome: acteon_core::ActionOutcome::Executed(_)
+            }
+        ));
+        let fenced: ProviderHistoryReceipt =
+            serde_json::from_value(fixture["no_effect_receipt"].clone()).unwrap();
+        assert!(matches!(
+            fenced.status,
+            acteon_core::ProviderHistoryStatus::Completed {
+                outcome: acteon_core::ActionOutcome::Failed(_)
+            }
+        ));
+        assert_eq!(
+            PlatformOperation::GovernanceReconciliationCorrelation
+                .descriptor()
+                .0,
+            "GET"
+        );
+        assert_eq!(
+            PlatformOperation::GovernanceAcceptReconciliation
+                .descriptor()
+                .0,
+            "POST"
+        );
     }
 }

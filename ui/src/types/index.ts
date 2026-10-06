@@ -230,6 +230,7 @@ export interface ChainStepStatus {
 }
 
 export interface ChainDetailResponse {
+  wait_state?: ExecutionWaitState
   chain_id: string
   namespace: string
   tenant: string
@@ -1136,7 +1137,7 @@ export interface AnalyticsResponse {
 // ---- Executions visibility ----
 
 export interface ExecutionWaitState {
-  kind: 'timer' | 'signal' | 'worker'
+  kind: 'timer' | 'signal' | 'worker' | 'provider'
   // Kind-specific fields (step_index, fire_at, signal_name, task_id, queue,
   // timeout_at, ...).
   [key: string]: unknown

@@ -256,6 +256,25 @@ public class ActeonClient implements AutoCloseable {
         try { return objectMapper.treeToValue(node, Governance.ScopeView.class); }
         catch (IOException e) { throw new ConnectionException("Malformed governance response", e); }
     }
+    /** Inspect retained evidence using independently authorized management credentials. */
+    public ProviderExecutionHistory providerExecutionHistory(String namespace, String tenant, String executionId) throws ActeonException {
+        var node = platformRequest(PlatformOperation.GOVERNANCE_PROVIDER_HISTORY,
+            Map.of("execution_id", executionId), Map.of("namespace", List.of(namespace), "tenant", List.of(tenant)), null);
+        try { return objectMapper.treeToValue(node, ProviderExecutionHistory.class); }
+        catch (IOException e) { throw new ConnectionException("Malformed provider history response", e); }
+    }
+    public ProviderReconciliation.Correlation providerReconciliationCorrelation(String namespace, String tenant, String executionId, long ordinal) throws ActeonException {
+        var node = platformRequest(PlatformOperation.GOVERNANCE_RECONCILIATION_CORRELATION,
+            Map.of("execution_id", executionId, "ordinal", Long.toString(ordinal)), Map.of("namespace", List.of(namespace), "tenant", List.of(tenant)), null);
+        try { return objectMapper.treeToValue(node, ProviderReconciliation.Correlation.class); }
+        catch (IOException e) { throw new ConnectionException("Malformed reconciliation correlation", e); }
+    }
+    public ProviderExecutionHistory.Receipt acceptProviderReconciliation(String namespace, String tenant, String executionId, long ordinal, ProviderReconciliation.Request request) throws ActeonException {
+        var node = platformRequest(PlatformOperation.GOVERNANCE_ACCEPT_RECONCILIATION,
+            Map.of("execution_id", executionId, "ordinal", Long.toString(ordinal)), Map.of("namespace", List.of(namespace), "tenant", List.of(tenant)), request);
+        try { return objectMapper.treeToValue(node, ProviderExecutionHistory.Receipt.class); }
+        catch (IOException e) { throw new ConnectionException("Malformed reconciliation receipt", e); }
+    }
     public Governance.ChangeReceipt publishGovernancePermit(Governance.PublishPermitRequest request) throws ActeonException {
         var node = platformRequest(PlatformOperation.GOVERNANCE_PUBLISH_PERMIT, null, null, request);
         try { return objectMapper.treeToValue(node, Governance.ChangeReceipt.class); }

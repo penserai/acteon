@@ -684,6 +684,12 @@
     "permission": "OperationsManage"
   },
   {
+    "name": "governance_accept_reconciliation",
+    "method": "POST",
+    "path": "/v1/governance/executions/{execution_id}/attempts/{ordinal}/reconciliation",
+    "permission": "OperationsManage"
+  },
+  {
     "name": "governance_inspect",
     "method": "GET",
     "path": "/v1/governance",
@@ -696,9 +702,21 @@
     "permission": "OperationsManage"
   },
   {
+    "name": "governance_provider_history",
+    "method": "GET",
+    "path": "/v1/governance/executions/{execution_id}",
+    "permission": "OperationsManage"
+  },
+  {
     "name": "governance_publish_permit",
     "method": "POST",
     "path": "/v1/governance/permits",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "governance_reconciliation_correlation",
+    "method": "GET",
+    "path": "/v1/governance/executions/{execution_id}/attempts/{ordinal}/correlation",
     "permission": "OperationsManage"
   },
   {

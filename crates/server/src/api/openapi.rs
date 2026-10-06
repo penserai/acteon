@@ -4,7 +4,8 @@ use acteon_audit::{AuditPage, AuditQuery, AuditRecord};
 use acteon_core::{
     Action, ActionError, ActionMetadata, ActionOutcome, AnalyticsBucket, AnalyticsInterval,
     AnalyticsMetric, AnalyticsQuery, AnalyticsResponse, AnalyticsTopEntry, OverageBehavior,
-    ProviderResponse, QuotaUsage, QuotaWindow, ResponseStatus, TemplateProfileField,
+    ProviderResponse, ProviderWorkPending, ProviderWorkState, QuotaUsage, QuotaWindow,
+    ResponseStatus, TemplateProfileField,
 };
 
 use super::approvals::{
@@ -95,6 +96,9 @@ use acteon_core::{
         super::workforce::inspect,
         super::workforce::change,
         super::governance::inspect,
+        super::governance::provider_history,
+        super::governance::reconciliation_correlation,
+        super::governance::accept_reconciliation,
         super::governance::publish_permit,
         super::governance::intervene,
         super::auth::identity,
@@ -264,7 +268,7 @@ use acteon_core::{
         super::bus::reject_bus_approval,
     ),
     components(schemas(
-        Action, ActionOutcome, ProviderResponse, ResponseStatus, ActionError,
+        Action, ActionOutcome, ProviderWorkPending, ProviderWorkState, ProviderResponse, ResponseStatus, ActionError,
         ActionMetadata, DispatchResponse, DurableDispatchResponse,
         HealthResponse, MetricsResponse, RuleSummary,
         ReloadRequest, ReloadResponse, SetEnabledRequest, SetEnabledResponse,

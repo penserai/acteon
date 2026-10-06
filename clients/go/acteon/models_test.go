@@ -832,3 +832,36 @@ func TestSigningKeysResponseRejectsMalformedJSON(t *testing.T) {
 		t.Fatalf("expected unmarshal error on HTML body, got nil")
 	}
 }
+
+func TestProviderPendingReceiptPreservesIdentity(t *testing.T) {
+	for _, state := range []string{`{"kind":"in_flight","attempt_id":"a1"}`, `{"kind":"reconciliation_required","attempt_id":"a1"}`, `{"kind":"awaiting_retry","not_before_ms":1234}`} {
+		var outcome ActionOutcome
+		body := `{"ProviderPending":{"execution_id":"00000000-0000-0000-0000-000000000001","attempts":1,"state":` + state + `}}`
+		if err := json.Unmarshal([]byte(body), &outcome); err != nil {
+			t.Fatal(err)
+		}
+		if !outcome.IsProviderPending() || outcome.Pending == nil || outcome.Pending.Attempts != 1 || outcome.Pending.ExecutionID != "00000000-0000-0000-0000-000000000001" {
+			t.Fatalf("lost pending receipt: %+v", outcome)
+		}
+		if outcome.Pending.State.Kind == "awaiting_retry" {
+			if outcome.Pending.State.NotBeforeMS == nil || *outcome.Pending.State.NotBeforeMS != 1234 {
+				t.Fatal("lost retry deadline")
+			}
+		} else if outcome.Pending.State.AttemptID != "a1" {
+			t.Fatal("lost attempt identity")
+		}
+	}
+}
+
+func TestProviderPendingReuseCannotRetainOldReceipt(t *testing.T) {
+	var outcome ActionOutcome
+	if err := json.Unmarshal([]byte(`{"ProviderPending":{"execution_id":"00000000-0000-0000-0000-000000000001","attempts":1,"state":{"kind":"in_flight","attempt_id":"a1"}}}`), &outcome); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(`{"Executed":{"status":"success","body":{},"headers":{}}}`), &outcome); err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Pending != nil || outcome.IsProviderPending() || !outcome.IsExecuted() {
+		t.Fatalf("stale receipt survived completion: %+v", outcome)
+	}
+}

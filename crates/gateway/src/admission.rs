@@ -719,7 +719,7 @@ impl Gateway {
             }
             return Ok(admitted_chain_outcome(plan));
         }
-        self.handle_chain(&plan.action, &plan.config.name, caller, Some(plan))
+        self.handle_chain(&plan.action, &plan.config.name, caller, Some(plan), None)
             .await
     }
 }

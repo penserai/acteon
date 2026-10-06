@@ -4,6 +4,29 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+/// Durable provider work that must be observed before workflow progression.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ProviderWorkPending {
+    /// Original governed execution identity. This is not an execution credential.
+    #[cfg_attr(feature = "openapi", schema(value_type = String))]
+    pub execution_id: uuid::Uuid,
+    /// Number of provider attempts already registered for this identity.
+    pub attempts: u32,
+    /// Why completion is not yet established.
+    pub state: ProviderWorkState,
+}
+
+/// Pending states preserve the original attempt and its retained budget charge.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub enum ProviderWorkState {
+    InFlight { attempt_id: String },
+    ReconciliationRequired { attempt_id: String },
+    AwaitingRetry { not_before_ms: i64 },
+}
+
 /// Outcome of dispatching an action through the gateway pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -27,6 +50,9 @@ pub enum ActionOutcome {
     },
     /// Action failed after all retries.
     Failed(ActionError),
+    /// Governed provider work has durable evidence but no completed outcome.
+    /// Callers must observe/reconcile this identity, never resend as fresh work.
+    ProviderPending(ProviderWorkPending),
     /// Action was grouped for batched notification.
     Grouped {
         /// Unique identifier for the group.

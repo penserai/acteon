@@ -988,3 +988,91 @@ async fn root_limit_projection_intersects_all_permits_without_granting_authority
         Err(CoordinationError::PermitDenied(PermitDenial::Revoked))
     ));
 }
+
+#[tokio::test]
+async fn operation_seals_are_atomic_immutable_and_never_attached_to_legacy_replays() {
+    use acteon_governance::AttemptEvidenceReference;
+    for sealed in [false, true] {
+        let (coordinator, ctx) = fixture(Arc::new(MemoryStateStore::new())).await;
+        let selected = refs();
+        let footprint = effect("read", "a");
+        let digest = "a".repeat(64);
+        let clock = at(200);
+        let request = || PermittedAttempt {
+            id: "original",
+            context: &ctx,
+            permits: &selected,
+            effect: &footprint,
+            request_digest: &digest,
+            units: 1,
+            clock: &clock,
+        };
+        let seal = AttemptEvidenceReference {
+            id: ctx.execution_id().to_string(),
+            digest: "b".repeat(64),
+        };
+        if sealed {
+            coordinator
+                .register_permitted_attempt_with_operation(request(), &seal)
+                .await
+                .unwrap();
+            assert!(matches!(
+                coordinator
+                    .register_permitted_attempt_with_operation(request(), &seal)
+                    .await
+                    .unwrap(),
+                StartRegistration::Existing(_)
+            ));
+        } else {
+            coordinator
+                .register_permitted_attempt(request())
+                .await
+                .unwrap();
+        }
+        let before = coordinator.snapshot().await.unwrap();
+        assert_eq!(
+            before.starts["original"].operation_evidence,
+            sealed.then_some(seal.clone())
+        );
+        let changed = AttemptEvidenceReference {
+            digest: "c".repeat(64),
+            ..seal.clone()
+        };
+        assert!(matches!(
+            coordinator
+                .register_permitted_attempt_with_operation(request(), &changed)
+                .await,
+            Err(CoordinationError::Conflict)
+        ));
+        if sealed {
+            assert!(matches!(
+                coordinator.register_permitted_attempt(request()).await,
+                Err(CoordinationError::Conflict)
+            ));
+        } else {
+            assert!(matches!(
+                coordinator
+                    .register_permitted_attempt_with_operation(request(), &seal)
+                    .await,
+                Err(CoordinationError::Conflict)
+            ));
+        }
+        let wrong_owner = AttemptEvidenceReference {
+            id: uuid::Uuid::new_v4().to_string(),
+            ..seal
+        };
+        assert!(matches!(
+            coordinator
+                .register_permitted_attempt_with_operation(request(), &wrong_owner)
+                .await,
+            Err(CoordinationError::Invalid(_))
+        ));
+        let after = coordinator.snapshot().await.unwrap();
+        assert_eq!(
+            serde_json::to_value(before).unwrap(),
+            serde_json::to_value(&after).unwrap()
+        );
+        let root = &after.roots[&ctx.execution_id().to_string()];
+        assert_eq!((root.spent_units, root.active_attempts), (1, 1));
+    }
+}

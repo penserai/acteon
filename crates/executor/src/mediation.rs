@@ -43,6 +43,8 @@ pub enum ProviderInvocationOrigin {
     Reroute,
     ApprovalNotification,
     ApprovalRetry,
+    ChainStep,
+    ChainCancellation,
 }
 
 /// Actual immutable selected instance and actual work presented for mediation.
@@ -64,6 +66,33 @@ pub trait ProviderExecutionAdmission: Send + Sync {
         &self,
         invocation: ProviderInvocation<'_>,
     ) -> Result<ProviderExecutionAuthority, ActionError>;
+
+    /// Inspect already retained provider evidence through trusted owned work.
+    /// Default hosts have no observation path. `None` permits ordinary admission;
+    /// an error must never trigger an execution fallback.
+    async fn observe(
+        &self,
+        _invocation: ProviderInvocation<'_>,
+    ) -> Result<Option<ActionOutcome>, ActionError> {
+        Ok(None)
+    }
+
+    /// Admit complete host-selected chain work before indexing it. Unsupported
+    /// hosts refuse rather than borrowing ordinary dispatch authority.
+    async fn admit_chain(
+        &self,
+        _job_id: uuid::Uuid,
+        _action: &Action,
+        _entry: &str,
+        _definitions: &BTreeMap<String, acteon_core::ChainConfig>,
+    ) -> Result<(), ActionError> {
+        Err(ActionError {
+            code: "CHAIN_ADMISSION_UNSUPPORTED".into(),
+            message: "This host has no qualified chain admission".into(),
+            retryable: false,
+            attempts: 0,
+        })
+    }
 }
 
 /// Strict host adapter retaining one durable executor per qualified route.
@@ -73,6 +102,15 @@ pub struct GovernedProviderMediator {
     executors: BTreeMap<(String, String, String, String), GovernedProviderExecutor>,
 }
 impl GovernedProviderMediator {
+    /// An explicitly non-executing installation, such as a retained-history host.
+    /// It cannot select an executor and never invokes the supplied provider.
+    #[must_use]
+    pub fn deny_all() -> Self {
+        Self {
+            executors: BTreeMap::new(),
+        }
+    }
+
     pub fn new(executors: Vec<GovernedProviderExecutor>) -> Result<Self, &'static str> {
         if executors.is_empty() || executors.len() > 4096 {
             return Err("invalid governed mediator capacity");
@@ -99,6 +137,28 @@ impl GovernedProviderMediator {
     }
 }
 
+/// Convert retained receipt state without authorizing or invoking a provider.
+pub(crate) fn receipt_outcome(receipt: crate::governed::GovernedProviderReceipt) -> ActionOutcome {
+    let state = match receipt.status {
+        GovernedProviderStatus::Completed { outcome } => return outcome,
+        GovernedProviderStatus::Prepared => return refused("GOVERNED_PREPARED", receipt.attempts),
+        GovernedProviderStatus::InFlight { attempt_id } => {
+            acteon_core::ProviderWorkState::InFlight { attempt_id }
+        }
+        GovernedProviderStatus::ReconciliationRequired { attempt_id } => {
+            acteon_core::ProviderWorkState::ReconciliationRequired { attempt_id }
+        }
+        GovernedProviderStatus::AwaitingRetry { not_before_ms } => {
+            acteon_core::ProviderWorkState::AwaitingRetry { not_before_ms }
+        }
+    };
+    ActionOutcome::ProviderPending(acteon_core::ProviderWorkPending {
+        execution_id: receipt.execution_id,
+        attempts: receipt.attempts,
+        state,
+    })
+}
+
 fn refused(code: &str, attempts: u32) -> ActionOutcome {
     ActionOutcome::Failed(ActionError {
         code: code.into(),
@@ -112,6 +172,41 @@ fn refused(code: &str, attempts: u32) -> ActionOutcome {
 impl ProviderExecutionMediator for GovernedProviderMediator {
     fn requires_authority(&self) -> bool {
         true
+    }
+
+    async fn inspect(
+        &self,
+        action: &Action,
+        selected: &Arc<dyn DynProvider>,
+        reference: &ExecutionContextReference,
+        actor: &PrincipalIdentity,
+    ) -> Result<Option<crate::governed::GovernedProviderReceipt>, ActionError> {
+        let denied = || ActionError {
+            code: "GOVERNED_OBSERVATION_REFUSED".into(),
+            message: "Provider evidence could not be verified".into(),
+            retryable: false,
+            attempts: 0,
+        };
+        if crate::governed::governed_provider_input_digest(action).map_err(|_| denied())?
+            != reference.request_digest()
+        {
+            return Err(denied());
+        }
+        let route = (
+            action.namespace.as_str().into(),
+            action.tenant.as_str().into(),
+            selected.name().into(),
+            action.action_type.clone(),
+        );
+        let executor = self
+            .executors
+            .get(&route)
+            .filter(|executor| executor.bound_provider().is_provider(selected))
+            .ok_or_else(denied)?;
+        executor
+            .inspect(reference, actor)
+            .await
+            .map_err(|_| denied())
     }
 
     async fn execute(&self, invocation: ProviderInvocation<'_>) -> ActionOutcome {
@@ -145,19 +240,7 @@ impl ProviderExecutionMediator for GovernedProviderMediator {
             )
             .await
         {
-            Ok(receipt) => match receipt.status {
-                GovernedProviderStatus::Completed { outcome } => outcome,
-                GovernedProviderStatus::ReconciliationRequired { .. } => {
-                    refused("GOVERNED_RECONCILIATION_REQUIRED", receipt.attempts)
-                }
-                GovernedProviderStatus::InFlight { .. } => {
-                    refused("GOVERNED_IN_FLIGHT", receipt.attempts)
-                }
-                GovernedProviderStatus::AwaitingRetry { .. } => {
-                    refused("GOVERNED_AWAITING_RETRY", receipt.attempts)
-                }
-                GovernedProviderStatus::Prepared => refused("GOVERNED_PREPARED", receipt.attempts),
-            },
+            Ok(receipt) => receipt_outcome(receipt),
             Err(_) => refused("GOVERNED_EXECUTION_REFUSED", 0),
         }
     }
@@ -173,6 +256,23 @@ pub trait ProviderExecutionMediator: Send + Sync {
     /// separately at invocation. Compatibility adapters do not require proof.
     fn requires_authority(&self) -> bool {
         false
+    }
+
+    /// Historical receipt inspection. The host establishes ownership separately;
+    /// implementations must never invoke a provider from this method.
+    async fn inspect(
+        &self,
+        _action: &Action,
+        _selected: &Arc<dyn DynProvider>,
+        _reference: &ExecutionContextReference,
+        _actor: &PrincipalIdentity,
+    ) -> Result<Option<crate::governed::GovernedProviderReceipt>, ActionError> {
+        Err(ActionError {
+            code: "GOVERNED_OBSERVATION_UNSUPPORTED".into(),
+            message: "This host has no provider receipt inspection".into(),
+            retryable: false,
+            attempts: 0,
+        })
     }
 
     async fn execute(&self, invocation: ProviderInvocation<'_>) -> ActionOutcome;

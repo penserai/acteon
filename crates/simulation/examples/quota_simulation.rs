@@ -399,6 +399,7 @@ fn outcome_label(outcome: &ActionOutcome) -> &'static str {
         ActionOutcome::Rerouted { .. } => "Rerouted",
         ActionOutcome::Throttled { .. } => "Throttled",
         ActionOutcome::Failed(_) => "Failed",
+        ActionOutcome::ProviderPending(_) => "ProviderPending",
         ActionOutcome::Grouped { .. } => "Grouped",
         ActionOutcome::StateChanged { .. } => "StateChanged",
         ActionOutcome::PendingApproval { .. } => "PendingApproval",

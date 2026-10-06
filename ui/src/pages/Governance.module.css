@@ -8,4 +8,6 @@
 .grid { @apply grid grid-cols-2 gap-3; }
 .error { @apply text-sm; color: var(--text-error, #ef4444); overflow-wrap: anywhere; }
 .actions { @apply flex flex-wrap gap-2; }
-@media (max-width: 640px) { .scope, .grid { grid-template-columns: minmax(0, 1fr); } }
+.history { overflow-wrap: anywhere; }
+.historySearch { @apply grid gap-3 items-end; grid-template-columns: minmax(0, 1fr) auto; }
+@media (max-width: 640px) { .scope, .grid, .historySearch { grid-template-columns: minmax(0, 1fr); } }

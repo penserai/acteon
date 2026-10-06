@@ -5,7 +5,9 @@
 //! ceilings. Recovery verifies recorded provenance; it never authorizes an
 //! effect. Every effect still requires current authority evaluation/registration.
 mod admission;
+mod children;
 pub use admission::{IdempotentRootAdmission, ROOT_ADMISSION_KIND};
+pub use children::{CHILD_ADMISSION_KIND, ChildContextAdmission};
 
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -19,7 +21,7 @@ use uuid::Uuid;
 use crate::{AuthorityCoordinator, AuthorityStamp, CoordinationError};
 
 pub const CONTEXT_KIND: &str = "governance_execution_context";
-const FORMAT: u32 = 3;
+const FORMAT: u32 = 4;
 const MAX_BYTES: usize = 64 * 1024;
 const MAX_EFFECTS: usize = 128;
 const MAX_RESOURCES: usize = 16;
@@ -90,6 +92,8 @@ struct ContextRecord {
     credential_authority: Option<crate::credential::CredentialReference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     representation: Option<crate::workforce::RepresentationBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    lineage: Option<children::ChildLineage>,
     request_digest: String,
     accepted_ceiling_revision: String,
     accepted_effects: Vec<AcceptedEffect>,
@@ -114,6 +118,56 @@ struct SealedRecord {
 pub struct VerifiedExecutionContext(ContextRecord);
 
 impl VerifiedExecutionContext {
+    pub(crate) fn validate_inheritance(
+        &self,
+        state: &crate::CoordinatorSnapshot,
+        permits: &[crate::permit::PermitReference],
+        now_ms: i64,
+    ) -> Result<(), CoordinationError> {
+        if state.purpose != crate::ScopePurpose::Execution
+            || self.0.namespace != state.namespace
+            || self.0.tenant != state.tenant
+            || self.0.authority.incarnation != state.incarnation
+            || crate::permit::permit_revision_tag(permits)? != self.0.accepted_ceiling_revision
+            || now_ms < self.0.admitted_at_ms
+        {
+            return Err(CoordinationError::StaleAuthority);
+        }
+        self.validate_budget_binding(state)?;
+        let root = state
+            .roots
+            .get(&self.execution_id().to_string())
+            .ok_or(CoordinationError::Conflict)?;
+        if root.owner_subject != self.principal().id() {
+            return Err(CoordinationError::Restricted);
+        }
+        let admission = RootContextAdmission {
+            handle: self.0.handle.clone(),
+            binding: ContextBinding {
+                execution_id: self.0.execution_id,
+                principal: self.0.principal.clone(),
+                request_digest: self.0.request_digest.clone(),
+            },
+            credential_id: self.0.credential_id.clone(),
+            auth_method: self.0.auth_method.clone(),
+            accepted_ceiling_revision: self.0.accepted_ceiling_revision.clone(),
+            accepted_effects: self.0.accepted_effects.clone(),
+            deadline_ms: self.0.deadline_ms,
+            evaluated_authority: state.stamp(),
+        };
+        crate::permit::validate_root_admission_represented(
+            state,
+            &admission,
+            permits,
+            &root.limits,
+            now_ms,
+            self.0.representation.as_ref(),
+        )?;
+        if let Some(credential) = &self.0.credential_authority {
+            crate::credential::validate_root(state, &admission, credential, &root.limits, now_ms)?;
+        }
+        Ok(())
+    }
     #[must_use]
     pub fn authority_stamp(&self) -> &AuthorityStamp {
         &self.0.authority
@@ -435,8 +489,13 @@ impl TrustedContextStore {
     }
 
     fn validate(&self, record: &ContextRecord) -> Result<(), ContextError> {
-        if (!matches!(record.schema_version, 2 | 3))
+        if (!matches!(record.schema_version, 2..=4))
             || (record.schema_version == 2 && record.representation.is_some())
+            || (record.schema_version < 4 && record.lineage.is_some())
+            || record
+                .lineage
+                .as_ref()
+                .is_some_and(|lineage| !lineage.valid_shape(record))
             || record
                 .representation
                 .as_ref()
@@ -509,12 +568,20 @@ impl TrustedContextStore {
             auth_method: admission.auth_method,
             credential_authority,
             representation,
+            lineage: None,
             accepted_ceiling_revision: admission.accepted_ceiling_revision,
             accepted_effects: admission.accepted_effects,
             deadline_ms: admission.deadline_ms,
             admitted_at_ms: now_ms,
             authority: admission.evaluated_authority,
         };
+        self.persist_record(record, now_ms).await
+    }
+    async fn persist_record(
+        &self,
+        record: ContextRecord,
+        now_ms: i64,
+    ) -> Result<VerifiedExecutionContext, ContextError> {
         self.validate(&record).map_err(|_| ContextError::Invalid)?;
         let binding = ContextBinding {
             execution_id: record.execution_id,
@@ -538,23 +605,7 @@ impl TrustedContextStore {
                 CoordinationError::StaleAuthority,
             ));
         }
-        let payload = serde_json::to_string(&record).map_err(|_| ContextError::Invalid)?;
-        let secret = self
-            .keys
-            .get(&self.active_key)
-            .ok_or(ContextError::Invalid)?;
-        let mut mac = Hmac::<Sha256>::new_from_slice(secret).map_err(|_| ContextError::Invalid)?;
-        mac.update(payload.as_bytes());
-        let sealed = SealedRecord {
-            schema_version: FORMAT,
-            key_id: self.active_key.clone(),
-            payload,
-            tag: mac.finalize().into_bytes().to_vec(),
-        };
-        let encoded = serde_json::to_string(&sealed).map_err(|_| ContextError::Invalid)?;
-        if encoded.len() > MAX_BYTES {
-            return Err(ContextError::Invalid);
-        }
+        let encoded = self.seal_record(&record)?;
         if !self
             .store
             .check_and_set(&self.key(&record.handle), &encoded, None)
@@ -574,10 +625,12 @@ impl TrustedContextStore {
     ) -> Result<VerifiedExecutionContext, ContextError> {
         let mut original = existing.0.clone();
         original.admitted_at_ms = proposed.admitted_at_ms;
-        if matches!(original.schema_version, 2 | 3)
-            && matches!(proposed.schema_version, 2 | 3)
-            && original.representation.is_none()
-            && proposed.representation.is_none()
+        if matches!(original.schema_version, 2..=4)
+            && matches!(proposed.schema_version, 2..=4)
+            && original.lineage.is_none()
+            && proposed.lineage.is_none()
+            && (original.schema_version != 2 || proposed.representation.is_none())
+            && (proposed.schema_version != 2 || original.representation.is_none())
         {
             original.schema_version = proposed.schema_version;
         }
@@ -585,6 +638,48 @@ impl TrustedContextStore {
             return Err(ContextError::Conflict);
         }
         Ok(existing)
+    }
+
+    fn mac(&self, key_id: &str) -> Result<Hmac<Sha256>, ContextError> {
+        Hmac::<Sha256>::new_from_slice(self.keys.get(key_id).ok_or(ContextError::Verification)?)
+            .map_err(|_| ContextError::Verification)
+    }
+    fn seal_record(&self, record: &ContextRecord) -> Result<String, ContextError> {
+        let payload = serde_json::to_string(record).map_err(|_| ContextError::Invalid)?;
+        let mut mac = self.mac(&self.active_key)?;
+        mac.update(payload.as_bytes());
+        let encoded = serde_json::to_string(&SealedRecord {
+            schema_version: record.schema_version,
+            key_id: self.active_key.clone(),
+            payload,
+            tag: mac.finalize().into_bytes().to_vec(),
+        })
+        .map_err(|_| ContextError::Invalid)?;
+        if encoded.len() > MAX_BYTES {
+            return Err(ContextError::Invalid);
+        }
+        Ok(encoded)
+    }
+    fn open_record(&self, encoded: &str) -> Result<ContextRecord, ContextError> {
+        if encoded.len() > MAX_BYTES {
+            return Err(ContextError::Verification);
+        }
+        let sealed: SealedRecord =
+            serde_json::from_str(encoded).map_err(|_| ContextError::Verification)?;
+        if !matches!(sealed.schema_version, 2..=4) || sealed.tag.len() != 32 {
+            return Err(ContextError::Verification);
+        }
+        let mut mac = self.mac(&sealed.key_id)?;
+        mac.update(sealed.payload.as_bytes());
+        mac.verify_slice(&sealed.tag)
+            .map_err(|_| ContextError::Verification)?;
+        let record: ContextRecord =
+            serde_json::from_str(&sealed.payload).map_err(|_| ContextError::Verification)?;
+        self.validate(&record)?;
+        if record.schema_version != sealed.schema_version {
+            return Err(ContextError::Verification);
+        }
+        Ok(record)
     }
 
     /// Recover only through trusted storage, bound to independently trusted work
@@ -599,6 +694,17 @@ impl TrustedContextStore {
         self.recover_inner(handle, binding, Some(now_ms)).await
     }
 
+    /// Verify signed work provenance without current execution admission.
+    /// The host must establish work ownership independently. This never grants
+    /// permission for a new effect, even when the context is expired or revoked.
+    pub async fn recover_for_observation(
+        &self,
+        handle: &ExecutionContextHandle,
+        binding: &ContextBinding,
+    ) -> Result<VerifiedExecutionContext, ContextError> {
+        self.recover_inner(handle, binding, None).await
+    }
+
     async fn recover_inner(
         &self,
         handle: &ExecutionContextHandle,
@@ -610,29 +716,10 @@ impl TrustedContextStore {
             .get(&self.key(handle))
             .await?
             .ok_or(ContextError::Missing)?;
-        if encoded.len() > MAX_BYTES || now_ms.is_some_and(|now| now < 0) {
+        if now_ms.is_some_and(|now| now < 0) {
             return Err(ContextError::Verification);
         }
-        let sealed: SealedRecord =
-            serde_json::from_str(&encoded).map_err(|_| ContextError::Verification)?;
-        if !matches!(sealed.schema_version, 2 | 3) || sealed.tag.len() != 32 {
-            return Err(ContextError::Verification);
-        }
-        let secret = self
-            .keys
-            .get(&sealed.key_id)
-            .ok_or(ContextError::Verification)?;
-        let mut mac =
-            Hmac::<Sha256>::new_from_slice(secret).map_err(|_| ContextError::Verification)?;
-        mac.update(sealed.payload.as_bytes());
-        mac.verify_slice(&sealed.tag)
-            .map_err(|_| ContextError::Verification)?;
-        let record: ContextRecord =
-            serde_json::from_str(&sealed.payload).map_err(|_| ContextError::Verification)?;
-        self.validate(&record)?;
-        if record.schema_version != sealed.schema_version {
-            return Err(ContextError::Verification);
-        }
+        let record = self.open_record(&encoded)?;
         if record.handle != *handle
             || record.execution_id != binding.execution_id
             || record.principal != binding.principal

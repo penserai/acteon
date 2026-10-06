@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/url"
+	"strconv"
 )
 
 type GovernanceResource struct {
@@ -85,6 +86,8 @@ type GovernanceManagementBounds struct {
 	Subjects        []PrincipalIdentity `json:"subjects"`
 	CanIssuePermits bool                `json:"can_issue_permits"`
 	CanIntervene    bool                `json:"can_intervene"`
+	CanReadHistory  bool                `json:"can_read_history,omitempty"`
+	CanReconcile    bool                `json:"can_reconcile,omitempty"`
 	ValidFromMs     int64               `json:"valid_from_ms"`
 	Limits          GovernanceLimits    `json:"limits"`
 }
@@ -124,6 +127,122 @@ func (c *Client) InterveneGovernance(ctx context.Context, request GovernanceInte
 		return nil, err
 	}
 	var result GovernanceChangeReceipt
+	err = json.Unmarshal(data, &result)
+	return &result, err
+}
+
+// ProviderExecutionHistory contains retained evidence, never execution authority.
+type ProviderExecutionHistory struct {
+	Subject            PrincipalIdentity          `json:"subject"`
+	Receipt            ProviderHistoryReceipt     `json:"receipt"`
+	ObservedAuthority  ProviderHistoryAuthority   `json:"observed_authority"`
+	OperationIntegrity string                     `json:"operation_integrity"`
+	Metadata           *ProviderOperationMetadata `json:"metadata"`
+	Binding            *ProviderHistoryBinding    `json:"binding"`
+	CancellationFenced bool                       `json:"cancellation_fenced"`
+	Attempts           []ProviderHistoryAttempt   `json:"attempts"`
+}
+type ProviderHistoryReceipt struct {
+	ExecutionID string                `json:"execution_id"`
+	Attempts    uint32                `json:"attempts"`
+	Status      ProviderHistoryStatus `json:"status"`
+}
+type ProviderHistoryStatus struct {
+	State       string         `json:"state"`
+	AttemptID   string         `json:"attempt_id,omitempty"`
+	NotBeforeMs *int64         `json:"not_before_ms,omitempty"`
+	Outcome     *ActionOutcome `json:"outcome,omitempty"`
+}
+type ProviderHistoryAuthority struct {
+	Incarnation string `json:"incarnation"`
+	Generation  uint64 `json:"generation"`
+}
+type ProviderOperationMetadata struct {
+	OriginalActionID string `json:"original_action_id"`
+	MaxAttempts      uint32 `json:"max_attempts"`
+}
+type ProviderHistoryBinding struct {
+	Provider         string           `json:"provider"`
+	ProviderRevision string           `json:"provider_revision"`
+	FailureRevision  string           `json:"failure_revision"`
+	Effect           GovernanceEffect `json:"effect"`
+}
+type ProviderEvidenceReference struct {
+	ID     string `json:"id"`
+	Digest string `json:"digest"`
+}
+type ProviderHistoryAttempt struct {
+	AttemptID        string                         `json:"attempt_id"`
+	Ordinal          uint32                         `json:"ordinal"`
+	LedgerStatus     string                         `json:"ledger_status"`
+	OriginalEvidence *ProviderEvidenceReference     `json:"original_evidence"`
+	OriginalOutcome  *ActionOutcome                 `json:"original_outcome"`
+	Reconciliation   *ProviderHistoryReconciliation `json:"reconciliation"`
+}
+type ProviderReconciliationAcceptance struct {
+	Operator     PrincipalIdentity        `json:"operator"`
+	Authority    ProviderHistoryAuthority `json:"authority"`
+	AcceptedAtMs int64                    `json:"accepted_at_ms"`
+}
+type ProviderHistoryReconciliation struct {
+	PriorStatus      string                            `json:"prior_status"`
+	ExecutionID      string                            `json:"execution_id"`
+	AttemptID        string                            `json:"attempt_id"`
+	OriginalEvidence *ProviderEvidenceReference        `json:"original_evidence"`
+	Resolution       ProviderEvidenceReference         `json:"resolution"`
+	VerifierRevision string                            `json:"verifier_revision"`
+	ProofDigest      string                            `json:"proof_digest"`
+	ResolvedAtMs     int64                             `json:"resolved_at_ms"`
+	Acceptance       *ProviderReconciliationAcceptance `json:"acceptance,omitempty"`
+	Outcome          ActionOutcome                     `json:"outcome"`
+}
+
+func (c *Client) ProviderExecutionHistory(ctx context.Context, namespace, tenant, executionID string) (*ProviderExecutionHistory, error) {
+	data, err := c.PlatformRequest(ctx, OpGovernanceProviderHistory,
+		map[string]string{"execution_id": executionID}, url.Values{"namespace": {namespace}, "tenant": {tenant}}, nil)
+	if err != nil {
+		return nil, err
+	}
+	var result ProviderExecutionHistory
+	err = json.Unmarshal(data, &result)
+	return &result, err
+}
+
+type ProviderReconciliationContext struct {
+	ContextID     string            `json:"context_id"`
+	ExecutionID   string            `json:"execution_id"`
+	Namespace     string            `json:"namespace"`
+	Tenant        string            `json:"tenant"`
+	Principal     PrincipalIdentity `json:"principal"`
+	RequestDigest string            `json:"request_digest"`
+}
+type ProviderReconciliationCorrelation struct {
+	Context       ProviderReconciliationContext `json:"context"`
+	ActionID      string                        `json:"action_id"`
+	AttemptID     string                        `json:"attempt_id"`
+	Ordinal       uint32                        `json:"ordinal"`
+	Token         string                        `json:"token"`
+	BindingDigest string                        `json:"binding_digest"`
+}
+type ProviderReconciliationRequest struct {
+	ProofBase64 string `json:"proof_base64"`
+}
+
+func (c *Client) ProviderReconciliationCorrelation(ctx context.Context, namespace, tenant, executionID string, ordinal uint32) (*ProviderReconciliationCorrelation, error) {
+	data, err := c.PlatformRequest(ctx, OpGovernanceReconciliationCorrelation, map[string]string{"execution_id": executionID, "ordinal": strconv.FormatUint(uint64(ordinal), 10)}, url.Values{"namespace": {namespace}, "tenant": {tenant}}, nil)
+	if err != nil {
+		return nil, err
+	}
+	var result ProviderReconciliationCorrelation
+	err = json.Unmarshal(data, &result)
+	return &result, err
+}
+func (c *Client) AcceptProviderReconciliation(ctx context.Context, namespace, tenant, executionID string, ordinal uint32, request ProviderReconciliationRequest) (*ProviderHistoryReceipt, error) {
+	data, err := c.PlatformRequest(ctx, OpGovernanceAcceptReconciliation, map[string]string{"execution_id": executionID, "ordinal": strconv.FormatUint(uint64(ordinal), 10)}, url.Values{"namespace": {namespace}, "tenant": {tenant}}, request)
+	if err != nil {
+		return nil, err
+	}
+	var result ProviderHistoryReceipt
 	err = json.Unmarshal(data, &result)
 	return &result, err
 }

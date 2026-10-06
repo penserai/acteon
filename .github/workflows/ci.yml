@@ -362,6 +362,14 @@ jobs:
         env:
           ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
         run: cargo test --locked -p acteon-executor --test governed_provider independent_redis_workers_observe_one_provider_attempt -- --ignored
+      - name: Qualified plan multi-client Redis handoff contract
+        env:
+          ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
+        run: cargo test --locked -p acteon-executor --test qualified_plans independent_redis_qualified_handoff_contract -- --ignored
+      - name: Durable provider multi-client PostgreSQL contract
+        run: cargo test --locked -p acteon-executor --test governed_provider independent_postgres_workers_observe_one_provider_attempt -- --ignored
+      - name: Qualified plan multi-client PostgreSQL handoff contract
+        run: cargo test --locked -p acteon-executor --test qualified_plans independent_postgres_qualified_handoff_contract -- --ignored
       - name: Server authentication authority and startup PostgreSQL contract
         run: cargo test --locked -p acteon-server --features postgres --test auth_authority independent_postgres_authentication_replicas_pass_the_contract -- --ignored
       - name: Root admission multi-client PostgreSQL contract
@@ -390,6 +398,20 @@ jobs:
           AWS_EC2_METADATA_DISABLED: 'true'
       - name: Root admission multi-client DynamoDB contract
         run: cargo test --locked -p acteon-server --features dynamodb --test execution_preparation independent_dynamodb_root_admission_passes_the_contract -- --ignored
+        env:
+          DYNAMODB_ENDPOINT: http://127.0.0.1:8000
+          AWS_ACCESS_KEY_ID: acteonlocaltest
+          AWS_SECRET_ACCESS_KEY: acteon-local-test
+          AWS_EC2_METADATA_DISABLED: 'true'
+      - name: Durable provider multi-client DynamoDB contract
+        run: cargo test --locked -p acteon-executor --features dynamodb --test governed_provider independent_dynamodb_workers_observe_one_provider_attempt -- --ignored
+        env:
+          DYNAMODB_ENDPOINT: http://127.0.0.1:8000
+          AWS_ACCESS_KEY_ID: acteonlocaltest
+          AWS_SECRET_ACCESS_KEY: acteon-local-test
+          AWS_EC2_METADATA_DISABLED: 'true'
+      - name: Qualified plan multi-client DynamoDB handoff contract
+        run: cargo test --locked -p acteon-executor --features dynamodb --test qualified_plans independent_dynamodb_qualified_handoff_contract -- --ignored
         env:
           DYNAMODB_ENDPOINT: http://127.0.0.1:8000
           AWS_ACCESS_KEY_ID: acteonlocaltest

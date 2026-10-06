@@ -113,9 +113,12 @@ class PlatformOperation(StrEnum):
     EXECUTIONS_RESET_EXECUTION = "executions_reset_execution"
     EXECUTIONS_SIGNAL_EXECUTION = "executions_signal_execution"
     EXECUTIONS_UPSERT_EXECUTION_ATTRIBUTES = "executions_upsert_execution_attributes"
+    GOVERNANCE_ACCEPT_RECONCILIATION = "governance_accept_reconciliation"
     GOVERNANCE_INSPECT = "governance_inspect"
     GOVERNANCE_INTERVENE = "governance_intervene"
+    GOVERNANCE_PROVIDER_HISTORY = "governance_provider_history"
     GOVERNANCE_PUBLISH_PERMIT = "governance_publish_permit"
+    GOVERNANCE_RECONCILIATION_CORRELATION = "governance_reconciliation_correlation"
     GROUPS_FLUSH_GROUP = "groups_flush_group"
     GROUPS_GET_GROUP = "groups_get_group"
     GROUPS_LIST_GROUPS = "groups_list_groups"
@@ -714,9 +717,27 @@ OPERATIONS = {
         ("execution_id",),
         "json",
     ),
+    PlatformOperation.GOVERNANCE_ACCEPT_RECONCILIATION: (
+        "POST",
+        "/v1/governance/executions/{execution_id}/attempts/{ordinal}/reconciliation",
+        ("execution_id", "ordinal"),
+        "json",
+    ),
     PlatformOperation.GOVERNANCE_INSPECT: ("GET", "/v1/governance", (), "json"),
     PlatformOperation.GOVERNANCE_INTERVENE: ("POST", "/v1/governance/changes", (), "json"),
+    PlatformOperation.GOVERNANCE_PROVIDER_HISTORY: (
+        "GET",
+        "/v1/governance/executions/{execution_id}",
+        ("execution_id",),
+        "json",
+    ),
     PlatformOperation.GOVERNANCE_PUBLISH_PERMIT: ("POST", "/v1/governance/permits", (), "json"),
+    PlatformOperation.GOVERNANCE_RECONCILIATION_CORRELATION: (
+        "GET",
+        "/v1/governance/executions/{execution_id}/attempts/{ordinal}/correlation",
+        ("execution_id", "ordinal"),
+        "json",
+    ),
     PlatformOperation.GROUPS_FLUSH_GROUP: (
         "DELETE",
         "/v1/groups/{group_key}",

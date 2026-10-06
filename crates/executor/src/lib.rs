@@ -6,6 +6,7 @@ pub mod executor;
 pub mod gate;
 pub mod governed;
 pub mod mediation;
+pub mod plan;
 pub mod retry;
 
 pub use config::ExecutorConfig;

@@ -2,7 +2,7 @@
 
 Use Acteon's SDKs to connect agents, services, and workers to the same execution and governance platform. Start with the typed helpers for dispatch, rules, audit, approvals, and bus operations. Use the complete **platform operation API** for controls that do not yet have a dedicated helper in your language.
 
-The current source tree provides a generated catalog for **193 finite HTTP operations** in Rust, Python, TypeScript, Go, and Java. It includes receipt sessions, managed-stage recovery, workflow and execution controls, inference profiles, stream windows, and operator APIs. Six streaming or polymorphic RPC routes use the existing streaming and A2A clients instead. Server configuration, authorization, and optional build features still determine which operations are available on your deployment.
+The current source tree provides a generated catalog for **194 finite HTTP operations** in Rust, Python, TypeScript, Go, and Java. It includes receipt sessions, managed-stage recovery, workflow and execution controls, inference profiles, stream windows, and operator APIs. Six streaming or polymorphic RPC routes use the existing streaming and A2A clients instead. Server configuration, authorization, and optional build features still determine which operations are available on your deployment.
 
 ## Choose the right interface
 
@@ -118,7 +118,15 @@ After adding or changing a route, regenerate the catalogs, run each language's f
 
 ## Dispatch outcomes
 
-All clients recognize the server's 17 dispatch variants, including `Grouped`, `StateChanged`, `PendingApproval`, `ChainStarted`, `CircuitOpen`, `RecurringCreated`, `Silenced`, and `Muted`. Single and batch dispatch preserve their fields, including approval capabilities and chain IDs. A pending approval or a started chain is not a completed provider execution; inspect the outcome before advancing an agent workflow.
+All clients recognize the server's 18 dispatch variants, including `Grouped`, `StateChanged`, `PendingApproval`, `ChainStarted`, `CircuitOpen`, `RecurringCreated`, `Silenced`, and `Muted`. Single and batch dispatch preserve their fields, including approval capabilities and chain IDs. A pending approval or a started chain is not a completed provider execution; inspect the outcome before advancing an agent workflow.
+
+`ProviderPending` preserves the original provider execution ID, registered
+attempt count, and a typed state (`in_flight`, `reconciliation_required`, or
+`awaiting_retry`). It is not a completed failure and must not trigger a fresh
+send. Python exposes `outcome.pending`, Node `outcome.pending`, Go
+`outcome.Pending`, Java `outcome.getPending()`, and Rust
+`ActionOutcome::ProviderPending(work)`. Chain detail responses preserve
+`wait_state` (`waitState` in Node and Java), including the retained receipt IDs.
 
 ## Governance management
 
@@ -132,3 +140,31 @@ Rust and Python use `workforce`/`change_workforce`; TypeScript and Java use
 supports both synchronous and asynchronous clients. The shared wire contract
 verifies all variants, scoped authentication, nested record decoding and HTTP
 refusals without mutation retries. See [Agent workforce](../features/workforce.md).
+
+## Historical provider execution evidence
+
+`GET /v1/governance/executions/{execution_id}?namespace=prod&tenant=acme`
+returns verified provider receipts, original evidence and accepted reconciliation
+records from the deployment's configured state backend. The operator must have
+current scope management authority and an explicit `can_read_history = true`
+deployment grant. The manager's `subjects` list limits whose work can be read.
+Permit issuance and intervention grants do not imply history access.
+
+The operation catalog exposes `governance_provider_history` in all five SDKs.
+Every SDK provides a typed `ProviderExecutionHistory` response and a dedicated helper:
+
+| SDK | Method |
+|---|---|
+| Rust | `provider_execution_history(namespace, tenant, execution_id)` |
+| Python (sync and async) | `provider_execution_history(namespace, tenant, execution_id)` |
+| TypeScript | `providerExecutionHistory(namespace, tenant, executionId)` |
+| Go | `ProviderExecutionHistory(ctx, namespace, tenant, executionID)` |
+| Java | `providerExecutionHistory(namespace, tenant, executionId)` |
+
+Nested outcomes use each SDK's existing outcome model. Original evidence and
+accepted reconciliation remain distinct; a completed receipt may contain a failed
+outcome. The shared fixture is checked against Rust's public DTO and exercises all
+five receipt states across clients. Client decoding tests do not establish server
+authorization or backend durability.
+See [historical receipts](../features/durable-executions.md#historical-receipts)
+for evidence integrity and recovery semantics.

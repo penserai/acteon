@@ -29,6 +29,7 @@ pub mod key;
 pub mod outcome;
 pub mod principal;
 pub mod provider_health;
+pub mod provider_history;
 pub mod quota;
 pub mod recurring;
 pub mod resource;
@@ -116,7 +117,10 @@ pub use execution_history::{
 pub use fingerprint::compute_fingerprint;
 pub use group::{EventGroup, GroupState, GroupedEvent};
 pub use key::ActionKey;
-pub use outcome::{ActionError, ActionOutcome, ProviderResponse, ResponseStatus};
+pub use outcome::{
+    ActionError, ActionOutcome, ProviderResponse, ProviderWorkPending, ProviderWorkState,
+    ResponseStatus,
+};
 pub use principal::{CredentialIdentity, PrincipalIdentity, PrincipalIdentityError, PrincipalKind};
 pub use provider_health::{ListProviderHealthResponse, ProviderHealthStatus};
 pub use quota::{
@@ -165,6 +169,7 @@ pub use workflow::{
 };
 
 pub use governance::*;
+pub use provider_history::*;
 
 pub mod workforce;
 pub use workforce::{

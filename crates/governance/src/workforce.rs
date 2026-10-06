@@ -1031,12 +1031,12 @@ pub(crate) fn evaluate_effect(
                 now,
             )?;
             let mandate = &state.workforce.mandates[&required.id].value;
-            if root
-                .spent_units
-                .checked_add(request.units)
-                .is_none_or(|n| n > mandate.limits.max_units)
-                || root.active_attempts >= mandate.limits.max_concurrent
-            {
+            if !crate::budget::current_limits_allow(
+                state,
+                &request.context.execution_id().to_string(),
+                &mandate.limits,
+                request.units,
+            )? {
                 return Err(CoordinationError::Restricted);
             }
             Ok(())

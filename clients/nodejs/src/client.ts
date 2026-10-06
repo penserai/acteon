@@ -1,3 +1,5 @@
+import { parseProviderHistoryReceipt, type ProviderHistoryReceipt, type ProviderReconciliationCorrelation, type ProviderReconciliationRequest } from "./governance.js";
+import { parseProviderExecutionHistory, type ProviderExecutionHistory, type ProviderExecutionHistoryWire } from "./governance.js";
 import type { WorkforceScopeView, WorkforceChangeRequest } from "./workforce.js";
 import type { GovernanceScopeView, GovernanceChangeReceipt, PublishGovernancePermitRequest, GovernanceInterventionRequest } from "./governance.js";
 import { platformRequestParts, type PlatformOperation, type PlatformRequestOptions } from "./platform.js";
@@ -396,6 +398,25 @@ export class ActeonClient {
 
   async governance(namespace: string, tenant: string): Promise<GovernanceScopeView> {
     return await this.platformRequest("governance_inspect", { query: { namespace, tenant } }) as GovernanceScopeView;
+  }
+  /** Read retained evidence under independent history management authority. */
+  async providerExecutionHistory(namespace: string, tenant: string, executionId: string): Promise<ProviderExecutionHistory> {
+    const data = await this.platformRequest("governance_provider_history", {
+      path: { execution_id: executionId }, query: { namespace, tenant },
+    });
+    return parseProviderExecutionHistory(data as ProviderExecutionHistoryWire);
+  }
+  async providerReconciliationCorrelation(namespace: string, tenant: string, executionId: string, ordinal: number): Promise<ProviderReconciliationCorrelation> {
+    return await this.platformRequest("governance_reconciliation_correlation", {
+      path: { execution_id: executionId, ordinal: String(ordinal) }, query: { namespace, tenant },
+    }) as ProviderReconciliationCorrelation;
+  }
+  /** Accept independently qualified finality; never automatically retries. */
+  async acceptProviderReconciliation(namespace: string, tenant: string, executionId: string, ordinal: number, request: ProviderReconciliationRequest): Promise<ProviderHistoryReceipt> {
+    const data = await this.platformRequest("governance_accept_reconciliation", {
+      path: { execution_id: executionId, ordinal: String(ordinal) }, query: { namespace, tenant }, body: request,
+    });
+    return parseProviderHistoryReceipt(data as ProviderExecutionHistoryWire["receipt"]);
   }
   async publishGovernancePermit(request: PublishGovernancePermitRequest): Promise<GovernanceChangeReceipt> {
     return await this.platformRequest("governance_publish_permit", { body: request }) as GovernanceChangeReceipt;

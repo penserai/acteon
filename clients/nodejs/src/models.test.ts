@@ -1,6 +1,7 @@
 import { describe, it, assert } from "vitest";
 import {
   createWebhookAction,
+  parseActionOutcome,
   parseProviderHealthStatus,
   parseListProviderHealthResponse,
   parseWasmPluginConfig,
@@ -700,4 +701,19 @@ describe("parseSigningKeysResponse", () => {
       /malformed signing keys response.*tenants/,
     );
   });
+});
+
+describe("pending provider receipts", () => {
+  for (const state of [
+    { kind: "in_flight", attempt_id: "attempt-1" },
+    { kind: "reconciliation_required", attempt_id: "attempt-1" },
+    { kind: "awaiting_retry", not_before_ms: 1234 },
+  ] as const) {
+    it(`preserves ${state.kind} without converting it to failure`, () => {
+      const pending = { execution_id: "00000000-0000-0000-0000-000000000001", attempts: 1, state };
+      const outcome = parseActionOutcome({ ProviderPending: pending });
+      assert.equal(outcome.type, "provider_pending");
+      if (outcome.type === "provider_pending") assert.deepEqual(outcome.pending, pending);
+    });
+  }
 });

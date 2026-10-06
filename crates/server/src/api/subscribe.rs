@@ -411,7 +411,8 @@ fn build_chain_catchup(chain_state: &acteon_core::ChainState) -> Vec<Result<Even
             | ChainStatus::WaitingParallel
             | ChainStatus::WaitingTimer
             | ChainStatus::WaitingSignal
-            | ChainStatus::WaitingWorker => unreachable!(),
+            | ChainStatus::WaitingWorker
+            | ChainStatus::WaitingProvider => unreachable!(),
         };
         let event_type = StreamEventType::ChainCompleted {
             chain_id: chain_state.chain_id.clone(),

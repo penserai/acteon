@@ -215,6 +215,12 @@ impl Gateway {
                 chain_state.expires_at,
             ),
             ChainStatus::WaitingParallel => Some(now.timestamp_millis()),
+            ChainStatus::WaitingProvider => match &chain_state.wait_state {
+                Some(WaitState::Provider { next_poll_at, .. }) => {
+                    Some(next_poll_at.timestamp_millis().max(now.timestamp_millis()))
+                }
+                _ => Some((now + chrono::Duration::seconds(5)).timestamp_millis()),
+            },
             ChainStatus::Completed
             | ChainStatus::Failed
             | ChainStatus::Cancelled

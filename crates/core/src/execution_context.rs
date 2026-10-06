@@ -6,9 +6,12 @@ use uuid::Uuid;
 use crate::{PrincipalIdentity, ResourceKind, ResourceRef};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(try_from = "ReferenceWire")]
 pub struct ExecutionContextReference {
+    #[cfg_attr(feature = "openapi", schema(value_type = String, format = "uuid"))]
     context_id: Uuid,
+    #[cfg_attr(feature = "openapi", schema(value_type = String, format = "uuid"))]
     execution_id: Uuid,
     namespace: String,
     tenant: String,

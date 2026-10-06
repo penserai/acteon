@@ -139,6 +139,10 @@ async fn main() {
 fn describe_outcome(outcome: &ActionOutcome) -> String {
     match outcome {
         ActionOutcome::Executed(_) => "Executed".to_string(),
+        ActionOutcome::ProviderPending(work) => format!(
+            "Provider work {} awaits {:?}",
+            work.execution_id, work.state
+        ),
         ActionOutcome::Deduplicated => "Deduplicated".to_string(),
         ActionOutcome::Suppressed { rule } => format!("Suppressed by rule '{rule}'"),
         ActionOutcome::Rerouted {

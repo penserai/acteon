@@ -100,6 +100,21 @@ from .governance import (
     GovernanceSubjectRevocation as GovernanceSubjectRevocation,
 )
 from .governance import (
+    ProviderEvidenceReference,
+    ProviderExecutionHistory,
+    ProviderHistoryAttempt,
+    ProviderHistoryAuthority,
+    ProviderHistoryBinding,
+    ProviderHistoryReceipt,
+    ProviderHistoryReconciliation,
+    ProviderHistoryStatus,
+    ProviderOperationMetadata,
+    ProviderReconciliationAcceptance,
+    ProviderReconciliationContext,
+    ProviderReconciliationCorrelation,
+    ProviderReconciliationRequest,
+)
+from .governance import (
     PublishGovernancePermitRequest as PublishGovernancePermitRequest,
 )
 from .models import (
@@ -157,6 +172,8 @@ from .models import (
     PermitReference,
     PluginInvocationRequest,
     PluginInvocationResponse,
+    ProviderWorkPending,
+    ProviderWorkState,
     QuotaPolicy,
     QuotaUsage,
     RecurringDetail,
@@ -262,6 +279,8 @@ __all__ = [
     "PermitReference",
     "Attachment",
     "ActionOutcome",
+    "ProviderWorkPending",
+    "ProviderWorkState",
     "BatchResult",
     "RuleInfo",
     "ReloadResult",
@@ -432,4 +451,20 @@ __all__ += [
     "WorkforceManagementBounds",
     "WorkforcePermitBindingView",
     "WorkforceScopeView",
+]
+
+__all__ += [
+    "ProviderExecutionHistory",
+    "ProviderEvidenceReference",
+    "ProviderHistoryStatus",
+    "ProviderHistoryReceipt",
+    "ProviderHistoryAuthority",
+    "ProviderOperationMetadata",
+    "ProviderHistoryBinding",
+    "ProviderHistoryReconciliation",
+    "ProviderReconciliationAcceptance",
+    "ProviderReconciliationContext",
+    "ProviderReconciliationCorrelation",
+    "ProviderReconciliationRequest",
+    "ProviderHistoryAttempt",
 ]

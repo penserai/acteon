@@ -147,7 +147,17 @@ export interface ProviderResponse {
 /**
  * Outcome of dispatching an action.
  */
+/** Retained provider work; this identity must not be resent as a fresh action. */
+export interface ProviderWorkPending {
+  execution_id: string;
+  attempts: number;
+  state:
+    | { kind: "in_flight" | "reconciliation_required"; attempt_id: string }
+    | { kind: "awaiting_retry"; not_before_ms: number };
+}
+
 export type ActionOutcome =
+  | { type: "provider_pending"; pending: ProviderWorkPending }
   | { type: "grouped"; groupId: string; groupSize: number; notifyAt: string }
   | { type: "state_changed"; fingerprint: string; previousState: string; newState: string; notify: boolean }
   | { type: "pending_approval"; approvalId: string; expiresAt: string; approveUrl: string; rejectUrl: string; notificationSent: boolean }
@@ -195,6 +205,10 @@ export function parseActionOutcome(data: unknown): ActionOutcome {
   }
 
   const obj = data as Record<string, unknown>;
+
+  if ("ProviderPending" in obj) {
+    return { type: "provider_pending", pending: obj.ProviderPending as ProviderWorkPending };
+  }
 
   if ("Executed" in obj) {
     const resp = obj.Executed as Record<string, unknown>;
@@ -1807,6 +1821,8 @@ export function parseChainStepStatus(data: Record<string, unknown>): ChainStepSt
 
 /** Full detail response for a chain execution. */
 export interface ChainDetailResponse {
+  /** Durable wait details, including original provider receipt identities. */
+  waitState?: Record<string, unknown>;
   /** Unique chain execution ID. */
   chainId: string;
   /** Name of the chain configuration. */
@@ -1843,6 +1859,7 @@ export function parseChainDetailResponse(data: Record<string, unknown>): ChainDe
   const executionPath = data.execution_path as string[] | undefined;
   const childChainIds = data.child_chain_ids as string[] | undefined;
   return {
+    waitState: data.wait_state as Record<string, unknown> | undefined,
     chainId: data.chain_id as string,
     chainName: data.chain_name as string,
     status: data.status as string,

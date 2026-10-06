@@ -1,0 +1,379 @@
+[
+  {
+    "subject": {
+      "id": "agent/maya",
+      "kind": "agent"
+    },
+    "receipt": {
+      "execution_id": "73000000-0000-4000-8000-000000000001",
+      "attempts": 0,
+      "status": {
+        "state": "prepared"
+      }
+    },
+    "observed_authority": {
+      "incarnation": "73000000-0000-4000-8000-000000000003",
+      "generation": 7
+    },
+    "operation_integrity": "unstarted",
+    "metadata": null,
+    "binding": null,
+    "cancellation_fenced": false,
+    "attempts": []
+  },
+  {
+    "subject": {
+      "id": "agent/maya",
+      "kind": "agent"
+    },
+    "receipt": {
+      "execution_id": "73000000-0000-4000-8000-000000000001",
+      "attempts": 1,
+      "status": {
+        "state": "in_flight",
+        "attempt_id": "73000000-0000-4000-8000-000000000002"
+      }
+    },
+    "observed_authority": {
+      "incarnation": "73000000-0000-4000-8000-000000000003",
+      "generation": 7
+    },
+    "operation_integrity": "sealed",
+    "metadata": {
+      "original_action_id": "73000000-0000-4000-8000-000000000004",
+      "max_attempts": 3
+    },
+    "binding": {
+      "provider": "incident",
+      "provider_revision": "webhook/v1",
+      "failure_revision": "http/v1",
+      "effect": {
+        "operation": "incident.create",
+        "resources": [
+          {
+            "kind": "endpoint",
+            "namespace": "prod",
+            "tenant": "acme",
+            "id": "incident"
+          }
+        ]
+      }
+    },
+    "cancellation_fenced": false,
+    "attempts": [
+      {
+        "attempt_id": "73000000-0000-4000-8000-000000000002",
+        "ordinal": 0,
+        "ledger_status": "in_flight",
+        "original_evidence": null,
+        "original_outcome": null,
+        "reconciliation": null
+      }
+    ]
+  },
+  {
+    "subject": {
+      "id": "agent/maya",
+      "kind": "agent"
+    },
+    "receipt": {
+      "execution_id": "73000000-0000-4000-8000-000000000001",
+      "attempts": 1,
+      "status": {
+        "state": "awaiting_retry",
+        "not_before_ms": 0
+      }
+    },
+    "observed_authority": {
+      "incarnation": "73000000-0000-4000-8000-000000000003",
+      "generation": 7
+    },
+    "operation_integrity": "sealed",
+    "metadata": {
+      "original_action_id": "73000000-0000-4000-8000-000000000004",
+      "max_attempts": 3
+    },
+    "binding": {
+      "provider": "incident",
+      "provider_revision": "webhook/v1",
+      "failure_revision": "http/v1",
+      "effect": {
+        "operation": "incident.create",
+        "resources": [
+          {
+            "kind": "endpoint",
+            "namespace": "prod",
+            "tenant": "acme",
+            "id": "incident"
+          }
+        ]
+      }
+    },
+    "cancellation_fenced": false,
+    "attempts": [
+      {
+        "attempt_id": "73000000-0000-4000-8000-000000000002",
+        "ordinal": 0,
+        "ledger_status": "settled",
+        "original_evidence": {
+          "id": "original-result",
+          "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "original_outcome": {
+          "Failed": {
+            "code": "PROVIDER_UNCERTAIN",
+            "message": "Response was lost",
+            "retryable": false,
+            "attempts": 1
+          }
+        },
+        "reconciliation": null
+      }
+    ]
+  },
+  {
+    "subject": {
+      "id": "agent/maya",
+      "kind": "agent"
+    },
+    "receipt": {
+      "execution_id": "73000000-0000-4000-8000-000000000001",
+      "attempts": 1,
+      "status": {
+        "state": "reconciliation_required",
+        "attempt_id": "73000000-0000-4000-8000-000000000002"
+      }
+    },
+    "observed_authority": {
+      "incarnation": "73000000-0000-4000-8000-000000000003",
+      "generation": 7
+    },
+    "operation_integrity": "sealed",
+    "metadata": {
+      "original_action_id": "73000000-0000-4000-8000-000000000004",
+      "max_attempts": 3
+    },
+    "binding": {
+      "provider": "incident",
+      "provider_revision": "webhook/v1",
+      "failure_revision": "http/v1",
+      "effect": {
+        "operation": "incident.create",
+        "resources": [
+          {
+            "kind": "endpoint",
+            "namespace": "prod",
+            "tenant": "acme",
+            "id": "incident"
+          }
+        ]
+      }
+    },
+    "cancellation_fenced": false,
+    "attempts": [
+      {
+        "attempt_id": "73000000-0000-4000-8000-000000000002",
+        "ordinal": 0,
+        "ledger_status": "uncertain",
+        "original_evidence": null,
+        "original_outcome": null,
+        "reconciliation": null
+      }
+    ]
+  },
+  {
+    "subject": {
+      "id": "agent/maya",
+      "kind": "agent"
+    },
+    "receipt": {
+      "execution_id": "73000000-0000-4000-8000-000000000001",
+      "attempts": 1,
+      "status": {
+        "state": "completed",
+        "outcome": {
+          "Executed": {
+            "status": "success",
+            "body": {
+              "ticket": "INC-42"
+            },
+            "headers": {}
+          }
+        }
+      }
+    },
+    "observed_authority": {
+      "incarnation": "73000000-0000-4000-8000-000000000003",
+      "generation": 7
+    },
+    "operation_integrity": "sealed",
+    "metadata": {
+      "original_action_id": "73000000-0000-4000-8000-000000000004",
+      "max_attempts": 3
+    },
+    "binding": {
+      "provider": "incident",
+      "provider_revision": "webhook/v1",
+      "failure_revision": "http/v1",
+      "effect": {
+        "operation": "incident.create",
+        "resources": [
+          {
+            "kind": "endpoint",
+            "namespace": "prod",
+            "tenant": "acme",
+            "id": "incident"
+          }
+        ]
+      }
+    },
+    "cancellation_fenced": true,
+    "attempts": [
+      {
+        "attempt_id": "73000000-0000-4000-8000-000000000002",
+        "ordinal": 0,
+        "ledger_status": "settled",
+        "original_evidence": {
+          "id": "original-result",
+          "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "original_outcome": {
+          "Failed": {
+            "code": "PROVIDER_UNCERTAIN",
+            "message": "Response was lost",
+            "retryable": false,
+            "attempts": 1
+          }
+        },
+        "reconciliation": {
+          "prior_status": "uncertain",
+          "execution_id": "73000000-0000-4000-8000-000000000001",
+          "attempt_id": "73000000-0000-4000-8000-000000000002",
+          "original_evidence": {
+            "id": "original-result",
+            "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "resolution": {
+            "id": "resolution",
+            "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          },
+          "verifier_revision": "incident-finality/v1",
+          "proof_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "resolved_at_ms": 1700000000000,
+          "outcome": {
+            "Executed": {
+              "status": "success",
+              "body": {
+                "ticket": "INC-42"
+              },
+              "headers": {}
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "subject": {
+      "id": "agent/maya",
+      "kind": "agent"
+    },
+    "receipt": {
+      "execution_id": "73000000-0000-4000-8000-000000000001",
+      "attempts": 1,
+      "status": {
+        "state": "completed",
+        "outcome": {
+          "Executed": {
+            "status": "success",
+            "body": {
+              "ticket": "INC-42"
+            },
+            "headers": {}
+          }
+        }
+      }
+    },
+    "observed_authority": {
+      "incarnation": "73000000-0000-4000-8000-000000000003",
+      "generation": 7
+    },
+    "operation_integrity": "sealed",
+    "metadata": {
+      "original_action_id": "73000000-0000-4000-8000-000000000004",
+      "max_attempts": 3
+    },
+    "binding": {
+      "provider": "incident",
+      "provider_revision": "webhook/v1",
+      "failure_revision": "http/v1",
+      "effect": {
+        "operation": "incident.create",
+        "resources": [
+          {
+            "kind": "endpoint",
+            "namespace": "prod",
+            "tenant": "acme",
+            "id": "incident"
+          }
+        ]
+      }
+    },
+    "cancellation_fenced": true,
+    "attempts": [
+      {
+        "attempt_id": "73000000-0000-4000-8000-000000000002",
+        "ordinal": 0,
+        "ledger_status": "settled",
+        "original_evidence": {
+          "id": "original-result",
+          "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "original_outcome": {
+          "Failed": {
+            "code": "PROVIDER_UNCERTAIN",
+            "message": "Response was lost",
+            "retryable": false,
+            "attempts": 1
+          }
+        },
+        "reconciliation": {
+          "prior_status": "uncertain",
+          "execution_id": "73000000-0000-4000-8000-000000000001",
+          "attempt_id": "73000000-0000-4000-8000-000000000002",
+          "original_evidence": {
+            "id": "original-result",
+            "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "resolution": {
+            "id": "resolution",
+            "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          },
+          "verifier_revision": "incident-finality/v1",
+          "proof_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "resolved_at_ms": 1700000000000,
+          "outcome": {
+            "Executed": {
+              "status": "success",
+              "body": {
+                "ticket": "INC-42"
+              },
+              "headers": {}
+            }
+          },
+          "acceptance": {
+            "operator": {
+              "id": "operator/incident",
+              "kind": "human"
+            },
+            "authority": {
+              "incarnation": "73000000-0000-4000-8000-000000000003",
+              "generation": 6
+            },
+            "accepted_at_ms": 1700000060000
+          }
+        }
+      }
+    ]
+  }
+]

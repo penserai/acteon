@@ -56,6 +56,13 @@ impl AuthenticatedExecutionConfiguration {
         })
     }
 
+    /// Verify the original authentication source independently of its scope projection.
+    pub(crate) async fn verify_authentication_current(
+        &self,
+    ) -> Result<AuthorityStamp, acteon_governance::CoordinationError> {
+        self.source.verify_current().await
+    }
+
     pub(crate) fn management_scope(
         &self,
         namespace: &str,
@@ -210,15 +217,46 @@ pub struct CredentialPolicyProjector {
     valid_from_ms: i64,
     limits: RootBudgetLimits,
     deployment_policy_fingerprint: Option<String>,
+    chain_subjects: BTreeMap<String, Vec<acteon_core::PrincipalIdentity>>,
 }
 
 impl CredentialPolicyProjector {
     pub async fn new_trusted(
         coordinator: AuthorityCoordinator,
         catalog: QualifiedProviderCatalog,
+        issuance: PermitIssuanceCeiling,
+        valid_from_ms: i64,
+        limits: RootBudgetLimits,
+    ) -> Result<Self, String> {
+        Self::new_scoped(coordinator, catalog, issuance, valid_from_ms, limits, false).await
+    }
+
+    /// Internal projection for explicitly validated retained-history deployments.
+    /// No provider effects are projected into executable credentials.
+    pub(crate) async fn for_history(
+        coordinator: AuthorityCoordinator,
+        issuance: PermitIssuanceCeiling,
+        valid_from_ms: i64,
+        limits: RootBudgetLimits,
+    ) -> Result<Self, String> {
+        Self::new_scoped(
+            coordinator,
+            QualifiedProviderCatalog::for_history(),
+            issuance,
+            valid_from_ms,
+            limits,
+            true,
+        )
+        .await
+    }
+
+    async fn new_scoped(
+        coordinator: AuthorityCoordinator,
+        catalog: QualifiedProviderCatalog,
         mut issuance: PermitIssuanceCeiling,
         valid_from_ms: i64,
         limits: RootBudgetLimits,
+        history_only: bool,
     ) -> Result<Self, String> {
         issuance
             .validate()
@@ -237,7 +275,7 @@ impl CredentialPolicyProjector {
             return Err("authentication-control scope cannot host execution projection".into());
         }
         let definitions = catalog.definitions(&scope.namespace, &scope.tenant);
-        if definitions.is_empty()
+        if definitions.is_empty() != history_only
             || valid_from_ms < 0
             || valid_from_ms < issuance.valid_from_ms
             || limits.max_units == 0
@@ -266,6 +304,7 @@ impl CredentialPolicyProjector {
             valid_from_ms,
             limits,
             deployment_policy_fingerprint: None,
+            chain_subjects: BTreeMap::new(),
         })
     }
 
@@ -278,9 +317,77 @@ impl CredentialPolicyProjector {
         self
     }
 
+    /// Independently declared chain rights, separate from provider grants.
+    pub(crate) fn with_chain_admission_bounds(
+        mut self,
+        bounds: BTreeMap<String, Vec<acteon_core::PrincipalIdentity>>,
+    ) -> Result<Self, String> {
+        if bounds.len() > 128 {
+            return Err("too many chain admission bounds".into());
+        }
+        for (name, subjects) in &bounds {
+            let effect = acteon_governance::context::AcceptedEffect {
+                operation: "chain.start".into(),
+                resources: vec![
+                    acteon_core::ResourceRef::new(
+                        acteon_core::ResourceKind::Chain,
+                        &self.namespace,
+                        &self.tenant,
+                        name,
+                    )
+                    .map_err(|_| "invalid chain admission bound")?,
+                ],
+            };
+            if subjects.is_empty()
+                || subjects.len() > 16
+                || !self.issuance.effects.contains(&effect)
+                || subjects
+                    .iter()
+                    .any(|subject| !self.issuance.subjects.contains(subject))
+            {
+                return Err("chain admission exceeds publication bounds".into());
+            }
+        }
+        self.chain_subjects = bounds;
+        Ok(self)
+    }
     #[must_use]
     pub fn scope(&self) -> (&str, &str) {
         (&self.namespace, &self.tenant)
+    }
+
+    fn chain_effects(
+        &self,
+        principal: &acteon_core::PrincipalIdentity,
+        grants: &[super::config::Grant],
+    ) -> Result<Vec<acteon_governance::context::AcceptedEffect>, String> {
+        self.chain_subjects
+            .iter()
+            .filter(|(_, subjects)| {
+                subjects.contains(principal)
+                    && grants.iter().any(|grant| {
+                        super::config::tenant_matches(&grant.tenants, &self.tenant)
+                            && grant
+                                .namespaces
+                                .iter()
+                                .any(|n| n == "*" || n == &self.namespace)
+                    })
+            })
+            .map(|(name, _)| {
+                Ok(acteon_governance::context::AcceptedEffect {
+                    operation: "chain.start".into(),
+                    resources: vec![
+                        acteon_core::ResourceRef::new(
+                            acteon_core::ResourceKind::Chain,
+                            &self.namespace,
+                            &self.tenant,
+                            name,
+                        )
+                        .map_err(|_| "invalid chain admission bound")?,
+                    ],
+                })
+            })
+            .collect()
     }
 
     /// Resolve each logical credential separately. The complete configuration
@@ -324,7 +431,7 @@ impl CredentialPolicyProjector {
             let principal =
                 principal.ok_or("execution scope projection requires stable principals")?;
             let role = Role::from_str_loose(role).ok_or("invalid credential role")?;
-            let effects = if role.has_permission(Permission::Dispatch) {
+            let mut effects = if role.has_permission(Permission::Dispatch) {
                 definitions
                     .iter()
                     .filter(|d| {
@@ -337,6 +444,9 @@ impl CredentialPolicyProjector {
             } else {
                 Vec::new()
             };
+            if role.has_permission(Permission::Dispatch) {
+                effects.extend(self.chain_effects(principal, grants)?);
+            }
             if !self.issuance.subjects.contains(principal) {
                 if effects.is_empty() {
                     // A shared auth file can contain actors belonging only to
@@ -369,6 +479,9 @@ impl CredentialPolicyProjector {
             "issuer": self.issuance.issuer,
             "valid_from_ms": self.valid_from_ms, "limits": self.limits,
         });
+        if !self.chain_subjects.is_empty() {
+            fingerprint["chain_subjects"] = json!(self.chain_subjects);
+        }
         if let Some(policy) = &self.deployment_policy_fingerprint {
             fingerprint
                 .as_object_mut()

@@ -658,3 +658,672 @@ enabled governance/backend tests and 22 real server tests passed, the latter wit
 PostgreSQL enabled and Redis disabled. All-target compilation passed. Reviewed-head
 CI, PR merge and public publication still require verification; this paragraph
 does not claim shipping.
+
+
+### Descendant execution foundations — in progress, uncommitted
+
+The descendant branch now implements signed child provenance and immutable
+parent-to-root budget links in the configured `StateStore`. Same-actor children
+retain the original initiator, representation and pinned dependencies. Every
+registered effect charges the leaf and all ancestors in one coordinator CAS;
+settlement releases concurrency once while uncertainty retains it. Current
+permit, credential and mandate limits apply across sibling spending.
+
+The coordinator wire protocol advances to 10 through the explicit reviewed
+cutover. A protocol 9 fixture with workforce state, live uncertain accounting
+and an earlier 7→9 history entry preserves those records through 9→10 migration.
+Signed context format 4 retains readers for existing root formats 2 and 3.
+
+Local governance validation passed 120 tests across 11 suites, with twelve
+backend-dependent tests excluded by the default invocation. This includes lost
+acknowledgments at admission, context persistence and ledger allocation; signed
+ancestry/input/scope tampering; branch exhaustion; sibling concurrency;
+exactly-once concurrency release; offboarding; bounded depth/count; and clock
+resampling after a same-generation CAS conflict. Workspace Clippy and all-target
+compilation passed. Separate PostgreSQL and Redis descendant contracts were
+attempted but both connections were refused by this session's network policy
+(`Operation not permitted`); they remain unverified.
+
+This is a foundation, not a shipped workflow feature. Qualified plan admission,
+actual step input binding, persisted workflow/chain references, restart and
+wait handling, SDK/UI surfaces, a real durable-backend scenario, full release
+checks, adversarial review, final-head CI and publication remain required.
+Cross-principal autonomous A2A and explicit team funding retain their separate
+implementation gates. No public child body supplies an actor or payer.
+
+### Qualified plans and durable worker provenance — in progress, uncommitted
+
+Complete chain qualification now binds original semantic input, pinned
+configurations and actual provider revisions/footprints, including parallel,
+sub-chain and cancellation routes. Signed children retain chain closure
+restrictions at the same CAS that admits provider effects and charges ancestors.
+The strict credential-requiring provider mediator accepts the private planned
+child adapter; ordinary dispatch origins cannot reuse it.
+
+The new `PlanHandoffStore` persists job provenance and logical child attempt
+identities through the configured `StateStore`, with deployment payload
+encryption support. Replacement workers requalify pinned definitions and verify
+the original signed root. Lost job/call write acknowledgements and competing
+replicas preserve identities; changed inputs, limits, route revisions and
+corrupted definitions are refused. The tests exercise actual in-process provider
+calls under the recovered root, with closure between calls and shared spending.
+This is not evidence of a real HTTP chain or autonomous A2A mesh.
+
+Authenticated plan-root admission, chain-engine job ownership and worker wiring,
+instance-cancellation fencing, lifecycle retention, SDK/UI inspection/control,
+a real durable-backend multi-step scenario and release verification remain
+required. Independent PostgreSQL and Redis clients have the same encrypted
+handoff test contract; those externally connected cases remain unverified in
+this network-restricted session. Redis is an optional StateStore implementation,
+not a required backing service for these features.
+
+Validation for this checkpoint passed 183 governance/executor tests across 16
+suites, with fifteen external-backend cases ignored and one real HTTP test
+explicitly filtered. The latest targeted handoff run passed six tests, including
+expiry observation without renewed child admission and encrypted restart, with
+the two external-backend handoff cases ignored. Workspace Clippy, current
+all-target compilation, formatting and diff checks passed. Full workspace
+runtime tests and release checks have not been completed for this branch.
+
+### Authenticated plan-root admission — in progress, uncommitted
+
+Independent deployment declarations now bound concrete chains and their eligible
+principals; deployment permits explicitly name chains as well as provider
+routes. Credential projection requires a dispatch-capable role and matching
+scope for each declared principal. Complete plans require both chain starts and
+all qualified provider effects. Provider grants alone do not issue chain rights.
+Canonical chain/subject bounds participate in the security policy fingerprint;
+empty declarations preserve the provider-only fingerprint shape.
+
+The server's private plan-root path shares the existing authenticated provider
+root's current limit attenuation, representation and credential admission. The
+runtime derives root admission identity from the authoritative job UUID and
+persists the qualified plan using the configured state backend and optional
+payload encryption before returning it for handoff. Replay retains the original
+root; changed candidate keys cannot reset its allocation. Changed inputs,
+undeclared sub-chains and revoked credentials refuse fresh admission, while
+historical recovery preserves the original evidence.
+
+The chain engine still needs to establish trusted work-record ownership and use
+this root/child path at its actual provider boundary. Chain-aware management and
+workforce job-class declaration surfaces, per-instance cancellation fencing,
+retention, public SDK/UI/guide coverage, a real durable-backend scenario and the
+remaining full-city phases stay open. This checkpoint does not claim a shipped
+protected workflow or autonomous A2A mesh.
+
+Current server validation passed eight execution-preparation tests with
+PostgreSQL support compiled, five external-backend cases ignored and the real
+network-listener test explicitly filtered. The plan contract uses actual private
+authentication middleware, deployment permit publication, original-root replay,
+changed candidate/input rejection, role/scope denial, replacement-runtime
+recovery and credential revocation. Both PostgreSQL and Redis have independent
+client variants of the same contract, but their connections remain unverified.
+Workspace Clippy and all-target compilation passed; full release validation and
+publication remain open. A separate server build directory preserves the user's
+main server executable; the dependency's supported local Swagger asset setting
+allows compilation from the existing cached archive without network access.
+
+
+## Connected provider steps in the chain engine (unreleased)
+
+The governed chain engine now captures a credentialed plan root and persists its
+handoff before publishing root work. Sequential provider steps and flat parallel
+provider groups use planned child admission at the existing provider boundary.
+The execution driver retains circuit breakers, metrics and provider attempt
+registration; a refusal never falls back to an ungated call. State, contexts,
+child identities and provider evidence use the configured `StateStore`.
+
+Workers recover the admitted definitions from the persisted plan rather than
+adopting a live registry edit. Logical step identities remain stable across a
+failed result-projection write, allowing an already completed provider result to
+be recovered without another provider invocation or budget charge. Closures of
+the enclosing chain are checked at each actual provider start. Missing handoff
+records and modified original inputs cannot borrow authority from chain labels.
+
+Five actual-engine tests pass with in-process providers: lost projection plus a
+registry edit, closure between steps, modified work input, missing provenance,
+and parallel calls charged to one root. Server compilation and production
+Clippy pass. These tests establish local behavior, not distributed backend parity.
+The real HTTP provider regression cannot bind a socket in this restricted
+session (`Operation not permitted`); it remains an explicit verification gate.
+
+Remaining delivery includes parking ambiguous/in-flight receipts, qualified sub-chain and nested parallel
+execution, cancellation fencing and independently authorized cleanup, deferred
+worker adapters, chain-aware management/workforce declarations, public surfaces,
+independent backend qualification and reviewed release. Unsupported execution
+profiles are refused before root work is admitted; that temporary restriction
+does not reduce the city platform's intended scope.
+
+
+### Historical receipt recovery after authority stops (unreleased)
+
+A separate observation boundary now reads a retained logical call without
+allocating work, verifies signed child provenance and inspects the exact
+qualified provider receipt. Completed evidence can repair a chain result after
+credential revocation or deadline expiry. Missing evidence still requires fresh
+child admission; unavailable or conflicting evidence refuses without an
+execution fallback. Inspection may reconcile already recorded settlement, but
+it never invokes a provider or registers a new attempt.
+
+Eight actual-engine tests pass, including completed-result recovery after expiry
+and revocation and refusal of a corrupted retained-call input. Recovery asserts
+that no new root, child budget link or attempt is created and that the following
+step remains denied. The corrupted-record test advances the injected clock past
+the abandoned chain lock lease before retrying. Current governance/executor
+regression: 183 passed, 15 external-backend tests ignored and one socket-bound
+HTTP test filtered. Production Clippy passes for governance, executor, gateway
+and server. The earlier pre-observation regression passed 776 tests; it is not
+represented as verification of later changes.
+
+Receipt observation does not yet provide a durable parked/reconciliation state
+in the chain engine. In-flight or uncertain work is refused, and implementing
+that lifecycle without inventing a fresh attempt identity remains a delivery
+requirement, alongside cancellation fencing, sub-chains and the other release
+gates above.
+
+
+Current gateway regression also passes 473 tests across the library, provider
+mediation, chain fencing and chain recovery suites. Final targeted verification
+passes the qualified-plan contracts and all eight governed engine tests after
+removing encoding from the observation path. The final production lint check
+passes for the four affected platform crates. These are scoped local checks;
+full release validation and external backend qualification remain open.
+
+
+## Durable provider receipt parking (unreleased)
+
+Pending provider work now has a first-class `ProviderPending` outcome with the
+original execution ID, attempt count and typed receipt state. Sequential and
+flat parallel provider steps persist `waiting_provider` and an observable
+provider wait before returning. Polling preserves the original logical attempt;
+uncertain work does not become a failed step, consume a new allocation or lose
+its retained charge when the workflow deadline passes.
+
+Parallel groups retain known sibling results and inspect started receipts after
+a group timeout. Governed bounded batches drain their started calls; `any` and
+fail-fast decisions prevent later batches from starting. A decided group that
+still has uncertain work polls only its retained pending branches. New status
+filters, chain wait details, SDK outcome decoding and UI visibility accompany
+the engine state. Generic state-backend storage remains authoritative.
+
+Current engine evidence: thirteen tests pass, including uncertain work across
+restart/expiry, in-flight completion after replacement and revocation, a mixed
+parallel group, an `any` winner with an uncertain loser, and group timeout.
+Provider executor regression passes twenty tests (one external backend ignored
+and one socket-bound HTTP test filtered). Release checks and backend parity are
+still required. An operator-facing reconciliation protocol must separately
+establish trustworthy external evidence; polling cannot invent that evidence.
+
+
+Final local parking verification: 1,360 tests pass across core, governance,
+executor and gateway (15 external-backend tests ignored; the socket-bound HTTP
+receipt test filtered). Workspace production Clippy, all-target compilation,
+strict public docs build and UI lint/build pass. Node model decoding passes 51
+tests and type checking; Python and Go pending-receipt cases pass. All Java SDK
+sources compile at the Java 21 language level and 12 outcome-decoder JUnit tests
+pass using the cached JDK/dependencies directly. Gradle itself cannot start its
+socket-based file-lock service in this restricted session; that build remains a
+separate release check. No commit, PR, merge or publication is recorded here.
+
+
+Execution-instance cancellation fencing (unreleased): governed chain cancellation
+commits a permanent root/descendant budget fence through the configured StateStore
+coordinator before chain status projection. Child admission and effect registration
+check the entire budget ancestry; known settlement is still permitted. Pending
+provider wait metadata and uncertainty charges survive cancellation. Generic
+resource controllers cannot use the host-only cancellation operation. Outstanding
+work must be reconciled from independently trusted evidence; cancellation is not
+completion evidence. This change does not close the remaining autonomous A2A,
+workforce management, deferred adapter, or trusted reconciliation gaps.
+
+Cancellation adversarial review found and removed a dependency on the current
+provider catalog. The restriction-only handoff reader verifies retained signed
+root/input/permit provenance without qualifying or granting any new effect, so
+provider removal and original-permit expiry cannot disable cancellation. Final
+focused verification passed 49 tests across chain execution, qualified plans,
+controller bounds and descendant accounting; six external-backend checks remain
+ignored. Workspace Clippy, all-target compilation, UI lint/build and strict docs
+build passed. The exact full workspace test command aborted in the unmodified
+socket-level Kafka mock transport suite (librdkafka assertion, SIGABRT), so the
+full test/release gate remains incomplete. No publication is claimed.
+
+
+Trusted finality reconciliation (unreleased): provider hosts can install a local
+verifier for independent finality receipts. The HMAC implementation binds signed
+context/action/attempt/nonce/binding identity with dedicated issuer keys; proof
+size, schema and signature are bounded and checked. Finality is a source contract
+covering all effects and future deliveries, not a signature on an empty lookup.
+No provider is invoked and no expired work permission is borrowed for verification.
+The coordinator pins a separate immutable attestation, original evidence and prior
+unresolved state, preserving spent units and releasing concurrency once. Accepted
+history is observable without reusing verifier keys. A candidate awaiting ledger
+acceptance is reverified; known ordinary evidence takes precedence over it.
+
+The actual chain engine has a reconciliation recovery test: an ambiguous metrics
+call parks; independent finality resolves that exact receipt; the same logical
+step repairs without another send and the next logs step obtains fresh admission.
+Management/proof-ingress endpoints, qualified external issuer/probe transports,
+and SDK/UI management controls remain required platform work. Historical
+binding-independent reads are implemented in the later checkpoint below. No globally permissive force-settlement endpoint was introduced.
+
+
+## Configured-backend provider contracts (unreleased)
+
+The provider multi-client contract now takes two `Arc<dyn StateStore>` clients,
+with memory, Redis, PostgreSQL and DynamoDB entry points. PostgreSQL and DynamoDB
+CI steps explicitly run the otherwise ignored tests against their disposable
+services. Each fixture isolates its state using a generated prefix or table; it
+does not flush a shared backend. The contract observes one started provider call
+from another client, permanently cancels the root, accepts independently signed
+finality after expiry, checks exact replay and recovery without a verifier, drains
+the late worker, and verifies one send, one spent unit and zero active attempts.
+
+Fresh starts also atomically seal the original operation envelope. Reads validate
+that retained digest, including encrypted envelopes, so delivery IDs excluded
+from semantic input equivalence cannot be rewritten after execution starts.
+Legacy starts are not retroactively sealed. At this checkpoint, the separate
+receipt-history reader was pending and the absent module declaration was removed.
+The historical-reader checkpoint below implements that interface without a live
+provider binding.
+
+Local validation and external-backend execution must be recorded separately;
+adding CI steps does not prove those services have passed on the final branch.
+
+
+The existing qualified-plan handoff contract now has explicit Redis/PostgreSQL
+CI steps and a DynamoDB Local wrapper using independent clients and encrypted
+handoffs. The broad shared contract exercises reconstruction, pinned definitions,
+child contexts, shared budgets and tamper refusal without backend-specific
+execution code. Persistent-backend runtime outcomes still await CI execution.
+
+
+## Historical provider receipt access (unreleased)
+
+`HistoricalProviderStore` is a read-only host primitive over the configured
+`StateStore`, scope coordinator and retained signed contexts. It has no provider,
+registry, executor, clock or verifier. Lookup by execution UUID or original
+context verifies authenticated ownership, scope, original input, permit selection,
+coordinator incarnation, attempt footprint and original-operation seals. Accepted
+original results and reconciliation records must match ledger-pinned digests.
+Uncommitted proofs and unacknowledged known bodies remain pending; the reader
+never repairs state or releases charges. Missing pinned records fail closed.
+
+Its projection preserves original and finality evidence separately, reports an
+inherited permanent cancellation fence, and distinguishes sealed, legacy and
+unstarted work. Legacy records do not expose unsealed delivery/retry
+metadata; binding metadata requires a whole-operation seal or pinned result/finality, and unsealed retry settings cannot hide later protocol attempts. The
+existing shared provider and qualified-plan contracts now exercise this reader
+through their backend fixtures, including parent cancellation and encrypted
+record recovery. The new API is a Rust host integration; authenticated management
+HTTP routes, SDK methods and UI views still require dedicated adapters and review.
+
+
+## Authenticated historical management boundary (unreleased)
+
+The provider history management route now reads the configured `StateStore`
+through the independent historical reader. An explicit, default-denied
+`can_read_history` deployment permission is bounded by the manager's subject
+allowlist and the original private authentication proof. Current management
+scope, policy, credential and authority are checked before and after observation.
+Read-only managers may omit live route grants and cannot intervene or issue
+permits merely because they can read evidence. Omitted false permissions retain
+the existing policy serialization. The response has dedicated public Core types
+and a typed Rust client; all five generated operation catalogs include the route.
+
+Full history-only deployments with zero live routes, the remaining dedicated SDK
+models/helpers, UI access and proof-ingress management remain required. This
+checkpoint does not certify external backend runtime tests or publication.
+
+
+## Provider retirement with authenticated history (unreleased)
+
+Execution scopes now support an explicitly validated `history_only` mode. It
+connects to existing state with retained reviewed effects, context keys and
+optional payload encryption, and needs no live provider registrations. The
+normal catalog/projector/mediator constructors still reject empty executable
+installations; separate history construction produces an empty catalog,
+execution-disabled projected credentials and a mediator that refuses every
+provider call. History-only declarations prohibit bootstrap, routes, chains,
+deployment permits, permit issuance, intervention and workforce management.
+Only explicit history readers with bounded subject allowlists can be installed.
+
+The server contract persists a real signed operation with admission interrupted
+before any network send, retires the actual registration, advances the security
+revision, denies the old proof and verifies the retained receipt through the
+production HTTP router. It proves that an out-of-allowlist execution is hidden,
+current credentials carry no executable effects, retained authority cannot invoke
+the removed provider, and receipt reads change no accounting or authority state.
+Additional tests cover invalid history-only declarations and refusal to create
+missing state. These are local memory/in-process checks; they do not certify
+external backend execution or publication. The earlier checkpoint's zero-route
+startup gap is closed; dedicated non-Rust history SDK helpers, UI access,
+revocation-during-read tests and qualified proof-ingress remain required.
+
+
+The Governance UI now exposes receipt inspection only when the returned
+management bounds include `can_read_history`. Its query is keyed by canonical
+scope and provider execution UUID. It resets selection on scope changes, hides
+cached results on read errors, and renders original and accepted reconciliation
+evidence separately. It contains no provider invocation, retry or settlement
+control. UI lint and production compilation pass; browser smoke coverage still
+requires an environment able to bind a preview server.
+
+The retirement contract also keeps a production-style credential-requiring
+worker alive across cutover and confirms it cannot start an attempt using the
+old adapter and context. Its admission is refused before a send, with unchanged
+accounting. Historical projections expose the signed participant identity,
+which the UI displays without deriving an actor from action labels.
+
+
+## Typed retained history across SDKs (unreleased)
+
+All five SDKs now expose dedicated provider history helpers and typed responses;
+Python supports both synchronous and asynchronous clients. Every nested outcome
+uses the existing dispatch decoder, while original evidence and accepted
+reconciliation remain separate. The shared fixture covers all five receipt states,
+nullable unstarted metadata and binding, zero timestamps, signed participant
+attribution, cancellation fences, and an original failed observation followed by
+an accepted executed resolution. Rust checks that the fixture round-trips through
+the public DTO. TypeScript, Python and Go transport tests assert the scoped,
+authenticated GET; Java tests use the production JSON mapper.
+
+This closes the preceding checkpoints' dedicated-client gap. It does not close
+revocation-during-read race coverage, qualified proof-ingress management, live
+browser verification, or final-head CI, adversarial review and publication.
+
+
+Local validation for this checkpoint: 11 TypeScript history/governance tests,
+28 Python governance/platform/pending-provider tests plus three subtests, Go's
+in-memory-transport history and capability contracts, Java's production-mapper
+history and capability contracts, and the Rust public-wire fixture test pass.
+Node type checking, lint and production build, Python scoped lint, UI lint/build,
+strict public docs, and the 200-operation permission/catalog checks pass. The
+full Node suite reports 199 passes and three existing bus/SSE failures caused by
+socket binding being denied (`EPERM`). Java's new HTTP history contract compiles
+but must run in network-capable CI. These limitations remain release gates.
+
+
+## Authority changes during retained-history reads (unreleased)
+
+A backend-agnostic read barrier now extends the existing `FaultStore` test adapter.
+It pauses `get` or `get_versioned` before or after the backend observation and
+signals that exact cut. This is test infrastructure, not a runtime retry policy.
+Production-router contracts pause a real signed prepared receipt, then apply role
+offboarding, execution credential or subject revocation, authentication-source
+disablement, authentication-only epoch rotation without refreshing the execution
+projection, resource closure, or management expiry before resuming the read.
+They compare both execution and authentication authority records before/after
+the resumed read to check that reads do not mutate authority or accounting.
+Unavailable authentication authority fails with HTTP 503 without recreation;
+expiry takes precedence over both corrupt evidence and a missing auth authority. An unchanged read returns
+its receipt; a new read after a resource closure can still inspect retained work.
+
+The tests reproduced two defects before fixes: corrupted evidence plus a newly
+expired reader returned a storage error before rechecking access, and a reader
+disabled at the original authentication authority received the receipt through an
+otherwise-current execution projection. History errors are now held until final
+management revalidation. Host-created authentication proofs retain their original
+trusted authority coordinator and verify its original epoch and current subject
+eligibility; management reads check both source and execution observations.
+No wire value chooses the authority, and an obsolete proof is never refreshed to
+new permissions. These are independent authoritative checks, not a multi-record
+atomicity guarantee or a substitute for execution-scope start fencing.
+
+Qualified finality-proof ingress, external-backend and final-head CI, browser
+verification, adversarial review, merge and publication remain outstanding, along
+with the later delegation, registry-driven A2A, funding and federation phases.
+
+
+The final local management suite passes ten tests, including one production-router
+contract with eleven explicitly ordered read cases. Both original defects have
+retained failing-before-fix logs. The shared read-barrier suite passes the four
+`get`/`get_versioned` before/after combinations and a dropped-controller contract.
+Provider persistence/reconciliation and qualified-plan regression suites pass
+with service-dependent tests explicitly ignored and the known socket-binding
+HTTP test filtered. This is local evidence; external backend runs and the full
+release gate are still required.
+
+
+## Evaluated reconciliation authority (unreleased)
+
+The coordinator now offers `reconcile_attempt_evaluated` for independently
+permitted acceptance of finality evidence. Trusted host inputs bound the operator,
+affected subject IDs, complete registered resource footprint and validity window.
+The host must first verify the original signed operation's full principal identity:
+legacy coordinator attempts contain subject IDs, not principal kinds. These inputs
+are not deserializable request authority and do not install a proof verifier.
+
+The authorization check runs before identical-proof replay and on every settlement
+CAS retry. A closure invalidates an earlier evaluation; a freshly authorized operator
+may still accept evidence about the earlier effect while the resource stays closed.
+This performs no provider send, creates no attempt, preserves original evidence and
+spent units, and releases concurrency once. The privileged library reconciliation
+entrypoint remains available for trusted adapters and must not be used as a public
+management authorization boundary.
+
+Five local memory-backed contracts pass: full subject/resource bounds, exact-proof
+replay and expiry, closure during CAS, expiry after a version-only CAS conflict,
+revoked-operator replay after lost acknowledgment, and invalid bounds/token refusal.
+The accounting assertions check retained capacity after refusal and unchanged spent
+units after successful settlement. Targeted Clippy passes with warnings denied.
+This uses the configured StateStore abstraction; it does not establish external
+backend qualification for this new API.
+
+The next required integration is a guarded executor path that does not implicitly
+repair or accept staged evidence before management authorization, followed by
+host-installed qualified verifiers, an independent default-denied management
+capability, server proof ingress, SDK/UI support and an end-to-end simulation.
+These remain outstanding together with the broader workforce implementation phases
+and final-head review, CI, merge and publication.
+
+
+## Guarded executor finality acceptance (unreleased)
+
+`GovernedProviderExecutor` now exposes independently evaluated correlation and
+finality-acceptance methods. Correlation validates the signed original owner,
+complete retained attempt history, installed provider binding and current management
+bounds using read-only history. It never acknowledges an interrupted result or
+accepts a staged proof. Acceptance verifies the exact latest attempt and qualified
+local proof, refuses a known ordinary result even when its ledger acknowledgment is
+pending, and settles through the evaluated coordinator CAS.
+
+Management-staged resolution records carry an explicit durable authorization
+requirement. Ordinary receipt observation and trusted legacy reconciliation do not
+adopt these candidates. A lost proof-write acknowledgment or a closure that wins
+before settlement leaves a staged proof without releasing capacity. Acceptance can
+resume under freshly evaluated operator authority. Accepted-proof replay checks
+operator authority before observing the retained final result.
+
+The coordinator can atomically pin a verified original uncertain result whose
+acknowledgment was interrupted, together with the separate finality link. It checks
+the expected original pin, never replaces an existing pin, preserves spent units,
+and releases concurrency once. No intermediate privileged acknowledgment is needed.
+The stored proof's `resolved_at_ms` is its verification/staging time; an operator
+acceptance audit record and acceptance timestamp remain required for public ingress.
+
+Six executor contracts exercise closure-before-settlement, restart with a staged
+management proof, original result acknowledgment interrupted at a controlled store
+barrier, proof-write and settlement acknowledgment loss and operator revocation, known success or
+rejection precedence, and invalid proof or incomplete operator bounds. They assert
+one original provider invocation and no reconciliation invocation. The tests use
+reserved execution scopes as production does; unclaimed legacy scopes cannot mint
+new evaluated management authority.
+
+Public ingress remains outstanding: qualified verifier installation and lifecycle,
+an independent default-denied management permission, original authentication-source
+revalidation, operator acceptance audit, HTTP and SDK/UI surfaces, and end-to-end
+simulation. Retired binding/settings reconciliation also needs explicit host
+qualification rather than constructing a current driver for unrelated retained work.
+External backend qualification, all final-head release gates and later workforce
+phases remain open.
+
+
+## Atomic reconciliation acceptance audit (unreleased)
+
+Evaluated reconciliation now commits the accepting operator's full principal,
+authority incarnation/generation and authorization decision time with the finality
+link, original evidence pin and concurrency release in one configured-StateStore
+CAS. Failed writes retain no attribution; lost acknowledgments retain the committed
+record. Replay checks current operator authority but preserves the original actor,
+original authority stamp and original acceptance time. Historical actor revocation
+does not erase the audit record or invalidate retained evidence.
+
+Recovery rejects orphan attribution, foreign incarnations, impossible generation
+ordering and negative timestamps. Management-marked accepted proofs require an
+operator acceptance record; ordinary privileged adapter settlements retain no
+invented actor. Both the live executor projection and the independent read-only
+history projection expose the optional acceptance record. The Rust public DTO,
+Python, TypeScript, Go and Java SDKs preserve it, including legacy omission, and
+the UI separates acceptance from proof-recording time.
+
+Contracts cover acceptance CAS failure and acknowledgment loss, another authorized
+operator's replay without rewritten attribution, corrupted audit metadata, and
+read-only recovery with plaintext and encrypted retained provider evidence. The
+shared SDK fixture includes both unattributed adapter settlement and attributed
+operator settlement, with distinct proof and acceptance times.
+
+Qualified verifier lifecycle, retired binding/settings support, the independently
+permissioned public proof-ingress API, original authentication-source revalidation,
+SDK/UI commands and end-to-end simulation remain outstanding. The broader
+workforce phases and final-head release gates remain active.
+
+
+## Provider-independent reconciliation store (unreleased)
+
+`ProviderReconciliationStore` now provides the same evaluated correlation and
+finality acceptance protocol for both live drivers and retired provider bindings.
+The store has no provider object, action executor or dispatch grant. Trusted host
+configuration qualifies verifiers against exact immutable binding digests retained
+before retirement. Archived acceptance requires complete original operation seals,
+valid signed ownership and the latest registered attempt. It revalidates the
+second operation read and current attempt set rather than trusting an earlier
+history projection. Current live drivers additionally require their original
+binding and settings to match.
+
+Removing an installed qualification prevents new acceptance. A changed verifier
+can authenticate new receipts for its binding, but cannot overwrite a staged
+receipt with another proof or revision. Retaining the original verifier allows
+freshly authorized acceptance of that staged receipt. Accepted exact-proof replay
+uses the pinned evidence and original audit without requiring the old signing key;
+current operator authority is still required. Independent history reads need no
+verifier installation.
+
+Contracts cover releasing every provider reference before archived acceptance,
+plaintext and encrypted records, accepted replay after verifier/key rotation,
+wrong binding and owner, rejection of an unaccepted old revision, a lost staging
+acknowledgment followed by verifier replacement and restoration, and refusal of
+unsealed legacy records. Existing closure, authority expiry, known-result
+precedence, acknowledgment-loss and replay contracts now use this shared store.
+
+Server host qualification and lifecycle configuration, independently permissioned
+HTTP proof ingress with original authentication-source revalidation, SDK/UI
+commands and end-to-end simulation remain outstanding. This library change does
+not qualify an external source merely because its signature is valid. Broader
+workforce phases and final-head review, CI, merge and publication remain active.
+
+
+## Trusted server reconciliation boundary (unreleased)
+
+Server embeddings can now install bounded, immutable verifier qualifications for
+exact binding digests in declared scopes. Installation consumes the runtime before
+serving requests, rejects empty, malformed, duplicate and undeclared installations,
+and does not mutate authoritative state. There is no request-controlled verifier
+selection and no automatically qualified CLI HMAC source.
+
+`can_reconcile` is independent of history, permit issuance and intervention. It
+is omitted when false, defaults to denied across all five SDKs and requires a
+nonempty, unique, scope-local `reconciliation_resources` declaration. History-only
+scopes retain their read-only meaning and reject this write grant. Signed full
+principal ownership and complete resource bounds are checked before correlation
+or acceptance. Missing host qualification fails closed.
+
+A generic asynchronous `ReconciliationAuthorityGuard` runs before staging and on
+each coordinator settlement CAS attempt, including replay and retries after a
+version-only conflict. The server guard revalidates the original private source,
+deployment policy, execution authority stamp and current management lifetime.
+Source and execution authority are separate records; these checks do not create a
+multi-record transaction. Immediate atomic closure/revocation fences remain the
+execution coordinator's generation-checked CAS. A stronger source-to-scope cutover
+protocol remains a required integration concern rather than an inferred guarantee.
+
+HTTP transport, CLI source qualification/lifecycle configuration, SDK/UI command
+surfaces and production-boundary finality/source-race simulations remain next.
+The full workforce phases and final-head release gates remain active.
+
+
+## Reconciliation HTTP and typed SDK transport (unreleased)
+
+The protected production router now exposes independently permissioned correlation
+and acceptance endpoints under each retained execution/attempt. Scope comes from
+explicit namespace/tenant query parameters; signed ownership comes from retained
+state and the manager's full-principal allowlist. Requests cannot select an actor
+or verifier. The checked role inventory assigns both routes OperationsManage;
+`can_reconcile`, exact resource bounds and qualified host installation remain
+independent handler requirements. Sensitive responses disable caching.
+
+Acceptance takes one opaque base64 proof, bounded to 64 KiB after decoding, and
+returns a typed provider receipt. Malformed, oversized and unknown-field evidence
+cannot create a staged proof or settle an attempt. Exact accepted replay retains
+original attribution, spent budget and single concurrency release. Source
+offboarding during a controlled ownership-read barrier refuses correlation and
+acceptance without exposing correlation or writing reconciliation state. These
+contracts use real in-process production authentication/router handlers and a
+properly sealed abandoned registration; they do not invoke a provider or claim a
+live-network simulation.
+
+Rust, Python (sync/async), TypeScript, Go and Java now expose typed correlation and
+acceptance helpers. Generated finite-operation catalogs and the role inventory
+cover both new routes. Shared wire fixtures exercise original correlation, exact
+opaque request bytes and completed/no-effect nested outcomes. Client commands do
+not automatically retry acceptance.
+
+CLI source qualification and lifecycle installation, stronger atomic
+source-to-execution cutover, UI acceptance commands, external finality-source
+qualification and a live end-to-end simulation remain outstanding, along with
+broader workforce phases and final-head review/CI/merge/publication gates.
+
+
+### Standard server finality-source configuration (unreleased)
+
+The server now resolves bounded `reconciliation_sources` declarations and dedicated
+hex-encoded environment keys before authority publication. Each declaration names
+a scope, original immutable binding digest, operator-reviewed source contract and
+verifier revision. Resolution uses no state access and installation retains the
+same configured StateStore. Duplicate bindings, conflicting source revisions or
+key references, authority-key aliases (including hex case changes), missing keys,
+undeclared scopes and read-only scopes are refused. Empty configuration retains
+default-denied reconciliation. Qualified HTTP test fixtures now install their
+verifiers through this configuration path.
+
+This supplies startup configuration and restart-based key replacement. It does
+not establish external source qualification by itself, provide a durable external
+finality journal, dynamically revoke trust roots across replicas or atomically
+fence authentication-source changes against execution commits. Archived write-only
+scope mode, UI acceptance controls, autonomous cross-participant delegation and
+registry-driven A2A remain part of the full city objective. Current changes are
+local, unmerged and unpublished.
+
+
+### Retained finality management without live providers (unreleased)
+
+The explicit `reconciliation_only` deployment mode connects to an existing scope,
+requires retained reviewed effect bounds and installs an empty provider catalog.
+It uses observation-only credential projection, yielding no executable effects.
+Evidence managers can hold independent history and reconciliation grants; live
+routes, chains, deployment permits, bootstrap, permit issuance, intervention and
+workforce mutation are rejected. The policy fingerprint distinguishes this mode
+from read-only `history_only`; changing modes requires a new shared authentication
+revision. `history_only` retains its original strict read-only semantics.
+
+The transition contract retains a real sealed unresolved attempt, replaces the
+live runtime with an empty-registry runtime on the same StateStore, republishes
+private authentication, accepts an independently signed no-effect proof and
+replays without changing the original acceptance. It also checks old-proof
+refusal, disabled executable credentials, permit and intervention refusal,
+concurrency release and absence of provider result records. This is an in-process
+production-router contract, not a live external finality-source qualification.
+
+Cross-replica trust-root cutover, atomic authentication-source fencing, UI finality
+acceptance, a qualified external journal, autonomous registry-driven A2A and
+cross-principal delegation remain required for the full city objective. The
+current feature batch is still local, unmerged and unpublished.

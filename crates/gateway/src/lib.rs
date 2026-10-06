@@ -11,6 +11,7 @@ pub mod execution;
 pub mod gateway;
 pub mod group_manager;
 pub mod metrics;
+mod planned_chain;
 mod quota_enforcement;
 pub mod recurring_overlap;
 mod scheduled;

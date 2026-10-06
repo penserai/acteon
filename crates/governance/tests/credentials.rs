@@ -911,6 +911,7 @@ async fn explicit_cutover_preserves_original_provenance_accounting_and_uncertain
         let mut source = original.clone();
         source["schema_version"] = protocol.into();
         source.as_object_mut().unwrap().remove("workforce");
+        source.as_object_mut().unwrap().remove("budget_parents");
         if protocol == 7 {
             source.as_object_mut().unwrap().remove("purpose");
         }

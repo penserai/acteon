@@ -240,7 +240,7 @@ async fn old_protocols_and_missing_scope_ownership_fail_closed_without_recreatio
         KeyKind::Custom(COORDINATOR_KIND.into()),
         "authority",
     );
-    for version in 1..=8 {
+    for version in 1..=9 {
         let state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
         let c = coordinator(state.clone()).await;
         let mut value = serde_json::to_value(c.snapshot().await.unwrap()).unwrap();
@@ -462,6 +462,7 @@ async fn malformed_legacy_cutovers_never_rewrite_or_bootstrap_authority() {
         let mut value = serde_json::to_value(c.snapshot().await.unwrap()).unwrap();
         value["schema_version"] = 7.into();
         value.as_object_mut().unwrap().remove("workforce");
+        value.as_object_mut().unwrap().remove("budget_parents");
         value.as_object_mut().unwrap().remove("purpose");
         let mut raw = value.to_string();
         match mutation {

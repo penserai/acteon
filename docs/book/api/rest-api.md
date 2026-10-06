@@ -153,6 +153,7 @@ Dispatch a single action through the gateway pipeline.
 | `rerouted` | Redirected to different provider |
 | `throttled` | Rate limit exceeded |
 | `failed` | Provider error after all retries |
+| `provider_pending` | Retained provider attempt is in flight, requires reconciliation, or awaits retry; observe its original receipt and do not resend as fresh work |
 | `grouped` | Added to event group |
 | `state_changed` | Event state transitioned |
 | `pending_approval` | Awaiting human approval |
@@ -985,3 +986,19 @@ When the execution-authority deployment profile is enabled, single and batch
 grants still apply. See [Execution permits](../features/execution-permits.md) for
 configuration, typed SDK methods, refusal handling and supported execution paths.
 Dry runs can omit references.
+
+## Historical provider executions
+
+Read `GET /v1/governance/executions/{execution_id}` with `namespace` and `tenant`
+query parameters. This is a provider execution UUID, which may differ from a
+chain execution ID. Authentication must produce Acteon's private middleware
+proof; caller-supplied actor or role labels do not authorize access.
+
+A deployment manager needs `can_read_history = true` and must include the
+execution's authenticated subject in its `subjects` allowlist. The server checks
+current authority before and after reading. Reads return no execution or
+settlement grant and perform no state repair. Original and reconciliation
+evidence remain distinct, with digest verification against the authority ledger.
+Unknown or inaccessible executions return `404`; denied management authority
+returns `403`; missing pinned evidence returns `503`; conflicting evidence or an
+authority change during observation returns `409`.

@@ -107,6 +107,31 @@ fn preparation_requires_the_actual_qualified_registration() {
         json!({}),
     );
     assert!(prepared[0].catalog().resolve(&action, &actual).is_ok());
+    let definitions = std::collections::BTreeMap::from([(
+        "diagnose".into(),
+        acteon_core::ChainConfig::new("diagnose").with_step(acteon_core::ChainStepConfig::new(
+            "investigate",
+            "incident",
+            "execute",
+            json!({"incident":42}),
+        )),
+    )]);
+    let plan = prepared[0]
+        .qualify_chain_plan("diagnose", &definitions)
+        .unwrap();
+    assert!(
+        plan.required_effects()
+            .iter()
+            .any(|e| e.operation == "chain.start")
+    );
+    let mut invalid = definitions;
+    invalid.get_mut("diagnose").unwrap().steps[0].provider = "undeclared".into();
+    assert!(
+        prepared[0]
+            .qualify_chain_plan("diagnose", &invalid)
+            .is_err()
+    );
+
     assert!(
         prepared[0]
             .catalog()
@@ -749,6 +774,7 @@ async fn legacy_control_fixture(state: &Arc<dyn StateStore>) -> (acteon_state::S
     let mut legacy = serde_json::to_value(coordinator.snapshot().await.unwrap()).unwrap();
     legacy["schema_version"] = 7.into();
     legacy.as_object_mut().unwrap().remove("workforce");
+    legacy.as_object_mut().unwrap().remove("budget_parents");
     legacy.as_object_mut().unwrap().remove("purpose");
     let key = StateKey::new(
         "legacy-control",
@@ -1204,6 +1230,9 @@ fn manager_intervention_footprints_must_fit_before_authority_publication() {
             valid_from_ms: scope.valid_from_ms,
             limits: scope.credential_limits.clone(),
             can_issue_permits: true,
+            can_read_history: false,
+            can_reconcile: false,
+            reconciliation_resources: vec![],
             can_intervene: false,
             workforce: None,
         });
@@ -1540,6 +1569,426 @@ async fn independent_postgres_authenticated_workforce_passes_the_contract() {
         ..Default::default()
     };
     authenticated_workforce_contract(
+        Arc::new(PostgresStateStore::new(config.clone()).await.unwrap()),
+        Arc::new(PostgresStateStore::new(config.clone()).await.unwrap()),
+    )
+    .await;
+    let pool = sqlx::PgPool::connect(&config.url).await.unwrap();
+    for suffix in ["state", "locks", "timeout_index", "chain_ready_index"] {
+        sqlx::query(&format!(
+            "DROP TABLE public.{}{suffix}",
+            config.table_prefix
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    pool.close().await;
+}
+
+#[test]
+fn chain_declarations_are_explicit_bounded_and_canonical() {
+    let (registry, _) = registry();
+    let mut config = configuration();
+    let actor = config.scopes[0].subjects[0].clone();
+    config.scopes[0].chains = vec![
+        acteon_server::config::ExecutionChainDeclaration {
+            name: "diagnose".into(),
+            subjects: vec![actor.clone()],
+        },
+        acteon_server::config::ExecutionChainDeclaration {
+            name: "investigate".into(),
+            subjects: vec![actor],
+        },
+    ];
+    let prepared = registry
+        .prepare(&config, ("auth-control", "deployment"), &[8; 32])
+        .unwrap();
+    let mut reordered = config.clone();
+    reordered.scopes[0].chains.reverse();
+    assert_eq!(
+        prepared[0].policy_fingerprint(),
+        registry
+            .prepare(&reordered, ("auth-control", "deployment"), &[8; 32])
+            .unwrap()[0]
+            .policy_fingerprint()
+    );
+    for kind in 0..4 {
+        let mut invalid = config.clone();
+        match kind {
+            0 => invalid.scopes[0].chains[0].name = "*".into(),
+            1 => invalid.scopes[0].chains[0].subjects.clear(),
+            2 => {
+                invalid.scopes[0].chains[0].subjects =
+                    vec![PrincipalIdentity::new("outsider", PrincipalKind::Agent).unwrap()]
+            }
+            _ => {
+                let duplicate = invalid.scopes[0].chains[0].clone();
+                invalid.scopes[0].chains.push(duplicate);
+            }
+        }
+        assert!(
+            registry
+                .prepare(&invalid, ("auth-control", "deployment"), &[8; 32])
+                .is_err()
+        );
+    }
+    let mut changed = config.clone();
+    changed.scopes[0].chains.pop();
+    assert_ne!(
+        prepared[0].policy_fingerprint(),
+        registry
+            .prepare(&changed, ("auth-control", "deployment"), &[8; 32])
+            .unwrap()[0]
+            .policy_fingerprint()
+    );
+}
+
+#[tokio::test]
+async fn authenticated_chain_root_requires_explicit_chain_and_provider_permits() {
+    let state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    authenticated_chain_root_contract(state.clone(), state).await;
+}
+
+#[allow(clippy::too_many_lines)] // One private authentication, replay and revocation contract.
+async fn authenticated_chain_root_contract(state: Arc<dyn StateStore>, peer: Arc<dyn StateStore>) {
+    use acteon_governance::context::ExecutionContextHandle;
+    use acteon_governance::permit::PermitReference;
+    use acteon_server::execution_authority::{
+        ExecutionAuthorityRuntime, ExecutionRuntimeDependencies, RootPlanRequest,
+    };
+    let (registry, _) = registry();
+    let mut config = configuration();
+    config.scopes[0].bootstrap = true;
+    let actor = config.scopes[0].subjects[0].clone();
+    config.scopes[0]
+        .chains
+        .push(acteon_server::config::ExecutionChainDeclaration {
+            name: "diagnose".into(),
+            subjects: vec![actor.clone()],
+        });
+    config.scopes[0].permits = serde_json::from_value(json!([
+        {"id":"provider-only", "revision":1,"subject":actor,"routes":config.scopes[0].routes,
+            "valid_from_ms":0,"limits":config.scopes[0].credential_limits},
+        {"id":"complete-plan", "revision":1,"subject":actor,"routes":config.scopes[0].routes,
+            "chains":["diagnose"],"valid_from_ms":0,"limits":config.scopes[0].credential_limits}
+    ]))
+    .unwrap();
+    let prepared = registry
+        .prepare(&config, ("auth-control", "deployment"), &[8; 32])
+        .unwrap();
+    let runtime = ExecutionAuthorityRuntime::install(
+        &registry,
+        prepared,
+        ExecutionRuntimeDependencies {
+            state: state.clone(),
+            executor: acteon_executor::ExecutorConfig::default(),
+            clock: Arc::new(acteon_time::SystemClock::default()),
+            encryptor: None,
+            signing_key: vec![8; 32].into(),
+        },
+    )
+    .await
+    .unwrap();
+    let control = AuthorityCoordinator::initialize(
+        state.clone(),
+        "auth-control",
+        "deployment",
+        CoordinatorLimits::default(),
+    )
+    .await
+    .unwrap();
+    let authority = Arc::new(
+        AuthAuthority::new(
+            control,
+            &AuthAuthorityConfig {
+                namespace: "auth-control".into(),
+                tenant: "deployment".into(),
+                source_id: "deployment-auth".into(),
+                bootstrap: false,
+            },
+            SecretString::new("shared-security-fingerprint-key-32-bytes".into()),
+        )
+        .unwrap(),
+    );
+    let mut auth = AuthFileConfig {
+        authority_revision: Some(1),
+        settings: AuthSettings {
+            jwt_secret: SecretString::new("jwt-signing-key-at-least-32-bytes".into()),
+            jwt_expiry_seconds: 3600,
+        },
+        users: vec![],
+        api_keys: vec![ApiKeyConfig {
+            authority_id: Some("credential/maya".into()),
+            name: "maya".into(),
+            principal: Some(actor.clone()),
+            key_hash: SecretString::new(hash_api_key("maya-secret").into()),
+            role: "executor".into(),
+            grants: vec![Grant {
+                namespaces: vec!["prod".into()],
+                tenants: vec!["acme".into()],
+                providers: vec!["incident".into()],
+                actions: vec!["execute".into()],
+                agent_id: None,
+            }],
+        }],
+    };
+    // Explicit chain subject bounds still require a dispatch-capable role and
+    // a matching authenticated scope; unrelated credential grants cannot widen it.
+    for variation in 0..2 {
+        let role = auth.api_keys[0].role.clone();
+        let namespaces = auth.api_keys[0].grants[0].namespaces.clone();
+        if variation == 0 {
+            auth.api_keys[0].role = "viewer".into();
+        } else {
+            auth.api_keys[0].grants[0].namespaces = vec!["other".into()];
+        }
+        let projection = runtime.projectors()[0].project(&authority, &auth).unwrap();
+        auth.api_keys[0].role = role;
+        auth.api_keys[0].grants[0].namespaces = namespaces;
+        assert!(projection.credentials.iter().all(|credential| {
+            credential
+                .ceiling
+                .effects
+                .iter()
+                .all(|effect| effect.operation != "chain.start")
+        }));
+    }
+    let auth_provider = Arc::new(
+        AuthProvider::new_with_scope_projection(
+            &auth,
+            state.clone(),
+            authority,
+            runtime.projectors(),
+        )
+        .await
+        .unwrap(),
+    );
+    let binding = authenticated_binding(auth_provider).await;
+    runtime.publish_deployment_permits().await.unwrap();
+    let scope = AuthorityCoordinator::connect(state.clone(), "prod", "acme")
+        .await
+        .unwrap();
+    let definitions = std::collections::BTreeMap::from([(
+        "diagnose".into(),
+        acteon_core::ChainConfig::new("diagnose")
+            .with_step(acteon_core::ChainStepConfig::new(
+                "metrics",
+                "incident",
+                "execute",
+                json!({"source":"metrics"}),
+            ))
+            .with_step(acteon_core::ChainStepConfig::new(
+                "logs",
+                "incident",
+                "execute",
+                json!({"source":"logs"}),
+            )),
+    )]);
+    let action = Action::new(
+        "prod",
+        "acme",
+        "incident",
+        "execute",
+        json!({"incident":42}),
+    );
+    let only_provider = [PermitReference {
+        id: "provider-only".into(),
+        accepted_revision: 1,
+    }];
+    let complete = [PermitReference {
+        id: "complete-plan".into(),
+        accepted_revision: 1,
+    }];
+    let request = |permits| RootPlanRequest {
+        admission_key: "plan/incident-42",
+        handle: ExecutionContextHandle::new(),
+        execution_id: uuid::Uuid::new_v4(),
+        action: &action,
+        entry: "diagnose",
+        definitions: &definitions,
+        authentication: &binding,
+        permits,
+    };
+    let job_id = uuid::Uuid::new_v4();
+    assert!(
+        runtime
+            .admit_chain_job(uuid::Uuid::nil(), request(&complete))
+            .await
+            .is_err()
+    );
+    assert!(scope.snapshot().await.unwrap().roots.is_empty());
+    assert!(
+        runtime
+            .admit_chain_job(job_id, request(&only_provider))
+            .await
+            .is_err()
+    );
+    assert!(scope.snapshot().await.unwrap().roots.is_empty());
+    let accepted = runtime
+        .admit_chain_job(job_id, request(&complete))
+        .await
+        .unwrap();
+    let replay = runtime
+        .admit_chain_job(job_id, request(&complete))
+        .await
+        .unwrap();
+    assert_eq!(
+        accepted.root.reference().unwrap(),
+        replay.root.reference().unwrap()
+    );
+    assert_eq!(accepted.root.principal(), &actor);
+    let changed_candidate = runtime
+        .admit_chain_job(
+            job_id,
+            RootPlanRequest {
+                admission_key: "different-candidate-key",
+                ..request(&complete)
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        changed_candidate.root.reference().unwrap(),
+        accepted.root.reference().unwrap()
+    );
+    let mut restart_config = config.clone();
+    restart_config.scopes[0].bootstrap = false;
+    let restart_prepared = registry
+        .prepare(&restart_config, ("auth-control", "deployment"), &[8; 32])
+        .unwrap();
+    let restarted = ExecutionAuthorityRuntime::install(
+        &registry,
+        restart_prepared,
+        ExecutionRuntimeDependencies {
+            state: peer,
+            executor: acteon_executor::ExecutorConfig::default(),
+            clock: Arc::new(acteon_time::SystemClock::default()),
+            encryptor: None,
+            signing_key: vec![8; 32].into(),
+        },
+    )
+    .await
+    .unwrap();
+    let recovered = restarted
+        .recover_chain_job("prod", "acme", job_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        recovered.root().reference().unwrap(),
+        accepted.root.reference().unwrap()
+    );
+    assert_eq!(recovered.permits(), complete);
+    assert_eq!(scope.snapshot().await.unwrap().roots.len(), 1);
+    assert!(scope.snapshot().await.unwrap().starts.is_empty());
+    assert!(
+        runtime
+            .recover_chain_job("prod", "other", job_id)
+            .await
+            .is_err()
+    );
+    let mut unapproved = definitions.clone();
+    unapproved.insert(
+        "nested".into(),
+        acteon_core::ChainConfig::new("nested").with_step(acteon_core::ChainStepConfig::new(
+            "extra",
+            "incident",
+            "execute",
+            json!({}),
+        )),
+    );
+    unapproved.get_mut("diagnose").unwrap().steps =
+        vec![acteon_core::ChainStepConfig::new_sub_chain(
+            "nested-step",
+            "nested",
+        )];
+    assert!(
+        runtime
+            .admit_chain_job(
+                uuid::Uuid::new_v4(),
+                RootPlanRequest {
+                    definitions: &unapproved,
+                    ..request(&complete)
+                }
+            )
+            .await
+            .is_err()
+    );
+    let mut altered_action = action.clone();
+    altered_action.payload = json!({"incident":999});
+    assert!(
+        runtime
+            .admit_chain_job(
+                job_id,
+                RootPlanRequest {
+                    action: &altered_action,
+                    ..request(&complete)
+                }
+            )
+            .await
+            .is_err()
+    );
+    scope
+        .change(
+            "stop-plan-credential",
+            acteon_governance::AuthorityChange::RevokeCredential {
+                credential_id: binding.credential_reference().id.clone(),
+                expected_revision: 1,
+            },
+            "operator",
+            "stop plan admission",
+        )
+        .await
+        .unwrap();
+    assert!(
+        runtime
+            .admit_chain_job(job_id, request(&complete))
+            .await
+            .is_err()
+    );
+    // Revocation refuses fresh admission but does not erase historical evidence.
+    assert_eq!(
+        restarted
+            .recover_chain_job("prod", "acme", job_id)
+            .await
+            .unwrap()
+            .root()
+            .reference()
+            .unwrap(),
+        accepted.root.reference().unwrap()
+    );
+    assert!(scope.snapshot().await.unwrap().starts.is_empty());
+    assert_eq!(scope.snapshot().await.unwrap().roots.len(), 1);
+}
+
+#[cfg(feature = "redis")]
+#[tokio::test]
+#[ignore = "requires ACTEON_GOVERNANCE_REDIS_URL; independent Redis clients"]
+async fn independent_redis_authenticated_chain_root_contract() {
+    use acteon_state_redis::{RedisConfig, RedisStateStore};
+    let config = RedisConfig {
+        url: std::env::var("ACTEON_GOVERNANCE_REDIS_URL").unwrap(),
+        prefix: format!("authenticated-plan-{}", uuid::Uuid::new_v4()),
+        ..Default::default()
+    };
+    authenticated_chain_root_contract(
+        Arc::new(RedisStateStore::new(&config).unwrap()),
+        Arc::new(RedisStateStore::new(&config).unwrap()),
+    )
+    .await;
+}
+
+#[cfg(feature = "postgres")]
+#[tokio::test]
+#[ignore = "requires DATABASE_URL; independent PostgreSQL clients"]
+async fn independent_postgres_authenticated_chain_root_contract() {
+    use acteon_state_postgres::{PostgresConfig, PostgresStateStore};
+    let config = PostgresConfig {
+        url: std::env::var("DATABASE_URL").unwrap(),
+        table_prefix: format!("authenticated_plan_{}_", uuid::Uuid::new_v4().simple()),
+        ..Default::default()
+    };
+    authenticated_chain_root_contract(
         Arc::new(PostgresStateStore::new(config.clone()).await.unwrap()),
         Arc::new(PostgresStateStore::new(config.clone()).await.unwrap()),
     )

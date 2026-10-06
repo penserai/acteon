@@ -796,6 +796,18 @@ async fn openapi_json_is_valid() {
     );
 
     assert!(spec["components"]["schemas"]["DispatchResponse"].is_object());
+    for schema in [
+        "ProviderExecutionHistory",
+        "ProviderHistoryStatus",
+        "ProviderHistoryReconciliation",
+        "ProviderAttemptStatus",
+    ] {
+        assert!(
+            spec["components"]["schemas"][schema].is_object(),
+            "missing history schema {schema}"
+        );
+    }
+    assert!(spec["paths"]["/v1/governance/executions/{execution_id}"]["get"].is_object());
     assert!(spec["components"]["schemas"]["DurableDispatchResponse"].is_object());
     assert!(
         spec["paths"]["/v1/dispatch"]["post"]["parameters"]
@@ -4721,4 +4733,29 @@ async fn identity_endpoint_reports_only_the_authenticated_enrollment() {
             .unwrap()
             .contains("raw-enrolled")
     );
+}
+
+#[tokio::test]
+async fn provider_history_route_requires_private_authentication_even_without_auth_configuration() {
+    let app = acteon_server::api::router(build_test_state(Vec::new()));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/v1/governance/executions/{}?namespace=prod&tenant=acme",
+                    uuid::Uuid::new_v4()
+                ))
+                .header("x-acteon-principal", "operator")
+                .header("x-acteon-role", "operator")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(error["code"], "private_authentication_required");
 }

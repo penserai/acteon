@@ -133,6 +133,7 @@ fn outcome_label(outcome: &ActionOutcome) -> &'static str {
         ActionOutcome::Grouped { .. } => "Grouped",
         ActionOutcome::StateChanged { .. } => "StateChanged",
         ActionOutcome::Failed(_) => "Failed",
+        ActionOutcome::ProviderPending(_) => "ProviderPending",
         ActionOutcome::PendingApproval { .. } => "PendingApproval",
         ActionOutcome::ChainStarted { .. } => "ChainStarted",
         ActionOutcome::DryRun { .. } => "DryRun",

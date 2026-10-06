@@ -269,6 +269,14 @@ Audit the concrete call sites: direct provider execution and background paths mu
 
 Grouped work cannot arbitrarily select one member's authority. Initially group only compatible contexts or use an explicitly permitted aggregator principal and retain all contributing provenance. Recurring schedules run under the original subject's current authority; ownership transfer is explicit and audited.
 
+### Persistence through the configured state backend
+
+The workforce and agent mesh use Acteon's configured `Arc<dyn StateStore>`, shared with the gateway. This is the persistence boundary for participant and team records, agent registry entries, mandates, permits, authority generations, closures, execution contexts, budgets, handoffs and reconciliation evidence. Redis is an optional implementation of this boundary; it is not a prerequisite or a separate governance database.
+
+Backend implementations must satisfy the conditional-create and compare-and-swap contracts required by each feature. Qualify those contracts for memory, Redis, PostgreSQL and DynamoDB, including contention, interrupted writes and recovery. Memory supports development and simulations; deployments that need persistence across process restarts select a durable state backend. Backend-specific accelerators may improve performance, but enforcement must retain the same authority semantics through `StateStore`.
+
+The abstraction does not imply a transaction across multiple records. Keep authority transitions atomic within the coordinator record where possible, and use explicit durable protocols for transitions that span records. Cache invalidation, pub/sub delivery and local process state cannot substitute for authoritative persisted decisions.
+
 ### Closure/revocation linearization
 
 A final state read alone cannot eliminate the race between checking authority and starting an effect. Define an authorization start lease registered against current authority generations. Closure activation and start-lease registration must serialize through a backend-supported coordinator.

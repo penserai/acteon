@@ -121,6 +121,37 @@ class ProviderResponse:
 
 
 @dataclass
+class ProviderWorkState:
+    """Retained provider state; observing it does not authorize another send."""
+
+    kind: str
+    attempt_id: str | None = None
+    not_before_ms: int | None = None
+
+
+@dataclass
+class ProviderWorkPending:
+    """Durable pending provider work, distinct from a failed action."""
+
+    execution_id: str
+    attempts: int
+    state: ProviderWorkState
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ProviderWorkPending":
+        state = data["state"]
+        return cls(
+            data["execution_id"],
+            data["attempts"],
+            ProviderWorkState(
+                kind=state["kind"],
+                attempt_id=state.get("attempt_id"),
+                not_before_ms=state.get("not_before_ms"),
+            ),
+        )
+
+
+@dataclass
 class ActionOutcome:
     """Outcome of dispatching an action.
 
@@ -142,6 +173,7 @@ class ActionOutcome:
     """
 
     outcome_type: str
+    pending: ProviderWorkPending | None = None
     response: ProviderResponse | None = None
     rule: str | None = None
     original_provider: str | None = None
@@ -189,7 +221,12 @@ class ActionOutcome:
             if data == "Deduplicated":
                 return cls(outcome_type="deduplicated")
             raise ValueError(f"Unknown action outcome: {data}")
-        if "Executed" in data:
+        if "ProviderPending" in data:
+            return cls(
+                outcome_type="provider_pending",
+                pending=ProviderWorkPending.from_dict(data["ProviderPending"]),
+            )
+        elif "Executed" in data:
             resp_data = data["Executed"]
             return cls(
                 outcome_type="executed",
@@ -2075,6 +2112,7 @@ class ChainDetailResponse:
     steps: list[ChainStepStatus]
     started_at: str
     updated_at: str
+    wait_state: dict[str, Any] | None = None
     expires_at: str | None = None
     cancel_reason: str | None = None
     cancelled_by: str | None = None
@@ -2085,6 +2123,7 @@ class ChainDetailResponse:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ChainDetailResponse":
         return cls(
+            wait_state=data.get("wait_state"),
             chain_id=data["chain_id"],
             chain_name=data["chain_name"],
             status=data["status"],

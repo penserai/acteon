@@ -8,6 +8,10 @@ import java.time.Duration;
  */
 public class ActionOutcome {
     private OutcomeType type;
+    private ProviderWorkPending pending;
+    public ProviderWorkPending getPending() { return pending; }
+    public void setPending(ProviderWorkPending value) { pending = value; }
+    public boolean isProviderPending() { return type == OutcomeType.PROVIDER_PENDING; }
     private String groupId;
     private long groupSize;
     private String notifyAt;
@@ -50,7 +54,7 @@ public class ActionOutcome {
     private String overageBehavior;
 
     public enum OutcomeType {
-        GROUPED, STATE_CHANGED, PENDING_APPROVAL, CHAIN_STARTED, CIRCUIT_OPEN, RECURRING_CREATED, SILENCED, MUTED, EXECUTED, DEDUPLICATED, SUPPRESSED, REROUTED, THROTTLED, FAILED, DRY_RUN, SCHEDULED, QUOTA_EXCEEDED
+        PROVIDER_PENDING, GROUPED, STATE_CHANGED, PENDING_APPROVAL, CHAIN_STARTED, CIRCUIT_OPEN, RECURRING_CREATED, SILENCED, MUTED, EXECUTED, DEDUPLICATED, SUPPRESSED, REROUTED, THROTTLED, FAILED, DRY_RUN, SCHEDULED, QUOTA_EXCEEDED
     }
 
     // Getters and setters

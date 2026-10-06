@@ -105,8 +105,24 @@ type ProviderResponse struct {
 	Headers map[string]string `json:"headers"`
 }
 
+// ProviderWorkPending describes retained work that must be observed, never resent.
+type ProviderWorkPending struct {
+	ExecutionID string            `json:"execution_id"`
+	Attempts    uint32            `json:"attempts"`
+	State       ProviderWorkState `json:"state"`
+}
+
+// ProviderWorkState is in_flight, reconciliation_required, or awaiting_retry.
+type ProviderWorkState struct {
+	Kind        string `json:"kind"`
+	AttemptID   string `json:"attempt_id,omitempty"`
+	NotBeforeMS *int64 `json:"not_before_ms,omitempty"`
+}
+
 // ActionOutcome represents the outcome of dispatching an action.
 type ActionOutcome struct {
+	Pending *ProviderWorkPending
+
 	GroupID          string
 	GroupSize        uint64
 	NotifyAt         string
@@ -154,6 +170,7 @@ type ActionOutcome struct {
 type OutcomeType string
 
 const (
+	OutcomeProviderPending  OutcomeType = "provider_pending"
 	OutcomeGrouped          OutcomeType = "grouped"
 	OutcomeStateChanged     OutcomeType = "state_changed"
 	OutcomePendingApproval  OutcomeType = "pending_approval"
@@ -183,6 +200,9 @@ type ActionError struct {
 
 // UnmarshalJSON implements custom JSON unmarshaling for ActionOutcome.
 func (o *ActionOutcome) UnmarshalJSON(data []byte) error {
+	// A decoder may reuse its destination across poll responses. Do not retain
+	// a prior receipt or completed result when the outcome changes.
+	*o = ActionOutcome{}
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
 		// Try as string (for "Deduplicated")
@@ -192,6 +212,16 @@ func (o *ActionOutcome) UnmarshalJSON(data []byte) error {
 			return nil
 		}
 		return err
+	}
+
+	if pending, ok := raw["ProviderPending"]; ok {
+		var work ProviderWorkPending
+		if err := json.Unmarshal(pending, &work); err != nil {
+			return err
+		}
+		o.Type = OutcomeProviderPending
+		o.Pending = &work
+		return nil
 	}
 
 	if _, ok := raw["Executed"]; ok {
@@ -1182,20 +1212,21 @@ type ChainStepStatus struct {
 
 // ChainDetailResponse is the full detail response for a chain execution.
 type ChainDetailResponse struct {
-	ChainID       string            `json:"chain_id"`
-	ChainName     string            `json:"chain_name"`
-	Status        string            `json:"status"`
-	CurrentStep   int               `json:"current_step"`
-	TotalSteps    int               `json:"total_steps"`
-	Steps         []ChainStepStatus `json:"steps"`
-	StartedAt     string            `json:"started_at"`
-	UpdatedAt     string            `json:"updated_at"`
-	ExpiresAt     *string           `json:"expires_at,omitempty"`
-	CancelReason  *string           `json:"cancel_reason,omitempty"`
-	CancelledBy   *string           `json:"cancelled_by,omitempty"`
-	ExecutionPath []string          `json:"execution_path,omitempty"`
-	ParentChainID *string           `json:"parent_chain_id,omitempty"`
-	ChildChainIDs []string          `json:"child_chain_ids,omitempty"`
+	WaitState     map[string]interface{} `json:"wait_state,omitempty"`
+	ChainID       string                 `json:"chain_id"`
+	ChainName     string                 `json:"chain_name"`
+	Status        string                 `json:"status"`
+	CurrentStep   int                    `json:"current_step"`
+	TotalSteps    int                    `json:"total_steps"`
+	Steps         []ChainStepStatus      `json:"steps"`
+	StartedAt     string                 `json:"started_at"`
+	UpdatedAt     string                 `json:"updated_at"`
+	ExpiresAt     *string                `json:"expires_at,omitempty"`
+	CancelReason  *string                `json:"cancel_reason,omitempty"`
+	CancelledBy   *string                `json:"cancelled_by,omitempty"`
+	ExecutionPath []string               `json:"execution_path,omitempty"`
+	ParentChainID *string                `json:"parent_chain_id,omitempty"`
+	ChildChainIDs []string               `json:"child_chain_ids,omitempty"`
 }
 
 // =============================================================================
@@ -2422,3 +2453,6 @@ type ListSwarmRunsResponse struct {
 	Runs  []SwarmRunSnapshot `json:"runs"`
 	Total int                `json:"total"`
 }
+
+// IsProviderPending reports work that needs observation instead of a new send.
+func (o *ActionOutcome) IsProviderPending() bool { return o.Type == OutcomeProviderPending }

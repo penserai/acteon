@@ -1,4 +1,5 @@
 //! Management from original private authentication and independent deployment policy.
+mod reconciliation;
 mod workforce;
 use super::{ExecutionAuthorityRuntime, InstalledScope};
 use crate::{
@@ -14,11 +15,14 @@ use acteon_governance::{
     control::{ControlChangeAuthorization, ControlChangeCeiling},
     permit::{EvaluatedPermitPublication, ExecutionPermit, PermitIssuanceCeiling},
 };
+pub use reconciliation::TrustedReconciliationInstallation;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ManagementError {
     #[error("current management authority is required")]
     Forbidden,
+    #[error("provider execution history not found")]
+    NotFound,
     #[error("invalid governance request")]
     Invalid,
     #[error("governance state changed; evaluate authority again")]
@@ -40,9 +44,18 @@ struct ManagementObservation<'a> {
     scope: &'a InstalledScope,
     policy: &'a ExecutionManagerConfig,
     stamp: AuthorityStamp,
+    authentication_stamp: AuthorityStamp,
     effects: Vec<acteon_governance::context::AcceptedEffect>,
 }
 impl ExecutionAuthorityRuntime {
+    fn management_now(&self, policy: &ExecutionManagerConfig) -> Result<i64, ManagementError> {
+        let now_ms = self.clock.now().timestamp_millis();
+        if now_ms < policy.valid_from_ms || now_ms >= policy.limits.deadline_ms {
+            return Err(ManagementError::Forbidden);
+        }
+        Ok(now_ms)
+    }
+
     async fn management_observation<'a>(
         &'a self,
         namespace: &str,
@@ -66,11 +79,14 @@ impl ExecutionAuthorityRuntime {
             .iter()
             .find(|manager| manager.principal == *binding.authentication_source().principal())
             .ok_or(ManagementError::Forbidden)?;
-        let state = scope.coordinator.snapshot().await?;
-        let now_ms = self.clock.now().timestamp_millis();
-        if now_ms < policy.valid_from_ms || now_ms >= policy.limits.deadline_ms {
-            return Err(ManagementError::Forbidden);
-        }
+        self.management_now(policy)?;
+        let state = scope
+            .coordinator
+            .snapshot()
+            .await
+            .map_err(|_| ManagementError::Unavailable)?;
+        let authentication_stamp = authentication.verify_authentication_current().await?;
+        let now_ms = self.management_now(policy)?;
         let stamp = binding
             .verify_management_snapshot(&state, now_ms)
             .map_err(|_| ManagementError::Forbidden)?;
@@ -90,8 +106,89 @@ impl ExecutionAuthorityRuntime {
             scope,
             policy,
             stamp,
+            authentication_stamp,
             effects,
         })
+    }
+
+    async fn revalidate_management(
+        &self,
+        observation: &ManagementObservation<'_>,
+        authentication: &AuthenticatedExecutionConfiguration,
+    ) -> Result<acteon_governance::CoordinatorSnapshot, ManagementError> {
+        let declaration = observation.scope.prepared.declaration();
+        self.management_now(observation.policy)?;
+        let state = observation
+            .scope
+            .coordinator
+            .snapshot()
+            .await
+            .map_err(|_| ManagementError::Unavailable)?;
+        if state.stamp() != observation.stamp {
+            return Err(ManagementError::Conflict);
+        }
+        let authentication_stamp = authentication.verify_authentication_current().await?;
+        if authentication_stamp != observation.authentication_stamp {
+            return Err(ManagementError::Conflict);
+        }
+        let now_ms = self.management_now(observation.policy)?;
+        authentication
+            .management_scope(&declaration.namespace, &declaration.tenant)
+            .map_err(|_| ManagementError::Forbidden)?
+            .verify_management_snapshot(&state, now_ms)
+            .map_err(|_| ManagementError::Forbidden)?;
+        Ok(state)
+    }
+
+    /// Read verified evidence under current operator authority. Historical work
+    /// may be expired or cancelled; the operator's read grant must remain current.
+    pub async fn inspect_provider_history(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        execution_id: uuid::Uuid,
+        authentication: &AuthenticatedExecutionConfiguration,
+    ) -> Result<acteon_core::ProviderExecutionHistory, ManagementError> {
+        use acteon_executor::governed::GovernedProviderError;
+        let observation = self
+            .management_observation(namespace, tenant, authentication)
+            .await?;
+        if !observation.policy.can_read_history {
+            return Err(ManagementError::Forbidden);
+        }
+        let mut history = Ok(None);
+        for subject in &observation.policy.subjects {
+            match observation
+                .scope
+                .history
+                .inspect_execution(execution_id, subject)
+                .await
+            {
+                Ok(receipt) => {
+                    history = Ok(receipt);
+                    break;
+                }
+                Err(GovernedProviderError::Ownership) => {}
+                Err(GovernedProviderError::Conflict) => {
+                    history = Err(ManagementError::Conflict);
+                    break;
+                }
+                Err(_) => {
+                    history = Err(ManagementError::Unavailable);
+                    break;
+                }
+            }
+        }
+        // A reader that lost authority must not learn even the storage status.
+        // Revalidate success, absence and error observations before projecting them.
+        self.revalidate_management(&observation, authentication)
+            .await?;
+        let history = history?.ok_or(ManagementError::NotFound)?;
+        // Both projections have an explicitly tested public wire contract.
+        serde_json::from_value(
+            serde_json::to_value(history).map_err(|_| ManagementError::Unavailable)?,
+        )
+        .map_err(|_| ManagementError::Unavailable)
     }
 
     pub async fn inspect_governance(
@@ -103,21 +200,9 @@ impl ExecutionAuthorityRuntime {
         let observation = self
             .management_observation(namespace, tenant, authentication)
             .await?;
-        let state = observation.scope.coordinator.snapshot().await?;
-        if state.stamp() != observation.stamp {
-            return Err(ManagementError::Conflict);
-        }
-        let now_ms = self.clock.now().timestamp_millis();
-        if now_ms < observation.policy.valid_from_ms
-            || now_ms >= observation.policy.limits.deadline_ms
-        {
-            return Err(ManagementError::Forbidden);
-        }
-        authentication
-            .management_scope(namespace, tenant)
-            .map_err(|_| ManagementError::Forbidden)?
-            .verify_management_snapshot(&state, now_ms)
-            .map_err(|_| ManagementError::Forbidden)?;
+        let state = self
+            .revalidate_management(&observation, authentication)
+            .await?;
         let resources = observation
             .effects
             .iter()
@@ -174,6 +259,8 @@ impl ExecutionAuthorityRuntime {
                 subjects: observation.policy.subjects.clone(),
                 can_issue_permits: observation.policy.can_issue_permits,
                 can_intervene: observation.policy.can_intervene,
+                can_read_history: observation.policy.can_read_history,
+                can_reconcile: observation.policy.can_reconcile,
                 valid_from_ms: observation.policy.valid_from_ms,
                 limits: GovernanceLimits {
                     max_units: observation.policy.limits.max_units,
