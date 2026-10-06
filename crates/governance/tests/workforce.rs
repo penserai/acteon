@@ -1089,6 +1089,14 @@ async fn descendants_preserve_representation_and_current_membership_dependencies
         .unwrap();
     assert_eq!(child.principal(), parent.principal());
     assert_eq!(child.representation(), parent.representation());
+    assert_eq!(
+        parent.original_requester(),
+        &parent.representation().unwrap().initiator
+    );
+    assert_eq!(
+        child.original_requester(),
+        &parent.representation().unwrap().initiator
+    );
     let grandchild = contexts
         .capture_child(ChildContextAdmission {
             admission_key: "represented-grandchild",
@@ -1108,6 +1116,10 @@ async fn descendants_preserve_representation_and_current_membership_dependencies
         .await
         .unwrap();
     assert_eq!(grandchild.root_execution_id(), parent.execution_id());
+    assert_eq!(
+        grandchild.original_requester(),
+        &parent.representation().unwrap().initiator
+    );
     change(
         &c,
         "offboard-descendant",

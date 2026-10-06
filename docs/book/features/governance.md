@@ -307,3 +307,63 @@ That admission and real A2A runtime handoff remain subsequent implementation wor
 This host integration currently has no HTTP discovery route or model-callable
 runtime tool. HTTPS URL syntax approval also requires a separately qualified
 transport with network confinement, endpoint authentication and protocol checks.
+
+
+### Service delegation and shared sponsorship
+
+A service request can authorize an agent to do work that its caller cannot execute
+personally. Trusted runtimes use a `DelegationGrant` to pin the actual source and
+recipient principals, individual agent resource, approved binding digest, skill,
+complete `agent.invoke` ingress effect and qualified effect footprint. The ingress
+resources include every resource in that footprint. Direct execution permissions
+remain separate: the caller needs current authority for the ingress request,
+and the recipient needs its own current credentials, permits and workforce
+relationships for each effect it executes.
+
+Publish and retire these grants through
+`AuthorityCoordinator::publish_delegation_grant` and
+`revoke_delegation_grant`, using independently authenticated management bounds.
+Publication and terminal retirement share the coordinator's StateStore CAS
+boundary with effect starts. Accepted executions keep both the original grant
+revision and the current restriction checks. A later expansion of a grant cannot
+expand an already accepted request. Retirement requires a new grant ID for new
+authority; it cannot resurrect an old execution's rights.
+
+At initial acceptance, `TrustedContextStore::capture_delegating_root` seals the
+selected grant references into the durable root acceptance journal. The host then
+uses `capture_delegated_child` with independently authenticated recipient
+admission for the **actual new input**, its direct effects, complete service intent,
+credential and permit references, qualified binding digest and optional verified
+workforce representation. For represented work, the verified initiator must be
+the immediate source participant. Root requester identity remains available
+separately through `original_requester()`; it cannot supply the recipient's team
+membership or substitute for its actual caller.
+
+The child receives a recipient-owned budget leaf linked to the existing sponsor
+ancestry. Allocation creates no separate recipient funding root and spends no
+attempt units. Each registered effect charges that leaf and every sponsor
+ancestor once, within the same CAS. Known settlement releases their concurrency;
+spent units remain spent. Cancellation, subject revocation, grant retirement and
+closures of the enclosing agent resources apply throughout the branch. The budget
+pins the admitted recipient context reference to prevent execution-ID rebinding.
+
+Onward grants and their complete footprints must fit inside the already accepted
+service intent. This allows a coordinating agent to request another service while
+remaining unable to execute that service's private operations directly. Nested
+starts recheck each source's ingress authority, each ancestor's original and
+current service intent, and the final recipient's direct authority. Same-actor
+workflow continuations preserve the delegation proof and sponsorship.
+
+These are trusted Rust runtime APIs. Registry selection, input qualification,
+agent-specific runtime binding and A2A transport must supply the approved plan
+and independently authenticated recipient acceptance. The existing advisory
+registry preview is separate from child admission. Public delegation routes,
+client tooling and the durable peer transport belong to the mesh integration
+phase.
+
+New contexts use signed format 5. Previously accepted formats 2–4 remain readable;
+new grants cannot be attached to an old acceptance by replay. Upgrade and drain
+older workers before activating the new grant event types, since those workers
+refuse records they cannot understand. Retain the admission journals, context
+verification keys and historical grant publications needed by live descendants
+and reconciliation.

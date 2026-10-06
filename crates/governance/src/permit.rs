@@ -517,6 +517,7 @@ pub(crate) fn evaluate(
     if !request.context.within_accepted_ceiling(request.effect) {
         return Err(deny(PermitDenial::Effect));
     }
+    crate::context::delegated_effect_check(state, request, now_ms)?;
     crate::credential::evaluate(state, request, now_ms)?;
     let root_id = request.context.execution_id().to_string();
     let root = state
