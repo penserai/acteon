@@ -362,6 +362,10 @@ jobs:
         env:
           ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
         run: cargo test --locked -p acteon-executor --test governed_provider independent_redis_workers_observe_one_provider_attempt -- --ignored
+      - name: Approved peer discovery multi-client Redis contract
+        env:
+          ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
+        run: cargo test --locked -p acteon-executor --test delegation_discovery independent_redis_clients_discover_only_current_credentialed_peers -- --ignored
       - name: Qualified plan multi-client Redis handoff contract
         env:
           ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379

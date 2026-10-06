@@ -11,6 +11,7 @@ rust-version.workspace = true
 dynamodb = ["dep:acteon-state-dynamodb"]
 
 [dependencies]
+url.workspace = true
 acteon-state-dynamodb = { workspace = true, optional = true }
 acteon-governance.workspace = true
 acteon-state.workspace = true

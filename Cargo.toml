@@ -87,6 +87,7 @@ repository = "https://github.com/penserai/acteon"
 rust-version = "1.88"
 
 [workspace.dependencies]
+url = "2.5"
 # Internal crates - Core
 acteon-core = { path = "crates/core" }
 acteon-time = { path = "crates/time" }
