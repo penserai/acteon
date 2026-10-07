@@ -58,6 +58,8 @@
 //! ```
 
 pub mod a2a;
+pub mod agent_services;
+pub use agent_services::AgentServiceReceipt;
 pub mod aws;
 pub mod azure;
 mod error;
@@ -247,6 +249,8 @@ impl ActeonClientBuilder {
             c
         } else {
             let mut builder = Client::builder()
+                .retry(reqwest::retry::never())
+                .redirect(reqwest::redirect::Policy::none())
                 .use_rustls_tls()
                 .timeout(self.timeout)
                 .danger_accept_invalid_certs(self.danger_accept_invalid_certs);

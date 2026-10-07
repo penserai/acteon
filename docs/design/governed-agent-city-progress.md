@@ -1497,3 +1497,26 @@ these inbound adapter behaviors on Redis, rather than outbound A2A lifecycle or
 all-backend qualification. The full city/workforce objective remains active;
 requester cancellation, native SDK/header integration, UI, registry revision
 fencing, and qualified outbound peer lifecycle remain required.
+
+
+### Native agent-service receipt lifecycle integration
+
+All five SDKs now have dedicated service acceptance and observation helpers;
+Python covers sync and async clients. Receipts retain response provenance in
+host state separately from mutable task data. Observation uses the original
+route and task identity with per-request headers. Missing provenance cannot be
+filled from model metadata, and the service helpers do not retry or follow
+redirects. Default Rust and Python transports also refuse automatic redirects;
+custom transports must retain the documented constraints.
+
+The agent detail UI now accepts governed service work and observes retained jobs
+using the current browser identity. An explicit retry preserves its exact message
+ID and content. A new request requires an explicit user action. Context is kept
+out of the rendered task data. Configured CORS origins can read receipt/version
+headers; the real server contract checks that a reference without the original
+requester credential remains denied.
+
+This completes acceptance/observation integration, not cancellation or complete
+peer lifecycle. Registry revision fencing, qualified outbound A2A, unsupported
+and response-lost cancellation, host tools, production backend qualification and
+broader workforce/aggregate funding requirements remain active.

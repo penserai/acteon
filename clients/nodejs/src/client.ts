@@ -1,3 +1,4 @@
+import { AGENT_SOURCE_CONTEXT_HEADER, agentSource, agentTask, agentServiceBase, type AgentServiceReceipt } from "./agent_services.js";
 import { parseProviderHistoryReceipt, type ProviderHistoryReceipt, type ProviderReconciliationCorrelation, type ProviderReconciliationRequest } from "./governance.js";
 import { parseProviderExecutionHistory, type ProviderExecutionHistory, type ProviderExecutionHistoryWire } from "./governance.js";
 import type { WorkforceScopeView, WorkforceChangeRequest } from "./workforce.js";
@@ -167,6 +168,7 @@ import {
 import { ApiError, ConnectionError, HttpError } from "./errors.js";
 import {
   A2A_HEADERS,
+  A2A_PROTOCOL_VERSION,
   a2aSegment,
   unwrapJsonRpc,
   type JsonRpcReply,
@@ -388,6 +390,24 @@ export class ActeonClient {
     return parts.response === "text" ? response.text() : response.json();
   }
 
+  /** Submit once. Persist the receipt in host state; preserve message ID on response loss. */
+  async agentServiceSendMessage(namespace: string, tenant: string, agent: string, message: Record<string, unknown>): Promise<AgentServiceReceipt> {
+    const response = await this.request("POST", agentServiceBase(namespace, tenant, agent) + "/message:send", { body: { message }, extraHeaders: A2A_HEADERS, redirect: "error" });
+    if (!response.ok) throw new HttpError(response.status, await response.text());
+    if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent service response version missing or unsupported");
+    const task = agentTask(await response.json(), namespace, tenant);
+    return Object.freeze({ namespace, tenant, agent, taskId: task.id as string, sourceContext: agentSource(response.headers.get(AGENT_SOURCE_CONTEXT_HEADER)), task });
+  }
+  /** Observe one retained job; never starts work or changes global headers. */
+  async agentServiceGetTask(receipt: AgentServiceReceipt): Promise<Record<string, unknown>> {
+    const taskId = receipt.taskId;
+    if (!taskId || taskId === "." || taskId === "..") throw new Error("invalid agent service task ID");
+    const response = await this.request("GET", agentServiceBase(receipt.namespace, receipt.tenant, receipt.agent) + "/tasks/" + encodeURIComponent(taskId), { extraHeaders: { ...A2A_HEADERS, [AGENT_SOURCE_CONTEXT_HEADER]: agentSource(receipt.sourceContext) }, redirect: "error" });
+    if (!response.ok) throw new HttpError(response.status, await response.text());
+    if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent service response version missing or unsupported");
+    return agentTask(await response.json(), receipt.namespace, receipt.tenant, taskId);
+  }
+
   /** Inspect only the routes and permits within current independent management policy. */
   async workforce(namespace: string, tenant: string): Promise<WorkforceScopeView> {
     return await this.platformRequest("workforce_inspect", { query: { namespace, tenant } }) as WorkforceScopeView;
@@ -468,6 +488,7 @@ export class ActeonClient {
       body?: unknown;
       params?: URLSearchParams;
       extraHeaders?: Record<string, string>;
+      redirect?: "error" | "follow" | "manual";
       /**
        * When true, suppress the `Authorization` header. Used by the
        * A2A unauthenticated discovery endpoint
@@ -495,6 +516,7 @@ export class ActeonClient {
       const fetchOptions: RequestInit & { dispatcher?: unknown } = {
         method,
         headers,
+        redirect: options?.redirect ?? "follow",
         body: options?.body !== undefined ? JSON.stringify(options.body) : undefined,
         signal: controller.signal,
       };

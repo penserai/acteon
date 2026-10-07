@@ -77,6 +77,34 @@ public class ActeonClient implements AutoCloseable {
         catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new ConnectionException("Request interrupted", e); }
     }
 
+    /** Submit once and retain host provenance. Preserve message ID after response loss. */
+    public AgentServiceReceipt agentServiceSendMessage(String namespace, String tenant, String agent, Map<String, Object> message) throws ActeonException {
+        var response = agentServiceRequest("POST", AgentServiceReceipt.base(namespace, tenant, agent)+"/message:send", Map.of("message", message), null);
+        try {
+            var task = AgentServiceReceipt.verifyTask(objectMapper.readTree(response.body()), namespace, tenant, null);
+            var source = AgentServiceReceipt.source(response.headers().firstValue(AgentServiceReceipt.SOURCE_CONTEXT_HEADER).orElse(null));
+            return new AgentServiceReceipt(namespace, tenant, agent, task.path("id").asText(), source, task);
+        } catch (IOException e) { throw new ActeonException("invalid agent service response", e); }
+    }
+    /** Observe the retained job without provider execution or global header mutation. */
+    public com.fasterxml.jackson.databind.JsonNode agentServiceGetTask(AgentServiceReceipt receipt) throws ActeonException {
+        var response = agentServiceRequest("GET", AgentServiceReceipt.base(receipt.namespace(), receipt.tenant(), receipt.agent())+"/tasks/"+AgentServiceReceipt.segment(receipt.taskId()), null, AgentServiceReceipt.source(receipt.sourceContext()));
+        try { return AgentServiceReceipt.verifyTask(objectMapper.readTree(response.body()), receipt.namespace(), receipt.tenant(), receipt.taskId()); }
+        catch (IOException e) { throw new ActeonException("invalid agent service response", e); }
+    }
+    private HttpResponse<String> agentServiceRequest(String method, String path, Object body, String source) throws ActeonException {
+        if (httpClient.followRedirects() != HttpClient.Redirect.NEVER) throw new ActeonException("agent services require redirects disabled");
+        try {
+            var builder = requestBuilder(path).header(A2A.VERSION_HEADER, A2A.PROTOCOL_VERSION);
+            if (source != null) builder.header(AgentServiceReceipt.SOURCE_CONTEXT_HEADER, source);
+            var response = httpClient.send(builder.method(method, body == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body))).build(), HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() < 200 || response.statusCode() >= 300) throw new HttpException(response.statusCode(), response.body());
+            if (!response.headers().firstValue(A2A.VERSION_HEADER).orElse("").equals(A2A.PROTOCOL_VERSION)) throw new ActeonException("agent service response version missing or unsupported");
+            return response;
+        } catch (IOException e) { throw new ConnectionException(e.getMessage(), e); }
+        catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new ConnectionException("Request interrupted", e); }
+    }
+
     private final String baseUrl;
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;

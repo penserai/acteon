@@ -8,6 +8,7 @@ from .a2a import (
     make_part_url,
     make_push_config,
 )
+from .agent_services import AGENT_SOURCE_CONTEXT_HEADER, AgentServiceReceipt
 from .bus_models import (
     AppendBusConversationMessage,
     BusAgent,
@@ -468,3 +469,6 @@ __all__ += [
     "ProviderReconciliationRequest",
     "ProviderHistoryAttempt",
 ]
+
+
+__all__ += ["AGENT_SOURCE_CONTEXT_HEADER", "AgentServiceReceipt"]

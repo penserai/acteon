@@ -1,0 +1,48 @@
+{
+  "namespace": "prod",
+  "tenant": "acme",
+  "agent": "notifier",
+  "jobs": [
+    {
+      "source_context": "eyJqb2IiOiIxIn0",
+      "task": {
+        "id": "job-1",
+        "namespace": "prod",
+        "tenant": "acme",
+        "status": {
+          "state": "submitted",
+          "timestamp": "2026-10-07T00:00:00Z"
+        },
+        "createdAt": "2026-10-07T00:00:00Z",
+        "updatedAt": "2026-10-07T00:00:00Z",
+        "metadata": {
+          "source_context": "forged-model-token"
+        }
+      }
+    },
+    {
+      "source_context": "eyJqb2IiOiIyIn0",
+      "task": {
+        "id": "job-2",
+        "namespace": "prod",
+        "tenant": "acme",
+        "status": {
+          "state": "submitted",
+          "timestamp": "2026-10-07T00:00:00Z"
+        },
+        "createdAt": "2026-10-07T00:00:00Z",
+        "updatedAt": "2026-10-07T00:00:00Z",
+        "metadata": {
+          "source_context": "forged-model-token"
+        }
+      }
+    }
+  ],
+  "error_statuses": [
+    403,
+    404,
+    409,
+    429,
+    503
+  ]
+}

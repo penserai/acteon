@@ -6,10 +6,10 @@ function getAuthHeaders(): Record<string, string> {
   return {}
 }
 
-export async function apiFetch<T>(
+export async function apiResponse(
   path: string,
   options: RequestInit = {},
-): Promise<T> {
+): Promise<Response> {
   const isFormData = options.body instanceof FormData
   const res = await fetch(`${BASE_URL}${path}`, {
     ...options,
@@ -23,6 +23,11 @@ export async function apiFetch<T>(
     const text = await res.text().catch(() => res.statusText)
     throw new Error(`${res.status}: ${text}`)
   }
+  return res
+}
+
+export async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const res = await apiResponse(path, options)
   if (res.status === 204) return undefined as T
   return res.json()
 }

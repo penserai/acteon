@@ -35,3 +35,10 @@ Go, and Java verify every field and the single/batch outcome discriminator.
 All five SDKs verify single/batch request construction, retained credentials and
 legacy header omission. Refusal tests preserve HTTP statuses instead of treating
 server error envelopes as transport or deserialization failures.
+
+`agent-services.json` pins task identities, response provenance headers, and
+foreign model metadata across all five native SDKs. Contract tests verify that
+concurrent jobs use their own context, mutable task data cannot change the
+observation identity, missing headers cannot be filled from metadata, and HTTP
+failures and redirects are not retried. Rust additionally exercises the real
+server's authenticated agent requester and configured CORS response exposure.

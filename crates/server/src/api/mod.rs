@@ -761,6 +761,10 @@ pub fn router(state: AppState) -> Router {
             .allow_origin(AllowOrigin::list(origins))
             .allow_methods(tower_http::cors::Any)
             .allow_headers(tower_http::cors::Any)
+            .expose_headers([
+                axum::http::HeaderName::from_static("x-acteon-agent-source-context"),
+                axum::http::HeaderName::from_static("a2a-version"),
+            ])
     };
 
     router

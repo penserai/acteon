@@ -28,6 +28,7 @@ import {
   type BusAgent,
   type SetBusAgentAdminState,
 } from '../api/hooks/useBus'
+import { AgentServicePanel } from './AgentServicePanel'
 import { PageHeader } from '../components/layout/PageHeader'
 import { Badge } from '../components/ui/Badge'
 import { Button } from '../components/ui/Button'
@@ -81,7 +82,7 @@ export function AgentDetail() {
 
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [adminModal, setAdminModal] = useState<'suspend' | 'ban' | null>(null)
-  const [activeTab, setActiveTab] = useState<'overview' | 'card' | 'activity'>('overview')
+  const [activeTab, setActiveTab] = useState<'overview' | 'card' | 'activity' | 'tasks'>('overview')
 
   function reinstate() {
     if (!namespace || !tenant || !agentId) return
@@ -189,9 +190,10 @@ export function AgentDetail() {
           { id: 'overview', label: 'Overview' },
           { id: 'card', label: 'A2A Card' },
           { id: 'activity', label: 'Activity' },
+          { id: 'tasks', label: 'Governed tasks' },
         ]}
         active={activeTab}
-        onChange={(id) => setActiveTab(id as 'overview' | 'card' | 'activity')}
+        onChange={(id) => setActiveTab(id as 'overview' | 'card' | 'activity' | 'tasks')}
       />
       {activeTab === 'overview' && <OverviewPanel agent={agent} />}
       {activeTab === 'card' && (
@@ -203,6 +205,7 @@ export function AgentDetail() {
         />
       )}
       {activeTab === 'activity' && <ActivityPanel agent={agent} />}
+      {activeTab === 'tasks' && <AgentServicePanel key={`${agent.namespace}/${agent.tenant}/${agent.agent_id}`} namespace={agent.namespace} tenant={agent.tenant} agent={agent.agent_id} />}
 
       <AdminStateModal
         open={adminModal !== null}

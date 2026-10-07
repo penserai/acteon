@@ -602,6 +602,7 @@ dependencies = [
  "acteon-aws",
  "acteon-azure",
  "acteon-bus",
+ "acteon-client",
  "acteon-core",
  "acteon-crypto",
  "acteon-discord",

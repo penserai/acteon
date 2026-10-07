@@ -65,7 +65,7 @@ impl Server {
         let worker = json!({"id":"agent/notifier","kind":"agent"});
         let route = json!({"provider":"incident","action_type":"execute"});
         let configuration = json!({
-            "server":{"host":"127.0.0.1","port":port},
+            "server":{"host":"127.0.0.1","port":port,"cors_allowed_origins":["https://console.example"]},
             "state":state, "ui":{"enabled":false},
             "auth":{"enabled":true,"config_path":"auth.toml","watch":false,
                 "authority":{"namespace":"auth-control","tenant":"deployment","source_id":"service-auth","bootstrap":true}},
@@ -803,6 +803,92 @@ async fn redis_corrupt_projection_reports_unavailable_without_hiding_or_starting
     assert_eq!(
         response.json::<Value>().await.unwrap()["status"]["state"],
         "submitted"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    webhook_task.abort();
+}
+
+#[tokio::test]
+async fn native_sdk_observes_exact_agent_job_and_cors_exposes_host_receipt() {
+    let (url, calls, webhook_task) = webhook().await;
+    let mut server = Server::configured(
+        &url,
+        Some("notifier-secret"),
+        "incident",
+        false,
+        "agent",
+        json!({"backend":"memory"}),
+    );
+    let http = reqwest::Client::new();
+    server.ready(&http).await;
+    let client = acteon_client::ActeonClient::builder(&server.url)
+        .api_key("alice-secret")
+        .build()
+        .unwrap();
+    let message = acteon_core::TaskMessage::text(
+        "sdk-original",
+        acteon_core::TaskRole::User,
+        "Notify incident owner",
+    );
+    let receipt = client
+        .agent_service_send_message("prod", "acme", "notifier", &message)
+        .await
+        .unwrap();
+    let saved = serde_json::to_string(&receipt).unwrap();
+    let mut restored: acteon_client::AgentServiceReceipt = serde_json::from_str(&saved).unwrap();
+    restored.task.id = "model-mutated-task-data".into();
+    let task = client.agent_service_get_task(&restored).await.unwrap();
+    assert_eq!(task.id, receipt.task_id());
+    assert_eq!(task.status.state, acteon_core::TaskState::Submitted);
+    let response = http
+        .post(server.endpoint())
+        .bearer_auth("alice-secret")
+        .header("origin", "https://console.example")
+        .json(&serde_json::json!({"message":message}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        response.headers()["access-control-allow-origin"],
+        "https://console.example"
+    );
+    let exposed = response.headers()["access-control-expose-headers"]
+        .to_str()
+        .unwrap();
+    assert!(exposed.contains("x-acteon-agent-source-context"));
+    assert!(exposed.contains("a2a-version"));
+    assert_eq!(
+        response.headers()["x-acteon-agent-source-context"],
+        receipt.source_context()
+    );
+    let preflight = http
+        .request(reqwest::Method::OPTIONS, server.task_url(receipt.task_id()))
+        .header("origin", "https://console.example")
+        .header("access-control-request-method", "GET")
+        .header(
+            "access-control-request-headers",
+            "authorization,x-acteon-agent-source-context",
+        )
+        .send()
+        .await
+        .unwrap();
+    assert!(preflight.status().is_success());
+    assert_eq!(
+        preflight.headers()["access-control-allow-origin"],
+        "https://console.example"
+    );
+    let outsider = http
+        .get(server.task_url(receipt.task_id()))
+        .bearer_auth("observer-secret")
+        .header("x-acteon-agent-source-context", receipt.source_context())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        outsider.status(),
+        404,
+        "opaque reference does not replace original private authentication"
     );
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     webhook_task.abort();

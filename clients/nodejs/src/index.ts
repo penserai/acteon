@@ -232,3 +232,5 @@ export { type PrincipalIdentity, type CredentialIdentity, parseCredentialIdentit
 export * from "./governance.js";
 
 export * from "./workforce.js";
+
+export { AGENT_SOURCE_CONTEXT_HEADER, type AgentServiceReceipt } from "./agent_services.js";

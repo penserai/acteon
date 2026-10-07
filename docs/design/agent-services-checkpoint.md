@@ -54,6 +54,14 @@ Errors and task responses use `Cache-Control: no-store`. A 503 is not evidence
 that earlier acceptance or an external effect did not occur; retain the same
 message identity and inspect durable evidence rather than constructing new work.
 
+- Native receipts and observation helpers exist in Rust, Python sync/async,
+  TypeScript, Go, and Java. Each retains response provenance separately from task
+  data and uses the original job identity; concurrent jobs do not share headers.
+  Missing headers, HTTP failures, and redirects do not trigger a new request.
+- The browser agent detail view can accept and observe governed tasks with its
+  current identity. Context remains in local host state, outside the rendered
+  task data. The configured CORS origins can read receipt/version headers.
+
 Remaining before release:
 
 - Complete requester cancellation and ambiguity handling; qualify restart
@@ -61,7 +69,7 @@ Remaining before release:
 - Expand focused adversarial and integration tests from admission/isolation to
   full provider execution and peer lifecycle.
 - Complete registry revision fencing and qualified outbound A2A lifecycle work.
-- Update SDKs, UI, and public documentation when the wire contract is established.
+- Complete lifecycle SDK/UI integration as cancellation and outbound peer contracts are added.
 - Review adversarially, run CI, and verify publication before merging.
 
 Passing existing workspace checks alone does not demonstrate these new service

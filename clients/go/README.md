@@ -421,3 +421,34 @@ These methods preserve the completed or definitive no-effect receipt. Correlatio
 is not a permit; proof bytes must come from the qualified source. After a lost
 acknowledgment, replay the exact proof under current authority rather than changing
 its content or verifier revision.
+
+## Authenticated individual-agent services
+
+These native helpers target a configured governed agent service. The server must
+have the service installed, and the client must retain the original requester
+credential and invocation permits. This is a separate surface from tenant-level
+legacy A2A tasks.
+
+```go
+receipt, err := client.AgentServiceSendMessage(ctx, "prod", "acme", "notifier",
+    acteon.MakeMessage("incident-42", "user",
+        []map[string]any{acteon.MakePartText("Notify the incident owner")},
+        acteon.MakeMessageOptions{}))
+if err != nil { return err }
+task, err := client.AgentServiceGetTask(ctx, receipt)
+```
+
+`AgentServiceReceipt` supports JSON persistence in host state. Observation uses
+its original `TaskID`, independently of mutable `Task` data.
+
+Acceptance does not prove that provider execution has completed. Read the task's
+status and artifacts through the receipt. Its source context comes only from the
+admission response header; never obtain it from model output or task metadata.
+Keep it with the original route and task ID in host state, outside model messages.
+It is not a bearer credential: the original requester must still authenticate.
+
+The helpers do not add retry loops. After a lost response, explicitly reuse the
+same message ID and unchanged input; a new ID represents new work. SDK default
+transports reject service redirects. A custom transport must keep retries and
+redirects disabled for this surface. HTTP failures preserve their status and
+server error body. Observation never resumes or starts provider work.

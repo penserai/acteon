@@ -11,6 +11,7 @@ The current source tree provides a generated catalog for **198 finite HTTP opera
 | Typed dispatch, batch, rules, audit and bus helpers | Yes | Yes | Yes | Yes | Yes |
 | Complete finite HTTP operation catalog | Yes | Yes, sync and async | Yes | Yes | Yes |
 | Native streaming and A2A helpers | Yes | Yes | Yes | Yes | Yes |
+| Authenticated agent-service acceptance receipts and observation | Yes | Yes, sync and async | Yes | Yes | Yes |
 | Code-defined workflow runner | — | Yes | Yes | — | — |
 | Managed stream-processing adapter | `stream-processing` feature | — | — | — | — |
 
@@ -168,3 +169,43 @@ five receipt states across clients. Client decoding tests do not establish serve
 authorization or backend durability.
 See [historical receipts](../features/durable-executions.md#historical-receipts)
 for evidence integrity and recovery semantics.
+
+
+## Retain an authenticated agent-service receipt
+
+Individual governed services expose `POST
+/a2a/{namespace}/{tenant}/agents/{agent}/v1/message:send` and `GET
+/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}`. These require a configured
+service and the requester's original private authentication; a registry card
+alone does not install a runtime or authorize an invocation.
+
+All five SDKs expose native acceptance and observation helpers:
+
+| SDK | Accept message | Observe retained receipt |
+| --- | --- | --- |
+| Rust | `agent_service_send_message` | `agent_service_get_task` |
+| Python, sync/async | `agent_service_send_message` | `agent_service_get_task` |
+| TypeScript | `agentServiceSendMessage` | `agentServiceGetTask` |
+| Go | `AgentServiceSendMessage` | `AgentServiceGetTask` |
+| Java | `agentServiceSendMessage` | `agentServiceGetTask` |
+
+The returned receipt retains the `x-acteon-agent-source-context` response header
+separately from task data and binds it to the original namespace, tenant, agent,
+and task ID. Keep the receipt in host-owned state; do not place it in model
+messages. Shared agent callers must supply the exact retained context on reads.
+The receipt does not replace authentication. The SDKs never substitute metadata
+for a missing header, and observation does not start or resume work.
+
+Use a stable message ID. If an admission response is lost, explicitly replay the
+same unchanged message under current invocation authority. A fresh ID creates
+new work. SDK default transports reject redirects and the helpers introduce no
+retry loops; custom transports must retain those constraints. Configured CORS
+origins can read the provenance and A2A version headers.
+
+The admin UI's **Governed tasks** tab on an agent detail page accepts work and
+refreshes accepted tasks using the current browser identity. The server enforces
+its configured service, source permits, and recipient authority. The tab retains
+receipts in memory while it is open, reuses the original request on explicit
+retry, and displays task state and result artifacts without displaying source
+context. Leaving the tab clears this local view. SDK host persistence supports
+longer-lived clients.

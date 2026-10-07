@@ -1,5 +1,8 @@
 import { defineConfig, devices } from '@playwright/test'
 
+const testPort = process.env.ACTEON_UI_TEST_PORT ?? '5173'
+const testUrl = `http://127.0.0.1:${testPort}`
+
 export default defineConfig({
   testDir: './e2e',
   fullyParallel: true,
@@ -9,7 +12,7 @@ export default defineConfig({
   reporter: 'html',
   timeout: 30_000,
   use: {
-    baseURL: 'http://localhost:5173',
+    baseURL: testUrl,
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
   },
@@ -24,8 +27,8 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'npm run dev',
-    url: 'http://localhost:5173',
+    command: `npm run dev -- --host 127.0.0.1 --port ${testPort}`,
+    url: testUrl,
     reuseExistingServer: !process.env.CI,
     timeout: 30_000,
   },

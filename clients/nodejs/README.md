@@ -376,3 +376,35 @@ These methods preserve the completed or definitive no-effect receipt. Correlatio
 is not a permit; proof bytes must come from the qualified source. After a lost
 acknowledgment, replay the exact proof under current authority rather than changing
 its content or verifier revision.
+
+## Authenticated individual-agent services
+
+These native helpers target a configured governed agent service. The server must
+have the service installed, and the client must retain the original requester
+credential and invocation permits. This is a separate surface from tenant-level
+legacy A2A tasks.
+
+```typescript
+import { makeMessage, makePartText } from "@acteon/client";
+
+const receipt = await client.agentServiceSendMessage(
+  "prod", "acme", "notifier",
+  makeMessage("incident-42", "user", [makePartText("Notify the incident owner")]),
+);
+const task = await client.agentServiceGetTask(receipt);
+```
+
+Persist the receipt as host-owned JSON for observation after a client restart.
+The original `taskId` remains separate from mutable task data.
+
+Acceptance does not prove that provider execution has completed. Read the task's
+status and artifacts through the receipt. Its source context comes only from the
+admission response header; never obtain it from model output or task metadata.
+Keep it with the original route and task ID in host state, outside model messages.
+It is not a bearer credential: the original requester must still authenticate.
+
+The helpers do not add retry loops. After a lost response, explicitly reuse the
+same message ID and unchanged input; a new ID represents new work. SDK default
+transports reject service redirects. A custom transport must keep retries and
+redirects disabled for this surface. HTTP failures preserve their status and
+server error body. Observation never resumes or starts provider work.
