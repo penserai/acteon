@@ -426,7 +426,6 @@ impl ApprovedPeerRegistry {
             || agent.agent_id != binding.agent_id
             || agent.namespace != self.namespace
             || agent.tenant != self.tenant
-            || !agent.has_agent_card
         {
             return Err(PeerDiscoveryError::Unavailable);
         }

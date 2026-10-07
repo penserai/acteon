@@ -103,7 +103,12 @@ message identity and inspect durable evidence rather than constructing new work.
   preservation, original actor attribution,
   write acknowledgement loss before and after persistence, qualification
   retirement on success and known version conflicts, and legacy card writes
-  with absent runtime or unreadable authority. Native SDK helpers, public
+  with absent runtime or unreadable authority. A bus-feature contract covers
+  registration, update, deletion, and admin-state legacy write refusal. Approved
+  peer discovery reads the actual card and verifies its approved digest; the
+  separate presence hint cannot hide a valid card or authorize a missing or
+  changed card, and current qualification remains mandatory when enrolled.
+  Native SDK helpers, public
   documentation, and broader lifecycle tests are still pending. Unresolved
   delivery replays return HTTP 503 rather than an authority-denied 403. Clients
   must retain the original change identifier and request; the coordinator does
@@ -120,8 +125,9 @@ Remaining before release:
   recovery against each supported production backend.
 - Expand focused adversarial and integration tests from admission/isolation to
   full provider execution and peer lifecycle.
-- Verify the registry HTTP adapter with focused adversarial tests, including
-  unresolved delivery status and card/agent projection consistency. Add native
+- Complete registry projection consistency and recovery contracts. Align HTTP
+  projection acceptance with the 64 KiB approved-discovery record bound; the
+  mutation kernel currently permits 256 KiB. Add native
   SDK helpers and public documentation. Retain historical bindings across service
   replacement; complete qualified outbound A2A lifecycle work.
 - Extend lifecycle SDK/UI integration as provider abort and outbound peer contracts are added.

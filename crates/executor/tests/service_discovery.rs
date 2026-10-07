@@ -205,6 +205,7 @@ fn binding(card: &AgentCard, direct: Vec<AcceptedEffect>) -> ApprovedPeerBinding
     .unwrap()
 }
 struct Fixture {
+    store: Arc<dyn StateStore>,
     coordinator: AuthorityCoordinator,
     contexts: TrustedContextStore,
     clock: ManualClock,
@@ -299,8 +300,10 @@ impl Fixture {
             .await
             .unwrap();
         let registry =
-            ApprovedPeerRegistry::new_trusted(store, "city", "tenant", vec![binding]).unwrap();
+            ApprovedPeerRegistry::new_trusted(store.clone(), "city", "tenant", vec![binding])
+                .unwrap();
         Self {
+            store,
             coordinator,
             contexts,
             clock,
@@ -627,4 +630,109 @@ fn direct_operation_selection_is_part_of_service_binding_digest() {
     assert_ne!(first.digest(), second.digest());
     assert_eq!(first.service_plan().unwrap().direct_effects(), &[execute]);
     assert_eq!(first.service_plan().unwrap().intent().len(), 2);
+}
+
+#[tokio::test]
+async fn approved_service_discovery_reads_actual_card_instead_of_presence_hint() {
+    let f = Fixture::new().await;
+    let agent_key = StateKey::new("city", "tenant", KeyKind::BusAgent, "responder");
+    let card_key = StateKey::new("city", "tenant", KeyKind::BusAgentCard, "responder");
+    let mut agent: Agent =
+        serde_json::from_str(&f.store.get(&agent_key).await.unwrap().unwrap()).unwrap();
+    let approved_card = f.store.get(&card_key).await.unwrap().unwrap();
+    agent.has_agent_card = false;
+    f.store
+        .set(&agent_key, &serde_json::to_string(&agent).unwrap(), None)
+        .await
+        .unwrap();
+    let before = serde_json::to_value(f.coordinator.snapshot().await.unwrap()).unwrap();
+    let resolver = Resolver::new(&f);
+    assert_eq!(f.discover(&f.parent, &resolver).await.len(), 1);
+    // Removing the actual card must hide the candidate even with a true hint.
+    agent.has_agent_card = true;
+    f.store
+        .set(&agent_key, &serde_json::to_string(&agent).unwrap(), None)
+        .await
+        .unwrap();
+    f.store.delete(&card_key).await.unwrap();
+    assert!(f.discover(&f.parent, &resolver).await.is_empty());
+    // A changed card cannot borrow approval from either hint value.
+    let mut changed: AgentCard = serde_json::from_str(&approved_card).unwrap();
+    changed.name = "different unapproved card".into();
+    f.store
+        .set(&card_key, &serde_json::to_string(&changed).unwrap(), None)
+        .await
+        .unwrap();
+    assert!(f.discover(&f.parent, &resolver).await.is_empty());
+    f.store.set(&card_key, &approved_card, None).await.unwrap();
+    f.retire().await;
+    assert!(f.discover(&f.parent, &resolver).await.is_empty());
+    // Discovery itself never allocates or spends an execution attempt.
+    let after = f.coordinator.snapshot().await.unwrap();
+    let prior: serde_json::Value = before;
+    assert_eq!(serde_json::to_value(&after.roots).unwrap(), prior["roots"]);
+    assert!(after.starts.is_empty());
+}
+
+#[tokio::test]
+async fn actual_approved_card_cannot_override_registry_retirement() {
+    use acteon_governance::{
+        control::{ControlChangeAuthorization, ControlChangeCeiling},
+        registry::{AgentRegistryIssuanceCeiling, AgentRegistryQualification},
+    };
+    let f = Fixture::new().await;
+    let qualification = AgentRegistryQualification {
+        agent: f.grant.agent_resource.clone(),
+        target: f.grant.target.clone(),
+        revision: 1,
+        bindings: std::collections::BTreeMap::from([(
+            f.grant.skill.clone(),
+            f.grant.binding_digest.clone(),
+        )]),
+    };
+    let ceiling = AgentRegistryIssuanceCeiling {
+        issuer: actor("operator"),
+        approved: vec![qualification.clone()],
+        valid_from_ms: 0,
+        deadline_ms: 10_000,
+    };
+    f.coordinator
+        .publish_agent_registry(
+            "qualify-registry",
+            qualification,
+            0,
+            &ceiling,
+            &f.coordinator.snapshot().await.unwrap().stamp(),
+            "reviewed registry",
+            &f.clock,
+        )
+        .await
+        .unwrap();
+    let resolver = Resolver::new(&f);
+    assert_eq!(f.discover(&f.parent, &resolver).await.len(), 1);
+    let bounds = ControlChangeCeiling {
+        actor: actor("operator"),
+        subjects: vec![],
+        resources: vec![f.grant.agent_resource.clone()],
+        valid_from_ms: 0,
+        deadline_ms: 10_000,
+    };
+    f.coordinator
+        .change_evaluated(
+            "retire-registry",
+            AuthorityChange::RetireAgentRegistry {
+                agent: f.grant.agent_resource.clone(),
+                expected_revision: 1,
+            },
+            "retire reviewed epoch",
+            ControlChangeAuthorization {
+                ceiling: &bounds,
+                evaluated_authority: &f.coordinator.snapshot().await.unwrap().stamp(),
+                clock: &f.clock,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(f.discover(&f.parent, &resolver).await.is_empty());
+    assert!(f.coordinator.snapshot().await.unwrap().starts.is_empty());
 }

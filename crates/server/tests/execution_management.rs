@@ -548,13 +548,16 @@ fn history_router(
     runtime: Arc<ExecutionAuthorityRuntime>,
     auth: Arc<AuthProvider>,
 ) -> Router {
-    history_router_with_runtime(state, Some(runtime), auth)
+    history_router_with_runtime(state, Some(runtime), auth, false)
 }
 fn history_router_with_runtime(
     state: Arc<dyn StateStore>,
     runtime: Option<Arc<ExecutionAuthorityRuntime>>,
     auth: Arc<AuthProvider>,
+    bus_enabled: bool,
 ) -> Router {
+    #[cfg(not(feature = "bus"))]
+    let _ = bus_enabled;
     let gateway = acteon_gateway::GatewayBuilder::new()
         .state(state)
         .lock(Arc::new(acteon_state_memory::MemoryDistributedLock::new()))
@@ -587,7 +590,11 @@ fn history_router_with_runtime(
         #[cfg(feature = "swarm")]
         swarm_registry: None,
         #[cfg(feature = "bus")]
-        bus_backend: None,
+        bus_backend: if bus_enabled {
+            Some(acteon_bus::MemoryBackend::new())
+        } else {
+            None
+        },
         #[cfg(feature = "bus")]
         bus_schema_validator: acteon_bus::SchemaValidator::new(),
         #[cfg(feature = "bus")]
@@ -2555,7 +2562,7 @@ fn registry_manager_agent_bounds_reject_unbounded_or_nonintervening_declarations
 #[tokio::test]
 async fn registry_http_legacy_guard_survives_uninstalled_runtime_and_unreadable_authority() {
     let f = registry_http_fixture(vec!["maya".into()]).await;
-    let app = history_router_with_runtime(f.state.clone(), None, f.provider);
+    let app = history_router_with_runtime(f.state.clone(), None, f.provider, false);
     let uri = "/v1/bus/agents/prod/acme/maya/card";
     let (status, response) = registry_http(&app, "DELETE", uri, None).await;
     assert_eq!(status, 409);
@@ -2576,4 +2583,37 @@ async fn registry_http_legacy_guard_survives_uninstalled_runtime_and_unreadable_
     let card_key =
         acteon_state::StateKey::new("prod", "acme", acteon_state::KeyKind::BusAgentCard, "maya");
     assert!(f.state.get(&card_key).await.unwrap().is_none());
+}
+
+#[cfg(feature = "bus")]
+#[tokio::test]
+async fn registry_http_all_legacy_bus_metadata_writers_refuse_governed_scope() {
+    let f = registry_http_fixture(vec!["maya".into()]).await;
+    let app = history_router_with_runtime(f.state.clone(), None, f.provider, true);
+    let coordinator = AuthorityCoordinator::connect(f.state.clone(), "prod", "acme")
+        .await
+        .unwrap();
+    let before = serde_json::to_value(coordinator.snapshot().await.unwrap()).unwrap();
+    let register = json!({"namespace":"prod", "tenant":"acme", "agent_id":"maya"});
+    let update = json!({"display_name":"unguarded replacement"});
+    let admin = json!({"admin_state":"active"});
+    for (method, uri, body) in [
+        ("POST", "/v1/bus/agents", Some(&register)),
+        ("PUT", "/v1/bus/agents/prod/acme/maya", Some(&update)),
+        ("DELETE", "/v1/bus/agents/prod/acme/maya", None),
+        (
+            "PUT",
+            "/v1/bus/agents/prod/acme/maya/admin-state",
+            Some(&admin),
+        ),
+    ] {
+        let (status, response) = registry_http(&app, method, uri, body).await;
+        assert_eq!(status, 409, "{method} {uri}: {response}");
+        assert_eq!(response["code"], "governed_registry_mutation_required");
+    }
+    assert!(f.state.get(&registry_agent_key()).await.unwrap().is_none());
+    assert_eq!(
+        before,
+        serde_json::to_value(coordinator.snapshot().await.unwrap()).unwrap()
+    );
 }

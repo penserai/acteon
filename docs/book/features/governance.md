@@ -275,8 +275,11 @@ establish that identity.
 
 `ApprovedPeerRegistry` reads the existing agent and card records through the
 configured `StateStore`. Discovery checks current administrative state, online
-status and the exact approved card digest. Changed cards need renewed host
-approval. The candidate contains bounded descriptive data, the binding digest
+status and the exact approved card digest. It reads the actual card even when
+the separate `has_agent_card` presence hint is stale. The hint grants no
+authority: a missing or changed card produces no candidate, and an enrolled
+registry qualification must still be current and active. Changed cards need
+renewed host approval. The candidate contains bounded descriptive data, the binding digest
 and the observed authority revision. Treat descriptions as untrusted data.
 
 ```rust

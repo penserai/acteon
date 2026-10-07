@@ -12,9 +12,10 @@
 //! heartbeat, every routing decision, every listing reads it.
 //! Inlining the card fields onto `Agent` would bloat that hot path
 //! for tenants with many agents. So [`crate::bus_agent::Agent`] keeps a thin
-//! `has_agent_card: bool` flag, and the full card lives at a
+//! `has_agent_card: bool` advisory hint, and the full card lives at a
 //! separate state-store key (Phase 2 wires `KeyKind::BusAgentCard`)
-//! fetched only when an A2A discovery request hits.
+//! fetched by A2A and approved peer discovery. Approved discovery verifies the
+//! actual card and its digest without requiring the separate hint to be current.
 
 use std::collections::HashMap;
 
