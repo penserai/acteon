@@ -72,14 +72,20 @@ message identity and inspect durable evidence rather than constructing new work.
   with a `cancelled` task. Lost acknowledgements are recovered by stopping the
   same original task again. Recovery scheduling skips durably stopped work.
 
+- Receipt-aware future-start stop helpers exist in all five SDKs, including
+  Python sync/async. They preserve original route/task identity and source context,
+  require a true restriction acknowledgement, and send one request without retry
+  or redirect. The browser has an explicit per-job stop control; acknowledgement
+  is separate from provider task state and survives local task refreshes.
+
 Remaining before release:
 
-- Complete provider abort/reconciliation and cancellation SDK/UI integration; qualify restart
+- Complete qualified provider abort/reconciliation and its SDK/UI lifecycle; qualify restart
   recovery against each supported production backend.
 - Expand focused adversarial and integration tests from admission/isolation to
   full provider execution and peer lifecycle.
 - Complete registry revision fencing and qualified outbound A2A lifecycle work.
-- Complete lifecycle SDK/UI integration as cancellation and outbound peer contracts are added.
+- Extend lifecycle SDK/UI integration as provider abort and outbound peer contracts are added.
 - Review adversarially, run CI, and verify publication before merging.
 
 Passing existing workspace checks alone does not demonstrate these new service

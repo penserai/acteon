@@ -854,6 +854,13 @@ async fn native_sdk_observes_exact_agent_job_and_cors_exposes_host_receipt() {
     let task = client.agent_service_get_task(&restored).await.unwrap();
     assert_eq!(task.id, receipt.task_id());
     assert_eq!(task.status.state, acteon_core::TaskState::Submitted);
+    let stopped = client.agent_service_stop_task(&restored).await.unwrap();
+    assert!(stopped.future_starts_blocked);
+    assert_eq!(stopped.task.id, receipt.task_id());
+    assert_eq!(stopped.task.status.state, acteon_core::TaskState::Submitted);
+    let repeated = client.agent_service_stop_task(&restored).await.unwrap();
+    assert!(repeated.future_starts_blocked);
+    assert_eq!(repeated.task.id, receipt.task_id());
     let response = http
         .post(server.endpoint())
         .bearer_auth("alice-secret")

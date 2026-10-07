@@ -233,4 +233,4 @@ export * from "./governance.js";
 
 export * from "./workforce.js";
 
-export { AGENT_SOURCE_CONTEXT_HEADER, type AgentServiceReceipt } from "./agent_services.js";
+export { AGENT_SOURCE_CONTEXT_HEADER, type AgentServiceReceipt, type AgentServiceStopReceipt } from "./agent_services.js";

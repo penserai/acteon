@@ -86,6 +86,18 @@ public class ActeonClient implements AutoCloseable {
             return new AgentServiceReceipt(namespace, tenant, agent, task.path("id").asText(), source, task);
         } catch (IOException e) { throw new ActeonException("invalid agent service response", e); }
     }
+    /** Stop future starts; explicitly retry the original receipt after response loss. */
+    public AgentServiceStopReceipt agentServiceStopTask(AgentServiceReceipt receipt) throws ActeonException {
+        var response = agentServiceRequest("POST", AgentServiceReceipt.base(receipt.namespace(), receipt.tenant(), receipt.agent())+"/tasks/"+AgentServiceReceipt.segment(receipt.taskId())+"/stop", null, AgentServiceReceipt.source(receipt.sourceContext()));
+        try {
+            var value = objectMapper.readTree(response.body());
+            if (value == null || !value.path("future_starts_blocked").isBoolean() || !value.path("future_starts_blocked").booleanValue())
+                throw new ActeonException("agent service stop acknowledgement missing or malformed");
+            var task = AgentServiceReceipt.verifyTask(value.path("task"), receipt.namespace(), receipt.tenant(), receipt.taskId());
+            return new AgentServiceStopReceipt(task, true);
+        } catch (IOException e) { throw new ActeonException("invalid agent service response", e); }
+    }
+
     /** Observe the retained job without provider execution or global header mutation. */
     public com.fasterxml.jackson.databind.JsonNode agentServiceGetTask(AgentServiceReceipt receipt) throws ActeonException {
         var response = agentServiceRequest("GET", AgentServiceReceipt.base(receipt.namespace(), receipt.tenant(), receipt.agent())+"/tasks/"+AgentServiceReceipt.segment(receipt.taskId()), null, AgentServiceReceipt.source(receipt.sourceContext()));

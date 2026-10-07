@@ -17,6 +17,7 @@ func TestAgentServiceReceiptsPreserveHeadersAndIdentity(t *testing.T) {
 		Jobs []struct {
 			Source string         `json:"source_context"`
 			Task   map[string]any `json:"task"`
+			Stop   map[string]any `json:"stop_response"`
 		} `json:"jobs"`
 	}
 	data, _ := os.ReadFile("../../contract-fixtures/agent-services.json")
@@ -30,7 +31,7 @@ func TestAgentServiceReceiptsPreserveHeadersAndIdentity(t *testing.T) {
 			t.Error("original authentication/version missing")
 		}
 		index := 0
-		if r.Method == "POST" {
+		if r.Method == "POST" && !strings.HasSuffix(r.URL.Path, "/stop") {
 			var body struct {
 				Message map[string]any `json:"message"`
 			}
@@ -44,7 +45,7 @@ func TestAgentServiceReceiptsPreserveHeadersAndIdentity(t *testing.T) {
 				t.Error("source context leaked to admission")
 			}
 		} else {
-			if strings.HasSuffix(r.URL.Path, "job-2") {
+			if strings.HasSuffix(r.URL.Path, "job-2") || strings.HasSuffix(r.URL.Path, "job-2/stop") {
 				index = 1
 			}
 			if r.Header.Get(AgentSourceContextHeader) != fixture.Jobs[index].Source {
@@ -53,7 +54,11 @@ func TestAgentServiceReceiptsPreserveHeadersAndIdentity(t *testing.T) {
 		}
 		w.Header().Set(A2AVersionHeader, "1.0")
 		w.Header().Set(AgentSourceContextHeader, fixture.Jobs[index].Source)
-		json.NewEncoder(w).Encode(fixture.Jobs[index].Task)
+		if strings.HasSuffix(r.URL.Path, "/stop") {
+			json.NewEncoder(w).Encode(fixture.Jobs[index].Stop)
+		} else {
+			json.NewEncoder(w).Encode(fixture.Jobs[index].Task)
+		}
 	}))
 	defer server.Close()
 	client := NewClient(server.URL, WithAPIKey("caller-key"))
@@ -88,7 +93,16 @@ func TestAgentServiceReceiptsPreserveHeadersAndIdentity(t *testing.T) {
 		}(i, receipt)
 	}
 	jobs.Wait()
-	if calls.Load() != 4 {
+	for _, receipt := range receipts {
+		stopped, err := client.AgentServiceStopTask(context.Background(), receipt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !stopped.FutureStartsBlocked || stopped.Task["id"] != receipt.TaskID {
+			t.Fatal("stop mixed original jobs")
+		}
+	}
+	if calls.Load() != 6 {
 		t.Fatalf("unexpected request count: %d", calls.Load())
 	}
 }
@@ -117,5 +131,38 @@ func TestAgentServiceErrorsMissingHeaderAndRedirectsDoNotRetry(t *testing.T) {
 				t.Fatalf("retried or redirected: %d", calls.Load())
 			}
 		})
+	}
+}
+
+func TestAgentServiceStopRejectsFalseAcknowledgementsAndFailuresWithoutRetry(t *testing.T) {
+	task := map[string]any{"id": "job-1", "namespace": "prod", "tenant": "acme"}
+	receipt := &AgentServiceReceipt{Namespace: "prod", Tenant: "acme", Agent: "notifier", TaskID: "job-1", SourceContext: "opaque", Task: task}
+	payloads := []any{nil, map[string]any{}, map[string]any{"task": task, "future_starts_blocked": false}, map[string]any{"task": task, "future_starts_blocked": "true"}, map[string]any{"task": map[string]any{"id": "foreign", "namespace": "prod", "tenant": "acme"}, "future_starts_blocked": true}}
+	for _, payload := range payloads {
+		var calls atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls.Add(1)
+			w.Header().Set(A2AVersionHeader, "1.0")
+			json.NewEncoder(w).Encode(payload)
+		}))
+		_, err := NewClient(server.URL).AgentServiceStopTask(context.Background(), receipt)
+		server.Close()
+		if err == nil || calls.Load() != 1 {
+			t.Fatalf("invalid acknowledgement accepted or retried: %v", err)
+		}
+	}
+	for _, status := range []int{403, 404, 409, 429, 503, 307} {
+		var calls atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls.Add(1)
+			w.Header().Set("Location", "/redirected")
+			w.WriteHeader(status)
+		}))
+		_, err := NewClient(server.URL).AgentServiceStopTask(context.Background(), receipt)
+		server.Close()
+		failure, ok := err.(*HTTPError)
+		if !ok || failure.Status != status || calls.Load() != 1 {
+			t.Fatalf("failed stop retried or status lost: %v", err)
+		}
 	}
 }

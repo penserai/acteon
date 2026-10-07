@@ -39,14 +39,17 @@ class AgentServiceReceipt:
     task: dict[str, Any]
 
 
-def _task(
-    response: httpx.Response, namespace: str, tenant: str, task_id: str | None = None
+@dataclass(frozen=True)
+class AgentServiceStopReceipt:
+    """Future starts are blocked; an external effect may still complete."""
+
+    task: dict[str, Any]
+    future_starts_blocked: bool
+
+
+def _task_value(
+    task: Any, namespace: str, tenant: str, task_id: str | None = None
 ) -> dict[str, Any]:
-    if not 200 <= response.status_code < 300:
-        raise HttpError(response.status_code, response.text)
-    if response.headers.get("a2a-version") != A2A_PROTOCOL_VERSION:
-        raise ActeonError("agent service response version missing or unsupported")
-    task = response.json()
     if (
         not isinstance(task, dict)
         or not isinstance(task.get("id"), str)
@@ -57,6 +60,29 @@ def _task(
     ):
         raise ActeonError("agent service task identity mismatch")
     return task
+
+
+def _response_value(response: httpx.Response) -> Any:
+    if not 200 <= response.status_code < 300:
+        raise HttpError(response.status_code, response.text)
+    if response.headers.get("a2a-version") != A2A_PROTOCOL_VERSION:
+        raise ActeonError("agent service response version missing or unsupported")
+    return response.json()
+
+
+def _stop(response: httpx.Response, receipt: AgentServiceReceipt) -> AgentServiceStopReceipt:
+    value = _response_value(response)
+    if not isinstance(value, dict) or value.get("future_starts_blocked") is not True:
+        raise ActeonError("agent service stop acknowledgement missing or malformed")
+    return AgentServiceStopReceipt(
+        _task_value(value.get("task"), receipt.namespace, receipt.tenant, receipt.task_id), True
+    )
+
+
+def _task(
+    response: httpx.Response, namespace: str, tenant: str, task_id: str | None = None
+) -> dict[str, Any]:
+    return _task_value(_response_value(response), namespace, tenant, task_id)
 
 
 def _receipt(
@@ -101,6 +127,21 @@ class _AgentServicesMixin:
         )
         return _receipt(response, namespace, tenant, agent)
 
+    def agent_service_stop_task(self, receipt: AgentServiceReceipt) -> AgentServiceStopReceipt:
+        """Stop future starts; repeat the same receipt explicitly after response loss."""
+        response = self._request(
+            "POST",
+            _base(receipt.namespace, receipt.tenant, receipt.agent)
+            + "/tasks/"
+            + _segment(receipt.task_id)
+            + "/stop",
+            extra_headers={
+                **_A2A_HEADERS,
+                AGENT_SOURCE_CONTEXT_HEADER: _source(receipt.source_context),
+            },
+        )
+        return _stop(response, receipt)
+
     def agent_service_get_task(self, receipt: AgentServiceReceipt) -> dict[str, Any]:
         """Observe the retained job without starting work or changing client defaults."""
         response = self._request(
@@ -139,6 +180,23 @@ class _AsyncAgentServicesMixin:
             extra_headers=_A2A_HEADERS,
         )
         return _receipt(response, namespace, tenant, agent)
+
+    async def agent_service_stop_task(
+        self, receipt: AgentServiceReceipt
+    ) -> AgentServiceStopReceipt:
+        """Stop future starts; repeat the same receipt explicitly after response loss."""
+        response = await self._request(
+            "POST",
+            _base(receipt.namespace, receipt.tenant, receipt.agent)
+            + "/tasks/"
+            + _segment(receipt.task_id)
+            + "/stop",
+            extra_headers={
+                **_A2A_HEADERS,
+                AGENT_SOURCE_CONTEXT_HEADER: _source(receipt.source_context),
+            },
+        )
+        return _stop(response, receipt)
 
     async def agent_service_get_task(self, receipt: AgentServiceReceipt) -> dict[str, Any]:
         response = await self._request(

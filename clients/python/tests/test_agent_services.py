@@ -7,7 +7,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from acteon_client import ActeonClient, AsyncActeonClient
+from acteon_client import ActeonClient, AgentServiceReceipt, AsyncActeonClient
 from acteon_client.agent_services import AGENT_SOURCE_CONTEXT_HEADER
 from acteon_client.errors import ActeonError, HttpError
 
@@ -19,6 +19,12 @@ FIXTURE = json.loads(
 def handler(request):
     assert request.headers["authorization"] == "Bearer caller-key"
     assert request.headers["a2a-version"] == "1.0"
+    if request.url.path.endswith("/stop"):
+        assert not request.content
+        index = int(request.url.path.split("/")[-2][-1]) - 1
+        job = FIXTURE["jobs"][index]
+        assert request.headers[AGENT_SOURCE_CONTEXT_HEADER] == job["source_context"]
+        return httpx.Response(200, json=job["stop_response"], headers={"a2a-version": "1.0"})
     if request.method == "POST":
         body = json.loads(request.content)
         index = int(body["message"]["messageId"][-1]) - 1
@@ -45,6 +51,11 @@ def test_sync_receipts_keep_jobs_separate_and_original_identity():
         first.task["id"] = "tampered-model-id"
         assert client.agent_service_get_task(first)["id"] == "job-1"
         assert client.agent_service_get_task(second)["id"] == "job-2"
+        for receipt in [second, first]:
+            stopped = client.agent_service_stop_task(receipt)
+            assert stopped.future_starts_blocked is True
+            assert stopped.task["id"] == receipt.task_id
+            assert stopped.task["status"]["state"] == "submitted"
         assert first.source_context == FIXTURE["jobs"][0]["source_context"]
         assert first.source_context not in repr(first)
     finally:
@@ -68,6 +79,11 @@ async def test_async_concurrent_jobs_use_request_local_context():
             *(client.agent_service_get_task(receipt) for receipt in reversed(receipts))
         )
         assert [task["id"] for task in tasks] == ["job-2", "job-1"]
+        stopped = await asyncio.gather(
+            *(client.agent_service_stop_task(r) for r in reversed(receipts))
+        )
+        assert [r.task["id"] for r in stopped] == ["job-2", "job-1"]
+        assert all(r.future_starts_blocked for r in stopped)
     finally:
         await client.close()
 
@@ -111,6 +127,82 @@ def test_http_errors_and_redirects_are_not_retried(status):
         with pytest.raises(HttpError) as error:
             client.agent_service_send_message("prod", "acme", "notifier", {})
         assert error.value.status == status
+        assert len(calls) == 1
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize("value", [False, "true", 1, None])
+def test_stop_rejects_non_acknowledgements_with_one_request(value):
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        return httpx.Response(
+            200,
+            json={"task": FIXTURE["jobs"][0]["task"], "future_starts_blocked": value},
+            headers={"a2a-version": "1.0"},
+        )
+
+    job = FIXTURE["jobs"][0]
+    receipt = AgentServiceReceipt(
+        "prod", "acme", "notifier", "job-1", job["source_context"], job["task"]
+    )
+    client = ActeonClient("http://acteon")
+    client._client = httpx.Client(transport=httpx.MockTransport(respond))
+    try:
+        with pytest.raises(ActeonError):
+            client.agent_service_stop_task(receipt)
+        assert len(calls) == 1
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize("status", FIXTURE["error_statuses"] + [307])
+def test_stop_failed_acknowledgements_preserve_status_and_never_retry(status):
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        return httpx.Response(
+            status, json={"error": "denied"}, headers={"location": "http://other/steal"}
+        )
+
+    job = FIXTURE["jobs"][0]
+    receipt = AgentServiceReceipt(
+        "prod", "acme", "notifier", "job-1", job["source_context"], job["task"]
+    )
+    client = ActeonClient("http://acteon")
+    client._client = httpx.Client(transport=httpx.MockTransport(respond), follow_redirects=True)
+    try:
+        with pytest.raises(HttpError) as error:
+            client.agent_service_stop_task(receipt)
+        assert error.value.status == status
+        assert len(calls) == 1
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize("field,value", [("id", "foreign-job"), ("tenant", "other-tenant")])
+def test_stop_rejects_foreign_task_identity(field, value):
+    calls = []
+    job = FIXTURE["jobs"][0]
+    receipt = AgentServiceReceipt(
+        "prod", "acme", "notifier", "job-1", job["source_context"], job["task"]
+    )
+
+    def respond(request):
+        calls.append(request)
+        task = {**job["task"], field: value}
+        return httpx.Response(
+            200, json={"task": task, "future_starts_blocked": True}, headers={"a2a-version": "1.0"}
+        )
+
+    client = ActeonClient("http://acteon")
+    client._client = httpx.Client(transport=httpx.MockTransport(respond))
+    try:
+        with pytest.raises(ActeonError, match="identity mismatch"):
+            client.agent_service_stop_task(receipt)
         assert len(calls) == 1
     finally:
         client.close()

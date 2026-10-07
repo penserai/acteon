@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { sendServiceMessage, observeServiceTask, type ServiceReceipt } from '../api/agentServices'
+import { sendServiceMessage, observeServiceTask, stopServiceTask, type ServiceReceipt } from '../api/agentServices'
 import { Button } from '../components/ui/Button'
 import { Input } from '../components/ui/Input'
 import { Badge } from '../components/ui/Badge'
@@ -10,7 +10,7 @@ export function AgentServicePanel({ namespace, tenant, agent }: { namespace: str
   const [attempted, setAttempted] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  const [receipts, setReceipts] = useState<ServiceReceipt[]>([])
+  const [receipts, setReceipts] = useState<(ServiceReceipt & { futureStartsBlocked?: boolean })[]>([])
   async function send() {
     setBusy(true); setError(''); setAttempted(true)
     try {
@@ -25,6 +25,14 @@ export function AgentServicePanel({ namespace, tenant, agent }: { namespace: str
       const task = await observeServiceTask(receipt)
       setReceipts(current => current.map(item => item.taskId === receipt.taskId ? { ...item, task } : item))
     } catch (cause) { setError((cause as Error).message) }
+    finally { setBusy(false) }
+  }
+  async function stop(receipt: ServiceReceipt) {
+    setBusy(true); setError('')
+    try {
+      const stopped = await stopServiceTask(receipt)
+      setReceipts(current => current.map(item => item.taskId === receipt.taskId ? { ...item, task: stopped.task, futureStartsBlocked: true } : item))
+    } catch (cause) { setError(`Stop acknowledgement for task ${receipt.taskId} unavailable. Retry this task’s stop control. ${(cause as Error).message}`) }
     finally { setBusy(false) }
   }
   return <section className="space-y-4" aria-label="Governed agent tasks">
@@ -43,7 +51,11 @@ export function AgentServicePanel({ namespace, tenant, agent }: { namespace: str
       <div className="flex flex-wrap items-center justify-between gap-3">
         <code className="min-w-0 break-all">{receipt.taskId}</code><Badge variant={receipt.task.status.state === 'completed' ? 'success' : 'neutral'}>{receipt.task.status.state}</Badge>
       </div>
-      <Button variant="secondary" disabled={busy} onClick={() => void refresh(receipt)}>Refresh task</Button>
+      <div className="flex flex-wrap gap-2">
+        <Button variant="secondary" disabled={busy} onClick={() => void refresh(receipt)}>Refresh task</Button>
+        <Button variant="secondary" disabled={busy || receipt.futureStartsBlocked === true} onClick={() => void stop(receipt)}>Stop future starts</Button>
+      </div>
+      {receipt.futureStartsBlocked && <p className="text-sm">Future starts stopped. An operation already delivered may still complete; unresolved work retains its capacity.</p>}
       {!!receipt.task.artifacts?.length && <pre className="overflow-auto text-xs">{JSON.stringify(receipt.task.artifacts, null, 2)}</pre>}
     </article>)}
   </section>

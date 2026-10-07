@@ -11,7 +11,7 @@ The current source tree provides a generated catalog for **199 finite HTTP opera
 | Typed dispatch, batch, rules, audit and bus helpers | Yes | Yes | Yes | Yes | Yes |
 | Complete finite HTTP operation catalog | Yes | Yes, sync and async | Yes | Yes | Yes |
 | Native streaming and A2A helpers | Yes | Yes | Yes | Yes | Yes |
-| Authenticated agent-service acceptance receipts and observation | Yes | Yes, sync and async | Yes | Yes | Yes |
+| Authenticated agent-service receipts, observation and future-start stop | Yes | Yes, sync and async | Yes | Yes | Yes |
 | Code-defined workflow runner | — | Yes | Yes | — | — |
 | Managed stream-processing adapter | `stream-processing` feature | — | — | — | — |
 
@@ -218,8 +218,22 @@ The service control extension `POST
 requester's private credential and admission source-context header. Agent
 requesters must send the exact `x-acteon-agent-source-context` returned for that
 job. The finite operation catalog includes `agent_services_task_stop` in every
-SDK; dedicated receipt-aware stop helpers are still being added. Retain the
-original job ID and source context when invoking this control.
+SDK; dedicated receipt-aware stop helpers retain the original job ID and source
+context when invoking this control.
+
+| SDK | Stop helper | Acknowledgement |
+| --- | --- | --- |
+| Rust | `agent_service_stop_task(&receipt)` | `AgentServiceStopReceipt` |
+| Python sync/async | `agent_service_stop_task(receipt)` | `AgentServiceStopReceipt` |
+| TypeScript | `agentServiceStopTask(receipt)` | `AgentServiceStopReceipt` |
+| Go | `AgentServiceStopTask(ctx, receipt)` | `AgentServiceStopReceipt` |
+| Java | `agentServiceStopTask(receipt)` | `AgentServiceStopReceipt` |
+
+All helpers send one request, validate the original task identity and exact
+restriction acknowledgement, and reject redirects. The agent detail view provides
+**Stop future starts** for each locally retained job. A failed acknowledgement
+keeps that job available for an explicit retry; a successful acknowledgement
+keeps the restriction visible alongside later provider results.
 
 A successful response is `{"task": ..., "future_starts_blocked": true}`. The
 restriction blocks future starts in the recipient execution subtree and survives

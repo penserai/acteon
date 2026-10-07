@@ -25,3 +25,9 @@ export function agentServiceBase(namespace: string, tenant: string, agent: strin
   };
   return `/a2a/${segment(namespace)}/${segment(tenant)}/agents/${segment(agent)}/v1`;
 }
+
+/** Acknowledges future-start restriction, never an external provider abort. */
+export interface AgentServiceStopReceipt {
+  readonly task: Record<string, unknown>;
+  readonly futureStartsBlocked: true;
+}

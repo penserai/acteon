@@ -17,6 +17,14 @@ pub struct AgentServiceReceipt {
     task_id: String,
     source_context: String,
 }
+/// Restriction acknowledgement; task status continues to reflect provider evidence.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentServiceStopReceipt {
+    pub task: Task,
+    pub future_starts_blocked: bool,
+}
+
 impl std::fmt::Debug for AgentServiceReceipt {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentServiceReceipt")
@@ -134,6 +142,69 @@ impl ActeonClient {
             source_context: source,
         })
     }
+    /// Stop future starts for the original accepted job. No automatic retry;
+    /// response loss requires an explicit retry with the same retained receipt.
+    pub async fn agent_service_stop_task(
+        &self,
+        receipt: &AgentServiceReceipt,
+    ) -> Result<AgentServiceStopReceipt, Error> {
+        if !valid_source(&receipt.source_context) {
+            return Err(Error::Configuration(
+                "invalid agent service source context".into(),
+            ));
+        }
+        let path = format!(
+            "/a2a/{}/{}/agents/{}/v1/tasks/{}/stop",
+            segment(&receipt.namespace)?,
+            segment(&receipt.tenant)?,
+            segment(&receipt.agent)?,
+            segment(&receipt.task_id)?
+        );
+        let response = self
+            .add_auth(self.client.post(format!("{}{path}", self.base_url)))
+            .header("a2a-version", A2A_PROTOCOL_VERSION)
+            .header(AGENT_SOURCE_CONTEXT_HEADER, &receipt.source_context)
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+        if !response.status().is_success() {
+            return Err(Error::Http {
+                status: response.status().as_u16(),
+                message: response
+                    .text()
+                    .await
+                    .map_err(|e| Error::Connection(e.to_string()))?,
+            });
+        }
+        if response
+            .headers()
+            .get("a2a-version")
+            .and_then(|v| v.to_str().ok())
+            != Some(A2A_PROTOCOL_VERSION)
+        {
+            return Err(Error::Deserialization(
+                "agent service response version missing or unsupported".into(),
+            ));
+        }
+        let stopped: AgentServiceStopReceipt = response
+            .json()
+            .await
+            .map_err(|e| Error::Deserialization(e.to_string()))?;
+        if !stopped.future_starts_blocked
+            || !task_matches(
+                &stopped.task,
+                &receipt.namespace,
+                &receipt.tenant,
+                Some(&receipt.task_id),
+            )
+        {
+            return Err(Error::Deserialization(
+                "agent service stop acknowledgement mismatch".into(),
+            ));
+        }
+        Ok(stopped)
+    }
+
     /// Observe exactly the retained job. This neither resumes nor invokes work.
     pub async fn agent_service_get_task(
         &self,
@@ -189,6 +260,7 @@ mod tests {
         calls: Arc<Mutex<Vec<(String, Option<String>)>>>,
         status: Arc<AtomicU16>,
         source: Arc<AtomicBool>,
+        stop_payload: Arc<Mutex<Option<serde_json::Value>>>,
         server: tokio::task::JoinHandle<()>,
     }
     impl Drop for Fixture {
@@ -205,10 +277,21 @@ mod tests {
             let calls = Arc::new(Mutex::new(Vec::new()));
             let status = Arc::new(AtomicU16::new(200));
             let source = Arc::new(AtomicBool::new(true));
-            let (log, code, header) = (calls.clone(), status.clone(), source.clone());
+            let stop_payload = Arc::new(Mutex::new(None));
+            let (log, code, header, stopped) = (
+                calls.clone(),
+                status.clone(),
+                source.clone(),
+                stop_payload.clone(),
+            );
             let app = Router::new().fallback(any(move |request: Request| {
-                let (wire, log, code, header) =
-                    (wire.clone(), log.clone(), code.clone(), header.clone());
+                let (wire, log, code, header, stopped) = (
+                    wire.clone(),
+                    log.clone(),
+                    code.clone(),
+                    header.clone(),
+                    stopped.clone(),
+                );
                 async move {
                     assert_eq!(request.headers()["authorization"], "Bearer caller-key");
                     assert_eq!(request.headers()["a2a-version"], "1.0");
@@ -235,7 +318,7 @@ mod tests {
                         .await
                         .unwrap();
                     let index = if raw.is_empty() {
-                        usize::from(path.ends_with("job-2"))
+                        usize::from(path.ends_with("job-2") || path.ends_with("job-2/stop"))
                     } else {
                         let body: serde_json::Value = serde_json::from_slice(&raw).unwrap();
                         assert!(source.is_none());
@@ -245,7 +328,17 @@ mod tests {
                     if let Some(source) = source {
                         assert_eq!(source, job["source_context"].as_str().unwrap());
                     }
-                    let mut response = Json(job["task"].clone()).into_response();
+                    let payload = if path.ends_with("/stop") {
+                        assert!(raw.is_empty());
+                        stopped
+                            .lock()
+                            .unwrap()
+                            .clone()
+                            .unwrap_or_else(|| job["stop_response"].clone())
+                    } else {
+                        job["task"].clone()
+                    };
+                    let mut response = Json(payload).into_response();
                     response
                         .headers_mut()
                         .insert("a2a-version", "1.0".parse().unwrap());
@@ -272,6 +365,7 @@ mod tests {
                 calls,
                 status,
                 source,
+                stop_payload,
                 server,
             }
         }
@@ -309,7 +403,15 @@ mod tests {
             "job-2"
         );
         assert!(!format!("{restored:?}").contains(restored.source_context()));
-        assert_eq!(fixture.calls.lock().unwrap().len(), 4);
+        let stopped = fixture
+            .client
+            .agent_service_stop_task(&restored)
+            .await
+            .unwrap();
+        assert!(stopped.future_starts_blocked);
+        assert_eq!(stopped.task.id, "job-1");
+        assert_eq!(stopped.task.status.state, acteon_core::TaskState::Submitted);
+        assert_eq!(fixture.calls.lock().unwrap().len(), 5);
     }
     #[tokio::test]
     async fn missing_header_errors_and_redirects_never_return_fake_receipts_or_retry() {
@@ -330,5 +432,43 @@ mod tests {
             );
         }
         assert_eq!(fixture.calls.lock().unwrap().len(), 7);
+    }
+    #[tokio::test]
+    async fn stop_refuses_false_acknowledgements_foreign_tasks_and_failed_http_without_retry() {
+        let f = Fixture::new().await;
+        let receipt = f
+            .client
+            .agent_service_send_message(
+                "prod",
+                "acme",
+                "notifier",
+                &TaskMessage::text("m1", acteon_core::TaskRole::User, "one"),
+            )
+            .await
+            .unwrap();
+        let wire: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../clients/contract-fixtures/agent-services.json"
+        ))
+        .unwrap();
+        for payload in [
+            serde_json::Value::Null,
+            serde_json::json!({}),
+            serde_json::json!({"task":wire["jobs"][0]["task"],"future_starts_blocked":false}),
+            serde_json::json!({"task":wire["jobs"][0]["task"],"future_starts_blocked":"true"}),
+            serde_json::json!({"task":wire["jobs"][1]["task"],"future_starts_blocked":true}),
+        ] {
+            *f.stop_payload.lock().unwrap() = Some(payload);
+            assert!(matches!(
+                f.client.agent_service_stop_task(&receipt).await,
+                Err(Error::Deserialization(_))
+            ));
+        }
+        for status in [403, 404, 409, 429, 503, 307] {
+            f.status.store(status, Ordering::SeqCst);
+            assert!(
+                matches!(f.client.agent_service_stop_task(&receipt).await, Err(Error::Http {status:actual, ..}) if actual == status)
+            );
+        }
+        assert_eq!(f.calls.lock().unwrap().len(), 12);
     }
 }

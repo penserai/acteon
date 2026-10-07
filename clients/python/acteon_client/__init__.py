@@ -8,7 +8,11 @@ from .a2a import (
     make_part_url,
     make_push_config,
 )
-from .agent_services import AGENT_SOURCE_CONTEXT_HEADER, AgentServiceReceipt
+from .agent_services import (
+    AGENT_SOURCE_CONTEXT_HEADER,
+    AgentServiceReceipt,
+    AgentServiceStopReceipt,
+)
 from .bus_models import (
     AppendBusConversationMessage,
     BusAgent,
@@ -471,4 +475,4 @@ __all__ += [
 ]
 
 
-__all__ += ["AGENT_SOURCE_CONTEXT_HEADER", "AgentServiceReceipt"]
+__all__ += ["AGENT_SOURCE_CONTEXT_HEADER", "AgentServiceReceipt", "AgentServiceStopReceipt"]

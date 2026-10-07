@@ -48,3 +48,15 @@ export async function observeServiceTask(receipt: ServiceReceipt): Promise<Servi
   })
   return task(response, receipt.namespace, receipt.tenant, receipt.taskId)
 }
+
+export async function stopServiceTask(receipt: ServiceReceipt): Promise<{ task: ServiceTask; futureStartsBlocked: true }> {
+  const response = await apiResponse(base(receipt.namespace, receipt.tenant, receipt.agent) + '/tasks/' + segment(receipt.taskId) + '/stop', {
+    method: 'POST', redirect: 'error', headers: { 'a2a-version': '1.0', [SOURCE_HEADER]: source(receipt.sourceContext) },
+  })
+  if (response.headers.get('a2a-version') !== '1.0') throw new Error('Unsupported agent service response')
+  const value = await response.json() as { task?: ServiceTask; future_starts_blocked?: unknown } | null
+  if (!value || value.future_starts_blocked !== true) throw new Error('Stop acknowledgement unavailable. Retry the stop for this same task.')
+  const stopped = value.task
+  if (!stopped || stopped.id !== receipt.taskId || stopped.namespace !== receipt.namespace || stopped.tenant !== receipt.tenant) throw new Error('Agent service task identity mismatch')
+  return { task: stopped, futureStartsBlocked: true }
+}

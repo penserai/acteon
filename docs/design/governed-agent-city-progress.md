@@ -1537,3 +1537,24 @@ a delivered operation may still complete after the restriction. This checkpoint
 adds the safe restriction boundary. Provider abort/reconciliation, native stop
 SDK/UI helpers, all-backend qualification, registry fencing, qualified outbound
 A2A, and the full workforce objective remain required. PR #433 remains draft.
+
+
+### Receipt-aware stop SDK and browser controls
+
+Every native SDK now stops the original job using its retained host receipt,
+without deriving authority from mutable task data or sharing job headers.
+Helpers require the exact original task identity and a true restriction
+acknowledgement; failed HTTP responses, redirects, false flags and foreign task
+identities cannot return a successful stop receipt. Python covers sync and async.
+
+The browser's per-job **Stop future starts** action retains the same target and
+context on an explicit retry. It acknowledges only the durable future-start
+restriction and keeps actual provider status visible. A later completed result
+preserves the local stopped indication rather than replacing it with Cancelled.
+Desktop and mobile contracts cover this path and keep source contexts out of the
+rendered page. Receipt retention remains local to the open view.
+
+Provider abort/reconciliation, response-lost peer cancellation, registry revision
+fencing, qualified outbound A2A, all-backend/scale qualification, and the complete
+city/workforce requirements remain active. This completes native future-start
+stop integration, not the complete peer lifecycle or Phase 4 release gate.

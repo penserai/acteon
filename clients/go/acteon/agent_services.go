@@ -130,3 +130,45 @@ func (c *Client) AgentServiceGetTask(ctx context.Context, receipt *AgentServiceR
 	}
 	return task, nil
 }
+
+// AgentServiceStopReceipt acknowledges a durable restriction on future starts.
+// Task remains actual provider evidence; no external abort is implied.
+type AgentServiceStopReceipt struct {
+	Task                map[string]any `json:"task"`
+	FutureStartsBlocked bool           `json:"future_starts_blocked"`
+}
+
+// AgentServiceStopTask stops future starts for the original retained job.
+// After response loss, explicitly retry with the same receipt.
+func (c *Client) AgentServiceStopTask(ctx context.Context, receipt *AgentServiceReceipt) (*AgentServiceStopReceipt, error) {
+	if receipt == nil {
+		return nil, fmt.Errorf("agent service receipt required")
+	}
+	if err := agentSource(receipt.SourceContext); err != nil {
+		return nil, err
+	}
+	path, err := agentServiceBase(receipt.Namespace, receipt.Tenant, receipt.Agent)
+	if err != nil {
+		return nil, err
+	}
+	id, err := agentSegment(receipt.TaskID)
+	if err != nil {
+		return nil, err
+	}
+	value, _, err := c.agentServiceRequest(ctx, "POST", path+"/tasks/"+id+"/stop", nil, receipt.SourceContext)
+	if err != nil {
+		return nil, err
+	}
+	blocked, ok := value["future_starts_blocked"].(bool)
+	if !ok || !blocked {
+		return nil, fmt.Errorf("agent service stop acknowledgement missing or malformed")
+	}
+	task, ok := value["task"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("agent service task identity mismatch")
+	}
+	if _, err := agentTask(task, receipt.Namespace, receipt.Tenant, receipt.TaskID); err != nil {
+		return nil, err
+	}
+	return &AgentServiceStopReceipt{Task: task, FutureStartsBlocked: true}, nil
+}

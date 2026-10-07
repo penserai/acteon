@@ -42,3 +42,8 @@ concurrent jobs use their own context, mutable task data cannot change the
 observation identity, missing headers cannot be filled from metadata, and HTTP
 failures and redirects are not retried. Rust additionally exercises the real
 server's authenticated agent requester and configured CORS response exposure.
+
+The agent-service fixture also supplies per-job future-start stop acknowledgements.
+All five native SDK contracts verify the original task and request-local context,
+retain provider task status, and reject failed or false acknowledgements without
+retries. Browser contracts cover explicit same-job recovery and later completion.
