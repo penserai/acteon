@@ -8,6 +8,7 @@ import { Badge } from '../components/ui/Badge'
 import { Modal } from '../components/ui/Modal'
 import type { GovernanceChangeReceipt, GovernanceIntervention, GovernanceResource } from '../types'
 import { ProviderHistory } from './ProviderHistory'
+import { RegistryManagement } from './governance/RegistryManagement'
 import styles from './Governance.module.css'
 
 const resourceKey = (resource: GovernanceResource) => JSON.stringify(resource)
@@ -30,8 +31,9 @@ export function Governance() {
   const [deadline, setDeadline] = useState('')
   const [issueReason, setIssueReason] = useState('')
   const [issueId, setIssueId] = useState<string | null>(null)
+  const [registryLocked, setRegistryLocked] = useState(false)
   const view = query.isError ? undefined : query.data
-  const busy = intervention.isPending || publication.isPending
+  const busy = intervention.isPending || publication.isPending || registryLocked
   const resources = [...new Map(view?.routes.flatMap(r => r.effect.resources).map(r => [resourceKey(r), r]) ?? []).values()]
   const begin = (label: string, change: GovernanceIntervention) => {
     setPending({ label, change, id: crypto.randomUUID(), ...scope }); setReason(''); setError('')
@@ -72,6 +74,7 @@ export function Governance() {
     {receipt && <div className={styles.card} role="status"><strong>Control recorded</strong><p className={styles.muted}>Generation {receipt.generation} · {receipt.reason}</p><p className={styles.muted}>New execution checks use this authority. Already started effects may still finish.</p></div>}
     {view && <>
       {view.management.can_read_history && <ProviderHistory key={JSON.stringify([view.namespace, view.tenant])} namespace={view.namespace} tenant={view.tenant} />}
+      <RegistryManagement key={JSON.stringify([view.namespace, view.tenant])} namespace={view.namespace} tenant={view.tenant} canIntervene={view.management.can_intervene} onLockChange={setRegistryLocked} />
       <section className={styles.card}><h2>Governed routes</h2>
         {view.routes.map(r => <div className={styles.row} key={r.route.provider + r.route.action_type}><div className={styles.identity}><strong>{r.route.provider} / {r.route.action_type}</strong><p className={styles.muted}>{r.effect.operation}</p></div><Badge variant={r.closed ? 'warning' : 'success'}>{r.closed ? 'Closed' : 'Open'}</Badge></div>)}
       </section>

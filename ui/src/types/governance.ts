@@ -41,6 +41,24 @@ export interface GovernanceScopeView {
   closed_resources: GovernanceResource[]; revoked_subjects: string[];
 }
 
+export type GovernanceRegistryProjection = 'agent' | 'card';
+export interface GovernanceRegistryMutationRequest {
+  namespace: string; tenant: string; agent_id: string; change_id: string;
+  expected_registry_revision: number; projection: GovernanceRegistryProjection;
+  expected_projection_version: number | null; value: Record<string, unknown> | null; reason: string;
+}
+export interface GovernanceRegistryProjectionView {
+  namespace: string; tenant: string; agent_id: string; agent_resource: GovernanceResource;
+  projection: GovernanceRegistryProjection; registry_revision: number;
+  qualification_retired: boolean | null; version: number | null;
+  value: Record<string, unknown> | null;
+}
+export interface GovernanceRegistryMutationReceipt {
+  namespace: string; tenant: string; agent_id: string; change_id: string;
+  projection: GovernanceRegistryProjection; expected_registry_revision: number;
+  input_digest: string; actor: string; delivery_complete: boolean; applied: boolean;
+}
+
 export type ProviderHistoryStatus =
   | { state: 'prepared' }
   | { state: 'in_flight'; attempt_id: string }

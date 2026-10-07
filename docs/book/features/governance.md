@@ -420,6 +420,16 @@ removal, together with the observed versions and a caller-owned `change_id`.
 | Go | `RegistryProjection` | `MutateRegistry` |
 | Java | `registryProjection` | `mutateRegistry` |
 
+The Admin UI exposes the same flow under **Governance → Registry metadata**.
+Inspect an exact agent and projection, edit the object or choose removal, add a
+reason, and review the complete intent before sending. Once attempted, the
+editor is locked to the reviewed change ID and versions. An unavailable or
+invalid acknowledgement exposes only **Retry same registry change** or
+**Discard and inspect again**. Success also requires a fresh inspection before
+another intent. Before sending, the UI journals the reviewed request in browser
+storage and restores it after a reload; if it cannot retain the request, it
+does not send. The browser refuses redirects and does not retry automatically.
+
 For example, removing an advertisement with the Python SDK:
 
 ```python
