@@ -648,3 +648,11 @@ and `ACTEON_EXECUTION_AUTHORITY_KEY`. See [Execution permits](../features/execut
 for a complete scope declaration, SDK options, replay behavior and current
 execution-path coverage. The sanitized admin configuration exposes only
 `execution_authority_enabled` for this profile.
+
+Configured agent-service replacements use `retained_agent_services` inside the
+same scope. Copy the former binding's card, registry revision, principal, skill,
+endpoint, endpoint ID and route, and pin its published binding digest. The
+retained entry can recover accepted tasks but cannot accept new work or publish
+permits, grants, or registry authority. See [Replacing a configured service
+binding](../features/governance.md#replacing-a-configured-service-binding) for
+the required revision and grant-ID transition.

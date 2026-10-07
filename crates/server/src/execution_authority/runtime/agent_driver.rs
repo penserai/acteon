@@ -40,7 +40,12 @@ impl ExecutionAuthorityRuntime {
         config: &AgentServiceDriverConfig,
     ) -> Result<Option<AgentServiceDriver>, String> {
         config.validate()?;
-        if !config.enabled || self.scopes.values().all(|scope| scope.agents.is_empty()) {
+        if !config.enabled
+            || self
+                .scopes
+                .values()
+                .all(|scope| scope.agent_bindings.is_empty())
+        {
             return Ok(None);
         }
         let stop = CancellationToken::new();
@@ -121,7 +126,7 @@ impl ExecutionAuthorityRuntime {
         }
         for (identity, scope) in scopes {
             *last_scope = Some(identity.clone());
-            if scope.agents.is_empty() {
+            if scope.agent_bindings.is_empty() {
                 continue;
             }
             let mut entries = self
@@ -144,7 +149,7 @@ impl ExecutionAuthorityRuntime {
             let length = entries.len();
             entries.rotate_left(start % length);
             let bindings: BTreeMap<_, _> = scope
-                .agents
+                .agent_bindings
                 .values()
                 .map(|runtime| (runtime.binding_digest(), runtime))
                 .collect();

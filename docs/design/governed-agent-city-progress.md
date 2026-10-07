@@ -1638,8 +1638,8 @@ receipts under both source versions, with one provider invocation and no resend.
 This is the mutation protocol prerequisite. Registry HTTP mutation handlers,
 operator agent-management bounds, receipt-aware SDK/UI recovery and qualified
 reconciliation for ambiguous metadata writes remain required integrations.
-Retained service bindings across replacement, outbound A2A, provider abort and
-the complete city/workforce phases remain open.
+At this checkpoint, retained service bindings across replacement, outbound A2A,
+provider abort and the complete city/workforce phases remained open.
 
 
 ### Governed registry operator and backend completion
@@ -1666,6 +1666,42 @@ delete/recreate, restart again and requalification only after known completion. 
 production backend variants use isolated storage and run in CI.
 
 This closes the governed registry mutation/operator/backend building block.
-Retained historical service bindings across replacement, provider
-abort/reconciliation and qualified outbound A2A remain required for the full
-peer lifecycle and city objective.
+Provider abort/reconciliation and qualified outbound A2A remain required for the
+full peer lifecycle and city objective.
+
+
+### Retained service bindings across replacement
+
+Execution scopes can now retain up to 128 exact prior agent-service bindings in
+addition to their active services. Each host declaration reconstructs the old
+card, registry epoch, agent principal, endpoint, route and provider operation and
+must match its pinned 64-character binding digest. Preparation refuses forged
+digests, duplicate epochs, nonhistorical revisions and provider substitutions.
+
+Retained bindings install runtimes for accepted-work recovery only. They are
+excluded from new admission bounds, permits, registry qualification and grant
+publication. Their ingress effects remain in the publisher ceiling so a newer
+authentication configuration can withdraw the former credential projection.
+Replacement uses a new registry epoch, source permit revision, authentication
+authority revision and delegation-grant ID; immutable grant IDs cannot be
+retargeted.
+
+Task observation, future-start stop, the recovery driver and exact message replay
+route by the binding digest sealed in the durable acceptance. Read-only signed
+root/child admission inspection correlates a response-lost replay without
+restoring contexts or budgets. Current authentication, original credential ID
+and method, source lineage, task identity, binding and input digest are all
+verified before the original receipt is returned. A changed payload conflicts,
+and a fresh message uses only the active binding. Exact replays and task controls
+continue after all active declarations are removed; fresh sends are refused.
+
+A real server replacement contract on Redis accepts work under revision 1,
+restarts with revision 2 plus the retained binding, observes, stops and exactly
+replays original tasks, executes new work once under the new digest, removes the
+active service while preserving exact replay, and repeats old observations after
+another restart. A superseded queued task cannot borrow the new authority; when
+current checks refuse its first provider start, it stays retained without a
+provider call.
+
+This closes historical service binding retention. Qualified outbound A2A and
+provider abort/reconciliation remain required for the complete peer lifecycle.

@@ -148,6 +148,34 @@ impl VerifiedExecutionContext {
     }
 }
 impl TrustedContextStore {
+    /// Inspect a signed child admission by its host-owned idempotency key.
+    /// The returned context is read-only correlation; no context or budget is
+    /// restored and no current execution authority is implied.
+    pub async fn inspect_child_admission(
+        &self,
+        admission_key: &str,
+    ) -> Result<Option<VerifiedExecutionContext>, ContextError> {
+        let (key, digest) = self.child_admission_key(admission_key)?;
+        let Some(raw) = self.store.get(&key).await? else {
+            return Ok(None);
+        };
+        let record = self.open_record(&raw)?;
+        let snapshot = self.coordinator.snapshot().await?;
+        if record.namespace != snapshot.namespace
+            || record.tenant != snapshot.tenant
+            || record.authority.incarnation != snapshot.incarnation
+            || record
+                .lineage
+                .as_ref()
+                .map(|lineage| &lineage.admission_digest)
+                != Some(&digest)
+        {
+            return Err(ContextError::Conflict);
+        }
+        self.validate(&record)?;
+        Ok(Some(VerifiedExecutionContext(record)))
+    }
+
     pub async fn capture_child(
         &self,
         request: ChildContextAdmission<'_>,

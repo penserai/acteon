@@ -180,6 +180,43 @@ impl ExecutionProviderRegistry {
                         },
                     );
                 }
+                let mut retained_agents = BTreeMap::new();
+                for service in &declaration.retained_agent_services {
+                    let actual = &self
+                        .entries
+                        .get(&service.route.provider)
+                        .ok_or("retained agent provider unavailable")?
+                        .actual;
+                    let action = Action::new(
+                        declaration.namespace.as_str(),
+                        declaration.tenant.as_str(),
+                        service.route.provider.as_str(),
+                        &service.route.action_type,
+                        serde_json::Value::Null,
+                    );
+                    let bound = catalog
+                        .resolve(&action, actual)
+                        .map_err(|_| "retained agent operation is not qualified")?
+                        .clone();
+                    let binding = service.qualify(&bound)?;
+                    let key = (service.card.agent_id.clone(), binding.digest().to_owned());
+                    if agents.values().any(|current| {
+                        current.declaration.card.agent_id == service.card.agent_id
+                            && current.binding.digest() == binding.digest()
+                    }) || retained_agents
+                        .insert(
+                            key,
+                            agent_services::PreparedRetainedAgentService {
+                                agent_id: service.card.agent_id.clone(),
+                                binding,
+                                bound,
+                            },
+                        )
+                        .is_some()
+                    {
+                        return Err("duplicate retained agent binding".into());
+                    }
+                }
                 let mut effects: Vec<_> = catalog
                     .definitions(&declaration.namespace, &declaration.tenant)
                     .into_iter()
@@ -191,6 +228,15 @@ impl ExecutionProviderRegistry {
                 effects.extend(declaration.historical_effects.clone());
                 effects.extend(
                     agents
+                        .values()
+                        .map(|agent| agent.binding.ingress_effect().clone()),
+                );
+                // Retain the previous footprint in the publisher ceiling so a
+                // new authentication revision can withdraw its old credential
+                // effects. Retained bindings are excluded from agent admission
+                // bounds, permits, registry publication, and delegation grants.
+                effects.extend(
+                    retained_agents
                         .values()
                         .map(|agent| agent.binding.ingress_effect().clone()),
                 );
@@ -231,6 +277,10 @@ impl ExecutionProviderRegistry {
                 if !declaration.agent_services.is_empty() {
                     policy["agent_services"] = serde_json::json!(declaration.agent_services);
                 }
+                if !declaration.retained_agent_services.is_empty() {
+                    policy["retained_agent_services"] =
+                        serde_json::json!(declaration.retained_agent_services);
+                }
                 if !declaration.chains.is_empty() {
                     policy["chains"] = serde_json::json!(declaration.chains);
                 }
@@ -244,6 +294,7 @@ impl ExecutionProviderRegistry {
                     catalog,
                     issuance,
                     agents,
+                    retained_agents,
                     policy_fingerprint: format!("{:x}", Sha256::digest(bytes)),
                 })
             })
@@ -423,11 +474,21 @@ pub struct PreparedExecutionScope {
     declaration: ExecutionScopeConfig,
     catalog: QualifiedProviderCatalog,
     agents: BTreeMap<String, agent_services::PreparedAgentService>,
+    retained_agents: BTreeMap<(String, String), agent_services::PreparedRetainedAgentService>,
     issuance: PermitIssuanceCeiling,
     policy_fingerprint: String,
 }
 
 impl PreparedExecutionScope {
+    /// Exact reviewed service digest operators retain when replacing a binding.
+    /// The digest is correlation data only and grants no authority by itself.
+    #[must_use]
+    pub fn agent_service_binding_digest(&self, agent_id: &str) -> Option<&str> {
+        self.agents
+            .get(agent_id)
+            .map(|agent| agent.binding.digest())
+    }
+
     /// Qualify complete pinned plans against this scope's actual registrations.
     /// This is preparation metadata; authentication and current permits are
     /// still required for root admission and every subsequent effect.
@@ -865,6 +926,13 @@ fn canonicalize_declaration(declaration: &mut ExecutionScopeConfig) {
             grant.source_permits.sort_by(|a, b| a.id.cmp(&b.id));
         }
     }
+    declaration.retained_agent_services.sort_by(|a, b| {
+        a.card
+            .agent_id
+            .cmp(&b.card.agent_id)
+            .then(a.registry_revision.cmp(&b.registry_revision))
+            .then(a.binding_digest.cmp(&b.binding_digest))
+    });
     declaration.permits.sort_by(|a, b| a.id.cmp(&b.id));
     for permit in &mut declaration.permits {
         permit.routes.sort();

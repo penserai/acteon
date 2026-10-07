@@ -495,8 +495,43 @@ from that evidence without another provider call. The reaper also checks the
 acceptance journal, so removing a projection's metadata cannot certify an
 uncertain outcome.
 
-This is a trusted Rust host adapter for one qualified provider operation.
-Agent-specific HTTP/A2A configuration, authenticated network envelopes, transport
-qualification, cancellation acknowledgment, and adapters for other runtime
-families remain separate integration work. No new client SDK wire API is exposed
-by this adapter.
+#### Replacing a configured service binding
+
+When a service card, registry revision, endpoint identity, or qualified provider
+footprint changes, keep the former binding in the scope's
+`retained_agent_services` list. Each retained entry contains the former card,
+registry revision, principal, skill, endpoint, endpoint ID and route plus the
+exact 64-character `binding_digest` published in the former registry
+qualification. `PreparedExecutionScope::agent_service_binding_digest` exposes
+the same reviewed value during deployment preparation.
+
+A retained entry installs a recovery runtime keyed by `(agent_id,
+binding_digest)`. It is excluded from new agent admission bounds, deployment
+permits, registry qualification and delegation-grant publication. Its old
+ingress footprint remains in the publisher ceiling only so the next
+authentication revision can withdraw the previous credential projection.
+Prepare fails if the digest does not match the reconstructed binding, if the
+route no longer resolves to the exact qualified provider operation, or if the
+retained epoch is not older than the active epoch.
+
+For the active replacement, increment `registry_revision`, increment the source
+permit revision, and issue a new delegation-grant ID. A grant ID cannot be
+retargeted to another binding. Increment `authority_revision` when the projected
+authentication policy changes. Preserve every retained entry until no accepted
+task references its digest.
+
+Task reads, stops, driver recovery and exact same-message replay select the
+runtime from the immutable acceptance journal rather than the active service
+definition. The replay path verifies signed root and child admissions, current
+requester authentication, the original credential ID and auth method, the exact
+message digest, and the complete acceptance before returning the original task.
+A changed message under the same ID conflicts. New message IDs always use the
+active binding. If every active declaration is removed, exact replay and task
+controls still work through retained bindings while fresh sends are refused.
+Retention does not revive authority: an old queued start still
+passes current credential, permit, grant, budget and resource checks, and may
+remain submitted or working when those checks refuse it.
+
+This is a trusted host adapter for qualified provider operations. Transport
+qualification, provider cancellation acknowledgment, and adapters for other
+runtime families remain separate integration work.

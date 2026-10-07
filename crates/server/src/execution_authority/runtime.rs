@@ -78,6 +78,8 @@ struct InstalledScope {
     handoffs: Arc<acteon_executor::plan::handoff::PlanHandoffStore>,
     history: acteon_executor::governed::history::HistoricalProviderStore,
     agents: BTreeMap<String, Arc<acteon_gateway::agent_runtime::AgentProviderRuntime>>,
+    agent_bindings:
+        BTreeMap<(String, String), Arc<acteon_gateway::agent_runtime::AgentProviderRuntime>>,
     reconciliation: Option<acteon_executor::governed::reconciliation::ProviderReconciliationStore>,
 }
 pub struct ExecutionAuthorityRuntime {
@@ -166,6 +168,7 @@ impl ExecutionAuthorityRuntime {
                 );
             }
             let mut agents = BTreeMap::new();
+            let mut agent_bindings = BTreeMap::new();
             for (id, agent) in &prepared.agents {
                 let runtime = acteon_gateway::agent_runtime::AgentProviderRuntime::new_trusted(
                     acteon_gateway::agent_runtime::AgentRuntimeDependencies {
@@ -179,7 +182,46 @@ impl ExecutionAuthorityRuntime {
                     dependencies.executor.clone(),
                 )
                 .map_err(|_| "invalid agent runtime")?;
-                agents.insert(id.clone(), Arc::new(runtime));
+                let runtime = Arc::new(runtime);
+                if agent_bindings.values().any(
+                    |installed: &Arc<acteon_gateway::agent_runtime::AgentProviderRuntime>| {
+                        installed.binding_digest() == agent.binding.digest()
+                    },
+                ) {
+                    return Err("duplicate agent runtime binding".into());
+                }
+                agent_bindings.insert(
+                    (id.clone(), agent.binding.digest().to_owned()),
+                    runtime.clone(),
+                );
+                agents.insert(id.clone(), runtime);
+            }
+            for ((id, digest), agent) in &prepared.retained_agents {
+                let runtime = Arc::new(
+                    acteon_gateway::agent_runtime::AgentProviderRuntime::new_trusted(
+                        acteon_gateway::agent_runtime::AgentRuntimeDependencies {
+                            state: dependencies.state.clone(),
+                            coordinator: coordinator.clone(),
+                            contexts: contexts.clone(),
+                            clock: dependencies.clock.clone(),
+                        },
+                        agent.binding.clone(),
+                        agent.bound.clone(),
+                        dependencies.executor.clone(),
+                    )
+                    .map_err(|_| "invalid retained agent runtime")?,
+                );
+                if agent.agent_id != *id
+                    || agent.binding.digest() != digest
+                    || agent_bindings
+                        .values()
+                        .any(|installed| installed.binding_digest() == agent.binding.digest())
+                    || agent_bindings
+                        .insert((id.clone(), digest.clone()), runtime)
+                        .is_some()
+                {
+                    return Err("duplicate retained agent runtime".into());
+                }
             }
             let handoffs = dependencies.handoffs(&declaration.namespace, &declaration.tenant)?;
             let history = dependencies.history(&coordinator, contexts.clone());
@@ -192,6 +234,7 @@ impl ExecutionAuthorityRuntime {
                     handoffs,
                     history,
                     agents,
+                    agent_bindings,
                     reconciliation: None,
                 },
             );

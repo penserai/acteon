@@ -40,6 +40,23 @@ pub struct AgentServiceGrantDeclaration {
     pub max_depth: usize,
 }
 
+/// A previously qualified service binding retained only for accepted-work
+/// observation and recovery. It cannot publish registry authority, grants, or
+/// permits, and it cannot accept new messages.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetainedAgentServiceDeclaration {
+    pub card: AgentCard,
+    pub registry_revision: u64,
+    pub principal: PrincipalIdentity,
+    pub skill: String,
+    pub endpoint: String,
+    pub endpoint_id: String,
+    pub route: ExecutionRouteConfig,
+    /// Operator-reviewed digest of the complete historical service binding.
+    pub binding_digest: String,
+}
+
 impl AgentServiceDeclaration {
     pub(crate) fn validate(&self, scope: &ExecutionScopeConfig) -> Result<(), String> {
         self.card.validate().map_err(|_| "invalid service card")?;
@@ -100,54 +117,140 @@ impl AgentServiceDeclaration {
     }
 
     pub(crate) fn qualify(&self, bound: &BoundProvider) -> Result<ApprovedPeerBinding, String> {
-        if bound.provider_name() != self.route.provider
-            || bound.action_type() != self.route.action_type
-            || bound.catalog_version().is_none()
-        {
-            return Err("agent service has no qualified actual operation".into());
-        }
-        // The card revision is an enclosing resource, separate from the digest
-        // of the complete service binding (which also includes this footprint).
-        let digest = acteon_executor::delegation::card_digest(&self.card)
-            .map_err(|_| "invalid service card")?;
-        let mut resources = bound.effect().resources.clone();
-        for (kind, name) in [
-            (ResourceKind::Agent, self.card.agent_id.clone()),
-            (
-                ResourceKind::Route,
-                format!(
-                    "agent-registry.{}.{}",
-                    self.card.agent_id, self.registry_revision
-                ),
-            ),
-            (ResourceKind::Endpoint, self.endpoint_id.clone()),
-            (ResourceKind::Route, format!("agent-card.{digest}")),
-        ] {
-            resources.push(
-                ResourceRef::new(kind, &self.card.namespace, &self.card.tenant, name)
-                    .map_err(|_| "invalid service enclosing resource")?,
-            );
-        }
-        resources.sort();
-        let ingress = AcceptedEffect {
-            operation: "agent.invoke".into(),
-            resources,
-        };
-        ApprovedPeerBinding::new_service_trusted(
-            &self.card,
-            self.principal.clone(),
-            &self.skill,
-            &self.endpoint,
-            "rest",
-            ingress,
-            ApprovedServicePlan::new_trusted(
-                vec![bound.effect().clone()],
-                vec![bound.effect().clone()],
-            )
-            .map_err(|_| "invalid service plan")?,
+        qualify_binding(
+            ServiceBindingDeclaration {
+                card: &self.card,
+                registry_revision: self.registry_revision,
+                principal: &self.principal,
+                skill: &self.skill,
+                endpoint: &self.endpoint,
+                endpoint_id: &self.endpoint_id,
+                route: &self.route,
+            },
+            bound,
         )
-        .map_err(|_| "invalid approved service binding".into())
     }
+}
+
+impl RetainedAgentServiceDeclaration {
+    pub(crate) fn validate(&self, scope: &ExecutionScopeConfig) -> Result<(), String> {
+        self.card
+            .validate()
+            .map_err(|_| "invalid retained service card")?;
+        ResourceRef::new(
+            ResourceKind::Endpoint,
+            &scope.namespace,
+            &scope.tenant,
+            &self.endpoint_id,
+        )
+        .map_err(|_| "invalid retained service endpoint identity")?;
+        if self.registry_revision == 0
+            || self.card.namespace != scope.namespace
+            || self.card.tenant != scope.tenant
+            || self.principal.kind() != PrincipalKind::Agent
+            || !scope.subjects.contains(&self.principal)
+            || !scope.routes.contains(&self.route)
+            || !valid_digest(&self.binding_digest)
+        {
+            return Err("invalid retained agent service".into());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn qualify(&self, bound: &BoundProvider) -> Result<ApprovedPeerBinding, String> {
+        let binding = qualify_binding(
+            ServiceBindingDeclaration {
+                card: &self.card,
+                registry_revision: self.registry_revision,
+                principal: &self.principal,
+                skill: &self.skill,
+                endpoint: &self.endpoint,
+                endpoint_id: &self.endpoint_id,
+                route: &self.route,
+            },
+            bound,
+        )?;
+        if binding.digest() != self.binding_digest {
+            return Err("retained agent service digest mismatch".into());
+        }
+        Ok(binding)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ServiceBindingDeclaration<'a> {
+    card: &'a AgentCard,
+    registry_revision: u64,
+    principal: &'a PrincipalIdentity,
+    skill: &'a str,
+    endpoint: &'a str,
+    endpoint_id: &'a str,
+    route: &'a ExecutionRouteConfig,
+}
+
+fn qualify_binding(
+    declaration: ServiceBindingDeclaration<'_>,
+    bound: &BoundProvider,
+) -> Result<ApprovedPeerBinding, String> {
+    if bound.provider_name() != declaration.route.provider
+        || bound.action_type() != declaration.route.action_type
+        || bound.catalog_version().is_none()
+    {
+        return Err("agent service has no qualified actual operation".into());
+    }
+    // The card revision is an enclosing resource, separate from the digest
+    // of the complete service binding (which also includes this footprint).
+    let digest = acteon_executor::delegation::card_digest(declaration.card)
+        .map_err(|_| "invalid service card")?;
+    let mut resources = bound.effect().resources.clone();
+    for (kind, name) in [
+        (ResourceKind::Agent, declaration.card.agent_id.clone()),
+        (
+            ResourceKind::Route,
+            format!(
+                "agent-registry.{}.{}",
+                declaration.card.agent_id, declaration.registry_revision
+            ),
+        ),
+        (ResourceKind::Endpoint, declaration.endpoint_id.to_owned()),
+        (ResourceKind::Route, format!("agent-card.{digest}")),
+    ] {
+        resources.push(
+            ResourceRef::new(
+                kind,
+                &declaration.card.namespace,
+                &declaration.card.tenant,
+                name,
+            )
+            .map_err(|_| "invalid service enclosing resource")?,
+        );
+    }
+    resources.sort();
+    let ingress = AcceptedEffect {
+        operation: "agent.invoke".into(),
+        resources,
+    };
+    ApprovedPeerBinding::new_service_trusted(
+        declaration.card,
+        declaration.principal.clone(),
+        declaration.skill,
+        declaration.endpoint,
+        "rest",
+        ingress,
+        ApprovedServicePlan::new_trusted(
+            vec![bound.effect().clone()],
+            vec![bound.effect().clone()],
+        )
+        .map_err(|_| "invalid service plan")?,
+    )
+    .map_err(|_| "invalid approved service binding".into())
+}
+
+fn valid_digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 fn initial_registry_revision() -> u64 {
@@ -171,6 +274,13 @@ fn valid_permits(permits: &[PermitReference]) -> bool {
 #[derive(Clone)]
 pub(crate) struct PreparedAgentService {
     pub declaration: AgentServiceDeclaration,
+    pub binding: ApprovedPeerBinding,
+    pub bound: BoundProvider,
+}
+
+#[derive(Clone)]
+pub(crate) struct PreparedRetainedAgentService {
+    pub agent_id: String,
     pub binding: ApprovedPeerBinding,
     pub bound: BoundProvider,
 }

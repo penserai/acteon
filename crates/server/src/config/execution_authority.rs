@@ -73,6 +73,10 @@ pub struct ExecutionScopeConfig {
     /// Explicit individual-agent runtime and service delegation declarations.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub agent_services: Vec<crate::execution_authority::agent_services::AgentServiceDeclaration>,
+    /// Exact prior service bindings available only to already accepted work.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retained_agent_services:
+        Vec<crate::execution_authority::agent_services::RetainedAgentServiceDeclaration>,
     #[serde(default)]
     pub historical_effects: Vec<AcceptedEffect>,
     pub valid_from_ms: i64,
@@ -273,6 +277,7 @@ impl ExecutionScopeConfig {
                 || !self.routes.is_empty()
                 || !self.chains.is_empty()
                 || !self.agent_services.is_empty()
+                || !self.retained_agent_services.is_empty()
                 || !self.permits.is_empty()
                 || self.historical_effects.is_empty()
                 || self.managers.is_empty()
@@ -294,6 +299,7 @@ impl ExecutionScopeConfig {
                 || !self.routes.is_empty()
                 || !self.chains.is_empty()
                 || !self.agent_services.is_empty()
+                || !self.retained_agent_services.is_empty()
                 || !self.permits.is_empty()
                 || self.historical_effects.is_empty()
                 || self.managers.is_empty()
@@ -313,7 +319,10 @@ impl ExecutionScopeConfig {
     fn validate_agents(&self) -> Result<(), String> {
         let mut agents = BTreeSet::new();
         let mut grants = BTreeSet::new();
-        if self.agent_services.len() > 128 {
+        if self.agent_services.len() > 128
+            || self.retained_agent_services.len() > 128
+            || self.agent_services.len() + self.retained_agent_services.len() > 256
+        {
             return Err("too many declared agent services".into());
         }
         for service in &self.agent_services {
@@ -322,6 +331,20 @@ impl ExecutionScopeConfig {
                 || service.grants.iter().any(|grant| !grants.insert(&grant.id))
             {
                 return Err("agent service and grant identities must be unique".into());
+            }
+        }
+        let mut retained_epochs = BTreeSet::new();
+        let mut retained_digests = BTreeSet::new();
+        for service in &self.retained_agent_services {
+            service.validate(self)?;
+            if !retained_epochs.insert((&service.card.agent_id, service.registry_revision))
+                || !retained_digests.insert(&service.binding_digest)
+                || self.agent_services.iter().any(|current| {
+                    current.card.agent_id == service.card.agent_id
+                        && service.registry_revision >= current.registry_revision
+                })
+            {
+                return Err("retained agent service bindings must be unique prior epochs".into());
             }
         }
         Ok(())

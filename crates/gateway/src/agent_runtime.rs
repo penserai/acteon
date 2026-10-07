@@ -91,6 +91,30 @@ struct Acceptance {
     initial_task: Task,
 }
 
+#[derive(Deserialize)]
+struct AcceptanceRoutingHint {
+    binding_digest: String,
+}
+
+/// Read the bounded binding selector used by a trusted recovery host. This is
+/// only a routing hint; the selected runtime must decode and verify the complete
+/// immutable acceptance before returning data or starting an effect.
+pub fn accepted_agent_binding_digest(raw: &str) -> Result<String, AgentRuntimeError> {
+    if raw.len() > MAX_ACCEPTANCE_BYTES {
+        return Err(AgentRuntimeError::Invalid);
+    }
+    let hint: AcceptanceRoutingHint = serde_json::from_str(raw)?;
+    if hint.binding_digest.len() != 64
+        || !hint
+            .binding_digest
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err(AgentRuntimeError::Invalid);
+    }
+    Ok(hint.binding_digest)
+}
+
 /// An individual agent bound to one qualified provider operation. Other runtime
 /// families (chains, workers, external runtimes) need their own adapters.
 /// Requests cannot select providers, endpoints, executing identities, or plans.

@@ -142,10 +142,21 @@ Remaining before release:
   recovery against each supported production backend.
 - Expand focused adversarial and integration tests from admission/isolation to
   full provider execution and peer lifecycle.
-- Retain historical bindings across service replacement; complete qualified
-  outbound A2A lifecycle work.
+- Complete qualified outbound A2A lifecycle work.
 - Extend lifecycle SDK/UI integration as provider abort and outbound peer contracts are added.
 - Review adversarially, run CI, and verify publication before merging.
 
 Passing existing workspace checks alone does not demonstrate these new service
 flows work or satisfy the remaining lifecycle requirements.
+
+Retained service replacement is now a host-qualified platform contract. A scope
+can install bounded prior service declarations pinned to their exact binding
+digests. They are recovery-only and cannot publish authority or accept new work.
+Signed admission lookup recovers exact response-lost replay across an auth and
+service revision without allocating work; changed payloads conflict. The driver,
+task reads and stop controls route accepted tasks by their immutable binding.
+A real Redis/server replacement contract proves revision-1 task observation and
+same-message replay, revision-2 admission/execution, restart recovery, and no
+provider call from the superseded queued task when current authority refuses it.
+After the active declaration is removed, both retained revisions still support
+exact replay and task controls while fresh sends are denied.

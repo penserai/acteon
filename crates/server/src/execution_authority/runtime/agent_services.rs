@@ -12,7 +12,9 @@ use crate::{
 };
 use acteon_core::{ExecutionContextReference, PrincipalKind, Task, TaskMessage};
 use acteon_executor::governed::governed_provider_input_digest;
-use acteon_gateway::agent_runtime::{AgentProviderRuntime, AgentTaskStopReceipt};
+use acteon_gateway::agent_runtime::{
+    ACCEPTANCE_KIND, AgentProviderRuntime, AgentTaskStopReceipt, accepted_agent_binding_digest,
+};
 use acteon_governance::{
     AuthorityCoordinator, RootBudgetLimits,
     context::{
@@ -26,6 +28,7 @@ use acteon_governance::{
     permit::PermitReference,
     registry::{AgentRegistryIssuanceCeiling, AgentRegistryQualification},
 };
+use acteon_state::{KeyKind, StateKey};
 use acteon_time::Clock;
 use sha2::{Digest, Sha256};
 
@@ -282,8 +285,10 @@ impl ExecutionAuthorityRuntime {
         &self,
         request: AgentServiceRequest<'_>,
     ) -> Result<AgentServiceAcceptance, AgentServiceError> {
-        let (scope, agent, runtime) =
-            self.service(request.namespace, request.tenant, request.agent_id)?;
+        let scope = self
+            .scopes
+            .get(&(request.namespace.into(), request.tenant.into()))
+            .ok_or(AgentServiceError::NotFound)?;
         request
             .authentication
             .verify_authentication_current()
@@ -293,6 +298,13 @@ impl ExecutionAuthorityRuntime {
             .authentication
             .scope(request.namespace, request.tenant)
             .map_err(|_| AgentServiceError::Forbidden)?;
+        let actor = source.authentication_source().principal();
+        if let Some(replayed) = self
+            .replay_accepted_agent_service(scope, &request, &source)
+            .await?
+        {
+            return Ok(replayed);
+        }
         let stamp = scope
             .prepared
             .verify_authenticated_scope_typed(
@@ -301,6 +313,8 @@ impl ExecutionAuthorityRuntime {
                 self.clock.now().timestamp_millis(),
             )
             .await?;
+        let (_, agent, runtime) =
+            self.service(request.namespace, request.tenant, request.agent_id)?;
         let qualification = Self::registry_qualification(agent);
         let snapshot = scope
             .coordinator
@@ -314,7 +328,6 @@ impl ExecutionAuthorityRuntime {
         if current.retired || current.qualification != qualification {
             return Err(AgentServiceError::Forbidden);
         }
-        let actor = source.authentication_source().principal();
         let declared = agent
             .declaration
             .grants
@@ -511,6 +524,146 @@ impl ExecutionAuthorityRuntime {
         })
     }
 
+    async fn replay_source_context(
+        scope: &InstalledScope,
+        request: &AgentServiceRequest<'_>,
+        caller: &ScopedCredentialBinding,
+    ) -> Result<Option<acteon_governance::context::VerifiedExecutionContext>, AgentServiceError>
+    {
+        let actor = caller.authentication_source().principal();
+        if let Some(parent) = &request.parent {
+            let context = scope
+                .contexts
+                .recover_reference_for_observation(parent.context)
+                .await
+                .map_err(AgentServiceError::from)?;
+            if context.principal() != actor
+                || context
+                    .credential_authority()
+                    .map(|credential| credential.id.as_str())
+                    != Some(caller.credential_reference().id.as_str())
+                || context.auth_method() != caller.authentication_source().auth_method()
+            {
+                return Err(AgentServiceError::Forbidden);
+            }
+            Ok(Some(context))
+        } else {
+            let key = service_key(
+                "root",
+                &[actor.id(), request.agent_id, &request.message.message_id],
+            );
+            let source = scope
+                .contexts
+                .inspect_root_admission(&key)
+                .await
+                .map_err(AgentServiceError::from)?;
+            Ok(source)
+        }
+    }
+
+    async fn replay_accepted_agent_service(
+        &self,
+        scope: &InstalledScope,
+        request: &AgentServiceRequest<'_>,
+        caller: &ScopedCredentialBinding,
+    ) -> Result<Option<AgentServiceAcceptance>, AgentServiceError> {
+        let actor = caller.authentication_source().principal();
+        let source = Self::replay_source_context(scope, request, caller).await?;
+        let Some(source) = source else {
+            return Ok(None);
+        };
+        if source.principal() != actor
+            || source
+                .credential_authority()
+                .map(|credential| credential.id.as_str())
+                != Some(caller.credential_reference().id.as_str())
+            || source.auth_method() != caller.authentication_source().auth_method()
+        {
+            return Err(AgentServiceError::Conflict);
+        }
+        let child_key = service_key(
+            "recipient",
+            &[
+                &source.execution_id().to_string(),
+                request.agent_id,
+                &request.message.message_id,
+            ],
+        );
+        let Some(child) = scope
+            .contexts
+            .inspect_child_admission(&child_key)
+            .await
+            .map_err(AgentServiceError::from)?
+        else {
+            return Ok(None);
+        };
+        let child_source = child
+            .immediate_service_source()
+            .ok_or(AgentServiceError::Conflict)?;
+        if child_source
+            .reference()
+            .map_err(|_| AgentServiceError::Conflict)?
+            != source
+                .reference()
+                .map_err(|_| AgentServiceError::Conflict)?
+        {
+            return Err(AgentServiceError::Conflict);
+        }
+        let runtime = self
+            .service_runtime_for_task(
+                request.namespace,
+                request.tenant,
+                request.agent_id,
+                child.execution_id(),
+            )
+            .await?;
+        let action = runtime
+            .prepare_message(request.message)
+            .map_err(AgentServiceError::from)?;
+        let provider_digest =
+            governed_provider_input_digest(&action).map_err(|_| AgentServiceError::Invalid)?;
+        if provider_digest
+            != child
+                .reference()
+                .map_err(|_| AgentServiceError::Conflict)?
+                .request_digest()
+        {
+            return Err(AgentServiceError::Conflict);
+        }
+        if request.parent.is_none() {
+            let expected_source = format!(
+                "{:x}",
+                Sha256::digest(
+                    serde_json::to_vec(&serde_json::json!({
+                        "domain":"acteon.agent-service-input.v1",
+                        "binding":runtime.binding_digest(),
+                        "input":provider_digest,
+                    }))
+                    .map_err(|_| AgentServiceError::Invalid)?
+                )
+            );
+            if source
+                .reference()
+                .map_err(|_| AgentServiceError::Conflict)?
+                .request_digest()
+                != expected_source
+            {
+                return Err(AgentServiceError::Conflict);
+            }
+        }
+        let task = runtime
+            .observe(child.execution_id())
+            .await
+            .map_err(AgentServiceError::observation)?
+            .task;
+        Ok(Some(AgentServiceAcceptance {
+            task,
+            source_context: source
+                .reference()
+                .map_err(|_| AgentServiceError::Unavailable)?,
+        }))
+    }
+
     /// Observe only the authenticated original source. Shared agents must also
     /// present the exact job context, so one agent identity cannot join requesters.
     pub async fn observe_agent_service(
@@ -559,7 +712,14 @@ impl ExecutionAuthorityRuntime {
             .authentication
             .scope(request.namespace, request.tenant)
             .map_err(|_| AgentServiceError::Forbidden)?;
-        let (_, _, runtime) = self.service(request.namespace, request.tenant, request.agent_id)?;
+        let runtime = self
+            .service_runtime_for_task(
+                request.namespace,
+                request.tenant,
+                request.agent_id,
+                request.task_id,
+            )
+            .await?;
         let source = runtime
             .source_context(request.task_id)
             .await
@@ -578,6 +738,36 @@ impl ExecutionAuthorityRuntime {
             return Err(AgentServiceError::NotFound);
         }
         Ok((runtime, source))
+    }
+
+    async fn service_runtime_for_task(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        agent_id: &str,
+        task_id: uuid::Uuid,
+    ) -> Result<&AgentProviderRuntime, AgentServiceError> {
+        let scope = self
+            .scopes
+            .get(&(namespace.into(), tenant.into()))
+            .ok_or(AgentServiceError::NotFound)?;
+        let raw = self
+            .state
+            .get(&StateKey::new(
+                namespace,
+                tenant,
+                KeyKind::Custom(ACCEPTANCE_KIND.into()),
+                task_id.to_string(),
+            ))
+            .await
+            .map_err(|_| AgentServiceError::Unavailable)?
+            .ok_or(AgentServiceError::NotFound)?;
+        let digest = accepted_agent_binding_digest(&raw).map_err(AgentServiceError::observation)?;
+        scope
+            .agent_bindings
+            .get(&(agent_id.to_owned(), digest))
+            .map(AsRef::as_ref)
+            .ok_or(AgentServiceError::NotFound)
     }
 
     fn service(

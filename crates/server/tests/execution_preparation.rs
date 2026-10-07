@@ -2113,3 +2113,54 @@ fn agent_service_preparation_rejects_binding_and_independent_bound_substitution(
         changed[0].policy_fingerprint()
     );
 }
+
+#[test]
+fn retained_agent_service_requires_an_exact_prior_qualified_binding() {
+    let (registry, _) = registry();
+    let mut original = agent_service_configuration();
+    let prepared = registry
+        .prepare(&original, ("auth-control", "deployment"), &[8; 32])
+        .unwrap();
+    let digest = prepared[0]
+        .agent_service_binding_digest("notifier")
+        .unwrap()
+        .to_owned();
+    let current = original.scopes[0].agent_services[0].clone();
+    original.scopes[0].agent_services[0].registry_revision = 2;
+    original.scopes[0].agent_services[0].card.version = "2".into();
+    original.scopes[0].retained_agent_services = serde_json::from_value(json!([{
+        "card": current.card,
+        "registry_revision": current.registry_revision,
+        "principal": current.principal,
+        "skill": current.skill,
+        "endpoint": current.endpoint,
+        "endpoint_id": current.endpoint_id,
+        "route": current.route,
+        "binding_digest": digest,
+    }]))
+    .unwrap();
+    let replacement = registry
+        .prepare(&original, ("auth-control", "deployment"), &[8; 32])
+        .unwrap();
+    assert_ne!(
+        replacement[0]
+            .agent_service_binding_digest("notifier")
+            .unwrap(),
+        digest
+    );
+
+    let mut wrong_digest = original.clone();
+    wrong_digest.scopes[0].retained_agent_services[0].binding_digest = "f".repeat(64);
+    assert!(
+        registry
+            .prepare(&wrong_digest, ("auth-control", "deployment"), &[8; 32])
+            .is_err()
+    );
+    let mut non_historical = original;
+    non_historical.scopes[0].retained_agent_services[0].registry_revision = 2;
+    assert!(
+        registry
+            .prepare(&non_historical, ("auth-control", "deployment"), &[8; 32])
+            .is_err()
+    );
+}

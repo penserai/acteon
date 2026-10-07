@@ -189,6 +189,94 @@ actions = ["rpc"]
         fs::write(path, toml::to_string(&config).unwrap()).unwrap();
         self.process = Self::launch(&self.directory, self.worker_secret.as_deref());
     }
+    fn replace_service_and_retain(&mut self, binding_digest: &str, driver: bool) {
+        self.process.kill().unwrap();
+        self.process.wait().unwrap();
+        let path = self.directory.join("acteon.toml");
+        let mut config: toml::Value = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        config["execution_authority"]["agent_driver"]["enabled"] = toml::Value::Boolean(driver);
+        let scope = &mut config["execution_authority"]["scopes"][0];
+        let current = scope["agent_services"][0].clone();
+        let current_table = current.as_table().unwrap();
+        let mut retained = toml::map::Map::new();
+        for field in [
+            "card",
+            "principal",
+            "skill",
+            "endpoint",
+            "endpoint_id",
+            "route",
+        ] {
+            retained.insert(field.into(), current_table[field].clone());
+        }
+        retained.insert("registry_revision".into(), toml::Value::Integer(1));
+        retained.insert(
+            "binding_digest".into(),
+            toml::Value::String(binding_digest.into()),
+        );
+        scope.as_table_mut().unwrap().insert(
+            "retained_agent_services".into(),
+            toml::Value::Array(vec![toml::Value::Table(retained)]),
+        );
+        scope["agent_services"][0]
+            .as_table_mut()
+            .unwrap()
+            .insert("registry_revision".into(), toml::Value::Integer(2));
+        scope["agent_services"][0]["card"]["version"] = toml::Value::String("2".into());
+        scope["agent_services"][0]["grants"][0]["id"] =
+            toml::Value::String("alice-notifier-v2".into());
+        scope["agent_services"][0]["grants"][0]["source_permits"][0]["accepted_revision"] =
+            toml::Value::Integer(2);
+        scope["permits"][0]["revision"] = toml::Value::Integer(2);
+        fs::write(path, toml::to_string(&config).unwrap()).unwrap();
+        let auth_path = self.directory.join("auth.toml");
+        let auth = fs::read_to_string(&auth_path).unwrap().replacen(
+            "authority_revision = 1",
+            "authority_revision = 2",
+            1,
+        );
+        fs::write(auth_path, auth).unwrap();
+        self.process = Self::launch(&self.directory, self.worker_secret.as_deref());
+    }
+    fn remove_service_and_retain_current(&mut self, binding_digest: &str) {
+        self.process.kill().unwrap();
+        self.process.wait().unwrap();
+        let path = self.directory.join("acteon.toml");
+        let mut config: toml::Value = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let scope = &mut config["execution_authority"]["scopes"][0];
+        let current = scope["agent_services"][0].as_table().unwrap();
+        let mut retained = toml::map::Map::new();
+        for field in [
+            "card",
+            "registry_revision",
+            "principal",
+            "skill",
+            "endpoint",
+            "endpoint_id",
+            "route",
+        ] {
+            retained.insert(field.into(), current[field].clone());
+        }
+        retained.insert(
+            "binding_digest".into(),
+            toml::Value::String(binding_digest.into()),
+        );
+        scope["retained_agent_services"]
+            .as_array_mut()
+            .unwrap()
+            .push(toml::Value::Table(retained));
+        scope["agent_services"] = toml::Value::Array(Vec::new());
+        scope["permits"].as_array_mut().unwrap().remove(0);
+        fs::write(path, toml::to_string(&config).unwrap()).unwrap();
+        let auth_path = self.directory.join("auth.toml");
+        let auth = fs::read_to_string(&auth_path).unwrap().replacen(
+            "authority_revision = 2",
+            "authority_revision = 3",
+            1,
+        );
+        fs::write(auth_path, auth).unwrap();
+        self.process = Self::launch(&self.directory, self.worker_secret.as_deref());
+    }
     fn task_url(&self, id: &str) -> String {
         format!("{}/a2a/prod/acme/agents/notifier/v1/tasks/{id}", self.url)
     }
@@ -597,6 +685,153 @@ async fn redis_restart_recovers_queued_work_without_requester_resubmission_and_k
         .unwrap();
     assert_eq!(response.status(), 403);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
+    webhook_task.abort();
+}
+
+#[tokio::test]
+#[cfg(feature = "redis")]
+#[ignore = "requires ACTEON_GOVERNANCE_REDIS_URL; retained service replacement contract"]
+async fn redis_service_replacement_recovers_old_tasks_and_routes_new_work_to_the_new_binding() {
+    use acteon_governance::AuthorityCoordinator;
+    let (url, calls, webhook_task) = webhook().await;
+    let (backend, settings) = redis_state();
+    let store: Arc<dyn acteon_state::StateStore> =
+        Arc::new(acteon_state_redis::RedisStateStore::new(&settings).unwrap());
+    let mut server = Server::configured(
+        &url,
+        Some("notifier-secret"),
+        "incident",
+        true,
+        "human",
+        backend,
+    );
+    let client = reqwest::Client::new();
+    server.ready(&client).await;
+    let coordinator = AuthorityCoordinator::connect(store, "prod", "acme")
+        .await
+        .unwrap();
+    let old_digest = coordinator.snapshot().await.unwrap().agent_registry["notifier"]
+        .qualification
+        .bindings["notify"]
+        .clone();
+    let (completed_task, completed_source) =
+        send_task(&server, &client, "completed-before-replacement").await;
+    let completed = await_completed(&server, &client, completed_task["id"].as_str().unwrap()).await;
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    server.restart(false);
+    server.ready(&client).await;
+    let (queued_task, _) = send_task(&server, &client, "queued-before-replacement").await;
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    server.replace_service_and_retain(&old_digest, true);
+    server.ready(&client).await;
+    let replacement = coordinator.snapshot().await.unwrap();
+    let registry = &replacement.agent_registry["notifier"];
+    assert_eq!(registry.qualification.revision, 2);
+    let new_digest = &registry.qualification.bindings["notify"];
+    assert_ne!(new_digest, &old_digest);
+
+    let response = client
+        .get(server.task_url(queued_task["id"].as_str().unwrap()))
+        .bearer_auth("alice-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let retained: Value = response.json().await.unwrap();
+    assert!(matches!(
+        retained["status"]["state"].as_str(),
+        Some("submitted" | "working")
+    ));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let roots_before_replay = coordinator.snapshot().await.unwrap().roots.len();
+    let (replayed, replayed_source) =
+        send_task(&server, &client, "completed-before-replacement").await;
+    assert_eq!(replayed["id"], completed_task["id"]);
+    assert_eq!(replayed_source, completed_source);
+    assert_eq!(
+        replayed["metadata"]["acteon_governed_execution"]["binding_digest"],
+        old_digest
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        coordinator.snapshot().await.unwrap().roots.len(),
+        roots_before_replay
+    );
+    let mut altered = message("completed-before-replacement");
+    altered["message"]["parts"][0]["text"] = json!("Different work under the same ID");
+    let response = client
+        .post(server.endpoint())
+        .bearer_auth("alice-secret")
+        .json(&altered)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 409);
+    assert_eq!(
+        coordinator.snapshot().await.unwrap().roots.len(),
+        roots_before_replay
+    );
+    let response = client
+        .post(format!(
+            "{}/stop",
+            server.task_url(queued_task["id"].as_str().unwrap())
+        ))
+        .bearer_auth("alice-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let stopped: Value = response.json().await.unwrap();
+    assert_eq!(stopped["task"]["id"], queued_task["id"]);
+    assert_eq!(stopped["future_starts_blocked"], true);
+
+    let (new_task, _) = send_task(&server, &client, "after-replacement").await;
+    assert_ne!(new_task["id"], completed_task["id"]);
+    assert_ne!(new_task["id"], queued_task["id"]);
+    assert_eq!(
+        new_task["metadata"]["acteon_governed_execution"]["binding_digest"],
+        *new_digest
+    );
+    let new_completed = await_completed(&server, &client, new_task["id"].as_str().unwrap()).await;
+    assert_eq!(new_completed["id"], new_task["id"]);
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+    server.remove_service_and_retain_current(new_digest);
+    server.ready(&client).await;
+    for (message_id, expected_id) in [
+        ("completed-before-replacement", &completed_task["id"]),
+        ("after-replacement", &new_task["id"]),
+    ] {
+        let (replayed, _) = send_task(&server, &client, message_id).await;
+        assert_eq!(&replayed["id"], expected_id);
+    }
+    let response = client
+        .post(server.endpoint())
+        .bearer_auth("alice-secret")
+        .json(&message("fresh-after-removal"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 403);
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+    server.restart(true);
+    server.ready(&client).await;
+    let response = client
+        .get(server.task_url(queued_task["id"].as_str().unwrap()))
+        .bearer_auth("alice-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    assert!(matches!(
+        response.json::<Value>().await.unwrap()["status"]["state"].as_str(),
+        Some("submitted" | "working")
+    ));
+    let recovered = await_completed(&server, &client, completed_task["id"].as_str().unwrap()).await;
+    assert_eq!(recovered["artifacts"], completed["artifacts"]);
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
     webhook_task.abort();
 }
 
