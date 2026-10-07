@@ -221,7 +221,7 @@ async fn explicit_protocol_10_upgrade_retains_state_and_rejects_implicit_adoptio
     .await
     .unwrap();
     assert_eq!(plan.report().from_protocol, 10);
-    assert_eq!(plan.report().to_protocol, 11);
+    assert_eq!(plan.report().to_protocol, 12);
     assert!(plan.apply(&plan.report().review_digest).await.unwrap());
     let after = AuthorityCoordinator::connect(store, "city", "tenant")
         .await

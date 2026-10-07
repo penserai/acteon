@@ -356,6 +356,10 @@ jobs:
         env:
           ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
         run: cargo test --locked -p acteon-server --test execution_preparation independent_redis_root_admission_passes_the_contract -- --ignored
+      - name: Registry mutation multi-client Redis contract
+        env:
+          ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
+        run: cargo test --locked -p acteon-governance --test registry_mutations -- --ignored
       - name: Governance credential authority multi-client Redis contract
         env:
           ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379

@@ -106,7 +106,7 @@ fn digest(raw: &str) -> String {
 }
 
 impl AuthorityCoordinator {
-    /// Read-only preparation for protocol 7/8/9/10 or unclaimed current protocol. Preserve
+    /// Read-only preparation for protocol 7/8/9/10/11 or unclaimed current protocol. Preserve
     /// incarnation, all authority history, roots, spending and reconciliation
     /// records. Scope purpose classification must match the complete state.
     pub async fn plan_scope_upgrade(
@@ -219,7 +219,7 @@ impl AuthorityCoordinator {
     }
 }
 
-// Exact legacy shape for protocols 7 through 10. Purpose is read separately. This
+// Exact legacy shape for protocols 7 through 11. Purpose is read separately. This
 // compatibility reader is reachable only through explicit reviewed cutover.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -240,6 +240,8 @@ struct LegacyScope {
     workforce: Option<crate::workforce::WorkforceState>,
     #[serde(default)]
     budget_parents: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    agent_registry: Option<BTreeMap<String, crate::registry::AgentRegistryRecord>>,
     changes: BTreeMap<String, ChangeRecord>,
     permits: BTreeMap<String, crate::permit::PermitRecord>,
     credentials: BTreeMap<String, crate::credential::CredentialRecord>,
@@ -254,7 +256,7 @@ impl AuthorityCoordinator {
         let value: serde_json::Value = serde_json::from_str(raw)
             .map_err(|_| CoordinationError::Invalid("invalid source authority".into()))?;
         match value["schema_version"].as_u64() {
-            Some(source_version @ (7..=10)) => {
+            Some(source_version @ (7..=11)) => {
                 let legacy: LegacyScope = serde_json::from_str(raw)
                     .map_err(|_| CoordinationError::Invalid("invalid legacy authority".into()))?;
                 if u64::from(legacy.schema_version) != source_version
@@ -286,6 +288,17 @@ impl AuthorityCoordinator {
                     }
                     crate::workforce::WorkforceState::default()
                 };
+                let agent_registry = legacy_registry(
+                    source_version,
+                    legacy.agent_registry,
+                    value.get("agent_registry").is_some(),
+                    legacy.changes.values().any(|record| {
+                        matches!(
+                            record.change,
+                            AuthorityChange::BeginAgentRegistryMutation { .. }
+                        )
+                    }),
+                )?;
                 let state = crate::CoordinatorSnapshot {
                     schema_version: FORMAT,
                     purpose,
@@ -303,9 +316,9 @@ impl AuthorityCoordinator {
                     credentials: legacy.credentials,
                     credential_configurations: legacy.credential_configurations,
                     workforce,
-                    budget_parents: if source_version == 10 {
+                    budget_parents: if source_version >= 10 {
                         legacy.budget_parents.ok_or_else(|| {
-                            CoordinationError::Invalid("protocol-10 budget links missing".into())
+                            CoordinationError::Invalid("budget links missing".into())
                         })?
                     } else {
                         if legacy.budget_parents.is_some() {
@@ -315,7 +328,7 @@ impl AuthorityCoordinator {
                         }
                         BTreeMap::new()
                     },
-                    agent_registry: BTreeMap::new(),
+                    agent_registry,
                 };
                 let encoded = Self::encode(&state)?;
                 Ok((
@@ -326,7 +339,7 @@ impl AuthorityCoordinator {
             }
             Some(version) if version == u64::from(FORMAT) => Ok((self.decode(raw)?, FORMAT)),
             _ => Err(CoordinationError::Invalid(
-                "cutover supports protocol 7/8/9/10 or unclaimed current protocol".into(),
+                "cutover supports protocol 7/8/9/10/11 or unclaimed current protocol".into(),
             )),
         }
     }
@@ -349,4 +362,26 @@ fn review_cutover(
     ))
     .map_err(|_| CoordinationError::Invalid("cutover review inputs".into()))?;
     Ok(digest(&inputs))
+}
+
+fn legacy_registry(
+    source_version: u64,
+    registry: Option<BTreeMap<String, crate::registry::AgentRegistryRecord>>,
+    has_registry_field: bool,
+    has_mutation_intents: bool,
+) -> Result<BTreeMap<String, crate::registry::AgentRegistryRecord>, CoordinationError> {
+    if has_mutation_intents {
+        return Err(CoordinationError::Invalid(
+            "legacy protocol contains mutation intents".into(),
+        ));
+    }
+    if source_version == 11 {
+        registry.ok_or_else(|| CoordinationError::Invalid("protocol-11 registry missing".into()))
+    } else if has_registry_field {
+        Err(CoordinationError::Invalid(
+            "pre-registry protocol contains registry records".into(),
+        ))
+    } else {
+        Ok(BTreeMap::new())
+    }
 }

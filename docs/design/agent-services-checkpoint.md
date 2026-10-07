@@ -87,6 +87,22 @@ message identity and inspect durable evidence rather than constructing new work.
   remains observable under the unchanged service binding. Coordinator checks
   continue to enforce qualified digests at delegated effect starts.
 
+- A registry mutation primitive now stages an exact agent/card projection,
+  its observed metadata version, and its input digest in the authority CAS.
+  Staging retires the current qualification and blocks requalification and
+  delegated starts until a known control-effect result completes the fence.
+  Delivery uses create-if-absent, compare-and-swap, or compare-and-delete through
+  the configured StateStore. In-flight and uncertain attempts never resend.
+  Matching bytes or an absent row do not certify a lost write acknowledgement.
+  A known version conflict records no effect and leaves the old epoch retired.
+  Ordinary control-event acknowledgements cannot complete this mutation.
+  The HTTP registry mutation routes still need to adopt the primitive.
+- Authority protocol 12 requires explicit reviewed cutover from protocols 10
+  and 11; startup does not upgrade automatically. Contracts preserve funded
+  descendants, opaque contexts, known/uncertain execution receipts and qualified
+  registry records. Hybrid legacy records containing new mutation intents fail
+  closed rather than becoming authority during upgrade.
+
 Remaining before release:
 
 - Complete qualified provider abort/reconciliation and its SDK/UI lifecycle; qualify restart

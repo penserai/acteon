@@ -1459,10 +1459,13 @@ async fn registry_retirement_during_an_in_flight_call_preserves_its_known_comple
     assert_eq!(f.counter.calls.load(Ordering::SeqCst), 1);
 }
 #[tokio::test]
-async fn protocol_ten_upgrade_preserves_child_budgets_opaque_contexts_and_execution_receipts() {
-    for ambiguous in [false, true] {
+async fn protocol_ten_and_eleven_upgrades_preserve_funded_contexts_and_execution_receipts() {
+    for (ambiguous, source_version) in [(false, 10), (false, 11), (true, 10), (true, 11)] {
         let f = Fixture::new(ambiguous).await;
         let runtime = f.runtime();
+        if source_version == 11 {
+            qualify_registry_fixture(&f, 1, runtime.binding_digest().into()).await;
+        }
         f.accept(&runtime).await;
         Box::pin(runtime.resume(f.child.execution_id()))
             .await
@@ -1475,8 +1478,10 @@ async fn protocol_ten_upgrade_preserves_child_budgets_opaque_contexts_and_execut
             "authority",
         );
         let mut raw = serde_json::to_value(&before).unwrap();
-        raw["schema_version"] = 10.into();
-        raw.as_object_mut().unwrap().remove("agent_registry");
+        raw["schema_version"] = source_version.into();
+        if source_version == 10 {
+            raw.as_object_mut().unwrap().remove("agent_registry");
+        }
         f.state
             .set(&key, &serde_json::to_string(&raw).unwrap(), None)
             .await
@@ -1491,12 +1496,13 @@ async fn protocol_ten_upgrade_preserves_child_budgets_opaque_contexts_and_execut
         )
         .await
         .unwrap();
-        assert_eq!(plan.report().from_protocol, 10);
-        assert_eq!(plan.report().to_protocol, 11);
+        assert_eq!(plan.report().from_protocol, source_version);
+        assert_eq!(plan.report().to_protocol, 12);
         plan.apply(&plan.report().review_digest).await.unwrap();
         let after = f.coordinator.snapshot().await.unwrap();
         assert_eq!(before.incarnation, after.incarnation);
         assert_eq!(before.budget_parents, after.budget_parents);
+        assert_eq!(before.agent_registry, after.agent_registry);
         for (id, root) in &before.roots {
             assert_eq!(root.active_attempts, after.roots[id].active_attempts);
             assert_eq!(root.spent_units, after.roots[id].spent_units);

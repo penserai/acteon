@@ -31,7 +31,7 @@ pub use budget::{
 pub use scope::ScopePurpose;
 pub use upgrade::{ScopeUpgradePlan, ScopeUpgradeReport};
 
-const FORMAT: u32 = 11;
+const FORMAT: u32 = 12;
 const MAX_ATTEMPT_RESOURCES: usize = 16;
 const RETRIES: usize = 32;
 const CONTROL_RECORD_RESERVE: usize = 16;
@@ -67,6 +67,14 @@ impl Default for CoordinatorLimits {
 pub enum AuthorityChange {
     PublishAgentRegistry {
         qualification: registry::AgentRegistryQualification,
+    },
+    /// Restrict starts and qualification while a separate registry projection is written.
+    BeginAgentRegistryMutation {
+        agent: ResourceRef,
+        expected_revision: u64,
+        projection: registry::RegistryProjectionKind,
+        expected_projection_version: Option<u64>,
+        input_digest: String,
     },
     RetireAgentRegistry {
         agent: ResourceRef,
@@ -557,10 +565,19 @@ impl AuthorityCoordinator {
                     to_protocol,
                 } => !matches!(
                     (*from_protocol, *to_protocol),
-                    (7 | 8, 9..=11) | (9, 10 | 11) | (10, 11)
+                    (7 | 8, 9..=12) | (9, 10..=12) | (10, 11 | 12) | (11, 12)
                 ),
                 AuthorityChange::PublishAgentRegistry { qualification } => {
                     self.validate_resource_scope(&qualification.agent).is_err()
+                }
+                AuthorityChange::BeginAgentRegistryMutation {
+                    agent,
+                    input_digest,
+                    ..
+                } => {
+                    self.validate_resource_scope(agent).is_err()
+                        || agent.kind() != acteon_core::ResourceKind::Agent
+                        || !registry::valid_digest(input_digest)
                 }
                 AuthorityChange::RetireAgentRegistry {
                     agent,
@@ -776,6 +793,19 @@ impl AuthorityCoordinator {
 
     fn validate_change(&self, change: &AuthorityChange) -> Result<(), CoordinationError> {
         match change {
+            AuthorityChange::BeginAgentRegistryMutation {
+                agent,
+                input_digest,
+                ..
+            } => {
+                self.validate_resource_scope(agent)?;
+                if agent.kind() != acteon_core::ResourceKind::Agent
+                    || !registry::valid_digest(input_digest)
+                {
+                    return Err(CoordinationError::Invalid("registry mutation".into()));
+                }
+            }
+
             AuthorityChange::RetireAgentRegistry {
                 agent,
                 expected_revision,
@@ -838,6 +868,8 @@ impl AuthorityCoordinator {
         self.change_internal(id, change, actor, reason, None).await
     }
 
+    // Keep the single authority-change transaction visible across all change kinds.
+    #[allow(clippy::too_many_lines)]
     async fn change_internal(
         &self,
         id: &str,
@@ -861,6 +893,11 @@ impl AuthorityCoordinator {
                 }
                 return Ok(old.clone());
             }
+            if let AuthorityChange::BeginAgentRegistryMutation { agent, .. } = &change
+                && registry::mutation_pending(&state, agent)
+            {
+                return Err(CoordinationError::Conflict);
+            }
             if state.record_count() >= state.limits.max_records {
                 return Err(CoordinationError::Capacity);
             }
@@ -869,6 +906,13 @@ impl AuthorityCoordinator {
                 .checked_add(1)
                 .ok_or(CoordinationError::Capacity)?;
             match &change {
+                AuthorityChange::BeginAgentRegistryMutation {
+                    agent,
+                    expected_revision,
+                    ..
+                } => {
+                    Self::begin_registry_mutation(&mut state, agent, *expected_revision)?;
+                }
                 AuthorityChange::RetireAgentRegistry {
                     agent,
                     expected_revision,
@@ -1134,6 +1178,12 @@ impl AuthorityCoordinator {
                 .changes
                 .get_mut(id)
                 .ok_or(CoordinationError::Conflict)?;
+            if matches!(
+                record.change,
+                AuthorityChange::BeginAgentRegistryMutation { .. }
+            ) {
+                return Err(CoordinationError::Restricted);
+            }
             if !record.pending {
                 return Ok(());
             }

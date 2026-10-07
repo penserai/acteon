@@ -1601,3 +1601,42 @@ Registry mutation-route fencing, retained historical bindings after replacement,
 qualified outbound transport, provider abort/reconciliation and the remaining
 city/workforce phase gates remain required. This completes configured-service
 enrollment, not the full registry or peer lifecycle.
+
+
+### Registry metadata mutation control effects (integration in progress)
+
+The coordinator now stages a digest-pinned agent or card mutation, including
+its expected metadata version, before delivering the separate projection write.
+Staging retires an existing qualification; an intent for an agent that is not
+yet qualified also blocks new qualification. Competing pending intents for the
+same agent are rejected. The same authority CAS gates delegated starts and
+qualification publication.
+
+Delivery requires current independently bounded operator authority and creates
+one durable control-effect receipt. Creation uses StateStore check-and-set,
+replacement uses compare-and-swap, and removal uses compare-and-delete. A known
+version conflict certifies no effect without overwriting newer metadata. A
+successful acknowledgement and matching projection complete the fence. Known
+receipts recover interrupted completion without another write. In-flight or
+uncertain delivery retains the fence and capacity; matching metadata alone,
+including an absent deleted row, cannot certify finality. Secondary delivery
+acknowledgements cannot clear mutation intents. Control authority can remove a
+closed agent's metadata without reopening agent execution.
+
+Focused contracts cover paused writes and independent concurrent workers,
+qualification exclusion, original operator/resource bounds, changed inputs,
+registration and completion acknowledgement loss, uncertain replacement and
+deletion, stale metadata versions, forged completion and explicit legacy
+cutover. An independently connected live Redis race runs under an isolated UUID
+prefix and is included in CI.
+
+Authority protocol 12 has an explicit reviewed cutover from protocols 10 and 11.
+The real delegated runtime contract preserves funded source/recipient budget
+links, opaque context references, registry qualifications and known or uncertain
+receipts under both source versions, with one provider invocation and no resend.
+
+This is the mutation protocol prerequisite. Registry HTTP mutation handlers,
+operator agent-management bounds, receipt-aware SDK/UI recovery and qualified
+reconciliation for ambiguous metadata writes remain required integrations.
+Retained service bindings across replacement, outbound A2A, provider abort and
+the complete city/workforce phases remain open.

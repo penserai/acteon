@@ -1,5 +1,9 @@
 //! Qualified registry revisions share the same CAS as delegated effect starts.
 //! Descriptive cards do not publish qualification or revive retired bindings.
+mod mutation;
+pub(crate) use mutation::mutation_pending;
+pub use mutation::{RegistryProjectionKind, registry_projection_digest};
+use mutation::{no_effect_digest, registry_mutation_attempt_id};
 use std::collections::{BTreeMap, BTreeSet};
 
 use acteon_core::{PrincipalIdentity, PrincipalKind, ResourceKind, ResourceRef};
@@ -38,20 +42,22 @@ pub struct AgentRegistryIssuanceCeiling {
     pub deadline_ms: i64,
 }
 
+pub(crate) fn valid_digest(digest: &str) -> bool {
+    digest.len() == 64
+        && digest
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 fn valid(q: &AgentRegistryQualification) -> bool {
     q.agent.kind() == ResourceKind::Agent
         && q.target.kind() == PrincipalKind::Agent
         && q.revision > 0
         && !q.bindings.is_empty()
         && q.bindings.len() <= 16
-        && q.bindings.iter().all(|(skill, digest)| {
-            valid_text(skill)
-                && skill.len() <= 256
-                && digest.len() == 64
-                && digest
-                    .bytes()
-                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-        })
+        && q.bindings
+            .iter()
+            .all(|(skill, digest)| valid_text(skill) && skill.len() <= 256 && valid_digest(digest))
         && q.bindings.values().collect::<BTreeSet<_>>().len() == q.bindings.len()
 }
 
@@ -85,6 +91,26 @@ fn apply(
                 },
             );
         }
+        AuthorityChange::BeginAgentRegistryMutation {
+            agent,
+            expected_revision,
+            input_digest,
+            ..
+        } => {
+            if !valid_digest(input_digest) {
+                return Err(CoordinationError::Conflict);
+            }
+            match state.get_mut(agent.id()) {
+                Some(current)
+                    if current.qualification.agent == *agent
+                        && current.qualification.revision == *expected_revision =>
+                {
+                    current.retired = true;
+                }
+                None if *expected_revision == 0 => {}
+                _ => return Err(CoordinationError::Conflict),
+            }
+        }
         AuthorityChange::RetireAgentRegistry {
             agent,
             expected_revision,
@@ -108,6 +134,9 @@ pub(crate) fn validate_grant(
     state: &CoordinatorSnapshot,
     grant: &crate::delegation_policy::DelegationGrant,
 ) -> Result<(), CoordinationError> {
+    if mutation_pending(state, &grant.agent_resource) {
+        return Err(CoordinationError::Restricted);
+    }
     // Trusted abstract delegation can exist without a registry adapter. A mesh
     // host must register every executable service before exposing it; integration
     // adapters will require this record, rather than treat absence as approval.
@@ -139,7 +168,8 @@ impl AuthorityCoordinator {
                         return false;
                     }
                 }
-                AuthorityChange::RetireAgentRegistry { agent, .. } => {
+                AuthorityChange::BeginAgentRegistryMutation { agent, .. }
+                | AuthorityChange::RetireAgentRegistry { agent, .. } => {
                     if state.purpose != ScopePurpose::Execution
                         || self.validate_resource_scope(agent).is_err()
                     {
@@ -150,6 +180,45 @@ impl AuthorityCoordinator {
             }
             if apply(&mut reconstructed, &record.change, &mut seen).is_err() {
                 return false;
+            }
+        }
+        let mut pending_agents = BTreeSet::new();
+        for (id, record) in &state.changes {
+            if let AuthorityChange::BeginAgentRegistryMutation {
+                agent,
+                input_digest,
+                ..
+            } = &record.change
+            {
+                if record.pending {
+                    if !pending_agents.insert(agent.clone()) || state.changes.values().any(|later| {
+                        later.generation > record.generation && matches!(&later.change,
+                            AuthorityChange::PublishAgentRegistry { qualification } if qualification.agent == *agent)
+                    }) {
+                        return false;
+                    }
+                } else {
+                    let attempt_id = registry_mutation_attempt_id(id);
+                    let Some(delivery) = state.starts.get(&attempt_id) else {
+                        return false;
+                    };
+                    if delivery.status != crate::AttemptStatus::Settled
+                        || delivery.subject != record.actor
+                        || delivery.request_digest != *input_digest
+                        || delivery.resources != BTreeSet::from([agent.clone()])
+                        || delivery.reservation.is_some()
+                        || delivery.operation_evidence.is_some()
+                        || delivery.authority.incarnation != state.incarnation
+                        || delivery.authority.generation < record.generation
+                        || !delivery.evidence.as_ref().is_some_and(|evidence| {
+                            evidence.id == attempt_id
+                                && (evidence.digest == *input_digest
+                                    || evidence.digest == no_effect_digest(input_digest))
+                        })
+                    {
+                        return false;
+                    }
+                }
             }
         }
         reconstructed == state.agent_registry
@@ -196,6 +265,15 @@ impl AuthorityCoordinator {
                 || now >= ceiling.deadline_ms
                 || state.revoked_subjects.contains(ceiling.issuer.id())
             {
+                return Err(CoordinationError::Restricted);
+            }
+            if mutation_pending(
+                &state,
+                match &change {
+                    AuthorityChange::PublishAgentRegistry { qualification } => &qualification.agent,
+                    _ => unreachable!(),
+                },
+            ) {
                 return Err(CoordinationError::Restricted);
             }
             if let Some(old) = state.changes.get(id) {
@@ -253,6 +331,24 @@ impl AuthorityCoordinator {
             }
         }
         Err(CoordinationError::Contention)
+    }
+
+    pub(crate) fn begin_registry_mutation(
+        state: &mut CoordinatorSnapshot,
+        agent: &ResourceRef,
+        expected_revision: u64,
+    ) -> Result<(), CoordinationError> {
+        apply(
+            &mut state.agent_registry,
+            &AuthorityChange::BeginAgentRegistryMutation {
+                agent: agent.clone(),
+                expected_revision,
+                projection: RegistryProjectionKind::Agent,
+                expected_projection_version: None,
+                input_digest: "0".repeat(64),
+            },
+            &mut BTreeSet::new(),
+        )
     }
 
     pub(crate) fn retire_registry(

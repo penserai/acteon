@@ -83,7 +83,10 @@ impl ControlChangeAuthorization<'_> {
             return Err(CoordinationError::Restricted);
         }
         let allowed = match change {
-            AuthorityChange::RetireAgentRegistry {
+            AuthorityChange::BeginAgentRegistryMutation {
+                agent: resource, ..
+            }
+            | AuthorityChange::RetireAgentRegistry {
                 agent: resource, ..
             }
             | AuthorityChange::CloseResource { resource }

@@ -747,7 +747,7 @@ async fn claimed_protocol_eight_requires_reviewed_cutover_and_preserves_accounti
     .await
     .unwrap();
     assert_eq!(plan.report().from_protocol, 8);
-    assert_eq!(plan.report().to_protocol, 11);
+    assert_eq!(plan.report().to_protocol, 12);
     let before = store.get_versioned(&key).await.unwrap();
     assert!(plan.apply("unreviewed").await.is_err());
     assert_eq!(store.get_versioned(&key).await.unwrap(), before);
@@ -1224,7 +1224,7 @@ async fn protocol_nine_cutover_preserves_workforce_and_live_accounting() {
     .await
     .unwrap();
     assert_eq!(plan.report().from_protocol, 9);
-    assert_eq!(plan.report().to_protocol, 11);
+    assert_eq!(plan.report().to_protocol, 12);
     assert_eq!(plan.report().unsettled_starts, 1);
     assert!(plan.apply(&plan.report().review_digest).await.unwrap());
     let recovered = AuthorityCoordinator::connect(store, "prod", "acme")
