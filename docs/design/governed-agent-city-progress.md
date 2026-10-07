@@ -1581,3 +1581,23 @@ and revision-aware service enrollment remain required integration work.
 Abstract trusted delegation can still operate without a registry record; this
 checkpoint does not establish registry fencing for every deployed service.
 Phase 4 and the full governed-city objective remain open.
+
+
+### Mandatory configured-service registry enrollment (integration in progress)
+
+Configured agent services publish their independently qualified registry record
+before deployment grants. Their explicit `registry_revision` defaults to 1 and
+is bound into the complete approved service digest through an enclosing route
+resource. Requalification requires a new epoch and newly reviewed credentials,
+permits and grant revisions wherever their approved footprint changes. Replaying
+a retired or replaced epoch refuses startup rather than reopening it.
+
+Admission requires the exact current qualification before allocating source
+work. The retirement contract uses a real server and an independent Redis
+coordinator: new requests are denied without new roots, accepted history remains
+readable, and a restart under the retired declaration refuses to listen.
+
+Registry mutation-route fencing, retained historical bindings after replacement,
+qualified outbound transport, provider abort/reconciliation and the remaining
+city/workforce phase gates remain required. This completes configured-service
+enrollment, not the full registry or peer lifecycle.

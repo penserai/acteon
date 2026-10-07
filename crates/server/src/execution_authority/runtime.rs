@@ -264,6 +264,10 @@ impl ExecutionAuthorityRuntime {
     ) -> Result<(), String> {
         self.validate_agent_credentials(authentication).await?;
         for scope in self.scopes.values() {
+            Self::publish_agent_registry(&scope.prepared, &scope.coordinator, self.clock.as_ref())
+                .await?;
+        }
+        for scope in self.scopes.values() {
             Self::publish_permits(&scope.prepared, &scope.coordinator, self.clock.as_ref()).await?;
             Self::publish_agent_grants(&scope.prepared, &scope.coordinator, self.clock.as_ref())
                 .await?;

@@ -2066,6 +2066,7 @@ async fn agent_service_publication_requires_private_auth_before_any_permits_or_g
     assert!(runtime.publish_deployment_permits(None).await.is_err());
     let snapshot = scope.snapshot().await.unwrap();
     assert!(snapshot.permits.is_empty());
+    assert!(snapshot.agent_registry.is_empty());
     assert_eq!(
         serde_json::to_value(&snapshot.changes).unwrap(),
         before["changes"]
@@ -2080,7 +2081,7 @@ fn agent_service_preparation_rejects_binding_and_independent_bound_substitution(
     let original = registry
         .prepare(&configuration, ("auth-control", "deployment"), &[8; 32])
         .unwrap();
-    for variant in 0..8 {
+    for variant in 0..9 {
         let mut config = configuration.clone();
         let scope = &mut config.scopes[0];
         match variant {
@@ -2091,6 +2092,7 @@ fn agent_service_preparation_rejects_binding_and_independent_bound_substitution(
             4 => scope.agent_services[0].grants[0].revision = 0,
             5 => scope.agent_services[0].endpoint = "https://unapproved.example".into(),
             6 => scope.agent_services[0].card.tenant = "another".into(),
+            7 => scope.agent_services[0].registry_revision = 0,
             _ => scope.permits[0].subject = scope.subjects[1].clone(),
         }
         assert!(

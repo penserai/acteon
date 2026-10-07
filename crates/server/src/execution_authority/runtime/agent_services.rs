@@ -24,6 +24,7 @@ use acteon_governance::{
         EvaluatedDelegationPublication,
     },
     permit::PermitReference,
+    registry::{AgentRegistryIssuanceCeiling, AgentRegistryQualification},
 };
 use acteon_time::Clock;
 use sha2::{Digest, Sha256};
@@ -135,6 +136,70 @@ impl ExecutionAuthorityRuntime {
         Ok(binding)
     }
 
+    fn registry_qualification(agent: &PreparedAgentService) -> AgentRegistryQualification {
+        AgentRegistryQualification {
+            agent: agent.binding.agent_resource().clone(),
+            target: agent.declaration.principal.clone(),
+            revision: agent.declaration.registry_revision,
+            bindings: std::collections::BTreeMap::from([(
+                agent.declaration.skill.clone(),
+                agent.binding.digest().into(),
+            )]),
+        }
+    }
+
+    pub(super) async fn publish_agent_registry(
+        prepared: &PreparedExecutionScope,
+        coordinator: &AuthorityCoordinator,
+        clock: &dyn Clock,
+    ) -> Result<(), String> {
+        let scope = prepared.declaration();
+        for agent in prepared.agents.values() {
+            let qualification = Self::registry_qualification(agent);
+            let ceiling = AgentRegistryIssuanceCeiling {
+                issuer: scope.publisher.clone(),
+                approved: vec![qualification.clone()],
+                valid_from_ms: scope.valid_from_ms,
+                deadline_ms: scope.credential_limits.deadline_ms,
+            };
+            let change = format!(
+                "deployment-agent-registry/{:x}",
+                Sha256::digest(
+                    serde_json::to_vec(&(qualification.agent.id(), qualification.revision,))
+                        .map_err(|_| "invalid registry qualification")?
+                )
+            );
+            coordinator
+                .publish_agent_registry(
+                    &change,
+                    qualification.clone(),
+                    qualification.revision - 1,
+                    &ceiling,
+                    &coordinator
+                        .snapshot()
+                        .await
+                        .map_err(|_| "registry authority unavailable")?
+                        .stamp(),
+                    "explicit deployment registry qualification",
+                    clock,
+                )
+                .await
+                .map_err(|_| "registry qualification publication refused")?;
+            let snapshot = coordinator
+                .snapshot()
+                .await
+                .map_err(|_| "registry authority unavailable")?;
+            let current = snapshot
+                .agent_registry
+                .get(qualification.agent.id())
+                .ok_or("registry qualification missing")?;
+            if current.retired || current.qualification != qualification {
+                return Err("registry qualification retired or replaced".into());
+            }
+        }
+        Ok(())
+    }
+
     pub(super) async fn publish_agent_grants(
         prepared: &PreparedExecutionScope,
         coordinator: &AuthorityCoordinator,
@@ -236,6 +301,19 @@ impl ExecutionAuthorityRuntime {
                 self.clock.now().timestamp_millis(),
             )
             .await?;
+        let qualification = Self::registry_qualification(agent);
+        let snapshot = scope
+            .coordinator
+            .snapshot()
+            .await
+            .map_err(AgentServiceError::from)?;
+        let current = snapshot
+            .agent_registry
+            .get(qualification.agent.id())
+            .ok_or(AgentServiceError::Unavailable)?;
+        if current.retired || current.qualification != qualification {
+            return Err(AgentServiceError::Forbidden);
+        }
         let actor = source.authentication_source().principal();
         let declared = agent
             .declaration

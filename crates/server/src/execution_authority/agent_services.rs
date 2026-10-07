@@ -15,6 +15,9 @@ use crate::config::{ExecutionRouteConfig, ExecutionScopeConfig};
 #[serde(deny_unknown_fields)]
 pub struct AgentServiceDeclaration {
     pub card: AgentCard,
+    /// Monotonic reviewed registry epoch; a retired epoch cannot be republished.
+    #[serde(default = "initial_registry_revision")]
+    pub registry_revision: u64,
     pub principal: PrincipalIdentity,
     pub skill: String,
     pub endpoint: String,
@@ -48,7 +51,8 @@ impl AgentServiceDeclaration {
         )
         .map_err(|_| "invalid service endpoint identity")?;
         let env = self.recipient_key_env.as_bytes();
-        if self.card.namespace != scope.namespace
+        if self.registry_revision == 0
+            || self.card.namespace != scope.namespace
             || self.card.tenant != scope.tenant
             || self.principal.kind() != PrincipalKind::Agent
             || !scope.subjects.contains(&self.principal)
@@ -109,6 +113,13 @@ impl AgentServiceDeclaration {
         let mut resources = bound.effect().resources.clone();
         for (kind, name) in [
             (ResourceKind::Agent, self.card.agent_id.clone()),
+            (
+                ResourceKind::Route,
+                format!(
+                    "agent-registry.{}.{}",
+                    self.card.agent_id, self.registry_revision
+                ),
+            ),
             (ResourceKind::Endpoint, self.endpoint_id.clone()),
             (ResourceKind::Route, format!("agent-card.{digest}")),
         ] {
@@ -137,6 +148,10 @@ impl AgentServiceDeclaration {
         )
         .map_err(|_| "invalid approved service binding".into())
     }
+}
+
+fn initial_registry_revision() -> u64 {
+    1
 }
 
 fn valid_permits(permits: &[PermitReference]) -> bool {

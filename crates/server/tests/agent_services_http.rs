@@ -1020,3 +1020,77 @@ async fn redis_restart_does_not_start_stopped_queued_service_work() {
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     webhook_task.abort();
 }
+
+#[tokio::test]
+#[cfg(feature = "redis")]
+#[ignore = "requires ACTEON_GOVERNANCE_REDIS_URL; isolated registry retirement contract"]
+async fn redis_registry_retirement_blocks_admission_and_republication_without_hiding_history() {
+    use acteon_governance::{AuthorityChange, AuthorityCoordinator};
+    let (url, calls, webhook_task) = webhook().await;
+    let (backend, settings) = redis_state();
+    let store: Arc<dyn acteon_state::StateStore> =
+        Arc::new(acteon_state_redis::RedisStateStore::new(&settings).unwrap());
+    let mut server = Server::configured(
+        &url,
+        Some("notifier-secret"),
+        "incident",
+        false,
+        "agent",
+        backend,
+    );
+    let client = reqwest::Client::new();
+    server.ready(&client).await;
+    let coordinator = AuthorityCoordinator::connect(store, "prod", "acme")
+        .await
+        .unwrap();
+    let before = coordinator.snapshot().await.unwrap();
+    let record = &before.agent_registry["notifier"];
+    assert_eq!(record.qualification.revision, 1);
+    assert!(!record.retired);
+    let (task, source) = send_task(&server, &client, "registry-retired-job").await;
+    coordinator
+        .change(
+            "operator-registry-retirement",
+            AuthorityChange::RetireAgentRegistry {
+                agent: record.qualification.agent.clone(),
+                expected_revision: 1,
+            },
+            "operator",
+            "reviewed registry withdrawal",
+        )
+        .await
+        .unwrap();
+    let before_denied = coordinator.snapshot().await.unwrap();
+    let response = client
+        .post(server.endpoint())
+        .bearer_auth("alice-secret")
+        .json(&message("new-after-retirement"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 403);
+    let after_denied = coordinator.snapshot().await.unwrap();
+    assert_eq!(before_denied.roots.len(), after_denied.roots.len());
+    assert!(after_denied.starts.is_empty());
+    let response = client
+        .get(server.task_url(task["id"].as_str().unwrap()))
+        .bearer_auth("alice-secret")
+        .header("x-acteon-agent-source-context", source)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.json::<Value>().await.unwrap()["id"], task["id"]);
+    server.restart(true);
+    server.rejected_startup().await;
+    assert!(
+        server
+            .log()
+            .contains("registry qualification retired or replaced"),
+        "{}",
+        server.log()
+    );
+    assert!(coordinator.snapshot().await.unwrap().agent_registry["notifier"].retired);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    webhook_task.abort();
+}

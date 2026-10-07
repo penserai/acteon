@@ -78,13 +78,23 @@ message identity and inspect durable evidence rather than constructing new work.
   or redirect. The browser has an explicit per-job stop control; acknowledgement
   is separate from provider task state and survives local task refreshes.
 
+- Configured service deployment now publishes a mandatory, independently
+  approved registry qualification before service grants. `registry_revision`
+  defaults to 1 and must increase for requalification. The revision contributes
+  to the service binding digest; changing or retiring an epoch cannot be undone
+  by restarting the same declaration. Retired or replaced qualifications deny
+  new admission before source root allocation, while original requester history
+  remains observable under the unchanged service binding. Coordinator checks
+  continue to enforce qualified digests at delegated effect starts.
+
 Remaining before release:
 
 - Complete qualified provider abort/reconciliation and its SDK/UI lifecycle; qualify restart
   recovery against each supported production backend.
 - Expand focused adversarial and integration tests from admission/isolation to
   full provider execution and peer lifecycle.
-- Complete registry revision fencing and qualified outbound A2A lifecycle work.
+- Fence registry mutation routes and retain historical bindings across service
+  replacement; complete qualified outbound A2A lifecycle work.
 - Extend lifecycle SDK/UI integration as provider abort and outbound peer contracts are added.
 - Review adversarially, run CI, and verify publication before merging.
 
