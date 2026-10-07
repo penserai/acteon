@@ -255,6 +255,8 @@ fn grant_pair<'a>(
         delegation_policy::original(state, reference).ok_or(CoordinationError::Restricted)?;
     let (current, revoked) =
         delegation_policy::current(state, &reference.id).ok_or(CoordinationError::Restricted)?;
+    crate::registry::validate_grant(state, original)?;
+    crate::registry::validate_grant(state, &current)?;
     if revoked
         || current.revision < original.revision
         || now < original.valid_from_ms

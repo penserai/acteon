@@ -1334,3 +1334,185 @@ async fn simultaneous_requester_stops_publish_one_control_event() {
     );
     assert_eq!(f.counter.calls.load(Ordering::SeqCst), 0);
 }
+
+async fn qualify_registry_fixture(f: &Fixture, revision: u64, digest: String) {
+    use acteon_governance::registry::{AgentRegistryIssuanceCeiling, AgentRegistryQualification};
+    let q = AgentRegistryQualification {
+        agent: resource(ResourceKind::Agent, "notifier"),
+        target: actor("worker"),
+        revision,
+        bindings: std::collections::BTreeMap::from([("notify".into(), digest)]),
+    };
+    let ceiling = AgentRegistryIssuanceCeiling {
+        issuer: actor("operator"),
+        approved: vec![q.clone()],
+        valid_from_ms: 0,
+        deadline_ms: 10_000,
+    };
+    f.coordinator
+        .publish_agent_registry(
+            &format!("registry-{revision}"),
+            q,
+            revision - 1,
+            &ceiling,
+            &f.coordinator.snapshot().await.unwrap().stamp(),
+            "qualified fixed runtime",
+            f.clock.as_ref(),
+        )
+        .await
+        .unwrap();
+}
+async fn retire_registry_fixture(f: &Fixture) {
+    f.coordinator
+        .change(
+            "registry-retire",
+            AuthorityChange::RetireAgentRegistry {
+                agent: resource(ResourceKind::Agent, "notifier"),
+                expected_revision: 1,
+            },
+            "operator",
+            "registry changed",
+        )
+        .await
+        .unwrap();
+}
+#[tokio::test]
+async fn registry_retirement_and_new_binding_block_old_accepted_provider_starts() {
+    let f = Fixture::new(false).await;
+    let runtime = f.runtime();
+    qualify_registry_fixture(&f, 1, runtime.binding_digest().into()).await;
+    f.accept(&runtime).await;
+    retire_registry_fixture(&f).await;
+    assert!(
+        Box::pin(f.runtime().resume(f.child.execution_id()))
+            .await
+            .is_err()
+    );
+    qualify_registry_fixture(&f, 2, "c".repeat(64)).await;
+    assert!(
+        Box::pin(f.runtime().resume(f.child.execution_id()))
+            .await
+            .is_err()
+    );
+    assert_eq!(f.counter.calls.load(Ordering::SeqCst), 0);
+    assert!(f.coordinator.snapshot().await.unwrap().starts.is_empty());
+    // Restriction does not hide durable accepted work from its legitimate host.
+    assert_eq!(
+        f.runtime()
+            .observe(f.child.execution_id())
+            .await
+            .unwrap()
+            .task
+            .id,
+        f.child.execution_id().to_string()
+    );
+}
+#[tokio::test]
+async fn registry_retirement_does_not_certify_an_uncertain_result_or_release_capacity() {
+    let f = Fixture::new(true).await;
+    let runtime = f.runtime();
+    qualify_registry_fixture(&f, 1, runtime.binding_digest().into()).await;
+    f.accept(&runtime).await;
+    Box::pin(runtime.resume(f.child.execution_id()))
+        .await
+        .unwrap();
+    retire_registry_fixture(&f).await;
+    let observed = Box::pin(f.runtime().resume(f.child.execution_id()))
+        .await
+        .unwrap();
+    assert_eq!(observed.task.status.state, TaskState::Working);
+    assert!(matches!(
+        observed.execution.unwrap().status,
+        GovernedProviderStatus::ReconciliationRequired { .. }
+    ));
+    assert_eq!(f.counter.calls.load(Ordering::SeqCst), 1);
+    assert!(
+        f.coordinator
+            .snapshot()
+            .await
+            .unwrap()
+            .roots
+            .values()
+            .all(|r| r.active_attempts == 1 && r.spent_units == 1)
+    );
+}
+#[tokio::test]
+async fn registry_retirement_during_an_in_flight_call_preserves_its_known_completion() {
+    let f = Fixture::new(false).await;
+    let runtime = f.runtime();
+    qualify_registry_fixture(&f, 1, runtime.binding_digest().into()).await;
+    f.accept(&runtime).await;
+    f.counter.blocking.store(true, Ordering::SeqCst);
+    let id = f.child.execution_id();
+    let running = tokio::spawn(async move { Box::pin(runtime.resume(id)).await });
+    f.counter.entered.notified().await;
+    retire_registry_fixture(&f).await;
+    f.counter.release.add_permits(1);
+    assert_eq!(
+        running.await.unwrap().unwrap().task.status.state,
+        TaskState::Completed
+    );
+    assert_eq!(
+        f.runtime().observe(id).await.unwrap().task.artifacts.len(),
+        1
+    );
+    assert_eq!(f.counter.calls.load(Ordering::SeqCst), 1);
+}
+#[tokio::test]
+async fn protocol_ten_upgrade_preserves_child_budgets_opaque_contexts_and_execution_receipts() {
+    for ambiguous in [false, true] {
+        let f = Fixture::new(ambiguous).await;
+        let runtime = f.runtime();
+        f.accept(&runtime).await;
+        Box::pin(runtime.resume(f.child.execution_id()))
+            .await
+            .unwrap();
+        let before = f.coordinator.snapshot().await.unwrap();
+        let key = StateKey::new(
+            "city",
+            "tenant",
+            KeyKind::Custom(acteon_governance::COORDINATOR_KIND.into()),
+            "authority",
+        );
+        let mut raw = serde_json::to_value(&before).unwrap();
+        raw["schema_version"] = 10.into();
+        raw.as_object_mut().unwrap().remove("agent_registry");
+        f.state
+            .set(&key, &serde_json::to_string(&raw).unwrap(), None)
+            .await
+            .unwrap();
+        let plan = AuthorityCoordinator::plan_scope_upgrade(
+            f.state.clone(),
+            "city",
+            "tenant",
+            acteon_governance::ScopePurpose::Execution,
+            "operator",
+            "registry protocol upgrade",
+        )
+        .await
+        .unwrap();
+        assert_eq!(plan.report().from_protocol, 10);
+        assert_eq!(plan.report().to_protocol, 11);
+        plan.apply(&plan.report().review_digest).await.unwrap();
+        let after = f.coordinator.snapshot().await.unwrap();
+        assert_eq!(before.incarnation, after.incarnation);
+        assert_eq!(before.budget_parents, after.budget_parents);
+        for (id, root) in &before.roots {
+            assert_eq!(root.active_attempts, after.roots[id].active_attempts);
+            assert_eq!(root.spent_units, after.roots[id].spent_units);
+            assert_eq!(root.accepted_context, after.roots[id].accepted_context);
+        }
+        let observed = Box::pin(f.runtime().resume(f.child.execution_id()))
+            .await
+            .unwrap();
+        assert_eq!(
+            observed.task.status.state,
+            if ambiguous {
+                TaskState::Working
+            } else {
+                TaskState::Completed
+            }
+        );
+        assert_eq!(f.counter.calls.load(Ordering::SeqCst), 1);
+    }
+}

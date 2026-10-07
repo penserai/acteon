@@ -1558,3 +1558,26 @@ Provider abort/reconciliation, response-lost peer cancellation, registry revisio
 fencing, qualified outbound A2A, all-backend/scale qualification, and the complete
 city/workforce requirements remain active. This completes native future-start
 stop integration, not the complete peer lifecycle or Phase 4 release gate.
+
+
+### Registry authority foundation (integration in progress)
+
+The coordinator now retains independently approved agent revisions and exact
+skill binding digests through the configured StateStore. Publication requires a
+trusted host approval and the evaluated authority stamp; ordinary registry
+metadata cannot publish qualification. Retirement and delegated effect starts
+share the coordinator CAS. A retired or replaced qualified binding blocks new
+starts, while known completion and uncertain accounting remain observable.
+Previously published digests cannot be reused to revive old accepted work.
+
+This advances the persisted authority protocol to 11. Existing protocol 10
+scopes require the explicit reviewed upgrade, preserving their incarnation,
+funded child budget links, opaque execution contexts and known or uncertain
+receipts. Startup does not migrate authority automatically.
+
+This is a kernel checkpoint. Mandatory qualification of configured mesh
+services, fencing registry mutation routes before updating their projections,
+and revision-aware service enrollment remain required integration work.
+Abstract trusted delegation can still operate without a registry record; this
+checkpoint does not establish registry fencing for every deployed service.
+Phase 4 and the full governed-city objective remain open.
