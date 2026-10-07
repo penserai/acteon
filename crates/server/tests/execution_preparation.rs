@@ -1226,6 +1226,7 @@ fn manager_intervention_footprints_must_fit_before_authority_publication() {
     scope
         .managers
         .push(acteon_server::config::ExecutionManagerConfig {
+            agents: vec![],
             principal: scope.subjects[0].clone(),
             subjects: scope.subjects.clone(),
             routes: scope.routes.clone(),

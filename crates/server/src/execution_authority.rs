@@ -47,6 +47,15 @@ fn validate_management_footprints(
                     .any(|r| r.provider == d.provider && r.action_type == d.action_type)
             })
             .flat_map(|d| d.effect.resources.iter().cloned())
+            .chain(manager.agents.iter().map(|id| {
+                acteon_core::ResourceRef::new(
+                    acteon_core::ResourceKind::Agent,
+                    &declaration.namespace,
+                    &declaration.tenant,
+                    id,
+                )
+                .expect("validated manager agent")
+            }))
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect();
@@ -823,6 +832,7 @@ impl PreparedExecutionScope {
 }
 
 fn canonicalize_manager(manager: &mut crate::config::ExecutionManagerConfig) {
+    manager.agents.sort();
     manager.subjects.sort_by(|a, b| a.id().cmp(b.id()));
     manager.routes.sort();
     if let Some(workforce) = &mut manager.workforce {

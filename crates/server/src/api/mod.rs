@@ -32,6 +32,7 @@ pub mod provider_health;
 pub mod queues;
 pub mod quotas;
 pub mod recurring;
+mod registry_guard;
 pub mod replay;
 pub mod retention;
 pub mod rules;
@@ -208,6 +209,11 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/v1/governance/permits", post(governance::publish_permit))
         .route("/v1/governance/changes", post(governance::intervene))
+        .route("/v1/governance/registry", post(governance::mutate_registry))
+        .route(
+            "/v1/governance/registry/{agent_id}",
+            get(governance::registry_projection),
+        )
         // Dispatch
         .route("/v1/dispatch", post(dispatch::dispatch))
         .route("/v1/dispatch/batch", post(dispatch::dispatch_batch))

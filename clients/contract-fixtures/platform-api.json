@@ -1165,6 +1165,13 @@
       "response": "json"
     },
     {
+      "name": "governance_mutate_registry",
+      "method": "POST",
+      "path": "/v1/governance/registry",
+      "parameters": [],
+      "response": "json"
+    },
+    {
       "name": "governance_provider_history",
       "method": "GET",
       "path": "/v1/governance/executions/{execution_id}",
@@ -1187,6 +1194,15 @@
       "parameters": [
         "execution_id",
         "ordinal"
+      ],
+      "response": "json"
+    },
+    {
+      "name": "governance_registry_projection",
+      "method": "GET",
+      "path": "/v1/governance/registry/{agent_id}",
+      "parameters": [
+        "agent_id"
       ],
       "response": "json"
     },

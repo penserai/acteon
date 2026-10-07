@@ -128,6 +128,9 @@ pub struct ExecutionPermitDeclaration {
 // Independent additive permissions retain the established wire/config contract.
 #[allow(clippy::struct_excessive_bools)]
 pub struct ExecutionManagerConfig {
+    /// Exact independent registry/control footprint; routes do not imply agent management.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agents: Vec<String>,
     pub principal: PrincipalIdentity,
     pub subjects: Vec<PrincipalIdentity>,
     pub routes: Vec<ExecutionRouteConfig>,
@@ -371,6 +374,14 @@ impl ExecutionScopeConfig {
                     .len()
                     != manager.subjects.len()
                 || manager.subjects.iter().any(|s| !self.subjects.contains(s))
+                || manager.agents.len() > 128
+                || manager.agents.iter().collect::<BTreeSet<_>>().len() != manager.agents.len()
+                || (!manager.agents.is_empty() && !manager.can_intervene)
+                || manager.agents.iter().any(|id| {
+                    id.contains('*')
+                        || ResourceRef::new(ResourceKind::Agent, &self.namespace, &self.tenant, id)
+                            .is_err()
+                })
                 || manager.routes.len() > 128
                 || manager.routes.iter().collect::<BTreeSet<_>>().len() != manager.routes.len()
                 || manager.routes.iter().any(|r| !self.routes.contains(r))

@@ -119,9 +119,11 @@ class PlatformOperation(StrEnum):
     GOVERNANCE_ACCEPT_RECONCILIATION = "governance_accept_reconciliation"
     GOVERNANCE_INSPECT = "governance_inspect"
     GOVERNANCE_INTERVENE = "governance_intervene"
+    GOVERNANCE_MUTATE_REGISTRY = "governance_mutate_registry"
     GOVERNANCE_PROVIDER_HISTORY = "governance_provider_history"
     GOVERNANCE_PUBLISH_PERMIT = "governance_publish_permit"
     GOVERNANCE_RECONCILIATION_CORRELATION = "governance_reconciliation_correlation"
+    GOVERNANCE_REGISTRY_PROJECTION = "governance_registry_projection"
     GROUPS_FLUSH_GROUP = "groups_flush_group"
     GROUPS_GET_GROUP = "groups_get_group"
     GROUPS_LIST_GROUPS = "groups_list_groups"
@@ -746,6 +748,7 @@ OPERATIONS = {
     ),
     PlatformOperation.GOVERNANCE_INSPECT: ("GET", "/v1/governance", (), "json"),
     PlatformOperation.GOVERNANCE_INTERVENE: ("POST", "/v1/governance/changes", (), "json"),
+    PlatformOperation.GOVERNANCE_MUTATE_REGISTRY: ("POST", "/v1/governance/registry", (), "json"),
     PlatformOperation.GOVERNANCE_PROVIDER_HISTORY: (
         "GET",
         "/v1/governance/executions/{execution_id}",
@@ -757,6 +760,12 @@ OPERATIONS = {
         "GET",
         "/v1/governance/executions/{execution_id}/attempts/{ordinal}/correlation",
         ("execution_id", "ordinal"),
+        "json",
+    ),
+    PlatformOperation.GOVERNANCE_REGISTRY_PROJECTION: (
+        "GET",
+        "/v1/governance/registry/{agent_id}",
+        ("agent_id",),
         "json",
     ),
     PlatformOperation.GROUPS_FLUSH_GROUP: (

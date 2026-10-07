@@ -96,7 +96,10 @@ message identity and inspect durable evidence rather than constructing new work.
   Matching bytes or an absent row do not certify a lost write acknowledgement.
   A known version conflict records no effect and leaves the old epoch retired.
   Ordinary control-event acknowledgements cannot complete this mutation.
-  The HTTP registry mutation routes still need to adopt the primitive.
+  The HTTP registry mutation routes now call the primitive with independently
+  declared manager agent bounds. Governed scopes reject legacy metadata writes.
+  This HTTP integration remains a draft checkpoint: focused failure-path tests,
+  native SDK helpers, and public documentation are still pending.
 - Authority protocol 12 requires explicit reviewed cutover from protocols 10
   and 11; startup does not upgrade automatically. Contracts preserve funded
   descendants, opaque contexts, known/uncertain execution receipts and qualified
@@ -109,7 +112,9 @@ Remaining before release:
   recovery against each supported production backend.
 - Expand focused adversarial and integration tests from admission/isolation to
   full provider execution and peer lifecycle.
-- Fence registry mutation routes and retain historical bindings across service
+- Verify the registry HTTP adapter with focused adversarial tests, including
+  unresolved delivery status and card/agent projection consistency. Add native
+  SDK helpers and public documentation. Retain historical bindings across service
   replacement; complete qualified outbound A2A lifecycle work.
 - Extend lifecycle SDK/UI integration as provider abort and outbound peer contracts are added.
 - Review adversarially, run CI, and verify publication before merging.

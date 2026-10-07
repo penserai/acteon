@@ -120,9 +120,11 @@ const (
 	OpGovernanceAcceptReconciliation PlatformOperation = "governance_accept_reconciliation"
 	OpGovernanceInspect PlatformOperation = "governance_inspect"
 	OpGovernanceIntervene PlatformOperation = "governance_intervene"
+	OpGovernanceMutateRegistry PlatformOperation = "governance_mutate_registry"
 	OpGovernanceProviderHistory PlatformOperation = "governance_provider_history"
 	OpGovernancePublishPermit PlatformOperation = "governance_publish_permit"
 	OpGovernanceReconciliationCorrelation PlatformOperation = "governance_reconciliation_correlation"
+	OpGovernanceRegistryProjection PlatformOperation = "governance_registry_projection"
 	OpGroupsFlushGroup PlatformOperation = "groups_flush_group"
 	OpGroupsGetGroup PlatformOperation = "groups_get_group"
 	OpGroupsListGroups PlatformOperation = "groups_list_groups"
@@ -322,9 +324,11 @@ var platformOperations = map[PlatformOperation]platformDescriptor{
 	OpGovernanceAcceptReconciliation: {"POST", "/v1/governance/executions/{execution_id}/attempts/{ordinal}/reconciliation", []string{"execution_id", "ordinal"}, false},
 	OpGovernanceInspect: {"GET", "/v1/governance", []string{}, false},
 	OpGovernanceIntervene: {"POST", "/v1/governance/changes", []string{}, false},
+	OpGovernanceMutateRegistry: {"POST", "/v1/governance/registry", []string{}, false},
 	OpGovernanceProviderHistory: {"GET", "/v1/governance/executions/{execution_id}", []string{"execution_id"}, false},
 	OpGovernancePublishPermit: {"POST", "/v1/governance/permits", []string{}, false},
 	OpGovernanceReconciliationCorrelation: {"GET", "/v1/governance/executions/{execution_id}/attempts/{ordinal}/correlation", []string{"execution_id", "ordinal"}, false},
+	OpGovernanceRegistryProjection: {"GET", "/v1/governance/registry/{agent_id}", []string{"agent_id"}, false},
 	OpGroupsFlushGroup: {"DELETE", "/v1/groups/{group_key}", []string{"group_key"}, false},
 	OpGroupsGetGroup: {"GET", "/v1/groups/{group_key}", []string{"group_key"}, false},
 	OpGroupsListGroups: {"GET", "/v1/groups", []string{}, false},

@@ -720,6 +720,12 @@
     "permission": "OperationsManage"
   },
   {
+    "name": "governance_mutate_registry",
+    "method": "POST",
+    "path": "/v1/governance/registry",
+    "permission": "OperationsManage"
+  },
+  {
     "name": "governance_provider_history",
     "method": "GET",
     "path": "/v1/governance/executions/{execution_id}",
@@ -735,6 +741,12 @@
     "name": "governance_reconciliation_correlation",
     "method": "GET",
     "path": "/v1/governance/executions/{execution_id}/attempts/{ordinal}/correlation",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "governance_registry_projection",
+    "method": "GET",
+    "path": "/v1/governance/registry/{agent_id}",
     "permission": "OperationsManage"
   },
   {

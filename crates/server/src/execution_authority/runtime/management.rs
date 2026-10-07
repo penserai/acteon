@@ -1,5 +1,6 @@
 //! Management from original private authentication and independent deployment policy.
 mod reconciliation;
+mod registry;
 mod workforce;
 use super::{ExecutionAuthorityRuntime, InstalledScope};
 use crate::{
@@ -410,6 +411,15 @@ impl ExecutionAuthorityRuntime {
                 .effects
                 .into_iter()
                 .flat_map(|e| e.resources)
+                .chain(observation.policy.agents.iter().map(|id| {
+                    acteon_core::ResourceRef::new(
+                        acteon_core::ResourceKind::Agent,
+                        &request.namespace,
+                        &request.tenant,
+                        id,
+                    )
+                    .expect("validated agent management bound")
+                }))
                 .collect::<std::collections::BTreeSet<_>>()
                 .into_iter()
                 .collect(),

@@ -230,3 +230,58 @@ pub async fn accept_reconciliation(
         Json(body),
     ))
 }
+
+#[derive(Deserialize, utoipa::IntoParams)]
+#[serde(deny_unknown_fields)]
+pub struct RegistryProjectionQuery {
+    pub namespace: String,
+    pub tenant: String,
+    pub projection: acteon_core::GovernanceRegistryProjection,
+}
+
+#[utoipa::path(get, path = "/v1/governance/registry/{agent_id}", tag = "Governance", params(("agent_id" = String, Path), RegistryProjectionQuery),
+    responses((status = 200, body = acteon_core::GovernanceRegistryProjectionView), (status = 403, description = "Exact current agent management authority required"), (status = 503, description = "Registry authority unavailable")))]
+pub async fn registry_projection(
+    State(state): State<AppState>,
+    proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
+    Path(agent_id): Path<String>,
+    Query(query): Query<RegistryProjectionQuery>,
+) -> Result<Response, GovernanceApiError> {
+    let proof = authentication(proof)?;
+    let view = runtime(&state)?
+        .inspect_registry_projection(
+            &query.namespace,
+            &query.tenant,
+            &agent_id,
+            query.projection,
+            &proof,
+        )
+        .await?;
+    Ok((
+        [(axum::http::header::CACHE_CONTROL, "no-store")],
+        Json(view),
+    )
+        .into_response())
+}
+
+#[utoipa::path(post, path = "/v1/governance/registry", tag = "Governance", request_body = acteon_core::GovernanceRegistryMutationRequest,
+    responses((status = 200, body = acteon_core::GovernanceRegistryMutationReceipt), (status = 400, description = "Invalid metadata or intent"), (status = 403, description = "Exact current agent management authority required"), (status = 409, description = "Changed metadata or qualification"), (status = 503, description = "Unavailable or unresolved control delivery")))]
+pub async fn mutate_registry(
+    State(state): State<AppState>,
+    proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
+    Json(request): Json<acteon_core::GovernanceRegistryMutationRequest>,
+) -> Result<Response, GovernanceApiError> {
+    let proof = authentication(proof)?;
+    let receipt = runtime(&state)?
+        .mutate_registry_projection(request, &proof)
+        .await?;
+    state
+        .a2a_discovery_cache
+        .invalidate(&receipt.namespace, &receipt.tenant)
+        .await;
+    Ok((
+        [(axum::http::header::CACHE_CONTROL, "no-store")],
+        Json(receipt),
+    )
+        .into_response())
+}

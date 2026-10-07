@@ -99,6 +99,8 @@ use acteon_core::{
         super::workforce::inspect,
         super::workforce::change,
         super::governance::inspect,
+        super::governance::registry_projection,
+        super::governance::mutate_registry,
         super::governance::provider_history,
         super::governance::reconciliation_correlation,
         super::governance::accept_reconciliation,
