@@ -12,7 +12,7 @@ use crate::{
 };
 use acteon_core::{ExecutionContextReference, PrincipalKind, Task, TaskMessage};
 use acteon_executor::governed::governed_provider_input_digest;
-use acteon_gateway::agent_runtime::AgentProviderRuntime;
+use acteon_gateway::agent_runtime::{AgentProviderRuntime, AgentTaskStopReceipt};
 use acteon_governance::{
     AuthorityCoordinator, RootBudgetLimits,
     context::{
@@ -439,6 +439,39 @@ impl ExecutionAuthorityRuntime {
         &self,
         request: AgentServiceObservation<'_>,
     ) -> Result<Task, AgentServiceError> {
+        let task_id = request.task_id;
+        let (runtime, _) = self.authorize_service_observation(request).await?;
+        let observed = runtime
+            .observe(task_id)
+            .await
+            .map_err(AgentServiceError::observation)?;
+        Ok(observed.task)
+    }
+
+    /// Stop only the original accepted recipient subtree. Current private
+    /// authentication and exact source provenance are required, as for reads.
+    pub async fn stop_agent_service(
+        &self,
+        request: AgentServiceObservation<'_>,
+    ) -> Result<AgentTaskStopReceipt, AgentServiceError> {
+        let task_id = request.task_id;
+        let (runtime, source) = self.authorize_service_observation(request).await?;
+        runtime
+            .stop(task_id, &source)
+            .await
+            .map_err(AgentServiceError::from)
+    }
+
+    async fn authorize_service_observation<'a>(
+        &'a self,
+        request: AgentServiceObservation<'_>,
+    ) -> Result<
+        (
+            &'a AgentProviderRuntime,
+            acteon_governance::context::VerifiedExecutionContext,
+        ),
+        AgentServiceError,
+    > {
         request
             .authentication
             .verify_authentication_current()
@@ -466,11 +499,7 @@ impl ExecutionAuthorityRuntime {
         {
             return Err(AgentServiceError::NotFound);
         }
-        let observed = runtime
-            .observe(request.task_id)
-            .await
-            .map_err(AgentServiceError::observation)?;
-        Ok(observed.task)
+        Ok((runtime, source))
     }
 
     fn service(

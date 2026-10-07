@@ -499,7 +499,9 @@ legacy A2A tasks.
 from acteon_client import make_message, make_part_text
 
 receipt = client.agent_service_send_message(
-    "prod", "acme", "notifier",
+    "prod",
+    "acme",
+    "notifier",
     make_message("incident-42", "user", [make_part_text("Notify the incident owner")]),
 )
 task = client.agent_service_get_task(receipt)

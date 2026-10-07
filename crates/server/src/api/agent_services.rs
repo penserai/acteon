@@ -14,7 +14,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 const SOURCE_CONTEXT_HEADER: &str = "x-acteon-agent-source-context";
 
@@ -118,22 +118,9 @@ pub async fn task_get(
     {
         return error(StatusCode::BAD_REQUEST, "unsupported_a2a_version");
     }
-    let source = match headers.get(SOURCE_CONTEXT_HEADER) {
-        None => None,
-        Some(value) => {
-            let parsed = value
-                .to_str()
-                .ok()
-                .filter(|v| v.len() <= 8192)
-                .and_then(|v| URL_SAFE_NO_PAD.decode(v).ok())
-                .and_then(|raw| {
-                    serde_json::from_slice::<acteon_core::ExecutionContextReference>(&raw).ok()
-                });
-            let Some(reference) = parsed else {
-                return error(StatusCode::BAD_REQUEST, "invalid_source_context");
-            };
-            Some(reference)
-        }
+    let source = match parse_source_context(&headers) {
+        Ok(source) => source,
+        Err(code) => return error(StatusCode::BAD_REQUEST, code),
     };
     let Some(runtime) = &state.execution_authority else {
         return error(
@@ -163,6 +150,90 @@ pub async fn task_get(
             .into_response(),
         Err(cause) => service_error(cause),
     }
+}
+
+/// Durable restriction acknowledgement. Task state remains provider evidence;
+/// stopping future starts does not certify cancellation of an existing effect.
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct AgentServiceStopResponse {
+    pub task: acteon_core::Task,
+    pub future_starts_blocked: bool,
+}
+
+#[utoipa::path(
+    post, path = "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/stop", tag = "Governance",
+    params(("namespace" = String, Path), ("tenant" = String, Path), ("agent" = String, Path),
+        ("id" = String, Path), ("x-acteon-agent-source-context" = Option<String>, Header, description = "Original admission source context; mandatory for agent requesters")),
+    responses((status = 200, body = AgentServiceStopResponse),
+        (status = 404, description = "Task unavailable to this requester"),
+        (status = 503, description = "Restriction or observation acknowledgement unavailable; retry the same task"))
+)]
+pub async fn task_stop(
+    State(state): State<AppState>,
+    proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
+    Path((namespace, tenant, agent, task_id)): Path<(String, String, String, uuid::Uuid)>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(Extension(proof)) = proof else {
+        return error(StatusCode::FORBIDDEN, "private_authentication_required");
+    };
+    if headers
+        .get("a2a-version")
+        .is_some_and(|v| v != A2A_PROTOCOL_VERSION)
+    {
+        return error(StatusCode::BAD_REQUEST, "unsupported_a2a_version");
+    }
+    let source = match parse_source_context(&headers) {
+        Ok(source) => source,
+        Err(code) => return error(StatusCode::BAD_REQUEST, code),
+    };
+    let Some(runtime) = &state.execution_authority else {
+        return error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "agent_services_unavailable",
+        );
+    };
+    match runtime
+        .stop_agent_service(AgentServiceObservation {
+            namespace: &namespace,
+            tenant: &tenant,
+            agent_id: &agent,
+            task_id,
+            authentication: &proof,
+            source_context: source.as_ref(),
+        })
+        .await
+    {
+        Ok(receipt) => (
+            StatusCode::OK,
+            [
+                ("a2a-version", A2A_PROTOCOL_VERSION),
+                ("cache-control", "no-store"),
+            ],
+            Json(AgentServiceStopResponse {
+                task: receipt.task,
+                future_starts_blocked: receipt.future_starts_blocked,
+            }),
+        )
+            .into_response(),
+        Err(cause) => service_error(cause),
+    }
+}
+
+fn parse_source_context(
+    headers: &HeaderMap,
+) -> Result<Option<acteon_core::ExecutionContextReference>, &'static str> {
+    let Some(value) = headers.get(SOURCE_CONTEXT_HEADER) else {
+        return Ok(None);
+    };
+    value
+        .to_str()
+        .ok()
+        .filter(|v| v.len() <= 8192)
+        .and_then(|v| URL_SAFE_NO_PAD.decode(v).ok())
+        .and_then(|raw| serde_json::from_slice(&raw).ok())
+        .map(Some)
+        .ok_or("invalid_source_context")
 }
 
 fn service_error(cause: AgentServiceError) -> Response {

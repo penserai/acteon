@@ -1152,3 +1152,185 @@ async fn observation_rejects_fake_terminal_projection_and_repairs_known_result_w
     );
     assert_eq!(f.counter.calls.load(Ordering::SeqCst), 1);
 }
+
+#[tokio::test]
+async fn requester_stop_is_durable_idempotent_and_prevents_queued_effects() {
+    let f = Fixture::new(false).await;
+    let runtime = f.runtime();
+    f.accept(&runtime).await;
+    // A recipient's own context cannot substitute for its original source.
+    assert!(
+        runtime
+            .stop(f.child.execution_id(), &f.child)
+            .await
+            .is_err()
+    );
+    assert!(
+        !f.coordinator.snapshot().await.unwrap().roots[&f.child.execution_id().to_string()]
+            .cancelled
+    );
+    let stopped = runtime
+        .stop(f.child.execution_id(), &f.parent)
+        .await
+        .unwrap();
+    assert!(stopped.future_starts_blocked);
+    assert_eq!(stopped.task.status.state, TaskState::Submitted);
+    let generation = f.coordinator.snapshot().await.unwrap().generation;
+    let restarted = f.runtime();
+    assert!(
+        restarted
+            .stop(f.child.execution_id(), &f.parent)
+            .await
+            .unwrap()
+            .future_starts_blocked
+    );
+    assert_eq!(
+        f.coordinator.snapshot().await.unwrap().generation,
+        generation
+    );
+    assert!(
+        Box::pin(restarted.resume(f.child.execution_id()))
+            .await
+            .is_err()
+    );
+    assert_eq!(f.counter.calls.load(Ordering::SeqCst), 0);
+    let state = f.coordinator.snapshot().await.unwrap();
+    assert!(state.starts.is_empty());
+    assert!(!state.roots[&f.parent.execution_id().to_string()].cancelled);
+    assert!(
+        restarted
+            .observe(f.child.execution_id())
+            .await
+            .unwrap()
+            .future_starts_blocked
+    );
+}
+
+#[tokio::test]
+async fn requester_stop_preserves_uncertain_delivery_and_shared_capacity() {
+    let f = Fixture::new(true).await;
+    let runtime = f.runtime();
+    f.accept(&runtime).await;
+    Box::pin(runtime.resume(f.child.execution_id()))
+        .await
+        .unwrap();
+    let stopped = runtime
+        .stop(f.child.execution_id(), &f.parent)
+        .await
+        .unwrap();
+    assert!(stopped.future_starts_blocked);
+    assert_eq!(stopped.task.status.state, TaskState::Working);
+    let restarted = f.runtime();
+    let observed = Box::pin(restarted.resume(f.child.execution_id()))
+        .await
+        .unwrap();
+    assert!(observed.future_starts_blocked);
+    assert!(matches!(
+        observed.execution.unwrap().status,
+        GovernedProviderStatus::ReconciliationRequired { .. }
+    ));
+    assert_eq!(f.counter.calls.load(Ordering::SeqCst), 1);
+    let state = f.coordinator.snapshot().await.unwrap();
+    for id in [f.parent.execution_id(), f.child.execution_id()] {
+        assert_eq!(state.roots[&id.to_string()].active_attempts, 1);
+        assert_eq!(state.roots[&id.to_string()].spent_units, 1);
+    }
+}
+
+#[tokio::test]
+async fn requester_stop_racing_delivered_work_does_not_replace_its_known_result() {
+    let f = Fixture::new(false).await;
+    f.counter.blocking.store(true, Ordering::SeqCst);
+    let runtime = f.runtime();
+    f.accept(&runtime).await;
+    let id = f.child.execution_id();
+    let running = tokio::spawn(async move { Box::pin(runtime.resume(id)).await });
+    f.counter.entered.notified().await;
+    let stopped = f.runtime().stop(id, &f.parent).await.unwrap();
+    assert!(stopped.future_starts_blocked);
+    assert_eq!(stopped.task.status.state, TaskState::Working);
+    assert_eq!(
+        f.coordinator.snapshot().await.unwrap().roots[&id.to_string()].active_attempts,
+        1
+    );
+    f.counter.release.add_permits(1);
+    let completed = running.await.unwrap().unwrap();
+    assert!(completed.future_starts_blocked);
+    assert_eq!(completed.task.status.state, TaskState::Completed);
+    assert_eq!(completed.task.artifacts.len(), 1);
+    let replay = f.runtime().stop(id, &f.parent).await.unwrap();
+    assert_eq!(replay.task.status.state, TaskState::Completed);
+    assert_eq!(replay.task.artifacts.len(), 1);
+    assert_eq!(f.counter.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        f.coordinator.snapshot().await.unwrap().roots[&id.to_string()].active_attempts,
+        0
+    );
+}
+
+#[tokio::test]
+async fn requester_stop_recovers_a_lost_control_write_acknowledgement() {
+    for timing in [FaultTiming::Before, FaultTiming::After] {
+        let f = Fixture::new(false).await;
+        let runtime = f.runtime();
+        f.accept(&runtime).await;
+        f.state
+            .fail_next(
+                KeyKind::Custom(acteon_governance::COORDINATOR_KIND.into()),
+                WriteOperation::CompareAndSwap,
+                timing,
+            )
+            .unwrap();
+        assert!(
+            runtime
+                .stop(f.child.execution_id(), &f.parent)
+                .await
+                .is_err()
+        );
+        let persisted = f.coordinator.snapshot().await.unwrap();
+        assert_eq!(
+            persisted.roots[&f.child.execution_id().to_string()].cancelled,
+            timing == FaultTiming::After
+        );
+        let replacement = f.runtime();
+        assert!(
+            replacement
+                .stop(f.child.execution_id(), &f.parent)
+                .await
+                .unwrap()
+                .future_starts_blocked
+        );
+        assert!(
+            Box::pin(replacement.resume(f.child.execution_id()))
+                .await
+                .is_err()
+        );
+        assert_eq!(f.counter.calls.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[tokio::test]
+async fn simultaneous_requester_stops_publish_one_control_event() {
+    let f = Fixture::new(false).await;
+    let first = f.runtime();
+    let second = f.runtime();
+    f.accept(&first).await;
+    let generation = f.coordinator.snapshot().await.unwrap().generation;
+    let (a, b) = tokio::join!(
+        first.stop(f.child.execution_id(), &f.parent),
+        second.stop(f.child.execution_id(), &f.parent),
+    );
+    assert!(a.unwrap().future_starts_blocked);
+    assert!(b.unwrap().future_starts_blocked);
+    let snapshot = f.coordinator.snapshot().await.unwrap();
+    assert_eq!(snapshot.generation, generation + 1);
+    assert_eq!(
+        snapshot
+            .changes
+            .values()
+            .filter(|r| matches!(r.change, AuthorityChange::CancelExecution { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(f.counter.calls.load(Ordering::SeqCst), 0);
+}

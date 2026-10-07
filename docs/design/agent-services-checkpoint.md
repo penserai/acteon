@@ -62,9 +62,19 @@ message identity and inspect durable evidence rather than constructing new work.
   current identity. Context remains in local host state, outside the rendered
   task data. The configured CORS origins can read receipt/version headers.
 
+- Original requesters can durably stop future starts for an accepted service
+  task and its descendant budget subtree. `POST
+  /a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/stop` uses the same
+  private authentication and source-context requirements as observation. Its
+  response contains the original task and `future_starts_blocked: true`.
+  This is an Acteon control extension. It does not certify provider abort,
+  refund spent budget, release unresolved capacity, or replace a known result
+  with a `cancelled` task. Lost acknowledgements are recovered by stopping the
+  same original task again. Recovery scheduling skips durably stopped work.
+
 Remaining before release:
 
-- Complete requester cancellation and ambiguity handling; qualify restart
+- Complete provider abort/reconciliation and cancellation SDK/UI integration; qualify restart
   recovery against each supported production backend.
 - Expand focused adversarial and integration tests from admission/isolation to
   full provider execution and peer lifecycle.

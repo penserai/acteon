@@ -198,6 +198,18 @@
       "response": "json"
     },
     {
+      "name": "agent_services_task_stop",
+      "method": "POST",
+      "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/stop",
+      "parameters": [
+        "namespace",
+        "tenant",
+        "agent",
+        "id"
+      ],
+      "response": "json"
+    },
+    {
       "name": "analytics_query_analytics",
       "method": "GET",
       "path": "/v1/analytics",

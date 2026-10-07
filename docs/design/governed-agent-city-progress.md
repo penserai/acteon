@@ -1520,3 +1520,20 @@ This completes acceptance/observation integration, not cancellation or complete
 peer lifecycle. Registry revision fencing, qualified outbound A2A, unsupported
 and response-lost cancellation, host tools, production backend qualification and
 broader workforce/aggregate funding requirements remain active.
+
+
+### Original-requester stop boundary
+
+An accepted service requester can now restrict future starts for its recipient
+execution subtree through the configured StateStore coordinator. The original
+private credential and signed per-job source context bind this control to its
+accepted task; another job or recipient cannot substitute authority. Concurrent
+and repeated stops share one durable control event. Recovery scheduling skips
+stopped jobs, while observation continues to preserve provider evidence.
+
+Stop is distinct from a provider abort acknowledgement. A task with an uncertain
+external effect stays working and keeps its source and recipient reservations;
+a delivered operation may still complete after the restriction. This checkpoint
+adds the safe restriction boundary. Provider abort/reconciliation, native stop
+SDK/UI helpers, all-backend qualification, registry fencing, qualified outbound
+A2A, and the full workforce objective remain required. PR #433 remains draft.

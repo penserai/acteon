@@ -17,7 +17,7 @@ use acteon_executor::{
     },
 };
 use acteon_governance::{
-    AuthorityCoordinator, CoordinationError,
+    AuthorityChange, AuthorityCoordinator, CoordinationError,
     context::{ContextError, TrustedContextStore, VerifiedExecutionContext},
     permit::{PermitReference, matches_effect, permit_revision_tag},
 };
@@ -105,6 +105,15 @@ pub struct AgentProviderRuntime {
 pub struct AgentTaskReceipt {
     pub task: Task,
     pub execution: Option<GovernedProviderReceipt>,
+    /// Durable coordinator restriction, independent of provider outcome.
+    pub future_starts_blocked: bool,
+}
+
+/// Acknowledgement of a restrictive control write, not a provider abort.
+#[derive(Serialize)]
+pub struct AgentTaskStopReceipt {
+    pub task: Task,
+    pub future_starts_blocked: bool,
 }
 
 impl AgentProviderRuntime {
@@ -399,6 +408,57 @@ impl AgentProviderRuntime {
         Ok(accepted)
     }
 
+    /// Restrict this accepted recipient subtree using its original signed source.
+    /// Trusted hosts must authenticate the current requester before calling this.
+    /// This does not settle attempts, refund budgets, release capacity, or assert
+    /// that an already delivered provider effect has been cancelled.
+    pub async fn stop(
+        &self,
+        task_id: uuid::Uuid,
+        requester: &VerifiedExecutionContext,
+    ) -> Result<AgentTaskStopReceipt, AgentRuntimeError> {
+        let accepted = self.load_acceptance(task_id).await?;
+        let recipient = self
+            .dependencies
+            .contexts
+            .recover_reference_for_observation(&accepted.reference)
+            .await?;
+        let source = recipient
+            .immediate_service_source()
+            .ok_or(AgentRuntimeError::Conflict)?;
+        if source.reference()? != requester.reference()? {
+            return Err(AgentRuntimeError::Conflict);
+        }
+        self.dependencies
+            .coordinator
+            .change(
+                &format!("agent-service-stop:{task_id}"),
+                AuthorityChange::CancelExecution {
+                    execution_id: task_id.to_string(),
+                },
+                source.principal().id(),
+                "original requester stopped future agent-service starts",
+            )
+            .await?;
+        let observed = self.observe(task_id).await?;
+        Ok(AgentTaskStopReceipt {
+            task: observed.task,
+            future_starts_blocked: observed.future_starts_blocked,
+        })
+    }
+
+    async fn future_starts_blocked(
+        &self,
+        accepted: &Acceptance,
+    ) -> Result<bool, AgentRuntimeError> {
+        let snapshot = self.dependencies.coordinator.snapshot().await?;
+        let root = snapshot
+            .roots
+            .get(&accepted.reference.execution_id().to_string())
+            .ok_or(AgentRuntimeError::Conflict)?;
+        Ok(root.cancelled)
+    }
+
     /// Read and repair evidence without invoking a provider or reserving capacity.
     /// Current revocation can deny a start without hiding already accepted work.
     pub async fn observe(
@@ -426,6 +486,7 @@ impl AgentProviderRuntime {
             None => Ok(AgentTaskReceipt {
                 task,
                 execution: None,
+                future_starts_blocked: self.future_starts_blocked(&accepted).await?,
             }),
         }
     }
@@ -469,7 +530,11 @@ impl AgentProviderRuntime {
                     self.project_execution(&scope, &accepted.initial_task, task, execution)
                         .await
                 }
-                execution => Ok(AgentTaskReceipt { task, execution }),
+                execution => Ok(AgentTaskReceipt {
+                    task,
+                    execution,
+                    future_starts_blocked: self.future_starts_blocked(&accepted).await?,
+                }),
             };
         }
         if task.status.state == TaskState::Submitted {
@@ -551,6 +616,15 @@ impl AgentProviderRuntime {
                 return Ok(AgentTaskReceipt {
                     task,
                     execution: Some(execution),
+                    future_starts_blocked: self
+                        .dependencies
+                        .coordinator
+                        .snapshot()
+                        .await?
+                        .roots
+                        .get(&expected.id)
+                        .ok_or(AgentRuntimeError::Conflict)?
+                        .cancelled,
                 });
             }
             task = self
@@ -561,6 +635,15 @@ impl AgentProviderRuntime {
         Ok(AgentTaskReceipt {
             task,
             execution: Some(execution),
+            future_starts_blocked: self
+                .dependencies
+                .coordinator
+                .snapshot()
+                .await?
+                .roots
+                .get(&expected.id)
+                .ok_or(AgentRuntimeError::Conflict)?
+                .cancelled,
         })
     }
 }

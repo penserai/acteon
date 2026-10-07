@@ -2,7 +2,7 @@
 
 Use Acteon's SDKs to connect agents, services, and workers to the same execution and governance platform. Start with the typed helpers for dispatch, rules, audit, approvals, and bus operations. Use the complete **platform operation API** for controls that do not yet have a dedicated helper in your language.
 
-The current source tree provides a generated catalog for **198 finite HTTP operations** in Rust, Python, TypeScript, Go, and Java. It includes receipt sessions, managed-stage recovery, workflow and execution controls, inference profiles, stream windows, and operator APIs. Six streaming or polymorphic RPC routes use the existing streaming and A2A clients instead. Server configuration, authorization, and optional build features still determine which operations are available on your deployment.
+The current source tree provides a generated catalog for **199 finite HTTP operations** in Rust, Python, TypeScript, Go, and Java. It includes receipt sessions, managed-stage recovery, workflow and execution controls, inference profiles, stream windows, and operator APIs. Six streaming or polymorphic RPC routes use the existing streaming and A2A clients instead. Server configuration, authorization, and optional build features still determine which operations are available on your deployment.
 
 ## Choose the right interface
 
@@ -209,3 +209,22 @@ receipts in memory while it is open, reuses the original request on explicit
 retry, and displays task state and result artifacts without displaying source
 context. Leaving the tab clears this local view. SDK host persistence supports
 longer-lived clients.
+
+
+## Stop future agent-service starts
+
+The service control extension `POST
+/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/stop` uses the original
+requester's private credential and admission source-context header. Agent
+requesters must send the exact `x-acteon-agent-source-context` returned for that
+job. The finite operation catalog includes `agent_services_task_stop` in every
+SDK; dedicated receipt-aware stop helpers are still being added. Retain the
+original job ID and source context when invoking this control.
+
+A successful response is `{"task": ..., "future_starts_blocked": true}`. The
+restriction blocks future starts in the recipient execution subtree and survives
+restart. It leaves the task's status and artifacts tied to actual provider
+results. A stop does not undo an effect already delivered, release unresolved
+capacity, or prove that an external provider aborted. For a lost acknowledgement,
+repeat the stop against the same original task. A subsequent known completion
+can still appear in observation.

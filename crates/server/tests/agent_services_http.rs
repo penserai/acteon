@@ -719,6 +719,19 @@ async fn redis_restart_preserves_uncertain_delivery_without_resend_or_released_c
     .await
     .unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let response = client
+        .post(format!(
+            "{}/stop",
+            server.task_url(accepted["id"].as_str().unwrap())
+        ))
+        .bearer_auth("alice-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let stopped: Value = response.json().await.unwrap();
+    assert_eq!(stopped["future_starts_blocked"], true);
+    assert_eq!(stopped["task"]["status"]["state"], "working");
     server.restart(true);
     server.ready(&client).await;
     // Observe multiple driver ticks after restart; neither reads nor replay resend.
@@ -744,6 +757,7 @@ async fn redis_restart_preserves_uncertain_delivery_without_resend_or_released_c
         AttemptStatus::Uncertain
     );
     assert_eq!(retained.roots.len(), 2);
+    assert!(retained.roots[accepted["id"].as_str().unwrap()].cancelled);
     assert!(
         retained
             .roots
@@ -889,6 +903,112 @@ async fn native_sdk_observes_exact_agent_job_and_cors_exposes_host_receipt() {
         outsider.status(),
         404,
         "opaque reference does not replace original private authentication"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    webhook_task.abort();
+}
+
+#[tokio::test]
+async fn requester_stop_requires_original_job_provenance_and_never_starts_effects() {
+    let (url, calls, webhook_task) = webhook().await;
+    let mut server = Server::configured(
+        &url,
+        Some("notifier-secret"),
+        "incident",
+        false,
+        "agent",
+        json!({"backend":"memory"}),
+    );
+    let client = reqwest::Client::new();
+    server.ready(&client).await;
+    let (task, source) = send_task(&server, &client, "stop-original").await;
+    let (_, other_source) = send_task(&server, &client, "stop-other").await;
+    let url = format!("{}/stop", server.task_url(task["id"].as_str().unwrap()));
+    for (token, context, expected) in [
+        ("alice-secret", None, 404),
+        ("alice-secret", Some(other_source.as_str()), 404),
+        ("observer-secret", Some(source.as_str()), 404),
+        ("notifier-secret", Some(source.as_str()), 404),
+        ("alice-secret", Some(source.as_str()), 200),
+        ("alice-secret", Some(source.as_str()), 200),
+    ] {
+        let mut request = client.post(&url).bearer_auth(token);
+        if let Some(context) = context {
+            request = request.header("x-acteon-agent-source-context", context);
+        }
+        let response = request.send().await.unwrap();
+        assert_eq!(response.status(), expected);
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        if expected == 200 {
+            let body: Value = response.json().await.unwrap();
+            assert_eq!(body["future_starts_blocked"], true);
+            assert_eq!(body["task"]["id"], task["id"]);
+            assert_eq!(body["task"]["status"]["state"], "submitted");
+        }
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    webhook_task.abort();
+}
+
+#[tokio::test]
+#[cfg(feature = "redis")]
+#[ignore = "requires ACTEON_GOVERNANCE_REDIS_URL; isolated durable requester stop contract"]
+async fn redis_restart_does_not_start_stopped_queued_service_work() {
+    let (url, calls, webhook_task) = webhook().await;
+    let (backend, settings) = redis_state();
+    let store: Arc<dyn acteon_state::StateStore> =
+        Arc::new(acteon_state_redis::RedisStateStore::new(&settings).unwrap());
+    let mut server = Server::configured(
+        &url,
+        Some("notifier-secret"),
+        "incident",
+        false,
+        "agent",
+        backend,
+    );
+    let client = reqwest::Client::new();
+    server.ready(&client).await;
+    let (task, source) = send_task(&server, &client, "stopped-before-restart").await;
+    let stop_url = format!("{}/stop", server.task_url(task["id"].as_str().unwrap()));
+    let response = client
+        .post(&stop_url)
+        .bearer_auth("alice-secret")
+        .header("x-acteon-agent-source-context", &source)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let stopped: Value = response.json().await.unwrap();
+    assert_eq!(stopped["future_starts_blocked"], true);
+    server.restart(true);
+    server.ready(&client).await;
+    // Observe twelve independent recovery ticks and repeat the same control.
+    for _ in 0..12 {
+        let response = client
+            .post(&stop_url)
+            .bearer_auth("alice-secret")
+            .header("x-acteon-agent-source-context", &source)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let stopped: Value = response.json().await.unwrap();
+        assert_eq!(stopped["future_starts_blocked"], true);
+        assert_eq!(stopped["task"]["id"], task["id"]);
+        assert_eq!(stopped["task"]["status"]["state"], "submitted");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let coordinator = acteon_governance::AuthorityCoordinator::connect(store, "prod", "acme")
+        .await
+        .unwrap();
+    let snapshot = coordinator.snapshot().await.unwrap();
+    assert!(snapshot.roots[task["id"].as_str().unwrap()].cancelled);
+    assert!(snapshot.starts.is_empty());
+    assert!(
+        snapshot
+            .roots
+            .values()
+            .all(|root| root.active_attempts == 0 && root.spent_units == 0)
     );
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     webhook_task.abort();

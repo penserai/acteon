@@ -182,6 +182,9 @@ impl ExecutionAuthorityRuntime {
                 let Ok(observation) = runtime.observe(id).await else {
                     continue;
                 };
+                if observation.future_starts_blocked {
+                    continue;
+                }
                 if observation.execution.as_ref().is_some_and(|receipt| {
                     matches!(
                         receipt.status,
