@@ -1640,3 +1640,32 @@ operator agent-management bounds, receipt-aware SDK/UI recovery and qualified
 reconciliation for ambiguous metadata writes remain required integrations.
 Retained service bindings across replacement, outbound A2A, provider abort and
 the complete city/workforce phases remain open.
+
+
+### Governed registry operator and backend completion
+
+The registry mutation prerequisite is now integrated through the public HTTP
+boundary with exact manager agent bounds. Governed scopes fence the six legacy
+agent/card writers. Approved discovery reads the actual card, verifies the pinned
+digest and current qualification, and treats the separate presence hint as
+advisory. Agent and card projections keep separate backend versions and share a
+64 KiB discovery/write limit; older larger records remain inspectable and
+removable.
+
+Rust, Python, TypeScript, Go and Java expose typed inspect/mutate helpers with
+correlated receipts, redirect refusal and no automatic retry. The Governance UI
+adds reviewed update/removal, validates responses, journals the exact request
+before send, restores it after reload, prevents duplicate activation and requires
+reinspection before a new intent. Desktop and mobile contracts cover redirect,
+response-loss, false-completion and exact-replay paths.
+
+A shared registry lifecycle contract now passes on memory and independently
+connected Redis, PostgreSQL and DynamoDB stores. It exercises create, a paused
+concurrent replacement, restart, replay without another projection write,
+delete/recreate, restart again and requalification only after known completion. The
+production backend variants use isolated storage and run in CI.
+
+This closes the governed registry mutation/operator/backend building block.
+Retained historical service bindings across replacement, provider
+abort/reconciliation and qualified outbound A2A remain required for the full
+peer lifecycle and city objective.

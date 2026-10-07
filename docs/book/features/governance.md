@@ -455,6 +455,10 @@ completion acknowledgement can be recovered by explicitly sending the original
 request again. An unresolved write remains unavailable and is never resent;
 matching metadata is not proof that the write completed. A version conflict
 requires inspection and a new reviewed intent rather than a silent version refresh.
+The same create, compare-and-swap, and compare-and-delete lifecycle contract runs
+against memory, Redis, PostgreSQL, and DynamoDB. It verifies independent clients,
+paused delivery, restart, exact replay without another projection write, deletion,
+recreation, and requalification after a known result.
 
 Staging a metadata mutation retires the current qualification. Successful
 metadata publication does not restore execution permission: the host must

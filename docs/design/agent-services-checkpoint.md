@@ -122,7 +122,11 @@ message identity and inspect durable evidence rather than constructing new work.
   in-flight submission, rejects false completion, refuses redirects, and
   requires reinspection before a new intent. Desktop and mobile browser
   contracts cover response loss, reload recovery, malformed completion, exact
-  replay, update, and removal. Broader lifecycle tests remain pending.
+  replay, update, and removal. One shared backend lifecycle contract now covers
+  creation, paused concurrent replacement, restart, exact replay without another
+  write, removal/recreation, and requalification on memory, Redis, PostgreSQL, and DynamoDB.
+  The three production backend variants use independent clients and isolated
+  storage and run in CI. Broader peer/provider lifecycle tests remain pending.
   Unresolved delivery replays return HTTP 503 rather than an authority-denied 403. Clients
   must retain the original change identifier and request; the coordinator does
   not resend a registered write whose outcome is unknown.
@@ -138,8 +142,7 @@ Remaining before release:
   recovery against each supported production backend.
 - Expand focused adversarial and integration tests from admission/isolation to
   full provider execution and peer lifecycle.
-- Complete registry projection consistency and backend recovery contracts.
-  Retain historical bindings across service replacement; complete qualified
+- Retain historical bindings across service replacement; complete qualified
   outbound A2A lifecycle work.
 - Extend lifecycle SDK/UI integration as provider abort and outbound peer contracts are added.
 - Review adversarially, run CI, and verify publication before merging.

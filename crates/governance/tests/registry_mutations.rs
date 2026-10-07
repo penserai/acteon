@@ -293,20 +293,32 @@ async fn projection_version_conflict_is_certified_no_effect_and_does_not_overwri
 }
 
 #[tokio::test]
-async fn paused_delivery_blocks_requalification_and_concurrent_worker_never_resends() {
+async fn state_backend_registry_lifecycle_recovers_without_duplicate_writes() {
     let memory: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
-    paused_delivery_contract(memory.clone(), memory).await;
+    registry_backend_contract(memory.clone(), memory).await;
 }
 
-async fn paused_delivery_contract(memory: Arc<dyn StateStore>, peer_store: Arc<dyn StateStore>) {
-    let faults = Arc::new(FaultStore::new(memory.clone()));
+async fn registry_backend_contract(backing: Arc<dyn StateStore>, peer_store: Arc<dyn StateStore>) {
+    let faults = Arc::new(FaultStore::new(backing.clone()));
     let c = fixture(faults.clone()).await;
-    let peer = AuthorityCoordinator::connect(peer_store, "city", "tenant")
+    qualify(&c, 1).await.unwrap();
+    begin(&c, "create", 1, None, Some("first")).await.unwrap();
+    execute(&c, "create", Some("first")).await.unwrap();
+    let created = backing.get_versioned(&key()).await.unwrap().unwrap();
+    assert_eq!(created, ("first".into(), 1));
+
+    let peer = AuthorityCoordinator::connect(peer_store.clone(), "city", "tenant")
         .await
         .unwrap();
-    memory.set(&key(), "old", None).await.unwrap();
-    qualify(&c, 1).await.unwrap();
-    begin(&c, "edit", 1, Some(1), Some("new")).await.unwrap();
+    execute(&peer, "create", Some("first")).await.unwrap();
+    assert_eq!(
+        created,
+        backing.get_versioned(&key()).await.unwrap().unwrap()
+    );
+    qualify(&peer, 2).await.unwrap();
+    begin(&peer, "update", 2, Some(created.1), Some("second"))
+        .await
+        .unwrap();
     let release = faults
         .pause_next(
             KeyKind::BusAgentCard,
@@ -315,7 +327,7 @@ async fn paused_delivery_contract(memory: Arc<dyn StateStore>, peer_store: Arc<d
         )
         .unwrap();
     let worker = c.clone();
-    let task = tokio::spawn(async move { execute(&worker, "edit", Some("new")).await });
+    let task = tokio::spawn(async move { execute(&worker, "update", Some("second")).await });
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         while faults.consumed() == 0 {
             tokio::task::yield_now().await;
@@ -323,20 +335,81 @@ async fn paused_delivery_contract(memory: Arc<dyn StateStore>, peer_store: Arc<d
     })
     .await
     .unwrap();
-    assert!(qualify(&peer, 2).await.is_err());
+    assert!(qualify(&peer, 3).await.is_err());
     assert!(matches!(
-        execute(&peer, "edit", Some("new")).await,
+        execute(&peer, "update", Some("second")).await,
         Err(CoordinationError::RegistryMutationUnresolved)
     ));
-    assert_eq!(memory.get_versioned(&key()).await.unwrap().unwrap().1, 1);
+    assert_eq!(
+        backing.get_versioned(&key()).await.unwrap().unwrap(),
+        created
+    );
     release.send(()).unwrap();
     task.await.unwrap().unwrap();
+    let updated = backing.get_versioned(&key()).await.unwrap().unwrap();
+    assert_eq!(updated, ("second".into(), 2));
+    finish_backend_lifecycle(backing, peer_store, updated).await;
+}
+
+async fn finish_backend_lifecycle(
+    backing: Arc<dyn StateStore>,
+    peer_store: Arc<dyn StateStore>,
+    updated: (String, u64),
+) {
+    let recovered = AuthorityCoordinator::connect(peer_store.clone(), "city", "tenant")
+        .await
+        .unwrap();
+    assert_eq!(recovered.snapshot().await.unwrap().starts.len(), 2);
+    execute(&recovered, "update", Some("second")).await.unwrap();
     assert_eq!(
-        memory.get_versioned(&key()).await.unwrap().unwrap(),
-        ("new".into(), 2)
+        updated,
+        backing.get_versioned(&key()).await.unwrap().unwrap()
     );
-    assert_eq!(c.snapshot().await.unwrap().starts.len(), 1);
-    qualify(&c, 2).await.unwrap();
+    qualify(&recovered, 3).await.unwrap();
+    begin(&recovered, "delete", 3, Some(updated.1), None)
+        .await
+        .unwrap();
+    execute(&recovered, "delete", None).await.unwrap();
+    assert!(backing.get_versioned(&key()).await.unwrap().is_none());
+
+    let restarted = AuthorityCoordinator::connect(peer_store, "city", "tenant")
+        .await
+        .unwrap();
+    execute(&restarted, "delete", None).await.unwrap();
+    assert!(backing.get_versioned(&key()).await.unwrap().is_none());
+    let retired = restarted.snapshot().await.unwrap();
+    assert_eq!(retired.starts.len(), 3);
+    assert!(retired.agent_registry["worker"].retired);
+    qualify(&restarted, 4).await.unwrap();
+    let active = restarted.snapshot().await.unwrap();
+    assert_eq!(active.agent_registry["worker"].qualification.revision, 4);
+    assert!(!active.agent_registry["worker"].retired);
+    begin(&restarted, "recreate", 4, None, Some("third"))
+        .await
+        .unwrap();
+    execute(&restarted, "recreate", Some("third"))
+        .await
+        .unwrap();
+    let recreated = backing.get_versioned(&key()).await.unwrap().unwrap();
+    assert_eq!(recreated, ("third".into(), 1));
+    let final_restart = AuthorityCoordinator::connect(backing.clone(), "city", "tenant")
+        .await
+        .unwrap();
+    execute(&final_restart, "recreate", Some("third"))
+        .await
+        .unwrap();
+    assert_eq!(
+        recreated,
+        backing.get_versioned(&key()).await.unwrap().unwrap()
+    );
+    assert_eq!(final_restart.snapshot().await.unwrap().starts.len(), 4);
+    qualify(&final_restart, 5).await.unwrap();
+    let final_state = final_restart.snapshot().await.unwrap();
+    assert_eq!(
+        final_state.agent_registry["worker"].qualification.revision,
+        5
+    );
+    assert!(!final_state.agent_registry["worker"].retired);
 }
 
 #[tokio::test]
@@ -503,16 +576,68 @@ async fn uncertain_deletion_is_not_certified_by_an_absent_projection() {
 
 #[tokio::test]
 #[ignore = "requires ACTEON_GOVERNANCE_REDIS_URL; isolated UUID registry mutation race"]
-async fn independent_redis_registry_mutation_fences_qualification_and_duplicate_workers() {
+async fn independent_redis_registry_lifecycle_recovers_without_duplicate_writes() {
     use acteon_state_redis::{RedisConfig, RedisStateStore};
     let config = RedisConfig {
         url: std::env::var("ACTEON_GOVERNANCE_REDIS_URL").unwrap(),
         prefix: format!("registry-mutation-{}", uuid::Uuid::new_v4()),
         ..Default::default()
     };
-    paused_delivery_contract(
+    registry_backend_contract(
         Arc::new(RedisStateStore::new(&config).unwrap()),
         Arc::new(RedisStateStore::new(&config).unwrap()),
     )
     .await;
+}
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL; isolated PostgreSQL registry lifecycle"]
+async fn independent_postgres_registry_lifecycle_recovers_without_duplicate_writes() {
+    use acteon_state_postgres::{PostgresConfig, PostgresStateStore};
+    let config = PostgresConfig {
+        url: std::env::var("DATABASE_URL").unwrap(),
+        table_prefix: format!("registry_mutation{}_", uuid::Uuid::new_v4().simple()),
+        ..Default::default()
+    };
+    registry_backend_contract(
+        Arc::new(PostgresStateStore::new(config.clone()).await.unwrap()),
+        Arc::new(PostgresStateStore::new(config.clone()).await.unwrap()),
+    )
+    .await;
+    let pool = sqlx::PgPool::connect(&config.url).await.unwrap();
+    for suffix in ["state", "locks", "timeout_index", "chain_ready_index"] {
+        sqlx::query(&format!(
+            "DROP TABLE public.{}{suffix}",
+            config.table_prefix
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    pool.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires DYNAMODB_ENDPOINT; isolated DynamoDB Local registry lifecycle"]
+async fn independent_dynamodb_registry_lifecycle_recovers_without_duplicate_writes() {
+    use acteon_state_dynamodb::{DynamoConfig, DynamoStateStore, build_client, create_table};
+    let config = DynamoConfig {
+        endpoint_url: Some(std::env::var("DYNAMODB_ENDPOINT").unwrap()),
+        table_name: format!("registry_mutation_{}", uuid::Uuid::new_v4().simple()),
+        key_prefix: format!("registry_mutation_{}", uuid::Uuid::new_v4().simple()),
+        ..Default::default()
+    };
+    let client = build_client(&config).await;
+    create_table(&client, &config.table_name).await.unwrap();
+    registry_backend_contract(
+        Arc::new(DynamoStateStore::new(&config).await.unwrap()),
+        Arc::new(DynamoStateStore::new(&config).await.unwrap()),
+    )
+    .await;
+    client
+        .delete_table()
+        .table_name(&config.table_name)
+        .send()
+        .await
+        .unwrap();
 }
