@@ -107,3 +107,56 @@ it.each([400, 401, 403, 404, 409, 503])("finality preserves refusal %i without r
   await expect(new ActeonClient("https://acteon.example").acceptProviderReconciliation("prod", "acme", finality.correlation.context.execution_id, 0, finality.request)).rejects.toMatchObject({ status });
   expect(fetch).toHaveBeenCalledTimes(1);
 });
+
+const registryFixture = JSON.parse(readFileSync(new URL("../../contract-fixtures/governance-registry.json", import.meta.url), "utf8"));
+describe("registry management", () => {
+  it("preserves exact requests and validates matching completed receipts", async () => {
+    let status = 200;
+    let receipt = registryFixture.receipt;
+    let view = registryFixture.view;
+    const calls: {url: string; init: RequestInit}[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => {
+      calls.push({url, init});
+      expect(new Headers(init.headers).get("Authorization")).toBe("Bearer operator-key");
+      expect(init.redirect).toBe("error");
+      if (init.method === "GET") {
+        expect(new URL(url).pathname).toBe("/v1/governance/registry/maya");
+        expect(Object.fromEntries(new URL(url).searchParams)).toEqual({namespace:"prod",tenant:"acme",projection:"card"});
+        return new Response(JSON.stringify(view));
+      }
+      expect(JSON.parse(init.body as string)).toEqual(registryFixture.request);
+      return new Response(JSON.stringify(receipt), {status});
+    }));
+    const client = new ActeonClient("http://example.test", {apiKey:"operator-key"});
+    expect(await client.registryProjection("prod","acme","maya","card")).toEqual(registryFixture.view);
+    for (const [field,value] of [["tenant","other"],["version",0],["qualification_retired",null],["registry_revision",0],["value","invalid"]]) {
+      view = {...registryFixture.view, [field as string]:value};
+      const before = calls.length;
+      await expect(client.registryProjection("prod","acme","maya","card")).rejects.toThrow();
+      expect(calls.length).toBe(before+1);
+    }
+    for (let i=0;i<2;i++) expect(await client.mutateRegistry(registryFixture.request)).toEqual(registryFixture.receipt);
+    for (const [field,value] of [["delivery_complete",false],["applied",false],["change_id","other"],["tenant","other"],["input_digest","bad"],["delivery_complete","true"]]) {
+      receipt = {...registryFixture.receipt, [field as string]:value};
+      const count = calls.length;
+      await expect(client.mutateRegistry(registryFixture.request)).rejects.toThrow();
+      expect(calls.length).toBe(count+1);
+    }
+    for (status of [401,403,409,503,307]) {
+      const count = calls.length;
+      await expect(client.mutateRegistry(registryFixture.request)).rejects.toMatchObject({status});
+      expect(calls.length).toBe(count+1);
+    }
+  });
+});
+
+
+it("registry mutation correlates the sent identity despite caller mutation while awaiting", async () => {
+  const request = structuredClone(registryFixture.request);
+  vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => {
+    expect(JSON.parse(init.body as string)).toEqual(registryFixture.request);
+    request.tenant = "caller-changed-after-send";
+    return new Response(JSON.stringify(registryFixture.receipt));
+  }));
+  expect(await new ActeonClient("http://example.test").mutateRegistry(request)).toEqual(registryFixture.receipt);
+});

@@ -113,8 +113,10 @@ message identity and inspect durable evidence rather than constructing new work.
   lower-level mutation kernel retains its independent 256 KiB capacity bound.
   Boundary contracts cover both projection kinds with ASCII/multibyte content
   and exact-size acceptance; older larger records remain inspectable/deletable.
-  Native SDK helpers, public
-  documentation, and broader lifecycle tests are still pending. Unresolved
+  All five SDKs now expose typed projection inspection and mutation helpers
+  (Python sync/async), validate receipt identity/completion, and refuse redirects
+  without automatic retries. Shared wire fixtures and the public operator
+  workflow cover explicit recovery. Broader lifecycle tests remain pending. Unresolved
   delivery replays return HTTP 503 rather than an authority-denied 403. Clients
   must retain the original change identifier and request; the coordinator does
   not resend a registered write whose outcome is unknown.
@@ -130,8 +132,7 @@ Remaining before release:
   recovery against each supported production backend.
 - Expand focused adversarial and integration tests from admission/isolation to
   full provider execution and peer lifecycle.
-- Complete registry projection consistency and recovery contracts. Add native
-  SDK helpers and public documentation. Retain historical bindings across service
+- Complete registry projection consistency and recovery contracts. Complete the browser operator workflow. Retain historical bindings across service
   replacement; complete qualified outbound A2A lifecycle work.
 - Extend lifecycle SDK/UI integration as provider abort and outbound peer contracts are added.
 - Review adversarially, run CI, and verify publication before merging.

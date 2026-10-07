@@ -41,7 +41,7 @@ func (c *Client) PlatformRequest(ctx context.Context, operation PlatformOperatio
 	if encoded := query.Encode(); encoded != "" {
 		path += "?" + encoded
 	}
-	resp, err := c.doRequest(ctx, d.method, path, body)
+	resp, err := c.doRequestExt(ctx, d.method, path, body, requestOpts{noRedirect: operation == OpGovernanceMutateRegistry || operation == OpGovernanceRegistryProjection})
 	if err != nil {
 		return nil, err
 	}

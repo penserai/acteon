@@ -255,3 +255,92 @@ func TestProviderReconciliationTransport(t *testing.T) {
 		t.Fatal("unexpected replay")
 	}
 }
+
+func TestRegistryManagementRequestsAndReceiptValidation(t *testing.T) {
+	raw, err := os.ReadFile("../../contract-fixtures/governance-registry.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f map[string]json.RawMessage
+	if err = json.Unmarshal(raw, &f); err != nil {
+		t.Fatal(err)
+	}
+	var request GovernanceRegistryMutationRequest
+	if err = json.Unmarshal(f["request"], &request); err != nil {
+		t.Fatal(err)
+	}
+	receipt := f["receipt"]
+	view := f["view"]
+	status := 200
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Header.Get("Authorization") != "Bearer operator-key" {
+			t.Error("missing original authentication")
+		}
+		if r.Method == "GET" {
+			if r.URL.Path != "/v1/governance/registry/maya" || r.URL.Query().Get("projection") != "card" || r.URL.Query().Get("namespace") != "prod" || r.URL.Query().Get("tenant") != "acme" {
+				t.Error("wrong projection scope")
+			}
+			w.Write(view)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		var actual, expected any
+		json.Unmarshal(body, &actual)
+		json.Unmarshal(f["request"], &expected)
+		if !reflect.DeepEqual(actual, expected) {
+			t.Error("mutation request changed")
+		}
+		w.Header().Set("Location", "/redirected")
+		w.WriteHeader(status)
+		w.Write(receipt)
+	}))
+	defer server.Close()
+	client := NewClient(server.URL, WithAPIKey("operator-key"))
+	ctx := context.Background()
+	if _, err = client.RegistryProjection(ctx, "prod", "acme", "maya", RegistryProjectionCard); err != nil {
+		t.Fatal(err)
+	}
+	for field, value := range map[string]any{"tenant": "other", "version": 0, "qualification_retired": nil, "registry_revision": 0, "value": "invalid"} {
+		var bad map[string]any
+		json.Unmarshal(f["view"], &bad)
+		bad[field] = value
+		view, _ = json.Marshal(bad)
+		before := calls
+		if _, err = client.RegistryProjection(ctx, "prod", "acme", "maya", RegistryProjectionCard); err == nil {
+			t.Fatal("invalid observation accepted", field)
+		}
+		if calls != before+1 {
+			t.Fatal("automatic observation retry")
+		}
+	}
+
+	for i := 0; i < 2; i++ {
+		if _, err = client.MutateRegistry(ctx, request); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for field, value := range map[string]any{"delivery_complete": false, "applied": false, "change_id": "other", "tenant": "other", "input_digest": "bad"} {
+		var bad map[string]any
+		json.Unmarshal(f["receipt"], &bad)
+		bad[field] = value
+		receipt, _ = json.Marshal(bad)
+		before := calls
+		if _, err = client.MutateRegistry(ctx, request); err == nil {
+			t.Fatal("invalid receipt accepted", field)
+		}
+		if calls != before+1 {
+			t.Fatal("automatic retry")
+		}
+	}
+	for _, status = range []int{401, 403, 409, 503, 307} {
+		before := calls
+		if _, err = client.MutateRegistry(ctx, request); err == nil {
+			t.Fatal("HTTP refusal accepted")
+		}
+		if calls != before+1 {
+			t.Fatal("retry or redirect followed")
+		}
+	}
+}

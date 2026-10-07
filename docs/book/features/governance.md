@@ -399,6 +399,61 @@ or its payer. Discovery creates no context, budget allocation, or effect start.
 Ordinary peer bindings retain their existing intersection-based preview.
 
 
+### Managing registry projections
+
+Operators manage agent metadata through the same configured `StateStore` used
+by execution authority. The deployment grants each manager an explicit `agents`
+list and `can_intervene = true` within its scope. An operator role or provider
+route permission alone does not grant access to an agent's metadata.
+
+`GET /v1/governance/registry/{agent_id}` takes `namespace`, `tenant`, and
+`projection=agent|card`. It returns the metadata, its backend `version`, and the
+current qualification revision and retirement state. `POST
+/v1/governance/registry` accepts a complete projection or `value: null` for
+removal, together with the observed versions and a caller-owned `change_id`.
+
+| SDK | Inspect | Mutate |
+|---|---|---|
+| Rust | `registry_projection` | `mutate_registry` |
+| Python sync/async | `registry_projection` | `mutate_registry` |
+| TypeScript | `registryProjection` | `mutateRegistry` |
+| Go | `RegistryProjection` | `MutateRegistry` |
+| Java | `registryProjection` | `mutateRegistry` |
+
+For example, removing an advertisement with the Python SDK:
+
+```python
+from uuid import uuid4
+from acteon_client import GovernanceRegistryMutationRequest
+
+view = client.registry_projection("prod", "acme", "maya", "card")
+request = GovernanceRegistryMutationRequest(
+    namespace="prod", tenant="acme", agent_id="maya",
+    change_id=str(uuid4()),
+    expected_registry_revision=view.registry_revision,
+    projection="card", expected_projection_version=view.version,
+    value=None, reason="Remove the outdated advertisement",
+)
+# Save this complete request in the host's durable operation journal before sending.
+receipt = client.mutate_registry(request)
+```
+
+Retain that exact request for recovery. The helpers send once, refuse redirects,
+and require a completed applied receipt matching its scope, agent, projection,
+change ID, and qualification revision. They preserve HTTP refusals. A lost
+completion acknowledgement can be recovered by explicitly sending the original
+request again. An unresolved write remains unavailable and is never resent;
+matching metadata is not proof that the write completed. A version conflict
+requires inspection and a new reviewed intent rather than a silent version refresh.
+
+Staging a metadata mutation retires the current qualification. Successful
+metadata publication does not restore execution permission: the host must
+independently approve a new qualification epoch. The `agent` and `card`
+projections have separate versions. Card presence is checked from the actual
+card record. Metadata publication does not provision a Kafka inbox or certify
+provider abort. In governed scopes, legacy bus registry writes return a conflict
+requiring the governed mutation API.
+
 ### Durable individual-agent task execution
 
 `AgentProviderRuntime` connects an authenticated recipient context to a qualified

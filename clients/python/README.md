@@ -541,3 +541,8 @@ retry this stop explicitly with the same receipt. The helper never retries autom
 or takes provenance from mutable task data.
 
 `AsyncActeonClient` exposes the same helper with `await`.
+
+
+### Governed registry metadata
+
+Use `registry_projection` and `mutate_registry` (sync and async) to inspect versioned agent/card records and send an independently authorized mutation. The typed request retains a caller-supplied change ID; preserve the exact request for explicit recovery. A successful helper result requires a matching completed, applied receipt. Calls refuse redirects and do not automatically retry. Metadata changes retire the current qualification; publication alone does not grant execution permission. See the [registry operator workflow](../../docs/book/features/governance.md#managing-registry-projections).

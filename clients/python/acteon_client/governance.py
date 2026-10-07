@@ -407,6 +407,108 @@ class ProviderReconciliationRequest:
     proof_base64: str
 
 
+RegistryProjection = Literal["agent", "card"]
+
+
+@dataclass
+class GovernanceRegistryMutationRequest:
+    namespace: str
+    tenant: str
+    agent_id: str
+    change_id: str
+    expected_registry_revision: int
+    projection: RegistryProjection
+    expected_projection_version: int | None
+    value: dict[str, Any] | None
+    reason: str
+
+
+@dataclass
+class GovernanceRegistryProjectionView:
+    namespace: str
+    tenant: str
+    agent_id: str
+    agent_resource: GovernanceResource
+    projection: RegistryProjection
+    registry_revision: int
+    qualification_retired: bool | None
+    version: int | None
+    value: dict[str, Any] | None
+
+    @classmethod
+    def from_dict(
+        cls,
+        data: dict[str, Any],
+        namespace: str,
+        tenant: str,
+        agent_id: str,
+        projection: RegistryProjection,
+    ) -> "GovernanceRegistryProjectionView":
+        result = cls(**{**data, "agent_resource": GovernanceResource(**data["agent_resource"])})
+        if (
+            (result.namespace, result.tenant, result.agent_id, result.projection)
+            != (namespace, tenant, agent_id, projection)
+            or result.agent_resource != GovernanceResource("agent", namespace, tenant, agent_id)
+            or type(result.registry_revision) is not int
+            or result.registry_revision < 0
+            or (result.registry_revision == 0) != (result.qualification_retired is None)
+            or (
+                result.qualification_retired is not None
+                and type(result.qualification_retired) is not bool
+            )
+            or (
+                result.version is not None
+                and (type(result.version) is not int or result.version <= 0)
+            )
+            or (result.version is None) != (result.value is None)
+            or (result.value is not None and not isinstance(result.value, dict))
+        ):
+            raise ValueError("registry observation identity or version mismatch")
+        return result
+
+
+@dataclass
+class GovernanceRegistryMutationReceipt:
+    namespace: str
+    tenant: str
+    agent_id: str
+    change_id: str
+    projection: RegistryProjection
+    expected_registry_revision: int
+    input_digest: str
+    actor: str
+    delivery_complete: bool
+    applied: bool
+
+    @classmethod
+    def from_dict(
+        cls, data: dict[str, Any], request: GovernanceRegistryMutationRequest
+    ) -> "GovernanceRegistryMutationReceipt":
+        result = cls(**data)
+        fields = (
+            "namespace",
+            "tenant",
+            "agent_id",
+            "change_id",
+            "projection",
+            "expected_registry_revision",
+        )
+        if (
+            any(getattr(result, key) != getattr(request, key) for key in fields)
+            or type(result.expected_registry_revision) is not int
+            or result.expected_registry_revision < 0
+            or result.delivery_complete is not True
+            or result.applied is not True
+            or not isinstance(result.actor, str)
+            or not result.actor
+            or not isinstance(result.input_digest, str)
+            or len(result.input_digest) != 64
+            or any(c not in "0123456789abcdef" for c in result.input_digest)
+        ):
+            raise ValueError("unmatched or incomplete registry mutation receipt")
+        return result
+
+
 class _GovernanceMixin:
     if TYPE_CHECKING:
 
@@ -418,6 +520,28 @@ class _GovernanceMixin:
             query: dict[str, Any] | None = None,
             body: Any = None,
         ) -> Any: ...
+
+    def registry_projection(
+        self, namespace: str, tenant: str, agent_id: str, projection: RegistryProjection
+    ) -> GovernanceRegistryProjectionView:
+        data = self.platform_request(
+            PlatformOperation.GOVERNANCE_REGISTRY_PROJECTION,
+            path={"agent_id": agent_id},
+            query={"namespace": namespace, "tenant": tenant, "projection": projection},
+        )
+        return GovernanceRegistryProjectionView.from_dict(
+            data, namespace, tenant, agent_id, projection
+        )
+
+    def mutate_registry(
+        self, request: GovernanceRegistryMutationRequest
+    ) -> GovernanceRegistryMutationReceipt:
+        """Send once; retain this exact request/change ID for explicit recovery."""
+        sent = GovernanceRegistryMutationRequest(**asdict(request))
+        data = self.platform_request(
+            PlatformOperation.GOVERNANCE_MUTATE_REGISTRY, body=asdict(sent)
+        )
+        return GovernanceRegistryMutationReceipt.from_dict(data, sent)
 
     def governance(self, namespace: str, tenant: str) -> GovernanceScopeView:
         return GovernanceScopeView.from_dict(
@@ -492,6 +616,28 @@ class _AsyncGovernanceMixin:
             query: dict[str, Any] | None = None,
             body: Any = None,
         ) -> Any: ...
+
+    async def registry_projection(
+        self, namespace: str, tenant: str, agent_id: str, projection: RegistryProjection
+    ) -> GovernanceRegistryProjectionView:
+        data = await self.platform_request(
+            PlatformOperation.GOVERNANCE_REGISTRY_PROJECTION,
+            path={"agent_id": agent_id},
+            query={"namespace": namespace, "tenant": tenant, "projection": projection},
+        )
+        return GovernanceRegistryProjectionView.from_dict(
+            data, namespace, tenant, agent_id, projection
+        )
+
+    async def mutate_registry(
+        self, request: GovernanceRegistryMutationRequest
+    ) -> GovernanceRegistryMutationReceipt:
+        """Send once; retain this exact request/change ID for explicit recovery."""
+        sent = GovernanceRegistryMutationRequest(**asdict(request))
+        data = await self.platform_request(
+            PlatformOperation.GOVERNANCE_MUTATE_REGISTRY, body=asdict(sent)
+        )
+        return GovernanceRegistryMutationReceipt.from_dict(data, sent)
 
     async def governance(self, namespace: str, tenant: str) -> GovernanceScopeView:
         return GovernanceScopeView.from_dict(

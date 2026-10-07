@@ -87,6 +87,15 @@ from .governance import (
     GovernancePermitView as GovernancePermitView,
 )
 from .governance import (
+    GovernanceRegistryMutationReceipt as GovernanceRegistryMutationReceipt,
+)
+from .governance import (
+    GovernanceRegistryMutationRequest as GovernanceRegistryMutationRequest,
+)
+from .governance import (
+    GovernanceRegistryProjectionView as GovernanceRegistryProjectionView,
+)
+from .governance import (
     GovernanceResource as GovernanceResource,
 )
 from .governance import (
@@ -122,6 +131,7 @@ from .governance import (
 from .governance import (
     PublishGovernancePermitRequest as PublishGovernancePermitRequest,
 )
+from .governance import RegistryProjection as RegistryProjection
 from .models import (
     Action,
     ActionOutcome,
@@ -476,3 +486,10 @@ __all__ += [
 
 
 __all__ += ["AGENT_SOURCE_CONTEXT_HEADER", "AgentServiceReceipt", "AgentServiceStopReceipt"]
+
+__all__ += [
+    "GovernanceRegistryMutationRequest",
+    "GovernanceRegistryProjectionView",
+    "GovernanceRegistryMutationReceipt",
+    "RegistryProjection",
+]

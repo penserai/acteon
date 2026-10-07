@@ -1,3 +1,4 @@
+import { parseRegistryProjection, parseRegistryMutationReceipt, type RegistryProjection, type GovernanceRegistryMutationRequest, type GovernanceRegistryProjectionView, type GovernanceRegistryMutationReceipt } from "./governance.js";
 import { AGENT_SOURCE_CONTEXT_HEADER, agentSource, agentTask, agentServiceBase, type AgentServiceReceipt, type AgentServiceStopReceipt } from "./agent_services.js";
 import { parseProviderHistoryReceipt, type ProviderHistoryReceipt, type ProviderReconciliationCorrelation, type ProviderReconciliationRequest } from "./governance.js";
 import { parseProviderExecutionHistory, type ProviderExecutionHistory, type ProviderExecutionHistoryWire } from "./governance.js";
@@ -384,7 +385,7 @@ export class ActeonClient {
   /** Complete finite HTTP API, using wire field names. Never automatically retries. */
   async platformRequest(operation: PlatformOperation, options: PlatformRequestOptions = {}): Promise<unknown> {
     const parts = platformRequestParts(operation, options);
-    const response = await this.request(parts.method, parts.path, { params: parts.params, body: options.body });
+    const response = await this.request(parts.method, parts.path, { params: parts.params, body: options.body, redirect: operation === "governance_mutate_registry" || operation === "governance_registry_projection" ? "error" : "follow" });
     if (!response.ok) throw new HttpError(response.status, await response.text());
     if (response.status === 204) return null;
     return parts.response === "text" ? response.text() : response.json();
@@ -428,6 +429,16 @@ export class ActeonClient {
     return await this.platformRequest("workforce_change", { body: request }) as GovernanceChangeReceipt;
   }
 
+  async registryProjection(namespace: string, tenant: string, agentId: string, projection: RegistryProjection): Promise<GovernanceRegistryProjectionView> {
+    const data = await this.platformRequest("governance_registry_projection", { path: { agent_id: agentId }, query: { namespace, tenant, projection } });
+    return parseRegistryProjection(data, namespace, tenant, agentId, projection);
+  }
+  /** Send once; retain the same request and change ID for explicit recovery. */
+  async mutateRegistry(request: GovernanceRegistryMutationRequest): Promise<GovernanceRegistryMutationReceipt> {
+    const sent = structuredClone(request);
+    const data = await this.platformRequest("governance_mutate_registry", { body: sent });
+    return parseRegistryMutationReceipt(data, sent);
+  }
   async governance(namespace: string, tenant: string): Promise<GovernanceScopeView> {
     return await this.platformRequest("governance_inspect", { query: { namespace, tenant } }) as GovernanceScopeView;
   }

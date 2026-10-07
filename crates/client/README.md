@@ -289,3 +289,6 @@ capacity. The returned task retains actual provider status and artifacts; an alr
 delivered operation can still complete. After a timeout or unavailable acknowledgement,
 retry this stop explicitly with the same receipt. The helper never retries automatically
 or takes provenance from mutable task data.
+
+
+Governed registry metadata uses `registry_projection` and `mutate_registry` with the exported `GovernanceRegistry*` wire models. Preserve the same mutation request/change ID for explicit recovery. Helpers require matching completed applied receipts and never automatically retry.

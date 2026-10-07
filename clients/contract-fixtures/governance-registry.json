@@ -1,0 +1,47 @@
+{
+  "request": {
+    "namespace": "prod",
+    "tenant": "acme",
+    "agent_id": "maya",
+    "change_id": "remove-maya-card",
+    "expected_registry_revision": 7,
+    "projection": "card",
+    "expected_projection_version": 3,
+    "value": null,
+    "reason": "reviewed removal"
+  },
+  "view": {
+    "namespace": "prod",
+    "tenant": "acme",
+    "agent_id": "maya",
+    "agent_resource": {
+      "kind": "agent",
+      "namespace": "prod",
+      "tenant": "acme",
+      "id": "maya"
+    },
+    "projection": "card",
+    "registry_revision": 7,
+    "qualification_retired": false,
+    "version": 3,
+    "value": {
+      "agentId": "maya",
+      "namespace": "prod",
+      "tenant": "acme",
+      "name": "Maya",
+      "version": "1"
+    }
+  },
+  "receipt": {
+    "namespace": "prod",
+    "tenant": "acme",
+    "agent_id": "maya",
+    "change_id": "remove-maya-card",
+    "projection": "card",
+    "expected_registry_revision": 7,
+    "input_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "actor": "operator",
+    "delivery_complete": true,
+    "applied": true
+  }
+}

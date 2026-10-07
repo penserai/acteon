@@ -472,3 +472,8 @@ capacity. The returned task retains actual provider status and artifacts; an alr
 delivered operation can still complete. After a timeout or unavailable acknowledgement,
 retry this stop explicitly with the same receipt. The helper never retries automatically
 or takes provenance from mutable task data.
+
+
+### Governed registry metadata
+
+Use `registryProjection` and `mutateRegistry` to inspect versioned agent/card records and send an independently authorized mutation. The typed request retains a caller-supplied change ID; preserve the exact request for explicit recovery. A successful helper result requires a matching completed, applied receipt. Calls refuse redirects and do not automatically retry. Metadata changes retire the current qualification; publication alone does not grant execution permission. See the [registry operator workflow](../../docs/book/features/governance.md#managing-registry-projections).

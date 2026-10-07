@@ -48,6 +48,8 @@ public class ActeonClient implements AutoCloseable {
     public com.fasterxml.jackson.databind.JsonNode platformRequest(
         PlatformOperation operation, Map<String, String> pathParameters,
         Map<String, List<String>> query, Object body) throws ActeonException {
+        if ((operation == PlatformOperation.GOVERNANCE_MUTATE_REGISTRY || operation == PlatformOperation.GOVERNANCE_REGISTRY_PROJECTION) && httpClient.followRedirects() != HttpClient.Redirect.NEVER)
+            throw new ActeonException("registry management requires redirects disabled");
         Map<String, String> values = pathParameters == null ? Map.of() : pathParameters;
         if (!values.keySet().equals(new java.util.HashSet<>(java.util.Arrays.asList(operation.parameters)))) {
             throw new IllegalArgumentException("Incorrect path parameters");
@@ -314,6 +316,38 @@ public class ActeonClient implements AutoCloseable {
             Map.of("execution_id", executionId, "ordinal", Long.toString(ordinal)), Map.of("namespace", List.of(namespace), "tenant", List.of(tenant)), request);
         try { return objectMapper.treeToValue(node, ProviderExecutionHistory.Receipt.class); }
         catch (IOException e) { throw new ConnectionException("Malformed reconciliation receipt", e); }
+    }
+    public Governance.RegistryProjectionView registryProjection(String namespace, String tenant, String agentId, String projection) throws ActeonException {
+        var node = platformRequest(PlatformOperation.GOVERNANCE_REGISTRY_PROJECTION, Map.of("agent_id", agentId),
+            Map.of("namespace", List.of(namespace), "tenant", List.of(tenant), "projection", List.of(projection)), null);
+        try {
+            var r = objectMapper.treeToValue(node, Governance.RegistryProjectionView.class);
+            if (!namespace.equals(r.namespace()) || !tenant.equals(r.tenant()) || !agentId.equals(r.agentId()) || !projection.equals(r.projection())
+                || !new Governance.Resource("agent", namespace, tenant, agentId).equals(r.agentResource())
+                || !node.path("registry_revision").isIntegralNumber() || !node.path("registry_revision").canConvertToLong() || r.registryRevision() < 0
+                || (!node.path("qualification_retired").isNull() && !node.path("qualification_retired").isBoolean())
+                || (r.registryRevision() == 0) != (r.qualificationRetired() == null)
+                || (!node.path("version").isNull() && (!node.path("version").isIntegralNumber() || !node.path("version").canConvertToLong()))
+                || !node.has("value") || (r.version() != null && r.version() <= 0) || (r.version() == null) != (r.value() == null || r.value().isNull())
+                || (r.value() != null && !r.value().isNull() && !r.value().isObject()))
+                throw new ConnectionException("Registry observation identity or version mismatch", null);
+            return r;
+        } catch (IOException e) { throw new ConnectionException("Malformed registry observation", e); }
+    }
+    /** Send once; preserve the same request and change ID for explicit recovery. */
+    public Governance.RegistryMutationReceipt mutateRegistry(Governance.RegistryMutationRequest request) throws ActeonException {
+        var node = platformRequest(PlatformOperation.GOVERNANCE_MUTATE_REGISTRY, null, null, request);
+        try {
+            var r = objectMapper.treeToValue(node, Governance.RegistryMutationReceipt.class);
+            if (!request.namespace().equals(r.namespace()) || !request.tenant().equals(r.tenant()) || !request.agentId().equals(r.agentId())
+                || !request.changeId().equals(r.changeId()) || !request.projection().equals(r.projection())
+                || !node.path("expected_registry_revision").isIntegralNumber() || !node.path("expected_registry_revision").canConvertToLong()
+                || r.expectedRegistryRevision() < 0 || r.expectedRegistryRevision() != request.expectedRegistryRevision()
+                || !node.path("delivery_complete").isBoolean() || !node.path("applied").isBoolean() || !r.deliveryComplete() || !r.applied()
+                || r.actor() == null || r.actor().isEmpty() || r.inputDigest() == null || !r.inputDigest().matches("[0-9a-f]{64}"))
+                throw new ConnectionException("Unmatched or incomplete registry mutation receipt", null);
+            return r;
+        } catch (IOException e) { throw new ConnectionException("Malformed registry mutation receipt", e); }
     }
     public Governance.ChangeReceipt publishGovernancePermit(Governance.PublishPermitRequest request) throws ActeonException {
         var node = platformRequest(PlatformOperation.GOVERNANCE_PUBLISH_PERMIT, null, null, request);

@@ -44,4 +44,19 @@ public final class Governance {
         List<RouteView> routes, List<PermitView> permits,
         @JsonProperty("closed_resources") List<Resource> closedResources,
         @JsonProperty("revoked_subjects") List<String> revokedSubjects) {}
+    public record RegistryMutationRequest(String namespace, String tenant,
+        @JsonProperty("agent_id") String agentId, @JsonProperty("change_id") String changeId,
+        @JsonProperty("expected_registry_revision") long expectedRegistryRevision, String projection,
+        @JsonProperty("expected_projection_version") Long expectedProjectionVersion,
+        com.fasterxml.jackson.databind.JsonNode value, String reason) {}
+    public record RegistryProjectionView(String namespace, String tenant, @JsonProperty("agent_id") String agentId,
+        @JsonProperty("agent_resource") Resource agentResource, String projection,
+        @JsonProperty("registry_revision") long registryRevision, @JsonProperty("qualification_retired") Boolean qualificationRetired,
+        Long version, com.fasterxml.jackson.databind.JsonNode value) {}
+    public record RegistryMutationReceipt(String namespace, String tenant,
+        @JsonProperty("agent_id") String agentId, @JsonProperty("change_id") String changeId, String projection,
+        @JsonProperty("expected_registry_revision") long expectedRegistryRevision,
+        @JsonProperty("input_digest") String inputDigest, String actor,
+        @JsonProperty("delivery_complete") boolean deliveryComplete, boolean applied) {}
+
 }
