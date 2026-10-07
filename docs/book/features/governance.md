@@ -279,7 +279,10 @@ status and the exact approved card digest. It reads the actual card even when
 the separate `has_agent_card` presence hint is stale. The hint grants no
 authority: a missing or changed card produces no candidate, and an enrolled
 registry qualification must still be current and active. Changed cards need
-renewed host approval. The candidate contains bounded descriptive data, the binding digest
+renewed host approval. Governed HTTP metadata writes enforce the same 64 KiB
+limit on the normalized record, measured in UTF-8 bytes, before staging a
+qualification retirement. Older larger records remain inspectable and deletable
+under exact manager permissions. The candidate contains bounded descriptive data, the binding digest
 and the observed authority revision. Treat descriptions as untrusted data.
 
 ```rust

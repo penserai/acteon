@@ -22,7 +22,9 @@ use acteon_time::Clock;
 use sha2::{Digest, Sha256};
 
 const MAX_BINDINGS: usize = 128;
-const MAX_RECORD_BYTES: usize = 64 * 1024;
+/// Maximum serialized UTF-8 bytes in an approved agent/card registry record.
+/// Hosts publishing discoverable metadata must enforce this bound before writes.
+pub const MAX_PEER_REGISTRY_RECORD_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PeerDiscoveryError {
@@ -274,7 +276,7 @@ impl ApprovedServicePlan {
 }
 fn value_digest(value: &serde_json::Value) -> Result<String, PeerDiscoveryError> {
     let bytes = crate::plan::canonical_bytes(value).map_err(|_| PeerDiscoveryError::Binding)?;
-    if bytes.len() > MAX_RECORD_BYTES {
+    if bytes.len() > MAX_PEER_REGISTRY_RECORD_BYTES {
         return Err(PeerDiscoveryError::Capacity);
     }
     Ok(format!("{:x}", Sha256::digest(bytes)))
@@ -399,7 +401,7 @@ impl ApprovedPeerRegistry {
             .await
             .map_err(|_| PeerDiscoveryError::Unavailable)?;
         raw.map(|raw| {
-            if raw.len() > MAX_RECORD_BYTES {
+            if raw.len() > MAX_PEER_REGISTRY_RECORD_BYTES {
                 return Err(PeerDiscoveryError::Unavailable);
             }
             serde_json::from_str(&raw).map_err(|_| PeerDiscoveryError::Unavailable)

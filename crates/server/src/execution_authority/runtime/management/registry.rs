@@ -90,8 +90,8 @@ fn normalize_projection(
         }
     };
     let raw = serde_json::to_string(&value).map_err(|_| ManagementError::Invalid)?;
-    // Reject an undeliverable projection before staging a retirement fence.
-    if raw.len() > 256 * 1024 {
+    // Enforce discovery eligibility before staging a retirement fence.
+    if raw.len() > acteon_executor::delegation::MAX_PEER_REGISTRY_RECORD_BYTES {
         return Err(ManagementError::Invalid);
     }
     Ok(Some(raw))

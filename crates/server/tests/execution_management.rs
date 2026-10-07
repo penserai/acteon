@@ -2617,3 +2617,142 @@ async fn registry_http_all_legacy_bus_metadata_writers_refuse_governed_scope() {
         serde_json::to_value(coordinator.snapshot().await.unwrap()).unwrap()
     );
 }
+
+fn sized_registry_request(projection: &str, bytes: usize, unicode: bool) -> serde_json::Value {
+    let mut request = registry_request("sized-projection");
+    request["projection"] = json!(projection);
+    if projection == "card" {
+        let mut card = acteon_core::AgentCard::new("maya", "prod", "acme", "Maya", "1");
+        let mut skill = acteon_core::Skill::new("work");
+        skill.input_schema = Some(json!({"type":"object", "description":""}));
+        card.skills.push(skill);
+        card.interfaces
+            .push(acteon_core::bus_agent_card::Interface {
+                kind: "rest".into(),
+                url: "https://peer.example/a2a".into(),
+            });
+        request["value"] = json!(card);
+    } else {
+        request["value"]["display_name"] = json!("");
+    }
+    let base = serde_json::to_vec(&request["value"]).unwrap().len();
+    let padding = bytes.checked_sub(base).unwrap();
+    let text = if unicode {
+        format!("{}{}", "é".repeat(padding / 2), "x".repeat(padding % 2))
+    } else {
+        "x".repeat(padding)
+    };
+    if projection == "card" {
+        request["value"]["skills"][0]["inputSchema"]["description"] = json!(text);
+    } else {
+        request["value"]["display_name"] = json!(text);
+    }
+    assert_eq!(serde_json::to_vec(&request["value"]).unwrap().len(), bytes);
+    request
+}
+
+#[tokio::test]
+async fn registry_http_discovery_byte_limit_accepts_exact_boundary_and_rejects_before_staging() {
+    use acteon_executor::delegation::MAX_PEER_REGISTRY_RECORD_BYTES;
+    for projection in ["agent", "card"] {
+        for unicode in [false, true] {
+            for size in [
+                MAX_PEER_REGISTRY_RECORD_BYTES - 1,
+                MAX_PEER_REGISTRY_RECORD_BYTES,
+                MAX_PEER_REGISTRY_RECORD_BYTES + 1,
+            ] {
+                let f = registry_http_fixture(vec!["maya".into()]).await;
+                let coordinator = AuthorityCoordinator::connect(f.state.clone(), "prod", "acme")
+                    .await
+                    .unwrap();
+                let before = serde_json::to_value(coordinator.snapshot().await.unwrap()).unwrap();
+                let request = sized_registry_request(projection, size, unicode);
+                let key = acteon_state::StateKey::new(
+                    "prod",
+                    "acme",
+                    if projection == "card" {
+                        acteon_state::KeyKind::BusAgentCard
+                    } else {
+                        acteon_state::KeyKind::BusAgent
+                    },
+                    "maya",
+                );
+                let (status, _) =
+                    registry_http(&f.app, "POST", "/v1/governance/registry", Some(&request)).await;
+                if size > MAX_PEER_REGISTRY_RECORD_BYTES {
+                    assert_eq!(status, 400, "{projection} {size} unicode={unicode}");
+                    assert!(f.state.get(&key).await.unwrap().is_none());
+                    assert_eq!(
+                        before,
+                        serde_json::to_value(coordinator.snapshot().await.unwrap()).unwrap()
+                    );
+                } else {
+                    assert_eq!(status, 200, "{projection} {size} unicode={unicode}");
+                    let (raw, version) = f.state.get_versioned(&key).await.unwrap().unwrap();
+                    assert_eq!(raw.len(), size);
+                    assert_eq!(version, 1);
+                    assert!(
+                        !coordinator.snapshot().await.unwrap().changes["sized-projection"].pending
+                    );
+                    if projection == "card" {
+                        let card: acteon_core::AgentCard = serde_json::from_str(&raw).unwrap();
+                        assert!(acteon_executor::delegation::card_digest(&card).is_ok());
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn registry_http_can_inspect_and_delete_older_records_above_discovery_limit() {
+    use acteon_executor::delegation::MAX_PEER_REGISTRY_RECORD_BYTES;
+    for projection in ["agent", "card"] {
+        let f = registry_http_fixture(vec!["maya".into()]).await;
+        let mut request =
+            sized_registry_request(projection, MAX_PEER_REGISTRY_RECORD_BYTES + 1, false);
+        let key = acteon_state::StateKey::new(
+            "prod",
+            "acme",
+            if projection == "card" {
+                acteon_state::KeyKind::BusAgentCard
+            } else {
+                acteon_state::KeyKind::BusAgent
+            },
+            "maya",
+        );
+        // Previously accepted metadata remains inspectable under exact manager bounds.
+        f.state
+            .set(
+                &key,
+                &serde_json::to_string(&request["value"]).unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+        let (status, view) = registry_http(
+            &f.app,
+            "GET",
+            &format!(
+                "/v1/governance/registry/maya?namespace=prod&tenant=acme&projection={projection}"
+            ),
+            None,
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(view["version"], 1);
+        assert_eq!(view["value"], request["value"]);
+        request["expected_projection_version"] = json!(1);
+        request["value"] = serde_json::Value::Null;
+        let (status, original) =
+            registry_http(&f.app, "POST", "/v1/governance/registry", Some(&request)).await;
+        assert_eq!(status, 200);
+        assert_eq!(original["delivery_complete"], true);
+        assert!(f.state.get(&key).await.unwrap().is_none());
+        let (status, replay) =
+            registry_http(&f.app, "POST", "/v1/governance/registry", Some(&request)).await;
+        assert_eq!(status, 200);
+        assert_eq!(replay, original);
+        assert!(f.state.get(&key).await.unwrap().is_none());
+    }
+}

@@ -108,6 +108,11 @@ message identity and inspect durable evidence rather than constructing new work.
   peer discovery reads the actual card and verifies its approved digest; the
   separate presence hint cannot hide a valid card or authorize a missing or
   changed card, and current qualification remains mandatory when enrolled.
+  HTTP mutations share the 64 KiB UTF-8 record bound with approved discovery
+  and reject larger normalized projections before staging retirement. The
+  lower-level mutation kernel retains its independent 256 KiB capacity bound.
+  Boundary contracts cover both projection kinds with ASCII/multibyte content
+  and exact-size acceptance; older larger records remain inspectable/deletable.
   Native SDK helpers, public
   documentation, and broader lifecycle tests are still pending. Unresolved
   delivery replays return HTTP 503 rather than an authority-denied 403. Clients
@@ -125,9 +130,7 @@ Remaining before release:
   recovery against each supported production backend.
 - Expand focused adversarial and integration tests from admission/isolation to
   full provider execution and peer lifecycle.
-- Complete registry projection consistency and recovery contracts. Align HTTP
-  projection acceptance with the 64 KiB approved-discovery record bound; the
-  mutation kernel currently permits 256 KiB. Add native
+- Complete registry projection consistency and recovery contracts. Add native
   SDK helpers and public documentation. Retain historical bindings across service
   replacement; complete qualified outbound A2A lifecycle work.
 - Extend lifecycle SDK/UI integration as provider abort and outbound peer contracts are added.
