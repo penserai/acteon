@@ -89,9 +89,12 @@ fn normalize_projection(
             serde_json::to_value(card).map_err(|_| ManagementError::Invalid)?
         }
     };
-    serde_json::to_string(&value)
-        .map(Some)
-        .map_err(|_| ManagementError::Invalid)
+    let raw = serde_json::to_string(&value).map_err(|_| ManagementError::Invalid)?;
+    // Reject an undeliverable projection before staging a retirement fence.
+    if raw.len() > 256 * 1024 {
+        return Err(ManagementError::Invalid);
+    }
+    Ok(Some(raw))
 }
 
 impl ExecutionAuthorityRuntime {

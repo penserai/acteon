@@ -98,8 +98,13 @@ message identity and inspect durable evidence rather than constructing new work.
   Ordinary control-event acknowledgements cannot complete this mutation.
   The HTTP registry mutation routes now call the primitive with independently
   declared manager agent bounds. Governed scopes reject legacy metadata writes.
-  This HTTP integration remains a draft checkpoint: focused failure-path tests,
-  native SDK helpers, and public documentation are still pending. Unresolved
+  Production-router contracts now cover exact agent bounds, foreign projection
+  identities and oversized values before staging, known replay/version
+  preservation, original actor attribution,
+  write acknowledgement loss before and after persistence, qualification
+  retirement on success and known version conflicts, and legacy card writes
+  with absent runtime or unreadable authority. Native SDK helpers, public
+  documentation, and broader lifecycle tests are still pending. Unresolved
   delivery replays return HTTP 503 rather than an authority-denied 403. Clients
   must retain the original change identifier and request; the coordinator does
   not resend a registered write whose outcome is unknown.

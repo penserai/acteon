@@ -548,6 +548,13 @@ fn history_router(
     runtime: Arc<ExecutionAuthorityRuntime>,
     auth: Arc<AuthProvider>,
 ) -> Router {
+    history_router_with_runtime(state, Some(runtime), auth)
+}
+fn history_router_with_runtime(
+    state: Arc<dyn StateStore>,
+    runtime: Option<Arc<ExecutionAuthorityRuntime>>,
+    auth: Arc<AuthProvider>,
+) -> Router {
     let gateway = acteon_gateway::GatewayBuilder::new()
         .state(state)
         .lock(Arc::new(acteon_state_memory::MemoryDistributedLock::new()))
@@ -560,7 +567,7 @@ fn history_router(
         audit: None,
         analytics: None,
         auth: Some(auth),
-        execution_authority: Some(runtime),
+        execution_authority: runtime,
         rate_limiter: None,
         embedding: None,
         embedding_metrics: None,
@@ -2185,4 +2192,388 @@ async fn reconciliation_only_does_not_require_or_imply_history_access() {
         Err(ManagementError::Forbidden)
     ));
     assert_archive_denies_live_management(&f).await;
+}
+
+struct RegistryHttpFixture {
+    provider: Arc<AuthProvider>,
+    state: Arc<acteon_state::testing::faults::FaultStore>,
+    app: Router,
+}
+async fn registry_http_fixture(agents: Vec<String>) -> RegistryHttpFixture {
+    let state = Arc::new(acteon_state::testing::faults::FaultStore::new(Arc::new(
+        MemoryStateStore::new(),
+    )));
+    let mut configuration = config();
+    configuration.scopes[0].managers[0].agents = agents;
+    let runtime = Arc::new(runtime(&registry(), &configuration, state.clone()).await);
+    let mut tables = auth();
+    tables.api_keys[0].grants[0].providers = vec!["*".into()];
+    tables.api_keys[0].grants[0].actions = vec!["*".into()];
+    let provider = Arc::new(
+        AuthProvider::new_with_scope_projection(
+            &tables,
+            state.clone(),
+            authority(state.clone()).await,
+            runtime.projectors(),
+        )
+        .await
+        .unwrap(),
+    );
+    RegistryHttpFixture {
+        app: history_router(state.clone(), runtime, provider.clone()),
+        provider,
+        state,
+    }
+}
+fn registry_request(id: &str) -> serde_json::Value {
+    json!({
+        "namespace":"prod", "tenant":"acme", "agent_id":"maya",
+        "change_id":id, "expected_registry_revision":0, "projection":"agent",
+        "expected_projection_version":null,
+        "value":acteon_core::Agent::new("maya", "prod", "acme"), "reason":"reviewed registry update"
+    })
+}
+async fn registry_http(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    body: Option<&serde_json::Value>,
+) -> (u16, serde_json::Value) {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("authorization", "Bearer operator-secret")
+                .header("content-type", "application/json")
+                .header("x-acteon-principal", "forged-admin")
+                .body(body.map_or_else(Body::empty, |body| {
+                    Body::from(serde_json::to_vec(body).unwrap())
+                }))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status().as_u16();
+    if uri.starts_with("/v1/governance/registry") {
+        assert_eq!(
+            response.headers()[axum::http::header::CACHE_CONTROL],
+            "no-store"
+        );
+    }
+    let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    (status, serde_json::from_slice(&bytes).unwrap())
+}
+fn registry_agent_key() -> acteon_state::StateKey {
+    acteon_state::StateKey::new("prod", "acme", acteon_state::KeyKind::BusAgent, "maya")
+}
+
+#[tokio::test]
+async fn registry_http_requires_independent_exact_agent_bounds() {
+    for agents in [vec![], vec!["other".into()]] {
+        let f = registry_http_fixture(agents).await;
+        let coordinator = AuthorityCoordinator::connect(f.state.clone(), "prod", "acme")
+            .await
+            .unwrap();
+        let before = serde_json::to_value(coordinator.snapshot().await.unwrap()).unwrap();
+        let (status, _) = registry_http(
+            &f.app,
+            "POST",
+            "/v1/governance/registry",
+            Some(&registry_request("denied")),
+        )
+        .await;
+        assert_eq!(status, 403);
+        let (status, _) = registry_http(
+            &f.app,
+            "GET",
+            "/v1/governance/registry/maya?namespace=prod&tenant=acme&projection=agent",
+            None,
+        )
+        .await;
+        assert_eq!(status, 403);
+        assert!(f.state.get(&registry_agent_key()).await.unwrap().is_none());
+        assert_eq!(
+            before,
+            serde_json::to_value(coordinator.snapshot().await.unwrap()).unwrap()
+        );
+    }
+}
+
+#[tokio::test]
+async fn registry_http_replay_preserves_known_receipt_and_projection_version() {
+    let f = registry_http_fixture(vec!["maya".into()]).await;
+    let mut request = registry_request("create-maya");
+    request["value"]["admin_state"] = json!("banned");
+    request["value"]["admin_set_by"] = json!("forged-admin");
+    let (status, first) =
+        registry_http(&f.app, "POST", "/v1/governance/registry", Some(&request)).await;
+    assert_eq!(status, 200);
+    assert_eq!(first["delivery_complete"], true);
+    assert_eq!(first["applied"], true);
+    assert_eq!(first["actor"], "operator");
+    let retained = f
+        .state
+        .get_versioned(&registry_agent_key())
+        .await
+        .unwrap()
+        .unwrap();
+    let actual: acteon_core::Agent = serde_json::from_str(&retained.0).unwrap();
+    assert_eq!(actual.admin_set_by.as_deref(), Some("operator"));
+    let (status, replay) =
+        registry_http(&f.app, "POST", "/v1/governance/registry", Some(&request)).await;
+    assert_eq!(status, 200);
+    assert_eq!(replay, first);
+    assert_eq!(
+        retained,
+        f.state
+            .get_versioned(&registry_agent_key())
+            .await
+            .unwrap()
+            .unwrap()
+    );
+    request["value"]["display_name"] = json!("changed");
+    assert_eq!(
+        registry_http(&f.app, "POST", "/v1/governance/registry", Some(&request))
+            .await
+            .0,
+        409
+    );
+    assert_eq!(
+        retained,
+        f.state
+            .get_versioned(&registry_agent_key())
+            .await
+            .unwrap()
+            .unwrap()
+    );
+}
+
+#[tokio::test]
+async fn registry_http_rejects_foreign_projection_before_staging() {
+    let f = registry_http_fixture(vec!["maya".into()]).await;
+    let coordinator = AuthorityCoordinator::connect(f.state.clone(), "prod", "acme")
+        .await
+        .unwrap();
+    let before = serde_json::to_value(coordinator.snapshot().await.unwrap()).unwrap();
+    for (field, value) in [
+        ("namespace", "other"),
+        ("tenant", "other"),
+        ("agent_id", "other"),
+    ] {
+        let mut request = registry_request("foreign");
+        request["value"][field] = json!(value);
+        assert_eq!(
+            registry_http(&f.app, "POST", "/v1/governance/registry", Some(&request))
+                .await
+                .0,
+            400
+        );
+    }
+    let mut oversized = registry_request("oversized");
+    oversized["value"]["display_name"] = json!("x".repeat(256 * 1024));
+    assert_eq!(
+        registry_http(&f.app, "POST", "/v1/governance/registry", Some(&oversized))
+            .await
+            .0,
+        400
+    );
+    assert_eq!(
+        before,
+        serde_json::to_value(coordinator.snapshot().await.unwrap()).unwrap()
+    );
+    assert!(f.state.get(&registry_agent_key()).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn registry_http_lost_projection_acknowledgement_never_resends() {
+    use acteon_state::testing::faults::{FaultTiming, WriteOperation};
+    for timing in [FaultTiming::Before, FaultTiming::After] {
+        let f = registry_http_fixture(vec!["maya".into()]).await;
+        let request = registry_request("uncertain-create");
+        f.state
+            .fail_next(
+                acteon_state::KeyKind::BusAgent,
+                WriteOperation::CheckAndSet,
+                timing,
+            )
+            .unwrap();
+        assert_eq!(
+            registry_http(&f.app, "POST", "/v1/governance/registry", Some(&request))
+                .await
+                .0,
+            503
+        );
+        let retained = f.state.get_versioned(&registry_agent_key()).await.unwrap();
+        assert_eq!(retained.is_some(), matches!(timing, FaultTiming::After));
+        for _ in 0..2 {
+            let (status, response) =
+                registry_http(&f.app, "POST", "/v1/governance/registry", Some(&request)).await;
+            assert_eq!(status, 503);
+            assert_eq!(response["code"], "governance_unavailable");
+            assert_eq!(
+                retained,
+                f.state.get_versioned(&registry_agent_key()).await.unwrap()
+            );
+        }
+        let snapshot = AuthorityCoordinator::connect(f.state.clone(), "prod", "acme")
+            .await
+            .unwrap()
+            .snapshot()
+            .await
+            .unwrap();
+        assert!(snapshot.changes["uncertain-create"].pending);
+        assert_eq!(snapshot.starts.len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn registry_http_legacy_card_writes_cannot_bypass_governed_scope() {
+    let f = registry_http_fixture(vec!["maya".into()]).await;
+    let card = json!(acteon_core::AgentCard::new(
+        "maya", "prod", "acme", "Maya", "1"
+    ));
+    for (method, body) in [("PUT", Some(&card)), ("DELETE", None)] {
+        let (status, response) =
+            registry_http(&f.app, method, "/v1/bus/agents/prod/acme/maya/card", body).await;
+        assert_eq!(status, 409);
+        assert_eq!(response["code"], "governed_registry_mutation_required");
+    }
+    let key =
+        acteon_state::StateKey::new("prod", "acme", acteon_state::KeyKind::BusAgentCard, "maya");
+    assert!(f.state.get(&key).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn registry_http_mutation_retires_qualification_even_on_known_version_conflict() {
+    use acteon_core::{PrincipalIdentity, PrincipalKind, ResourceKind, ResourceRef};
+    use acteon_governance::registry::{AgentRegistryIssuanceCeiling, AgentRegistryQualification};
+    for conflict in [false, true] {
+        let f = registry_http_fixture(vec!["maya".into()]).await;
+        let coordinator = AuthorityCoordinator::connect(f.state.clone(), "prod", "acme")
+            .await
+            .unwrap();
+        let qualification = AgentRegistryQualification {
+            agent: ResourceRef::new(ResourceKind::Agent, "prod", "acme", "maya").unwrap(),
+            target: PrincipalIdentity::new("agent/maya", PrincipalKind::Agent).unwrap(),
+            revision: 1,
+            bindings: std::collections::BTreeMap::from([("work".into(), "a".repeat(64))]),
+        };
+        let ceiling = AgentRegistryIssuanceCeiling {
+            issuer: PrincipalIdentity::new("operator", PrincipalKind::Human).unwrap(),
+            approved: vec![qualification.clone()],
+            valid_from_ms: 0,
+            deadline_ms: 4_102_444_800_000_i64,
+        };
+        coordinator
+            .publish_agent_registry(
+                "qualify-maya",
+                qualification,
+                0,
+                &ceiling,
+                &coordinator.snapshot().await.unwrap().stamp(),
+                "reviewed qualification",
+                &acteon_time::SystemClock::default(),
+            )
+            .await
+            .unwrap();
+        if conflict {
+            f.state
+                .set(
+                    &registry_agent_key(),
+                    &serde_json::to_string(&acteon_core::Agent::new("maya", "prod", "acme"))
+                        .unwrap(),
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+        let prior = f.state.get_versioned(&registry_agent_key()).await.unwrap();
+        let mut request = registry_request("mutate-qualified-maya");
+        request["expected_registry_revision"] = json!(1);
+        let (status, _) =
+            registry_http(&f.app, "POST", "/v1/governance/registry", Some(&request)).await;
+        assert_eq!(status, if conflict { 409 } else { 200 });
+        let snapshot = coordinator.snapshot().await.unwrap();
+        assert!(snapshot.agent_registry["maya"].retired);
+        assert!(!snapshot.changes["mutate-qualified-maya"].pending);
+        assert_eq!(snapshot.starts.len(), 1);
+        if conflict {
+            assert_eq!(
+                prior,
+                f.state.get_versioned(&registry_agent_key()).await.unwrap()
+            );
+        }
+        let (status, observed) = registry_http(
+            &f.app,
+            "GET",
+            "/v1/governance/registry/maya?namespace=prod&tenant=acme&projection=agent",
+            None,
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(observed["registry_revision"], 1);
+        assert_eq!(observed["qualification_retired"], true);
+        // Descriptive active metadata must never restore the old execution epoch.
+        let raw = f.state.get(&registry_agent_key()).await.unwrap().unwrap();
+        let row: acteon_core::Agent = serde_json::from_str(&raw).unwrap();
+        assert_eq!(row.admin_state, acteon_core::AgentAdminState::Active);
+    }
+}
+
+#[test]
+fn registry_manager_agent_bounds_reject_unbounded_or_nonintervening_declarations() {
+    let original = serde_json::to_value(config()).unwrap();
+    for agents in [
+        json!(["*"]),
+        json!(["maya", "maya"]),
+        json!([""]),
+        json!(["maya\n"]),
+    ] {
+        let mut wire = original.clone();
+        wire["scopes"][0]["managers"][0]["agents"] = agents;
+        let configuration: ExecutionAuthorityConfig = serde_json::from_value(wire).unwrap();
+        assert!(
+            configuration
+                .validate(("auth-control", "deployment"))
+                .is_err()
+        );
+    }
+    let mut configuration = config();
+    configuration.scopes[0].managers[0].agents = vec!["maya".into()];
+    configuration.scopes[0].managers[0].can_intervene = false;
+    assert!(
+        configuration
+            .validate(("auth-control", "deployment"))
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn registry_http_legacy_guard_survives_uninstalled_runtime_and_unreadable_authority() {
+    let f = registry_http_fixture(vec!["maya".into()]).await;
+    let app = history_router_with_runtime(f.state.clone(), None, f.provider);
+    let uri = "/v1/bus/agents/prod/acme/maya/card";
+    let (status, response) = registry_http(&app, "DELETE", uri, None).await;
+    assert_eq!(status, 409);
+    assert_eq!(response["code"], "governed_registry_mutation_required");
+    let authority_key = acteon_state::StateKey::new(
+        "prod",
+        "acme",
+        acteon_state::KeyKind::Custom(acteon_governance::COORDINATOR_KIND.into()),
+        "authority",
+    );
+    f.state
+        .set(&authority_key, "not-readable-authority", None)
+        .await
+        .unwrap();
+    let (status, response) = registry_http(&app, "DELETE", uri, None).await;
+    assert_eq!(status, 503);
+    assert_eq!(response["code"], "registry_authority_unavailable");
+    let card_key =
+        acteon_state::StateKey::new("prod", "acme", acteon_state::KeyKind::BusAgentCard, "maya");
+    assert!(f.state.get(&card_key).await.unwrap().is_none());
 }
