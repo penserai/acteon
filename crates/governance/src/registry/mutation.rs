@@ -89,7 +89,7 @@ impl AuthorityCoordinator {
         let applied = match attempt {
             crate::StartRegistration::Existing(record) => {
                 if record.status != crate::AttemptStatus::Settled {
-                    return Err(CoordinationError::Restricted);
+                    return Err(CoordinationError::RegistryMutationUnresolved);
                 }
                 match record.evidence {
                     Some(evidence)

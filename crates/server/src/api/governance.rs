@@ -285,3 +285,43 @@ pub async fn mutate_registry(
     )
         .into_response())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use acteon_governance::CoordinationError;
+
+    #[tokio::test]
+    async fn unresolved_registry_delivery_is_unavailable_and_not_authority_denied() {
+        for (error, expected_status, expected_code) in [
+            (
+                CoordinationError::RegistryMutationUnresolved,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "governance_unavailable",
+            ),
+            (
+                CoordinationError::Restricted,
+                StatusCode::FORBIDDEN,
+                "governance_authority_denied",
+            ),
+            (
+                CoordinationError::Conflict,
+                StatusCode::CONFLICT,
+                "governance_authority_changed",
+            ),
+        ] {
+            let response = GovernanceApiError::from(ManagementError::from(error)).into_response();
+            assert_eq!(response.status(), expected_status);
+            assert_eq!(
+                response.headers()[axum::http::header::CACHE_CONTROL],
+                "no-store"
+            );
+            let body = axum::body::to_bytes(response.into_body(), 1024)
+                .await
+                .unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(json["code"], expected_code);
+            assert_eq!(json["error"], expected_code);
+        }
+    }
+}

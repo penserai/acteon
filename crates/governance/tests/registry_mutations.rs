@@ -214,7 +214,7 @@ async fn lost_projection_acknowledgement_retains_uncertainty_even_when_bytes_mat
         );
         assert!(matches!(
             execute(&c, "edit", Some("new")).await,
-            Err(CoordinationError::Restricted)
+            Err(CoordinationError::RegistryMutationUnresolved)
         ));
         assert_eq!(
             retained,
@@ -326,7 +326,7 @@ async fn paused_delivery_contract(memory: Arc<dyn StateStore>, peer_store: Arc<d
     assert!(qualify(&peer, 2).await.is_err());
     assert!(matches!(
         execute(&peer, "edit", Some("new")).await,
-        Err(CoordinationError::Restricted)
+        Err(CoordinationError::RegistryMutationUnresolved)
     ));
     assert_eq!(memory.get_versioned(&key()).await.unwrap().unwrap().1, 1);
     release.send(()).unwrap();
@@ -468,7 +468,7 @@ async fn lost_registration_acknowledgement_never_authorizes_a_duplicate_projecti
             );
             assert!(matches!(
                 execute(&c, "edit", Some("new")).await,
-                Err(CoordinationError::Restricted)
+                Err(CoordinationError::RegistryMutationUnresolved)
             ));
             assert!(memory.get(&key()).await.unwrap().is_none());
             assert!(qualify(&c, 1).await.is_err());
@@ -495,7 +495,7 @@ async fn uncertain_deletion_is_not_certified_by_an_absent_projection() {
     assert!(memory.get(&key()).await.unwrap().is_none());
     assert!(matches!(
         execute(&c, "delete", None).await,
-        Err(CoordinationError::Restricted)
+        Err(CoordinationError::RegistryMutationUnresolved)
     ));
     assert!(c.snapshot().await.unwrap().changes["delete"].pending);
     assert!(qualify(&c, 2).await.is_err());

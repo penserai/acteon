@@ -23,7 +23,8 @@ impl AgentServiceError {
         match error {
             CoordinationError::State(_)
             | CoordinationError::Invalid(_)
-            | CoordinationError::Contention => Self::Unavailable,
+            | CoordinationError::Contention
+            | CoordinationError::RegistryMutationUnresolved => Self::Unavailable,
             _ => Self::Forbidden,
         }
     }
@@ -49,7 +50,8 @@ impl From<CoordinationError> for AgentServiceError {
             | CoordinationError::ConcurrencyExhausted => Self::Limits,
             CoordinationError::State(_)
             | CoordinationError::Invalid(_)
-            | CoordinationError::Contention => Self::Unavailable,
+            | CoordinationError::Contention
+            | CoordinationError::RegistryMutationUnresolved => Self::Unavailable,
         }
     }
 }

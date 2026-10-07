@@ -292,6 +292,9 @@ pub enum CoordinationError {
     StaleAuthority,
     #[error("subject or destination is restricted")]
     Restricted,
+    /// A registered registry write has no known result; observing it must not resend.
+    #[error("registry mutation delivery unresolved; retain the original change identifier")]
+    RegistryMutationUnresolved,
     #[error("coordinator capacity exhausted")]
     Capacity,
     #[error("root attempt units exhausted")]

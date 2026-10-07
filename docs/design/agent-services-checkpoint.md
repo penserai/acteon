@@ -99,7 +99,10 @@ message identity and inspect durable evidence rather than constructing new work.
   The HTTP registry mutation routes now call the primitive with independently
   declared manager agent bounds. Governed scopes reject legacy metadata writes.
   This HTTP integration remains a draft checkpoint: focused failure-path tests,
-  native SDK helpers, and public documentation are still pending.
+  native SDK helpers, and public documentation are still pending. Unresolved
+  delivery replays return HTTP 503 rather than an authority-denied 403. Clients
+  must retain the original change identifier and request; the coordinator does
+  not resend a registered write whose outcome is unknown.
 - Authority protocol 12 requires explicit reviewed cutover from protocols 10
   and 11; startup does not upgrade automatically. Contracts preserve funded
   descendants, opaque contexts, known/uncertain execution receipts and qualified
