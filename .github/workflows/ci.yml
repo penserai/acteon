@@ -366,6 +366,10 @@ jobs:
         env:
           ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
         run: cargo test --locked -p acteon-gateway --test agent_runtime independent_redis_runtime_recovers_lost_acceptance_and_known_or_uncertain_results -- --ignored
+      - name: Authenticated agent services restart, ambiguity and storage contracts
+        env:
+          ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
+        run: cargo test --locked -p acteon-server --test agent_services_http -- --ignored
       - name: Cross-principal delegation multi-client Redis contract
         env:
           ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379

@@ -4,7 +4,7 @@ use crate::{
     auth::{
         identity::CallerIdentity, projection::AuthenticatedExecutionConfiguration, role::Permission,
     },
-    execution_authority::{AgentServiceObservation, AgentServiceRequest},
+    execution_authority::{AgentServiceError, AgentServiceObservation, AgentServiceRequest},
 };
 use acteon_core::TaskMessage;
 use axum::{
@@ -31,8 +31,8 @@ pub struct AgentMessageSend {
     params(("namespace" = String, Path), ("tenant" = String, Path), ("agent" = String, Path)),
     request_body = AgentMessageSend,
     responses((status = 200, body = acteon_core::Task, description = "Durably accepted task; acceptance is not provider execution"),
-        (status = 400, description = "Unsupported A2A version"), (status = 403, description = "Original service authority required"),
-        (status = 409, description = "Admission refused"), (status = 503, description = "Service runtime unavailable"))
+        (status = 400, description = "Invalid message or unsupported A2A version"), (status = 403, description = "Original service authority required"),
+        (status = 404, description = "Service unavailable"), (status = 409, description = "Accepted input or authority conflict"), (status = 429, description = "Capacity or budget exhausted"), (status = 503, description = "Service runtime unavailable"))
 )]
 pub async fn message_send(
     State(state): State<AppState>,
@@ -85,15 +85,14 @@ pub async fn message_send(
                 StatusCode::OK,
                 [
                     ("a2a-version", A2A_PROTOCOL_VERSION.to_string()),
+                    ("cache-control", "no-store".to_string()),
                     (SOURCE_CONTEXT_HEADER, URL_SAFE_NO_PAD.encode(source)),
                 ],
                 Json(accepted.task),
             )
                 .into_response()
         }
-        // A refused admission may be an authority conflict or unavailable state.
-        // Do not expose private credential or configured recipient details.
-        Err(_) => error(StatusCode::CONFLICT, "agent_service_admission_refused"),
+        Err(cause) => service_error(cause),
     }
 }
 
@@ -155,18 +154,42 @@ pub async fn task_get(
     {
         Ok(task) => (
             StatusCode::OK,
-            [("a2a-version", A2A_PROTOCOL_VERSION)],
+            [
+                ("a2a-version", A2A_PROTOCOL_VERSION),
+                ("cache-control", "no-store"),
+            ],
             Json(task),
         )
             .into_response(),
-        Err(_) => error(StatusCode::NOT_FOUND, "service_task_unavailable"),
+        Err(cause) => service_error(cause),
     }
+}
+
+fn service_error(cause: AgentServiceError) -> Response {
+    let (status, code) = match cause {
+        AgentServiceError::Invalid => (StatusCode::BAD_REQUEST, "invalid_agent_service_request"),
+        AgentServiceError::Forbidden => (StatusCode::FORBIDDEN, "agent_service_authority_required"),
+        AgentServiceError::NotFound => (StatusCode::NOT_FOUND, "service_task_unavailable"),
+        AgentServiceError::Conflict => (StatusCode::CONFLICT, "agent_service_conflict"),
+        AgentServiceError::Limits => (
+            StatusCode::TOO_MANY_REQUESTS,
+            "agent_service_limits_exhausted",
+        ),
+        AgentServiceError::Unavailable => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "agent_services_unavailable",
+        ),
+    };
+    error(status, code)
 }
 
 fn error(status: StatusCode, code: &str) -> Response {
     (
         status,
-        [("a2a-version", A2A_PROTOCOL_VERSION)],
+        [
+            ("a2a-version", A2A_PROTOCOL_VERSION),
+            ("cache-control", "no-store"),
+        ],
         Json(ErrorResponse { error: code.into() }),
     )
         .into_response()

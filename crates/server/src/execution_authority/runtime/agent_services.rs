@@ -1,5 +1,5 @@
 //! Inbound service admission from original private caller and recipient proofs.
-use super::{ExecutionAuthorityRuntime, InstalledScope};
+use super::{AgentServiceError, ExecutionAuthorityRuntime, InstalledScope};
 use crate::{
     auth::{
         AuthProvider,
@@ -73,7 +73,8 @@ impl ExecutionAuthorityRuntime {
                     agent,
                     authentication.ok_or("agent services require private authentication")?,
                 )
-                .await?;
+                .await
+                .map_err(|e| e.to_string())?;
             }
         }
         Ok(())
@@ -84,38 +85,44 @@ impl ExecutionAuthorityRuntime {
         scope: &InstalledScope,
         agent: &PreparedAgentService,
         authentication: &AuthProvider,
-    ) -> Result<ScopedCredentialBinding, String> {
+    ) -> Result<ScopedCredentialBinding, AgentServiceError> {
         let secret = zeroize::Zeroizing::new(
             std::env::var(&agent.declaration.recipient_key_env)
-                .map_err(|_| "recipient authentication unavailable")?,
+                .map_err(|_| AgentServiceError::Unavailable)?,
         );
-        let recipient = authentication.authenticate_service_key(&secret).await?;
+        let recipient = authentication
+            .authenticate_service_key(&secret)
+            .await
+            .map_err(|_| AgentServiceError::Unavailable)?;
         recipient
             .verify_authentication_current()
             .await
-            .map_err(|_| "recipient authentication is stale")?;
+            .map_err(|_| AgentServiceError::Unavailable)?;
         let declaration = scope.prepared.declaration();
-        let binding = recipient.scope(&declaration.namespace, &declaration.tenant)?;
+        let binding = recipient
+            .scope(&declaration.namespace, &declaration.tenant)
+            .map_err(|_| AgentServiceError::Unavailable)?;
         if binding.authentication_source().principal() != &agent.declaration.principal {
-            return Err("recipient authentication differs from configured agent".into());
+            return Err(AgentServiceError::Unavailable);
         }
         scope
             .prepared
-            .verify_authenticated_scope(
+            .verify_authenticated_scope_typed(
                 &binding,
                 &scope.coordinator,
                 self.clock.now().timestamp_millis(),
             )
-            .await?;
+            .await
+            .map_err(|_| AgentServiceError::Unavailable)?;
         let snapshot = scope
             .coordinator
             .snapshot()
             .await
-            .map_err(|_| "recipient authority unavailable")?;
+            .map_err(AgentServiceError::from)?;
         let credential = snapshot
             .credentials
             .get(&binding.credential_reference().id)
-            .ok_or("recipient credential missing")?;
+            .ok_or(AgentServiceError::Unavailable)?;
         if !credential
             .authority
             .ceiling
@@ -123,7 +130,7 @@ impl ExecutionAuthorityRuntime {
             .iter()
             .any(|effect| acteon_governance::permit::matches_effect(effect, agent.bound.effect()))
         {
-            return Err("recipient credential does not cover configured operation".into());
+            return Err(AgentServiceError::Unavailable);
         }
         Ok(binding)
     }
@@ -209,20 +216,21 @@ impl ExecutionAuthorityRuntime {
     pub async fn accept_agent_service(
         &self,
         request: AgentServiceRequest<'_>,
-    ) -> Result<AgentServiceAcceptance, String> {
+    ) -> Result<AgentServiceAcceptance, AgentServiceError> {
         let (scope, agent, runtime) =
             self.service(request.namespace, request.tenant, request.agent_id)?;
         request
             .authentication
             .verify_authentication_current()
             .await
-            .map_err(|_| "caller authentication is stale")?;
+            .map_err(|e| AgentServiceError::authentication(&e))?;
         let source = request
             .authentication
-            .scope(request.namespace, request.tenant)?;
+            .scope(request.namespace, request.tenant)
+            .map_err(|_| AgentServiceError::Forbidden)?;
         let stamp = scope
             .prepared
-            .verify_authenticated_scope(
+            .verify_authenticated_scope_typed(
                 &source,
                 &scope.coordinator,
                 self.clock.now().timestamp_millis(),
@@ -234,13 +242,13 @@ impl ExecutionAuthorityRuntime {
             .grants
             .iter()
             .find(|grant| &grant.source == actor)
-            .ok_or("caller has no declared service grant")?;
+            .ok_or(AgentServiceError::Forbidden)?;
         let action = runtime
             .prepare_message(request.message)
-            .map_err(|_| "invalid service message")?;
+            .map_err(|_| AgentServiceError::Invalid)?;
         let provider_digest =
-            governed_provider_input_digest(&action).map_err(|_| "invalid service input")?;
-        let source_digest = format!("{:x}", Sha256::digest(serde_json::to_vec(&serde_json::json!({"domain":"acteon.agent-service-input.v1", "binding":agent.binding.digest(), "input":provider_digest})).map_err(|_| "invalid service input")?));
+            governed_provider_input_digest(&action).map_err(|_| AgentServiceError::Invalid)?;
+        let source_digest = format!("{:x}", Sha256::digest(serde_json::to_vec(&serde_json::json!({"domain":"acteon.agent-service-input.v1", "binding":agent.binding.digest(), "input":provider_digest})).map_err(|_| AgentServiceError::Invalid)?));
         let binding = self
             .authenticate_agent_recipient(scope, agent, request.auth_provider)
             .await?;
@@ -249,11 +257,11 @@ impl ExecutionAuthorityRuntime {
                 .contexts
                 .recover_reference_for_observation(parent.context)
                 .await
-                .map_err(|_| "source context unavailable")?;
+                .map_err(AgentServiceError::from)?;
             if context.principal() != actor
                 || context.credential_authority() != Some(source.credential_reference())
             {
-                return Err("source context differs from original authentication".into());
+                return Err(AgentServiceError::Forbidden);
             }
             context
         } else {
@@ -268,7 +276,9 @@ impl ExecutionAuthorityRuntime {
                 auth_method: source.authentication_source().auth_method().into(),
                 accepted_ceiling_revision: String::new(),
                 accepted_effects: vec![agent.binding.ingress_effect().clone()],
-                deadline_ms: self.service_deadline(scope, declared)?,
+                deadline_ms: self
+                    .service_deadline(scope, declared)
+                    .map_err(|_| AgentServiceError::Unavailable)?,
                 evaluated_authority: stamp,
             };
             let limits = scope
@@ -276,11 +286,12 @@ impl ExecutionAuthorityRuntime {
                 .attenuate_permitted_root_limits(
                     &admission,
                     &declared.source_permits,
-                    self.service_limits(scope, declared)?,
+                    self.service_limits(scope, declared)
+                        .map_err(|_| AgentServiceError::Unavailable)?,
                     self.clock.now().timestamp_millis(),
                 )
                 .await
-                .map_err(|_| "source limits refused")?;
+                .map_err(AgentServiceError::from)?;
             admission.deadline_ms = limits.deadline_ms;
             let representation = scope
                 .coordinator
@@ -295,7 +306,7 @@ impl ExecutionAuthorityRuntime {
                     },
                 )
                 .await
-                .map_err(|_| "source representation refused")?;
+                .map_err(AgentServiceError::from)?;
             let key = service_key(
                 "root",
                 &[actor.id(), request.agent_id, &request.message.message_id],
@@ -313,11 +324,11 @@ impl ExecutionAuthorityRuntime {
                     clock: self.clock.as_ref(),
                 })
                 .await
-                .map_err(|_| "source admission refused")?
+                .map_err(AgentServiceError::from)?
         };
         let stamp = scope
             .prepared
-            .verify_authenticated_scope(
+            .verify_authenticated_scope_typed(
                 &binding,
                 &scope.coordinator,
                 self.clock.now().timestamp_millis(),
@@ -334,20 +345,24 @@ impl ExecutionAuthorityRuntime {
             auth_method: binding.authentication_source().auth_method().into(),
             accepted_ceiling_revision: String::new(),
             accepted_effects: vec![agent.bound.effect().clone()],
-            deadline_ms: self.service_deadline(scope, declared)?,
+            deadline_ms: self
+                .service_deadline(scope, declared)
+                .map_err(|_| AgentServiceError::Unavailable)?,
             evaluated_authority: stamp,
         };
         let parent_limits = scope
             .coordinator
             .snapshot()
             .await
-            .map_err(|_| "source authority unavailable")?
+            .map_err(AgentServiceError::from)?
             .roots
             .get(&parent.execution_id().to_string())
-            .ok_or("source budget missing")?
+            .ok_or(AgentServiceError::Conflict)?
             .limits
             .clone();
-        let mut limits = self.service_limits(scope, declared)?;
+        let mut limits = self
+            .service_limits(scope, declared)
+            .map_err(|_| AgentServiceError::Unavailable)?;
         limits.max_units = limits.max_units.min(parent_limits.max_units);
         limits.max_concurrent = limits.max_concurrent.min(parent_limits.max_concurrent);
         limits.deadline_ms = limits.deadline_ms.min(parent_limits.deadline_ms);
@@ -365,7 +380,7 @@ impl ExecutionAuthorityRuntime {
                 },
             )
             .await
-            .map_err(|_| "recipient representation refused")?;
+            .map_err(AgentServiceError::from)?;
         let key = service_key(
             "recipient",
             &[
@@ -393,7 +408,7 @@ impl ExecutionAuthorityRuntime {
                 intent_effects: agent
                     .binding
                     .service_plan()
-                    .ok_or("missing service plan")?
+                    .ok_or(AgentServiceError::Unavailable)?
                     .intent()
                     .to_vec(),
                 onward_grants: vec![],
@@ -401,7 +416,7 @@ impl ExecutionAuthorityRuntime {
                 clock: self.clock.as_ref(),
             })
             .await
-            .map_err(|_| "recipient admission refused")?;
+            .map_err(AgentServiceError::from)?;
         let task = runtime
             .accept(
                 &child,
@@ -409,12 +424,12 @@ impl ExecutionAuthorityRuntime {
                 request.message,
             )
             .await
-            .map_err(|_| "service acceptance refused")?;
+            .map_err(AgentServiceError::from)?;
         Ok(AgentServiceAcceptance {
             task,
             source_context: parent
                 .reference()
-                .map_err(|_| "source provenance unavailable")?,
+                .map_err(|_| AgentServiceError::Unavailable)?,
         })
     }
 
@@ -423,23 +438,24 @@ impl ExecutionAuthorityRuntime {
     pub async fn observe_agent_service(
         &self,
         request: AgentServiceObservation<'_>,
-    ) -> Result<Task, String> {
+    ) -> Result<Task, AgentServiceError> {
         request
             .authentication
             .verify_authentication_current()
             .await
-            .map_err(|_| "authentication is stale")?;
+            .map_err(|e| AgentServiceError::authentication(&e))?;
         let caller = request
             .authentication
-            .scope(request.namespace, request.tenant)?;
+            .scope(request.namespace, request.tenant)
+            .map_err(|_| AgentServiceError::Forbidden)?;
         let (_, _, runtime) = self.service(request.namespace, request.tenant, request.agent_id)?;
         let source = runtime
             .source_context(request.task_id)
             .await
-            .map_err(|_| "service task unavailable")?;
+            .map_err(AgentServiceError::observation)?;
         let reference = source
             .reference()
-            .map_err(|_| "source provenance unavailable")?;
+            .map_err(|_| AgentServiceError::NotFound)?;
         let actor = caller.authentication_source().principal();
         if source.principal() != actor
             || source.credential_authority().map(|c| c.id.as_str())
@@ -448,12 +464,12 @@ impl ExecutionAuthorityRuntime {
             || request.source_context.is_some_and(|r| r != &reference)
             || (actor.kind() == PrincipalKind::Agent && request.source_context != Some(&reference))
         {
-            return Err("service task unavailable".into());
+            return Err(AgentServiceError::NotFound);
         }
         let observed = runtime
             .observe(request.task_id)
             .await
-            .map_err(|_| "service task unavailable")?;
+            .map_err(AgentServiceError::observation)?;
         Ok(observed.task)
     }
 
@@ -468,23 +484,23 @@ impl ExecutionAuthorityRuntime {
             &PreparedAgentService,
             &AgentProviderRuntime,
         ),
-        String,
+        AgentServiceError,
     > {
         let scope = self
             .scopes
             .get(&(namespace.into(), tenant.into()))
-            .ok_or("service scope is not configured")?;
+            .ok_or(AgentServiceError::NotFound)?;
         Ok((
             scope,
             scope
                 .prepared
                 .agents
                 .get(id)
-                .ok_or("agent service is not configured")?,
+                .ok_or(AgentServiceError::NotFound)?,
             scope
                 .agents
                 .get(id)
-                .ok_or("agent runtime unavailable")?
+                .ok_or(AgentServiceError::Unavailable)?
                 .as_ref(),
         ))
     }

@@ -21,7 +21,6 @@ Implemented so far:
 - Legacy tenant A2A read, append, cancel, events, and push configuration cannot
   access governed service tasks. The boundary reads durable acceptance rather
   than trusting display metadata.
-
 - Requester-isolated observation authenticates the original source credential.
   Agent callers must also present the exact source context returned by admission.
   Observation repairs known completion receipts without starting provider work.
@@ -29,6 +28,31 @@ Implemented so far:
   state backend and resumes them through governed execution. It retains in-flight
   and uncertain receipts rather than resending them. Scheduling uses fair cursors
   and bounded concurrency; backend scans still collect whole scopes.
+
+- Typed service errors preserve invalid input (400), denied authority (403),
+  unavailable or foreign task identity (404), accepted-work conflicts (409),
+  budget/capacity limits (429), and unavailable storage/runtime (503). Public
+  errors carry stable codes and no private credential or backend details.
+- Real-server Redis contracts cover queued recovery, known completion recovery,
+  an HTTP request received with its response lost, and unreadable stored task
+  projection. Uncertain delivery survives restart with one provider request and
+  retained source/recipient capacity; observation and replay do not resend it.
+  The contracts use isolated UUID prefixes and run in CI.
+
+| HTTP status | Service error code | Meaning |
+| --- | --- | --- |
+| 400 | `invalid_agent_service_request` | Invalid message or unsupported continuation |
+| 403 | `agent_service_authority_required` | Current source authority is required |
+| 404 | `service_task_unavailable` | Service/task missing or inaccessible to this requester |
+| 409 | `agent_service_conflict` | Changed accepted input or conflicting authority observation |
+| 429 | `agent_service_limits_exhausted` | Capacity, concurrency, or budget exhausted |
+| 503 | `agent_services_unavailable` | Storage, verification, or installed runtime unavailable |
+
+Version negotiation and malformed source-context headers also return 400 with
+specific codes. Admission acceptance remains distinct from provider execution.
+Errors and task responses use `Cache-Control: no-store`. A 503 is not evidence
+that earlier acceptance or an external effect did not occur; retain the same
+message identity and inspect durable evidence rather than constructing new work.
 
 Remaining before release:
 

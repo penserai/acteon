@@ -3,9 +3,9 @@
 pub mod agent_services;
 mod runtime;
 pub use runtime::{
-    AgentServiceAcceptance, AgentServiceDriver, AgentServiceObservation, AgentServiceParent,
-    AgentServiceRequest, ExecutionAuthorityRuntime, ExecutionRuntimeDependencies, ManagementError,
-    TrustedReconciliationInstallation,
+    AgentServiceAcceptance, AgentServiceDriver, AgentServiceError, AgentServiceObservation,
+    AgentServiceParent, AgentServiceRequest, ExecutionAuthorityRuntime,
+    ExecutionRuntimeDependencies, ManagementError, TrustedReconciliationInstallation,
 };
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -493,6 +493,20 @@ impl PreparedExecutionScope {
             return Err("authenticated scope differs from prepared execution policy".into());
         }
         binding.verify_execution_scope(coordinator, now_ms).await
+    }
+
+    pub(crate) async fn verify_authenticated_scope_typed(
+        &self,
+        binding: &ScopedCredentialBinding,
+        coordinator: &AuthorityCoordinator,
+        now_ms: i64,
+    ) -> Result<acteon_governance::AuthorityStamp, acteon_governance::CoordinationError> {
+        if !binding.matches_deployment_policy(&self.policy_fingerprint) {
+            return Err(acteon_governance::CoordinationError::Restricted);
+        }
+        binding
+            .verify_execution_scope_typed(coordinator, now_ms)
+            .await
     }
 
     /// Admit actual selected work with original authentication and explicit

@@ -1,5 +1,7 @@
 //! Shared server installation against the configured backend, without wire proof.
 mod agent_driver;
+mod agent_service_error;
+pub use agent_service_error::AgentServiceError;
 mod agent_services;
 pub use agent_driver::AgentServiceDriver;
 pub use agent_services::{

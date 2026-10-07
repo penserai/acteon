@@ -258,22 +258,20 @@ fn message(id: &str) -> Value {
 #[tokio::test]
 async fn missing_wrong_or_unqualified_recipient_prevents_listener_startup() {
     let (url, calls, webhook_task) = webhook().await;
-    for (secret, grant, expected) in [
-        (None, "incident", "recipient authentication unavailable"),
-        (
-            Some("alice-secret"),
-            "incident",
-            "recipient authentication differs from configured agent",
-        ),
-        (
-            Some("notifier-secret"),
-            "unrelated",
-            "original scope credential binding is no longer eligible",
-        ),
+    for (secret, grant) in [
+        (None, "incident"),
+        (Some("alice-secret"), "incident"),
+        (Some("notifier-secret"), "unrelated"),
     ] {
         let mut server = Server::start(&url, secret, grant);
         server.rejected_startup().await;
-        assert!(server.log().contains(expected), "{}", server.log());
+        assert!(
+            server
+                .log()
+                .contains("agent service state or runtime unavailable"),
+            "{}",
+            server.log()
+        );
         assert!(!server.log().contains("alice-secret"));
         assert!(!server.log().contains("notifier-secret"));
     }
@@ -599,5 +597,213 @@ async fn redis_restart_recovers_queued_work_without_requester_resubmission_and_k
         .unwrap();
     assert_eq!(response.status(), 403);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
+    webhook_task.abort();
+}
+
+#[tokio::test]
+async fn invalid_messages_are_bad_requests_and_missing_work_is_not_found() {
+    let (url, calls, webhook_task) = webhook().await;
+    let mut server = Server::start(&url, Some("notifier-secret"), "incident");
+    let client = reqwest::Client::new();
+    server.ready(&client).await;
+    for request in [
+        json!({"message":{"role":"user","messageId":"empty","parts":[]}}),
+        json!({"message":{"role":"user","messageId":"continuation","taskId":"unaccepted","parts":[{"kind":"text","text":"Continue"}]}}),
+    ] {
+        let response = client
+            .post(server.endpoint())
+            .bearer_auth("alice-secret")
+            .json(&request)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 400);
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        assert_eq!(
+            response.json::<Value>().await.unwrap()["error"],
+            "invalid_agent_service_request"
+        );
+    }
+    let response = client
+        .get(server.task_url(&uuid::Uuid::new_v4().to_string()))
+        .bearer_auth("alice-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 404);
+    assert_eq!(
+        response.json::<Value>().await.unwrap()["error"],
+        "service_task_unavailable"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    webhook_task.abort();
+}
+
+#[cfg(feature = "redis")]
+async fn response_lost_webhook() -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
+    use tokio::io::AsyncReadExt;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = calls.clone();
+    let task = tokio::spawn(async move {
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut headers = Vec::new();
+            while !headers.ends_with(b"\r\n\r\n") {
+                headers.push(socket.read_u8().await.unwrap());
+                assert!(headers.len() <= 16_384);
+            }
+            let headers = String::from_utf8(headers).unwrap();
+            let length: usize = headers
+                .lines()
+                .find_map(|line| {
+                    let (key, value) = line.split_once(':')?;
+                    key.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse().unwrap())
+                })
+                .unwrap();
+            assert!(length <= 2 * 1024 * 1024);
+            let mut body = vec![0; length];
+            socket.read_exact(&mut body).await.unwrap();
+            assert!(
+                serde_json::from_slice::<Value>(&body)
+                    .unwrap()
+                    .pointer("/payload/a2a_message")
+                    .is_some()
+            );
+            counter.fetch_add(1, Ordering::SeqCst);
+            // The operation was received, but the caller never gets an ACK.
+            drop(socket);
+        }
+    });
+    (format!("http://{address}/incident"), calls, task)
+}
+
+#[tokio::test]
+#[cfg(feature = "redis")]
+#[ignore = "requires ACTEON_GOVERNANCE_REDIS_URL; isolated prefix and actual lost HTTP response"]
+async fn redis_restart_preserves_uncertain_delivery_without_resend_or_released_capacity() {
+    use acteon_governance::{AttemptStatus, AuthorityCoordinator};
+    let (url, calls, webhook_task) = response_lost_webhook().await;
+    let (backend, settings) = redis_state();
+    let store: Arc<dyn acteon_state::StateStore> =
+        Arc::new(acteon_state_redis::RedisStateStore::new(&settings).unwrap());
+    let mut server = Server::configured(
+        &url,
+        Some("notifier-secret"),
+        "incident",
+        true,
+        "human",
+        backend,
+    );
+    let client = reqwest::Client::new();
+    server.ready(&client).await;
+    let (accepted, _) = send_task(&server, &client, "response-lost").await;
+    let coordinator = AuthorityCoordinator::connect(store, "prod", "acme")
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let state = coordinator.snapshot().await.unwrap();
+            if state
+                .starts
+                .values()
+                .any(|start| start.status == AttemptStatus::Uncertain)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    server.restart(true);
+    server.ready(&client).await;
+    // Observe multiple driver ticks after restart; neither reads nor replay resend.
+    for _ in 0..12 {
+        let response = client
+            .get(server.task_url(accepted["id"].as_str().unwrap()))
+            .bearer_auth("alice-secret")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let task = response.json::<Value>().await.unwrap();
+        assert_eq!(task["status"]["state"], "working");
+        assert_eq!(task["artifacts"].as_array().map_or(0, Vec::len), 0);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let (replayed, _) = send_task(&server, &client, "response-lost").await;
+    assert_eq!(replayed["id"], accepted["id"]);
+    let retained = coordinator.snapshot().await.unwrap();
+    assert_eq!(retained.starts.len(), 1);
+    assert_eq!(
+        retained.starts.values().next().unwrap().status,
+        AttemptStatus::Uncertain
+    );
+    assert_eq!(retained.roots.len(), 2);
+    assert!(
+        retained
+            .roots
+            .values()
+            .all(|root| root.active_attempts == 1)
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    webhook_task.abort();
+}
+
+#[tokio::test]
+#[cfg(feature = "redis")]
+#[ignore = "requires ACTEON_GOVERNANCE_REDIS_URL; isolated corrupt projection contract"]
+async fn redis_corrupt_projection_reports_unavailable_without_hiding_or_starting_work() {
+    let (url, calls, webhook_task) = webhook().await;
+    let (backend, settings) = redis_state();
+    let store: Arc<dyn acteon_state::StateStore> =
+        Arc::new(acteon_state_redis::RedisStateStore::new(&settings).unwrap());
+    let mut server = Server::configured(
+        &url,
+        Some("notifier-secret"),
+        "incident",
+        false,
+        "human",
+        backend,
+    );
+    let client = reqwest::Client::new();
+    server.ready(&client).await;
+    let (accepted, _) = send_task(&server, &client, "corrupt-projection").await;
+    let id = accepted["id"].as_str().unwrap();
+    let key = acteon_state::StateKey::new("prod", "acme", acteon_state::KeyKind::A2aTask, id);
+    let original = store.get(&key).await.unwrap().unwrap();
+    store
+        .set(&key, "private backend corruption", None)
+        .await
+        .unwrap();
+    let response = client
+        .get(server.task_url(id))
+        .bearer_auth("alice-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 503);
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    assert_eq!(
+        response.json::<Value>().await.unwrap(),
+        json!({"error":"agent_services_unavailable"})
+    );
+    store.set(&key, &original, None).await.unwrap();
+    let response = client
+        .get(server.task_url(id))
+        .bearer_auth("alice-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        response.json::<Value>().await.unwrap()["status"]["state"],
+        "submitted"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
     webhook_task.abort();
 }

@@ -144,6 +144,17 @@ impl ScopedCredentialBinding {
         self.verify_scope(coordinator, now_ms, true, false).await
     }
 
+    /// Preserve backend failures separately from denied scope authority.
+    pub(crate) async fn verify_execution_scope_typed(
+        &self,
+        coordinator: &AuthorityCoordinator,
+        now_ms: i64,
+    ) -> Result<AuthorityStamp, acteon_governance::CoordinationError> {
+        let state = coordinator.snapshot().await?;
+        self.verify_scope_snapshot(&state, now_ms, true, false)
+            .map_err(|_| acteon_governance::CoordinationError::Restricted)
+    }
+
     pub(crate) fn verify_management_snapshot(
         &self,
         state: &acteon_governance::CoordinatorSnapshot,

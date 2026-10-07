@@ -1477,3 +1477,23 @@ API still collects whole scopes, so this does not claim bounded storage scanning
 or production scale qualification. Cancellation, typed wire errors, native SDK
 header retention, UI, registry revision fencing, and the qualified outbound peer
 lifecycle remain before release. PR #433 remains a draft.
+
+
+### Typed service failures and actual response-loss recovery
+
+The PR #433 branch now preserves typed failure categories from authentication,
+scope evaluation, context admission, and the durable runtime through the HTTP
+boundary. Storage failure no longer claims missing work, and invalid messages no
+longer look like accepted-input conflicts. Requester ownership failures still
+conceal foreign work. Error bodies contain stable public codes, and service task
+responses prohibit caching.
+
+Three independently connected Redis contracts passed locally: queued work and
+known artifacts survive server restart; a fully received HTTP operation whose
+response is lost remains uncertain across restart without resend or capacity
+release; and an unreadable task projection returns 503 and recovers after repair
+without a provider start. These contracts are now included in CI. This proves
+these inbound adapter behaviors on Redis, rather than outbound A2A lifecycle or
+all-backend qualification. The full city/workforce objective remains active;
+requester cancellation, native SDK/header integration, UI, registry revision
+fencing, and qualified outbound peer lifecycle remain required.
