@@ -1751,3 +1751,30 @@ helpers backed by one cross-language fixture. Context stays in host state and is
 never inferred from model messages or task metadata. This closes the public
 authority-handoff contract needed by outbound peer invocation. Qualified durable
 transport, delivery recovery, and remote finality remain the next platform gap.
+
+### Durable qualified peer-transport foundation
+
+The Rust host now has a backend-neutral durable peer-send journal over the
+configured `StateStore`. It rechecks the approved live registry binding and
+current source delegation authority, persists the complete send intent before
+network delivery, uses a CAS claim for one sender, and retains the exact remote
+task/source mapping only after validating it. Repeated or concurrent submission
+observes the same stable record; the same message ID with different content
+conflicts.
+
+Timeouts, adapter errors, malformed successes, crash-visible registered or
+delivering records, and settlement loss remain uncertain. They are never
+reported as rejection and are not resent by a normal retry. Explicit redelivery
+is available only for an exact host adapter that declares a reviewed idempotent
+submission contract, and it rechecks registry and authority before its CAS claim.
+At-most-once peers cannot use that path.
+
+Focused contracts cover concurrency, changed input, corrupt retained mappings,
+grant retirement, registry suspension, malformed acceptance, ambiguity, and
+qualified idempotent recovery. See
+[Durable qualified peer transport](durable-peer-transport.md).
+
+This closes the generic outbound intent, claim, ambiguity, and remote-acceptance
+mapping foundation. A guarded Acteon HTTP adapter, host tool/API, remote lifecycle
+bridge, real two-server restart scenario, and durable-backend qualification are
+still required before the autonomous mesh is complete.

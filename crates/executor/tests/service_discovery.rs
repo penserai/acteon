@@ -1,11 +1,13 @@
 //! Service discovery composes real signed source grants with independent recipient authority.
 use acteon_core::{
-    Agent, AgentCard, PrincipalIdentity, PrincipalKind, ResourceKind, ResourceRef, Skill,
-    bus_agent_card::Interface,
+    Agent, AgentCard, PrincipalIdentity, PrincipalKind, ResourceKind, ResourceRef, Skill, Task,
+    TaskMessage, TaskRole, bus_agent_card::Interface,
 };
 use acteon_executor::delegation::{
-    ApprovedPeerBinding, ApprovedPeerRegistry, ApprovedServicePlan, PeerCandidateQuery,
-    PeerDiscoveryError, PeerRecipientResolver, RecipientDiscoveryContext,
+    ApprovedPeerBinding, ApprovedPeerRegistry, ApprovedServicePlan, DurablePeerTransport,
+    PeerCandidateQuery, PeerDiscoveryError, PeerRecipientResolver, PeerSendDisposition,
+    PeerSendRequest, PeerSendStatus, PeerSubmissionCapability, PeerTransportAdapter,
+    PeerTransportDependencies, PeerTransportError, RecipientDiscoveryContext,
 };
 use acteon_governance::{
     AuthorityChange, AuthorityCoordinator, CoordinatorLimits, RootBudgetLimits,
@@ -26,7 +28,7 @@ use acteon_state_memory::MemoryStateStore;
 use acteon_time::{Clock, ManualClock};
 use std::sync::{
     Arc,
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicU8, AtomicUsize, Ordering},
 };
 fn actor(id: &str) -> PrincipalIdentity {
     PrincipalIdentity::new(
@@ -192,6 +194,27 @@ fn card() -> AgentCard {
     });
     card
 }
+fn live_agent(clock: &ManualClock) -> Agent {
+    let mut agent = Agent::new("responder", "city", "tenant");
+    agent.has_agent_card = true;
+    agent.last_heartbeat_at = Some(clock.now());
+    agent
+}
+async fn publish_registry(store: &dyn StateStore, agent: &Agent, card: &AgentCard) {
+    for (kind, value) in [
+        (KeyKind::BusAgent, serde_json::to_string(agent).unwrap()),
+        (KeyKind::BusAgentCard, serde_json::to_string(card).unwrap()),
+    ] {
+        store
+            .set(
+                &StateKey::new("city", "tenant", kind, "responder"),
+                &value,
+                None,
+            )
+            .await
+            .unwrap();
+    }
+}
 fn binding(card: &AgentCard, direct: Vec<AcceptedEffect>) -> ApprovedPeerBinding {
     ApprovedPeerBinding::new_service_trusted(
         card,
@@ -204,6 +227,9 @@ fn binding(card: &AgentCard, direct: Vec<AcceptedEffect>) -> ApprovedPeerBinding
     )
     .unwrap()
 }
+fn registry(store: Arc<dyn StateStore>, binding: ApprovedPeerBinding) -> ApprovedPeerRegistry {
+    ApprovedPeerRegistry::new_trusted(store, "city", "tenant", vec![binding]).unwrap()
+}
 struct Fixture {
     store: Arc<dyn StateStore>,
     coordinator: AuthorityCoordinator,
@@ -212,6 +238,7 @@ struct Fixture {
     parent: VerifiedExecutionContext,
     recipient: VerifiedExecutionContext,
     grant: DelegationGrant,
+    binding: ApprovedPeerBinding,
     registry: ApprovedPeerRegistry,
 }
 impl Fixture {
@@ -280,28 +307,8 @@ impl Fixture {
             )
             .await
             .unwrap();
-        let mut agent = Agent::new("responder", "city", "tenant");
-        agent.has_agent_card = true;
-        agent.last_heartbeat_at = Some(clock.now());
-        store
-            .set(
-                &StateKey::new("city", "tenant", KeyKind::BusAgent, "responder"),
-                &serde_json::to_string(&agent).unwrap(),
-                None,
-            )
-            .await
-            .unwrap();
-        store
-            .set(
-                &StateKey::new("city", "tenant", KeyKind::BusAgentCard, "responder"),
-                &serde_json::to_string(&approved_card).unwrap(),
-                None,
-            )
-            .await
-            .unwrap();
-        let registry =
-            ApprovedPeerRegistry::new_trusted(store.clone(), "city", "tenant", vec![binding])
-                .unwrap();
+        publish_registry(store.as_ref(), &live_agent(&clock), &approved_card).await;
+        let registry = registry(store.clone(), binding.clone());
         Self {
             store,
             coordinator,
@@ -310,6 +317,7 @@ impl Fixture {
             parent,
             recipient,
             grant,
+            binding,
             registry,
         }
     }
@@ -486,6 +494,360 @@ async fn service_discovery_checks_ingress_and_private_effects_without_borrowing_
         state.roots[&f.recipient.execution_id().to_string()].spent_units,
         0
     );
+}
+
+struct TransportAdapter {
+    digest: String,
+    capability: PeerSubmissionCapability,
+    outcome: AtomicU8,
+    calls: AtomicUsize,
+}
+impl TransportAdapter {
+    fn new(
+        binding: &ApprovedPeerBinding,
+        capability: PeerSubmissionCapability,
+        outcome: u8,
+    ) -> Self {
+        Self {
+            digest: binding.digest().into(),
+            capability,
+            outcome: AtomicU8::new(outcome),
+            calls: AtomicUsize::new(0),
+        }
+    }
+}
+#[async_trait::async_trait]
+impl PeerTransportAdapter for TransportAdapter {
+    fn revision(&self) -> &'static str {
+        "test-a2a-v1"
+    }
+    fn binding_digest(&self) -> &str {
+        &self.digest
+    }
+    fn submission_capability(&self) -> PeerSubmissionCapability {
+        self.capability
+    }
+    async fn send(
+        &self,
+        request: PeerSendRequest<'_>,
+    ) -> Result<PeerSendDisposition, PeerTransportError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(request.endpoint, "https://peer.example/a2a");
+        assert_eq!(request.transport, "rest");
+        assert_eq!(request.message.message_id, "peer-message");
+        if self.outcome.load(Ordering::SeqCst) == 4 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            return Ok(PeerSendDisposition::Uncertain);
+        }
+        match self.outcome.load(Ordering::SeqCst) {
+            0 => Ok(PeerSendDisposition::Accepted {
+                task: Box::new(Task::new(
+                    "remote-task",
+                    request.parent.namespace(),
+                    request.parent.tenant(),
+                )),
+                source_context: request.parent.clone(),
+            }),
+            1 => Ok(PeerSendDisposition::Uncertain),
+            2 => Ok(PeerSendDisposition::Rejected {
+                code: "peer_denied".into(),
+            }),
+            _ => Ok(PeerSendDisposition::Accepted {
+                task: Box::new(Task::new(
+                    "remote-task",
+                    request.parent.namespace(),
+                    "wrong-tenant",
+                )),
+                source_context: request.parent.clone(),
+            }),
+        }
+    }
+}
+
+fn peer_message(text: &str) -> TaskMessage {
+    TaskMessage::text("peer-message", TaskRole::User, text)
+}
+
+fn peer_transport(f: &Fixture, adapter: Arc<dyn PeerTransportAdapter>) -> DurablePeerTransport {
+    DurablePeerTransport::new_trusted(
+        PeerTransportDependencies {
+            state: f.store.clone(),
+            coordinator: f.coordinator.clone(),
+            clock: Arc::new(f.clock.clone()),
+            encryptor: None,
+        },
+        adapter,
+        std::time::Duration::from_secs(1),
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn durable_peer_submission_sends_once_and_conflicts_on_changed_input() {
+    let f = Fixture::new().await;
+    let adapter = Arc::new(TransportAdapter::new(
+        &f.binding,
+        PeerSubmissionCapability::AtMostOnce,
+        0,
+    ));
+    let transport = peer_transport(&f, adapter.clone());
+    let receipt = transport
+        .submit(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            &peer_message("diagnose"),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(receipt.status, PeerSendStatus::Accepted { .. }));
+    let replay = transport
+        .submit(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            &peer_message("diagnose"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(replay.submission_id, receipt.submission_id);
+    assert_eq!(adapter.calls.load(Ordering::SeqCst), 1);
+    let observed = transport
+        .observe(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            &peer_message("diagnose"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(observed.submission_id, receipt.submission_id);
+    assert_eq!(adapter.calls.load(Ordering::SeqCst), 1);
+    assert!(matches!(
+        transport
+            .submit(
+                &f.registry,
+                "responder",
+                "notify",
+                &f.parent,
+                &permits("caller"),
+                &peer_message("changed")
+            )
+            .await,
+        Err(PeerTransportError::Conflict)
+    ));
+    let key = StateKey::new(
+        "city",
+        "tenant",
+        KeyKind::Custom(acteon_executor::delegation::transport::PEER_SEND_KIND.into()),
+        receipt.submission_id.to_string(),
+    );
+    let mut corrupted: serde_json::Value =
+        serde_json::from_str(&f.store.get(&key).await.unwrap().unwrap()).unwrap();
+    corrupted["state"]["task"]["tenant"] = "other".into();
+    f.store
+        .set(&key, &corrupted.to_string(), None)
+        .await
+        .unwrap();
+    assert!(matches!(
+        transport
+            .submit(
+                &f.registry,
+                "responder",
+                "notify",
+                &f.parent,
+                &permits("caller"),
+                &peer_message("diagnose")
+            )
+            .await,
+        Err(PeerTransportError::Conflict)
+    ));
+}
+
+#[tokio::test]
+async fn ambiguous_peer_submission_requires_explicit_qualified_replay() {
+    let f = Fixture::new().await;
+    let adapter = Arc::new(TransportAdapter::new(
+        &f.binding,
+        PeerSubmissionCapability::VerifiedIdempotent,
+        1,
+    ));
+    let transport = peer_transport(&f, adapter.clone());
+    let message = peer_message("diagnose");
+    let uncertain = transport
+        .submit(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            &message,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(uncertain.status, PeerSendStatus::Uncertain));
+    assert_eq!(adapter.calls.load(Ordering::SeqCst), 1);
+    adapter.outcome.store(0, Ordering::SeqCst);
+    let accepted = transport
+        .replay_idempotent(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            &message,
+        )
+        .await
+        .unwrap();
+    assert_eq!(accepted.submission_id, uncertain.submission_id);
+    assert!(matches!(accepted.status, PeerSendStatus::Accepted { .. }));
+    assert_eq!(adapter.calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn send_time_authority_and_at_most_once_ambiguity_fail_closed() {
+    let f = Fixture::new().await;
+    let adapter = Arc::new(TransportAdapter::new(
+        &f.binding,
+        PeerSubmissionCapability::AtMostOnce,
+        1,
+    ));
+    let transport = peer_transport(&f, adapter.clone());
+    let message = peer_message("diagnose");
+    assert!(matches!(
+        transport
+            .replay_idempotent(
+                &f.registry,
+                "responder",
+                "notify",
+                &f.parent,
+                &permits("caller"),
+                &message
+            )
+            .await,
+        Err(PeerTransportError::Refused)
+    ));
+    let mut suspended = live_agent(&f.clock);
+    suspended.admin_state = acteon_core::AgentAdminState::Suspended;
+    publish_registry(f.store.as_ref(), &suspended, &card()).await;
+    assert!(matches!(
+        transport
+            .submit(
+                &f.registry,
+                "responder",
+                "notify",
+                &f.parent,
+                &permits("caller"),
+                &message
+            )
+            .await,
+        Err(PeerTransportError::Refused)
+    ));
+    publish_registry(f.store.as_ref(), &live_agent(&f.clock), &card()).await;
+    f.retire().await;
+    assert!(matches!(
+        transport
+            .submit(
+                &f.registry,
+                "responder",
+                "notify",
+                &f.parent,
+                &permits("caller"),
+                &message
+            )
+            .await,
+        Err(PeerTransportError::Refused)
+    ));
+    assert_eq!(adapter.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn concurrent_submission_has_one_sender_and_malformed_acceptance_is_uncertain() {
+    let f = Fixture::new().await;
+    let adapter = Arc::new(TransportAdapter::new(
+        &f.binding,
+        PeerSubmissionCapability::AtMostOnce,
+        0,
+    ));
+    let transport = peer_transport(&f, adapter.clone());
+    let message = peer_message("diagnose");
+    let parent_permits = permits("caller");
+    let (left, right) = tokio::join!(
+        transport.submit(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &parent_permits,
+            &message
+        ),
+        transport.submit(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &parent_permits,
+            &message
+        ),
+    );
+    assert!(left.is_ok() && right.is_ok());
+    assert_eq!(adapter.calls.load(Ordering::SeqCst), 1);
+
+    let other = Fixture::new().await;
+    let malformed = Arc::new(TransportAdapter::new(
+        &other.binding,
+        PeerSubmissionCapability::AtMostOnce,
+        3,
+    ));
+    let receipt = peer_transport(&other, malformed)
+        .submit(
+            &other.registry,
+            "responder",
+            "notify",
+            &other.parent,
+            &permits("caller"),
+            &message,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(receipt.status, PeerSendStatus::Uncertain));
+
+    let timeout_fixture = Fixture::new().await;
+    let slow = Arc::new(TransportAdapter::new(
+        &timeout_fixture.binding,
+        PeerSubmissionCapability::AtMostOnce,
+        4,
+    ));
+    let timeout_transport = DurablePeerTransport::new_trusted(
+        PeerTransportDependencies {
+            state: timeout_fixture.store.clone(),
+            coordinator: timeout_fixture.coordinator.clone(),
+            clock: Arc::new(timeout_fixture.clock.clone()),
+            encryptor: None,
+        },
+        slow.clone(),
+        std::time::Duration::from_millis(1),
+    )
+    .unwrap();
+    let timed_out = timeout_transport
+        .submit(
+            &timeout_fixture.registry,
+            "responder",
+            "notify",
+            &timeout_fixture.parent,
+            &permits("caller"),
+            &message,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(timed_out.status, PeerSendStatus::Uncertain));
+    assert_eq!(slow.calls.load(Ordering::SeqCst), 1);
 }
 #[tokio::test]
 async fn unaccepted_or_retired_service_grants_do_not_resolve_private_recipient() {

@@ -21,6 +21,12 @@ use acteon_state::{KeyKind, StateKey, StateStore};
 use acteon_time::Clock;
 use sha2::{Digest, Sha256};
 
+pub mod transport;
+pub use transport::{
+    DurablePeerTransport, PeerSendDisposition, PeerSendReceipt, PeerSendRequest, PeerSendStatus,
+    PeerSubmissionCapability, PeerTransportAdapter, PeerTransportDependencies, PeerTransportError,
+};
+
 const MAX_BINDINGS: usize = 128;
 /// Maximum serialized UTF-8 bytes in an approved agent/card registry record.
 /// Hosts publishing discoverable metadata must enforce this bound before writes.

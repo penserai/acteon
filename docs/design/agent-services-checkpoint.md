@@ -28,6 +28,11 @@ Implemented so far:
   reference with explicit permit revisions. Admission recovers sealed authority
   and revalidates the caller, current permits, registry, grant, and budgets. All
   five SDKs implement the same paired-header contract.
+- The Rust host includes a backend-neutral durable peer-send journal. It pins
+  the approved binding and adapter revision, persists intent before delivery,
+  claims one sender with CAS, records validated remote mapping or uncertainty,
+  and permits explicit replay only for a qualified idempotent adapter. The
+  guarded HTTP adapter and lifecycle bridge remain follow-ups.
 - A configurable server driver discovers durable acceptances from the configured
   state backend and resumes them through governed execution. It retains in-flight
   and uncertain receipts rather than resending them. Scheduling uses fair cursors
