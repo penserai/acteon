@@ -1,10 +1,25 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { ActeonClient } from "./client.js";
-import { AGENT_SOURCE_CONTEXT_HEADER, agentProviderAbort } from "./agent_services.js";
+import { AGENT_EXECUTION_CONTEXT_HEADER, AGENT_SOURCE_CONTEXT_HEADER, agentProviderAbort } from "./agent_services.js";
 import { HttpError } from "./errors.js";
 const fixture = JSON.parse(readFileSync(new URL("../../contract-fixtures/agent-services.json", import.meta.url), "utf8"));
 afterEach(() => vi.unstubAllGlobals());
+it("carries an opaque governed parent with explicit permits", async () => {
+  const fetch = vi.fn(async (_input: string, init: RequestInit) => {
+    const headers = init.headers as Record<string, string>;
+    expect(headers[AGENT_EXECUTION_CONTEXT_HEADER]).toBe(fixture.parent.execution_context);
+    expect(JSON.parse(headers["x-acteon-execution-permits"])).toEqual(fixture.parent.permits);
+    expect(headers[AGENT_SOURCE_CONTEXT_HEADER]).toBeUndefined();
+    return new Response(JSON.stringify(fixture.jobs[0].task), {headers:{"a2a-version":"1.0", [AGENT_SOURCE_CONTEXT_HEADER]:fixture.jobs[0].source_context}});
+  });
+  vi.stubGlobal("fetch", fetch);
+  await new ActeonClient("http://acteon").agentServiceSendMessage("prod", "acme", "notifier", {}, {
+    executionContext: fixture.parent.execution_context,
+    permits: fixture.parent.permits.map((p: {id: string; accepted_revision: number}) => ({id:p.id, acceptedRevision:p.accepted_revision})),
+  });
+  expect(fetch).toHaveBeenCalledTimes(1);
+});
 it("keeps concurrent job headers separate and ignores mutable task metadata", async () => {
   vi.stubGlobal("fetch", async (input: string, init: RequestInit) => {
     const headers = init.headers as Record<string, string>;

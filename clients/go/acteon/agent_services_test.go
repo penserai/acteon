@@ -110,6 +110,46 @@ func TestAgentServiceReceiptsPreserveHeadersAndIdentity(t *testing.T) {
 		t.Fatalf("unexpected request count: %d", calls.Load())
 	}
 }
+
+func TestAgentServiceParentCarriesContextAndPermits(t *testing.T) {
+	var fixture struct {
+		Parent struct {
+			ExecutionContext string            `json:"execution_context"`
+			Permits          []PermitReference `json:"permits"`
+		} `json:"parent"`
+		Jobs []struct {
+			Source string         `json:"source_context"`
+			Task   map[string]any `json:"task"`
+		} `json:"jobs"`
+	}
+	data, _ := os.ReadFile("../../contract-fixtures/agent-services.json")
+	if err := json.Unmarshal(data, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(AgentExecutionContextHeader) != fixture.Parent.ExecutionContext {
+			t.Error("parent context missing")
+		}
+		var permits []PermitReference
+		if err := json.Unmarshal([]byte(r.Header.Get("x-acteon-execution-permits")), &permits); err != nil {
+			t.Error(err)
+		}
+		if len(permits) != 1 || permits[0] != fixture.Parent.Permits[0] {
+			t.Error("parent permits changed")
+		}
+		if r.Header.Get(AgentSourceContextHeader) != "" {
+			t.Error("source context leaked into admission")
+		}
+		w.Header().Set(A2AVersionHeader, "1.0")
+		w.Header().Set(AgentSourceContextHeader, fixture.Jobs[0].Source)
+		json.NewEncoder(w).Encode(fixture.Jobs[0].Task)
+	}))
+	defer server.Close()
+	parent := &AgentServiceParent{ExecutionContext: fixture.Parent.ExecutionContext, Permits: fixture.Parent.Permits}
+	if _, err := NewClient(server.URL).AgentServiceSendMessageWithParent(context.Background(), "prod", "acme", "notifier", map[string]any{}, parent); err != nil {
+		t.Fatal(err)
+	}
+}
 func TestAgentServiceErrorsMissingHeaderAndRedirectsDoNotRetry(t *testing.T) {
 	for _, status := range []int{200, 403, 404, 409, 429, 503, 307} {
 		t.Run(http.StatusText(status), func(t *testing.T) {

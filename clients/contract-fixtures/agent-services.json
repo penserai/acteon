@@ -2,6 +2,15 @@
   "namespace": "prod",
   "tenant": "acme",
   "agent": "notifier",
+  "parent": {
+    "execution_context": "eyJjb250ZXh0X2lkIjoiMTExMTExMTEtMTExMS00MTExLTgxMTEtMTExMTExMTExMTExIiwiZXhlY3V0aW9uX2lkIjoiMjIyMjIyMjItMjIyMi00MjIyLTgyMjItMjIyMjIyMjIyMjIyIiwibmFtZXNwYWNlIjoicHJvZCIsInRlbmFudCI6ImFjbWUiLCJwcmluY2lwYWwiOnsiaWQiOiJjYWxsZXItYWdlbnQiLCJraW5kIjoiYWdlbnQifSwicmVxdWVzdF9kaWdlc3QiOiJhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhIn0",
+    "permits": [
+      {
+        "id": "caller-agent-service",
+        "accepted_revision": 3
+      }
+    ]
+  },
   "jobs": [
     {
       "source_context": "eyJqb2IiOiIxIn0",

@@ -7,12 +7,38 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.List;
+import com.acteon.client.models.PermitReference;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 class AgentServiceTest {
+    @Test void parentContextAndPermitsAreRequestLocal() throws Exception {
+        var mapper = JsonMapper.build();
+        var fixture = mapper.readTree(Files.readString(Path.of("../contract-fixtures/agent-services.json")));
+        var failure = new AtomicReference<Throwable>();
+        var server = HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
+        server.createContext("/",exchange -> {
+            try {
+                assertEquals(fixture.path("parent").path("execution_context").asText(), exchange.getRequestHeaders().getFirst("x-acteon-execution-context"));
+                assertEquals(fixture.path("parent").path("permits"), mapper.readTree(exchange.getRequestHeaders().getFirst("x-acteon-execution-permits")));
+                assertNull(exchange.getRequestHeaders().getFirst(AgentServiceReceipt.SOURCE_CONTEXT_HEADER));
+            } catch(Throwable error) { failure.set(error); }
+            var job = fixture.path("jobs").get(0);
+            exchange.getResponseHeaders().set(A2A.VERSION_HEADER,"1.0");
+            exchange.getResponseHeaders().set(AgentServiceReceipt.SOURCE_CONTEXT_HEADER,job.path("source_context").asText());
+            var body = mapper.writeValueAsBytes(job.path("task"));
+            exchange.sendResponseHeaders(200,body.length); exchange.getResponseBody().write(body); exchange.close();
+        }); server.start();
+        try(var client = new ActeonClient("http://127.0.0.1:"+server.getAddress().getPort())) {
+            var p = fixture.path("parent").path("permits").get(0);
+            client.agentServiceSendMessage("prod","acme","notifier",Map.of(),new AgentServiceParent(
+                fixture.path("parent").path("execution_context").asText(), List.of(new PermitReference(p.path("id").asText(),p.path("accepted_revision").asLong()))));
+            if(failure.get()!=null) throw new AssertionError(failure.get());
+        } finally { server.stop(0); }
+    }
     @Test void providerAbortRequiresCanonicalUuidV5() throws Exception {
         var mapper = JsonMapper.build();
         for (var id : new String[]{"F47AC10B-58CC-5372-A567-0E02B2C3D479","f47ac10b-58cc-4372-a567-0e02b2c3d479"}) {

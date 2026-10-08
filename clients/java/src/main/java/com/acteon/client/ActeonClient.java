@@ -81,7 +81,11 @@ public class ActeonClient implements AutoCloseable {
 
     /** Submit once and retain host provenance. Preserve message ID after response loss. */
     public AgentServiceReceipt agentServiceSendMessage(String namespace, String tenant, String agent, Map<String, Object> message) throws ActeonException {
-        var response = agentServiceRequest("POST", AgentServiceReceipt.base(namespace, tenant, agent)+"/message:send", Map.of("message", message), null);
+        return agentServiceSendMessage(namespace, tenant, agent, message, null);
+    }
+    /** Submit as a governed child of an existing execution context. */
+    public AgentServiceReceipt agentServiceSendMessage(String namespace, String tenant, String agent, Map<String, Object> message, AgentServiceParent parent) throws ActeonException {
+        var response = agentServiceRequest("POST", AgentServiceReceipt.base(namespace, tenant, agent)+"/message:send", Map.of("message", message), null, parent);
         try {
             var task = AgentServiceReceipt.verifyTask(objectMapper.readTree(response.body()), namespace, tenant, null);
             var source = AgentServiceReceipt.source(response.headers().firstValue(AgentServiceReceipt.SOURCE_CONTEXT_HEADER).orElse(null));
@@ -90,7 +94,7 @@ public class ActeonClient implements AutoCloseable {
     }
     /** Stop future starts; explicitly retry the original receipt after response loss. */
     public AgentServiceStopReceipt agentServiceStopTask(AgentServiceReceipt receipt) throws ActeonException {
-        var response = agentServiceRequest("POST", AgentServiceReceipt.base(receipt.namespace(), receipt.tenant(), receipt.agent())+"/tasks/"+AgentServiceReceipt.segment(receipt.taskId())+"/stop", null, AgentServiceReceipt.source(receipt.sourceContext()));
+        var response = agentServiceRequest("POST", AgentServiceReceipt.base(receipt.namespace(), receipt.tenant(), receipt.agent())+"/tasks/"+AgentServiceReceipt.segment(receipt.taskId())+"/stop", null, AgentServiceReceipt.source(receipt.sourceContext()), null);
         try {
             var value = objectMapper.readTree(response.body());
             if (value == null || !value.path("future_starts_blocked").isBoolean() || !value.path("future_starts_blocked").booleanValue())
@@ -102,15 +106,23 @@ public class ActeonClient implements AutoCloseable {
 
     /** Observe the retained job without provider execution or global header mutation. */
     public com.fasterxml.jackson.databind.JsonNode agentServiceGetTask(AgentServiceReceipt receipt) throws ActeonException {
-        var response = agentServiceRequest("GET", AgentServiceReceipt.base(receipt.namespace(), receipt.tenant(), receipt.agent())+"/tasks/"+AgentServiceReceipt.segment(receipt.taskId()), null, AgentServiceReceipt.source(receipt.sourceContext()));
+        var response = agentServiceRequest("GET", AgentServiceReceipt.base(receipt.namespace(), receipt.tenant(), receipt.agent())+"/tasks/"+AgentServiceReceipt.segment(receipt.taskId()), null, AgentServiceReceipt.source(receipt.sourceContext()), null);
         try { return AgentServiceReceipt.verifyTask(objectMapper.readTree(response.body()), receipt.namespace(), receipt.tenant(), receipt.taskId()); }
         catch (IOException e) { throw new ActeonException("invalid agent service response", e); }
     }
-    private HttpResponse<String> agentServiceRequest(String method, String path, Object body, String source) throws ActeonException {
+    private HttpResponse<String> agentServiceRequest(String method, String path, Object body, String source, AgentServiceParent parent) throws ActeonException {
         if (httpClient.followRedirects() != HttpClient.Redirect.NEVER) throw new ActeonException("agent services require redirects disabled");
         try {
             var builder = requestBuilder(path).header(A2A.VERSION_HEADER, A2A.PROTOCOL_VERSION);
             if (source != null) builder.header(AgentServiceReceipt.SOURCE_CONTEXT_HEADER, source);
+            if (parent != null) {
+                String context = parent.executionContext();
+                if (context == null || context.isEmpty() || context.length() > 8192 || !context.matches("[A-Za-z0-9_-]+"))
+                    throw new IllegalArgumentException("parent execution context is malformed");
+                if (parent.permits().isEmpty()) throw new IllegalArgumentException("parent permits are required");
+                builder.header("x-acteon-execution-context", context);
+                builder.header("x-acteon-execution-permits", objectMapper.writeValueAsString(parent.permits()));
+            }
             var response = httpClient.send(builder.method(method, body == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body))).build(), HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() < 200 || response.statusCode() >= 300) throw new HttpException(response.statusCode(), response.body());
             if (!response.headers().firstValue(A2A.VERSION_HEADER).orElse("").equals(A2A.PROTOCOL_VERSION)) throw new ActeonException("agent service response version missing or unsupported");

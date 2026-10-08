@@ -14,7 +14,7 @@ use super::AppState;
 use super::schemas::ErrorResponse;
 
 const EXECUTION_PERMITS_HEADER: &str = "x-acteon-execution-permits";
-fn execution_permits(
+pub(super) fn execution_permits(
     headers: &axum::http::HeaderMap,
     enabled: bool,
     required: bool,

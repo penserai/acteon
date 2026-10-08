@@ -10,6 +10,7 @@ import (
 )
 
 const AgentSourceContextHeader = "x-acteon-agent-source-context"
+const AgentExecutionContextHeader = "x-acteon-execution-context"
 
 var agentSourcePattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 var agentAttemptPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
@@ -53,10 +54,27 @@ func agentServiceBase(namespace, tenant, agent string) (string, error) {
 	}
 	return "/a2a/" + n + "/" + t + "/agents/" + a + "/v1", nil
 }
-func (c *Client) agentServiceRequest(ctx context.Context, method, path string, body any, source string) (map[string]any, string, error) {
+
+type AgentServiceParent struct {
+	ExecutionContext string
+	Permits          []PermitReference
+}
+
+func (c *Client) agentServiceRequest(ctx context.Context, method, path string, body any, source string, parent *AgentServiceParent) (map[string]any, string, error) {
 	headers := map[string]string{A2AVersionHeader: A2AProtocolVersion}
 	if source != "" {
 		headers[AgentSourceContextHeader] = source
+	}
+	if parent != nil {
+		if err := agentSource(parent.ExecutionContext); err != nil || len(parent.Permits) == 0 {
+			return nil, "", fmt.Errorf("delegated agent service parent is malformed")
+		}
+		permits, err := json.Marshal(parent.Permits)
+		if err != nil {
+			return nil, "", err
+		}
+		headers[AgentExecutionContextHeader] = parent.ExecutionContext
+		headers["x-acteon-execution-permits"] = string(permits)
 	}
 	resp, err := c.doRequestExt(ctx, method, path, body, requestOpts{extraHeaders: headers, noRedirect: true})
 	if err != nil {
@@ -89,11 +107,16 @@ func agentTask(task map[string]any, namespace, tenant, expected string) (string,
 
 // AgentServiceSendMessage submits once. Preserve message identity after response loss.
 func (c *Client) AgentServiceSendMessage(ctx context.Context, namespace, tenant, agent string, message map[string]any) (*AgentServiceReceipt, error) {
+	return c.AgentServiceSendMessageWithParent(ctx, namespace, tenant, agent, message, nil)
+}
+
+// AgentServiceSendMessageWithParent carries existing verified authority into one delegated invocation.
+func (c *Client) AgentServiceSendMessageWithParent(ctx context.Context, namespace, tenant, agent string, message map[string]any, parent *AgentServiceParent) (*AgentServiceReceipt, error) {
 	path, err := agentServiceBase(namespace, tenant, agent)
 	if err != nil {
 		return nil, err
 	}
-	task, source, err := c.agentServiceRequest(ctx, "POST", path+"/message:send", map[string]any{"message": message}, "")
+	task, source, err := c.agentServiceRequest(ctx, "POST", path+"/message:send", map[string]any{"message": message}, "", parent)
 	if err != nil {
 		return nil, err
 	}
@@ -123,7 +146,7 @@ func (c *Client) AgentServiceGetTask(ctx context.Context, receipt *AgentServiceR
 	if err != nil {
 		return nil, err
 	}
-	task, _, err := c.agentServiceRequest(ctx, "GET", path+"/tasks/"+id, nil, receipt.SourceContext)
+	task, _, err := c.agentServiceRequest(ctx, "GET", path+"/tasks/"+id, nil, receipt.SourceContext, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -189,7 +212,7 @@ func (c *Client) AgentServiceStopTask(ctx context.Context, receipt *AgentService
 	if err != nil {
 		return nil, err
 	}
-	value, _, err := c.agentServiceRequest(ctx, "POST", path+"/tasks/"+id+"/stop", nil, receipt.SourceContext)
+	value, _, err := c.agentServiceRequest(ctx, "POST", path+"/tasks/"+id+"/stop", nil, receipt.SourceContext, nil)
 	if err != nil {
 		return nil, err
 	}

@@ -24,6 +24,10 @@ Implemented so far:
 - Requester-isolated observation authenticates the original source credential.
   Agent callers must also present the exact source context returned by admission.
   Observation repairs known completion receipts without starting provider work.
+- Governed peer invocation can carry a host-owned parent execution-context
+  reference with explicit permit revisions. Admission recovers sealed authority
+  and revalidates the caller, current permits, registry, grant, and budgets. All
+  five SDKs implement the same paired-header contract.
 - A configurable server driver discovers durable acceptances from the configured
   state backend and resumes them through governed execution. It retains in-flight
   and uncertain receipts rather than resending them. Scheduling uses fair cursors

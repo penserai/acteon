@@ -438,6 +438,21 @@ if err != nil { return err }
 task, err := client.AgentServiceGetTask(ctx, receipt)
 ```
 
+An agent already running under Acteon can invoke a peer as a governed child:
+
+```go
+parent := &acteon.AgentServiceParent{
+    ExecutionContext: executionContext,
+    Permits: []acteon.PermitReference{{ID: "caller-agent-service", AcceptedRevision: 3}},
+}
+receipt, err := client.AgentServiceSendMessageWithParent(
+    ctx, "prod", "acme", "notifier", message, parent)
+```
+
+The server recovers the sealed parent, verifies the authenticated caller, and
+rechecks current permit, registry, grant, and budget state. Keep the context in
+host state and never source either header from model output.
+
 `AgentServiceReceipt` supports JSON persistence in host state. Observation uses
 its original `TaskID`, independently of mutable `Task` data.
 

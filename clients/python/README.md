@@ -507,6 +507,21 @@ receipt = client.agent_service_send_message(
 task = client.agent_service_get_task(receipt)
 ```
 
+An agent already running under Acteon can invoke a peer as a governed child:
+
+```python
+from acteon_client import AgentServiceParent, PermitReference
+
+parent = AgentServiceParent(execution_context, (PermitReference("caller-agent-service", 3),))
+receipt = client.agent_service_send_message(
+    "prod", "acme", "notifier", message, parent=parent
+)
+```
+
+The server recovers the sealed parent, verifies the authenticated caller, and
+rechecks current permit, registry, grant, and budget state. Keep the context in
+host state and never source either header from model output.
+
 The async client exposes the same methods with `await`. Persist the frozen
 `AgentServiceReceipt` in host state when work must survive a client restart.
 

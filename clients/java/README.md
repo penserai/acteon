@@ -439,6 +439,19 @@ var receipt = client.agentServiceSendMessage("prod", "acme", "notifier",
 var task = client.agentServiceGetTask(receipt);
 ```
 
+An agent already running under Acteon can invoke a peer as a governed child:
+
+```java
+var parent = new AgentServiceParent(executionContext,
+    java.util.List.of(new PermitReference("caller-agent-service", 3)));
+var receipt = client.agentServiceSendMessage(
+    "prod", "acme", "notifier", message, parent);
+```
+
+The server recovers the sealed parent, verifies the authenticated caller, and
+rechecks current permit, registry, grant, and budget state. Keep the context in
+host state and never source either header from model output.
+
 The `AgentServiceReceipt` record can be persisted as host-owned JSON. Observation
 uses the original `taskId`, separately from the mutable task JSON.
 

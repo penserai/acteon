@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID
 
@@ -10,8 +11,11 @@ import httpx
 
 from .a2a import _A2A_HEADERS, A2A_PROTOCOL_VERSION, _seg
 from .errors import ActeonError, HttpError
+from .models import PermitReference
 
 AGENT_SOURCE_CONTEXT_HEADER = "x-acteon-agent-source-context"
+AGENT_EXECUTION_CONTEXT_HEADER = "x-acteon-execution-context"
+EXECUTION_PERMITS_HEADER = "x-acteon-execution-permits"
 
 
 def _source(value: str | None) -> str:
@@ -40,6 +44,34 @@ class AgentServiceReceipt:
     task_id: str
     source_context: str = field(repr=False)
     task: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class AgentServiceParent:
+    """Opaque verified context plus explicit permit references for delegation."""
+
+    execution_context: str = field(repr=False)
+    permits: tuple[PermitReference, ...]
+
+
+def _parent_headers(parent: AgentServiceParent | None) -> dict[str, str]:
+    if parent is None:
+        return dict(_A2A_HEADERS)
+    context = parent.execution_context
+    if (
+        not context
+        or len(context) > 8192
+        or not all(c.isascii() and (c.isalnum() or c in "-_") for c in context)
+        or not parent.permits
+    ):
+        raise ActeonError("delegated agent service parent is malformed")
+    return {
+        **_A2A_HEADERS,
+        AGENT_EXECUTION_CONTEXT_HEADER: context,
+        EXECUTION_PERMITS_HEADER: json.dumps(
+            [permit.to_dict() for permit in parent.permits], separators=(",", ":")
+        ),
+    }
 
 
 @dataclass(frozen=True)
@@ -160,14 +192,20 @@ class _AgentServicesMixin:
         ) -> httpx.Response: ...
 
     def agent_service_send_message(
-        self, namespace: str, tenant: str, agent: str, message: dict[str, Any]
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        message: dict[str, Any],
+        *,
+        parent: AgentServiceParent | None = None,
     ) -> AgentServiceReceipt:
         """Submit once; reuse the same message ID after response loss. No automatic retry."""
         response = self._request(
             "POST",
             _base(namespace, tenant, agent) + "/message:send",
             json={"message": message},
-            extra_headers=_A2A_HEADERS,
+            extra_headers=_parent_headers(parent),
         )
         return _receipt(response, namespace, tenant, agent)
 
@@ -214,14 +252,20 @@ class _AsyncAgentServicesMixin:
         ) -> httpx.Response: ...
 
     async def agent_service_send_message(
-        self, namespace: str, tenant: str, agent: str, message: dict[str, Any]
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        message: dict[str, Any],
+        *,
+        parent: AgentServiceParent | None = None,
     ) -> AgentServiceReceipt:
         """Submit once and retain the original message identity on response loss."""
         response = await self._request(
             "POST",
             _base(namespace, tenant, agent) + "/message:send",
             json={"message": message},
-            extra_headers=_A2A_HEADERS,
+            extra_headers=_parent_headers(parent),
         )
         return _receipt(response, namespace, tenant, agent)
 

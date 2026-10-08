@@ -513,6 +513,48 @@ async fn send_task(server: &Server, client: &reqwest::Client, id: &str) -> (Valu
         .to_owned();
     (response.json().await.unwrap(), source)
 }
+
+#[tokio::test]
+async fn governed_parent_handoff_creates_a_verified_child_and_requires_paired_headers() {
+    let (url, calls, webhook_task) = webhook().await;
+    let mut server = Server::start(&url, Some("notifier-secret"), "incident");
+    let client = reqwest::Client::new();
+    server.ready(&client).await;
+    let (_, parent) = send_task(&server, &client, "parent-root").await;
+    let permits = r#"[{"id":"alice-service","accepted_revision":1}]"#;
+
+    let response = client
+        .post(server.endpoint())
+        .bearer_auth("alice-secret")
+        .header("x-acteon-execution-context", &parent)
+        .header("x-acteon-execution-permits", permits)
+        .json(&message("delegated-child"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+
+    for request in [
+        client
+            .post(server.endpoint())
+            .bearer_auth("alice-secret")
+            .header("x-acteon-execution-context", &parent),
+        client
+            .post(server.endpoint())
+            .bearer_auth("alice-secret")
+            .header("x-acteon-execution-permits", permits),
+    ] {
+        let response = request
+            .json(&message("unpaired-parent"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 400, "{}", response.text().await.unwrap());
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    webhook_task.abort();
+}
+
 async fn await_completed(server: &Server, client: &reqwest::Client, id: &str) -> Value {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {

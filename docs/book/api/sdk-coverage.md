@@ -198,13 +198,13 @@ alone does not install a runtime or authorize an invocation.
 
 All five SDKs expose native acceptance and observation helpers:
 
-| SDK | Accept message | Observe retained receipt |
-| --- | --- | --- |
-| Rust | `agent_service_send_message` | `agent_service_get_task` |
-| Python, sync/async | `agent_service_send_message` | `agent_service_get_task` |
-| TypeScript | `agentServiceSendMessage` | `agentServiceGetTask` |
-| Go | `AgentServiceSendMessage` | `AgentServiceGetTask` |
-| Java | `agentServiceSendMessage` | `agentServiceGetTask` |
+| SDK | Accept message | Accept governed child | Observe retained receipt |
+| --- | --- | --- | --- |
+| Rust | `agent_service_send_message` | `agent_service_send_message_with_parent` | `agent_service_get_task` |
+| Python, sync/async | `agent_service_send_message` | `parent=AgentServiceParent(...)` | `agent_service_get_task` |
+| TypeScript | `agentServiceSendMessage` | `parent: AgentServiceParentOptions` | `agentServiceGetTask` |
+| Go | `AgentServiceSendMessage` | `AgentServiceSendMessageWithParent` | `AgentServiceGetTask` |
+| Java | `agentServiceSendMessage` | overload with `AgentServiceParent` | `agentServiceGetTask` |
 
 The returned receipt retains the `x-acteon-agent-source-context` response header
 separately from task data and binds it to the original namespace, tenant, agent,
@@ -218,6 +218,13 @@ same unchanged message under current invocation authority. A fresh ID creates
 new work. SDK default transports reject redirects and the helpers introduce no
 retry loops; custom transports must retain those constraints. Configured CORS
 origins can read the provenance and A2A version headers.
+
+For peer invocation, all SDKs can carry the existing host-owned execution
+context and explicit permit references. Acteon treats the encoded context as an
+opaque lookup reference: the server recovers sealed state and revalidates the
+authenticated principal, permit revisions, registry, delegation grant, and
+budgets. Context and permit headers are required together. Model messages and
+task metadata are never authority sources.
 
 The admin UI's **Governed tasks** tab on an agent detail page accepts work and
 refreshes accepted tasks using the current browser identity. The server enforces

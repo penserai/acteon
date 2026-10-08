@@ -7,13 +7,35 @@ from pathlib import Path
 import httpx
 import pytest
 
-from acteon_client import ActeonClient, AgentServiceReceipt, AsyncActeonClient
-from acteon_client.agent_services import AGENT_SOURCE_CONTEXT_HEADER, _provider_abort
+from acteon_client import ActeonClient, AgentServiceParent, AgentServiceReceipt, AsyncActeonClient, PermitReference
+from acteon_client.agent_services import AGENT_EXECUTION_CONTEXT_HEADER, AGENT_SOURCE_CONTEXT_HEADER, _provider_abort
 from acteon_client.errors import ActeonError, HttpError
 
 FIXTURE = json.loads(
     (Path(__file__).parents[2] / "contract-fixtures/agent-services.json").read_text()
 )
+
+
+def test_parent_context_and_permits_are_request_local():
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        assert request.headers[AGENT_EXECUTION_CONTEXT_HEADER] == FIXTURE["parent"]["execution_context"]
+        assert json.loads(request.headers["x-acteon-execution-permits"]) == FIXTURE["parent"]["permits"]
+        assert AGENT_SOURCE_CONTEXT_HEADER not in request.headers
+        job = FIXTURE["jobs"][0]
+        return httpx.Response(200, json=job["task"], headers={"a2a-version": "1.0", AGENT_SOURCE_CONTEXT_HEADER: job["source_context"]})
+
+    permit = FIXTURE["parent"]["permits"][0]
+    parent = AgentServiceParent(FIXTURE["parent"]["execution_context"], (PermitReference(permit["id"], permit["accepted_revision"]),))
+    client = ActeonClient("http://acteon")
+    client._client = httpx.Client(transport=httpx.MockTransport(respond))
+    try:
+        client.agent_service_send_message("prod", "acme", "notifier", {}, parent=parent)
+        assert len(calls) == 1
+    finally:
+        client.close()
 
 
 def handler(request):

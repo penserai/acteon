@@ -1,5 +1,5 @@
 import { parseRegistryProjection, parseRegistryMutationReceipt, type RegistryProjection, type GovernanceRegistryMutationRequest, type GovernanceRegistryProjectionView, type GovernanceRegistryMutationReceipt } from "./governance.js";
-import { AGENT_SOURCE_CONTEXT_HEADER, agentProviderAbort, agentSource, agentTask, agentServiceBase, type AgentServiceReceipt, type AgentServiceStopReceipt } from "./agent_services.js";
+import { AGENT_EXECUTION_CONTEXT_HEADER, AGENT_SOURCE_CONTEXT_HEADER, agentExecutionContext, agentProviderAbort, agentSource, agentTask, agentServiceBase, type AgentServiceReceipt, type AgentServiceStopReceipt } from "./agent_services.js";
 import { parseProviderHistoryReceipt, type ProviderHistoryReceipt, type ProviderReconciliationCorrelation, type ProviderReconciliationRequest } from "./governance.js";
 import { parseProviderExecutionHistory, type ProviderExecutionHistory, type ProviderExecutionHistoryWire } from "./governance.js";
 import type { WorkforceScopeView, WorkforceChangeRequest } from "./workforce.js";
@@ -277,6 +277,12 @@ export interface PermitReference {
   acceptedRevision: number;
 }
 
+/** Existing verified authority for one delegated agent-service invocation. */
+export interface AgentServiceParentOptions {
+  executionContext: string;
+  permits: PermitReference[];
+}
+
 export interface DispatchOptions {
   dryRun?: boolean;
   permits?: PermitReference[];
@@ -392,8 +398,10 @@ export class ActeonClient {
   }
 
   /** Submit once. Persist the receipt in host state; preserve message ID on response loss. */
-  async agentServiceSendMessage(namespace: string, tenant: string, agent: string, message: Record<string, unknown>): Promise<AgentServiceReceipt> {
-    const response = await this.request("POST", agentServiceBase(namespace, tenant, agent) + "/message:send", { body: { message }, extraHeaders: A2A_HEADERS, redirect: "error" });
+  async agentServiceSendMessage(namespace: string, tenant: string, agent: string, message: Record<string, unknown>, parent?: AgentServiceParentOptions): Promise<AgentServiceReceipt> {
+    const parentHeaders = parent === undefined ? undefined : permitHeaders(parent.permits);
+    if (parent !== undefined && (!parentHeaders || parent.permits.length === 0)) throw new Error("delegated agent service invocation requires permits");
+    const response = await this.request("POST", agentServiceBase(namespace, tenant, agent) + "/message:send", { body: { message }, extraHeaders: { ...A2A_HEADERS, ...(parentHeaders ?? {}), ...(parent ? { [AGENT_EXECUTION_CONTEXT_HEADER]: agentExecutionContext(parent.executionContext) } : {}) }, redirect: "error" });
     if (!response.ok) throw new HttpError(response.status, await response.text());
     if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent service response version missing or unsupported");
     const task = agentTask(await response.json(), namespace, tenant);

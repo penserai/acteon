@@ -6,6 +6,24 @@ same configured state backend and atomic authority boundary as governed
 execution. A closure that commits before an effect starts prevents that start.
 An effect that started first may finish.
 
+## Carry authority between agent services
+
+A host invoking a registered peer agent can attach the current opaque execution
+context and explicit permit references to message admission. Acteon recovers
+the sealed parent from the configured state backend, verifies that the private
+caller still represents its principal, and rechecks current permit revisions,
+registry state, delegation grant, closures, and budgets before creating a child.
+
+The headers form one contract: `x-acteon-execution-context` and
+`x-acteon-execution-permits` must either both be present or both be absent. The
+context is a reference, not a bearer token. Keep it in host state; model output,
+message content, task metadata, and registry cards cannot provide authority.
+Ordinary external admission without a parent creates a new governed root after
+the same private caller checks.
+
+All five SDKs expose this path through `AgentServiceParent` or the corresponding
+typed options. See [SDK coverage](../api/sdk-coverage.md#retain-an-authenticated-agent-service-receipt).
+
 ## Declare independent management rights
 
 First enable [execution permits](execution-permits.md) and shared authentication.

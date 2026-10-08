@@ -20,6 +20,7 @@ async-trait = { workspace = true, optional = true }
 acteon-crypto = { workspace = true, features = ["signing"], optional = true }
 
 chrono.workspace = true
+base64.workspace = true
 futures.workspace = true
 percent-encoding.workspace = true
 reqwest = { workspace = true, features = ["stream"] }

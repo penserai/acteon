@@ -394,6 +394,20 @@ const receipt = await client.agentServiceSendMessage(
 const task = await client.agentServiceGetTask(receipt);
 ```
 
+An agent already running under Acteon can invoke a peer as a governed child by
+passing its host-owned execution context and explicit permits:
+
+```typescript
+await client.agentServiceSendMessage("prod", "acme", "notifier", message, {
+  executionContext,
+  permits: [{ id: "caller-agent-service", acceptedRevision: 3 }],
+});
+```
+
+The server recovers the sealed parent, verifies the authenticated caller, and
+rechecks current permit, registry, grant, and budget state. Keep the context in
+host state and never source either header from model output.
+
 Persist the receipt as host-owned JSON for observation after a client restart.
 The original `taskId` remains separate from mutable task data.
 

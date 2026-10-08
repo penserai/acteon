@@ -1703,8 +1703,9 @@ another restart. A superseded queued task cannot borrow the new authority; when
 current checks refuse its first provider start, it stays retained without a
 provider call.
 
-This closes historical service binding retention. Qualified outbound A2A and
-provider abort/reconciliation remain required for the complete peer lifecycle.
+This closes historical service binding retention. Governed parent-context
+handoff, qualified outbound A2A transport, and provider abort/reconciliation
+remain required for the complete peer lifecycle.
 
 
 ### Durable provider-abort delivery foundation
@@ -1735,3 +1736,18 @@ This closes the generic durable abort-delivery and client lifecycle building
 block. Concrete adapters must still qualify external attempt mapping and
 finality against every supported production backend. Qualified outbound A2A
 remains required for the complete peer lifecycle.
+
+### Governed parent-context handoff
+
+The individual-agent admission surface now accepts a paired opaque execution
+context and explicit permit references. It recovers sealed parent authority from
+the configured state backend and rechecks authenticated principal binding,
+permit revisions, registry state, delegation grants, closures, and budgets before
+creating a child. It rejects duplicate or malformed contexts, either header on
+its own, and empty permit sets.
+
+Rust, Python sync/async, TypeScript, Go, and Java expose typed parent invocation
+helpers backed by one cross-language fixture. Context stays in host state and is
+never inferred from model messages or task metadata. This closes the public
+authority-handoff contract needed by outbound peer invocation. Qualified durable
+transport, delivery recovery, and remote finality remain the next platform gap.

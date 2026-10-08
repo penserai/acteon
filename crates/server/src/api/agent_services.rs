@@ -1,5 +1,6 @@
 //! Explicit individual-agent ingress; tenant-level A2A remains independent.
 use super::{AppState, a2a::A2A_PROTOCOL_VERSION, schemas::ErrorResponse};
+use crate::execution_authority::AgentServiceParent;
 use crate::{
     auth::{
         identity::CallerIdentity, projection::AuthenticatedExecutionConfiguration, role::Permission,
@@ -17,6 +18,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 
 const SOURCE_CONTEXT_HEADER: &str = "x-acteon-agent-source-context";
+const EXECUTION_CONTEXT_HEADER: &str = "x-acteon-execution-context";
 
 /// New service tasks use a fixed, operator-qualified runtime. Original context
 /// injection for delegated host tools is a separate trusted-host operation.
@@ -28,7 +30,9 @@ pub struct AgentMessageSend {
 
 #[utoipa::path(
     post, path = "/a2a/{namespace}/{tenant}/agents/{agent}/v1/message:send", tag = "Governance",
-    params(("namespace" = String, Path), ("tenant" = String, Path), ("agent" = String, Path)),
+    params(("namespace" = String, Path), ("tenant" = String, Path), ("agent" = String, Path),
+        ("x-acteon-execution-context" = Option<String>, Header, description = "URL-safe base64 encoded parent execution-context reference; requires matching private caller authentication"),
+        ("x-acteon-execution-permits" = Option<String>, Header, description = "JSON array of the parent context's explicit permit references; required with x-acteon-execution-context")),
     request_body = AgentMessageSend,
     responses((status = 200, body = acteon_core::Task, description = "Durably accepted task; acceptance is not provider execution"),
         (status = 400, description = "Invalid message or unsupported A2A version"), (status = 403, description = "Original service authority required"),
@@ -62,6 +66,13 @@ pub async fn message_send(
             "agent_services_unavailable",
         );
     };
+    let parent_input = match parse_parent(&headers) {
+        Ok(parent) => parent,
+        Err(code) => return error(StatusCode::BAD_REQUEST, code),
+    };
+    let parent = parent_input
+        .as_ref()
+        .map(|(context, permits)| AgentServiceParent { context, permits });
     match runtime
         .accept_agent_service(AgentServiceRequest {
             namespace: &namespace,
@@ -70,7 +81,7 @@ pub async fn message_send(
             message: &request.message,
             authentication: &proof,
             auth_provider: authentication,
-            parent: None,
+            parent,
         })
         .await
     {
@@ -93,6 +104,47 @@ pub async fn message_send(
                 .into_response()
         }
         Err(cause) => service_error(cause),
+    }
+}
+
+fn parse_execution_context(
+    headers: &HeaderMap,
+) -> Result<Option<acteon_core::ExecutionContextReference>, &'static str> {
+    let values: Vec<_> = headers.get_all(EXECUTION_CONTEXT_HEADER).iter().collect();
+    if values.is_empty() {
+        return Ok(None);
+    }
+    if values.len() != 1 || values[0].as_bytes().len() > 8192 {
+        return Err("invalid_execution_context");
+    }
+    values[0]
+        .to_str()
+        .ok()
+        .and_then(|value| URL_SAFE_NO_PAD.decode(value).ok())
+        .and_then(|raw| serde_json::from_slice(&raw).ok())
+        .map(Some)
+        .ok_or("invalid_execution_context")
+}
+
+fn parse_parent(
+    headers: &HeaderMap,
+) -> Result<
+    Option<(
+        acteon_core::ExecutionContextReference,
+        Vec<acteon_governance::permit::PermitReference>,
+    )>,
+    &'static str,
+> {
+    let context = parse_execution_context(headers)?;
+    if context.is_none() && headers.contains_key("x-acteon-execution-permits") {
+        return Err("execution_context_required");
+    }
+    let permits = super::dispatch::execution_permits(headers, true, context.is_some())
+        .map_err(|_| "invalid_execution_permits")?;
+    match context {
+        Some(_) if permits.is_empty() => Err("invalid_execution_permits"),
+        Some(context) => Ok(Some((context, permits))),
+        None => Ok(None),
     }
 }
 
@@ -287,4 +339,55 @@ fn error(status: StatusCode, code: &str) -> Response {
         Json(ErrorResponse { error: code.into() }),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn execution_context_header_is_single_bounded_and_typed() {
+        let context = serde_json::json!({
+            "context_id":"11111111-1111-4111-8111-111111111111",
+            "execution_id":"22222222-2222-4222-8222-222222222222",
+            "namespace":"prod", "tenant":"acme",
+            "principal":{"id":"caller-agent","kind":"agent"},
+            "request_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        });
+        let encoded = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&context).unwrap());
+        let mut headers = HeaderMap::new();
+        headers.insert(EXECUTION_CONTEXT_HEADER, encoded.parse().unwrap());
+        assert!(parse_execution_context(&headers).unwrap().is_some());
+        headers.append(EXECUTION_CONTEXT_HEADER, encoded.parse().unwrap());
+        assert_eq!(
+            parse_execution_context(&headers),
+            Err("invalid_execution_context")
+        );
+        let mut malformed = HeaderMap::new();
+        malformed.insert(EXECUTION_CONTEXT_HEADER, "bm90LWpzb24".parse().unwrap());
+        assert_eq!(
+            parse_execution_context(&malformed),
+            Err("invalid_execution_context")
+        );
+
+        let mut context_only = HeaderMap::new();
+        context_only.insert(EXECUTION_CONTEXT_HEADER, encoded.parse().unwrap());
+        assert!(matches!(
+            parse_parent(&context_only),
+            Err("invalid_execution_permits")
+        ));
+        let mut permits_only = HeaderMap::new();
+        permits_only.insert("x-acteon-execution-permits", "[]".parse().unwrap());
+        assert!(matches!(
+            parse_parent(&permits_only),
+            Err("execution_context_required")
+        ));
+        let mut paired = HeaderMap::new();
+        paired.insert(EXECUTION_CONTEXT_HEADER, encoded.parse().unwrap());
+        paired.insert(
+            "x-acteon-execution-permits",
+            "[{\"id\":\"p\",\"accepted_revision\":1}]".parse().unwrap(),
+        );
+        assert!(matches!(parse_parent(&paired), Ok(Some(_))));
+    }
 }

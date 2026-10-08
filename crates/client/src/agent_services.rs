@@ -1,10 +1,20 @@
 //! Authenticated individual-agent services. Receipts are host-owned provenance;
 //! never derive their source context from model messages or task metadata.
-use crate::{ActeonClient, Error, a2a::A2A_PROTOCOL_VERSION};
-use acteon_core::{Task, TaskMessage};
+use crate::{ActeonClient, Error, PermitReference, a2a::A2A_PROTOCOL_VERSION};
+use acteon_core::{ExecutionContextReference, Task, TaskMessage};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 
 pub const AGENT_SOURCE_CONTEXT_HEADER: &str = "x-acteon-agent-source-context";
+pub const AGENT_EXECUTION_CONTEXT_HEADER: &str = "x-acteon-execution-context";
+const EXECUTION_PERMITS_HEADER: &str = "x-acteon-execution-permits";
+
+/// Existing verified authority carried into a delegated peer invocation.
+/// The server revalidates the opaque reference, caller credential and permits.
+pub struct AgentServiceParent<'a> {
+    pub execution_context: &'a ExecutionContextReference,
+    pub permits: &'a [PermitReference],
+}
 
 /// Persist this receipt in host state. Acceptance is not proof of execution.
 #[derive(Clone, Serialize, Deserialize)]
@@ -141,15 +151,59 @@ impl ActeonClient {
         agent: &str,
         message: &TaskMessage,
     ) -> Result<AgentServiceReceipt, Error> {
+        self.agent_service_send_message_inner(namespace, tenant, agent, message, None)
+            .await
+    }
+
+    /// Submit under an existing verified parent context. This only carries
+    /// references; the server recovers authority and verifies current permits.
+    pub async fn agent_service_send_message_with_parent(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        agent: &str,
+        message: &TaskMessage,
+        parent: AgentServiceParent<'_>,
+    ) -> Result<AgentServiceReceipt, Error> {
+        self.agent_service_send_message_inner(namespace, tenant, agent, message, Some(parent))
+            .await
+    }
+
+    async fn agent_service_send_message_inner(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        agent: &str,
+        message: &TaskMessage,
+        parent: Option<AgentServiceParent<'_>>,
+    ) -> Result<AgentServiceReceipt, Error> {
         let path = format!(
             "/a2a/{}/{}/agents/{}/v1/message:send",
             segment(namespace)?,
             segment(tenant)?,
             segment(agent)?
         );
-        let response = self
+        let mut request = self
             .add_auth(self.client.post(format!("{}{path}", self.base_url)))
-            .header("a2a-version", A2A_PROTOCOL_VERSION)
+            .header("a2a-version", A2A_PROTOCOL_VERSION);
+        if let Some(parent) = parent {
+            if parent.permits.is_empty() {
+                return Err(Error::Configuration(
+                    "delegated agent service invocation requires permits".into(),
+                ));
+            }
+            let context = serde_json::to_vec(parent.execution_context)
+                .map_err(|e| Error::Configuration(e.to_string()))?;
+            let permits = serde_json::to_string(parent.permits)
+                .map_err(|e| Error::Configuration(e.to_string()))?;
+            request = request
+                .header(
+                    AGENT_EXECUTION_CONTEXT_HEADER,
+                    URL_SAFE_NO_PAD.encode(context),
+                )
+                .header(EXECUTION_PERMITS_HEADER, permits);
+        }
+        let response = request
             .json(&serde_json::json!({"message":message}))
             .send()
             .await
@@ -459,6 +513,74 @@ mod tests {
         assert_eq!(stopped.task.id, "job-1");
         assert_eq!(stopped.task.status.state, acteon_core::TaskState::Submitted);
         assert_eq!(fixture.calls.lock().unwrap().len(), 5);
+    }
+    #[tokio::test]
+    async fn governed_parent_context_and_permits_are_request_local() {
+        let wire: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../clients/contract-fixtures/agent-services.json"
+        ))
+        .unwrap();
+        let expected = wire.clone();
+        let app = Router::new().fallback(any(move |request: Request| {
+            let wire = expected.clone();
+            async move {
+                assert!(request.headers().get(AGENT_SOURCE_CONTEXT_HEADER).is_none());
+                assert_eq!(
+                    request.headers()[AGENT_EXECUTION_CONTEXT_HEADER],
+                    wire["parent"]["execution_context"].as_str().unwrap()
+                );
+                assert_eq!(
+                    serde_json::from_str::<serde_json::Value>(
+                        request.headers()[EXECUTION_PERMITS_HEADER]
+                            .to_str()
+                            .unwrap()
+                    )
+                    .unwrap(),
+                    wire["parent"]["permits"]
+                );
+                let mut response = Json(wire["jobs"][0]["task"].clone()).into_response();
+                response
+                    .headers_mut()
+                    .insert("a2a-version", "1.0".parse().unwrap());
+                response.headers_mut().insert(
+                    AGENT_SOURCE_CONTEXT_HEADER,
+                    wire["jobs"][0]["source_context"]
+                        .as_str()
+                        .unwrap()
+                        .parse()
+                        .unwrap(),
+                );
+                response
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = ActeonClient::builder(format!("http://{address}"))
+            .build()
+            .unwrap();
+        let context: ExecutionContextReference = serde_json::from_slice(
+            &URL_SAFE_NO_PAD
+                .decode(wire["parent"]["execution_context"].as_str().unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        let permits: Vec<PermitReference> =
+            serde_json::from_value(wire["parent"]["permits"].clone()).unwrap();
+        client
+            .agent_service_send_message_with_parent(
+                "prod",
+                "acme",
+                "notifier",
+                &TaskMessage::text("m1", acteon_core::TaskRole::User, "one"),
+                AgentServiceParent {
+                    execution_context: &context,
+                    permits: &permits,
+                },
+            )
+            .await
+            .unwrap();
+        server.abort();
     }
     #[test]
     fn provider_abort_status_validation_is_exact() {

@@ -1,5 +1,10 @@
 /** Host-owned receipts; source context is never extracted from model data. */
 export const AGENT_SOURCE_CONTEXT_HEADER = "x-acteon-agent-source-context";
+export const AGENT_EXECUTION_CONTEXT_HEADER = "x-acteon-execution-context";
+export function agentExecutionContext(value: string): string {
+  if (!value || value.length > 8192 || !/^[A-Za-z0-9_-]+$/.test(value)) throw new Error("agent service execution context malformed");
+  return value;
+}
 export interface AgentServiceReceipt {
   readonly namespace: string;
   readonly tenant: string;
