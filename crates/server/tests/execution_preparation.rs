@@ -2036,6 +2036,85 @@ fn agent_service_configuration() -> ExecutionAuthorityConfig {
     config
 }
 
+fn agent_mesh_configuration() -> ExecutionAuthorityConfig {
+    let mut config = agent_service_configuration();
+    let scope = &mut config.scopes[0];
+    let resolve_route: acteon_server::config::ExecutionRouteConfig =
+        serde_json::from_value(json!({
+            "provider":"incident", "action_type":"resolve"
+        }))
+        .unwrap();
+    scope.routes.push(resolve_route.clone());
+    let notifier = scope.agent_services[0].principal.clone();
+    let resolver = PrincipalIdentity::new("agent/resolver", PrincipalKind::Agent).unwrap();
+    scope.subjects.push(resolver.clone());
+    let mut card = acteon_core::AgentCard::new("resolver", "prod", "acme", "Resolver", "1");
+    card.skills.push(acteon_core::Skill::new("resolve"));
+    card.interfaces.push(acteon_core::AgentCardInterface {
+        kind: "rest".into(),
+        url: "https://agents.example/resolver".into(),
+    });
+    scope.agent_services[0].onward_agents = vec!["resolver".into()];
+    scope.agent_services.push(
+        serde_json::from_value(json!({
+            "card":card,"principal":resolver,"skill":"resolve",
+            "endpoint":"https://agents.example/resolver","endpoint_id":"resolver-api",
+            "route":resolve_route,"recipient_key_env":"ACTEON_TEST_RESOLVER_RECIPIENT",
+            "recipient_permits":[{"id":"resolver-provider","accepted_revision":1}],
+            "submission_capability":"verified_idempotent",
+            "grants":[{"id":"notifier-resolver","revision":1,"source":notifier,
+                "source_permits":[{"id":"worker-provider","accepted_revision":1}],
+                "valid_from_ms":0,"limits":scope.credential_limits,"max_depth":4}]
+        }))
+        .unwrap(),
+    );
+    scope.permits[1].agents.push("resolver".into());
+    scope.permits.push(
+        serde_json::from_value(json!({
+            "id":"resolver-provider","revision":1,"subject":resolver,
+            "routes":[resolve_route],"valid_from_ms":0,"limits":scope.credential_limits
+        }))
+        .unwrap(),
+    );
+    config
+}
+
+#[test]
+fn agent_mesh_qualification_seals_onward_intent_and_target_grant() {
+    let (registry, _) = registry();
+    let configured = agent_mesh_configuration();
+    let prepared = registry
+        .prepare(&configured, ("auth-control", "deployment"), &[8; 32])
+        .unwrap();
+    let mesh_digest = prepared[0]
+        .agent_service_binding_digest("notifier")
+        .unwrap()
+        .to_owned();
+
+    let mut without_onward = configured.clone();
+    without_onward.scopes[0].agent_services[0]
+        .onward_agents
+        .clear();
+    let prepared = registry
+        .prepare(&without_onward, ("auth-control", "deployment"), &[8; 32])
+        .unwrap();
+    assert_ne!(
+        mesh_digest,
+        prepared[0]
+            .agent_service_binding_digest("notifier")
+            .unwrap()
+    );
+
+    let mut missing_grant = configured;
+    missing_grant.scopes[0].agent_services[1].grants[0].source =
+        missing_grant.scopes[0].subjects[0].clone();
+    assert!(
+        registry
+            .prepare(&missing_grant, ("auth-control", "deployment"), &[8; 32])
+            .is_err()
+    );
+}
+
 #[tokio::test]
 async fn agent_service_publication_requires_private_auth_before_any_permits_or_grants() {
     use acteon_server::execution_authority::{

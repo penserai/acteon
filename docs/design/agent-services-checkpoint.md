@@ -157,7 +157,10 @@ Remaining before release:
   recovery against each supported production backend.
 - Expand focused adversarial and integration tests from admission/isolation to
   full provider execution and peer lifecycle.
-- Complete qualified outbound A2A lifecycle work.
+- Connect the trusted peer invocation API to model/runtime tools without
+  deserializing authority fields.
+- Complete remote A2A task observation, progress, input, result and cancellation
+  lifecycle work.
 - Extend lifecycle SDK/UI integration as outbound peer contracts are added.
 - Review adversarially, run CI, and verify publication before merging.
 

@@ -22,9 +22,10 @@ use uuid::Uuid;
 pub const PEER_SEND_KIND: &str = "governed_peer_send";
 const MAX_RECORD_BYTES: usize = 2 * 1024 * 1024;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum PeerSubmissionCapability {
+    #[default]
     AtMostOnce,
     VerifiedIdempotent,
 }

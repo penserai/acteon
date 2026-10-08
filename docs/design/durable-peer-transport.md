@@ -1,7 +1,8 @@
 # Durable qualified peer transport
 
-**Status:** Rust host journal and guarded Acteon HTTP adapter implemented;
-configuration wiring and public host-tool surface remain follow-up work.
+**Status:** Rust host journal, guarded Acteon HTTP adapter, deployment wiring,
+and trusted host invocation API implemented. A model-tool adapter and the remote
+task lifecycle bridge remain follow-up work.
 
 Acteon needs a transport boundary between governed peer selection and a real A2A
 network call. Discovery is advisory. A live card, endpoint URL, or model-selected
@@ -87,6 +88,22 @@ Only a typed task plus one valid source-context response is accepted. Selected
 4xx responses are retained as known rejection; redirects, 5xx, transport errors,
 malformed success, and oversized response remain uncertain.
 
+`ExecutionAuthorityRuntime` now derives an outbound source/target matrix from
+each service's explicit `onward_agents`. Preparation computes the transitive
+service footprint, seals immediate `agent.invoke` operations into the source's
+direct ceiling, and seals the exact downstream grants into its accepted context.
+Installation resolves the source service credential from its existing private
+environment binding, constructs one adapter per exact target binding, and uses
+the same configured `StateStore`, coordinator, clock and payload encryptor for
+the journal.
+
+The trusted `AgentPeerInvocation` has no deserializer. The host injects the
+source agent and opaque context retained with accepted work; agent/model input
+can select only an already configured target, skill and message. Submission,
+observation and explicitly qualified idempotent recovery recover the current
+context, verify it still belongs to the installed source service binding, use
+the source's configured permits, and resolve only the installed transport.
+
 ## Evidence
 
 Focused contracts cover:
@@ -103,15 +120,12 @@ Focused contracts cover:
 
 This foundation does not yet complete the autonomous mesh. The next slices are:
 
-1. configuration that resolves and installs the exact source credential and
-   adapter for each allowed source/target binding;
-2. a host tool/API that resolves the caller's opaque context and never accepts
-   authority fields from model output;
-3. durable remote observation, progress cursor, bounded artifact transfer,
+1. a model/runtime tool adapter that maps only target, skill and message into
+   the trusted host invocation while retaining source context outside model data;
+2. durable remote observation, progress cursor, bounded artifact transfer,
    required-input handoff, terminal result projection, and cancellation state;
-4. restart and lost-acceptance tests against two real Acteon servers; and
-5. qualification on each supported durable state backend.
+3. restart and lost-acceptance tests against two real Acteon servers; and
+4. qualification on each supported durable state backend.
 
-Until those slices land, public documentation must describe parent-context
-handoff and authenticated agent services separately from a complete autonomous
-outbound mesh.
+Until those slices land, this is a governed host integration rather than a
+complete autonomous outbound task lifecycle.

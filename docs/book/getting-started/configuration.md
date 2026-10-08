@@ -656,3 +656,13 @@ retained entry can recover accepted tasks but cannot accept new work or publish
 permits, grants, or registry authority. See [Replacing a configured service
 binding](../features/governance.md#replacing-a-configured-service-binding) for
 the required revision and grant-ID transition.
+
+`[execution_authority.peer_transport]` controls host-installed outbound service
+delivery. It defaults to enabled with a 10-second timeout and an
+`acteon-peer-http-v1` adapter revision. `internal_hosts` is an operator-owned
+allowlist for private-network destinations; metadata and other special addresses
+remain forbidden. Each source service lists exact `onward_agents`; each target
+must declare the source grant, and the source's recipient permits must include
+that target. `submission_capability = "at_most_once"` is the safe default on a
+target service. Use `"verified_idempotent"` only after qualifying the endpoint's
+same-context, same-message replay behavior.

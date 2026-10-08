@@ -435,7 +435,12 @@ impl ExecutionAuthorityRuntime {
             credential_id: binding.credential_reference().id.clone(),
             auth_method: binding.authentication_source().auth_method().into(),
             accepted_ceiling_revision: String::new(),
-            accepted_effects: vec![agent.bound.effect().clone()],
+            accepted_effects: agent
+                .binding
+                .service_plan()
+                .ok_or(AgentServiceError::Unavailable)?
+                .direct_effects()
+                .to_vec(),
             deadline_ms: self
                 .service_deadline(scope, declared)
                 .map_err(|_| AgentServiceError::Unavailable)?,
@@ -484,6 +489,26 @@ impl ExecutionAuthorityRuntime {
             .parent
             .as_ref()
             .map_or(declared.source_permits.as_slice(), |p| p.permits);
+        let onward_grants = agent
+            .declaration
+            .onward_agents
+            .iter()
+            .map(|target_id| {
+                scope
+                    .prepared
+                    .agents
+                    .get(target_id)
+                    .and_then(|target| {
+                        target
+                            .declaration
+                            .grants
+                            .iter()
+                            .find(|grant| grant.source == agent.declaration.principal)
+                    })
+                    .map(grant_reference)
+                    .ok_or(AgentServiceError::Unavailable)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let child = scope
             .contexts
             .capture_delegated_child(DelegatedContextAdmission {
@@ -502,7 +527,7 @@ impl ExecutionAuthorityRuntime {
                     .ok_or(AgentServiceError::Unavailable)?
                     .intent()
                     .to_vec(),
-                onward_grants: vec![],
+                onward_grants,
                 limits,
                 clock: self.clock.as_ref(),
             })

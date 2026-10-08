@@ -25,6 +25,14 @@ pub struct AgentServiceDeclaration {
     pub route: ExecutionRouteConfig,
     pub recipient_key_env: String,
     pub recipient_permits: Vec<PermitReference>,
+    /// Exact agent services this runtime may invoke from accepted work. The
+    /// host resolves these IDs to reviewed bindings; models cannot supply URLs,
+    /// credentials, permits, or delegation grants.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub onward_agents: Vec<String>,
+    /// Replay qualification of this service's exact message endpoint.
+    #[serde(default)]
+    pub submission_capability: acteon_executor::delegation::PeerSubmissionCapability,
     pub grants: Vec<AgentServiceGrantDeclaration>,
 }
 
@@ -116,7 +124,12 @@ impl AgentServiceDeclaration {
         Ok(())
     }
 
-    pub(crate) fn qualify(&self, bound: &BoundProvider) -> Result<ApprovedPeerBinding, String> {
+    pub(crate) fn qualify_with_plan(
+        &self,
+        bound: &BoundProvider,
+        intent: Vec<AcceptedEffect>,
+        direct: Vec<AcceptedEffect>,
+    ) -> Result<ApprovedPeerBinding, String> {
         qualify_binding(
             ServiceBindingDeclaration {
                 card: &self.card,
@@ -128,6 +141,20 @@ impl AgentServiceDeclaration {
                 route: &self.route,
             },
             bound,
+            intent,
+            direct,
+        )
+    }
+
+    pub(crate) fn ingress_effect(
+        &self,
+        resources: Vec<ResourceRef>,
+    ) -> Result<AcceptedEffect, String> {
+        service_ingress(
+            &self.card,
+            self.registry_revision,
+            &self.endpoint_id,
+            resources,
         )
     }
 }
@@ -169,6 +196,8 @@ impl RetainedAgentServiceDeclaration {
                 route: &self.route,
             },
             bound,
+            vec![bound.effect().clone()],
+            vec![bound.effect().clone()],
         )?;
         if binding.digest() != self.binding_digest {
             return Err("retained agent service digest mismatch".into());
@@ -191,6 +220,8 @@ struct ServiceBindingDeclaration<'a> {
 fn qualify_binding(
     declaration: ServiceBindingDeclaration<'_>,
     bound: &BoundProvider,
+    intent: Vec<AcceptedEffect>,
+    direct: Vec<AcceptedEffect>,
 ) -> Result<ApprovedPeerBinding, String> {
     if bound.provider_name() != declaration.route.provider
         || bound.action_type() != declaration.route.action_type
@@ -198,38 +229,16 @@ fn qualify_binding(
     {
         return Err("agent service has no qualified actual operation".into());
     }
-    // The card revision is an enclosing resource, separate from the digest
-    // of the complete service binding (which also includes this footprint).
-    let digest = acteon_executor::delegation::card_digest(declaration.card)
-        .map_err(|_| "invalid service card")?;
-    let mut resources = bound.effect().resources.clone();
-    for (kind, name) in [
-        (ResourceKind::Agent, declaration.card.agent_id.clone()),
-        (
-            ResourceKind::Route,
-            format!(
-                "agent-registry.{}.{}",
-                declaration.card.agent_id, declaration.registry_revision
-            ),
-        ),
-        (ResourceKind::Endpoint, declaration.endpoint_id.to_owned()),
-        (ResourceKind::Route, format!("agent-card.{digest}")),
-    ] {
-        resources.push(
-            ResourceRef::new(
-                kind,
-                &declaration.card.namespace,
-                &declaration.card.tenant,
-                name,
-            )
-            .map_err(|_| "invalid service enclosing resource")?,
-        );
-    }
-    resources.sort();
-    let ingress = AcceptedEffect {
-        operation: "agent.invoke".into(),
+    let resources: Vec<_> = intent
+        .iter()
+        .flat_map(|effect| effect.resources.iter().cloned())
+        .collect();
+    let ingress = service_ingress(
+        declaration.card,
+        declaration.registry_revision,
+        declaration.endpoint_id,
         resources,
-    };
+    )?;
     ApprovedPeerBinding::new_service_trusted(
         declaration.card,
         declaration.principal.clone(),
@@ -237,13 +246,41 @@ fn qualify_binding(
         declaration.endpoint,
         "rest",
         ingress,
-        ApprovedServicePlan::new_trusted(
-            vec![bound.effect().clone()],
-            vec![bound.effect().clone()],
-        )
-        .map_err(|_| "invalid service plan")?,
+        ApprovedServicePlan::new_trusted(intent, direct).map_err(|_| "invalid service plan")?,
     )
     .map_err(|_| "invalid approved service binding".into())
+}
+
+fn service_ingress(
+    card: &AgentCard,
+    registry_revision: u64,
+    endpoint_id: &str,
+    mut resources: Vec<ResourceRef>,
+) -> Result<AcceptedEffect, String> {
+    // The card revision is an enclosing resource, separate from the digest
+    // of the complete service binding (which also includes this footprint).
+    let digest =
+        acteon_executor::delegation::card_digest(card).map_err(|_| "invalid service card")?;
+    for (kind, name) in [
+        (ResourceKind::Agent, card.agent_id.clone()),
+        (
+            ResourceKind::Route,
+            format!("agent-registry.{}.{}", card.agent_id, registry_revision),
+        ),
+        (ResourceKind::Endpoint, endpoint_id.to_owned()),
+        (ResourceKind::Route, format!("agent-card.{digest}")),
+    ] {
+        resources.push(
+            ResourceRef::new(kind, &card.namespace, &card.tenant, name)
+                .map_err(|_| "invalid service enclosing resource")?,
+        );
+    }
+    resources.sort();
+    resources.dedup();
+    Ok(AcceptedEffect {
+        operation: "agent.invoke".into(),
+        resources,
+    })
 }
 
 fn valid_digest(value: &str) -> bool {

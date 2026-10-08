@@ -5,9 +5,10 @@ mod peer_http;
 mod runtime;
 pub use peer_http::ActeonPeerHttpAdapter;
 pub use runtime::{
-    AgentServiceAcceptance, AgentServiceDriver, AgentServiceError, AgentServiceObservation,
-    AgentServiceParent, AgentServiceRequest, ExecutionAuthorityRuntime,
-    ExecutionRuntimeDependencies, ManagementError, TrustedReconciliationInstallation,
+    AgentPeerInvocation, AgentPeerTransportError, AgentServiceAcceptance, AgentServiceDriver,
+    AgentServiceError, AgentServiceObservation, AgentServiceParent, AgentServiceRequest,
+    ExecutionAuthorityRuntime, ExecutionRuntimeDependencies, ManagementError,
+    TrustedReconciliationInstallation,
 };
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -154,7 +155,7 @@ impl ExecutionProviderRegistry {
                     QualifiedProviderCatalog::new_trusted(bindings)
                         .map_err(|_| "invalid execution scope catalog")?
                 };
-                let mut agents = BTreeMap::new();
+                let mut agent_operations = BTreeMap::new();
                 for service in &declaration.agent_services {
                     let actual = &self
                         .entries
@@ -172,13 +173,84 @@ impl ExecutionProviderRegistry {
                         .resolve(&action, actual)
                         .map_err(|_| "agent operation is not qualified")?
                         .clone();
-                    let binding = service.qualify(&bound)?;
+                    agent_operations
+                        .insert(service.card.agent_id.clone(), (service.clone(), bound));
+                }
+                let mut reachability = BTreeMap::new();
+                for agent_id in agent_operations.keys() {
+                    let mut reachable = std::collections::BTreeSet::new();
+                    let mut pending = vec![agent_id.as_str()];
+                    while let Some(candidate) = pending.pop() {
+                        if !reachable.insert(candidate.to_owned()) {
+                            continue;
+                        }
+                        let (declaration, _) = agent_operations
+                            .get(candidate)
+                            .ok_or("agent onward service lost qualification")?;
+                        pending.extend(declaration.onward_agents.iter().map(String::as_str));
+                    }
+                    reachability.insert(agent_id.clone(), reachable);
+                }
+                let mut ingresses = BTreeMap::new();
+                for (agent_id, reachable) in &reachability {
+                    let mut resources = Vec::new();
+                    for target_id in reachable {
+                        let (target, operation) = agent_operations
+                            .get(target_id)
+                            .ok_or("agent onward service is not qualified")?;
+                        resources.extend(operation.effect().resources.iter().cloned());
+                        resources.extend(target.ingress_effect(Vec::new())?.resources);
+                    }
+                    let (service, _) = &agent_operations[agent_id];
+                    ingresses.insert(agent_id.clone(), service.ingress_effect(resources)?);
+                }
+                let mut agents = BTreeMap::new();
+                for (agent_id, (service, bound)) in &agent_operations {
+                    let reachable = &reachability[agent_id];
+                    let mut intent: Vec<_> = reachable
+                        .iter()
+                        .map(|id| {
+                            agent_operations
+                                .get(id)
+                                .map(|(_, operation)| operation.effect().clone())
+                                .ok_or("agent onward service is not qualified")
+                        })
+                        .collect::<Result<_, _>>()?;
+                    intent.extend(
+                        reachable
+                            .iter()
+                            .filter(|target_id| *target_id != agent_id)
+                            .map(|target_id| ingresses[target_id].clone()),
+                    );
+                    let mut direct = vec![bound.effect().clone()];
+                    direct.extend(
+                        service
+                            .onward_agents
+                            .iter()
+                            .map(|target_id| ingresses[target_id].clone()),
+                    );
+                    intent.sort_by(|left, right| {
+                        left.operation
+                            .cmp(&right.operation)
+                            .then(left.resources.cmp(&right.resources))
+                    });
+                    intent.dedup();
+                    direct.sort_by(|left, right| {
+                        left.operation
+                            .cmp(&right.operation)
+                            .then(left.resources.cmp(&right.resources))
+                    });
+                    direct.dedup();
+                    let binding = service.qualify_with_plan(bound, intent, direct)?;
+                    if binding.ingress_effect() != &ingresses[agent_id] {
+                        return Err("agent service graph footprint is not canonical".into());
+                    }
                     agents.insert(
-                        service.card.agent_id.clone(),
+                        agent_id.clone(),
                         agent_services::PreparedAgentService {
                             declaration: service.clone(),
                             binding,
-                            bound,
+                            bound: bound.clone(),
                         },
                     );
                 }
@@ -289,10 +361,12 @@ impl ExecutionProviderRegistry {
                 if !declaration.managers.is_empty() {
                     policy["managers"] = serde_json::json!(declaration.managers);
                 }
+                policy["peer_transport"] = serde_json::json!(configuration.peer_transport);
                 let bytes = serde_json::to_vec(&policy)
                     .map_err(|_| "invalid execution deployment policy")?;
                 Ok(PreparedExecutionScope {
                     declaration,
+                    peer_transport: configuration.peer_transport.clone(),
                     catalog,
                     issuance,
                     agents,
@@ -474,6 +548,7 @@ impl<'a> AuthenticatedProviderAdmission<'a> {
 /// Private construction keeps preparation evidence separate from wire metadata.
 pub struct PreparedExecutionScope {
     declaration: ExecutionScopeConfig,
+    peer_transport: crate::config::AgentPeerTransportConfig,
     catalog: QualifiedProviderCatalog,
     agents: BTreeMap<String, agent_services::PreparedAgentService>,
     retained_agents: BTreeMap<(String, String), agent_services::PreparedRetainedAgentService>,

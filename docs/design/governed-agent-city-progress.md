@@ -1779,6 +1779,30 @@ mapping foundation. The first concrete adapter now uses the guarded outbound
 client, exact host credential, disabled redirects, bounded response reads, and
 native parent-context headers. It accepts only a typed task and source mapping;
 redirects, 5xx, malformed responses, and transport failures remain uncertain.
-Configuration installation, a host tool/API, the remote lifecycle bridge, a real
-two-server restart scenario, and durable-backend qualification are still required
-before the autonomous mesh is complete.
+The remote lifecycle bridge, a concrete model-tool adapter, a real two-server
+restart scenario, and durable-backend qualification are still required before
+the autonomous mesh is complete.
+
+### Installed governed peer handoff
+
+Configured agent services now declare exact `onward_agents`. Preparation walks
+that bounded graph, seals the transitive provider intent and immediate peer
+ingress effects, and rejects an edge without the target's grant and a matching
+source permit. Accepted service children retain only those exact onward grant
+references. This closes the authority gap where provider-only intent could not
+authorize the target's full `agent.invoke` effect.
+
+The server installs an approved registry and one durable guarded transport for
+each configured source/target edge. It resolves the source credential from host
+configuration, pins the target binding and replay capability into the adapter
+revision, and shares the configured state backend, coordinator, clock and
+encryption boundary. `AgentPeerInvocation` is a trusted non-deserializable host
+input: the host injects source identity and opaque context while model-selected
+data is limited to the installed target, skill and message. Submit, observe and
+qualified idempotent replay recover and verify the current source service context
+before reaching the journal.
+
+Focused preparation and strict Clippy checks cover call-graph digest changes,
+missing target grants/permits and the compiled runtime integration. The remaining
+mesh work is a concrete model-tool bridge, remote task lifecycle projection, a
+two-server lost-response/restart scenario and production-backend qualification.

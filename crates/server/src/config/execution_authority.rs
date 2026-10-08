@@ -13,7 +13,54 @@ use serde::{Deserialize, Serialize};
 pub struct ExecutionAuthorityConfig {
     #[serde(default)]
     pub agent_driver: AgentServiceDriverConfig,
+    #[serde(default)]
+    pub peer_transport: AgentPeerTransportConfig,
     pub scopes: Vec<ExecutionScopeConfig>,
+}
+
+/// Host-owned agent-to-agent delivery controls. Credentials and exact endpoints
+/// remain on qualified service declarations and never enter invocation input.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AgentPeerTransportConfig {
+    pub enabled: bool,
+    pub timeout_ms: u64,
+    pub adapter_revision: String,
+    pub internal_hosts: Vec<String>,
+}
+impl Default for AgentPeerTransportConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            timeout_ms: 10_000,
+            adapter_revision: "acteon-peer-http-v1".into(),
+            internal_hosts: Vec::new(),
+        }
+    }
+}
+impl AgentPeerTransportConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        let hosts = self.internal_hosts.iter().collect::<BTreeSet<_>>();
+        if !(100..=120_000).contains(&self.timeout_ms)
+            || self.adapter_revision.is_empty()
+            || self.adapter_revision.len() > 120
+            || self.adapter_revision.trim() != self.adapter_revision
+            || self.adapter_revision.chars().any(char::is_control)
+            || self.internal_hosts.len() > 64
+            || hosts.len() != self.internal_hosts.len()
+            || self.internal_hosts.iter().any(|host| {
+                host.is_empty()
+                    || host.len() > 253
+                    || host.trim() != host
+                    || host.contains('/')
+                    || host.contains('@')
+                    || host.chars().any(char::is_control)
+            })
+        {
+            return Err("invalid bounded agent peer transport configuration".into());
+        }
+        Ok(())
+    }
 }
 
 /// Host scheduling controls, separate from agent permits and service identity.
@@ -182,6 +229,7 @@ pub struct ExecutionRouteConfig {
 impl ExecutionAuthorityConfig {
     pub fn validate(&self, control_scope: (&str, &str)) -> Result<(), String> {
         self.agent_driver.validate()?;
+        self.peer_transport.validate()?;
         if self.scopes.is_empty() || self.scopes.len() > 128 {
             return Err("execution authority requires 1..128 declared scopes".into());
         }
@@ -331,6 +379,37 @@ impl ExecutionScopeConfig {
                 || service.grants.iter().any(|grant| !grants.insert(&grant.id))
             {
                 return Err("agent service and grant identities must be unique".into());
+            }
+        }
+        for source in &self.agent_services {
+            let onward = source.onward_agents.iter().collect::<BTreeSet<_>>();
+            if source.onward_agents.len() > 16 || onward.len() != source.onward_agents.len() {
+                return Err("agent onward service bindings must be unique and bounded".into());
+            }
+            for target_id in onward {
+                let target = self
+                    .agent_services
+                    .iter()
+                    .find(|candidate| &candidate.card.agent_id == target_id)
+                    .ok_or("agent onward service must name a current declared service")?;
+                if target.card.agent_id == source.card.agent_id
+                    || !target
+                        .grants
+                        .iter()
+                        .any(|grant| grant.source == source.principal)
+                    || !source.recipient_permits.iter().any(|reference| {
+                        self.permits.iter().any(|permit| {
+                            permit.id == reference.id
+                                && permit.revision == reference.accepted_revision
+                                && permit.subject == source.principal
+                                && permit.agents.contains(target_id)
+                        })
+                    })
+                {
+                    return Err(
+                        "agent onward service requires an explicit target grant and permit".into(),
+                    );
+                }
             }
         }
         let mut retained_epochs = BTreeSet::new();

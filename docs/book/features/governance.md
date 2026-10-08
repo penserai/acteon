@@ -24,6 +24,38 @@ the same private caller checks.
 All five SDKs expose this path through `AgentServiceParent` or the corresponding
 typed options. See [SDK coverage](../api/sdk-coverage.md#retain-an-authenticated-agent-service-receipt).
 
+For agent-to-agent calls made inside an accepted service, declare exact outbound
+edges on the source service. The target must independently grant that source
+principal access, and one of the source service's recipient permits must name
+the target:
+
+```toml
+[execution_authority.peer_transport]
+enabled = true
+timeout_ms = 10000
+adapter_revision = "acteon-peer-http-v1"
+
+[[execution_authority.scopes.agent_services]]
+# card, principal, endpoint, route, credential and recipient permits omitted
+onward_agents = ["resolver"]
+submission_capability = "at_most_once"
+```
+
+Preparation seals the full reachable provider footprint, each immediate peer's
+`agent.invoke` effect, and the exact target grants into the source service
+context. A changed call graph changes the deployment policy and binding digest.
+At runtime, `submit_agent_peer` recovers the host-retained source context,
+rechecks its current service binding, grants, permits, closures, registry state
+and budget, journals the intent in the configured state backend, then calls the
+exact guarded target adapter. `observe_agent_peer` performs the same current
+checks without network traffic. `replay_agent_peer_idempotent` is available only
+when the operator has qualified that target endpoint as replay-idempotent.
+
+The Rust host constructs `AgentPeerInvocation`; it has no wire deserializer.
+Model output may choose an installed target, skill and message, while the host
+supplies source identity and opaque context. A model-runtime tool adapter remains
+to be connected to this API.
+
 ## Declare independent management rights
 
 First enable [execution permits](execution-permits.md) and shared authentication.
@@ -325,12 +357,11 @@ denied candidates are omitted.
 
 Discovery is advisory and writes no reservations, children or start leases.
 The returned revision describes the observation; it is not authority to invoke
-a peer. Cross-participant child admission must preserve both authority sources
-and establish shared sponsorship before a transport adapter can register a send.
-That admission and real A2A runtime handoff remain subsequent implementation work.
-This host integration currently has no HTTP discovery route or model-callable
-runtime tool. HTTPS URL syntax approval also requires a separately qualified
-transport with network confinement, endpoint authentication and protocol checks.
+a peer. Configured agent services preserve cross-participant lineage and shared
+sponsorship at child admission. The installed durable transport repeats current
+source, registry and binding checks before registering a send. There is no HTTP
+discovery route or model-callable runtime tool yet; hosts call the trusted Rust
+API and keep authority data outside model output.
 
 
 ### Service delegation and shared sponsorship
@@ -378,12 +409,12 @@ starts recheck each source's ingress authority, each ancestor's original and
 current service intent, and the final recipient's direct authority. Same-actor
 workflow continuations preserve the delegation proof and sponsorship.
 
-These are trusted Rust runtime APIs. Registry selection, input qualification,
-agent-specific runtime binding and A2A transport must supply the approved plan
-and independently authenticated recipient acceptance. The existing advisory
-registry preview is separate from child admission. Public delegation routes,
-client tooling and the durable peer transport belong to the mesh integration
-phase.
+These are trusted Rust runtime APIs. Configured services now bind registry
+selection, the complete call graph, agent-specific runtime identity and durable
+A2A submission to the approved plan and independently authenticated recipient
+acceptance. The advisory registry preview remains separate from child admission.
+Remote task progress, result, input and cancellation projection and public model
+tooling remain part of the mesh integration phase.
 
 New contexts use signed format 5. Previously accepted formats 2–4 remain readable;
 new grants cannot be attached to an old acceptance by replay. Upgrade and drain
