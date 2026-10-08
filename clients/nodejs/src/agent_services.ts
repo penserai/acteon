@@ -13,6 +13,26 @@ export interface AgentServiceReceipt {
   readonly sourceContext: string;
   readonly task: Record<string, unknown>;
 }
+export type AgentPeerSendStatus =
+  | Readonly<{ state: "uncertain" }>
+  | Readonly<{ state: "accepted"; task: Record<string, unknown> }>
+  | Readonly<{ state: "rejected"; code: string }>;
+export interface AgentPeerSendReceipt {
+  readonly submissionId: string;
+  readonly status: AgentPeerSendStatus;
+}
+export function agentPeerReceipt(value: unknown, namespace: string, tenant: string): AgentPeerSendReceipt {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("agent peer receipt missing or malformed");
+  const raw = value as Record<string, unknown>;
+  if (Object.keys(raw).sort().join(",") !== "status,submission_id" || typeof raw.submission_id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(raw.submission_id)) throw new Error("agent peer receipt missing or malformed");
+  if (!raw.status || typeof raw.status !== "object" || Array.isArray(raw.status)) throw new Error("agent peer receipt missing or malformed");
+  const status = raw.status as Record<string, unknown>;
+  const keys = Object.keys(status).sort().join(",");
+  if (status.state === "uncertain" && keys === "state") return Object.freeze({ submissionId: raw.submission_id, status: Object.freeze({ state: "uncertain" as const }) });
+  if (status.state === "accepted" && keys === "state,task") return Object.freeze({ submissionId: raw.submission_id, status: Object.freeze({ state: "accepted" as const, task: agentTask(status.task, namespace, tenant) }) });
+  if (status.state === "rejected" && keys === "code,state" && typeof status.code === "string" && status.code.length > 0 && status.code.length <= 1024 && status.code.trim() === status.code && !/\p{Cc}/u.test(status.code)) return Object.freeze({ submissionId: raw.submission_id, status: Object.freeze({ state: "rejected" as const, code: status.code }) });
+  throw new Error("agent peer receipt missing or malformed");
+}
 export function agentSource(value: string | null): string {
   if (!value || value.length > 8192 || !/^[A-Za-z0-9_-]+$/.test(value)) throw new Error("agent service source context missing or malformed");
   return value;

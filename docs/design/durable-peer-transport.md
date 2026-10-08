@@ -1,8 +1,8 @@
 # Durable qualified peer transport
 
 **Status:** Rust host journal, guarded Acteon HTTP adapter, deployment wiring,
-and trusted host invocation API implemented. A model-tool adapter and the remote
-task lifecycle bridge remain follow-up work.
+trusted host invocation API, safe agent-facing route and five SDK helpers
+implemented. The remote task lifecycle bridge remains follow-up work.
 
 Acteon needs a transport boundary between governed peer selection and a real A2A
 network call. Discovery is advisory. A live card, endpoint URL, or model-selected
@@ -103,6 +103,10 @@ can select only an already configured target, skill and message. Submission,
 observation and explicitly qualified idempotent recovery recover the current
 context, verify it still belongs to the installed source service binding, use
 the source's configured permits, and resolve only the installed transport.
+The agent-facing route takes an accepted source task ID as an opaque lookup
+handle plus current private authentication. Its body contains only the message;
+the runtime proves the caller is that accepted recipient before constructing the
+trusted invocation.
 
 ## Evidence
 
@@ -120,12 +124,10 @@ Focused contracts cover:
 
 This foundation does not yet complete the autonomous mesh. The next slices are:
 
-1. a model/runtime tool adapter that maps only target, skill and message into
-   the trusted host invocation while retaining source context outside model data;
-2. durable remote observation, progress cursor, bounded artifact transfer,
+1. durable remote observation, progress cursor, bounded artifact transfer,
    required-input handoff, terminal result projection, and cancellation state;
-3. restart and lost-acceptance tests against two real Acteon servers; and
-4. qualification on each supported durable state backend.
+2. restart and lost-acceptance tests against two real Acteon servers; and
+3. qualification on each supported durable state backend.
 
-Until those slices land, this is a governed host integration rather than a
-complete autonomous outbound task lifecycle.
+Until those slices land, submission is governed and durable while the complete
+autonomous remote task lifecycle remains unfinished.

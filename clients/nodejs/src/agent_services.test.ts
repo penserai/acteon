@@ -20,6 +20,22 @@ it("carries an opaque governed parent with explicit permits", async () => {
   });
   expect(fetch).toHaveBeenCalledTimes(1);
 });
+it("sends peer tool input without authority fields and validates the durable receipt", async () => {
+  const source = { namespace: "prod", tenant: "acme", agent: "notifier", taskId: "job-1", sourceContext: fixture.jobs[0].source_context, task: fixture.jobs[0].task };
+  const fetch = vi.fn(async (input: string, init: RequestInit) => {
+    expect(input).toContain("/tasks/job-1/peers/team%2Fresolver/diagnose/message:send");
+    const headers = init.headers as Record<string, string>;
+    expect(headers[AGENT_SOURCE_CONTEXT_HEADER]).toBeUndefined();
+    expect(headers[AGENT_EXECUTION_CONTEXT_HEADER]).toBeUndefined();
+    expect(headers["x-acteon-execution-permits"]).toBeUndefined();
+    expect(JSON.parse(init.body as string)).toEqual({message:{messageId:"peer-1"}});
+    return new Response(JSON.stringify({submission_id:"f47ac10b-58cc-5372-a567-0e02b2c3d479",status:{state:"accepted",task:fixture.jobs[1].task}}), {headers:{"a2a-version":"1.0"}});
+  });
+  vi.stubGlobal("fetch", fetch);
+  const receipt = await new ActeonClient("http://acteon").agentServiceSendPeer(source, "team/resolver", "diagnose", {messageId:"peer-1"});
+  expect(receipt.status.state).toBe("accepted");
+  expect(fetch).toHaveBeenCalledTimes(1);
+});
 it("keeps concurrent job headers separate and ignores mutable task metadata", async () => {
   vi.stubGlobal("fetch", async (input: string, init: RequestInit) => {
     const headers = init.headers as Record<string, string>;

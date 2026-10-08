@@ -60,6 +60,7 @@ Mirrors the JSON-RPC methods on resource-shaped paths:
 
 ```text
 POST   /a2a/{ns}/{tenant}/v1/message:send
+POST   /a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/message:send
 GET    /a2a/{ns}/{tenant}/v1/tasks/{id}
 POST   /a2a/{ns}/{tenant}/v1/tasks/{id}:cancel
 GET    /a2a/{ns}/{tenant}/v1/tasks/{id}/events            # SSE
@@ -68,6 +69,12 @@ GET    /a2a/{ns}/{tenant}/v1/tasks/{id}/pushNotificationConfigs
 GET    /a2a/{ns}/{tenant}/v1/tasks/{id}/pushNotificationConfigs/{cfgId}
 DELETE /a2a/{ns}/{tenant}/v1/tasks/{id}/pushNotificationConfigs/{cfgId}
 ```
+
+The longer agent-service route is Acteon's governed peer tool. A configured
+agent calls from one accepted source task and supplies only a message. The server
+recovers the source context and permits, resolves the reviewed target binding and
+credential, and journals the send before network delivery. Its response is
+accepted, rejected, or uncertain; uncertainty is never an instruction to retry.
 
 ### Discovery (unauthenticated)
 

@@ -765,7 +765,7 @@ impl ExecutionAuthorityRuntime {
         Ok((runtime, source))
     }
 
-    async fn service_runtime_for_task(
+    pub(super) async fn service_runtime_for_task(
         &self,
         namespace: &str,
         tenant: &str,

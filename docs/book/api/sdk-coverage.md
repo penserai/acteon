@@ -2,7 +2,7 @@
 
 Use Acteon's SDKs to connect agents, services, and workers to the same execution and governance platform. Start with the typed helpers for dispatch, rules, audit, approvals, and bus operations. Use the complete **platform operation API** for controls that do not yet have a dedicated helper in your language.
 
-The current source tree provides a generated catalog for **207 finite HTTP operations** in Rust, Python, TypeScript, Go, and Java. It includes receipt sessions, managed-stage recovery, workflow and execution controls, inference profiles, stream windows, and operator APIs. Six streaming or polymorphic RPC routes use the existing streaming and A2A clients instead. Server configuration, authorization, and optional build features still determine which operations are available on your deployment.
+The current source tree provides a generated catalog for **208 finite HTTP operations** in Rust, Python, TypeScript, Go, and Java. It includes receipt sessions, managed-stage recovery, workflow and execution controls, inference profiles, stream windows, and operator APIs. Six streaming or polymorphic RPC routes use the existing streaming and A2A clients instead. Server configuration, authorization, and optional build features still determine which operations are available on your deployment.
 
 ## Choose the right interface
 
@@ -225,6 +225,23 @@ opaque lookup reference: the server recovers sealed state and revalidates the
 authenticated principal, permit revisions, registry, delegation grant, and
 budgets. Context and permit headers are required together. Model messages and
 task metadata are never authority sources.
+
+An accepted agent can invoke one configured peer without receiving those
+authority references. The helper uses the source service receipt only to address
+the accepted task; it sends the target, skill and message while current private
+authentication proves the source recipient:
+
+| SDK | Governed peer submission |
+| --- | --- |
+| Rust | `agent_service_send_peer(&source, target, skill, &message)` |
+| Python, sync/async | `agent_service_send_peer(source, target, skill, message)` |
+| TypeScript | `agentServiceSendPeer(source, target, skill, message)` |
+| Go | `AgentServiceSendPeer(ctx, source, target, skill, message)` |
+| Java | `agentServiceSendPeer(source, target, skill, message)` |
+
+The typed receipt preserves `accepted`, `rejected`, and `uncertain` as distinct
+states and validates the stable submission UUID and accepted task scope. Helpers
+send one request, reject redirects, and never turn uncertainty into retry.
 
 The admin UI's **Governed tasks** tab on an agent detail page accepts work and
 refreshes accepted tasks using the current browser identity. The server enforces

@@ -295,7 +295,10 @@ impl AgentProviderRuntime {
             .verify_service_runtime_binding(
                 &context,
                 self.binding.digest(),
-                std::slice::from_ref(self.bound.effect()),
+                self.binding
+                    .service_plan()
+                    .ok_or(AgentRuntimeError::Invalid)?
+                    .direct_effects(),
             )
             .await?;
         Ok(())
@@ -434,6 +437,23 @@ impl AgentProviderRuntime {
         context
             .immediate_service_source()
             .ok_or(AgentRuntimeError::Conflict)
+    }
+
+    /// Recover the current recipient context for a host-owned tool invocation.
+    /// The task ID is an opaque lookup handle, never an authority token.
+    pub async fn recipient_context(
+        &self,
+        task_id: uuid::Uuid,
+    ) -> Result<VerifiedExecutionContext, AgentRuntimeError> {
+        let accepted = self.load_acceptance(task_id).await?;
+        self.dependencies
+            .contexts
+            .recover_reference(
+                &accepted.reference,
+                self.dependencies.clock.now().timestamp_millis(),
+            )
+            .await
+            .map_err(Into::into)
     }
 
     async fn load_acceptance(&self, task_id: uuid::Uuid) -> Result<Acceptance, AgentRuntimeError> {

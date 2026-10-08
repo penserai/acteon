@@ -186,6 +186,20 @@
       "response": "json"
     },
     {
+      "name": "agent_services_peer_send",
+      "method": "POST",
+      "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/message:send",
+      "parameters": [
+        "namespace",
+        "tenant",
+        "agent",
+        "id",
+        "target",
+        "skill"
+      ],
+      "response": "json"
+    },
+    {
       "name": "agent_services_task_get",
       "method": "GET",
       "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}",

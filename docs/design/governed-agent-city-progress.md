@@ -1779,9 +1779,9 @@ mapping foundation. The first concrete adapter now uses the guarded outbound
 client, exact host credential, disabled redirects, bounded response reads, and
 native parent-context headers. It accepts only a typed task and source mapping;
 redirects, 5xx, malformed responses, and transport failures remain uncertain.
-The remote lifecycle bridge, a concrete model-tool adapter, a real two-server
-restart scenario, and durable-backend qualification are still required before
-the autonomous mesh is complete.
+The remote lifecycle bridge, a real two-server restart scenario, and
+durable-backend qualification are still required before the autonomous mesh is
+complete.
 
 ### Installed governed peer handoff
 
@@ -1802,7 +1802,14 @@ data is limited to the installed target, skill and message. Submit, observe and
 qualified idempotent replay recover and verify the current source service context
 before reaching the journal.
 
+The protected peer-send route resolves that trusted invocation from an accepted
+source task and the calling agent's current private credential. The request body
+contains only the message; source context, permits, endpoint, binding and
+credentials cannot be deserialized from model output. Rust, Python sync/async,
+TypeScript, Go and Java expose typed one-shot helpers and validate the versioned
+accepted, rejected or uncertain receipt without automatic retry.
+
 Focused preparation and strict Clippy checks cover call-graph digest changes,
 missing target grants/permits and the compiled runtime integration. The remaining
-mesh work is a concrete model-tool bridge, remote task lifecycle projection, a
-two-server lost-response/restart scenario and production-backend qualification.
+mesh work is remote task lifecycle projection, a two-server
+lost-response/restart scenario and production-backend qualification.

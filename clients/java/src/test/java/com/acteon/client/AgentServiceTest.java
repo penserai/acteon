@@ -15,6 +15,30 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 class AgentServiceTest {
+    @Test void peerToolSendsNoAuthorityFieldsAndValidatesReceipt() throws Exception {
+        var mapper = JsonMapper.build();
+        var task = mapper.readTree("{\"id\":\"job-1\",\"namespace\":\"prod\",\"tenant\":\"acme\"}");
+        var source = new AgentServiceReceipt("prod","acme","notifier","job-1","host-only",task);
+        var failure = new AtomicReference<Throwable>();
+        var server = HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
+        server.createContext("/",exchange -> {
+            try {
+                assertNull(exchange.getRequestHeaders().getFirst(AgentServiceReceipt.SOURCE_CONTEXT_HEADER));
+                assertNull(exchange.getRequestHeaders().getFirst("x-acteon-execution-context"));
+                assertNull(exchange.getRequestHeaders().getFirst("x-acteon-execution-permits"));
+                assertTrue(exchange.getRequestURI().getRawPath().contains("/peers/team%2Fresolver/diagnose/message:send"));
+            } catch(Throwable error) { failure.set(error); }
+            exchange.getResponseHeaders().set(A2A.VERSION_HEADER,"1.0");
+            var body = "{\"submission_id\":\"f47ac10b-58cc-5372-a567-0e02b2c3d479\",\"status\":{\"state\":\"accepted\",\"task\":{\"id\":\"remote-1\",\"namespace\":\"prod\",\"tenant\":\"acme\"}}}".getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200,body.length); exchange.getResponseBody().write(body); exchange.close();
+        }); server.start();
+        try(var client = new ActeonClient("http://127.0.0.1:"+server.getAddress().getPort())) {
+            var receipt = client.agentServiceSendPeer(source,"team/resolver","diagnose",Map.of("messageId","peer-1"));
+            assertEquals("accepted",receipt.state());
+            if(failure.get()!=null) throw new AssertionError(failure.get());
+        } finally { server.stop(0); }
+    }
+
     @Test void parentContextAndPermitsAreRequestLocal() throws Exception {
         var mapper = JsonMapper.build();
         var fixture = mapper.readTree(Files.readString(Path.of("../contract-fixtures/agent-services.json")));

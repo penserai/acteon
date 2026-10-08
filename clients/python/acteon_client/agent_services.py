@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+import unicodedata
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID
 
@@ -90,6 +91,49 @@ class AgentServiceProviderAbort:
     state: Literal["restricted_only", "uncertain", "reconciled"]
     attempt_id: str | None = None
     proof_digest: str | None = None
+
+
+@dataclass(frozen=True)
+class AgentPeerSendReceipt:
+    """Durable send result; uncertain does not prove rejection."""
+
+    submission_id: str
+    state: Literal["uncertain", "accepted", "rejected"]
+    task: dict[str, Any] | None = None
+    code: str | None = None
+
+
+def _peer_receipt(
+    response: httpx.Response, namespace: str, tenant: str
+) -> AgentPeerSendReceipt:
+    value = _response_value(response)
+    if not isinstance(value, dict) or set(value) != {"submission_id", "status"}:
+        raise ActeonError("agent peer receipt missing or malformed")
+    submission_id = value.get("submission_id")
+    try:
+        parsed = UUID(submission_id) if isinstance(submission_id, str) else None
+    except ValueError:
+        parsed = None
+    status = value.get("status")
+    if parsed is None or parsed.version != 5 or str(parsed) != submission_id or not isinstance(status, dict):
+        raise ActeonError("agent peer receipt missing or malformed")
+    state = status.get("state")
+    if state == "uncertain" and set(status) == {"state"}:
+        return AgentPeerSendReceipt(submission_id, state)
+    if state == "accepted" and set(status) == {"state", "task"}:
+        return AgentPeerSendReceipt(
+            submission_id, state, task=_task_value(status.get("task"), namespace, tenant)
+        )
+    if state == "rejected" and set(status) == {"state", "code"}:
+        code = status.get("code")
+        if (
+            isinstance(code, str)
+            and 0 < len(code) <= 1024
+            and code.strip() == code
+            and not any(unicodedata.category(char) == "Cc" for char in code)
+        ):
+            return AgentPeerSendReceipt(submission_id, state, code=code)
+    raise ActeonError("agent peer receipt missing or malformed")
 
 
 def _provider_abort(value: Any) -> AgentServiceProviderAbort | None:
@@ -209,6 +253,29 @@ class _AgentServicesMixin:
         )
         return _receipt(response, namespace, tenant, agent)
 
+    def agent_service_send_peer(
+        self,
+        source: AgentServiceReceipt,
+        target: str,
+        skill: str,
+        message: dict[str, Any],
+    ) -> AgentPeerSendReceipt:
+        """Submit once from an accepted source task; sends no authority fields."""
+        response = self._request(
+            "POST",
+            _base(source.namespace, source.tenant, source.agent)
+            + "/tasks/"
+            + _segment(source.task_id)
+            + "/peers/"
+            + _segment(target)
+            + "/"
+            + _segment(skill)
+            + "/message:send",
+            json={"message": message},
+            extra_headers=dict(_A2A_HEADERS),
+        )
+        return _peer_receipt(response, source.namespace, source.tenant)
+
     def agent_service_stop_task(self, receipt: AgentServiceReceipt) -> AgentServiceStopReceipt:
         """Stop future starts; repeat the same receipt explicitly after response loss."""
         response = self._request(
@@ -268,6 +335,28 @@ class _AsyncAgentServicesMixin:
             extra_headers=_parent_headers(parent),
         )
         return _receipt(response, namespace, tenant, agent)
+
+    async def agent_service_send_peer(
+        self,
+        source: AgentServiceReceipt,
+        target: str,
+        skill: str,
+        message: dict[str, Any],
+    ) -> AgentPeerSendReceipt:
+        response = await self._request(
+            "POST",
+            _base(source.namespace, source.tenant, source.agent)
+            + "/tasks/"
+            + _segment(source.task_id)
+            + "/peers/"
+            + _segment(target)
+            + "/"
+            + _segment(skill)
+            + "/message:send",
+            json={"message": message},
+            extra_headers=dict(_A2A_HEADERS),
+        )
+        return _peer_receipt(response, source.namespace, source.tenant)
 
     async def agent_service_stop_task(
         self, receipt: AgentServiceReceipt

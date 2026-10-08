@@ -944,6 +944,7 @@ Cancel an active swarm execution run.
 | **A2A Protocol & Bus** |||
 | `POST` | `/a2a/{ns}/{tenant}` | A2A JSON-RPC 2.0 endpoint |
 | `POST` | `/a2a/{ns}/{tenant}/v1/message:send` | A2A REST message/task submit |
+| `POST` | `/a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/message:send` | Governed peer submission from an accepted agent task |
 | `GET` | `/a2a/{ns}/{tenant}/v1/tasks/{id}` | A2A task details |
 | `GET` | `/a2a/{ns}/{tenant}/.well-known/agent.json` | Public A2A agent card discovery |
 | `GET` | `/v1/bus/topics` | List bus topics |

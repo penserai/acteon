@@ -239,6 +239,11 @@ pub fn router(state: AppState) -> Router {
             post(agent_services::task_stop),
         )
         .route(
+            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/message:send",
+            post(agent_services::peer_send)
+                .layer(DefaultBodyLimit::max(a2a::A2A_MAX_BODY_BYTES)),
+        )
+        .route(
             "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}",
             get(agent_services::task_get),
         )

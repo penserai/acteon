@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/url"
 	"regexp"
+	"strings"
+	"unicode"
 )
 
 const AgentSourceContextHeader = "x-acteon-agent-source-context"
@@ -58,6 +60,19 @@ func agentServiceBase(namespace, tenant, agent string) (string, error) {
 type AgentServiceParent struct {
 	ExecutionContext string
 	Permits          []PermitReference
+}
+
+// AgentPeerSendStatus is the durable outcome of one peer submission.
+type AgentPeerSendStatus struct {
+	State string         `json:"state"`
+	Task  map[string]any `json:"task,omitempty"`
+	Code  string         `json:"code,omitempty"`
+}
+
+// AgentPeerSendReceipt keeps ambiguity distinct from known rejection.
+type AgentPeerSendReceipt struct {
+	SubmissionID string              `json:"submission_id"`
+	Status       AgentPeerSendStatus `json:"status"`
 }
 
 func (c *Client) agentServiceRequest(ctx context.Context, method, path string, body any, source string, parent *AgentServiceParent) (map[string]any, string, error) {
@@ -128,6 +143,79 @@ func (c *Client) AgentServiceSendMessageWithParent(ctx context.Context, namespac
 		return nil, err
 	}
 	return &AgentServiceReceipt{Namespace: namespace, Tenant: tenant, Agent: agent, TaskID: id, SourceContext: source, Task: task}, nil
+}
+
+// AgentServiceSendPeer submits from an accepted source task to one configured
+// peer. The request body contains only the message; authority stays server-side.
+func (c *Client) AgentServiceSendPeer(ctx context.Context, source *AgentServiceReceipt, target, skill string, message map[string]any) (*AgentPeerSendReceipt, error) {
+	if source == nil {
+		return nil, fmt.Errorf("agent service source receipt required")
+	}
+	base, err := agentServiceBase(source.Namespace, source.Tenant, source.Agent)
+	if err != nil {
+		return nil, err
+	}
+	taskID, err := agentSegment(source.TaskID)
+	if err != nil {
+		return nil, err
+	}
+	targetID, err := agentSegment(target)
+	if err != nil {
+		return nil, err
+	}
+	skillID, err := agentSegment(skill)
+	if err != nil {
+		return nil, err
+	}
+	value, _, err := c.agentServiceRequest(ctx, "POST", base+"/tasks/"+taskID+"/peers/"+targetID+"/"+skillID+"/message:send", map[string]any{"message": message}, "", nil)
+	if err != nil {
+		return nil, err
+	}
+	if len(value) != 2 {
+		return nil, fmt.Errorf("agent peer receipt missing or malformed")
+	}
+	submission, ok := value["submission_id"].(string)
+	if !ok || !agentAttemptPattern.MatchString(submission) {
+		return nil, fmt.Errorf("agent peer receipt missing or malformed")
+	}
+	rawStatus, ok := value["status"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("agent peer receipt missing or malformed")
+	}
+	state, ok := rawStatus["state"].(string)
+	if !ok {
+		return nil, fmt.Errorf("agent peer receipt missing or malformed")
+	}
+	status := AgentPeerSendStatus{State: state}
+	switch state {
+	case "uncertain":
+		if len(rawStatus) != 1 {
+			return nil, fmt.Errorf("agent peer receipt missing or malformed")
+		}
+	case "accepted":
+		task, ok := rawStatus["task"].(map[string]any)
+		if !ok || len(rawStatus) != 2 {
+			return nil, fmt.Errorf("agent peer receipt missing or malformed")
+		}
+		if _, err := agentTask(task, source.Namespace, source.Tenant, ""); err != nil {
+			return nil, err
+		}
+		status.Task = task
+	case "rejected":
+		code, ok := rawStatus["code"].(string)
+		if !ok || code == "" || len(code) > 1024 || strings.TrimSpace(code) != code || len(rawStatus) != 2 {
+			return nil, fmt.Errorf("agent peer receipt missing or malformed")
+		}
+		for _, character := range code {
+			if unicode.IsControl(character) {
+				return nil, fmt.Errorf("agent peer receipt missing or malformed")
+			}
+		}
+		status.Code = code
+	default:
+		return nil, fmt.Errorf("agent peer receipt missing or malformed")
+	}
+	return &AgentPeerSendReceipt{SubmissionID: submission, Status: status}, nil
 }
 
 // AgentServiceGetTask observes one retained job without starting provider work.

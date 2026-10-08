@@ -52,9 +52,12 @@ checks without network traffic. `replay_agent_peer_idempotent` is available only
 when the operator has qualified that target endpoint as replay-idempotent.
 
 The Rust host constructs `AgentPeerInvocation`; it has no wire deserializer.
-Model output may choose an installed target, skill and message, while the host
-supplies source identity and opaque context. A model-runtime tool adapter remains
-to be connected to this API.
+Agents call `POST
+/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{source_task}/peers/{target}/{skill}/message:send`
+with only `{"message": ...}`. The accepted source task is an opaque lookup
+handle, and current private authentication must match that task's recipient
+context. The server supplies source identity, permits, credential, endpoint and
+opaque context. Models never send those authority fields.
 
 ## Declare independent management rights
 
@@ -360,8 +363,8 @@ The returned revision describes the observation; it is not authority to invoke
 a peer. Configured agent services preserve cross-participant lineage and shared
 sponsorship at child admission. The installed durable transport repeats current
 source, registry and binding checks before registering a send. There is no HTTP
-discovery route or model-callable runtime tool yet; hosts call the trusted Rust
-API and keep authority data outside model output.
+discovery route for this reviewed registry; the model-callable send route accepts
+only a configured target, skill and message and keeps authority data server-side.
 
 
 ### Service delegation and shared sponsorship
@@ -413,8 +416,8 @@ These are trusted Rust runtime APIs. Configured services now bind registry
 selection, the complete call graph, agent-specific runtime identity and durable
 A2A submission to the approved plan and independently authenticated recipient
 acceptance. The advisory registry preview remains separate from child admission.
-Remote task progress, result, input and cancellation projection and public model
-tooling remain part of the mesh integration phase.
+Remote task progress, result, input and cancellation projection remain part of
+the mesh integration phase.
 
 New contexts use signed format 5. Previously accepted formats 2–4 remain readable;
 new grants cannot be attached to an old acceptance by replay. Upgrade and drain

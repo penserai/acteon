@@ -37,6 +37,23 @@ pub struct AgentServiceStopReceipt {
     pub provider_abort: Option<AgentServiceProviderAbort>,
 }
 
+/// Durable peer-send receipt. `Uncertain` never proves remote rejection and
+/// must not be retried with a new message identity.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentPeerSendReceipt {
+    pub submission_id: String,
+    pub status: AgentPeerSendStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AgentPeerSendStatus {
+    Uncertain,
+    Accepted { task: Box<Task> },
+    Rejected { code: String },
+}
+
 /// Provider-side intervention remains separate from the durable start fence.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
@@ -142,6 +159,75 @@ async fn response_task(response: reqwest::Response) -> Result<Task, Error> {
         .map_err(|e| Error::Deserialization(e.to_string()))
 }
 impl ActeonClient {
+    /// Submit from an accepted source-agent task to one configured peer. The
+    /// source task is an opaque host lookup; no authority fields are sent.
+    pub async fn agent_service_send_peer(
+        &self,
+        source: &AgentServiceReceipt,
+        target: &str,
+        skill: &str,
+        message: &TaskMessage,
+    ) -> Result<AgentPeerSendReceipt, Error> {
+        let path = format!(
+            "/a2a/{}/{}/agents/{}/v1/tasks/{}/peers/{}/{}/message:send",
+            segment(&source.namespace)?,
+            segment(&source.tenant)?,
+            segment(&source.agent)?,
+            segment(&source.task_id)?,
+            segment(target)?,
+            segment(skill)?,
+        );
+        let response = self
+            .add_auth(self.client.post(format!("{}{path}", self.base_url)))
+            .header("a2a-version", A2A_PROTOCOL_VERSION)
+            .json(&serde_json::json!({"message":message}))
+            .send()
+            .await
+            .map_err(|error| Error::Connection(error.to_string()))?;
+        if !response.status().is_success() {
+            return Err(Error::Http {
+                status: response.status().as_u16(),
+                message: response
+                    .text()
+                    .await
+                    .map_err(|error| Error::Connection(error.to_string()))?,
+            });
+        }
+        if response
+            .headers()
+            .get("a2a-version")
+            .and_then(|value| value.to_str().ok())
+            != Some(A2A_PROTOCOL_VERSION)
+        {
+            return Err(Error::Deserialization(
+                "agent peer response version missing or unsupported".into(),
+            ));
+        }
+        let receipt: AgentPeerSendReceipt = response
+            .json()
+            .await
+            .map_err(|error| Error::Deserialization(error.to_string()))?;
+        let valid_submission = valid_attempt_id(&receipt.submission_id);
+        let valid_status = match &receipt.status {
+            AgentPeerSendStatus::Uncertain => true,
+            AgentPeerSendStatus::Accepted { task } => {
+                task_matches(task, &source.namespace, &source.tenant, None)
+            }
+            AgentPeerSendStatus::Rejected { code } => {
+                !code.is_empty()
+                    && code.len() <= 1024
+                    && code.trim() == code
+                    && !code.chars().any(char::is_control)
+            }
+        };
+        if !valid_submission || !valid_status {
+            return Err(Error::Deserialization(
+                "agent peer receipt missing or malformed".into(),
+            ));
+        }
+        Ok(receipt)
+    }
+
     /// Submit once with a stable message ID; retain the receipt separately from
     /// model data. On response loss, reuse that same message identity.
     pub async fn agent_service_send_message(
@@ -411,9 +497,31 @@ mod tests {
                         )
                             .into_response();
                     }
+                    let has_execution_context = request
+                        .headers()
+                        .contains_key(AGENT_EXECUTION_CONTEXT_HEADER);
+                    let has_execution_permits =
+                        request.headers().contains_key(EXECUTION_PERMITS_HEADER);
                     let raw = to_bytes(request.into_body(), 2 * 1024 * 1024)
                         .await
                         .unwrap();
+                    if path.contains("/peers/") {
+                        assert!(source.is_none());
+                        assert!(!has_execution_context);
+                        assert!(!has_execution_permits);
+                        let body: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+                        assert_eq!(body.as_object().unwrap().len(), 1);
+                        assert_eq!(body["message"]["messageId"], "peer-1");
+                        let mut response = Json(serde_json::json!({
+                            "submission_id":"f47ac10b-58cc-5372-a567-0e02b2c3d479",
+                            "status":{"state":"accepted", "task":wire["jobs"][0]["task"]}
+                        }))
+                        .into_response();
+                        response
+                            .headers_mut()
+                            .insert("a2a-version", "1.0".parse().unwrap());
+                        return response;
+                    }
                     let index = if raw.is_empty() {
                         usize::from(path.ends_with("job-2") || path.ends_with("job-2/stop"))
                     } else {
@@ -466,6 +574,43 @@ mod tests {
                 server,
             }
         }
+    }
+    #[tokio::test]
+    async fn peer_tool_sends_only_message_and_validates_durable_receipt() {
+        let fixture = Fixture::new().await;
+        let source = fixture
+            .client
+            .agent_service_send_message(
+                "prod",
+                "acme",
+                "notifier",
+                &TaskMessage::text("m1", acteon_core::TaskRole::User, "one"),
+            )
+            .await
+            .unwrap();
+        let receipt = fixture
+            .client
+            .agent_service_send_peer(
+                &source,
+                "team/resolver",
+                "diagnose",
+                &TaskMessage::text("peer-1", acteon_core::TaskRole::User, "inspect"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            receipt.submission_id,
+            "f47ac10b-58cc-5372-a567-0e02b2c3d479"
+        );
+        assert!(matches!(
+            receipt.status,
+            AgentPeerSendStatus::Accepted { .. }
+        ));
+        assert!(
+            fixture.calls.lock().unwrap()[1]
+                .0
+                .ends_with("/tasks/job-1/peers/team/resolver/diagnose/message:send")
+        );
     }
     #[tokio::test]
     async fn original_receipt_identity_survives_task_mutation_and_host_serialization() {

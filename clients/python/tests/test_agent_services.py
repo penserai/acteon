@@ -38,6 +38,40 @@ def test_parent_context_and_permits_are_request_local():
         client.close()
 
 
+def test_peer_tool_sends_no_authority_fields_and_validates_receipt():
+    source = AgentServiceReceipt(
+        "prod", "acme", "notifier", "job-1", FIXTURE["jobs"][0]["source_context"], FIXTURE["jobs"][0]["task"]
+    )
+
+    def respond(request):
+        assert request.url.path.endswith(
+            "/tasks/job-1/peers/team/resolver/diagnose/message:send"
+        )
+        assert AGENT_SOURCE_CONTEXT_HEADER not in request.headers
+        assert AGENT_EXECUTION_CONTEXT_HEADER not in request.headers
+        assert "x-acteon-execution-permits" not in request.headers
+        assert json.loads(request.content) == {"message": {"messageId": "peer-1"}}
+        return httpx.Response(
+            200,
+            json={
+                "submission_id": "f47ac10b-58cc-5372-a567-0e02b2c3d479",
+                "status": {"state": "accepted", "task": FIXTURE["jobs"][1]["task"]},
+            },
+            headers={"a2a-version": "1.0"},
+        )
+
+    client = ActeonClient("http://acteon")
+    client._client = httpx.Client(transport=httpx.MockTransport(respond))
+    try:
+        receipt = client.agent_service_send_peer(
+            source, "team/resolver", "diagnose", {"messageId": "peer-1"}
+        )
+        assert receipt.state == "accepted"
+        assert receipt.task == FIXTURE["jobs"][1]["task"]
+    finally:
+        client.close()
+
+
 def handler(request):
     assert request.headers["authorization"] == "Bearer caller-key"
     assert request.headers["a2a-version"] == "1.0"

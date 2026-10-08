@@ -150,6 +150,32 @@ func TestAgentServiceParentCarriesContextAndPermits(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestAgentServicePeerToolCarriesNoAuthorityFields(t *testing.T) {
+	source := &AgentServiceReceipt{Namespace: "prod", Tenant: "acme", Agent: "notifier", TaskID: "job-1", SourceContext: "host-only"}
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.URL.Path != "/a2a/prod/acme/agents/notifier/v1/tasks/job-1/peers/team%2Fresolver/diagnose/message:send" &&
+			r.URL.Path != "/a2a/prod/acme/agents/notifier/v1/tasks/job-1/peers/team/resolver/diagnose/message:send" {
+			t.Errorf("unexpected peer path: %s", r.URL.Path)
+		}
+		if r.Header.Get(AgentSourceContextHeader) != "" || r.Header.Get(AgentExecutionContextHeader) != "" || r.Header.Get("x-acteon-execution-permits") != "" {
+			t.Error("authority fields leaked into peer tool request")
+		}
+		w.Header().Set(A2AVersionHeader, A2AProtocolVersion)
+		json.NewEncoder(w).Encode(map[string]any{
+			"submission_id": "f47ac10b-58cc-5372-a567-0e02b2c3d479",
+			"status":        map[string]any{"state": "accepted", "task": map[string]any{"id": "remote-1", "namespace": "prod", "tenant": "acme"}},
+		})
+	}))
+	defer server.Close()
+	receipt, err := NewClient(server.URL).AgentServiceSendPeer(context.Background(), source, "team/resolver", "diagnose", map[string]any{"messageId": "peer-1"})
+	if err != nil || receipt.Status.State != "accepted" || calls.Load() != 1 {
+		t.Fatalf("peer receipt mismatch: %#v %v", receipt, err)
+	}
+}
+
 func TestAgentServiceErrorsMissingHeaderAndRedirectsDoNotRetry(t *testing.T) {
 	for _, status := range []int{200, 403, 404, 409, 429, 503, 307} {
 		t.Run(http.StatusText(status), func(t *testing.T) {

@@ -92,6 +92,17 @@ public class ActeonClient implements AutoCloseable {
             return new AgentServiceReceipt(namespace, tenant, agent, task.path("id").asText(), source, task);
         } catch (IOException e) { throw new ActeonException("invalid agent service response", e); }
     }
+    /** Submit from an accepted source-agent task without sending authority fields. */
+    public AgentPeerSendReceipt agentServiceSendPeer(AgentServiceReceipt source, String target, String skill, Map<String, Object> message) throws ActeonException {
+        if (source == null) throw new IllegalArgumentException("agent service source receipt required");
+        String path = AgentServiceReceipt.base(source.namespace(), source.tenant(), source.agent())
+            + "/tasks/" + AgentServiceReceipt.segment(source.taskId())
+            + "/peers/" + AgentServiceReceipt.segment(target)
+            + "/" + AgentServiceReceipt.segment(skill) + "/message:send";
+        var response = agentServiceRequest("POST", path, Map.of("message", message), null, null);
+        try { return AgentPeerSendReceipt.parse(objectMapper.readTree(response.body()), source.namespace(), source.tenant()); }
+        catch (IOException e) { throw new ActeonException("invalid agent peer response", e); }
+    }
     /** Stop future starts; explicitly retry the original receipt after response loss. */
     public AgentServiceStopReceipt agentServiceStopTask(AgentServiceReceipt receipt) throws ActeonException {
         var response = agentServiceRequest("POST", AgentServiceReceipt.base(receipt.namespace(), receipt.tenant(), receipt.agent())+"/tasks/"+AgentServiceReceipt.segment(receipt.taskId())+"/stop", null, AgentServiceReceipt.source(receipt.sourceContext()), null);

@@ -8,6 +8,7 @@ use crate::{
     execution_authority::{AgentServiceError, AgentServiceObservation, AgentServiceRequest},
 };
 use acteon_core::TaskMessage;
+use acteon_executor::delegation::PeerSendStatus;
 use axum::{
     Extension, Json,
     extract::{Path, State},
@@ -26,6 +27,109 @@ const EXECUTION_CONTEXT_HEADER: &str = "x-acteon-execution-context";
 #[serde(deny_unknown_fields)]
 pub struct AgentMessageSend {
     pub message: TaskMessage,
+}
+
+/// Model/tool input for a configured peer. Authority comes from the accepted
+/// source task and private caller authentication, never this body.
+#[derive(Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AgentPeerSend {
+    pub message: TaskMessage,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct AgentPeerSendReceipt {
+    pub submission_id: String,
+    pub status: AgentPeerSendStatus,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum AgentPeerSendStatus {
+    Uncertain,
+    Accepted { task: Box<acteon_core::Task> },
+    Rejected { code: String },
+}
+
+impl From<acteon_executor::delegation::PeerSendReceipt> for AgentPeerSendReceipt {
+    fn from(receipt: acteon_executor::delegation::PeerSendReceipt) -> Self {
+        Self {
+            submission_id: receipt.submission_id.to_string(),
+            status: match receipt.status {
+                PeerSendStatus::Uncertain => AgentPeerSendStatus::Uncertain,
+                PeerSendStatus::Accepted { task, .. } => AgentPeerSendStatus::Accepted { task },
+                PeerSendStatus::Rejected { code } => AgentPeerSendStatus::Rejected { code },
+            },
+        }
+    }
+}
+
+#[utoipa::path(
+    post, path = "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/message:send", tag = "Governance",
+    params(("namespace" = String, Path), ("tenant" = String, Path), ("agent" = String, Path),
+        ("id" = String, Path), ("target" = String, Path), ("skill" = String, Path)),
+    request_body = AgentPeerSend,
+    responses((status = 200, body = AgentPeerSendReceipt, description = "Durable peer submission receipt; uncertain is not rejection"),
+        (status = 400, description = "Invalid message"), (status = 403, description = "Current peer authority required"),
+        (status = 404, description = "Source task unavailable to this agent"), (status = 409, description = "Message conflicts with durable intent"),
+        (status = 503, description = "Peer transport or state unavailable"))
+)]
+pub async fn peer_send(
+    State(state): State<AppState>,
+    Extension(identity): Extension<CallerIdentity>,
+    proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
+    Path((namespace, tenant, agent, task_id, target, skill)): Path<(
+        String,
+        String,
+        String,
+        uuid::Uuid,
+        String,
+        String,
+    )>,
+    headers: HeaderMap,
+    Json(request): Json<AgentPeerSend>,
+) -> Response {
+    if headers
+        .get("a2a-version")
+        .is_some_and(|value| value != A2A_PROTOCOL_VERSION)
+    {
+        return error(StatusCode::BAD_REQUEST, "unsupported_a2a_version");
+    }
+    if !identity.role.has_permission(Permission::Dispatch)
+        || !identity.is_authorized(&tenant, &namespace, &format!("agent.{target}"), "invoke")
+    {
+        return error(StatusCode::FORBIDDEN, "agent_peer_authority_required");
+    }
+    let Some(Extension(proof)) = proof else {
+        return error(StatusCode::FORBIDDEN, "private_authentication_required");
+    };
+    let Some(runtime) = &state.execution_authority else {
+        return error(StatusCode::SERVICE_UNAVAILABLE, "agent_peer_unavailable");
+    };
+    match runtime
+        .submit_agent_peer_tool(crate::execution_authority::AgentPeerToolRequest {
+            namespace: &namespace,
+            tenant: &tenant,
+            source_agent_id: &agent,
+            source_task_id: task_id,
+            target_agent_id: &target,
+            skill: &skill,
+            message: &request.message,
+            authentication: &proof,
+        })
+        .await
+    {
+        Ok(receipt) => (
+            StatusCode::OK,
+            [
+                ("a2a-version", A2A_PROTOCOL_VERSION),
+                ("cache-control", "no-store"),
+            ],
+            Json(AgentPeerSendReceipt::from(receipt)),
+        )
+            .into_response(),
+        Err(cause) => peer_error(cause),
+    }
 }
 
 #[utoipa::path(
@@ -325,6 +429,26 @@ fn service_error(cause: AgentServiceError) -> Response {
             StatusCode::SERVICE_UNAVAILABLE,
             "agent_services_unavailable",
         ),
+    };
+    error(status, code)
+}
+
+fn peer_error(cause: crate::execution_authority::AgentPeerTransportError) -> Response {
+    use crate::execution_authority::AgentPeerTransportError;
+    let (status, code) = match cause {
+        AgentPeerTransportError::Invalid => (StatusCode::BAD_REQUEST, "invalid_agent_peer_request"),
+        AgentPeerTransportError::Forbidden => {
+            (StatusCode::FORBIDDEN, "agent_peer_authority_required")
+        }
+        AgentPeerTransportError::NotFound => {
+            (StatusCode::NOT_FOUND, "agent_peer_source_unavailable")
+        }
+        AgentPeerTransportError::Conflict => {
+            (StatusCode::CONFLICT, "agent_peer_submission_conflict")
+        }
+        AgentPeerTransportError::Unavailable => {
+            (StatusCode::SERVICE_UNAVAILABLE, "agent_peer_unavailable")
+        }
     };
     error(status, code)
 }
