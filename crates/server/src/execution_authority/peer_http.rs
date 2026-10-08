@@ -3,8 +3,8 @@
 use acteon_core::{ExecutionContextReference, Task};
 use acteon_crypto::{ExposeSecret, SecretString};
 use acteon_executor::delegation::{
-    PeerSendDisposition, PeerSendRequest, PeerSubmissionCapability, PeerTransportAdapter,
-    PeerTransportError,
+    PeerSendDisposition, PeerSendRequest, PeerSubmissionCapability, PeerTaskRequest,
+    PeerTransportAdapter, PeerTransportError,
 };
 use acteon_http::{GuardedClient, OutboundPolicy};
 use async_trait::async_trait;
@@ -108,6 +108,74 @@ impl PeerTransportAdapter for ActeonPeerHttpAdapter {
         }
         Ok(PeerSendDisposition::Uncertain)
     }
+
+    async fn observe_task(&self, request: PeerTaskRequest<'_>) -> Result<Task, PeerTransportError> {
+        if request.transport != "rest" {
+            return Err(PeerTransportError::Refused);
+        }
+        let endpoint = task_endpoint(request.endpoint, request.task_id)?;
+        let context =
+            serde_json::to_vec(request.source_context).map_err(|_| PeerTransportError::Invalid)?;
+        let response = self
+            .client
+            .request(reqwest::Method::GET, &endpoint)
+            .map_err(|_| PeerTransportError::Refused)?
+            .bearer_auth(self.credential.expose_secret())
+            .header("a2a-version", "1.0")
+            .header(
+                "x-acteon-agent-source-context",
+                URL_SAFE_NO_PAD.encode(context),
+            )
+            .send()
+            .await
+            .map_err(|_| PeerTransportError::Unavailable)?;
+        if !response.status().is_success() {
+            return Err(
+                if matches!(
+                    response.status().as_u16(),
+                    400 | 401 | 403 | 404 | 409 | 429
+                ) {
+                    PeerTransportError::Refused
+                } else {
+                    PeerTransportError::Unavailable
+                },
+            );
+        }
+        if response
+            .headers()
+            .get("a2a-version")
+            .and_then(|value| value.to_str().ok())
+            != Some("1.0")
+        {
+            return Err(PeerTransportError::Unavailable);
+        }
+        let raw = read_bounded(response, MAX_TASK_BYTES).await?;
+        serde_json::from_slice(&raw).map_err(|_| PeerTransportError::Unavailable)
+    }
+}
+
+fn task_endpoint(endpoint: &str, task_id: &str) -> Result<String, PeerTransportError> {
+    if task_id.is_empty()
+        || task_id.len() > 1024
+        || matches!(task_id, "." | "..")
+        || task_id.chars().any(char::is_control)
+    {
+        return Err(PeerTransportError::Invalid);
+    }
+    let mut url = reqwest::Url::parse(endpoint).map_err(|_| PeerTransportError::Invalid)?;
+    if url.query().is_some()
+        || url.fragment().is_some()
+        || url.path_segments().and_then(Iterator::last) != Some("message:send")
+    {
+        return Err(PeerTransportError::Refused);
+    }
+    {
+        let mut segments = url
+            .path_segments_mut()
+            .map_err(|()| PeerTransportError::Refused)?;
+        segments.pop().push("tasks").push(task_id);
+    }
+    Ok(url.into())
 }
 
 async fn accepted(response: reqwest::Response) -> Result<PeerSendDisposition, PeerTransportError> {
@@ -237,6 +305,25 @@ mod tests {
             Duration::from_secs(1),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn remote_task_endpoint_stays_under_the_qualified_agent_service() {
+        assert_eq!(
+            task_endpoint(
+                "https://peer.example/a2a/city/tenant/agents/responder/v1/message:send",
+                "task/one",
+            )
+            .unwrap(),
+            "https://peer.example/a2a/city/tenant/agents/responder/v1/tasks/task%2Fone"
+        );
+        for endpoint in [
+            "https://peer.example/a2a/city/tenant/v1/tasks/other",
+            "https://peer.example/a2a/city/tenant/v1/message:send?redirect=other",
+        ] {
+            assert!(task_endpoint(endpoint, "task").is_err());
+        }
+        assert!(task_endpoint("https://peer.example/v1/message:send", "..").is_err());
     }
 
     #[tokio::test]

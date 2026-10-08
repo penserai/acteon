@@ -171,6 +171,10 @@ func (c *Client) AgentServiceSendPeer(ctx context.Context, source *AgentServiceR
 	if err != nil {
 		return nil, err
 	}
+	return agentPeerReceipt(value, source)
+}
+
+func agentPeerReceipt(value map[string]any, source *AgentServiceReceipt) (*AgentPeerSendReceipt, error) {
 	if len(value) != 2 {
 		return nil, fmt.Errorf("agent peer receipt missing or malformed")
 	}
@@ -216,6 +220,60 @@ func (c *Client) AgentServiceSendPeer(ctx context.Context, source *AgentServiceR
 		return nil, fmt.Errorf("agent peer receipt missing or malformed")
 	}
 	return &AgentPeerSendReceipt{SubmissionID: submission, Status: status}, nil
+}
+
+// AgentServiceRefreshPeer observes and journals an accepted remote task. It
+// never resubmits the original message.
+func (c *Client) AgentServiceRefreshPeer(ctx context.Context, source *AgentServiceReceipt, target, skill string, peer *AgentPeerSendReceipt) (*AgentPeerSendReceipt, error) {
+	if source == nil || peer == nil {
+		return nil, fmt.Errorf("agent peer source and receipt required")
+	}
+	if !agentAttemptPattern.MatchString(peer.SubmissionID) {
+		return nil, fmt.Errorf("invalid agent peer submission identity")
+	}
+	base, err := agentServiceBase(source.Namespace, source.Tenant, source.Agent)
+	if err != nil {
+		return nil, err
+	}
+	taskID, err := agentSegment(source.TaskID)
+	if err != nil {
+		return nil, err
+	}
+	targetID, err := agentSegment(target)
+	if err != nil {
+		return nil, err
+	}
+	skillID, err := agentSegment(skill)
+	if err != nil {
+		return nil, err
+	}
+	value, _, err := c.agentServiceRequest(ctx, "POST", base+"/tasks/"+taskID+"/peers/"+targetID+"/"+skillID+"/submissions/"+peer.SubmissionID+":refresh", nil, "", nil)
+	if err != nil {
+		return nil, err
+	}
+	refreshed, err := agentPeerReceipt(value, source)
+	if err != nil {
+		return nil, err
+	}
+	if refreshed.SubmissionID != peer.SubmissionID {
+		return nil, fmt.Errorf("agent peer submission identity mismatch")
+	}
+	sameDisposition := peer.Status.State == refreshed.Status.State
+	if sameDisposition {
+		switch peer.Status.State {
+		case "accepted":
+			sameDisposition = peer.Status.Task["id"] == refreshed.Status.Task["id"]
+		case "rejected":
+			sameDisposition = peer.Status.Code == refreshed.Status.Code
+		case "uncertain":
+		default:
+			sameDisposition = false
+		}
+	}
+	if !sameDisposition {
+		return nil, fmt.Errorf("agent peer refresh changed durable disposition")
+	}
+	return refreshed, nil
 }
 
 // AgentServiceGetTask observes one retained job without starting provider work.

@@ -1809,7 +1809,14 @@ credentials cannot be deserialized from model output. Rust, Python sync/async,
 TypeScript, Go and Java expose typed one-shot helpers and validate the versioned
 accepted, rejected or uncertain receipt without automatic retry.
 
+Accepted sends can now be refreshed by stable submission ID. The runtime
+repeats source authentication, permit, grant, binding and registry checks,
+derives the remote task URL from the exact qualified REST endpoint, performs a
+single guarded read and compare-and-swap journals only valid forward task
+progress. Remote failure preserves the last accepted snapshot. All five clients
+expose the refresh operation without accepting authority fields.
+
 Focused preparation and strict Clippy checks cover call-graph digest changes,
 missing target grants/permits and the compiled runtime integration. The remaining
-mesh work is remote task lifecycle projection, a two-server
-lost-response/restart scenario and production-backend qualification.
+mesh work is event-cursor projection, input/auth responses, cancellation, a
+two-server lost-response/restart scenario and production-backend qualification.

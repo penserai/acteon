@@ -158,6 +158,53 @@ async fn response_task(response: reqwest::Response) -> Result<Task, Error> {
         .await
         .map_err(|e| Error::Deserialization(e.to_string()))
 }
+async fn peer_response(
+    response: reqwest::Response,
+    source: &AgentServiceReceipt,
+) -> Result<AgentPeerSendReceipt, Error> {
+    if !response.status().is_success() {
+        return Err(Error::Http {
+            status: response.status().as_u16(),
+            message: response
+                .text()
+                .await
+                .map_err(|error| Error::Connection(error.to_string()))?,
+        });
+    }
+    if response
+        .headers()
+        .get("a2a-version")
+        .and_then(|value| value.to_str().ok())
+        != Some(A2A_PROTOCOL_VERSION)
+    {
+        return Err(Error::Deserialization(
+            "agent peer response version missing or unsupported".into(),
+        ));
+    }
+    let receipt: AgentPeerSendReceipt = response
+        .json()
+        .await
+        .map_err(|error| Error::Deserialization(error.to_string()))?;
+    let valid_submission = valid_attempt_id(&receipt.submission_id);
+    let valid_status = match &receipt.status {
+        AgentPeerSendStatus::Uncertain => true,
+        AgentPeerSendStatus::Accepted { task } => {
+            task_matches(task, &source.namespace, &source.tenant, None)
+        }
+        AgentPeerSendStatus::Rejected { code } => {
+            !code.is_empty()
+                && code.len() <= 1024
+                && code.trim() == code
+                && !code.chars().any(char::is_control)
+        }
+    };
+    if !valid_submission || !valid_status {
+        return Err(Error::Deserialization(
+            "agent peer receipt missing or malformed".into(),
+        ));
+    }
+    Ok(receipt)
+}
 impl ActeonClient {
     /// Submit from an accepted source-agent task to one configured peer. The
     /// source task is an opaque host lookup; no authority fields are sent.
@@ -184,48 +231,63 @@ impl ActeonClient {
             .send()
             .await
             .map_err(|error| Error::Connection(error.to_string()))?;
-        if !response.status().is_success() {
-            return Err(Error::Http {
-                status: response.status().as_u16(),
-                message: response
-                    .text()
-                    .await
-                    .map_err(|error| Error::Connection(error.to_string()))?,
-            });
-        }
-        if response
-            .headers()
-            .get("a2a-version")
-            .and_then(|value| value.to_str().ok())
-            != Some(A2A_PROTOCOL_VERSION)
-        {
-            return Err(Error::Deserialization(
-                "agent peer response version missing or unsupported".into(),
+        peer_response(response, source).await
+    }
+
+    /// Revalidate current authority, fetch the accepted remote task once and
+    /// return the journaled snapshot. This call never resubmits the message.
+    pub async fn agent_service_refresh_peer(
+        &self,
+        source: &AgentServiceReceipt,
+        target: &str,
+        skill: &str,
+        peer: &AgentPeerSendReceipt,
+    ) -> Result<AgentPeerSendReceipt, Error> {
+        if !valid_attempt_id(&peer.submission_id) {
+            return Err(Error::Configuration(
+                "invalid agent peer submission identity".into(),
             ));
         }
-        let receipt: AgentPeerSendReceipt = response
-            .json()
+        let path = format!(
+            "/a2a/{}/{}/agents/{}/v1/tasks/{}/peers/{}/{}/submissions/{}:refresh",
+            segment(&source.namespace)?,
+            segment(&source.tenant)?,
+            segment(&source.agent)?,
+            segment(&source.task_id)?,
+            segment(target)?,
+            segment(skill)?,
+            segment(&peer.submission_id)?,
+        );
+        let response = self
+            .add_auth(self.client.post(format!("{}{path}", self.base_url)))
+            .header("a2a-version", A2A_PROTOCOL_VERSION)
+            .send()
             .await
-            .map_err(|error| Error::Deserialization(error.to_string()))?;
-        let valid_submission = valid_attempt_id(&receipt.submission_id);
-        let valid_status = match &receipt.status {
-            AgentPeerSendStatus::Uncertain => true,
-            AgentPeerSendStatus::Accepted { task } => {
-                task_matches(task, &source.namespace, &source.tenant, None)
-            }
-            AgentPeerSendStatus::Rejected { code } => {
-                !code.is_empty()
-                    && code.len() <= 1024
-                    && code.trim() == code
-                    && !code.chars().any(char::is_control)
-            }
-        };
-        if !valid_submission || !valid_status {
+            .map_err(|error| Error::Connection(error.to_string()))?;
+        let refreshed = peer_response(response, source).await?;
+        if refreshed.submission_id != peer.submission_id {
             return Err(Error::Deserialization(
-                "agent peer receipt missing or malformed".into(),
+                "agent peer submission identity mismatch".into(),
             ));
         }
-        Ok(receipt)
+        let same_disposition = match (&peer.status, &refreshed.status) {
+            (AgentPeerSendStatus::Uncertain, AgentPeerSendStatus::Uncertain) => true,
+            (
+                AgentPeerSendStatus::Accepted { task: prior },
+                AgentPeerSendStatus::Accepted { task: current },
+            ) => prior.id == current.id,
+            (
+                AgentPeerSendStatus::Rejected { code: prior },
+                AgentPeerSendStatus::Rejected { code: current },
+            ) => prior == current,
+            _ => false,
+        };
+        if !same_disposition {
+            return Err(Error::Deserialization(
+                "agent peer refresh changed durable disposition".into(),
+            ));
+        }
+        Ok(refreshed)
     }
 
     /// Submit once with a stable message ID; retain the receipt separately from
@@ -509,9 +571,13 @@ mod tests {
                         assert!(source.is_none());
                         assert!(!has_execution_context);
                         assert!(!has_execution_permits);
-                        let body: serde_json::Value = serde_json::from_slice(&raw).unwrap();
-                        assert_eq!(body.as_object().unwrap().len(), 1);
-                        assert_eq!(body["message"]["messageId"], "peer-1");
+                        if path.ends_with(":refresh") {
+                            assert!(raw.is_empty());
+                        } else {
+                            let body: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+                            assert_eq!(body.as_object().unwrap().len(), 1);
+                            assert_eq!(body["message"]["messageId"], "peer-1");
+                        }
                         let mut response = Json(serde_json::json!({
                             "submission_id":"f47ac10b-58cc-5372-a567-0e02b2c3d479",
                             "status":{"state":"accepted", "task":wire["jobs"][0]["task"]}
@@ -611,6 +677,15 @@ mod tests {
                 .0
                 .ends_with("/tasks/job-1/peers/team/resolver/diagnose/message:send")
         );
+        let refreshed = fixture
+            .client
+            .agent_service_refresh_peer(&source, "team/resolver", "diagnose", &receipt)
+            .await
+            .unwrap();
+        assert_eq!(refreshed.submission_id, receipt.submission_id);
+        assert!(fixture.calls.lock().unwrap()[2].0.ends_with(
+            "/peers/team/resolver/diagnose/submissions/f47ac10b-58cc-5372-a567-0e02b2c3d479:refresh"
+        ));
     }
     #[tokio::test]
     async fn original_receipt_identity_survives_task_mutation_and_host_serialization() {

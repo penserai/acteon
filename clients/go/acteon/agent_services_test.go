@@ -156,8 +156,8 @@ func TestAgentServicePeerToolCarriesNoAuthorityFields(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
-		if r.URL.Path != "/a2a/prod/acme/agents/notifier/v1/tasks/job-1/peers/team%2Fresolver/diagnose/message:send" &&
-			r.URL.Path != "/a2a/prod/acme/agents/notifier/v1/tasks/job-1/peers/team/resolver/diagnose/message:send" {
+		if !strings.Contains(r.URL.Path, "/tasks/job-1/peers/team/resolver/diagnose/") &&
+			!strings.Contains(r.URL.RawPath, "/tasks/job-1/peers/team%2Fresolver/diagnose/") {
 			t.Errorf("unexpected peer path: %s", r.URL.Path)
 		}
 		if r.Header.Get(AgentSourceContextHeader) != "" || r.Header.Get(AgentExecutionContextHeader) != "" || r.Header.Get("x-acteon-execution-permits") != "" {
@@ -173,6 +173,10 @@ func TestAgentServicePeerToolCarriesNoAuthorityFields(t *testing.T) {
 	receipt, err := NewClient(server.URL).AgentServiceSendPeer(context.Background(), source, "team/resolver", "diagnose", map[string]any{"messageId": "peer-1"})
 	if err != nil || receipt.Status.State != "accepted" || calls.Load() != 1 {
 		t.Fatalf("peer receipt mismatch: %#v %v", receipt, err)
+	}
+	refreshed, err := NewClient(server.URL).AgentServiceRefreshPeer(context.Background(), source, "team/resolver", "diagnose", receipt)
+	if err != nil || refreshed.SubmissionID != receipt.SubmissionID || calls.Load() != 2 {
+		t.Fatalf("peer refresh mismatch: %#v %v", refreshed, err)
 	}
 }
 

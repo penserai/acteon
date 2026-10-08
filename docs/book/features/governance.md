@@ -59,6 +59,15 @@ handle, and current private authentication must match that task's recipient
 context. The server supplies source identity, permits, credential, endpoint and
 opaque context. Models never send those authority fields.
 
+For accepted submissions, `POST
+/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{source_task}/peers/{target}/{skill}/submissions/{submission}:refresh`
+performs at most one guarded remote task read. Terminal snapshots return without
+network traffic. The submission ID is only a journal key.
+The runtime repeats all current source and target checks, derives the task URL
+from the qualified REST endpoint, rejects task identity changes or state
+regressions, and persists the new snapshot with compare-and-swap. A failed read
+does not erase the last accepted snapshot or resend work.
+
 ## Declare independent management rights
 
 First enable [execution permits](execution-permits.md) and shared authentication.
@@ -416,8 +425,9 @@ These are trusted Rust runtime APIs. Configured services now bind registry
 selection, the complete call graph, agent-specific runtime identity and durable
 A2A submission to the approved plan and independently authenticated recipient
 acceptance. The advisory registry preview remains separate from child admission.
-Remote task progress, result, input and cancellation projection remain part of
-the mesh integration phase.
+Remote polling now journals bounded task snapshots, including progress,
+interrupt, artifact and terminal-result fields. Event cursors, input/auth
+responses and cancellation remain part of the mesh integration phase.
 
 New contexts use signed format 5. Previously accepted formats 2–4 remain readable;
 new grants cannot be attached to an old acceptance by replay. Upgrade and drain

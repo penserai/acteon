@@ -44,13 +44,14 @@ def test_peer_tool_sends_no_authority_fields_and_validates_receipt():
     )
 
     def respond(request):
-        assert request.url.path.endswith(
-            "/tasks/job-1/peers/team/resolver/diagnose/message:send"
-        )
+        assert "/tasks/job-1/peers/team/resolver/diagnose/" in request.url.path
         assert AGENT_SOURCE_CONTEXT_HEADER not in request.headers
         assert AGENT_EXECUTION_CONTEXT_HEADER not in request.headers
         assert "x-acteon-execution-permits" not in request.headers
-        assert json.loads(request.content) == {"message": {"messageId": "peer-1"}}
+        if request.url.path.endswith(":refresh"):
+            assert not request.content
+        else:
+            assert json.loads(request.content) == {"message": {"messageId": "peer-1"}}
         return httpx.Response(
             200,
             json={
@@ -68,6 +69,10 @@ def test_peer_tool_sends_no_authority_fields_and_validates_receipt():
         )
         assert receipt.state == "accepted"
         assert receipt.task == FIXTURE["jobs"][1]["task"]
+        refreshed = client.agent_service_refresh_peer(
+            source, "team/resolver", "diagnose", receipt
+        )
+        assert refreshed.submission_id == receipt.submission_id
     finally:
         client.close()
 

@@ -10,7 +10,10 @@ pub use agent_services::{
 mod management;
 pub use management::{ManagementError, TrustedReconciliationInstallation};
 mod peer_transport;
-pub use peer_transport::{AgentPeerInvocation, AgentPeerToolRequest, AgentPeerTransportError};
+pub use peer_transport::{
+    AgentPeerInvocation, AgentPeerRefreshInvocation, AgentPeerRefreshRequest, AgentPeerToolRequest,
+    AgentPeerTransportError,
+};
 use std::{collections::BTreeMap, sync::Arc};
 
 use acteon_core::{Action, ActionOutcome};

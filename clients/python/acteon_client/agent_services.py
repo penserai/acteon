@@ -103,19 +103,25 @@ class AgentPeerSendReceipt:
     code: str | None = None
 
 
+def _submission(value: Any) -> str:
+    try:
+        parsed = UUID(value) if isinstance(value, str) else None
+    except ValueError:
+        parsed = None
+    if parsed is None or parsed.version != 5 or str(parsed) != value:
+        raise ActeonError("agent peer submission identity missing or malformed")
+    return value
+
+
 def _peer_receipt(
     response: httpx.Response, namespace: str, tenant: str
 ) -> AgentPeerSendReceipt:
     value = _response_value(response)
     if not isinstance(value, dict) or set(value) != {"submission_id", "status"}:
         raise ActeonError("agent peer receipt missing or malformed")
-    submission_id = value.get("submission_id")
-    try:
-        parsed = UUID(submission_id) if isinstance(submission_id, str) else None
-    except ValueError:
-        parsed = None
+    submission_id = _submission(value.get("submission_id"))
     status = value.get("status")
-    if parsed is None or parsed.version != 5 or str(parsed) != submission_id or not isinstance(status, dict):
+    if not isinstance(status, dict):
         raise ActeonError("agent peer receipt missing or malformed")
     state = status.get("state")
     if state == "uncertain" and set(status) == {"state"}:
@@ -276,6 +282,49 @@ class _AgentServicesMixin:
         )
         return _peer_receipt(response, source.namespace, source.tenant)
 
+    def agent_service_refresh_peer(
+        self,
+        source: AgentServiceReceipt,
+        target: str,
+        skill: str,
+        peer: AgentPeerSendReceipt,
+    ) -> AgentPeerSendReceipt:
+        """Refresh one accepted remote task without resubmitting its message."""
+        submission = _submission(peer.submission_id)
+        response = self._request(
+            "POST",
+            _base(source.namespace, source.tenant, source.agent)
+            + "/tasks/"
+            + _segment(source.task_id)
+            + "/peers/"
+            + _segment(target)
+            + "/"
+            + _segment(skill)
+            + "/submissions/"
+            + submission
+            + ":refresh",
+            extra_headers=dict(_A2A_HEADERS),
+        )
+        refreshed = _peer_receipt(response, source.namespace, source.tenant)
+        if refreshed.submission_id != submission:
+            raise ActeonError("agent peer submission identity mismatch")
+        same_disposition = (
+            peer.state == refreshed.state == "uncertain"
+            or (
+                peer.state == refreshed.state == "accepted"
+                and peer.task is not None
+                and refreshed.task is not None
+                and peer.task.get("id") == refreshed.task.get("id")
+            )
+            or (
+                peer.state == refreshed.state == "rejected"
+                and peer.code == refreshed.code
+            )
+        )
+        if not same_disposition:
+            raise ActeonError("agent peer refresh changed durable disposition")
+        return refreshed
+
     def agent_service_stop_task(self, receipt: AgentServiceReceipt) -> AgentServiceStopReceipt:
         """Stop future starts; repeat the same receipt explicitly after response loss."""
         response = self._request(
@@ -357,6 +406,48 @@ class _AsyncAgentServicesMixin:
             extra_headers=dict(_A2A_HEADERS),
         )
         return _peer_receipt(response, source.namespace, source.tenant)
+
+    async def agent_service_refresh_peer(
+        self,
+        source: AgentServiceReceipt,
+        target: str,
+        skill: str,
+        peer: AgentPeerSendReceipt,
+    ) -> AgentPeerSendReceipt:
+        submission = _submission(peer.submission_id)
+        response = await self._request(
+            "POST",
+            _base(source.namespace, source.tenant, source.agent)
+            + "/tasks/"
+            + _segment(source.task_id)
+            + "/peers/"
+            + _segment(target)
+            + "/"
+            + _segment(skill)
+            + "/submissions/"
+            + submission
+            + ":refresh",
+            extra_headers=dict(_A2A_HEADERS),
+        )
+        refreshed = _peer_receipt(response, source.namespace, source.tenant)
+        if refreshed.submission_id != submission:
+            raise ActeonError("agent peer submission identity mismatch")
+        same_disposition = (
+            peer.state == refreshed.state == "uncertain"
+            or (
+                peer.state == refreshed.state == "accepted"
+                and peer.task is not None
+                and refreshed.task is not None
+                and peer.task.get("id") == refreshed.task.get("id")
+            )
+            or (
+                peer.state == refreshed.state == "rejected"
+                and peer.code == refreshed.code
+            )
+        )
+        if not same_disposition:
+            raise ActeonError("agent peer refresh changed durable disposition")
+        return refreshed
 
     async def agent_service_stop_task(
         self, receipt: AgentServiceReceipt

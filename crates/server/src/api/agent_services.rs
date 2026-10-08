@@ -133,6 +133,74 @@ pub async fn peer_send(
 }
 
 #[utoipa::path(
+    post, path = "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:refresh", tag = "Governance",
+    params(("namespace" = String, Path), ("tenant" = String, Path), ("agent" = String, Path),
+        ("id" = String, Path), ("target" = String, Path), ("skill" = String, Path),
+        ("submission" = String, Path, description = "Stable peer submission UUID")),
+    responses((status = 200, body = AgentPeerSendReceipt, description = "Last durable peer receipt after an authorized remote observation"),
+        (status = 400, description = "Invalid lifecycle request"), (status = 403, description = "Current peer authority required"),
+        (status = 404, description = "Source task unavailable to this agent"), (status = 409, description = "Submission does not match its durable binding"),
+        (status = 503, description = "Peer transport, remote task, or state unavailable"))
+)]
+pub async fn peer_refresh(
+    State(state): State<AppState>,
+    Extension(identity): Extension<CallerIdentity>,
+    proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
+    Path((namespace, tenant, agent, task_id, target, skill, submission_id)): Path<(
+        String,
+        String,
+        String,
+        uuid::Uuid,
+        String,
+        String,
+        uuid::Uuid,
+    )>,
+    headers: HeaderMap,
+) -> Response {
+    if headers
+        .get("a2a-version")
+        .is_some_and(|value| value != A2A_PROTOCOL_VERSION)
+    {
+        return error(StatusCode::BAD_REQUEST, "unsupported_a2a_version");
+    }
+    if !identity.role.has_permission(Permission::Dispatch)
+        || !identity.is_authorized(&tenant, &namespace, &format!("agent.{target}"), "invoke")
+    {
+        return error(StatusCode::FORBIDDEN, "agent_peer_authority_required");
+    }
+    let Some(Extension(proof)) = proof else {
+        return error(StatusCode::FORBIDDEN, "private_authentication_required");
+    };
+    let Some(runtime) = &state.execution_authority else {
+        return error(StatusCode::SERVICE_UNAVAILABLE, "agent_peer_unavailable");
+    };
+    match runtime
+        .refresh_agent_peer_tool(crate::execution_authority::AgentPeerRefreshRequest {
+            namespace: &namespace,
+            tenant: &tenant,
+            source_agent_id: &agent,
+            source_task_id: task_id,
+            target_agent_id: &target,
+            skill: &skill,
+            submission_id,
+            authentication: &proof,
+        })
+        .await
+    {
+        Ok(receipt) => (
+            StatusCode::OK,
+            [
+                ("a2a-version", A2A_PROTOCOL_VERSION),
+                ("cache-control", "no-store"),
+            ],
+            Json(AgentPeerSendReceipt::from(receipt)),
+        )
+            .into_response(),
+        Err(cause) => peer_error(cause),
+    }
+}
+
+#[utoipa::path(
     post, path = "/a2a/{namespace}/{tenant}/agents/{agent}/v1/message:send", tag = "Governance",
     params(("namespace" = String, Path), ("tenant" = String, Path), ("agent" = String, Path),
         ("x-acteon-execution-context" = Option<String>, Header, description = "URL-safe base64 encoded parent execution-context reference; requires matching private caller authentication"),

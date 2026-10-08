@@ -666,3 +666,7 @@ must declare the source grant, and the source's recipient permits must include
 that target. `submission_capability = "at_most_once"` is the safe default on a
 target service. Use `"verified_idempotent"` only after qualifying the endpoint's
 same-context, same-message replay behavior.
+For REST peers, configure the target endpoint as its qualified agent-service
+`.../v1/message:send` URL. Task refresh derives `.../v1/tasks/{id}` on the same
+guarded origin and refuses any endpoint that does not have that shape. Message
+content, task metadata, and registry cards cannot provide authority.

@@ -103,6 +103,31 @@ public class ActeonClient implements AutoCloseable {
         try { return AgentPeerSendReceipt.parse(objectMapper.readTree(response.body()), source.namespace(), source.tenant()); }
         catch (IOException e) { throw new ActeonException("invalid agent peer response", e); }
     }
+    /** Observe and journal an accepted remote task without resubmitting work. */
+    public AgentPeerSendReceipt agentServiceRefreshPeer(AgentServiceReceipt source, String target, String skill, AgentPeerSendReceipt peer) throws ActeonException {
+        if (source == null || peer == null) throw new IllegalArgumentException("agent peer source and receipt required");
+        if (peer.submissionId() == null || !peer.submissionId().matches("[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"))
+            throw new IllegalArgumentException("invalid agent peer submission identity");
+        String path = AgentServiceReceipt.base(source.namespace(), source.tenant(), source.agent())
+            + "/tasks/" + AgentServiceReceipt.segment(source.taskId())
+            + "/peers/" + AgentServiceReceipt.segment(target)
+            + "/" + AgentServiceReceipt.segment(skill)
+            + "/submissions/" + peer.submissionId() + ":refresh";
+        var response = agentServiceRequest("POST", path, null, null, null);
+        try {
+            var refreshed = AgentPeerSendReceipt.parse(objectMapper.readTree(response.body()), source.namespace(), source.tenant());
+            if (!refreshed.submissionId().equals(peer.submissionId())) throw new IllegalArgumentException("agent peer submission identity mismatch");
+            boolean sameDisposition = refreshed.state().equals(peer.state()) && switch (peer.state()) {
+                case "uncertain" -> true;
+                case "accepted" -> peer.task() != null && refreshed.task() != null
+                    && peer.task().path("id").asText().equals(refreshed.task().path("id").asText());
+                case "rejected" -> java.util.Objects.equals(peer.code(), refreshed.code());
+                default -> false;
+            };
+            if (!sameDisposition) throw new IllegalArgumentException("agent peer refresh changed durable disposition");
+            return refreshed;
+        } catch (IOException e) { throw new ActeonException("invalid agent peer response", e); }
+    }
     /** Stop future starts; explicitly retry the original receipt after response loss. */
     public AgentServiceStopReceipt agentServiceStopTask(AgentServiceReceipt receipt) throws ActeonException {
         var response = agentServiceRequest("POST", AgentServiceReceipt.base(receipt.namespace(), receipt.tenant(), receipt.agent())+"/tasks/"+AgentServiceReceipt.segment(receipt.taskId())+"/stop", null, AgentServiceReceipt.source(receipt.sourceContext()), null);

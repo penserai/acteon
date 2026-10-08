@@ -6,7 +6,7 @@
 //! installed adapter qualifies identical-message submission as idempotent.
 
 use super::{ApprovedPeerBinding, ApprovedPeerRegistry, PeerDiscoveryError};
-use acteon_core::{ExecutionContextReference, Task, TaskMessage};
+use acteon_core::{ExecutionContextReference, Task, TaskMessage, TaskState};
 use acteon_crypto::PayloadEncryptor;
 use acteon_governance::{
     AuthorityCoordinator, context::VerifiedExecutionContext, permit::PermitReference,
@@ -50,6 +50,15 @@ pub struct PeerSendRequest<'a> {
     pub message: &'a TaskMessage,
 }
 
+/// Host-owned remote observation. The source context and endpoint come from
+/// the durable accepted send record, never from a model-facing request.
+pub struct PeerTaskRequest<'a> {
+    pub endpoint: &'a str,
+    pub transport: &'a str,
+    pub source_context: &'a ExecutionContextReference,
+    pub task_id: &'a str,
+}
+
 #[async_trait]
 pub trait PeerTransportAdapter: Send + Sync {
     fn revision(&self) -> &str;
@@ -59,6 +68,12 @@ pub trait PeerTransportAdapter: Send + Sync {
         &self,
         request: PeerSendRequest<'_>,
     ) -> Result<PeerSendDisposition, PeerTransportError>;
+    async fn observe_task(
+        &self,
+        _request: PeerTaskRequest<'_>,
+    ) -> Result<Task, PeerTransportError> {
+        Err(PeerTransportError::Unavailable)
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -269,6 +284,111 @@ impl DurablePeerTransport {
         }
     }
 
+    /// Refresh a previously accepted remote task. The submission id is only a
+    /// journal lookup: current source authority and the exact installed binding
+    /// are rechecked before any network request. Failed observation never
+    /// downgrades or erases the last durable remote task snapshot.
+    pub async fn refresh_task(
+        &self,
+        registry: &ApprovedPeerRegistry,
+        agent_id: &str,
+        skill: &str,
+        parent: &VerifiedExecutionContext,
+        permits: &[PermitReference],
+        submission_id: Uuid,
+    ) -> Result<PeerSendReceipt, PeerTransportError> {
+        let binding = registry
+            .bindings
+            .get(&(agent_id.into(), skill.into()))
+            .ok_or(PeerTransportError::Refused)?;
+        if binding.digest() != self.adapter.binding_digest()
+            || registry
+                .inspect_binding(binding, self.dependencies.clock.as_ref())
+                .await
+                .map_err(|error| Self::discovery_error(&error))?
+                .is_none()
+        {
+            return Err(PeerTransportError::Refused);
+        }
+        binding
+            .check_source(
+                &self.dependencies.coordinator,
+                parent,
+                permits,
+                self.dependencies.clock.as_ref(),
+            )
+            .await
+            .map_err(|_| PeerTransportError::Refused)?;
+        let reference = parent
+            .reference()
+            .map_err(|_| PeerTransportError::Invalid)?;
+        let key = StateKey::new(
+            reference.namespace(),
+            reference.tenant(),
+            KeyKind::Custom(PEER_SEND_KIND.into()),
+            submission_id.to_string(),
+        );
+        let (record, version) = self
+            .load_versioned(&key)
+            .await?
+            .ok_or(PeerTransportError::Conflict)?;
+        self.authorize_existing(&record, binding, &reference, submission_id)?;
+        let SendState::Accepted {
+            task: current,
+            source_context,
+        } = &record.state
+        else {
+            return Ok(Self::receipt(&record));
+        };
+        if current.status.state.is_terminal() {
+            return Ok(Self::receipt(&record));
+        }
+        let observed = tokio::time::timeout(
+            self.timeout,
+            self.adapter.observe_task(PeerTaskRequest {
+                endpoint: &record.endpoint,
+                transport: &record.transport,
+                source_context,
+                task_id: &current.id,
+            }),
+        )
+        .await
+        .map_err(|_| PeerTransportError::Unavailable)??;
+        if !valid_task_progress(current, &observed) {
+            return Err(PeerTransportError::Unavailable);
+        }
+        if serde_json::to_value(current).map_err(|_| PeerTransportError::Unavailable)?
+            == serde_json::to_value(&observed).map_err(|_| PeerTransportError::Unavailable)?
+        {
+            return Ok(Self::receipt(&record));
+        }
+        let mut refreshed = record.clone();
+        refreshed.state = SendState::Accepted {
+            task: Box::new(observed),
+            source_context: source_context.clone(),
+        };
+        let encoded = self
+            .encode(&refreshed)
+            .map_err(|_| PeerTransportError::Unavailable)?;
+        match self
+            .dependencies
+            .state
+            .compare_and_swap(&key, version, &encoded, None)
+            .await
+            .map_err(|_| PeerTransportError::Unavailable)?
+        {
+            CasResult::Ok => Ok(Self::receipt(&refreshed)),
+            CasResult::Conflict { .. } => {
+                let (current, _) = self
+                    .load_versioned(&key)
+                    .await?
+                    .ok_or(PeerTransportError::Conflict)?;
+                self.authorize_existing(&current, binding, &reference, submission_id)?;
+                Ok(Self::receipt(&current))
+            }
+        }
+    }
+
     async fn prepare<'a>(
         &self,
         registry: &'a ApprovedPeerRegistry,
@@ -474,6 +594,25 @@ impl DurablePeerTransport {
         Ok(())
     }
 
+    fn authorize_existing(
+        &self,
+        record: &SendRecord,
+        binding: &ApprovedPeerBinding,
+        parent: &ExecutionContextReference,
+        submission_id: Uuid,
+    ) -> Result<(), PeerTransportError> {
+        if !self.valid_record(record)
+            || record.submission_id != submission_id
+            || &record.parent != parent
+            || record.binding_digest != binding.digest()
+            || record.endpoint != binding.endpoint()
+            || record.transport != binding.transport()
+        {
+            return Err(PeerTransportError::Conflict);
+        }
+        Ok(())
+    }
+
     fn valid_record(&self, record: &SendRecord) -> bool {
         let state_valid = match &record.state {
             SendState::Registered | SendState::Delivering { .. } | SendState::Uncertain => true,
@@ -572,4 +711,43 @@ impl DurablePeerTransport {
             .map(|(raw, version)| self.decode(&raw).map(|record| (record, version)))
             .transpose()
     }
+}
+
+fn state_can_reach(current: TaskState, observed: TaskState) -> bool {
+    use TaskState::{
+        AuthRequired, Canceled, Completed, Failed, InputRequired, Rejected, Submitted, Working,
+    };
+    current == observed
+        || match current {
+            Submitted => matches!(
+                observed,
+                Working | Completed | Failed | Canceled | InputRequired | AuthRequired | Rejected
+            ),
+            Working => matches!(
+                observed,
+                Completed | Failed | Canceled | InputRequired | AuthRequired
+            ),
+            InputRequired | AuthRequired => {
+                matches!(
+                    observed,
+                    Working | Completed | Failed | Canceled | InputRequired | AuthRequired
+                )
+            }
+            Completed | Failed | Canceled | Rejected => false,
+        }
+}
+
+fn valid_task_progress(current: &Task, observed: &Task) -> bool {
+    observed.validate().is_ok()
+        && observed.id == current.id
+        && observed.namespace == current.namespace
+        && observed.tenant == current.tenant
+        && observed.context_id == current.context_id
+        && observed.created_at == current.created_at
+        && observed.working_ttl_ms == current.working_ttl_ms
+        && observed.updated_at >= current.updated_at
+        && observed.status.timestamp >= current.status.timestamp
+        && state_can_reach(current.status.state, observed.status.state)
+        && (observed.updated_at != current.updated_at
+            || serde_json::to_value(observed).ok() == serde_json::to_value(current).ok())
 }

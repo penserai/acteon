@@ -19,6 +19,7 @@ const (
 	OpA2aPushRestListPushDlq PlatformOperation = "a2a_push_rest_list_push_dlq"
 	OpA2aPushRestSetPushConfig PlatformOperation = "a2a_push_rest_set_push_config"
 	OpAgentServicesMessageSend PlatformOperation = "agent_services_message_send"
+	OpAgentServicesPeerRefresh PlatformOperation = "agent_services_peer_refresh"
 	OpAgentServicesPeerSend PlatformOperation = "agent_services_peer_send"
 	OpAgentServicesTaskGet PlatformOperation = "agent_services_task_get"
 	OpAgentServicesTaskStop PlatformOperation = "agent_services_task_stop"
@@ -224,6 +225,7 @@ var platformOperations = map[PlatformOperation]platformDescriptor{
 	OpA2aPushRestListPushDlq: {"GET", "/v1/a2a/{namespace}/{tenant}/push-dlq", []string{"namespace", "tenant"}, false},
 	OpA2aPushRestSetPushConfig: {"POST", "/a2a/{namespace}/{tenant}/v1/tasks/{id}/pushNotificationConfigs", []string{"namespace", "tenant", "id"}, false},
 	OpAgentServicesMessageSend: {"POST", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/message:send", []string{"namespace", "tenant", "agent"}, false},
+	OpAgentServicesPeerRefresh: {"POST", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:refresh", []string{"namespace", "tenant", "agent", "id", "target", "skill", "submission"}, false},
 	OpAgentServicesPeerSend: {"POST", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/message:send", []string{"namespace", "tenant", "agent", "id", "target", "skill"}, false},
 	OpAgentServicesTaskGet: {"GET", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}", []string{"namespace", "tenant", "agent", "id"}, false},
 	OpAgentServicesTaskStop: {"POST", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/stop", []string{"namespace", "tenant", "agent", "id"}, false},

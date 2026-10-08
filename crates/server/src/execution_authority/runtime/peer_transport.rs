@@ -32,6 +32,30 @@ pub struct AgentPeerToolRequest<'a> {
     pub authentication: &'a AuthenticatedExecutionConfiguration,
 }
 
+/// Agent-facing lifecycle refresh. The submission id is an opaque journal
+/// lookup and carries no authority by itself.
+pub struct AgentPeerRefreshRequest<'a> {
+    pub namespace: &'a str,
+    pub tenant: &'a str,
+    pub source_agent_id: &'a str,
+    pub source_task_id: uuid::Uuid,
+    pub target_agent_id: &'a str,
+    pub skill: &'a str,
+    pub submission_id: uuid::Uuid,
+    pub authentication: &'a AuthenticatedExecutionConfiguration,
+}
+
+/// Trusted host input after the source task and caller have been matched.
+pub struct AgentPeerRefreshInvocation<'a> {
+    pub namespace: &'a str,
+    pub tenant: &'a str,
+    pub source_agent_id: &'a str,
+    pub target_agent_id: &'a str,
+    pub skill: &'a str,
+    pub parent: &'a ExecutionContextReference,
+    pub submission_id: uuid::Uuid,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum AgentPeerTransportError {
     #[error("invalid agent peer invocation")]
@@ -59,55 +83,15 @@ impl ExecutionAuthorityRuntime {
         &self,
         request: AgentPeerToolRequest<'_>,
     ) -> Result<PeerSendReceipt, AgentPeerTransportError> {
-        request
-            .authentication
-            .verify_authentication_current()
-            .await
-            .map_err(|error| {
-                map_agent_service_error(super::AgentServiceError::authentication(&error))
-            })?;
-        let caller = request
-            .authentication
-            .scope(request.namespace, request.tenant)
-            .map_err(|_| AgentPeerTransportError::Forbidden)?;
-        let scope = self
-            .scopes
-            .get(&(request.namespace.into(), request.tenant.into()))
-            .ok_or(AgentPeerTransportError::NotFound)?;
-        let source = scope
-            .prepared
-            .agents
-            .get(request.source_agent_id)
-            .ok_or(AgentPeerTransportError::NotFound)?;
-        let runtime = self
-            .service_runtime_for_task(
+        let parent = self
+            .agent_peer_tool_parent(
                 request.namespace,
                 request.tenant,
                 request.source_agent_id,
                 request.source_task_id,
+                request.authentication,
             )
-            .await
-            .map_err(|error| match error {
-                super::AgentServiceError::Unavailable => AgentPeerTransportError::Unavailable,
-                _ => AgentPeerTransportError::NotFound,
-            })?;
-        if runtime.binding_digest() != source.binding.digest() {
-            return Err(AgentPeerTransportError::NotFound);
-        }
-        let parent = runtime
-            .recipient_context(request.source_task_id)
-            .await
-            .map_err(|error| {
-                map_agent_service_error(super::AgentServiceError::observation(error))
-            })?;
-        let actor = caller.authentication_source();
-        if parent.principal() != &source.declaration.principal
-            || parent.principal() != actor.principal()
-            || parent.credential_authority() != Some(caller.credential_reference())
-            || parent.auth_method() != actor.auth_method()
-        {
-            return Err(AgentPeerTransportError::NotFound);
-        }
+            .await?;
         let reference = parent
             .reference()
             .map_err(|_| AgentPeerTransportError::Unavailable)?;
@@ -121,6 +105,92 @@ impl ExecutionAuthorityRuntime {
             message: request.message,
         })
         .await
+    }
+
+    /// Refresh one accepted remote task through its exact durable send record.
+    pub async fn refresh_agent_peer_tool(
+        &self,
+        request: AgentPeerRefreshRequest<'_>,
+    ) -> Result<PeerSendReceipt, AgentPeerTransportError> {
+        let parent = self
+            .agent_peer_tool_parent(
+                request.namespace,
+                request.tenant,
+                request.source_agent_id,
+                request.source_task_id,
+                request.authentication,
+            )
+            .await?;
+        let reference = parent
+            .reference()
+            .map_err(|_| AgentPeerTransportError::Unavailable)?;
+        self.refresh_agent_peer(AgentPeerRefreshInvocation {
+            namespace: request.namespace,
+            tenant: request.tenant,
+            source_agent_id: request.source_agent_id,
+            target_agent_id: request.target_agent_id,
+            skill: request.skill,
+            parent: &reference,
+            submission_id: request.submission_id,
+        })
+        .await
+    }
+
+    async fn agent_peer_tool_parent(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        source_agent_id: &str,
+        source_task_id: uuid::Uuid,
+        authentication: &AuthenticatedExecutionConfiguration,
+    ) -> Result<acteon_governance::context::VerifiedExecutionContext, AgentPeerTransportError> {
+        authentication
+            .verify_authentication_current()
+            .await
+            .map_err(
+                |error| match super::AgentServiceError::authentication(&error) {
+                    super::AgentServiceError::Unavailable => AgentPeerTransportError::Unavailable,
+                    _ => AgentPeerTransportError::Forbidden,
+                },
+            )?;
+        let caller = authentication
+            .scope(namespace, tenant)
+            .map_err(|_| AgentPeerTransportError::Forbidden)?;
+        let scope = self
+            .scopes
+            .get(&(namespace.into(), tenant.into()))
+            .ok_or(AgentPeerTransportError::NotFound)?;
+        let source = scope
+            .prepared
+            .agents
+            .get(source_agent_id)
+            .ok_or(AgentPeerTransportError::NotFound)?;
+        let runtime = self
+            .service_runtime_for_task(namespace, tenant, source_agent_id, source_task_id)
+            .await
+            .map_err(|error| match error {
+                super::AgentServiceError::Unavailable => AgentPeerTransportError::Unavailable,
+                _ => AgentPeerTransportError::NotFound,
+            })?;
+        if runtime.binding_digest() != source.binding.digest() {
+            return Err(AgentPeerTransportError::NotFound);
+        }
+        let parent = runtime
+            .recipient_context(source_task_id)
+            .await
+            .map_err(|error| match super::AgentServiceError::observation(error) {
+                super::AgentServiceError::Unavailable => AgentPeerTransportError::Unavailable,
+                _ => AgentPeerTransportError::NotFound,
+            })?;
+        let actor = caller.authentication_source();
+        if parent.principal() != &source.declaration.principal
+            || parent.principal() != actor.principal()
+            || parent.credential_authority() != Some(caller.credential_reference())
+            || parent.auth_method() != actor.auth_method()
+        {
+            return Err(AgentPeerTransportError::NotFound);
+        }
+        Ok(parent)
     }
 
     /// Submit once through the exact installed source/target binding. Repeated
@@ -149,6 +219,84 @@ impl ExecutionAuthorityRuntime {
     ) -> Result<PeerSendReceipt, AgentPeerTransportError> {
         self.agent_peer_operation(invocation, Operation::ReplayIdempotent)
             .await
+    }
+
+    /// Refresh a remote task using only the installed transport and the
+    /// accepted journal entry selected by `submission_id`.
+    pub async fn refresh_agent_peer(
+        &self,
+        invocation: AgentPeerRefreshInvocation<'_>,
+    ) -> Result<PeerSendReceipt, AgentPeerTransportError> {
+        if invocation.namespace.is_empty()
+            || invocation.tenant.is_empty()
+            || invocation.source_agent_id.is_empty()
+            || invocation.target_agent_id.is_empty()
+            || invocation.skill.is_empty()
+            || invocation.parent.namespace() != invocation.namespace
+            || invocation.parent.tenant() != invocation.tenant
+        {
+            return Err(AgentPeerTransportError::Invalid);
+        }
+        let scope = self
+            .scopes
+            .get(&(invocation.namespace.into(), invocation.tenant.into()))
+            .ok_or(AgentPeerTransportError::Unavailable)?;
+        let source = scope
+            .prepared
+            .agents
+            .get(invocation.source_agent_id)
+            .ok_or(AgentPeerTransportError::Forbidden)?;
+        if !source
+            .declaration
+            .onward_agents
+            .iter()
+            .any(|target| target == invocation.target_agent_id)
+        {
+            return Err(AgentPeerTransportError::Forbidden);
+        }
+        let parent = scope
+            .contexts
+            .recover_reference(invocation.parent, self.clock.now().timestamp_millis())
+            .await
+            .map_err(|_| AgentPeerTransportError::Forbidden)?;
+        if parent.principal() != &source.declaration.principal {
+            return Err(AgentPeerTransportError::Forbidden);
+        }
+        let direct = source
+            .binding
+            .service_plan()
+            .ok_or(AgentPeerTransportError::Unavailable)?
+            .direct_effects();
+        scope
+            .coordinator
+            .verify_service_runtime_binding(&parent, source.binding.digest(), direct)
+            .await
+            .map_err(|_| AgentPeerTransportError::Forbidden)?;
+        let registry = scope
+            .peer_mesh
+            .registry
+            .as_ref()
+            .ok_or(AgentPeerTransportError::Unavailable)?;
+        let transport = scope
+            .peer_mesh
+            .transports
+            .get(&(
+                invocation.source_agent_id.into(),
+                invocation.target_agent_id.into(),
+                invocation.skill.into(),
+            ))
+            .ok_or(AgentPeerTransportError::Forbidden)?;
+        transport
+            .refresh_task(
+                registry,
+                invocation.target_agent_id,
+                invocation.skill,
+                &parent,
+                &source.declaration.recipient_permits,
+                invocation.submission_id,
+            )
+            .await
+            .map_err(Into::into)
     }
 
     // Keep context recovery, runtime-binding verification and transport lookup
@@ -258,17 +406,6 @@ impl ExecutionAuthorityRuntime {
             }
         };
         result.map_err(AgentPeerTransportError::from)
-    }
-}
-
-fn map_agent_service_error(error: super::AgentServiceError) -> AgentPeerTransportError {
-    match error {
-        super::AgentServiceError::Unavailable => AgentPeerTransportError::Unavailable,
-        super::AgentServiceError::Invalid => AgentPeerTransportError::Invalid,
-        super::AgentServiceError::Conflict => AgentPeerTransportError::Conflict,
-        super::AgentServiceError::Forbidden
-        | super::AgentServiceError::NotFound
-        | super::AgentServiceError::Limits => AgentPeerTransportError::NotFound,
     }
 }
 

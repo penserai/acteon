@@ -1,8 +1,9 @@
 # Durable qualified peer transport
 
 **Status:** Rust host journal, guarded Acteon HTTP adapter, deployment wiring,
-trusted host invocation API, safe agent-facing route and five SDK helpers
-implemented. The remote task lifecycle bridge remains follow-up work.
+trusted host invocation API, safe agent-facing route, five SDK helpers and
+durable remote task refresh implemented. Active lifecycle commands remain
+follow-up work.
 
 Acteon needs a transport boundary between governed peer selection and a real A2A
 network call. Discovery is advisory. A live card, endpoint URL, or model-selected
@@ -118,16 +119,19 @@ Focused contracts cover:
 - uncertain handling for ambiguous and malformed acceptance;
 - refusal of replay for at-most-once peers;
 - explicit successful recovery through a verified-idempotent adapter; and
-- rejection of corrupt retained remote task mappings.
+- rejection of corrupt retained remote task mappings;
+- current authority revalidation before remote observation; and
+- monotonic task projection with compare-and-swap persistence of the latest
+  valid snapshot.
 
 ## Remaining integration
 
 This foundation does not yet complete the autonomous mesh. The next slices are:
 
-1. durable remote observation, progress cursor, bounded artifact transfer,
-   required-input handoff, terminal result projection, and cancellation state;
+1. event-cursor streaming, required-input and authentication handoff, and
+   cancellation state;
 2. restart and lost-acceptance tests against two real Acteon servers; and
 3. qualification on each supported durable state backend.
 
-Until those slices land, submission is governed and durable while the complete
-autonomous remote task lifecycle remains unfinished.
+Until those slices land, submission and polling are governed and durable while
+active remote task control remains unfinished.

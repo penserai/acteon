@@ -418,6 +418,26 @@ export class ActeonClient {
     if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent peer response version missing or unsupported");
     return agentPeerReceipt(await response.json(), source.namespace, source.tenant);
   }
+  /** Observe and journal one accepted remote task without resubmitting work. */
+  async agentServiceRefreshPeer(source: AgentServiceReceipt, target: string, skill: string, peer: AgentPeerSendReceipt): Promise<AgentPeerSendReceipt> {
+    const segment = (value: string) => {
+      if (!value || value === "." || value === "..") throw new Error("invalid agent peer path segment");
+      return encodeURIComponent(value);
+    };
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(peer.submissionId)) throw new Error("invalid agent peer submission identity");
+    const path = agentServiceBase(source.namespace, source.tenant, source.agent) + "/tasks/" + segment(source.taskId) + "/peers/" + segment(target) + "/" + segment(skill) + "/submissions/" + peer.submissionId + ":refresh";
+    const response = await this.request("POST", path, { extraHeaders: A2A_HEADERS, redirect: "error" });
+    if (!response.ok) throw new HttpError(response.status, await response.text());
+    if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent peer response version missing or unsupported");
+    const refreshed = agentPeerReceipt(await response.json(), source.namespace, source.tenant);
+    if (refreshed.submissionId !== peer.submissionId) throw new Error("agent peer submission identity mismatch");
+    const sameDisposition =
+      (peer.status.state === "uncertain" && refreshed.status.state === "uncertain") ||
+      (peer.status.state === "accepted" && refreshed.status.state === "accepted" && peer.status.task.id === refreshed.status.task.id) ||
+      (peer.status.state === "rejected" && refreshed.status.state === "rejected" && peer.status.code === refreshed.status.code);
+    if (!sameDisposition) throw new Error("agent peer refresh changed durable disposition");
+    return refreshed;
+  }
   /** Stop future starts for the original job; retry explicitly with the same receipt on response loss. */
   async agentServiceStopTask(receipt: AgentServiceReceipt): Promise<AgentServiceStopReceipt> {
     const taskId = receipt.taskId;

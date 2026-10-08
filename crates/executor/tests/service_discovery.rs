@@ -1,13 +1,13 @@
 //! Service discovery composes real signed source grants with independent recipient authority.
 use acteon_core::{
     Agent, AgentCard, PrincipalIdentity, PrincipalKind, ResourceKind, ResourceRef, Skill, Task,
-    TaskMessage, TaskRole, bus_agent_card::Interface,
+    TaskMessage, TaskRole, TaskState, bus_agent_card::Interface,
 };
 use acteon_executor::delegation::{
     ApprovedPeerBinding, ApprovedPeerRegistry, ApprovedServicePlan, DurablePeerTransport,
     PeerCandidateQuery, PeerDiscoveryError, PeerRecipientResolver, PeerSendDisposition,
-    PeerSendRequest, PeerSendStatus, PeerSubmissionCapability, PeerTransportAdapter,
-    PeerTransportDependencies, PeerTransportError, RecipientDiscoveryContext,
+    PeerSendRequest, PeerSendStatus, PeerSubmissionCapability, PeerTaskRequest,
+    PeerTransportAdapter, PeerTransportDependencies, PeerTransportError, RecipientDiscoveryContext,
 };
 use acteon_governance::{
     AuthorityChange, AuthorityCoordinator, CoordinatorLimits, RootBudgetLimits,
@@ -501,6 +501,8 @@ struct TransportAdapter {
     capability: PeerSubmissionCapability,
     outcome: AtomicU8,
     calls: AtomicUsize,
+    observation_calls: AtomicUsize,
+    observed: std::sync::Mutex<Option<Task>>,
 }
 impl TransportAdapter {
     fn new(
@@ -513,6 +515,8 @@ impl TransportAdapter {
             capability,
             outcome: AtomicU8::new(outcome),
             calls: AtomicUsize::new(0),
+            observation_calls: AtomicUsize::new(0),
+            observed: std::sync::Mutex::new(None),
         }
     }
 }
@@ -540,14 +544,18 @@ impl PeerTransportAdapter for TransportAdapter {
             return Ok(PeerSendDisposition::Uncertain);
         }
         match self.outcome.load(Ordering::SeqCst) {
-            0 => Ok(PeerSendDisposition::Accepted {
-                task: Box::new(Task::new(
+            0 => {
+                let task = Task::new(
                     "remote-task",
                     request.parent.namespace(),
                     request.parent.tenant(),
-                )),
-                source_context: request.parent.clone(),
-            }),
+                );
+                *self.observed.lock().unwrap() = Some(task.clone());
+                Ok(PeerSendDisposition::Accepted {
+                    task: Box::new(task),
+                    source_context: request.parent.clone(),
+                })
+            }
             1 => Ok(PeerSendDisposition::Uncertain),
             2 => Ok(PeerSendDisposition::Rejected {
                 code: "peer_denied".into(),
@@ -561,6 +569,31 @@ impl PeerTransportAdapter for TransportAdapter {
                 source_context: request.parent.clone(),
             }),
         }
+    }
+
+    async fn observe_task(&self, request: PeerTaskRequest<'_>) -> Result<Task, PeerTransportError> {
+        self.observation_calls.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(request.endpoint, "https://peer.example/a2a");
+        assert_eq!(request.transport, "rest");
+        assert_eq!(request.task_id, "remote-task");
+        assert_eq!(request.source_context.namespace(), "city");
+        let mut task = self
+            .observed
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or(PeerTransportError::Unavailable)?;
+        let outcome = self.outcome.load(Ordering::SeqCst);
+        match outcome {
+            5 => task.transition_to(TaskState::Working, None).unwrap(),
+            6 => task.transition_to(TaskState::Completed, None).unwrap(),
+            7 => task.id = "substituted-task".into(),
+            _ => {}
+        }
+        if outcome != 7 {
+            *self.observed.lock().unwrap() = Some(task.clone());
+        }
+        Ok(task)
     }
 }
 
@@ -667,6 +700,161 @@ async fn durable_peer_submission_sends_once_and_conflicts_on_changed_input() {
             )
             .await,
         Err(PeerTransportError::Conflict)
+    ));
+}
+
+#[tokio::test]
+async fn remote_task_refresh_rechecks_authority_and_journals_forward_progress() {
+    let f = Fixture::new().await;
+    let adapter = Arc::new(TransportAdapter::new(
+        &f.binding,
+        PeerSubmissionCapability::AtMostOnce,
+        0,
+    ));
+    let transport = peer_transport(&f, adapter.clone());
+    let receipt = transport
+        .submit(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            &peer_message("diagnose"),
+        )
+        .await
+        .unwrap();
+    adapter.outcome.store(5, Ordering::SeqCst);
+    let refreshed = transport
+        .refresh_task(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            receipt.submission_id,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        refreshed.status,
+        PeerSendStatus::Accepted { task, .. } if task.status.state == TaskState::Working
+    ));
+    assert_eq!(adapter.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(adapter.observation_calls.load(Ordering::SeqCst), 1);
+
+    adapter.outcome.store(6, Ordering::SeqCst);
+    let terminal = transport
+        .refresh_task(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            receipt.submission_id,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        terminal.status,
+        PeerSendStatus::Accepted { task, .. } if task.status.state == TaskState::Completed
+    ));
+    let terminal_again = transport
+        .refresh_task(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            receipt.submission_id,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        terminal_again.status,
+        PeerSendStatus::Accepted { task, .. } if task.status.state == TaskState::Completed
+    ));
+    assert_eq!(adapter.observation_calls.load(Ordering::SeqCst), 2);
+
+    assert!(matches!(
+        transport
+            .refresh_task(
+                &f.registry,
+                "responder",
+                "notify",
+                &f.parent,
+                &permits("caller"),
+                uuid::Uuid::new_v4(),
+            )
+            .await,
+        Err(PeerTransportError::Conflict)
+    ));
+    f.retire().await;
+    assert!(matches!(
+        transport
+            .refresh_task(
+                &f.registry,
+                "responder",
+                "notify",
+                &f.parent,
+                &permits("caller"),
+                receipt.submission_id,
+            )
+            .await,
+        Err(PeerTransportError::Refused)
+    ));
+    assert_eq!(adapter.observation_calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn remote_task_refresh_rejects_identity_substitution_without_overwriting_snapshot() {
+    let f = Fixture::new().await;
+    let adapter = Arc::new(TransportAdapter::new(
+        &f.binding,
+        PeerSubmissionCapability::AtMostOnce,
+        0,
+    ));
+    let transport = peer_transport(&f, adapter.clone());
+    let accepted = transport
+        .submit(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            &peer_message("diagnose"),
+        )
+        .await
+        .unwrap();
+    adapter.outcome.store(7, Ordering::SeqCst);
+    assert!(matches!(
+        transport
+            .refresh_task(
+                &f.registry,
+                "responder",
+                "notify",
+                &f.parent,
+                &permits("caller"),
+                accepted.submission_id,
+            )
+            .await,
+        Err(PeerTransportError::Unavailable)
+    ));
+    adapter.outcome.store(0, Ordering::SeqCst);
+    let retained = transport
+        .refresh_task(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            accepted.submission_id,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        retained.status,
+        PeerSendStatus::Accepted { task, .. }
+            if task.id == "remote-task" && task.status.state == TaskState::Submitted
     ));
 }
 

@@ -61,6 +61,7 @@ Mirrors the JSON-RPC methods on resource-shaped paths:
 ```text
 POST   /a2a/{ns}/{tenant}/v1/message:send
 POST   /a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/message:send
+POST   /a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:refresh
 GET    /a2a/{ns}/{tenant}/v1/tasks/{id}
 POST   /a2a/{ns}/{tenant}/v1/tasks/{id}:cancel
 GET    /a2a/{ns}/{tenant}/v1/tasks/{id}/events            # SSE
@@ -75,6 +76,10 @@ agent calls from one accepted source task and supplies only a message. The serve
 recovers the source context and permits, resolves the reviewed target binding and
 credential, and journals the send before network delivery. Its response is
 accepted, rejected, or uncertain; uncertainty is never an instruction to retry.
+After acceptance, the refresh route rechecks the current source credential,
+permit, grant, registry card and installed binding before reading the exact
+remote task. It rejects identity changes and lifecycle regressions and retains
+the last valid snapshot when the remote read is unavailable.
 
 ### Discovery (unauthenticated)
 

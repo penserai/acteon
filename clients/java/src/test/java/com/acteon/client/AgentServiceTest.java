@@ -26,7 +26,7 @@ class AgentServiceTest {
                 assertNull(exchange.getRequestHeaders().getFirst(AgentServiceReceipt.SOURCE_CONTEXT_HEADER));
                 assertNull(exchange.getRequestHeaders().getFirst("x-acteon-execution-context"));
                 assertNull(exchange.getRequestHeaders().getFirst("x-acteon-execution-permits"));
-                assertTrue(exchange.getRequestURI().getRawPath().contains("/peers/team%2Fresolver/diagnose/message:send"));
+                assertTrue(exchange.getRequestURI().getRawPath().contains("/peers/team%2Fresolver/diagnose/"));
             } catch(Throwable error) { failure.set(error); }
             exchange.getResponseHeaders().set(A2A.VERSION_HEADER,"1.0");
             var body = "{\"submission_id\":\"f47ac10b-58cc-5372-a567-0e02b2c3d479\",\"status\":{\"state\":\"accepted\",\"task\":{\"id\":\"remote-1\",\"namespace\":\"prod\",\"tenant\":\"acme\"}}}".getBytes(StandardCharsets.UTF_8);
@@ -35,6 +35,8 @@ class AgentServiceTest {
         try(var client = new ActeonClient("http://127.0.0.1:"+server.getAddress().getPort())) {
             var receipt = client.agentServiceSendPeer(source,"team/resolver","diagnose",Map.of("messageId","peer-1"));
             assertEquals("accepted",receipt.state());
+            var refreshed = client.agentServiceRefreshPeer(source,"team/resolver","diagnose",receipt);
+            assertEquals(receipt.submissionId(),refreshed.submissionId());
             if(failure.get()!=null) throw new AssertionError(failure.get());
         } finally { server.stop(0); }
     }
