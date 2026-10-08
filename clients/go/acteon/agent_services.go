@@ -12,6 +12,8 @@ import (
 const AgentSourceContextHeader = "x-acteon-agent-source-context"
 
 var agentSourcePattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+var agentAttemptPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+var agentProofPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // AgentServiceReceipt belongs in host state, separately from model data.
 // TaskID is the original accepted identity, independent of mutable Task data.
@@ -131,11 +133,43 @@ func (c *Client) AgentServiceGetTask(ctx context.Context, receipt *AgentServiceR
 	return task, nil
 }
 
+// AgentServiceProviderAbort reports provider finality separately from restriction.
+type AgentServiceProviderAbort struct {
+	State       string `json:"state"`
+	AttemptID   string `json:"attempt_id,omitempty"`
+	ProofDigest string `json:"proof_digest,omitempty"`
+}
+
+func agentProviderAbort(value any) (*AgentServiceProviderAbort, error) {
+	if value == nil {
+		return nil, nil
+	}
+	raw, ok := value.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("agent service provider abort status malformed")
+	}
+	state, ok := raw["state"].(string)
+	if !ok {
+		return nil, fmt.Errorf("agent service provider abort status malformed")
+	}
+	if state == "restricted_only" && len(raw) == 1 {
+		return &AgentServiceProviderAbort{State: state}, nil
+	}
+	if id, ok := raw["attempt_id"].(string); state == "uncertain" && ok && len(raw) == 2 && agentAttemptPattern.MatchString(id) {
+		return &AgentServiceProviderAbort{State: state, AttemptID: id}, nil
+	}
+	if digest, ok := raw["proof_digest"].(string); state == "reconciled" && ok && len(raw) == 2 && agentProofPattern.MatchString(digest) {
+		return &AgentServiceProviderAbort{State: state, ProofDigest: digest}, nil
+	}
+	return nil, fmt.Errorf("agent service provider abort status malformed")
+}
+
 // AgentServiceStopReceipt acknowledges a durable restriction on future starts.
-// Task remains actual provider evidence; no external abort is implied.
+// Task remains actual provider evidence; ProviderAbort reports separate finality.
 type AgentServiceStopReceipt struct {
-	Task                map[string]any `json:"task"`
-	FutureStartsBlocked bool           `json:"future_starts_blocked"`
+	Task                map[string]any             `json:"task"`
+	FutureStartsBlocked bool                       `json:"future_starts_blocked"`
+	ProviderAbort       *AgentServiceProviderAbort `json:"provider_abort,omitempty"`
 }
 
 // AgentServiceStopTask stops future starts for the original retained job.
@@ -170,5 +204,9 @@ func (c *Client) AgentServiceStopTask(ctx context.Context, receipt *AgentService
 	if _, err := agentTask(task, receipt.Namespace, receipt.Tenant, receipt.TaskID); err != nil {
 		return nil, err
 	}
-	return &AgentServiceStopReceipt{Task: task, FutureStartsBlocked: true}, nil
+	abort, err := agentProviderAbort(value["provider_abort"])
+	if err != nil {
+		return nil, err
+	}
+	return &AgentServiceStopReceipt{Task: task, FutureStartsBlocked: true, ProviderAbort: abort}, nil
 }

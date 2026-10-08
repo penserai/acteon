@@ -34,7 +34,10 @@
             "source_context": "forged-model-token"
           }
         },
-        "future_starts_blocked": true
+        "future_starts_blocked": true,
+        "provider_abort": {
+          "state": "restricted_only"
+        }
       }
     },
     {
@@ -68,7 +71,11 @@
             "source_context": "forged-model-token"
           }
         },
-        "future_starts_blocked": true
+        "future_starts_blocked": true,
+        "provider_abort": {
+          "state": "uncertain",
+          "attempt_id": "f47ac10b-58cc-5372-a567-0e02b2c3d479"
+        }
       }
     }
   ],

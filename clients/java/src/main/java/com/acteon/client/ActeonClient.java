@@ -96,7 +96,7 @@ public class ActeonClient implements AutoCloseable {
             if (value == null || !value.path("future_starts_blocked").isBoolean() || !value.path("future_starts_blocked").booleanValue())
                 throw new ActeonException("agent service stop acknowledgement missing or malformed");
             var task = AgentServiceReceipt.verifyTask(value.path("task"), receipt.namespace(), receipt.tenant(), receipt.taskId());
-            return new AgentServiceStopReceipt(task, true);
+            return new AgentServiceStopReceipt(task, true, AgentServiceProviderAbort.parse(value.path("provider_abort")));
         } catch (IOException e) { throw new ActeonException("invalid agent service response", e); }
     }
 

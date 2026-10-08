@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { ActeonClient } from "./client.js";
-import { AGENT_SOURCE_CONTEXT_HEADER } from "./agent_services.js";
+import { AGENT_SOURCE_CONTEXT_HEADER, agentProviderAbort } from "./agent_services.js";
 import { HttpError } from "./errors.js";
 const fixture = JSON.parse(readFileSync(new URL("../../contract-fixtures/agent-services.json", import.meta.url), "utf8"));
 afterEach(() => vi.unstubAllGlobals());
@@ -26,6 +26,7 @@ it("keeps concurrent job headers separate and ignores mutable task metadata", as
   const stopped = await Promise.all(receipts.map(receipt => client.agentServiceStopTask(receipt)));
   expect(stopped.map(r => r.task.id)).toEqual(["job-2", "job-1"]);
   expect(stopped.every(r => r.futureStartsBlocked && (r.task.status as {state: string}).state === "submitted")).toBe(true);
+  expect(stopped.map(r => r.providerAbort?.state)).toEqual(["uncertain", "restricted_only"]);
 });
 it("rejects absent or malformed admission context without metadata fallback", async () => {
   for (const source of [null, "", "bad token", "x".repeat(8193)]) {
@@ -54,7 +55,7 @@ it("escapes route segments and rejects mismatched observed identity", async () =
 
 it("rejects false stop acknowledgements and foreign task identities without retries", async () => {
   const receipt = { namespace: "prod", tenant: "acme", agent: "notifier", taskId: "job-1", sourceContext: fixture.jobs[0].source_context, task: fixture.jobs[0].task };
-  for (const payload of [null, {}, {task: fixture.jobs[0].task, future_starts_blocked: false}, {task: fixture.jobs[0].task, future_starts_blocked: "true"}, {task: fixture.jobs[1].task, future_starts_blocked: true}]) {
+  for (const payload of [null, {}, {task: fixture.jobs[0].task, future_starts_blocked: false}, {task: fixture.jobs[0].task, future_starts_blocked: "true"}, {task: fixture.jobs[1].task, future_starts_blocked: true}, {task: fixture.jobs[0].task, future_starts_blocked: true, provider_abort: {state: "uncertain", attempt_id: "bad"}}]) {
     const fetch = vi.fn(async () => new Response(JSON.stringify(payload), {headers: {"a2a-version":"1.0"}}));
     vi.stubGlobal("fetch", fetch);
     await expect(new ActeonClient("http://acteon").agentServiceStopTask(receipt)).rejects.toThrow();
@@ -65,5 +66,12 @@ it("rejects false stop acknowledgements and foreign task identities without retr
     vi.stubGlobal("fetch", fetch);
     await expect(new ActeonClient("http://acteon").agentServiceStopTask(receipt)).rejects.toEqual(new HttpError(status, "denied"));
     expect(fetch).toHaveBeenCalledTimes(1);
+  }
+});
+
+it("requires canonical lowercase UUIDv5 provider-abort attempts", () => {
+  expect(agentProviderAbort(null)).toBeUndefined();
+  for (const attempt_id of ["F47AC10B-58CC-5372-A567-0E02B2C3D479", "f47ac10b-58cc-4372-a567-0e02b2c3d479"]) {
+    expect(() => agentProviderAbort({ state: "uncertain", attempt_id })).toThrow("malformed");
   }
 });

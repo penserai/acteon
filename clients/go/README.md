@@ -462,15 +462,17 @@ The helper sends that job's original identity and source context in one request:
 ```go
 stopped, err := client.AgentServiceStopTask(ctx, receipt)
 if err != nil { return err }
-fmt.Println(stopped.FutureStartsBlocked, stopped.Task["status"])
+fmt.Println(stopped.FutureStartsBlocked, stopped.ProviderAbort, stopped.Task["status"])
 ```
 
-The acknowledgement confirms a durable restriction on future starts. It does not
-certify that an external provider aborted, refund spent budget, or release unresolved
-capacity. The returned task retains actual provider status and artifacts; an already
-delivered operation can still complete. After a timeout or unavailable acknowledgement,
-retry this stop explicitly with the same receipt. The helper never retries automatically
-or takes provenance from mutable task data.
+The acknowledgement always confirms a durable restriction on future starts.
+`ProviderAbort` separately reports `restricted_only`, `uncertain`, or finality
+accepted by the qualified reconciliation verifier; it is absent when no registered
+attempt needs intervention. A stop never refunds spent budget. Uncertain work retains
+its capacity, and the returned task retains actual provider status and artifacts.
+After a timeout or unavailable acknowledgement, retry this stop explicitly with the
+same receipt. The helper never retries automatically or takes provenance from mutable
+task data.
 
 
 ### Governed registry metadata

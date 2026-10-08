@@ -13,6 +13,13 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 class AgentServiceTest {
+    @Test void providerAbortRequiresCanonicalUuidV5() throws Exception {
+        var mapper = JsonMapper.build();
+        for (var id : new String[]{"F47AC10B-58CC-5372-A567-0E02B2C3D479","f47ac10b-58cc-4372-a567-0e02b2c3d479"}) {
+            var value = mapper.readTree("{\"state\":\"uncertain\",\"attempt_id\":\""+id+"\"}");
+            assertThrows(com.acteon.client.exceptions.ActeonException.class,()->AgentServiceProviderAbort.parse(value));
+        }
+    }
     @Test void receiptsRetainOriginalJobWithRequestLocalHeaders() throws Exception {
         var mapper = JsonMapper.build();
         var fixture = mapper.readTree(Files.readString(Path.of("../contract-fixtures/agent-services.json")));
@@ -50,7 +57,10 @@ class AgentServiceTest {
             assertTrue(stopped.futureStartsBlocked());
             assertEquals("job-1",stopped.task().path("id").asText());
             assertEquals("submitted",stopped.task().path("status").path("state").asText());
-            assertEquals("job-2",client.agentServiceStopTask(second).task().path("id").asText());
+            assertEquals("restricted_only",stopped.providerAbort().state());
+            var stoppedSecond = client.agentServiceStopTask(second);
+            assertEquals("job-2",stoppedSecond.task().path("id").asText());
+            assertEquals("uncertain",stoppedSecond.providerAbort().state());
             assertEquals(6,calls.get()); if(failure.get()!=null) throw new AssertionError(failure.get());
         } finally { server.stop(0); }
     }
@@ -88,6 +98,15 @@ class AgentServiceTest {
                 assertEquals(1,calls.get());
             } finally { server.stop(0); }
         }
+        var malformedServer = HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
+        malformedServer.createContext("/",exchange -> {
+            exchange.getResponseHeaders().set(A2A.VERSION_HEADER,"1.0");
+            var body = mapper.writeValueAsBytes(Map.of("task",task,"future_starts_blocked",true,"provider_abort",Map.of("state","reconciled","proof_digest","bad")));
+            exchange.sendResponseHeaders(200,body.length);exchange.getResponseBody().write(body);exchange.close();
+        });malformedServer.start();
+        try(var client = new ActeonClient("http://127.0.0.1:"+malformedServer.getAddress().getPort())) {
+            assertThrows(com.acteon.client.exceptions.ActeonException.class,()->client.agentServiceStopTask(receipt));
+        } finally { malformedServer.stop(0); }
         for (int status : new int[]{403,404,409,429,503,307}) {
             var calls = new AtomicInteger();
             var server = HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);

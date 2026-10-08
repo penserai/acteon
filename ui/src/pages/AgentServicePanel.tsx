@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { sendServiceMessage, observeServiceTask, stopServiceTask, type ServiceReceipt } from '../api/agentServices'
+import { sendServiceMessage, observeServiceTask, stopServiceTask, type ServiceProviderAbort, type ServiceReceipt } from '../api/agentServices'
 import { Button } from '../components/ui/Button'
 import { Input } from '../components/ui/Input'
 import { Badge } from '../components/ui/Badge'
@@ -10,7 +10,7 @@ export function AgentServicePanel({ namespace, tenant, agent }: { namespace: str
   const [attempted, setAttempted] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  const [receipts, setReceipts] = useState<(ServiceReceipt & { futureStartsBlocked?: boolean })[]>([])
+  const [receipts, setReceipts] = useState<(ServiceReceipt & { futureStartsBlocked?: boolean; providerAbort?: ServiceProviderAbort })[]>([])
   async function send() {
     setBusy(true); setError(''); setAttempted(true)
     try {
@@ -31,7 +31,7 @@ export function AgentServicePanel({ namespace, tenant, agent }: { namespace: str
     setBusy(true); setError('')
     try {
       const stopped = await stopServiceTask(receipt)
-      setReceipts(current => current.map(item => item.taskId === receipt.taskId ? { ...item, task: stopped.task, futureStartsBlocked: true } : item))
+      setReceipts(current => current.map(item => item.taskId === receipt.taskId ? { ...item, task: stopped.task, futureStartsBlocked: true, providerAbort: stopped.providerAbort } : item))
     } catch (cause) { setError(`Stop acknowledgement for task ${receipt.taskId} unavailable. Retry this task’s stop control. ${(cause as Error).message}`) }
     finally { setBusy(false) }
   }
@@ -55,7 +55,13 @@ export function AgentServicePanel({ namespace, tenant, agent }: { namespace: str
         <Button variant="secondary" disabled={busy} onClick={() => void refresh(receipt)}>Refresh task</Button>
         <Button variant="secondary" disabled={busy || receipt.futureStartsBlocked === true} onClick={() => void stop(receipt)}>Stop future starts</Button>
       </div>
-      {receipt.futureStartsBlocked && <p className="text-sm">Future starts stopped. An operation already delivered may still complete; unresolved work retains its capacity.</p>}
+      {receipt.futureStartsBlocked && <p className="text-sm">{receipt.providerAbort?.state === 'reconciled'
+        ? 'Future starts stopped. Qualified provider finality reconciled the registered attempt.'
+        : receipt.providerAbort?.state === 'uncertain'
+          ? `Future starts stopped. Provider abort outcome is unresolved for attempt ${receipt.providerAbort.attemptId}; retained capacity requires reconciliation.`
+          : receipt.providerAbort?.state === 'restricted_only'
+            ? 'Future starts stopped. This provider has no qualified abort capability; a delivered operation may still complete.'
+            : 'Future starts stopped. No registered provider attempt required an abort.'}</p>}
       {!!receipt.task.artifacts?.length && <pre className="overflow-auto text-xs">{JSON.stringify(receipt.task.artifacts, null, 2)}</pre>}
     </article>)}
   </section>

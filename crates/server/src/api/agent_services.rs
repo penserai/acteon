@@ -158,6 +158,28 @@ pub async fn task_get(
 pub struct AgentServiceStopResponse {
     pub task: acteon_core::Task,
     pub future_starts_blocked: bool,
+    /// Provider-side outcome is distinct from the durable future-start fence.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_abort: Option<AgentServiceProviderAbort>,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum AgentServiceProviderAbort {
+    RestrictedOnly,
+    Uncertain { attempt_id: String },
+    Reconciled { proof_digest: String },
+}
+
+impl From<acteon_executor::governed::abort::ProviderAbortStatus> for AgentServiceProviderAbort {
+    fn from(status: acteon_executor::governed::abort::ProviderAbortStatus) -> Self {
+        use acteon_executor::governed::abort::ProviderAbortStatus;
+        match status {
+            ProviderAbortStatus::RestrictedOnly => Self::RestrictedOnly,
+            ProviderAbortStatus::Uncertain { attempt_id } => Self::Uncertain { attempt_id },
+            ProviderAbortStatus::Reconciled { proof_digest } => Self::Reconciled { proof_digest },
+        }
+    }
 }
 
 #[utoipa::path(
@@ -213,6 +235,7 @@ pub async fn task_stop(
             Json(AgentServiceStopResponse {
                 task: receipt.task,
                 future_starts_blocked: receipt.future_starts_blocked,
+                provider_abort: receipt.provider_abort.map(Into::into),
             }),
         )
             .into_response(),

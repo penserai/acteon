@@ -6,7 +6,15 @@ use acteon_core::{
 use acteon_executor::{
     ExecutorConfig, RetryStrategy,
     delegation::{ApprovedPeerBinding, ApprovedServicePlan},
-    governed::{BoundProvider, GovernedProviderStatus, governed_provider_input_digest},
+    governed::{
+        BoundProvider, GovernedProviderError, GovernedProviderStatus,
+        abort::{ProviderAbortAdapter, ProviderAbortDisposition, ProviderAbortStatus},
+        governed_provider_input_digest,
+        reconciliation::{
+            HmacFinalityVerifier, ProviderFinality, ProviderReconciliationVerifier,
+            ReconciliationAttempt, sign_finality_receipt,
+        },
+    },
 };
 use acteon_gateway::{
     TaskEngine, TaskScope,
@@ -186,6 +194,45 @@ struct Counter {
     blocking: AtomicBool,
     entered: tokio::sync::Notify,
     release: tokio::sync::Semaphore,
+}
+
+struct FinalityAbort {
+    calls: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl ProviderAbortAdapter for FinalityAbort {
+    fn revision(&self) -> &'static str {
+        "abort-v1"
+    }
+
+    async fn abort(
+        &self,
+        attempt: &ReconciliationAttempt,
+    ) -> Result<ProviderAbortDisposition, GovernedProviderError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(ProviderAbortDisposition::FinalityProof(
+            sign_finality_receipt(
+                attempt.clone(),
+                ProviderFinality::NoEffect {
+                    reason: "peer fenced the exact attempt".into(),
+                },
+                "finality-v1",
+                "provider",
+                &[17; 32],
+            )?,
+        ))
+    }
+}
+
+fn finality_verifier() -> Arc<dyn ProviderReconciliationVerifier> {
+    Arc::new(
+        HmacFinalityVerifier::new_trusted(
+            "finality-v1",
+            std::collections::BTreeMap::from([("provider".into(), vec![17; 32])]),
+        )
+        .unwrap(),
+    )
 }
 #[async_trait::async_trait]
 impl DynProvider for Counter {
@@ -1219,6 +1266,10 @@ async fn requester_stop_preserves_uncertain_delivery_and_shared_capacity() {
         .await
         .unwrap();
     assert!(stopped.future_starts_blocked);
+    assert_eq!(
+        stopped.provider_abort,
+        Some(ProviderAbortStatus::RestrictedOnly)
+    );
     assert_eq!(stopped.task.status.state, TaskState::Working);
     let restarted = f.runtime();
     let observed = Box::pin(restarted.resume(f.child.execution_id()))
@@ -1235,6 +1286,40 @@ async fn requester_stop_preserves_uncertain_delivery_and_shared_capacity() {
         assert_eq!(state.roots[&id.to_string()].active_attempts, 1);
         assert_eq!(state.roots[&id.to_string()].spent_units, 1);
     }
+}
+
+#[tokio::test]
+async fn requester_stop_reports_only_reconciliation_verified_provider_abort() {
+    let f = Fixture::new(false).await;
+    f.counter.blocking.store(true, Ordering::SeqCst);
+    let aborter = Arc::new(FinalityAbort {
+        calls: AtomicUsize::new(0),
+    });
+    let runtime = f
+        .runtime()
+        .with_trusted_provider_abort(aborter.clone(), finality_verifier())
+        .unwrap();
+    f.accept(&runtime).await;
+    let id = f.child.execution_id();
+    let running = tokio::spawn(async move { Box::pin(runtime.resume(id)).await });
+    f.counter.entered.notified().await;
+    let stopped = f
+        .runtime()
+        .with_trusted_provider_abort(aborter.clone(), finality_verifier())
+        .unwrap()
+        .stop(id, &f.parent)
+        .await
+        .unwrap();
+    assert!(matches!(
+        stopped.provider_abort,
+        Some(ProviderAbortStatus::Reconciled { .. })
+    ));
+    assert_eq!(stopped.task.status.state, TaskState::Failed);
+    assert_eq!(aborter.calls.load(Ordering::SeqCst), 1);
+    f.counter.release.add_permits(1);
+    let late = running.await.unwrap().unwrap();
+    assert_eq!(late.task.status.state, TaskState::Failed);
+    assert_eq!(aborter.calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

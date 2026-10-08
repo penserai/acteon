@@ -138,6 +138,8 @@ pub struct AgentTaskReceipt {
 pub struct AgentTaskStopReceipt {
     pub task: Task,
     pub future_starts_blocked: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_abort: Option<acteon_executor::governed::abort::ProviderAbortStatus>,
 }
 
 impl AgentProviderRuntime {
@@ -173,6 +175,23 @@ impl AgentProviderRuntime {
             executor,
             tasks,
         })
+    }
+
+    /// Install a host-qualified provider abort adapter and matching finality
+    /// verifier before sharing this runtime. The adapter can request an abort;
+    /// only the verifier can establish provider finality.
+    pub fn with_trusted_provider_abort(
+        mut self,
+        adapter: Arc<dyn acteon_executor::governed::abort::ProviderAbortAdapter>,
+        verifier: Arc<
+            dyn acteon_executor::governed::reconciliation::ProviderReconciliationVerifier,
+        >,
+    ) -> Result<Self, AgentRuntimeError> {
+        self.executor = self
+            .executor
+            .with_trusted_reconciliation_verifier(verifier)?
+            .with_trusted_abort_adapter(adapter)?;
+        Ok(self)
     }
 
     /// Fixed message-to-provider mapping, v1. The complete validated message is
@@ -464,10 +483,16 @@ impl AgentProviderRuntime {
                 "original requester stopped future agent-service starts",
             )
             .await?;
+        let provider_abort = self
+            .executor
+            .abort_restricted(&accepted.reference, recipient.principal())
+            .await?
+            .map(|receipt| receipt.abort);
         let observed = self.observe(task_id).await?;
         Ok(AgentTaskStopReceipt {
             task: observed.task,
             future_starts_blocked: observed.future_starts_blocked,
+            provider_abort,
         })
     }
 

@@ -26,8 +26,29 @@ export function agentServiceBase(namespace: string, tenant: string, agent: strin
   return `/a2a/${segment(namespace)}/${segment(tenant)}/agents/${segment(agent)}/v1`;
 }
 
-/** Acknowledges future-start restriction, never an external provider abort. */
+export type AgentServiceProviderAbort =
+  | Readonly<{ state: "restricted_only" }>
+  | Readonly<{ state: "uncertain"; attemptId: string }>
+  | Readonly<{ state: "reconciled"; proofDigest: string }>;
+
+export function agentProviderAbort(value: unknown): AgentServiceProviderAbort | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("agent service provider abort status malformed");
+  const raw = value as Record<string, unknown>;
+  const keys = Object.keys(raw).sort().join(",");
+  if (raw.state === "restricted_only" && keys === "state") return Object.freeze({ state: "restricted_only" });
+  if (raw.state === "uncertain" && keys === "attempt_id,state" && typeof raw.attempt_id === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(raw.attempt_id)) {
+    return Object.freeze({ state: "uncertain", attemptId: raw.attempt_id });
+  }
+  if (raw.state === "reconciled" && keys === "proof_digest,state" && typeof raw.proof_digest === "string" && /^[0-9a-f]{64}$/.test(raw.proof_digest)) {
+    return Object.freeze({ state: "reconciled", proofDigest: raw.proof_digest });
+  }
+  throw new Error("agent service provider abort status malformed");
+}
+
+/** Acknowledges future-start restriction and preserves separate provider finality. */
 export interface AgentServiceStopReceipt {
   readonly task: Record<string, unknown>;
   readonly futureStartsBlocked: true;
+  readonly providerAbort?: AgentServiceProviderAbort;
 }

@@ -93,13 +93,17 @@ func TestAgentServiceReceiptsPreserveHeadersAndIdentity(t *testing.T) {
 		}(i, receipt)
 	}
 	jobs.Wait()
-	for _, receipt := range receipts {
+	for i, receipt := range receipts {
 		stopped, err := client.AgentServiceStopTask(context.Background(), receipt)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if !stopped.FutureStartsBlocked || stopped.Task["id"] != receipt.TaskID {
 			t.Fatal("stop mixed original jobs")
+		}
+		expected := []string{"restricted_only", "uncertain"}[i]
+		if stopped.ProviderAbort == nil || stopped.ProviderAbort.State != expected {
+			t.Fatalf("provider abort status mismatch: %#v", stopped.ProviderAbort)
 		}
 	}
 	if calls.Load() != 6 {
@@ -137,7 +141,7 @@ func TestAgentServiceErrorsMissingHeaderAndRedirectsDoNotRetry(t *testing.T) {
 func TestAgentServiceStopRejectsFalseAcknowledgementsAndFailuresWithoutRetry(t *testing.T) {
 	task := map[string]any{"id": "job-1", "namespace": "prod", "tenant": "acme"}
 	receipt := &AgentServiceReceipt{Namespace: "prod", Tenant: "acme", Agent: "notifier", TaskID: "job-1", SourceContext: "opaque", Task: task}
-	payloads := []any{nil, map[string]any{}, map[string]any{"task": task, "future_starts_blocked": false}, map[string]any{"task": task, "future_starts_blocked": "true"}, map[string]any{"task": map[string]any{"id": "foreign", "namespace": "prod", "tenant": "acme"}, "future_starts_blocked": true}}
+	payloads := []any{nil, map[string]any{}, map[string]any{"task": task, "future_starts_blocked": false}, map[string]any{"task": task, "future_starts_blocked": "true"}, map[string]any{"task": map[string]any{"id": "foreign", "namespace": "prod", "tenant": "acme"}, "future_starts_blocked": true}, map[string]any{"task": task, "future_starts_blocked": true, "provider_abort": map[string]any{"state": "uncertain", "attempt_id": "bad"}}}
 	for _, payload := range payloads {
 		var calls atomic.Int32
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -163,6 +167,14 @@ func TestAgentServiceStopRejectsFalseAcknowledgementsAndFailuresWithoutRetry(t *
 		failure, ok := err.(*HTTPError)
 		if !ok || failure.Status != status || calls.Load() != 1 {
 			t.Fatalf("failed stop retried or status lost: %v", err)
+		}
+	}
+}
+
+func TestAgentProviderAbortRequiresCanonicalUUIDv5(t *testing.T) {
+	for _, id := range []string{"F47AC10B-58CC-5372-A567-0E02B2C3D479", "f47ac10b-58cc-4372-a567-0e02b2c3d479"} {
+		if _, err := agentProviderAbort(map[string]any{"state": "uncertain", "attempt_id": id}); err == nil {
+			t.Fatalf("accepted non-canonical provider abort attempt %q", id)
 		}
 	}
 }

@@ -252,10 +252,16 @@ restriction acknowledgement, and reject redirects. The agent detail view provide
 keeps that job available for an explicit retry; a successful acknowledgement
 keeps the restriction visible alongside later provider results.
 
-A successful response is `{"task": ..., "future_starts_blocked": true}`. The
-restriction blocks future starts in the recipient execution subtree and survives
+A successful response is `{"task": ..., "future_starts_blocked": true,
+"provider_abort": ...}`. `provider_abort` is optional and has one typed state:
+`restricted_only`, `uncertain` with the stable provider attempt ID, or
+`reconciled` with the accepted finality-proof digest. Every SDK validates this
+shape, including the canonical lowercase UUIDv5 attempt ID and lowercase
+SHA-256 proof digest. The browser explains the same distinction beside the task.
+
+The restriction blocks future starts in the recipient execution subtree and survives
 restart. It leaves the task's status and artifacts tied to actual provider
-results. A stop does not undo an effect already delivered, release unresolved
-capacity, or prove that an external provider aborted. For a lost acknowledgement,
-repeat the stop against the same original task. A subsequent known completion
-can still appear in observation.
+results. `restricted_only` and `uncertain` do not undo an effect already
+delivered, release unresolved capacity, or prove that an external provider
+aborted. For a lost acknowledgement, repeat the stop against the same original
+task. A subsequent known completion can still appear in observation.

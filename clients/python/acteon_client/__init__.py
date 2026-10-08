@@ -10,6 +10,7 @@ from .a2a import (
 )
 from .agent_services import (
     AGENT_SOURCE_CONTEXT_HEADER,
+    AgentServiceProviderAbort,
     AgentServiceReceipt,
     AgentServiceStopReceipt,
 )
@@ -485,7 +486,12 @@ __all__ += [
 ]
 
 
-__all__ += ["AGENT_SOURCE_CONTEXT_HEADER", "AgentServiceReceipt", "AgentServiceStopReceipt"]
+__all__ += [
+    "AGENT_SOURCE_CONTEXT_HEADER",
+    "AgentServiceProviderAbort",
+    "AgentServiceReceipt",
+    "AgentServiceStopReceipt",
+]
 
 __all__ += [
     "GovernanceRegistryMutationRequest",

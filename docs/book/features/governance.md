@@ -495,6 +495,46 @@ from that evidence without another provider call. The reaper also checks the
 acceptance journal, so removing a projection's metadata cannot certify an
 uncertain outcome.
 
+#### Provider abort delivery and finality
+
+Stopping an agent-service task first writes the execution restriction through
+the authority coordinator. Only after that durable fence exists can the governed
+executor invoke an optional, host-installed `ProviderAbortAdapter` for the exact
+qualified provider binding. The adapter receives the stable registered attempt
+identity. Public messages cannot choose an abort destination, credential,
+adapter revision, or finality verifier.
+
+Acteon persists the abort intent in the configured StateStore before calling the
+adapter. It makes at most one automatic call and bounds that call with the
+binding's configured execution timeout. A process crash, timeout, adapter error,
+or lost response remains `uncertain` and is never automatically resent.
+An unsupported binding reports `restricted_only`: future starts are blocked, but
+an already delivered operation may still complete. A provider can report
+`reconciled` only by returning proof accepted by the binding's independently
+installed reconciliation verifier. The proof is durably retained before the
+existing reconciliation CAS settles the attempt, so restart can finish a lost
+settlement acknowledgement without another abort call.
+
+The stop response keeps these facts separate:
+
+```json
+{
+  "task": {"id": "...", "status": {"state": "working"}},
+  "future_starts_blocked": true,
+  "provider_abort": {
+    "state": "uncertain",
+    "attempt_id": "f47ac10b-58cc-5372-a567-0e02b2c3d479"
+  }
+}
+```
+
+`provider_abort` is absent when no registered provider attempt needs
+intervention. Rust, Python, TypeScript, Go, Java, and the browser validate and
+display `restricted_only`, `uncertain`, and `reconciled`. Attempt IDs use the
+canonical lowercase UUIDv5 representation, and proof digests use lowercase
+SHA-256 hex. Concrete provider adapters still need to qualify their external
+attempt mapping and irrevocable finality source.
+
 #### Replacing a configured service binding
 
 When a service card, registry revision, endpoint identity, or qualified provider
@@ -532,6 +572,6 @@ Retention does not revive authority: an old queued start still
 passes current credential, permit, grant, budget and resource checks, and may
 remain submitted or working when those checks refuse it.
 
-This is a trusted host adapter for qualified provider operations. Transport
-qualification, provider cancellation acknowledgment, and adapters for other
-runtime families remain separate integration work.
+This is a trusted host adapter for qualified provider operations. Concrete abort
+adapter qualification, outbound transport, and adapters for other runtime
+families remain separate integration work.

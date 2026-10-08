@@ -16,6 +16,21 @@ export interface ServiceReceipt {
   readonly sourceContext: string
   readonly task: ServiceTask
 }
+export type ServiceProviderAbort =
+  | { state: 'restricted_only' }
+  | { state: 'uncertain'; attemptId: string }
+  | { state: 'reconciled'; proofDigest: string }
+
+function providerAbort(value: unknown): ServiceProviderAbort | undefined {
+  if (value === undefined || value === null) return undefined
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Provider abort status is malformed')
+  const raw = value as Record<string, unknown>
+  const keys = Object.keys(raw).sort().join(',')
+  if (raw.state === 'restricted_only' && keys === 'state') return { state: 'restricted_only' }
+  if (raw.state === 'uncertain' && keys === 'attempt_id,state' && typeof raw.attempt_id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(raw.attempt_id)) return { state: 'uncertain', attemptId: raw.attempt_id }
+  if (raw.state === 'reconciled' && keys === 'proof_digest,state' && typeof raw.proof_digest === 'string' && /^[0-9a-f]{64}$/.test(raw.proof_digest)) return { state: 'reconciled', proofDigest: raw.proof_digest }
+  throw new Error('Provider abort status is malformed')
+}
 function segment(value: string): string {
   if (!value || value === '.' || value === '..') throw new Error('Invalid service route')
   return encodeURIComponent(value)
@@ -49,14 +64,15 @@ export async function observeServiceTask(receipt: ServiceReceipt): Promise<Servi
   return task(response, receipt.namespace, receipt.tenant, receipt.taskId)
 }
 
-export async function stopServiceTask(receipt: ServiceReceipt): Promise<{ task: ServiceTask; futureStartsBlocked: true }> {
+export async function stopServiceTask(receipt: ServiceReceipt): Promise<{ task: ServiceTask; futureStartsBlocked: true; providerAbort?: ServiceProviderAbort }> {
   const response = await apiResponse(base(receipt.namespace, receipt.tenant, receipt.agent) + '/tasks/' + segment(receipt.taskId) + '/stop', {
     method: 'POST', redirect: 'error', headers: { 'a2a-version': '1.0', [SOURCE_HEADER]: source(receipt.sourceContext) },
   })
   if (response.headers.get('a2a-version') !== '1.0') throw new Error('Unsupported agent service response')
-  const value = await response.json() as { task?: ServiceTask; future_starts_blocked?: unknown } | null
+  const value = await response.json() as { task?: ServiceTask; future_starts_blocked?: unknown; provider_abort?: unknown } | null
   if (!value || value.future_starts_blocked !== true) throw new Error('Stop acknowledgement unavailable. Retry the stop for this same task.')
   const stopped = value.task
   if (!stopped || stopped.id !== receipt.taskId || stopped.namespace !== receipt.namespace || stopped.tenant !== receipt.tenant) throw new Error('Agent service task identity mismatch')
-  return { task: stopped, futureStartsBlocked: true }
+  const abort = providerAbort(value.provider_abort)
+  return { task: stopped, futureStartsBlocked: true, ...(abort ? { providerAbort: abort } : {}) }
 }

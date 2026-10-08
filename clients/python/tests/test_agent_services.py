@@ -8,7 +8,7 @@ import httpx
 import pytest
 
 from acteon_client import ActeonClient, AgentServiceReceipt, AsyncActeonClient
-from acteon_client.agent_services import AGENT_SOURCE_CONTEXT_HEADER
+from acteon_client.agent_services import AGENT_SOURCE_CONTEXT_HEADER, _provider_abort
 from acteon_client.errors import ActeonError, HttpError
 
 FIXTURE = json.loads(
@@ -51,11 +51,17 @@ def test_sync_receipts_keep_jobs_separate_and_original_identity():
         first.task["id"] = "tampered-model-id"
         assert client.agent_service_get_task(first)["id"] == "job-1"
         assert client.agent_service_get_task(second)["id"] == "job-2"
+        stopped_receipts = []
         for receipt in [second, first]:
             stopped = client.agent_service_stop_task(receipt)
+            stopped_receipts.append(stopped)
             assert stopped.future_starts_blocked is True
             assert stopped.task["id"] == receipt.task_id
             assert stopped.task["status"]["state"] == "submitted"
+        assert [r.provider_abort.state for r in stopped_receipts if r.provider_abort] == [
+            "uncertain",
+            "restricted_only",
+        ]
         assert first.source_context == FIXTURE["jobs"][0]["source_context"]
         assert first.source_context not in repr(first)
     finally:
@@ -84,6 +90,10 @@ async def test_async_concurrent_jobs_use_request_local_context():
         )
         assert [r.task["id"] for r in stopped] == ["job-2", "job-1"]
         assert all(r.future_starts_blocked for r in stopped)
+        assert [r.provider_abort.state for r in stopped if r.provider_abort] == [
+            "uncertain",
+            "restricted_only",
+        ]
     finally:
         await client.close()
 
@@ -156,6 +166,47 @@ def test_stop_rejects_non_acknowledgements_with_one_request(value):
         assert len(calls) == 1
     finally:
         client.close()
+
+
+def test_stop_rejects_malformed_provider_abort_with_one_request():
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "task": FIXTURE["jobs"][0]["task"],
+                "future_starts_blocked": True,
+                "provider_abort": {"state": "reconciled", "proof_digest": "bad"},
+            },
+            headers={"a2a-version": "1.0"},
+        )
+
+    job = FIXTURE["jobs"][0]
+    receipt = AgentServiceReceipt(
+        "prod", "acme", "notifier", "job-1", job["source_context"], job["task"]
+    )
+    client = ActeonClient("http://acteon")
+    client._client = httpx.Client(transport=httpx.MockTransport(respond))
+    try:
+        with pytest.raises(ActeonError):
+            client.agent_service_stop_task(receipt)
+        assert len(calls) == 1
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize(
+    "attempt_id",
+    [
+        "F47AC10B-58CC-5372-A567-0E02B2C3D479",
+        "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+    ],
+)
+def test_provider_abort_requires_canonical_uuid_v5(attempt_id):
+    with pytest.raises(ActeonError):
+        _provider_abort({"state": "uncertain", "attempt_id": attempt_id})
 
 
 @pytest.mark.parametrize("status", FIXTURE["error_statuses"] + [307])

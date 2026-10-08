@@ -59,7 +59,7 @@
 
 pub mod a2a;
 pub mod agent_services;
-pub use agent_services::{AgentServiceReceipt, AgentServiceStopReceipt};
+pub use agent_services::{AgentServiceProviderAbort, AgentServiceReceipt, AgentServiceStopReceipt};
 pub mod aws;
 pub mod azure;
 mod error;

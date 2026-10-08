@@ -1,6 +1,7 @@
 //! Durable, directly mediated provider execution under exact root permits.
 //! This does not install gateway/server-wide policy or govern provider internals.
 
+pub mod abort;
 pub mod history;
 pub mod reconciliation;
 use std::{
@@ -327,6 +328,7 @@ struct Runtime {
     clock: Arc<dyn Clock>,
     encryptor: Option<Arc<PayloadEncryptor>>,
     reconciler: Option<Arc<dyn reconciliation::ProviderReconciliationVerifier>>,
+    aborter: Option<Arc<dyn abort::ProviderAbortAdapter>>,
 }
 /// Direct provider boundary, not the rules/approval/chain dispatch pipeline.
 /// Authentication and qualification are host prerequisites; no public server
@@ -679,6 +681,7 @@ impl GovernedProviderExecutor {
                 clock: clock.clone(),
                 encryptor,
                 reconciler: None,
+                aborter: None,
             }),
             executor: ActionExecutor::new(execution)
                 .clock(clock)

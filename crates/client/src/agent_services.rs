@@ -23,6 +23,43 @@ pub struct AgentServiceReceipt {
 pub struct AgentServiceStopReceipt {
     pub task: Task,
     pub future_starts_blocked: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_abort: Option<AgentServiceProviderAbort>,
+}
+
+/// Provider-side intervention remains separate from the durable start fence.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AgentServiceProviderAbort {
+    RestrictedOnly,
+    Uncertain { attempt_id: String },
+    Reconciled { proof_digest: String },
+}
+
+impl AgentServiceProviderAbort {
+    fn valid(&self) -> bool {
+        match self {
+            Self::RestrictedOnly => true,
+            Self::Uncertain { attempt_id } => valid_attempt_id(attempt_id),
+            Self::Reconciled { proof_digest } => {
+                proof_digest.len() == 64
+                    && proof_digest
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            }
+        }
+    }
+}
+
+fn valid_attempt_id(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 36
+        && [8, 13, 18, 23].into_iter().all(|i| bytes[i] == b'-')
+        && bytes[14] == b'5'
+        && matches!(bytes[19], b'8' | b'9' | b'a' | b'b')
+        && bytes.iter().enumerate().all(|(i, b)| {
+            [8, 13, 18, 23].contains(&i) || b.is_ascii_digit() || (b'a'..=b'f').contains(b)
+        })
 }
 
 impl std::fmt::Debug for AgentServiceReceipt {
@@ -191,6 +228,10 @@ impl ActeonClient {
             .await
             .map_err(|e| Error::Deserialization(e.to_string()))?;
         if !stopped.future_starts_blocked
+            || stopped
+                .provider_abort
+                .as_ref()
+                .is_some_and(|status| !status.valid())
             || !task_matches(
                 &stopped.task,
                 &receipt.namespace,
@@ -255,9 +296,11 @@ mod tests {
         atomic::{AtomicBool, AtomicU16, Ordering},
     };
 
+    type RecordedCalls = Arc<Mutex<Vec<(String, Option<String>)>>>;
+
     struct Fixture {
         client: ActeonClient,
-        calls: Arc<Mutex<Vec<(String, Option<String>)>>>,
+        calls: RecordedCalls,
         status: Arc<AtomicU16>,
         source: Arc<AtomicBool>,
         stop_payload: Arc<Mutex<Option<serde_json::Value>>>,
@@ -409,9 +452,37 @@ mod tests {
             .await
             .unwrap();
         assert!(stopped.future_starts_blocked);
+        assert!(matches!(
+            stopped.provider_abort,
+            Some(AgentServiceProviderAbort::RestrictedOnly)
+        ));
         assert_eq!(stopped.task.id, "job-1");
         assert_eq!(stopped.task.status.state, acteon_core::TaskState::Submitted);
         assert_eq!(fixture.calls.lock().unwrap().len(), 5);
+    }
+    #[test]
+    fn provider_abort_status_validation_is_exact() {
+        for status in [
+            AgentServiceProviderAbort::RestrictedOnly,
+            AgentServiceProviderAbort::Uncertain {
+                attempt_id: "f47ac10b-58cc-5372-a567-0e02b2c3d479".into(),
+            },
+            AgentServiceProviderAbort::Reconciled {
+                proof_digest: "a".repeat(64),
+            },
+        ] {
+            assert!(status.valid());
+        }
+        for status in [
+            AgentServiceProviderAbort::Uncertain {
+                attempt_id: "f47ac10b-58cc-4372-a567-0e02b2c3d479".into(),
+            },
+            AgentServiceProviderAbort::Reconciled {
+                proof_digest: "A".repeat(64),
+            },
+        ] {
+            assert!(!status.valid());
+        }
     }
     #[tokio::test]
     async fn missing_header_errors_and_redirects_never_return_fake_receipts_or_retry() {
@@ -456,6 +527,7 @@ mod tests {
             serde_json::json!({"task":wire["jobs"][0]["task"],"future_starts_blocked":false}),
             serde_json::json!({"task":wire["jobs"][0]["task"],"future_starts_blocked":"true"}),
             serde_json::json!({"task":wire["jobs"][1]["task"],"future_starts_blocked":true}),
+            serde_json::json!({"task":wire["jobs"][0]["task"],"future_starts_blocked":true,"provider_abort":{"state":"reconciled","proof_digest":"not-a-digest"}}),
         ] {
             *f.stop_payload.lock().unwrap() = Some(payload);
             assert!(matches!(
@@ -469,6 +541,6 @@ mod tests {
                 matches!(f.client.agent_service_stop_task(&receipt).await, Err(Error::Http {status:actual, ..}) if actual == status)
             );
         }
-        assert_eq!(f.calls.lock().unwrap().len(), 12);
+        assert_eq!(f.calls.lock().unwrap().len(), 13);
     }
 }

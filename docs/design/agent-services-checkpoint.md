@@ -67,10 +67,13 @@ message identity and inspect durable evidence rather than constructing new work.
   /a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/stop` uses the same
   private authentication and source-context requirements as observation. Its
   response contains the original task and `future_starts_blocked: true`.
-  This is an Acteon control extension. It does not certify provider abort,
-  refund spent budget, release unresolved capacity, or replace a known result
-  with a `cancelled` task. Lost acknowledgements are recovered by stopping the
-  same original task again. Recovery scheduling skips durably stopped work.
+  An optional typed `provider_abort` reports `restricted_only`, `uncertain`, or
+  reconciliation-verified finality. The durable abort journal is written before
+  one adapter call; crashes and lost responses are never resent automatically.
+  This does not refund spent budget, release unresolved capacity, or replace a
+  known result with a `cancelled` task. Lost restriction acknowledgements are
+  recovered by stopping the same original task again. Recovery scheduling skips
+  durably stopped work.
 
 - Receipt-aware future-start stop helpers exist in all five SDKs, including
   Python sync/async. They preserve original route/task identity and source context,
@@ -138,12 +141,12 @@ message identity and inspect durable evidence rather than constructing new work.
 
 Remaining before release:
 
-- Complete qualified provider abort/reconciliation and its SDK/UI lifecycle; qualify restart
+- Install concrete qualified provider abort adapters and qualify their restart
   recovery against each supported production backend.
 - Expand focused adversarial and integration tests from admission/isolation to
   full provider execution and peer lifecycle.
 - Complete qualified outbound A2A lifecycle work.
-- Extend lifecycle SDK/UI integration as provider abort and outbound peer contracts are added.
+- Extend lifecycle SDK/UI integration as outbound peer contracts are added.
 - Review adversarially, run CI, and verify publication before merging.
 
 Passing existing workspace checks alone does not demonstrate these new service

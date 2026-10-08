@@ -1,7 +1,10 @@
 """Host-owned receipts for authenticated individual-agent services."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
+from uuid import UUID
 
 import httpx
 
@@ -41,10 +44,49 @@ class AgentServiceReceipt:
 
 @dataclass(frozen=True)
 class AgentServiceStopReceipt:
-    """Future starts are blocked; an external effect may still complete."""
+    """Future starts are blocked; provider finality is reported separately."""
 
     task: dict[str, Any]
     future_starts_blocked: bool
+    provider_abort: AgentServiceProviderAbort | None = None
+
+
+@dataclass(frozen=True)
+class AgentServiceProviderAbort:
+    """Honest provider-side abort state for the registered attempt."""
+
+    state: Literal["restricted_only", "uncertain", "reconciled"]
+    attempt_id: str | None = None
+    proof_digest: str | None = None
+
+
+def _provider_abort(value: Any) -> AgentServiceProviderAbort | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict) or not isinstance(value.get("state"), str):
+        raise ActeonError("agent service provider abort status malformed")
+    state = value["state"]
+    if state == "restricted_only" and set(value) == {"state"}:
+        return AgentServiceProviderAbort(state)
+    if state == "uncertain" and set(value) == {"state", "attempt_id"}:
+        attempt_id = value.get("attempt_id")
+        if isinstance(attempt_id, str):
+            try:
+                parsed = UUID(attempt_id)
+            except ValueError:
+                pass
+            else:
+                if parsed.version == 5 and str(parsed) == attempt_id:
+                    return AgentServiceProviderAbort(state, attempt_id=attempt_id)
+    if state == "reconciled" and set(value) == {"state", "proof_digest"}:
+        digest = value.get("proof_digest")
+        if (
+            isinstance(digest, str)
+            and len(digest) == 64
+            and all(c in "0123456789abcdef" for c in digest)
+        ):
+            return AgentServiceProviderAbort(state, proof_digest=digest)
+    raise ActeonError("agent service provider abort status malformed")
 
 
 def _task_value(
@@ -75,7 +117,9 @@ def _stop(response: httpx.Response, receipt: AgentServiceReceipt) -> AgentServic
     if not isinstance(value, dict) or value.get("future_starts_blocked") is not True:
         raise ActeonError("agent service stop acknowledgement missing or malformed")
     return AgentServiceStopReceipt(
-        _task_value(value.get("task"), receipt.namespace, receipt.tenant, receipt.task_id), True
+        _task_value(value.get("task"), receipt.namespace, receipt.tenant, receipt.task_id),
+        True,
+        _provider_abort(value.get("provider_abort")),
     )
 
 

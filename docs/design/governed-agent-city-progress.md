@@ -1705,3 +1705,33 @@ provider call.
 
 This closes historical service binding retention. Qualified outbound A2A and
 provider abort/reconciliation remain required for the complete peer lifecycle.
+
+
+### Durable provider-abort delivery foundation
+
+The governed executor now exposes a provider-independent abort adapter contract
+for work already fenced by the coordinator. It records the exact reconciliation
+attempt and adapter revision in the configured StateStore before making one
+external call. Unsupported adapters report restriction only. Any crash, timeout,
+error, or lost response remains uncertain and is not resent automatically. The
+host-controlled execution timeout also bounds adapter delivery.
+
+An adapter cannot settle work by claiming success. It must return proof accepted
+by the exact binding's existing finality verifier. Acteon persists that proof
+before reconciliation, replays only the idempotent settlement CAS after restart,
+and retains the proof digest in the abort receipt. Focused contracts prove abort
+is refused before restriction, qualified no-effect finality wins over a late
+provider return, unsupported capability stays distinct, and a crash during the
+adapter call produces one invocation and an uncertain receipt after restart.
+The retained-proof recovery contract also proves that a verifier unavailable at
+delivery time can finish settlement after restart without resending the abort.
+
+Agent-service stop now exposes this distinction as optional `provider_abort`
+state. Rust, Python sync/async, TypeScript, Go, Java, and the browser validate and
+render restriction-only, uncertain, and reconciled states while preserving the
+task's actual provider evidence.
+
+This closes the generic durable abort-delivery and client lifecycle building
+block. Concrete adapters must still qualify external attempt mapping and
+finality against every supported production backend. Qualified outbound A2A
+remains required for the complete peer lifecycle.

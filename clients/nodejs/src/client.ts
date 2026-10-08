@@ -1,5 +1,5 @@
 import { parseRegistryProjection, parseRegistryMutationReceipt, type RegistryProjection, type GovernanceRegistryMutationRequest, type GovernanceRegistryProjectionView, type GovernanceRegistryMutationReceipt } from "./governance.js";
-import { AGENT_SOURCE_CONTEXT_HEADER, agentSource, agentTask, agentServiceBase, type AgentServiceReceipt, type AgentServiceStopReceipt } from "./agent_services.js";
+import { AGENT_SOURCE_CONTEXT_HEADER, agentProviderAbort, agentSource, agentTask, agentServiceBase, type AgentServiceReceipt, type AgentServiceStopReceipt } from "./agent_services.js";
 import { parseProviderHistoryReceipt, type ProviderHistoryReceipt, type ProviderReconciliationCorrelation, type ProviderReconciliationRequest } from "./governance.js";
 import { parseProviderExecutionHistory, type ProviderExecutionHistory, type ProviderExecutionHistoryWire } from "./governance.js";
 import type { WorkforceScopeView, WorkforceChangeRequest } from "./workforce.js";
@@ -406,9 +406,10 @@ export class ActeonClient {
     const response = await this.request("POST", agentServiceBase(receipt.namespace, receipt.tenant, receipt.agent) + "/tasks/" + encodeURIComponent(taskId) + "/stop", { extraHeaders: { ...A2A_HEADERS, [AGENT_SOURCE_CONTEXT_HEADER]: agentSource(receipt.sourceContext) }, redirect: "error" });
     if (!response.ok) throw new HttpError(response.status, await response.text());
     if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent service response version missing or unsupported");
-    const value = await response.json() as { task?: unknown; future_starts_blocked?: unknown } | null;
+    const value = await response.json() as { task?: unknown; future_starts_blocked?: unknown; provider_abort?: unknown } | null;
     if (!value || value.future_starts_blocked !== true) throw new Error("agent service stop acknowledgement missing or malformed");
-    return Object.freeze({ task: agentTask(value.task, receipt.namespace, receipt.tenant, taskId), futureStartsBlocked: true as const });
+    const providerAbort = agentProviderAbort(value.provider_abort);
+    return Object.freeze({ task: agentTask(value.task, receipt.namespace, receipt.tenant, taskId), futureStartsBlocked: true as const, ...(providerAbort ? { providerAbort } : {}) });
   }
 
   /** Observe one retained job; never starts work or changes global headers. */
