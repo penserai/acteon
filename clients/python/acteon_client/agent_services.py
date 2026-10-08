@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import json
 import unicodedata
-from typing import TYPE_CHECKING, Any, Literal
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Literal, TypeGuard, cast
 from uuid import UUID
 
 import httpx
@@ -126,19 +126,15 @@ class AgentPeerSelectionOption:
     checked_at_ms: int
 
 
-def _peer_token(value: Any) -> bool:
+def _peer_token(value: Any) -> TypeGuard[str]:
     return (
         isinstance(value, str)
         and 0 < len(value) <= 120
-        and all(
-            char.isascii() and (char.isalnum() or char in "-_.") for char in value
-        )
+        and all(char.isascii() and (char.isalnum() or char in "-_.") for char in value)
     )
 
 
-def _peer_options(
-    response: httpx.Response, skill: str
-) -> tuple[AgentPeerSelectionOption, ...]:
+def _peer_options(response: httpx.Response, skill: str) -> tuple[AgentPeerSelectionOption, ...]:
     value = _response_value(response)
     if not isinstance(value, dict) or set(value) != {"peers"}:
         raise ActeonError("agent peer discovery response missing or malformed")
@@ -167,7 +163,10 @@ def _peer_options(
             or agent_id in seen
             or peer.get("skill") != skill
             or not _peer_token(peer.get("skill"))
-            or (description is not None and (not isinstance(description, str) or len(description.encode("utf-8")) > 2048))
+            or (
+                description is not None
+                and (not isinstance(description, str) or len(description.encode("utf-8")) > 2048)
+            )
             or not _peer_token(peer.get("card_version"))
             or not isinstance(digest, str)
             or len(digest) != 64
@@ -198,12 +197,10 @@ def _submission(value: Any) -> str:
         parsed = None
     if parsed is None or parsed.version != 5 or str(parsed) != value:
         raise ActeonError("agent peer submission identity missing or malformed")
-    return value
+    return cast(str, value)
 
 
-def _peer_receipt(
-    response: httpx.Response, namespace: str, tenant: str
-) -> AgentPeerSendReceipt:
+def _peer_receipt(response: httpx.Response, namespace: str, tenant: str) -> AgentPeerSendReceipt:
     value = _response_value(response)
     if not isinstance(value, dict) or set(value) != {"submission_id", "status"}:
         raise ActeonError("agent peer receipt missing or malformed")
@@ -261,13 +258,9 @@ def _peer_cancel_receipt(
             and code.strip() == code
             and not any(unicodedata.category(char) == "Cc" for char in code)
         ):
-            return AgentPeerCancelReceipt(
-                peer.submission_id, cancellation_id, state, code=code
-            )
+            return AgentPeerCancelReceipt(peer.submission_id, cancellation_id, state, code=code)
     if state == "reconciled" and set(status) == {"state", "task"}:
-        task = _task_value(
-            status.get("task"), source.namespace, source.tenant, accepted_task_id
-        )
+        task = _task_value(status.get("task"), source.namespace, source.tenant, accepted_task_id)
         task_status = task.get("status")
         if isinstance(task_status, dict) and task_status.get("state") in {
             "completed",
@@ -275,9 +268,7 @@ def _peer_cancel_receipt(
             "canceled",
             "rejected",
         }:
-            return AgentPeerCancelReceipt(
-                peer.submission_id, cancellation_id, state, task=task
-            )
+            return AgentPeerCancelReceipt(peer.submission_id, cancellation_id, state, task=task)
     raise ActeonError("agent peer cancellation receipt missing or malformed")
 
 
@@ -473,10 +464,7 @@ class _AgentServicesMixin:
                 and refreshed.task is not None
                 and peer.task.get("id") == refreshed.task.get("id")
             )
-            or (
-                peer.state == refreshed.state == "rejected"
-                and peer.code == refreshed.code
-            )
+            or (peer.state == refreshed.state == "rejected" and peer.code == refreshed.code)
         )
         if not same_disposition:
             raise ActeonError("agent peer refresh changed durable disposition")
@@ -642,10 +630,7 @@ class _AsyncAgentServicesMixin:
                 and refreshed.task is not None
                 and peer.task.get("id") == refreshed.task.get("id")
             )
-            or (
-                peer.state == refreshed.state == "rejected"
-                and peer.code == refreshed.code
-            )
+            or (peer.state == refreshed.state == "rejected" and peer.code == refreshed.code)
         )
         if not same_disposition:
             raise ActeonError("agent peer refresh changed durable disposition")

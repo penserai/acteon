@@ -15,7 +15,11 @@ from acteon_client import (
     AsyncActeonClient,
     PermitReference,
 )
-from acteon_client.agent_services import AGENT_EXECUTION_CONTEXT_HEADER, AGENT_SOURCE_CONTEXT_HEADER, _provider_abort
+from acteon_client.agent_services import (
+    AGENT_EXECUTION_CONTEXT_HEADER,
+    AGENT_SOURCE_CONTEXT_HEADER,
+    _provider_abort,
+)
 from acteon_client.errors import ActeonError, HttpError
 
 FIXTURE = json.loads(
@@ -28,14 +32,30 @@ def test_parent_context_and_permits_are_request_local():
 
     def respond(request):
         calls.append(request)
-        assert request.headers[AGENT_EXECUTION_CONTEXT_HEADER] == FIXTURE["parent"]["execution_context"]
-        assert json.loads(request.headers["x-acteon-execution-permits"]) == FIXTURE["parent"]["permits"]
+        assert (
+            request.headers[AGENT_EXECUTION_CONTEXT_HEADER]
+            == FIXTURE["parent"]["execution_context"]
+        )
+        assert (
+            json.loads(request.headers["x-acteon-execution-permits"])
+            == FIXTURE["parent"]["permits"]
+        )
         assert AGENT_SOURCE_CONTEXT_HEADER not in request.headers
         job = FIXTURE["jobs"][0]
-        return httpx.Response(200, json=job["task"], headers={"a2a-version": "1.0", AGENT_SOURCE_CONTEXT_HEADER: job["source_context"]})
+        return httpx.Response(
+            200,
+            json=job["task"],
+            headers={
+                "a2a-version": "1.0",
+                AGENT_SOURCE_CONTEXT_HEADER: job["source_context"],
+            },
+        )
 
     permit = FIXTURE["parent"]["permits"][0]
-    parent = AgentServiceParent(FIXTURE["parent"]["execution_context"], (PermitReference(permit["id"], permit["accepted_revision"]),))
+    parent = AgentServiceParent(
+        FIXTURE["parent"]["execution_context"],
+        (PermitReference(permit["id"], permit["accepted_revision"]),),
+    )
     client = ActeonClient("http://acteon")
     client._client = httpx.Client(transport=httpx.MockTransport(respond))
     try:
@@ -47,7 +67,12 @@ def test_parent_context_and_permits_are_request_local():
 
 def test_peer_tool_sends_no_authority_fields_and_validates_receipt():
     source = AgentServiceReceipt(
-        "prod", "acme", "notifier", "job-1", FIXTURE["jobs"][0]["source_context"], FIXTURE["jobs"][0]["task"]
+        "prod",
+        "acme",
+        "notifier",
+        "job-1",
+        FIXTURE["jobs"][0]["source_context"],
+        FIXTURE["jobs"][0]["task"],
     )
 
     def respond(request):
@@ -76,9 +101,7 @@ def test_peer_tool_sends_no_authority_fields_and_validates_receipt():
         )
         assert receipt.state == "accepted"
         assert receipt.task == FIXTURE["jobs"][1]["task"]
-        refreshed = client.agent_service_refresh_peer(
-            source, "team/resolver", "diagnose", receipt
-        )
+        refreshed = client.agent_service_refresh_peer(source, "team/resolver", "diagnose", receipt)
         assert refreshed.submission_id == receipt.submission_id
     finally:
         client.close()
@@ -86,7 +109,12 @@ def test_peer_tool_sends_no_authority_fields_and_validates_receipt():
 
 def test_peer_discovery_exposes_only_strict_safe_registry_data():
     source = AgentServiceReceipt(
-        "prod", "acme", "notifier", "job-1", FIXTURE["jobs"][0]["source_context"], FIXTURE["jobs"][0]["task"]
+        "prod",
+        "acme",
+        "notifier",
+        "job-1",
+        FIXTURE["jobs"][0]["source_context"],
+        FIXTURE["jobs"][0]["task"],
     )
 
     def respond(request):
@@ -95,11 +123,22 @@ def test_peer_discovery_exposes_only_strict_safe_registry_data():
         assert len(request.url.params) == 1
         assert AGENT_SOURCE_CONTEXT_HEADER not in request.headers
         assert AGENT_EXECUTION_CONTEXT_HEADER not in request.headers
-        return httpx.Response(200, json={"peers": [{
-            "agent_id": "resolver", "skill": "diagnose",
-            "description_untrusted": "Investigates incidents", "card_version": "v1",
-            "binding_digest": "a" * 64, "checked_at_ms": 42,
-        }]}, headers={"a2a-version": "1.0"})
+        return httpx.Response(
+            200,
+            json={
+                "peers": [
+                    {
+                        "agent_id": "resolver",
+                        "skill": "diagnose",
+                        "description_untrusted": "Investigates incidents",
+                        "card_version": "v1",
+                        "binding_digest": "a" * 64,
+                        "checked_at_ms": 42,
+                    }
+                ]
+            },
+            headers={"a2a-version": "1.0"},
+        )
 
     client = ActeonClient("http://acteon")
     client._client = httpx.Client(transport=httpx.MockTransport(respond))
@@ -114,9 +153,20 @@ def test_peer_discovery_exposes_only_strict_safe_registry_data():
 
 def test_peer_cancel_is_one_request_and_validates_terminal_identity():
     source = AgentServiceReceipt(
-        "prod", "acme", "notifier", "job-1", FIXTURE["jobs"][0]["source_context"], FIXTURE["jobs"][0]["task"]
+        "prod",
+        "acme",
+        "notifier",
+        "job-1",
+        FIXTURE["jobs"][0]["source_context"],
+        FIXTURE["jobs"][0]["task"],
     )
-    remote = {**FIXTURE["jobs"][1]["task"], "status": {**FIXTURE["jobs"][1]["task"]["status"], "state": "canceled"}}
+    remote = {
+        **FIXTURE["jobs"][1]["task"],
+        "status": {
+            **FIXTURE["jobs"][1]["task"]["status"],
+            "state": "canceled",
+        },
+    }
     peer = AgentPeerSendReceipt(
         "f47ac10b-58cc-5372-a567-0e02b2c3d479", "accepted", task=FIXTURE["jobs"][1]["task"]
     )
@@ -126,11 +176,15 @@ def test_peer_cancel_is_one_request_and_validates_terminal_identity():
         calls.append(request)
         assert request.url.path.endswith(peer.submission_id + ":cancel")
         assert not request.content
-        return httpx.Response(200, json={
-            "submission_id": peer.submission_id,
-            "cancellation_id": "67e55044-10b1-526f-9247-bb680e5fe0c8",
-            "status": {"state": "reconciled", "task": remote},
-        }, headers={"a2a-version": "1.0"})
+        return httpx.Response(
+            200,
+            json={
+                "submission_id": peer.submission_id,
+                "cancellation_id": "67e55044-10b1-526f-9247-bb680e5fe0c8",
+                "status": {"state": "reconciled", "task": remote},
+            },
+            headers={"a2a-version": "1.0"},
+        )
 
     client = ActeonClient("http://acteon")
     client._client = httpx.Client(transport=httpx.MockTransport(respond))
