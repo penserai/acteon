@@ -141,6 +141,8 @@ extension is covered by the retirement contract; the simulation above exercises
 the immediate execution and intervention loop.
 
 This establishes an observable control loop for immediate qualified operations.
-It does not establish team representation, autonomous A2A selection, delegated
-budget conservation or remote cancellation. Those require their own runtime
-contracts and scenarios.
+The [agent workforce](agent-workforce.md) scenario covers team representation,
+and the governed peer runtime now provides durable send, refresh, and
+at-most-once remote cancellation. This particular runner does not invoke those
+paths. Autonomous peer selection and shared delegated budget conservation remain
+separate runtime and scenario work.

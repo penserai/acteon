@@ -9,6 +9,7 @@ from .a2a import (
     make_push_config,
 )
 from .agent_services import (
+    AgentPeerCancelReceipt,
     AgentPeerSendReceipt,
     AGENT_EXECUTION_CONTEXT_HEADER,
     AGENT_SOURCE_CONTEXT_HEADER,
@@ -492,6 +493,7 @@ __all__ += [
 __all__ += [
     "AGENT_EXECUTION_CONTEXT_HEADER",
     "AGENT_SOURCE_CONTEXT_HEADER",
+    "AgentPeerCancelReceipt",
     "AgentPeerSendReceipt",
     "AgentServiceParent",
     "AgentServiceProviderAbort",

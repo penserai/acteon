@@ -49,3 +49,9 @@ retain provider task status, and reject failed or false acknowledgements without
 retries. The fixture distinguishes restriction-only and uncertain provider-abort
 states; SDKs reject malformed attempt identities and proof digests. Browser contracts
 cover explicit same-job recovery and later completion.
+
+Peer lifecycle contracts in all five native SDK suites also pin the governed
+send, refresh, and cancel paths. Cancellation accepts only an accepted peer
+receipt, sends no caller-supplied authority fields, validates canonical UUIDv5
+identities and the exact terminal remote task, and makes one HTTP request.
+`unsupported`, `rejected`, `uncertain`, and `reconciled` remain distinct.

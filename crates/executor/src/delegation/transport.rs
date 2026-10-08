@@ -20,6 +20,7 @@ use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
 
 pub const PEER_SEND_KIND: &str = "governed_peer_send";
+pub const PEER_CANCEL_KIND: &str = "governed_peer_cancel";
 const MAX_RECORD_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,6 +41,16 @@ pub enum PeerSendDisposition {
         code: String,
     },
     Uncertain,
+}
+
+/// Result of one remote cancellation delivery. Transport failures and any
+/// response that cannot prove a terminal task are `Uncertain`.
+#[derive(Debug, Clone)]
+pub enum PeerCancelDisposition {
+    Unsupported,
+    Rejected { code: String },
+    Uncertain,
+    Final { task: Box<Task> },
 }
 
 pub struct PeerSendRequest<'a> {
@@ -73,6 +84,12 @@ pub trait PeerTransportAdapter: Send + Sync {
         _request: PeerTaskRequest<'_>,
     ) -> Result<Task, PeerTransportError> {
         Err(PeerTransportError::Unavailable)
+    }
+    async fn cancel_task(
+        &self,
+        _request: PeerTaskRequest<'_>,
+    ) -> Result<PeerCancelDisposition, PeerTransportError> {
+        Ok(PeerCancelDisposition::Unsupported)
     }
 }
 
@@ -143,6 +160,50 @@ pub struct PeerSendReceipt {
     pub status: PeerSendStatus,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+enum CancelState {
+    Registered,
+    Delivering { claim_id: Uuid },
+    Unsupported,
+    Rejected { code: String },
+    Uncertain,
+    Reconciled { task: Box<Task> },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CancelRecord {
+    schema: u32,
+    submission_id: Uuid,
+    cancellation_id: Uuid,
+    binding_digest: String,
+    adapter_revision: String,
+    endpoint: String,
+    transport: String,
+    source_context: ExecutionContextReference,
+    task_id: String,
+    requested_at_ms: i64,
+    state: CancelState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PeerCancelStatus {
+    Unsupported,
+    Rejected { code: String },
+    Uncertain,
+    Reconciled { task: Box<Task> },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PeerCancelReceipt {
+    pub submission_id: Uuid,
+    pub cancellation_id: Uuid,
+    pub status: PeerCancelStatus,
+}
+
 pub struct PeerTransportDependencies {
     pub state: Arc<dyn StateStore>,
     pub coordinator: AuthorityCoordinator,
@@ -159,6 +220,14 @@ pub struct DurablePeerTransport {
 fn valid_text(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 1024
+        && value.trim() == value
+        && value != "*"
+        && !value.chars().any(char::is_control)
+}
+
+fn valid_endpoint(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 2048
         && value.trim() == value
         && value != "*"
         && !value.chars().any(char::is_control)
@@ -189,6 +258,10 @@ fn submission_id(
     }))
     .expect("fixed peer submission identity must serialize");
     Uuid::new_v5(&parent.execution_id(), &identity)
+}
+
+fn cancellation_id(submission_id: Uuid) -> Uuid {
+    Uuid::new_v5(&submission_id, b"acteon.peer-cancel.v1")
 }
 
 impl DurablePeerTransport {
@@ -389,6 +462,280 @@ impl DurablePeerTransport {
         }
     }
 
+    /// Deliver at most one cancellation request for an accepted remote task.
+    /// Intent and a delivery claim are durable before the adapter call. A lost
+    /// response or crash after that claim remains uncertain and is never
+    /// automatically resent.
+    pub async fn cancel_task(
+        &self,
+        registry: &ApprovedPeerRegistry,
+        agent_id: &str,
+        skill: &str,
+        parent: &VerifiedExecutionContext,
+        permits: &[PermitReference],
+        submission_id: Uuid,
+    ) -> Result<PeerCancelReceipt, PeerTransportError> {
+        let (binding, reference, send_key, send) = self
+            .authorized_existing(registry, agent_id, skill, parent, permits, submission_id)
+            .await?;
+        let SendState::Accepted {
+            task: accepted_task,
+            source_context,
+        } = &send.state
+        else {
+            return Err(PeerTransportError::Conflict);
+        };
+        let requested_at_ms = self.dependencies.clock.now().timestamp_millis();
+        if requested_at_ms < 0 {
+            return Err(PeerTransportError::Invalid);
+        }
+        let final_task = accepted_task
+            .status
+            .state
+            .is_terminal()
+            .then(|| accepted_task.clone());
+        let candidate = CancelRecord {
+            schema: 1,
+            submission_id,
+            cancellation_id: cancellation_id(submission_id),
+            binding_digest: binding.digest().into(),
+            adapter_revision: self.adapter.revision().into(),
+            endpoint: binding.endpoint().into(),
+            transport: binding.transport().into(),
+            source_context: source_context.clone(),
+            task_id: accepted_task.id.clone(),
+            requested_at_ms,
+            state: final_task.map_or(CancelState::Registered, |task| CancelState::Reconciled {
+                task,
+            }),
+        };
+        let key = Self::cancel_key(&reference, candidate.cancellation_id);
+        let created = self
+            .dependencies
+            .state
+            .check_and_set(&key, &self.encode_cancel(&candidate)?, None)
+            .await
+            .map_err(|_| PeerTransportError::Unavailable)?;
+        let mut receipt = if created && matches!(candidate.state, CancelState::Registered) {
+            self.claim_and_cancel(&key, &candidate, accepted_task)
+                .await?
+        } else if created {
+            Self::cancel_receipt(&candidate)
+        } else {
+            let (current, _) = self
+                .load_cancel_versioned(&key)
+                .await?
+                .ok_or(PeerTransportError::Unavailable)?;
+            self.same_cancel_intent(&current, &candidate)?;
+            if matches!(current.state, CancelState::Registered) {
+                self.claim_and_cancel(&key, &current, accepted_task).await?
+            } else {
+                Self::cancel_receipt(&current)
+            }
+        };
+        if !created
+            && matches!(receipt.status, PeerCancelStatus::Uncertain)
+            && let Ok(refreshed) = self
+                .refresh_task(registry, agent_id, skill, parent, permits, submission_id)
+                .await
+            && let PeerSendStatus::Accepted {
+                task: final_task, ..
+            } = refreshed.status
+            && final_task.status.state.is_terminal()
+            && valid_task_progress(accepted_task, &final_task)
+        {
+            receipt = self
+                .reconcile_cancel(&key, &candidate, final_task.as_ref())
+                .await?;
+        }
+        if let PeerCancelStatus::Reconciled { task } = &receipt.status {
+            self.persist_final_task(&send_key, binding, &reference, submission_id, task)
+                .await?;
+        }
+        Ok(receipt)
+    }
+
+    async fn authorized_existing<'a>(
+        &self,
+        registry: &'a ApprovedPeerRegistry,
+        agent_id: &str,
+        skill: &str,
+        parent: &VerifiedExecutionContext,
+        permits: &[PermitReference],
+        submission_id: Uuid,
+    ) -> Result<
+        (
+            &'a ApprovedPeerBinding,
+            ExecutionContextReference,
+            StateKey,
+            SendRecord,
+        ),
+        PeerTransportError,
+    > {
+        let binding = registry
+            .bindings
+            .get(&(agent_id.into(), skill.into()))
+            .ok_or(PeerTransportError::Refused)?;
+        if binding.digest() != self.adapter.binding_digest()
+            || registry
+                .inspect_binding(binding, self.dependencies.clock.as_ref())
+                .await
+                .map_err(|error| Self::discovery_error(&error))?
+                .is_none()
+        {
+            return Err(PeerTransportError::Refused);
+        }
+        binding
+            .check_source(
+                &self.dependencies.coordinator,
+                parent,
+                permits,
+                self.dependencies.clock.as_ref(),
+            )
+            .await
+            .map_err(|_| PeerTransportError::Refused)?;
+        let reference = parent
+            .reference()
+            .map_err(|_| PeerTransportError::Invalid)?;
+        let key = StateKey::new(
+            reference.namespace(),
+            reference.tenant(),
+            KeyKind::Custom(PEER_SEND_KIND.into()),
+            submission_id.to_string(),
+        );
+        let (record, _) = self
+            .load_versioned(&key)
+            .await?
+            .ok_or(PeerTransportError::Conflict)?;
+        self.authorize_existing(&record, binding, &reference, submission_id)?;
+        Ok((binding, reference, key, record))
+    }
+
+    async fn claim_and_cancel(
+        &self,
+        key: &StateKey,
+        expected: &CancelRecord,
+        current_task: &Task,
+    ) -> Result<PeerCancelReceipt, PeerTransportError> {
+        let (current, version) = self
+            .load_cancel_versioned(key)
+            .await?
+            .ok_or(PeerTransportError::Unavailable)?;
+        self.same_cancel_intent(&current, expected)?;
+        if !matches!(current.state, CancelState::Registered) {
+            return Ok(Self::cancel_receipt(&current));
+        }
+        let mut claimed = current.clone();
+        claimed.state = CancelState::Delivering {
+            claim_id: Uuid::new_v4(),
+        };
+        match self
+            .dependencies
+            .state
+            .compare_and_swap(key, version, &self.encode_cancel(&claimed)?, None)
+            .await
+            .map_err(|_| PeerTransportError::Unavailable)?
+        {
+            CasResult::Ok => {}
+            CasResult::Conflict { .. } => {
+                let (record, _) = self
+                    .load_cancel_versioned(key)
+                    .await?
+                    .ok_or(PeerTransportError::Unavailable)?;
+                self.same_cancel_intent(&record, expected)?;
+                return Ok(Self::cancel_receipt(&record));
+            }
+        }
+        let delivery = tokio::time::timeout(
+            self.timeout,
+            self.adapter.cancel_task(PeerTaskRequest {
+                endpoint: &claimed.endpoint,
+                transport: &claimed.transport,
+                source_context: &claimed.source_context,
+                task_id: &claimed.task_id,
+            }),
+        )
+        .await;
+        let state = match delivery {
+            Ok(Ok(PeerCancelDisposition::Unsupported)) => CancelState::Unsupported,
+            Ok(Ok(PeerCancelDisposition::Rejected { code })) if valid_text(&code) => {
+                CancelState::Rejected { code }
+            }
+            Ok(Ok(PeerCancelDisposition::Final { task }))
+                if task.status.state.is_terminal() && valid_task_progress(current_task, &task) =>
+            {
+                CancelState::Reconciled { task }
+            }
+            _ => CancelState::Uncertain,
+        };
+        let mut settled = claimed;
+        settled.state = state;
+        let encoded = self
+            .encode_cancel(&settled)
+            .map_err(|_| PeerTransportError::Unavailable)?;
+        match self
+            .dependencies
+            .state
+            .compare_and_swap(key, version + 1, &encoded, None)
+            .await
+            .map_err(|_| PeerTransportError::Unavailable)?
+        {
+            CasResult::Ok => Ok(Self::cancel_receipt(&settled)),
+            CasResult::Conflict { .. } => {
+                let (record, _) = self
+                    .load_cancel_versioned(key)
+                    .await?
+                    .ok_or(PeerTransportError::Unavailable)?;
+                self.same_cancel_intent(&record, expected)?;
+                Ok(Self::cancel_receipt(&record))
+            }
+        }
+    }
+
+    async fn reconcile_cancel(
+        &self,
+        key: &StateKey,
+        expected: &CancelRecord,
+        final_task: &Task,
+    ) -> Result<PeerCancelReceipt, PeerTransportError> {
+        for _ in 0..16 {
+            let (current, version) = self
+                .load_cancel_versioned(key)
+                .await?
+                .ok_or(PeerTransportError::Unavailable)?;
+            self.same_cancel_intent(&current, expected)?;
+            match current.state {
+                CancelState::Uncertain | CancelState::Delivering { .. } => {}
+                _ => return Ok(Self::cancel_receipt(&current)),
+            }
+            if !final_task.status.state.is_terminal()
+                || final_task.id != current.task_id
+                || final_task.namespace != current.source_context.namespace()
+                || final_task.tenant != current.source_context.tenant()
+            {
+                return Err(PeerTransportError::Conflict);
+            }
+            let mut next = current;
+            next.state = CancelState::Reconciled {
+                task: Box::new(final_task.clone()),
+            };
+            let encoded = self
+                .encode_cancel(&next)
+                .map_err(|_| PeerTransportError::Unavailable)?;
+            if matches!(
+                self.dependencies
+                    .state
+                    .compare_and_swap(key, version, &encoded, None)
+                    .await
+                    .map_err(|_| PeerTransportError::Unavailable)?,
+                CasResult::Ok
+            ) {
+                return Ok(Self::cancel_receipt(&next));
+            }
+        }
+        Err(PeerTransportError::Unavailable)
+    }
+
     async fn prepare<'a>(
         &self,
         registry: &'a ApprovedPeerRegistry,
@@ -476,6 +823,15 @@ impl DurablePeerTransport {
             record.parent.tenant(),
             KeyKind::Custom(PEER_SEND_KIND.into()),
             record.submission_id.to_string(),
+        )
+    }
+
+    fn cancel_key(parent: &ExecutionContextReference, cancellation_id: Uuid) -> StateKey {
+        StateKey::new(
+            parent.namespace(),
+            parent.tenant(),
+            KeyKind::Custom(PEER_CANCEL_KIND.into()),
+            cancellation_id.to_string(),
         )
     }
 
@@ -613,6 +969,123 @@ impl DurablePeerTransport {
         Ok(())
     }
 
+    fn same_cancel_intent(
+        &self,
+        actual: &CancelRecord,
+        expected: &CancelRecord,
+    ) -> Result<(), PeerTransportError> {
+        if !self.valid_cancel_record(actual)
+            || !self.valid_cancel_record(expected)
+            || actual.schema != expected.schema
+            || actual.submission_id != expected.submission_id
+            || actual.cancellation_id != expected.cancellation_id
+            || actual.binding_digest != expected.binding_digest
+            || actual.adapter_revision != expected.adapter_revision
+            || actual.endpoint != expected.endpoint
+            || actual.transport != expected.transport
+            || actual.source_context != expected.source_context
+            || actual.task_id != expected.task_id
+        {
+            return Err(PeerTransportError::Conflict);
+        }
+        Ok(())
+    }
+
+    fn valid_cancel_record(&self, record: &CancelRecord) -> bool {
+        let state_valid = match &record.state {
+            CancelState::Rejected { code } => valid_text(code),
+            CancelState::Reconciled { task } => {
+                task.validate().is_ok()
+                    && task.status.state.is_terminal()
+                    && task.id == record.task_id
+                    && task.namespace == record.source_context.namespace()
+                    && task.tenant == record.source_context.tenant()
+            }
+            CancelState::Registered
+            | CancelState::Delivering { .. }
+            | CancelState::Unsupported
+            | CancelState::Uncertain => true,
+        };
+        record.schema == 1
+            && record.cancellation_id == cancellation_id(record.submission_id)
+            && record.binding_digest == self.adapter.binding_digest()
+            && record.adapter_revision == self.adapter.revision()
+            && valid_digest(&record.binding_digest)
+            && valid_text(&record.adapter_revision)
+            && valid_endpoint(&record.endpoint)
+            && matches!(record.transport.as_str(), "rest" | "json-rpc")
+            && valid_text(&record.task_id)
+            && record.requested_at_ms >= 0
+            && state_valid
+    }
+
+    fn cancel_receipt(record: &CancelRecord) -> PeerCancelReceipt {
+        let status = match &record.state {
+            CancelState::Unsupported => PeerCancelStatus::Unsupported,
+            CancelState::Rejected { code } => PeerCancelStatus::Rejected { code: code.clone() },
+            CancelState::Reconciled { task } => PeerCancelStatus::Reconciled { task: task.clone() },
+            CancelState::Registered | CancelState::Delivering { .. } | CancelState::Uncertain => {
+                PeerCancelStatus::Uncertain
+            }
+        };
+        PeerCancelReceipt {
+            submission_id: record.submission_id,
+            cancellation_id: record.cancellation_id,
+            status,
+        }
+    }
+
+    async fn persist_final_task(
+        &self,
+        key: &StateKey,
+        binding: &ApprovedPeerBinding,
+        parent: &ExecutionContextReference,
+        submission_id: Uuid,
+        final_task: &Task,
+    ) -> Result<(), PeerTransportError> {
+        for _ in 0..16 {
+            let (current, version) = self
+                .load_versioned(key)
+                .await?
+                .ok_or(PeerTransportError::Conflict)?;
+            self.authorize_existing(&current, binding, parent, submission_id)?;
+            let SendState::Accepted {
+                task,
+                source_context,
+            } = &current.state
+            else {
+                return Err(PeerTransportError::Conflict);
+            };
+            if serde_json::to_value(task).map_err(|_| PeerTransportError::Unavailable)?
+                == serde_json::to_value(final_task).map_err(|_| PeerTransportError::Unavailable)?
+            {
+                return Ok(());
+            }
+            if !final_task.status.state.is_terminal() || !valid_task_progress(task, final_task) {
+                return Err(PeerTransportError::Unavailable);
+            }
+            let mut next = current.clone();
+            next.state = SendState::Accepted {
+                task: Box::new(final_task.clone()),
+                source_context: source_context.clone(),
+            };
+            let encoded = self
+                .encode(&next)
+                .map_err(|_| PeerTransportError::Unavailable)?;
+            if matches!(
+                self.dependencies
+                    .state
+                    .compare_and_swap(key, version, &encoded, None)
+                    .await
+                    .map_err(|_| PeerTransportError::Unavailable)?,
+                CasResult::Ok
+            ) {
+                return Ok(());
+            }
+        }
+        Err(PeerTransportError::Unavailable)
+    }
+
     fn valid_record(&self, record: &SendRecord) -> bool {
         let state_valid = match &record.state {
             SendState::Registered | SendState::Delivering { .. } | SendState::Uncertain => true,
@@ -633,7 +1106,7 @@ impl DurablePeerTransport {
             && record.capability == self.adapter.submission_capability()
             && valid_digest(&record.binding_digest)
             && valid_text(&record.adapter_revision)
-            && valid_text(&record.endpoint)
+            && valid_endpoint(&record.endpoint)
             && matches!(record.transport.as_str(), "rest" | "json-rpc")
             && valid_digest(&record.message_digest)
             && record.message.validate().is_ok()
@@ -681,7 +1154,40 @@ impl DurablePeerTransport {
             })
     }
 
+    fn encode_cancel(&self, record: &CancelRecord) -> Result<String, PeerTransportError> {
+        let raw = serde_json::to_string(record).map_err(|_| PeerTransportError::Invalid)?;
+        if raw.len() > MAX_RECORD_BYTES {
+            return Err(PeerTransportError::Invalid);
+        }
+        self.dependencies
+            .encryptor
+            .as_ref()
+            .map_or(Ok(raw.clone()), |encryptor| {
+                encryptor
+                    .encrypt_str(&raw)
+                    .map_err(|_| PeerTransportError::Unavailable)
+            })
+    }
+
     fn decode(&self, raw: &str) -> Result<SendRecord, PeerTransportError> {
+        if raw.len() > MAX_RECORD_BYTES * 2 {
+            return Err(PeerTransportError::Conflict);
+        }
+        let decoded = self.dependencies.encryptor.as_ref().map_or_else(
+            || Ok(raw.to_owned()),
+            |encryptor| {
+                encryptor
+                    .decrypt_str(raw)
+                    .map_err(|_| PeerTransportError::Unavailable)
+            },
+        )?;
+        if decoded.len() > MAX_RECORD_BYTES {
+            return Err(PeerTransportError::Conflict);
+        }
+        serde_json::from_str(&decoded).map_err(|_| PeerTransportError::Conflict)
+    }
+
+    fn decode_cancel(&self, raw: &str) -> Result<CancelRecord, PeerTransportError> {
         if raw.len() > MAX_RECORD_BYTES * 2 {
             return Err(PeerTransportError::Conflict);
         }
@@ -709,6 +1215,19 @@ impl DurablePeerTransport {
             .await
             .map_err(|_| PeerTransportError::Unavailable)?
             .map(|(raw, version)| self.decode(&raw).map(|record| (record, version)))
+            .transpose()
+    }
+
+    async fn load_cancel_versioned(
+        &self,
+        key: &StateKey,
+    ) -> Result<Option<(CancelRecord, u64)>, PeerTransportError> {
+        self.dependencies
+            .state
+            .get_versioned(key)
+            .await
+            .map_err(|_| PeerTransportError::Unavailable)?
+            .map(|(raw, version)| self.decode_cancel(&raw).map(|record| (record, version)))
             .transpose()
     }
 }

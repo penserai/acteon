@@ -23,7 +23,8 @@ use sha2::{Digest, Sha256};
 
 pub mod transport;
 pub use transport::{
-    DurablePeerTransport, PeerSendDisposition, PeerSendReceipt, PeerSendRequest, PeerSendStatus,
+    DurablePeerTransport, PeerCancelDisposition, PeerCancelReceipt, PeerCancelStatus,
+    PeerSendDisposition, PeerSendReceipt, PeerSendRequest, PeerSendStatus,
     PeerSubmissionCapability, PeerTaskRequest, PeerTransportAdapter, PeerTransportDependencies,
     PeerTransportError,
 };

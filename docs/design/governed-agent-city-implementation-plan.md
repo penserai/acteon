@@ -147,7 +147,7 @@ owner's teams or supply a represented team in model metadata.
 1. **Deny-new closure.** Exact resources and explicit routes, actor/reason, revision, optional expiry, and source-event idempotency. Activation and start registration serialize through the coordinator. Suspension remains an additional restriction.
 2. **Impact and reconciliation.** Persist authoritative restriction plus pending intervention intent atomically. Repairable indexes locate affected work; desired and observed states remain distinct. Repeated scans and requests are idempotent.
 3. **Drain and pause.** Admit only explicitly bounded pre-boundary continuations under drain. Pause parks at safe boundaries; adapters advertise whether they support remote pause/resume. New mesh edges are denied by default during drain.
-4. **Cancellation.** Add capability-aware local and remote cancellation, durable requests, and separate acknowledgments. Unsupported or lost acknowledgment stays unresolved. Compensation is separately authorized.
+4. **Cancellation.** The remote baseline persists intent and a delivery claim in the configured state backend, sends at most once, preserves unsupported, rejected, and uncertain outcomes, and reconciles finality by safe task observation. Complete capability-aware local cancellation, fleet-wide operator views, and separately authorized compensation.
 5. **Operator experience.** Scoped external-event automation, impact previews, histories, reopen controls, SDKs, UI, and recovery runbooks.
 
 ### Acceptance evidence
@@ -169,7 +169,7 @@ Closure races follow the documented start linearization point across replicas. R
 2. **Runtime bindings.** Configure agent-specific inbound task execution using existing chains, workers, swarm providers, or an external runtime. Preserve current tenant-level A2A semantics unless a target is explicitly configured.
 3. **Delegation authority.** Derive child authority from root constraints, parent delegation rights, the child envelope, and recipient execution permissions. Use opaque server-held handles bound to recipient and execution. Share root limits and retain ancestry.
 4. **Durable outbound transport.** Resolve approved endpoints and credential references; enforce network bounds. Persist send intent, attempt registration, local child/remote task mapping, progress cursor, artifact bounds, and reconciliation state.
-5. **Lifecycle bridge and host tools.** Implement discovery/delegate tools whose host supplies trusted context, plus required-input, observation, cancellation, artifact, and terminal result handoffs. Update SDKs and UI lineage views.
+5. **Lifecycle bridge and host tools.** Governed host tools now submit, observe, and cancel through an exact installed peer binding with current authority checks, and all five SDKs expose those operations. Complete registry-driven selection, required-input and artifact handoffs, terminal result propagation, and UI lineage views.
 
 ### Acceptance evidence
 

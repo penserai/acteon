@@ -68,6 +68,16 @@ from the qualified REST endpoint, rejects task identity changes or state
 regressions, and persists the new snapshot with compare-and-swap. A failed read
 does not erase the last accepted snapshot or resend work.
 
+For an accepted remote task, `POST
+/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{source_task}/peers/{target}/{skill}/submissions/{submission}:cancel`
+persists one cancellation intent before delivery and never automatically sends
+it twice. Every call repeats current authentication, source binding, permit,
+onward-agent grant, registry-card and target-binding checks. The receipt keeps
+`unsupported`, definitive `rejected`, ambiguous `uncertain`, and `reconciled`
+terminal task states separate. After ambiguity, the same endpoint performs safe
+task observation on a later explicit call; the refresh endpoint remains
+available for ordinary lifecycle observation.
+
 ## Declare independent management rights
 
 First enable [execution permits](execution-permits.md) and shared authentication.

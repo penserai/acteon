@@ -21,6 +21,16 @@ export interface AgentPeerSendReceipt {
   readonly submissionId: string;
   readonly status: AgentPeerSendStatus;
 }
+export type AgentPeerCancelStatus =
+  | Readonly<{ state: "unsupported" }>
+  | Readonly<{ state: "rejected"; code: string }>
+  | Readonly<{ state: "uncertain" }>
+  | Readonly<{ state: "reconciled"; task: Record<string, unknown> }>;
+export interface AgentPeerCancelReceipt {
+  readonly submissionId: string;
+  readonly cancellationId: string;
+  readonly status: AgentPeerCancelStatus;
+}
 export function agentPeerReceipt(value: unknown, namespace: string, tenant: string): AgentPeerSendReceipt {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("agent peer receipt missing or malformed");
   const raw = value as Record<string, unknown>;
@@ -32,6 +42,27 @@ export function agentPeerReceipt(value: unknown, namespace: string, tenant: stri
   if (status.state === "accepted" && keys === "state,task") return Object.freeze({ submissionId: raw.submission_id, status: Object.freeze({ state: "accepted" as const, task: agentTask(status.task, namespace, tenant) }) });
   if (status.state === "rejected" && keys === "code,state" && typeof status.code === "string" && status.code.length > 0 && status.code.length <= 1024 && status.code.trim() === status.code && !/\p{Cc}/u.test(status.code)) return Object.freeze({ submissionId: raw.submission_id, status: Object.freeze({ state: "rejected" as const, code: status.code }) });
   throw new Error("agent peer receipt missing or malformed");
+}
+export function agentPeerCancelReceipt(value: unknown, namespace: string, tenant: string, peer: AgentPeerSendReceipt): AgentPeerCancelReceipt {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("agent peer cancellation receipt missing or malformed");
+  const raw = value as Record<string, unknown>;
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  if (Object.keys(raw).sort().join(",") !== "cancellation_id,status,submission_id" || raw.submission_id !== peer.submissionId || typeof raw.cancellation_id !== "string" || !uuid.test(raw.cancellation_id)) throw new Error("agent peer cancellation receipt missing or malformed");
+  if (peer.status.state !== "accepted" || !raw.status || typeof raw.status !== "object" || Array.isArray(raw.status)) throw new Error("agent peer cancellation requires an accepted peer receipt");
+  const acceptedTask = agentTask(peer.status.task, namespace, tenant);
+  const status = raw.status as Record<string, unknown>;
+  const keys = Object.keys(status).sort().join(",");
+  let parsed: AgentPeerCancelStatus;
+  if (status.state === "unsupported" && keys === "state") parsed = Object.freeze({ state: "unsupported" });
+  else if (status.state === "uncertain" && keys === "state") parsed = Object.freeze({ state: "uncertain" });
+  else if (status.state === "rejected" && keys === "code,state" && typeof status.code === "string" && status.code.length > 0 && status.code.length <= 1024 && status.code.trim() === status.code && !/\p{Cc}/u.test(status.code)) parsed = Object.freeze({ state: "rejected", code: status.code });
+  else if (status.state === "reconciled" && keys === "state,task") {
+    const task = agentTask(status.task, namespace, tenant, acceptedTask.id as string);
+    const taskStatus = task.status as Record<string, unknown> | undefined;
+    if (!taskStatus || !["completed", "failed", "canceled", "rejected"].includes(String(taskStatus.state))) throw new Error("agent peer cancellation receipt missing or malformed");
+    parsed = Object.freeze({ state: "reconciled", task });
+  } else throw new Error("agent peer cancellation receipt missing or malformed");
+  return Object.freeze({ submissionId: peer.submissionId, cancellationId: raw.cancellation_id, status: parsed });
 }
 export function agentSource(value: string | null): string {
   if (!value || value.length > 8192 || !/^[A-Za-z0-9_-]+$/.test(value)) throw new Error("agent service source context missing or malformed");

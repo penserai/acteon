@@ -54,6 +54,25 @@ pub enum AgentPeerSendStatus {
     Rejected { code: String },
 }
 
+/// Durable at-most-once cancellation receipt. `Uncertain` requires task
+/// refresh for reconciliation and must never trigger an automatic resend.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentPeerCancelReceipt {
+    pub submission_id: String,
+    pub cancellation_id: String,
+    pub status: AgentPeerCancelStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AgentPeerCancelStatus {
+    Unsupported,
+    Rejected { code: String },
+    Uncertain,
+    Reconciled { task: Box<Task> },
+}
+
 /// Provider-side intervention remains separate from the durable start fence.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
@@ -205,6 +224,70 @@ async fn peer_response(
     }
     Ok(receipt)
 }
+
+async fn peer_cancel_response(
+    response: reqwest::Response,
+    source: &AgentServiceReceipt,
+    peer: &AgentPeerSendReceipt,
+) -> Result<AgentPeerCancelReceipt, Error> {
+    if !response.status().is_success() {
+        return Err(Error::Http {
+            status: response.status().as_u16(),
+            message: response
+                .text()
+                .await
+                .map_err(|error| Error::Connection(error.to_string()))?,
+        });
+    }
+    if response
+        .headers()
+        .get("a2a-version")
+        .and_then(|value| value.to_str().ok())
+        != Some(A2A_PROTOCOL_VERSION)
+    {
+        return Err(Error::Deserialization(
+            "agent peer cancellation response version missing or unsupported".into(),
+        ));
+    }
+    let receipt: AgentPeerCancelReceipt = response
+        .json()
+        .await
+        .map_err(|error| Error::Deserialization(error.to_string()))?;
+    let accepted_task_id = match &peer.status {
+        AgentPeerSendStatus::Accepted { task } => task.id.as_str(),
+        _ => {
+            return Err(Error::Configuration(
+                "agent peer cancellation requires an accepted peer receipt".into(),
+            ));
+        }
+    };
+    let valid_status = match &receipt.status {
+        AgentPeerCancelStatus::Unsupported | AgentPeerCancelStatus::Uncertain => true,
+        AgentPeerCancelStatus::Rejected { code } => {
+            !code.is_empty()
+                && code.len() <= 1024
+                && code.trim() == code
+                && !code.chars().any(char::is_control)
+        }
+        AgentPeerCancelStatus::Reconciled { task } => {
+            task_matches(
+                task,
+                &source.namespace,
+                &source.tenant,
+                Some(accepted_task_id),
+            ) && task.status.state.is_terminal()
+        }
+    };
+    if receipt.submission_id != peer.submission_id
+        || !valid_attempt_id(&receipt.cancellation_id)
+        || !valid_status
+    {
+        return Err(Error::Deserialization(
+            "agent peer cancellation receipt missing or malformed".into(),
+        ));
+    }
+    Ok(receipt)
+}
 impl ActeonClient {
     /// Submit from an accepted source-agent task to one configured peer. The
     /// source task is an opaque host lookup; no authority fields are sent.
@@ -288,6 +371,45 @@ impl ActeonClient {
             ));
         }
         Ok(refreshed)
+    }
+
+    /// Request at most one remote cancellation. An uncertain result is durable
+    /// and this helper never retries it; use peer refresh to observe finality.
+    pub async fn agent_service_cancel_peer(
+        &self,
+        source: &AgentServiceReceipt,
+        target: &str,
+        skill: &str,
+        peer: &AgentPeerSendReceipt,
+    ) -> Result<AgentPeerCancelReceipt, Error> {
+        if !valid_attempt_id(&peer.submission_id)
+            || !matches!(
+                &peer.status,
+                AgentPeerSendStatus::Accepted { task }
+                    if task_matches(task, &source.namespace, &source.tenant, None)
+            )
+        {
+            return Err(Error::Configuration(
+                "agent peer cancellation requires an accepted peer receipt".into(),
+            ));
+        }
+        let path = format!(
+            "/a2a/{}/{}/agents/{}/v1/tasks/{}/peers/{}/{}/submissions/{}:cancel",
+            segment(&source.namespace)?,
+            segment(&source.tenant)?,
+            segment(&source.agent)?,
+            segment(&source.task_id)?,
+            segment(target)?,
+            segment(skill)?,
+            segment(&peer.submission_id)?,
+        );
+        let response = self
+            .add_auth(self.client.post(format!("{}{path}", self.base_url)))
+            .header("a2a-version", A2A_PROTOCOL_VERSION)
+            .send()
+            .await
+            .map_err(|error| Error::Connection(error.to_string()))?;
+        peer_cancel_response(response, source, peer).await
     }
 
     /// Submit once with a stable message ID; retain the receipt separately from
@@ -571,18 +693,28 @@ mod tests {
                         assert!(source.is_none());
                         assert!(!has_execution_context);
                         assert!(!has_execution_permits);
-                        if path.ends_with(":refresh") {
+                        if path.ends_with(":refresh") || path.ends_with(":cancel") {
                             assert!(raw.is_empty());
                         } else {
                             let body: serde_json::Value = serde_json::from_slice(&raw).unwrap();
                             assert_eq!(body.as_object().unwrap().len(), 1);
                             assert_eq!(body["message"]["messageId"], "peer-1");
                         }
-                        let mut response = Json(serde_json::json!({
-                            "submission_id":"f47ac10b-58cc-5372-a567-0e02b2c3d479",
-                            "status":{"state":"accepted", "task":wire["jobs"][0]["task"]}
-                        }))
-                        .into_response();
+                        let payload = if path.ends_with(":cancel") {
+                            let mut task = wire["jobs"][0]["task"].clone();
+                            task["status"]["state"] = serde_json::json!("canceled");
+                            serde_json::json!({
+                                "submission_id":"f47ac10b-58cc-5372-a567-0e02b2c3d479",
+                                "cancellation_id":"67e55044-10b1-526f-9247-bb680e5fe0c8",
+                                "status":{"state":"reconciled", "task":task}
+                            })
+                        } else {
+                            serde_json::json!({
+                                "submission_id":"f47ac10b-58cc-5372-a567-0e02b2c3d479",
+                                "status":{"state":"accepted", "task":wire["jobs"][0]["task"]}
+                            })
+                        };
+                        let mut response = Json(payload).into_response();
                         response
                             .headers_mut()
                             .insert("a2a-version", "1.0".parse().unwrap());
@@ -685,6 +817,18 @@ mod tests {
         assert_eq!(refreshed.submission_id, receipt.submission_id);
         assert!(fixture.calls.lock().unwrap()[2].0.ends_with(
             "/peers/team/resolver/diagnose/submissions/f47ac10b-58cc-5372-a567-0e02b2c3d479:refresh"
+        ));
+        let canceled = fixture
+            .client
+            .agent_service_cancel_peer(&source, "team/resolver", "diagnose", &receipt)
+            .await
+            .unwrap();
+        assert!(matches!(
+            canceled.status,
+            AgentPeerCancelStatus::Reconciled { .. }
+        ));
+        assert!(fixture.calls.lock().unwrap()[3].0.ends_with(
+            "/peers/team/resolver/diagnose/submissions/f47ac10b-58cc-5372-a567-0e02b2c3d479:cancel"
         ));
     }
     #[tokio::test]

@@ -257,6 +257,19 @@ let receipt = client.agent_service_send_message("prod", "acme", "notifier", &mes
 let task = client.agent_service_get_task(&receipt).await?;
 ```
 
+From an accepted source task, invoke, observe, and cancel a configured peer
+without putting authority fields in model data:
+
+```rust
+let peer = client.agent_service_send_peer(&receipt, "resolver", "diagnose", &peer_message).await?;
+let peer = client.agent_service_refresh_peer(&receipt, "resolver", "diagnose", &peer).await?;
+let cancellation = client.agent_service_cancel_peer(&receipt, "resolver", "diagnose", &peer).await?;
+```
+
+Cancellation is delivered at most once. Preserve `Uncertain` and reconcile by
+an explicit later cancel or refresh; never generate a new submission or retry
+the cancellation automatically.
+
 `AgentServiceReceipt` supports Serde persistence in host state. Observation uses
 its original task identity, independently of mutable `receipt.task` data.
 

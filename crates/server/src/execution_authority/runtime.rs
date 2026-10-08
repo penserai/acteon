@@ -11,7 +11,8 @@ mod management;
 pub use management::{ManagementError, TrustedReconciliationInstallation};
 mod peer_transport;
 pub use peer_transport::{
-    AgentPeerInvocation, AgentPeerRefreshInvocation, AgentPeerRefreshRequest, AgentPeerToolRequest,
+    AgentPeerCancelInvocation, AgentPeerCancelRequest, AgentPeerInvocation,
+    AgentPeerRefreshInvocation, AgentPeerRefreshRequest, AgentPeerToolRequest,
     AgentPeerTransportError,
 };
 use std::{collections::BTreeMap, sync::Arc};

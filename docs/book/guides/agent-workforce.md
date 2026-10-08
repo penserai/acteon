@@ -153,5 +153,7 @@ The participants are driven by a deterministic scenario runner. It makes zero
 model invocations and does not demonstrate autonomous agent discovery or A2A
 negotiation. It exercises reusable platform features, described in
 [Agent workforce](../features/workforce.md), rather than adding authorization
-logic to the scenario. Shared team budgets, descendant delegation and autonomous
-mesh work remain separate implementation phases.
+logic to the scenario. Governed peer send, refresh, and remote cancellation are
+available as host-controlled building blocks. Shared team budgets, descendant
+delegation, and autonomous registry-driven peer selection remain separate
+implementation phases.

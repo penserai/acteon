@@ -103,6 +103,17 @@ class AgentPeerSendReceipt:
     code: str | None = None
 
 
+@dataclass(frozen=True)
+class AgentPeerCancelReceipt:
+    """Durable at-most-once cancellation outcome."""
+
+    submission_id: str
+    cancellation_id: str
+    state: Literal["unsupported", "rejected", "uncertain", "reconciled"]
+    task: dict[str, Any] | None = None
+    code: str | None = None
+
+
 def _submission(value: Any) -> str:
     try:
         parsed = UUID(value) if isinstance(value, str) else None
@@ -140,6 +151,57 @@ def _peer_receipt(
         ):
             return AgentPeerSendReceipt(submission_id, state, code=code)
     raise ActeonError("agent peer receipt missing or malformed")
+
+
+def _peer_cancel_receipt(
+    response: httpx.Response,
+    source: AgentServiceReceipt,
+    peer: AgentPeerSendReceipt,
+) -> AgentPeerCancelReceipt:
+    value = _response_value(response)
+    if (
+        peer.state != "accepted"
+        or peer.task is None
+        or not isinstance(value, dict)
+        or set(value) != {"submission_id", "cancellation_id", "status"}
+        or value.get("submission_id") != peer.submission_id
+    ):
+        raise ActeonError("agent peer cancellation receipt missing or malformed")
+    accepted_task = _task_value(peer.task, source.namespace, source.tenant)
+    accepted_task_id = accepted_task["id"]
+    cancellation_id = _submission(value.get("cancellation_id"))
+    status = value.get("status")
+    if not isinstance(status, dict):
+        raise ActeonError("agent peer cancellation receipt missing or malformed")
+    state = status.get("state")
+    if state in ("unsupported", "uncertain") and set(status) == {"state"}:
+        return AgentPeerCancelReceipt(peer.submission_id, cancellation_id, state)
+    if state == "rejected" and set(status) == {"state", "code"}:
+        code = status.get("code")
+        if (
+            isinstance(code, str)
+            and 0 < len(code) <= 1024
+            and code.strip() == code
+            and not any(unicodedata.category(char) == "Cc" for char in code)
+        ):
+            return AgentPeerCancelReceipt(
+                peer.submission_id, cancellation_id, state, code=code
+            )
+    if state == "reconciled" and set(status) == {"state", "task"}:
+        task = _task_value(
+            status.get("task"), source.namespace, source.tenant, accepted_task_id
+        )
+        task_status = task.get("status")
+        if isinstance(task_status, dict) and task_status.get("state") in {
+            "completed",
+            "failed",
+            "canceled",
+            "rejected",
+        }:
+            return AgentPeerCancelReceipt(
+                peer.submission_id, cancellation_id, state, task=task
+            )
+    raise ActeonError("agent peer cancellation receipt missing or malformed")
 
 
 def _provider_abort(value: Any) -> AgentServiceProviderAbort | None:
@@ -325,6 +387,34 @@ class _AgentServicesMixin:
             raise ActeonError("agent peer refresh changed durable disposition")
         return refreshed
 
+    def agent_service_cancel_peer(
+        self,
+        source: AgentServiceReceipt,
+        target: str,
+        skill: str,
+        peer: AgentPeerSendReceipt,
+    ) -> AgentPeerCancelReceipt:
+        """Persist and deliver at most one cancellation; never retries ambiguity."""
+        submission = _submission(peer.submission_id)
+        if peer.state != "accepted" or peer.task is None:
+            raise ActeonError("agent peer cancellation requires an accepted peer receipt")
+        _task_value(peer.task, source.namespace, source.tenant)
+        response = self._request(
+            "POST",
+            _base(source.namespace, source.tenant, source.agent)
+            + "/tasks/"
+            + _segment(source.task_id)
+            + "/peers/"
+            + _segment(target)
+            + "/"
+            + _segment(skill)
+            + "/submissions/"
+            + submission
+            + ":cancel",
+            extra_headers=dict(_A2A_HEADERS),
+        )
+        return _peer_cancel_receipt(response, source, peer)
+
     def agent_service_stop_task(self, receipt: AgentServiceReceipt) -> AgentServiceStopReceipt:
         """Stop future starts; repeat the same receipt explicitly after response loss."""
         response = self._request(
@@ -448,6 +538,33 @@ class _AsyncAgentServicesMixin:
         if not same_disposition:
             raise ActeonError("agent peer refresh changed durable disposition")
         return refreshed
+
+    async def agent_service_cancel_peer(
+        self,
+        source: AgentServiceReceipt,
+        target: str,
+        skill: str,
+        peer: AgentPeerSendReceipt,
+    ) -> AgentPeerCancelReceipt:
+        submission = _submission(peer.submission_id)
+        if peer.state != "accepted" or peer.task is None:
+            raise ActeonError("agent peer cancellation requires an accepted peer receipt")
+        _task_value(peer.task, source.namespace, source.tenant)
+        response = await self._request(
+            "POST",
+            _base(source.namespace, source.tenant, source.agent)
+            + "/tasks/"
+            + _segment(source.task_id)
+            + "/peers/"
+            + _segment(target)
+            + "/"
+            + _segment(skill)
+            + "/submissions/"
+            + submission
+            + ":cancel",
+            extra_headers=dict(_A2A_HEADERS),
+        )
+        return _peer_cancel_receipt(response, source, peer)
 
     async def agent_service_stop_task(
         self, receipt: AgentServiceReceipt

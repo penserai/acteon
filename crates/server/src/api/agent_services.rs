@@ -8,7 +8,7 @@ use crate::{
     execution_authority::{AgentServiceError, AgentServiceObservation, AgentServiceRequest},
 };
 use acteon_core::TaskMessage;
-use acteon_executor::delegation::PeerSendStatus;
+use acteon_executor::delegation::{PeerCancelStatus, PeerSendStatus};
 use axum::{
     Extension, Json,
     extract::{Path, State},
@@ -59,6 +59,37 @@ impl From<acteon_executor::delegation::PeerSendReceipt> for AgentPeerSendReceipt
                 PeerSendStatus::Uncertain => AgentPeerSendStatus::Uncertain,
                 PeerSendStatus::Accepted { task, .. } => AgentPeerSendStatus::Accepted { task },
                 PeerSendStatus::Rejected { code } => AgentPeerSendStatus::Rejected { code },
+            },
+        }
+    }
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct AgentPeerCancelReceipt {
+    pub submission_id: String,
+    pub cancellation_id: String,
+    pub status: AgentPeerCancelStatus,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum AgentPeerCancelStatus {
+    Unsupported,
+    Rejected { code: String },
+    Uncertain,
+    Reconciled { task: Box<acteon_core::Task> },
+}
+
+impl From<acteon_executor::delegation::PeerCancelReceipt> for AgentPeerCancelReceipt {
+    fn from(receipt: acteon_executor::delegation::PeerCancelReceipt) -> Self {
+        Self {
+            submission_id: receipt.submission_id.to_string(),
+            cancellation_id: receipt.cancellation_id.to_string(),
+            status: match receipt.status {
+                PeerCancelStatus::Unsupported => AgentPeerCancelStatus::Unsupported,
+                PeerCancelStatus::Rejected { code } => AgentPeerCancelStatus::Rejected { code },
+                PeerCancelStatus::Uncertain => AgentPeerCancelStatus::Uncertain,
+                PeerCancelStatus::Reconciled { task } => AgentPeerCancelStatus::Reconciled { task },
             },
         }
     }
@@ -194,6 +225,74 @@ pub async fn peer_refresh(
                 ("cache-control", "no-store"),
             ],
             Json(AgentPeerSendReceipt::from(receipt)),
+        )
+            .into_response(),
+        Err(cause) => peer_error(cause),
+    }
+}
+
+#[utoipa::path(
+    post, path = "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:cancel", tag = "Governance",
+    params(("namespace" = String, Path), ("tenant" = String, Path), ("agent" = String, Path),
+        ("id" = String, Path), ("target" = String, Path), ("skill" = String, Path),
+        ("submission" = String, Path, description = "Stable peer submission UUID")),
+    responses((status = 200, body = AgentPeerCancelReceipt, description = "Durable at-most-once remote cancellation receipt"),
+        (status = 400, description = "Invalid lifecycle request"), (status = 403, description = "Current peer authority required"),
+        (status = 404, description = "Source task unavailable to this agent"), (status = 409, description = "Submission does not match its durable binding"),
+        (status = 503, description = "Peer transport or state unavailable"))
+)]
+pub async fn peer_cancel(
+    State(state): State<AppState>,
+    Extension(identity): Extension<CallerIdentity>,
+    proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
+    Path((namespace, tenant, agent, task_id, target, skill, submission_id)): Path<(
+        String,
+        String,
+        String,
+        uuid::Uuid,
+        String,
+        String,
+        uuid::Uuid,
+    )>,
+    headers: HeaderMap,
+) -> Response {
+    if headers
+        .get("a2a-version")
+        .is_some_and(|value| value != A2A_PROTOCOL_VERSION)
+    {
+        return error(StatusCode::BAD_REQUEST, "unsupported_a2a_version");
+    }
+    if !identity.role.has_permission(Permission::Dispatch)
+        || !identity.is_authorized(&tenant, &namespace, &format!("agent.{target}"), "invoke")
+    {
+        return error(StatusCode::FORBIDDEN, "agent_peer_authority_required");
+    }
+    let Some(Extension(proof)) = proof else {
+        return error(StatusCode::FORBIDDEN, "private_authentication_required");
+    };
+    let Some(runtime) = &state.execution_authority else {
+        return error(StatusCode::SERVICE_UNAVAILABLE, "agent_peer_unavailable");
+    };
+    match runtime
+        .cancel_agent_peer_tool(crate::execution_authority::AgentPeerCancelRequest {
+            namespace: &namespace,
+            tenant: &tenant,
+            source_agent_id: &agent,
+            source_task_id: task_id,
+            target_agent_id: &target,
+            skill: &skill,
+            submission_id,
+            authentication: &proof,
+        })
+        .await
+    {
+        Ok(receipt) => (
+            StatusCode::OK,
+            [
+                ("a2a-version", A2A_PROTOCOL_VERSION),
+                ("cache-control", "no-store"),
+            ],
+            Json(AgentPeerCancelReceipt::from(receipt)),
         )
             .into_response(),
         Err(cause) => peer_error(cause),

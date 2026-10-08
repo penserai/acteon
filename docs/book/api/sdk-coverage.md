@@ -2,7 +2,7 @@
 
 Use Acteon's SDKs to connect agents, services, and workers to the same execution and governance platform. Start with the typed helpers for dispatch, rules, audit, approvals, and bus operations. Use the complete **platform operation API** for controls that do not yet have a dedicated helper in your language.
 
-The current source tree provides a generated catalog for **209 finite HTTP operations** in Rust, Python, TypeScript, Go, and Java. It includes receipt sessions, managed-stage recovery, workflow and execution controls, inference profiles, stream windows, and operator APIs. Six streaming or polymorphic RPC routes use the existing streaming and A2A clients instead. Server configuration, authorization, and optional build features still determine which operations are available on your deployment.
+The current source tree provides a generated catalog for **210 finite HTTP operations** in Rust, Python, TypeScript, Go, and Java. It includes receipt sessions, managed-stage recovery, workflow and execution controls, inference profiles, stream windows, and operator APIs. Six streaming or polymorphic RPC routes use the existing streaming and A2A clients instead. Server configuration, authorization, and optional build features still determine which operations are available on your deployment.
 
 ## Choose the right interface
 
@@ -248,6 +248,17 @@ Once accepted, the same five clients expose `agent_service_refresh_peer`,
 conventions. Refresh sends the stable submission ID with the retained source
 receipt. It revalidates current authority, reads the remote task once, journals
 only a valid forward snapshot, and never resubmits the original message.
+
+Accepted peer receipts also support durable cancellation through
+`agent_service_cancel_peer`, `agentServiceCancelPeer`, or
+`AgentServiceCancelPeer`. The helper sends one request and validates the stable
+submission and cancellation UUIDs, exact remote task identity, tenant scope,
+and terminal state. It exposes `unsupported`, `rejected`, `uncertain`, and
+`reconciled` without collapsing them. Never retry an uncertain cancellation
+automatically. Call cancellation explicitly again to let Acteon reconcile by a
+safe task read, or call peer refresh when only the latest lifecycle snapshot is
+needed. A reconciled `completed` or `failed` task means the task became final
+before cancellation took effect.
 
 The admin UI's **Governed tasks** tab on an agent detail page accepts work and
 refreshes accepted tasks using the current browser identity. The server enforces

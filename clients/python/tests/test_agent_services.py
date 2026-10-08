@@ -7,7 +7,14 @@ from pathlib import Path
 import httpx
 import pytest
 
-from acteon_client import ActeonClient, AgentServiceParent, AgentServiceReceipt, AsyncActeonClient, PermitReference
+from acteon_client import (
+    ActeonClient,
+    AgentPeerSendReceipt,
+    AgentServiceParent,
+    AgentServiceReceipt,
+    AsyncActeonClient,
+    PermitReference,
+)
 from acteon_client.agent_services import AGENT_EXECUTION_CONTEXT_HEADER, AGENT_SOURCE_CONTEXT_HEADER, _provider_abort
 from acteon_client.errors import ActeonError, HttpError
 
@@ -73,6 +80,42 @@ def test_peer_tool_sends_no_authority_fields_and_validates_receipt():
             source, "team/resolver", "diagnose", receipt
         )
         assert refreshed.submission_id == receipt.submission_id
+    finally:
+        client.close()
+
+
+def test_peer_cancel_is_one_request_and_validates_terminal_identity():
+    source = AgentServiceReceipt(
+        "prod", "acme", "notifier", "job-1", FIXTURE["jobs"][0]["source_context"], FIXTURE["jobs"][0]["task"]
+    )
+    remote = {**FIXTURE["jobs"][1]["task"], "status": {**FIXTURE["jobs"][1]["task"]["status"], "state": "canceled"}}
+    peer = AgentPeerSendReceipt(
+        "f47ac10b-58cc-5372-a567-0e02b2c3d479", "accepted", task=FIXTURE["jobs"][1]["task"]
+    )
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        assert request.url.path.endswith(peer.submission_id + ":cancel")
+        assert not request.content
+        return httpx.Response(200, json={
+            "submission_id": peer.submission_id,
+            "cancellation_id": "67e55044-10b1-526f-9247-bb680e5fe0c8",
+            "status": {"state": "reconciled", "task": remote},
+        }, headers={"a2a-version": "1.0"})
+
+    client = ActeonClient("http://acteon")
+    client._client = httpx.Client(transport=httpx.MockTransport(respond))
+    try:
+        canceled = client.agent_service_cancel_peer(source, "team/resolver", "diagnose", peer)
+        assert canceled.state == "reconciled"
+        assert canceled.task["id"] == peer.task["id"]
+        malformed = AgentPeerSendReceipt(
+            peer.submission_id, "accepted", task={**peer.task, "id": ""}
+        )
+        with pytest.raises(ActeonError, match="identity mismatch"):
+            client.agent_service_cancel_peer(source, "team/resolver", "diagnose", malformed)
+        assert len(calls) == 1
     finally:
         client.close()
 

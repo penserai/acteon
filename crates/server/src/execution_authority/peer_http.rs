@@ -3,8 +3,8 @@
 use acteon_core::{ExecutionContextReference, Task};
 use acteon_crypto::{ExposeSecret, SecretString};
 use acteon_executor::delegation::{
-    PeerSendDisposition, PeerSendRequest, PeerSubmissionCapability, PeerTaskRequest,
-    PeerTransportAdapter, PeerTransportError,
+    PeerCancelDisposition, PeerSendDisposition, PeerSendRequest, PeerSubmissionCapability,
+    PeerTaskRequest, PeerTransportAdapter, PeerTransportError,
 };
 use acteon_http::{GuardedClient, OutboundPolicy};
 use async_trait::async_trait;
@@ -151,6 +151,68 @@ impl PeerTransportAdapter for ActeonPeerHttpAdapter {
         }
         let raw = read_bounded(response, MAX_TASK_BYTES).await?;
         serde_json::from_slice(&raw).map_err(|_| PeerTransportError::Unavailable)
+    }
+
+    async fn cancel_task(
+        &self,
+        request: PeerTaskRequest<'_>,
+    ) -> Result<PeerCancelDisposition, PeerTransportError> {
+        if request.transport != "rest" {
+            return Ok(PeerCancelDisposition::Unsupported);
+        }
+        let endpoint = format!(
+            "{}:cancel",
+            task_endpoint(request.endpoint, request.task_id)?
+        );
+        let context =
+            serde_json::to_vec(request.source_context).map_err(|_| PeerTransportError::Invalid)?;
+        let Ok(builder) = self.client.request(reqwest::Method::POST, &endpoint) else {
+            return Ok(PeerCancelDisposition::Rejected {
+                code: "peer_destination_refused".into(),
+            });
+        };
+        let Ok(response) = builder
+            .bearer_auth(self.credential.expose_secret())
+            .header("a2a-version", "1.0")
+            .header(
+                "x-acteon-agent-source-context",
+                URL_SAFE_NO_PAD.encode(context),
+            )
+            .send()
+            .await
+        else {
+            return Ok(PeerCancelDisposition::Uncertain);
+        };
+        let status = response.status();
+        if status.is_success() {
+            if response
+                .headers()
+                .get("a2a-version")
+                .and_then(|value| value.to_str().ok())
+                != Some("1.0")
+            {
+                return Ok(PeerCancelDisposition::Uncertain);
+            }
+            return Ok(match read_bounded(response, MAX_TASK_BYTES).await {
+                Ok(raw) => {
+                    serde_json::from_slice(&raw).map_or(PeerCancelDisposition::Uncertain, |task| {
+                        PeerCancelDisposition::Final {
+                            task: Box::new(task),
+                        }
+                    })
+                }
+                Err(_) => PeerCancelDisposition::Uncertain,
+            });
+        }
+        if matches!(status.as_u16(), 405 | 501) {
+            return Ok(PeerCancelDisposition::Unsupported);
+        }
+        if matches!(status.as_u16(), 400 | 401 | 403 | 404 | 429) {
+            return Ok(PeerCancelDisposition::Rejected {
+                code: rejection_code(response, status.as_u16()).await,
+            });
+        }
+        Ok(PeerCancelDisposition::Uncertain)
     }
 }
 
@@ -324,6 +386,13 @@ mod tests {
             assert!(task_endpoint(endpoint, "task").is_err());
         }
         assert!(task_endpoint("https://peer.example/v1/message:send", "..").is_err());
+        assert_eq!(
+            format!(
+                "{}:cancel",
+                task_endpoint("https://peer.example/v1/message:send", "task/one").unwrap()
+            ),
+            "https://peer.example/v1/tasks/task%2Fone:cancel"
+        );
     }
 
     #[tokio::test]

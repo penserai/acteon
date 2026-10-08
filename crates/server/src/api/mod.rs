@@ -248,6 +248,10 @@ pub fn router(state: AppState) -> Router {
             post(agent_services::peer_refresh),
         )
         .route(
+            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:cancel",
+            post(agent_services::peer_cancel),
+        )
+        .route(
             "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}",
             get(agent_services::task_get),
         )

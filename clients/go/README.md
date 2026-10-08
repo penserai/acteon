@@ -438,6 +438,17 @@ if err != nil { return err }
 task, err := client.AgentServiceGetTask(ctx, receipt)
 ```
 
+Use the same retained source receipt for governed peer lifecycle operations:
+
+```go
+peer, err := client.AgentServiceSendPeer(ctx, receipt, "resolver", "diagnose", peerMessage)
+peer, err = client.AgentServiceRefreshPeer(ctx, receipt, "resolver", "diagnose", peer)
+cancellation, err := client.AgentServiceCancelPeer(ctx, receipt, "resolver", "diagnose", peer)
+```
+
+Cancellation is delivered at most once. Preserve an `uncertain` result and use
+an explicit later cancel or refresh to reconcile it; never retry automatically.
+
 An agent already running under Acteon can invoke a peer as a governed child:
 
 ```go

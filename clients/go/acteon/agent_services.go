@@ -75,6 +75,20 @@ type AgentPeerSendReceipt struct {
 	Status       AgentPeerSendStatus `json:"status"`
 }
 
+// AgentPeerCancelStatus preserves definitive refusal, ambiguity, and observed finality.
+type AgentPeerCancelStatus struct {
+	State string         `json:"state"`
+	Task  map[string]any `json:"task,omitempty"`
+	Code  string         `json:"code,omitempty"`
+}
+
+// AgentPeerCancelReceipt identifies the one durable cancellation intent.
+type AgentPeerCancelReceipt struct {
+	SubmissionID   string                `json:"submission_id"`
+	CancellationID string                `json:"cancellation_id"`
+	Status         AgentPeerCancelStatus `json:"status"`
+}
+
 func (c *Client) agentServiceRequest(ctx context.Context, method, path string, body any, source string, parent *AgentServiceParent) (map[string]any, string, error) {
 	headers := map[string]string{A2AVersionHeader: A2AProtocolVersion}
 	if source != "" {
@@ -231,6 +245,9 @@ func (c *Client) AgentServiceRefreshPeer(ctx context.Context, source *AgentServi
 	if !agentAttemptPattern.MatchString(peer.SubmissionID) {
 		return nil, fmt.Errorf("invalid agent peer submission identity")
 	}
+	if _, err := agentTask(peer.Status.Task, source.Namespace, source.Tenant, ""); err != nil {
+		return nil, err
+	}
 	base, err := agentServiceBase(source.Namespace, source.Tenant, source.Agent)
 	if err != nil {
 		return nil, err
@@ -274,6 +291,92 @@ func (c *Client) AgentServiceRefreshPeer(ctx context.Context, source *AgentServi
 		return nil, fmt.Errorf("agent peer refresh changed durable disposition")
 	}
 	return refreshed, nil
+}
+
+// AgentServiceCancelPeer persists and delivers at most one remote cancellation.
+// An uncertain result is never retried automatically.
+func (c *Client) AgentServiceCancelPeer(ctx context.Context, source *AgentServiceReceipt, target, skill string, peer *AgentPeerSendReceipt) (*AgentPeerCancelReceipt, error) {
+	if source == nil || peer == nil || peer.Status.State != "accepted" || peer.Status.Task == nil {
+		return nil, fmt.Errorf("agent peer cancellation requires an accepted peer receipt")
+	}
+	if !agentAttemptPattern.MatchString(peer.SubmissionID) {
+		return nil, fmt.Errorf("invalid agent peer submission identity")
+	}
+	base, err := agentServiceBase(source.Namespace, source.Tenant, source.Agent)
+	if err != nil {
+		return nil, err
+	}
+	taskID, err := agentSegment(source.TaskID)
+	if err != nil {
+		return nil, err
+	}
+	targetID, err := agentSegment(target)
+	if err != nil {
+		return nil, err
+	}
+	skillID, err := agentSegment(skill)
+	if err != nil {
+		return nil, err
+	}
+	value, _, err := c.agentServiceRequest(ctx, "POST", base+"/tasks/"+taskID+"/peers/"+targetID+"/"+skillID+"/submissions/"+peer.SubmissionID+":cancel", nil, "", nil)
+	if err != nil {
+		return nil, err
+	}
+	if len(value) != 3 || value["submission_id"] != peer.SubmissionID {
+		return nil, fmt.Errorf("agent peer cancellation receipt missing or malformed")
+	}
+	cancellationID, ok := value["cancellation_id"].(string)
+	if !ok || !agentAttemptPattern.MatchString(cancellationID) {
+		return nil, fmt.Errorf("agent peer cancellation receipt missing or malformed")
+	}
+	rawStatus, ok := value["status"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("agent peer cancellation receipt missing or malformed")
+	}
+	state, ok := rawStatus["state"].(string)
+	if !ok {
+		return nil, fmt.Errorf("agent peer cancellation receipt missing or malformed")
+	}
+	status := AgentPeerCancelStatus{State: state}
+	switch state {
+	case "unsupported", "uncertain":
+		if len(rawStatus) != 1 {
+			return nil, fmt.Errorf("agent peer cancellation receipt missing or malformed")
+		}
+	case "rejected":
+		code, ok := rawStatus["code"].(string)
+		if !ok || code == "" || len(code) > 1024 || strings.TrimSpace(code) != code || len(rawStatus) != 2 {
+			return nil, fmt.Errorf("agent peer cancellation receipt missing or malformed")
+		}
+		for _, character := range code {
+			if unicode.IsControl(character) {
+				return nil, fmt.Errorf("agent peer cancellation receipt missing or malformed")
+			}
+		}
+		status.Code = code
+	case "reconciled":
+		task, ok := rawStatus["task"].(map[string]any)
+		expected, _ := peer.Status.Task["id"].(string)
+		if !ok || len(rawStatus) != 2 || expected == "" {
+			return nil, fmt.Errorf("agent peer cancellation receipt missing or malformed")
+		}
+		if _, err := agentTask(task, source.Namespace, source.Tenant, expected); err != nil {
+			return nil, err
+		}
+		taskStatus, ok := task["status"].(map[string]any)
+		terminal := false
+		if ok {
+			state, _ := taskStatus["state"].(string)
+			terminal = state == "completed" || state == "failed" || state == "canceled" || state == "rejected"
+		}
+		if !terminal {
+			return nil, fmt.Errorf("agent peer cancellation receipt missing or malformed")
+		}
+		status.Task = task
+	default:
+		return nil, fmt.Errorf("agent peer cancellation receipt missing or malformed")
+	}
+	return &AgentPeerCancelReceipt{SubmissionID: peer.SubmissionID, CancellationID: cancellationID, Status: status}, nil
 }
 
 // AgentServiceGetTask observes one retained job without starting provider work.

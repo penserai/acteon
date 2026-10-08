@@ -62,6 +62,7 @@ Mirrors the JSON-RPC methods on resource-shaped paths:
 POST   /a2a/{ns}/{tenant}/v1/message:send
 POST   /a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/message:send
 POST   /a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:refresh
+POST   /a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:cancel
 GET    /a2a/{ns}/{tenant}/v1/tasks/{id}
 POST   /a2a/{ns}/{tenant}/v1/tasks/{id}:cancel
 GET    /a2a/{ns}/{tenant}/v1/tasks/{id}/events            # SSE
@@ -80,6 +81,15 @@ After acceptance, the refresh route rechecks the current source credential,
 permit, grant, registry card and installed binding before reading the exact
 remote task. It rejects identity changes and lifecycle regressions and retains
 the last valid snapshot when the remote read is unavailable.
+
+The cancel route uses the same recovered authority and exact accepted send
+record. Acteon journals cancellation intent and a delivery claim before making
+one remote call. `unsupported` and `rejected` are definitive; `uncertain` means
+delivery may have occurred and is never retried automatically. A later explicit
+cancel call may use safe task observation to return `reconciled` with the exact
+terminal task. That terminal task can be completed, failed, canceled, or
+rejected: reconciliation proves finality, while only the task state says whether
+the cancellation took effect.
 
 ### Discovery (unauthenticated)
 

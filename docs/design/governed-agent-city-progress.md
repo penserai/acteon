@@ -26,6 +26,14 @@ Implemented on `feat/governed-executor-boundary`:
 
 Evidence lives in `crates/server/tests/api_tests.rs`, role and route-permission
 unit tests, `scripts/ci/route_permissions.py`, and `scripts/ci/agent_guide.py`.
+
+Remote agent work now has a state-backend journal for at-most-once cancellation.
+The cancellation path rechecks current permits, closures, source service
+binding, onward-agent grant, registry card and exact target binding. Ambiguous
+delivery is retained as uncertain and reconciled only by safe task observation;
+it is never automatically resent. The public route and all five SDKs preserve
+unsupported, rejection, uncertainty, and observed terminal finality as separate
+outcomes.
 These verify endpoint least privilege and existing execution paths. Those first-slice checks do not
 verify per-effect permits, revocation during a chain, closures or mesh execution.
 

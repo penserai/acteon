@@ -108,6 +108,7 @@ public class ActeonClient implements AutoCloseable {
         if (source == null || peer == null) throw new IllegalArgumentException("agent peer source and receipt required");
         if (peer.submissionId() == null || !peer.submissionId().matches("[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"))
             throw new IllegalArgumentException("invalid agent peer submission identity");
+        AgentServiceReceipt.verifyTask(peer.task(), source.namespace(), source.tenant(), null);
         String path = AgentServiceReceipt.base(source.namespace(), source.tenant(), source.agent())
             + "/tasks/" + AgentServiceReceipt.segment(source.taskId())
             + "/peers/" + AgentServiceReceipt.segment(target)
@@ -127,6 +128,21 @@ public class ActeonClient implements AutoCloseable {
             if (!sameDisposition) throw new IllegalArgumentException("agent peer refresh changed durable disposition");
             return refreshed;
         } catch (IOException e) { throw new ActeonException("invalid agent peer response", e); }
+    }
+    /** Persist and deliver at most one remote cancellation; never retry ambiguity automatically. */
+    public AgentPeerCancelReceipt agentServiceCancelPeer(AgentServiceReceipt source, String target, String skill, AgentPeerSendReceipt peer) throws ActeonException {
+        if (source == null || peer == null || !"accepted".equals(peer.state()) || peer.task() == null)
+            throw new IllegalArgumentException("agent peer cancellation requires an accepted peer receipt");
+        if (peer.submissionId() == null || !peer.submissionId().matches("[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"))
+            throw new IllegalArgumentException("invalid agent peer submission identity");
+        String path = AgentServiceReceipt.base(source.namespace(), source.tenant(), source.agent())
+            + "/tasks/" + AgentServiceReceipt.segment(source.taskId())
+            + "/peers/" + AgentServiceReceipt.segment(target)
+            + "/" + AgentServiceReceipt.segment(skill)
+            + "/submissions/" + peer.submissionId() + ":cancel";
+        var response = agentServiceRequest("POST", path, null, null, null);
+        try { return AgentPeerCancelReceipt.parse(objectMapper.readTree(response.body()), source, peer); }
+        catch (IOException e) { throw new ActeonException("invalid agent peer cancellation response", e); }
     }
     /** Stop future starts; explicitly retry the original receipt after response loss. */
     public AgentServiceStopReceipt agentServiceStopTask(AgentServiceReceipt receipt) throws ActeonException {

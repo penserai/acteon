@@ -439,6 +439,17 @@ var receipt = client.agentServiceSendMessage("prod", "acme", "notifier",
 var task = client.agentServiceGetTask(receipt);
 ```
 
+Use the same retained source receipt for governed peer lifecycle operations:
+
+```java
+var peer = client.agentServiceSendPeer(receipt, "resolver", "diagnose", peerMessage);
+peer = client.agentServiceRefreshPeer(receipt, "resolver", "diagnose", peer);
+var cancellation = client.agentServiceCancelPeer(receipt, "resolver", "diagnose", peer);
+```
+
+Cancellation is delivered at most once. Preserve an `uncertain` result and use
+an explicit later cancel or refresh to reconcile it; never retry automatically.
+
 An agent already running under Acteon can invoke a peer as a governed child:
 
 ```java

@@ -507,6 +507,17 @@ receipt = client.agent_service_send_message(
 task = client.agent_service_get_task(receipt)
 ```
 
+Use the same retained source receipt for governed peer lifecycle operations:
+
+```python
+peer = client.agent_service_send_peer(receipt, "resolver", "diagnose", peer_message)
+peer = client.agent_service_refresh_peer(receipt, "resolver", "diagnose", peer)
+cancellation = client.agent_service_cancel_peer(receipt, "resolver", "diagnose", peer)
+```
+
+Cancellation is delivered at most once. Preserve an `uncertain` result and use
+an explicit later cancel or refresh to reconcile it; never retry automatically.
+
 An agent already running under Acteon can invoke a peer as a governed child:
 
 ```python

@@ -29,7 +29,9 @@ class AgentServiceTest {
                 assertTrue(exchange.getRequestURI().getRawPath().contains("/peers/team%2Fresolver/diagnose/"));
             } catch(Throwable error) { failure.set(error); }
             exchange.getResponseHeaders().set(A2A.VERSION_HEADER,"1.0");
-            var body = "{\"submission_id\":\"f47ac10b-58cc-5372-a567-0e02b2c3d479\",\"status\":{\"state\":\"accepted\",\"task\":{\"id\":\"remote-1\",\"namespace\":\"prod\",\"tenant\":\"acme\"}}}".getBytes(StandardCharsets.UTF_8);
+            var body = (exchange.getRequestURI().getPath().endsWith(":cancel")
+                ? "{\"submission_id\":\"f47ac10b-58cc-5372-a567-0e02b2c3d479\",\"cancellation_id\":\"67e55044-10b1-526f-9247-bb680e5fe0c8\",\"status\":{\"state\":\"reconciled\",\"task\":{\"id\":\"remote-1\",\"namespace\":\"prod\",\"tenant\":\"acme\",\"status\":{\"state\":\"canceled\"}}}}"
+                : "{\"submission_id\":\"f47ac10b-58cc-5372-a567-0e02b2c3d479\",\"status\":{\"state\":\"accepted\",\"task\":{\"id\":\"remote-1\",\"namespace\":\"prod\",\"tenant\":\"acme\"}}}").getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(200,body.length); exchange.getResponseBody().write(body); exchange.close();
         }); server.start();
         try(var client = new ActeonClient("http://127.0.0.1:"+server.getAddress().getPort())) {
@@ -37,6 +39,8 @@ class AgentServiceTest {
             assertEquals("accepted",receipt.state());
             var refreshed = client.agentServiceRefreshPeer(source,"team/resolver","diagnose",receipt);
             assertEquals(receipt.submissionId(),refreshed.submissionId());
+            var canceled = client.agentServiceCancelPeer(source,"team/resolver","diagnose",receipt);
+            assertEquals("reconciled",canceled.state());
             if(failure.get()!=null) throw new AssertionError(failure.get());
         } finally { server.stop(0); }
     }
