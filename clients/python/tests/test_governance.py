@@ -295,3 +295,122 @@ async def test_async_typed_reconciliation_transport_and_both_nested_outcomes():
             )
             assert result.status.outcome.outcome_type == expected
     assert len(calls) == 3
+
+
+REGISTRY = json.loads(
+    (Path(__file__).parents[2] / "contract-fixtures/governance-registry.json").read_text()
+)
+
+
+@pytest.mark.parametrize("async_client", [False, True])
+@pytest.mark.asyncio
+async def test_registry_requests_receipts_and_refusals(async_client):
+    from acteon_client import GovernanceRegistryMutationRequest
+
+    request = GovernanceRegistryMutationRequest(**REGISTRY["request"])
+    calls = []
+    status = 200
+    receipt = dict(REGISTRY["receipt"])
+    view_response = dict(REGISTRY["view"])
+
+    def handler(req):
+        calls.append(req)
+        assert req.headers["authorization"] == "Bearer operator-key"
+        assert req.extensions.get("follow_redirects") is None
+        if req.method == "GET":
+            assert req.url.path == "/v1/governance/registry/maya"
+            assert dict(req.url.params) == {
+                "namespace": "prod",
+                "tenant": "acme",
+                "projection": "card",
+            }
+            return httpx.Response(200, json=view_response)
+        assert json.loads(req.content) == REGISTRY["request"]
+        return httpx.Response(status, json=receipt)
+
+    transport = httpx.MockTransport(handler)
+    cls = AsyncActeonClient if async_client else ActeonClient
+    client = cls("http://example.test", api_key="operator-key")
+    if async_client:
+        await client._client.aclose()
+        client._client = httpx.AsyncClient(transport=transport)
+    else:
+        client._client.close()
+        client._client = httpx.Client(transport=transport)
+    try:
+        view_call = client.registry_projection("prod", "acme", "maya", "card")
+        view = await view_call if async_client else view_call
+        assert asdict(view) == REGISTRY["view"]
+        for field, invalid in [
+            ("tenant", "other"),
+            ("version", 0),
+            ("qualification_retired", None),
+            ("registry_revision", 0),
+            ("value", "invalid"),
+        ]:
+            view_response = {**REGISTRY["view"], field: invalid}
+            before = len(calls)
+            with pytest.raises(ValueError):
+                if async_client:
+                    await client.registry_projection("prod", "acme", "maya", "card")
+                else:
+                    client.registry_projection("prod", "acme", "maya", "card")
+            assert len(calls) == before + 1
+        for _ in range(2):
+            result_call = client.mutate_registry(request)
+            result = await result_call if async_client else result_call
+            assert asdict(result) == REGISTRY["receipt"]
+        for field, invalid in [
+            ("delivery_complete", False),
+            ("applied", False),
+            ("change_id", "other"),
+            ("tenant", "other"),
+            ("input_digest", "bad"),
+            ("delivery_complete", "true"),
+        ]:
+            receipt = {**REGISTRY["receipt"], field: invalid}
+            before = len(calls)
+            with pytest.raises(ValueError):
+                if async_client:
+                    await client.mutate_registry(request)
+                else:
+                    client.mutate_registry(request)
+            assert len(calls) == before + 1
+        for status in [401, 403, 409, 503, 307]:
+            before = len(calls)
+            with pytest.raises(HttpError) as error:
+                if async_client:
+                    await client.mutate_registry(request)
+                else:
+                    client.mutate_registry(request)
+            assert error.value.status == status
+            assert len(calls) == before + 1
+    finally:
+        if async_client:
+            await client.close()
+        else:
+            client.close()
+
+
+@pytest.mark.parametrize("async_client", [False, True])
+@pytest.mark.asyncio
+async def test_registry_receipt_checks_sent_identity_when_caller_mutates_request(async_client):
+    from acteon_client import GovernanceRegistryMutationRequest
+
+    request = GovernanceRegistryMutationRequest(**REGISTRY["request"])
+
+    def handler(req):
+        assert json.loads(req.content) == REGISTRY["request"]
+        request.tenant = "caller-changed-after-send"
+        return httpx.Response(200, json=REGISTRY["receipt"])
+
+    if async_client:
+        async with AsyncActeonClient("http://example.test") as client:
+            await client._client.aclose()
+            client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+            assert asdict(await client.mutate_registry(request)) == REGISTRY["receipt"]
+    else:
+        with ActeonClient("http://example.test") as client:
+            client._client.close()
+            client._client = httpx.Client(transport=httpx.MockTransport(handler))
+            assert asdict(client.mutate_registry(request)) == REGISTRY["receipt"]

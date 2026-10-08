@@ -648,3 +648,25 @@ and `ACTEON_EXECUTION_AUTHORITY_KEY`. See [Execution permits](../features/execut
 for a complete scope declaration, SDK options, replay behavior and current
 execution-path coverage. The sanitized admin configuration exposes only
 `execution_authority_enabled` for this profile.
+
+Configured agent-service replacements use `retained_agent_services` inside the
+same scope. Copy the former binding's card, registry revision, principal, skill,
+endpoint, endpoint ID and route, and pin its published binding digest. The
+retained entry can recover accepted tasks but cannot accept new work or publish
+permits, grants, or registry authority. See [Replacing a configured service
+binding](../features/governance.md#replacing-a-configured-service-binding) for
+the required revision and grant-ID transition.
+
+`[execution_authority.peer_transport]` controls host-installed outbound service
+delivery. It defaults to enabled with a 10-second timeout and an
+`acteon-peer-http-v1` adapter revision. `internal_hosts` is an operator-owned
+allowlist for private-network destinations; metadata and other special addresses
+remain forbidden. Each source service lists exact `onward_agents`; each target
+must declare the source grant, and the source's recipient permits must include
+that target. `submission_capability = "at_most_once"` is the safe default on a
+target service. Use `"verified_idempotent"` only after qualifying the endpoint's
+same-context, same-message replay behavior.
+For REST peers, configure the target endpoint as its qualified agent-service
+`.../v1/message:send` URL. Task refresh derives `.../v1/tasks/{id}` on the same
+guarded origin and refuses any endpoint that does not have that shape. Message
+content, task metadata, and registry cards cannot provide authority.

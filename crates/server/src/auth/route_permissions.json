@@ -96,6 +96,42 @@
     "permission": "OperationsManage"
   },
   {
+    "name": "agent_services_message_send",
+    "method": "POST",
+    "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/message:send",
+    "permission": "Dispatch"
+  },
+  {
+    "name": "agent_services_peer_discover",
+    "method": "GET",
+    "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers",
+    "permission": "Dispatch"
+  },
+  {
+    "name": "agent_services_peer_send",
+    "method": "POST",
+    "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/message:send",
+    "permission": "Dispatch"
+  },
+  {
+    "name": "agent_services_peer_submission_action",
+    "method": "POST",
+    "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission_action}",
+    "permission": "Dispatch"
+  },
+  {
+    "name": "agent_services_task_get",
+    "method": "GET",
+    "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}",
+    "permission": "AuditRead"
+  },
+  {
+    "name": "agent_services_task_stop",
+    "method": "POST",
+    "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/stop",
+    "permission": "Dispatch"
+  },
+  {
     "name": "analytics_query_analytics",
     "method": "GET",
     "path": "/v1/analytics",
@@ -702,6 +738,12 @@
     "permission": "OperationsManage"
   },
   {
+    "name": "governance_mutate_registry",
+    "method": "POST",
+    "path": "/v1/governance/registry",
+    "permission": "OperationsManage"
+  },
+  {
     "name": "governance_provider_history",
     "method": "GET",
     "path": "/v1/governance/executions/{execution_id}",
@@ -717,6 +759,12 @@
     "name": "governance_reconciliation_correlation",
     "method": "GET",
     "path": "/v1/governance/executions/{execution_id}/attempts/{ordinal}/correlation",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "governance_registry_projection",
+    "method": "GET",
+    "path": "/v1/governance/registry/{agent_id}",
     "permission": "OperationsManage"
   },
   {

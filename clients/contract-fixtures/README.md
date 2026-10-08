@@ -35,3 +35,23 @@ Go, and Java verify every field and the single/batch outcome discriminator.
 All five SDKs verify single/batch request construction, retained credentials and
 legacy header omission. Refusal tests preserve HTTP statuses instead of treating
 server error envelopes as transport or deserialization failures.
+
+`agent-services.json` pins task identities, response provenance headers, and
+foreign model metadata across all five native SDKs. Contract tests verify that
+concurrent jobs use their own context, mutable task data cannot change the
+observation identity, missing headers cannot be filled from metadata, and HTTP
+failures and redirects are not retried. Rust additionally exercises the real
+server's authenticated agent requester and configured CORS response exposure.
+
+The agent-service fixture also supplies per-job future-start stop acknowledgements.
+All five native SDK contracts verify the original task and request-local context,
+retain provider task status, and reject failed or false acknowledgements without
+retries. The fixture distinguishes restriction-only and uncertain provider-abort
+states; SDKs reject malformed attempt identities and proof digests. Browser contracts
+cover explicit same-job recovery and later completion.
+
+Peer lifecycle contracts in all five native SDK suites also pin the governed
+send, refresh, and cancel paths. Cancellation accepts only an accepted peer
+receipt, sends no caller-supplied authority fields, validates canonical UUIDv5
+identities and the exact terminal remote task, and makes one HTTP request.
+`unsupported`, `rejected`, `uncertain`, and `reconciled` remain distinct.

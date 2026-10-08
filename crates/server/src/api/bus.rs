@@ -3648,6 +3648,12 @@ pub async fn register_agent(
         {
             return resp;
         }
+        if let Some(response) =
+            super::registry_guard::refuse_unjournaled_write(&state, &req.namespace, &req.tenant)
+                .await
+        {
+            return response;
+        }
         let mut agent = acteon_core::Agent::new(&req.agent_id, &req.namespace, &req.tenant);
         agent.display_name = req.display_name.clone();
         agent.capabilities = req.capabilities.clone();
@@ -3916,6 +3922,11 @@ pub async fn update_agent(
         if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageAgent) {
             return resp;
         }
+        if let Some(response) =
+            super::registry_guard::refuse_unjournaled_write(&state, &namespace, &tenant).await
+        {
+            return response;
+        }
         let key = StateKey::new(
             namespace.clone(),
             tenant.clone(),
@@ -3996,6 +4007,11 @@ pub async fn delete_agent(
         }
         if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageAgent) {
             return resp;
+        }
+        if let Some(response) =
+            super::registry_guard::refuse_unjournaled_write(&state, &namespace, &tenant).await
+        {
+            return response;
         }
         let key = StateKey::new(
             namespace.clone(),
@@ -4337,6 +4353,11 @@ pub async fn set_agent_admin_state(
         // it's a moderation surface, not an end-user one.
         if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageAgent) {
             return resp;
+        }
+        if let Some(response) =
+            super::registry_guard::refuse_unjournaled_write(&state, &namespace, &tenant).await
+        {
+            return response;
         }
         // Reason length: keep DLQ-style cap so a 1MB reason can't
         // be smuggled into the agent row.

@@ -140,10 +140,12 @@ test.describe('Navigation', () => {
   })
 })
 
-test('governance keeps scoped operator authority and confirms closures', async ({ page }) => {
+test('governance preserves scoped authority and reviewed recovery', async ({ page }) => {
   const { readFileSync } = await import('node:fs')
   const fixture = JSON.parse(readFileSync(new URL('../../clients/contract-fixtures/governance-management.json', import.meta.url), 'utf8'))
+  const registryFixture = JSON.parse(readFileSync(new URL('../../clients/contract-fixtures/governance-registry.json', import.meta.url), 'utf8'))
   const scope = structuredClone(fixture.scope)
+  let registryView = structuredClone(registryFixture.view)
   const resource = scope.routes[0].effect.resources[0]
   // Exercise a realistic long endpoint identity on both desktop and mobile.
   resource.id = 'endpoint/' + '0123456789abcdef'.repeat(8)
@@ -152,11 +154,44 @@ test('governance keeps scoped operator authority and confirms closures', async (
   await page.addInitScript(() => localStorage.setItem('acteon-token', 'operator-key'))
   const changes: Record<string, unknown>[] = []
   const publications: Record<string, unknown>[] = []
+  const registryChanges: Record<string, unknown>[] = []
+  let registryReads = 0
+  let redirectedReads = 0
+  await page.route('**/redirected-registry**', async route => { redirectedReads++; await route.fulfill({ status: 500 }) })
   await page.route('**/v1/governance**', async route => {
     const request = route.request()
     expect(request.headers()['authorization']).toBe('Bearer operator-key')
+    const url = new URL(request.url())
+    if (url.pathname.startsWith('/v1/governance/registry')) {
+      if (request.method() === 'GET') {
+        registryReads++
+        expect(url.pathname).toBe('/v1/governance/registry/maya')
+        expect(Object.fromEntries(url.searchParams)).toEqual({ namespace: 'prod', tenant: 'acme', projection: 'card' })
+        if (registryReads === 1) {
+          await route.fulfill({ status: 307, headers: { location: '/redirected-registry' } })
+        } else if (registryReads === 2) {
+          await route.fulfill({ json: { ...registryView, tenant: 'other' } })
+        } else await route.fulfill({ json: registryView })
+        return
+      }
+      const body = request.postDataJSON()
+      registryChanges.push(body)
+      if (registryChanges.length === 1) {
+        await route.fulfill({ status: 307, headers: { location: '/redirected-registry' } }); return
+      }
+      if (registryChanges.length === 2) {
+        await route.fulfill({ status: 503, json: { error: 'registry_unavailable' } }); return
+      }
+      if (registryChanges.length === 3) {
+        await route.fulfill({ json: { ...registryFixture.receipt, change_id: body.change_id, applied: false } }); return
+      }
+      registryView = { ...registryView, qualification_retired: true,
+        version: body.value === null ? null : (registryView.version ?? 0) + 1, value: body.value }
+      await route.fulfill({ json: { ...registryFixture.receipt, change_id: body.change_id,
+        expected_registry_revision: body.expected_registry_revision } })
+      return
+    }
     if (request.method() === 'GET') {
-      const url = new URL(request.url())
       expect(url.searchParams.get('namespace')).toBe('prod')
       expect(url.searchParams.get('tenant')).toBe('acme')
       await route.fulfill({ json: scope })
@@ -193,6 +228,57 @@ test('governance keeps scoped operator authority and confirms closures', async (
   await page.getByRole('button', { name: 'Inspect scope', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Governed routes' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Issue a permit' })).toBeVisible()
+  const registry = page.getByRole('region', { name: 'Registry metadata' })
+  await registry.getByLabel('Registry agent ID').fill('maya')
+  await registry.getByRole('button', { name: 'Inspect registry record' }).click()
+  await expect(registry.getByRole('alert')).toBeVisible()
+  expect(redirectedReads).toBe(0)
+  await registry.getByRole('button', { name: 'Inspect registry record' }).click()
+  await expect(registry.getByRole('alert')).toContainText('identity or version mismatch')
+  await registry.getByRole('button', { name: 'Inspect registry record' }).click()
+  await expect(registry.getByText('Registry revision 7')).toBeVisible()
+  await registry.getByLabel('Projection JSON').fill(JSON.stringify({ ...registryFixture.view.value, name: 'Maya responder' }, null, 2))
+  await registry.getByLabel('Registry change reason').fill('Publish reviewed responder card')
+  await registry.getByRole('button', { name: 'Review metadata update' }).click()
+  await expect(registry.getByLabel('Projection JSON')).toBeDisabled()
+  await registry.getByRole('button', { name: 'Apply reviewed registry change' }).evaluate(button => { button.click(); button.click() })
+  await expect(registry.getByRole('alert')).toBeVisible()
+  expect(redirectedReads).toBe(0)
+  expect(registryChanges).toHaveLength(1)
+  await expect(page.getByRole('button', { name: 'Inspect scope', exact: true })).toBeDisabled()
+  await registry.getByRole('button', { name: 'Retry same registry change' }).click()
+  await expect(registry.getByRole('alert')).toContainText('503')
+  expect(registryChanges).toHaveLength(2)
+  expect(await page.evaluate(() => localStorage.getItem('acteon-registry-intent:prod:acme'))).not.toBeNull()
+  await page.reload()
+  await page.getByLabel('Namespace', { exact: true }).fill('prod')
+  await page.getByLabel('Tenant', { exact: true }).fill('acme')
+  await page.getByRole('button', { name: 'Inspect scope', exact: true }).click()
+  await expect(registry.getByRole('status').filter({ hasText: 'Recovered the exact reviewed request' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Inspect scope', exact: true })).toBeDisabled()
+  await expect(registry.getByRole('button', { name: 'Discard and inspect again' })).toBeVisible()
+  await registry.getByRole('button', { name: 'Retry same registry change' }).click()
+  await expect(registry.getByRole('alert')).toContainText('Unmatched or incomplete')
+  await registry.getByRole('button', { name: 'Retry same registry change' }).click()
+  await expect(registry.getByRole('status').filter({ hasText: 'Registry change applied' })).toBeVisible()
+  expect(registryChanges).toHaveLength(4)
+  expect(registryChanges[1]).toEqual(registryChanges[0])
+  expect(registryChanges[2]).toEqual(registryChanges[0])
+  expect(registryChanges[3]).toEqual(registryChanges[0])
+  expect(await page.evaluate(() => localStorage.getItem('acteon-registry-intent:prod:acme'))).toBeNull()
+  expect(registryChanges[0]).toMatchObject({ namespace: 'prod', tenant: 'acme', agent_id: 'maya', projection: 'card',
+    expected_registry_revision: 7, expected_projection_version: 3, reason: 'Publish reviewed responder card',
+    value: { name: 'Maya responder' } })
+  await registry.getByRole('button', { name: 'Inspect registry record' }).click()
+  await expect(registry.getByText('backend version 4')).toBeVisible()
+  await registry.getByLabel('Registry change reason').fill('Remove retired responder card')
+  await registry.getByRole('button', { name: 'Review metadata removal' }).click()
+  await registry.getByRole('button', { name: 'Apply reviewed registry change' }).click()
+  await expect(registry.getByRole('status').filter({ hasText: 'Registry change applied' })).toBeVisible()
+  expect(registryChanges).toHaveLength(5)
+  expect(registryChanges[4]).toMatchObject({ agent_id: 'maya', expected_registry_revision: 7,
+    expected_projection_version: 4, value: null, reason: 'Remove retired responder card' })
+  expect(registryChanges[4].change_id).not.toBe(registryChanges[0].change_id)
   const widths = await page.evaluate(() => ({ content: document.documentElement.scrollWidth, viewport: document.documentElement.clientWidth }))
   expect(widths.content).toBeLessThanOrEqual(widths.viewport)
   await page.getByRole('button', { name: 'Close', exact: true }).first().click()

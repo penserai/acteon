@@ -4,6 +4,7 @@ pub mod a2a_discovery_cache;
 pub mod a2a_push;
 pub mod a2a_push_worker;
 pub mod a2a_ssrf;
+pub mod agent_services;
 pub mod alerting;
 pub mod analytics;
 pub mod approvals;
@@ -31,6 +32,7 @@ pub mod provider_health;
 pub mod queues;
 pub mod quotas;
 pub mod recurring;
+mod registry_guard;
 pub mod replay;
 pub mod retention;
 pub mod rules;
@@ -207,6 +209,11 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/v1/governance/permits", post(governance::publish_permit))
         .route("/v1/governance/changes", post(governance::intervene))
+        .route("/v1/governance/registry", post(governance::mutate_registry))
+        .route(
+            "/v1/governance/registry/{agent_id}",
+            get(governance::registry_projection),
+        )
         // Dispatch
         .route("/v1/dispatch", post(dispatch::dispatch))
         .route("/v1/dispatch/batch", post(dispatch::dispatch_batch))
@@ -221,6 +228,34 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/a2a/{namespace}/{tenant}/v1/message:send",
             post(a2a::a2a_rest_message_send).layer(DefaultBodyLimit::max(a2a::A2A_MAX_BODY_BYTES)),
+        )
+        .route(
+            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/message:send",
+            post(agent_services::message_send)
+                .layer(DefaultBodyLimit::max(a2a::A2A_MAX_BODY_BYTES)),
+        )
+        .route(
+            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/stop",
+            post(agent_services::task_stop),
+        )
+        .route(
+            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/message:send",
+            post(agent_services::peer_send)
+                .layer(DefaultBodyLimit::max(a2a::A2A_MAX_BODY_BYTES)),
+        )
+        .route(
+            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers",
+            get(agent_services::peer_discover),
+        )
+        // Axum captures the submission UUID and A2A action suffix as one
+        // segment. The handler validates and dispatches `:refresh`/`:cancel`.
+        .route(
+            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission_action}",
+            post(agent_services::peer_submission_action),
+        )
+        .route(
+            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}",
+            get(agent_services::task_get),
         )
         .route(
             "/a2a/{namespace}/{tenant}/v1/tasks/{id}",
@@ -751,6 +786,10 @@ pub fn router(state: AppState) -> Router {
             .allow_origin(AllowOrigin::list(origins))
             .allow_methods(tower_http::cors::Any)
             .allow_headers(tower_http::cors::Any)
+            .expose_headers([
+                axum::http::HeaderName::from_static("x-acteon-agent-source-context"),
+                axum::http::HeaderName::from_static("a2a-version"),
+            ])
     };
 
     router

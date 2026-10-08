@@ -2,7 +2,7 @@
 
 Use Acteon's SDKs to connect agents, services, and workers to the same execution and governance platform. Start with the typed helpers for dispatch, rules, audit, approvals, and bus operations. Use the complete **platform operation API** for controls that do not yet have a dedicated helper in your language.
 
-The current source tree provides a generated catalog for **194 finite HTTP operations** in Rust, Python, TypeScript, Go, and Java. It includes receipt sessions, managed-stage recovery, workflow and execution controls, inference profiles, stream windows, and operator APIs. Six streaming or polymorphic RPC routes use the existing streaming and A2A clients instead. Server configuration, authorization, and optional build features still determine which operations are available on your deployment.
+The current source tree provides a generated catalog for **211 finite HTTP operations** in Rust, Python, TypeScript, Go, and Java. It includes receipt sessions, managed-stage recovery, workflow and execution controls, inference profiles, stream windows, and operator APIs. Six streaming or polymorphic RPC routes use the existing streaming and A2A clients instead. Server configuration, authorization, and optional build features still determine which operations are available on your deployment.
 
 ## Choose the right interface
 
@@ -11,6 +11,8 @@ The current source tree provides a generated catalog for **194 finite HTTP opera
 | Typed dispatch, batch, rules, audit and bus helpers | Yes | Yes | Yes | Yes | Yes |
 | Complete finite HTTP operation catalog | Yes | Yes, sync and async | Yes | Yes | Yes |
 | Native streaming and A2A helpers | Yes | Yes | Yes | Yes | Yes |
+| Authenticated agent-service receipts, observation and future-start stop | Yes | Yes, sync and async | Yes | Yes | Yes |
+| Governed registry inspection, mutation and explicit recovery | Yes | Yes, sync and async | Yes | Yes | Yes |
 | Code-defined workflow runner | — | Yes | Yes | — | — |
 | Managed stream-processing adapter | `stream-processing` feature | — | — | — | — |
 
@@ -132,6 +134,22 @@ send. Python exposes `outcome.pending`, Node `outcome.pending`, Go
 
 All five SDKs expose native typed scope inspection, permit publication, and intervention methods. See [governance management](../features/governance.md) for method names and authority requirements. The shared governance fixture checks request bodies, authentication, typed responses, and HTTP refusal preservation; actual authority enforcement is tested separately against the server and configured state backend.
 
+## Governed registry metadata
+
+Every SDK has typed helpers for an exact agent/card projection and its versioned
+mutation. Rust uses `registry_projection`/`mutate_registry`; Python uses the same
+names in synchronous and asynchronous clients; TypeScript and Java use
+`registryProjection`/`mutateRegistry`; Go uses
+`RegistryProjection`/`MutateRegistry`. The clients send once, refuse redirects,
+retain HTTP refusal status, and require a correlated completed/applied receipt.
+
+Keep the complete mutation and caller-owned change ID in durable host state. A
+lost acknowledgement is recovered only by explicitly replaying that exact
+request. A conflict requires a fresh inspection and reviewed intent. The shared
+wire fixture checks all five clients, while the same create/update/delete/recreate
+lifecycle runs against memory, Redis, PostgreSQL, and DynamoDB. See
+[managing registry projections](../features/governance.md#managing-registry-projections).
+
 ## Workforce management
 
 Every SDK supplies typed workforce inspection and all ten mutation variants.
@@ -168,3 +186,137 @@ five receipt states across clients. Client decoding tests do not establish serve
 authorization or backend durability.
 See [historical receipts](../features/durable-executions.md#historical-receipts)
 for evidence integrity and recovery semantics.
+
+
+## Retain an authenticated agent-service receipt
+
+Individual governed services expose `POST
+/a2a/{namespace}/{tenant}/agents/{agent}/v1/message:send` and `GET
+/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}`. These require a configured
+service and the requester's original private authentication; a registry card
+alone does not install a runtime or authorize an invocation.
+
+All five SDKs expose native acceptance and observation helpers:
+
+| SDK | Accept message | Accept governed child | Observe retained receipt |
+| --- | --- | --- | --- |
+| Rust | `agent_service_send_message` | `agent_service_send_message_with_parent` | `agent_service_get_task` |
+| Python, sync/async | `agent_service_send_message` | `parent=AgentServiceParent(...)` | `agent_service_get_task` |
+| TypeScript | `agentServiceSendMessage` | `parent: AgentServiceParentOptions` | `agentServiceGetTask` |
+| Go | `AgentServiceSendMessage` | `AgentServiceSendMessageWithParent` | `AgentServiceGetTask` |
+| Java | `agentServiceSendMessage` | overload with `AgentServiceParent` | `agentServiceGetTask` |
+
+The returned receipt retains the `x-acteon-agent-source-context` response header
+separately from task data and binds it to the original namespace, tenant, agent,
+and task ID. Keep the receipt in host-owned state; do not place it in model
+messages. Shared agent callers must supply the exact retained context on reads.
+The receipt does not replace authentication. The SDKs never substitute metadata
+for a missing header, and observation does not start or resume work.
+
+Use a stable message ID. If an admission response is lost, explicitly replay the
+same unchanged message under current invocation authority. A fresh ID creates
+new work. SDK default transports reject redirects and the helpers introduce no
+retry loops; custom transports must retain those constraints. Configured CORS
+origins can read the provenance and A2A version headers.
+
+For peer invocation, all SDKs can carry the existing host-owned execution
+context and explicit permit references. Acteon treats the encoded context as an
+opaque lookup reference: the server recovers sealed state and revalidates the
+authenticated principal, permit revisions, registry, delegation grant, and
+budgets. Context and permit headers are required together. Model messages and
+task metadata are never authority sources.
+
+An accepted agent can invoke one configured peer without receiving those
+authority references. The helper uses the source service receipt only to address
+the accepted task; it sends the target, skill and message while current private
+authentication proves the source recipient:
+
+Before selection, the SDKs can request current safe options for one exact skill.
+The server intersects the source agent's reviewed onward list, live registry and
+card state, installed binding, and caller grant. Returned descriptions are
+explicitly untrusted. Options contain no endpoint or authority material and do
+not authorize a later send.
+
+| SDK | Safe peer discovery |
+| --- | --- |
+| Rust | `agent_service_discover_peers(&source, skill)` |
+| Python, sync/async | `agent_service_discover_peers(source, skill)` |
+| TypeScript | `agentServiceDiscoverPeers(source, skill)` |
+| Go | `AgentServiceDiscoverPeers(ctx, source, skill)` |
+| Java | `agentServiceDiscoverPeers(source, skill)` |
+
+| SDK | Governed peer submission |
+| --- | --- |
+| Rust | `agent_service_send_peer(&source, target, skill, &message)` |
+| Python, sync/async | `agent_service_send_peer(source, target, skill, message)` |
+| TypeScript | `agentServiceSendPeer(source, target, skill, message)` |
+| Go | `AgentServiceSendPeer(ctx, source, target, skill, message)` |
+| Java | `agentServiceSendPeer(source, target, skill, message)` |
+
+The typed receipt preserves `accepted`, `rejected`, and `uncertain` as distinct
+states and validates the stable submission UUID and accepted task scope. Helpers
+send one request, reject redirects, and never turn uncertainty into retry.
+
+Once accepted, the same five clients expose `agent_service_refresh_peer`,
+`agentServiceRefreshPeer`, or `AgentServiceRefreshPeer` according to language
+conventions. Refresh sends the stable submission ID with the retained source
+receipt. It revalidates current authority, reads the remote task once, journals
+only a valid forward snapshot, and never resubmits the original message.
+
+Accepted peer receipts also support durable cancellation through
+`agent_service_cancel_peer`, `agentServiceCancelPeer`, or
+`AgentServiceCancelPeer`. The helper sends one request and validates the stable
+submission and cancellation UUIDs, exact remote task identity, tenant scope,
+and terminal state. It exposes `unsupported`, `rejected`, `uncertain`, and
+`reconciled` without collapsing them. Never retry an uncertain cancellation
+automatically. Call cancellation explicitly again to let Acteon reconcile by a
+safe task read, or call peer refresh when only the latest lifecycle snapshot is
+needed. A reconciled `completed` or `failed` task means the task became final
+before cancellation took effect.
+
+The admin UI's **Governed tasks** tab on an agent detail page accepts work and
+refreshes accepted tasks using the current browser identity. The server enforces
+its configured service, source permits, and recipient authority. The tab retains
+receipts in memory while it is open, reuses the original request on explicit
+retry, and displays task state and result artifacts without displaying source
+context. Leaving the tab clears this local view. SDK host persistence supports
+longer-lived clients.
+
+
+## Stop future agent-service starts
+
+The service control extension `POST
+/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/stop` uses the original
+requester's private credential and admission source-context header. Agent
+requesters must send the exact `x-acteon-agent-source-context` returned for that
+job. The finite operation catalog includes `agent_services_task_stop` in every
+SDK; dedicated receipt-aware stop helpers retain the original job ID and source
+context when invoking this control.
+
+| SDK | Stop helper | Acknowledgement |
+| --- | --- | --- |
+| Rust | `agent_service_stop_task(&receipt)` | `AgentServiceStopReceipt` |
+| Python sync/async | `agent_service_stop_task(receipt)` | `AgentServiceStopReceipt` |
+| TypeScript | `agentServiceStopTask(receipt)` | `AgentServiceStopReceipt` |
+| Go | `AgentServiceStopTask(ctx, receipt)` | `AgentServiceStopReceipt` |
+| Java | `agentServiceStopTask(receipt)` | `AgentServiceStopReceipt` |
+
+All helpers send one request, validate the original task identity and exact
+restriction acknowledgement, and reject redirects. The agent detail view provides
+**Stop future starts** for each locally retained job. A failed acknowledgement
+keeps that job available for an explicit retry; a successful acknowledgement
+keeps the restriction visible alongside later provider results.
+
+A successful response is `{"task": ..., "future_starts_blocked": true,
+"provider_abort": ...}`. `provider_abort` is optional and has one typed state:
+`restricted_only`, `uncertain` with the stable provider attempt ID, or
+`reconciled` with the accepted finality-proof digest. Every SDK validates this
+shape, including the canonical lowercase UUIDv5 attempt ID and lowercase
+SHA-256 proof digest. The browser explains the same distinction beside the task.
+
+The restriction blocks future starts in the recipient execution subtree and survives
+restart. It leaves the task's status and artifacts tied to actual provider
+results. `restricted_only` and `uncertain` do not undo an effect already
+delivered, release unresolved capacity, or prove that an external provider
+aborted. For a lost acknowledgement, repeat the stop against the same original
+task. A subsequent known completion can still appear in observation.

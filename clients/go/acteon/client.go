@@ -122,6 +122,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body any) (
 // authenticated calls and to issue the unauthenticated discovery
 // endpoint.
 type requestOpts struct {
+	noRedirect bool
 	// extraHeaders are merged on top of the default headers
 	// (caller wins on collision).
 	extraHeaders map[string]string
@@ -162,7 +163,13 @@ func (c *Client) doRequestExt(
 		req.Header.Set(k, v)
 	}
 
-	resp, err := c.httpClient.Do(req)
+	transport := c.httpClient
+	if opts.noRedirect {
+		guarded := *c.httpClient
+		guarded.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		transport = &guarded
+	}
+	resp, err := transport.Do(req)
 	if err != nil {
 		return nil, &ConnectionError{Message: err.Error()}
 	}

@@ -8,6 +8,11 @@
 .grid { @apply grid grid-cols-2 gap-3; }
 .error { @apply text-sm; color: var(--text-error, #ef4444); overflow-wrap: anywhere; }
 .actions { @apply flex flex-wrap gap-2; }
+.registryMeta { @apply flex flex-wrap items-center gap-2; }
+.registryReview { @apply border rounded-md p-3 space-y-3; border-color: var(--border-default); background: var(--bg-surface-secondary); }
+.registryJson { @apply text-xs rounded-md p-3 overflow-auto; max-height: 18rem; background: var(--bg-code); overflow-wrap: anywhere; white-space: pre-wrap; }
+.registryTextarea { @apply w-full rounded-md border px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary-400/20 focus:border-primary-400; min-height: 14rem; color: var(--text-primary); background: var(--bg-surface); border-color: var(--border-input); resize: vertical; }
+.registryTextarea:disabled { @apply opacity-60; background: var(--bg-surface-secondary); }
 .history { overflow-wrap: anywhere; }
 .historySearch { @apply grid gap-3 items-end; grid-template-columns: minmax(0, 1fr) auto; }
 @media (max-width: 640px) { .scope, .grid, .historySearch { grid-template-columns: minmax(0, 1fr); } }

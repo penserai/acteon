@@ -48,6 +48,8 @@ public class ActeonClient implements AutoCloseable {
     public com.fasterxml.jackson.databind.JsonNode platformRequest(
         PlatformOperation operation, Map<String, String> pathParameters,
         Map<String, List<String>> query, Object body) throws ActeonException {
+        if ((operation == PlatformOperation.GOVERNANCE_MUTATE_REGISTRY || operation == PlatformOperation.GOVERNANCE_REGISTRY_PROJECTION) && httpClient.followRedirects() != HttpClient.Redirect.NEVER)
+            throw new ActeonException("registry management requires redirects disabled");
         Map<String, String> values = pathParameters == null ? Map.of() : pathParameters;
         if (!values.keySet().equals(new java.util.HashSet<>(java.util.Arrays.asList(operation.parameters)))) {
             throw new IllegalArgumentException("Incorrect path parameters");
@@ -73,6 +75,122 @@ public class ActeonClient implements AutoCloseable {
             if (response.statusCode() < 200 || response.statusCode() >= 300) throw new HttpException(response.statusCode(), response.body());
             if (response.statusCode() == 204) return objectMapper.nullNode();
             return operation.text ? objectMapper.getNodeFactory().textNode(response.body()) : objectMapper.readTree(response.body());
+        } catch (IOException e) { throw new ConnectionException(e.getMessage(), e); }
+        catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new ConnectionException("Request interrupted", e); }
+    }
+
+    /** Submit once and retain host provenance. Preserve message ID after response loss. */
+    public AgentServiceReceipt agentServiceSendMessage(String namespace, String tenant, String agent, Map<String, Object> message) throws ActeonException {
+        return agentServiceSendMessage(namespace, tenant, agent, message, null);
+    }
+    /** Submit as a governed child of an existing execution context. */
+    public AgentServiceReceipt agentServiceSendMessage(String namespace, String tenant, String agent, Map<String, Object> message, AgentServiceParent parent) throws ActeonException {
+        var response = agentServiceRequest("POST", AgentServiceReceipt.base(namespace, tenant, agent)+"/message:send", Map.of("message", message), null, parent);
+        try {
+            var task = AgentServiceReceipt.verifyTask(objectMapper.readTree(response.body()), namespace, tenant, null);
+            var source = AgentServiceReceipt.source(response.headers().firstValue(AgentServiceReceipt.SOURCE_CONTEXT_HEADER).orElse(null));
+            return new AgentServiceReceipt(namespace, tenant, agent, task.path("id").asText(), source, task);
+        } catch (IOException e) { throw new ActeonException("invalid agent service response", e); }
+    }
+    /** List current source-authorized registry options. Descriptions are untrusted data. */
+    public List<AgentPeerSelectionOption> agentServiceDiscoverPeers(AgentServiceReceipt source, String skill) throws ActeonException {
+        if (source == null) throw new IllegalArgumentException("agent service source receipt required");
+        if (skill == null || skill.equals("*") || !skill.matches("[A-Za-z0-9._-]{1,120}"))
+            throw new IllegalArgumentException("invalid exact peer skill");
+        String path = AgentServiceReceipt.base(source.namespace(), source.tenant(), source.agent())
+            + "/tasks/" + AgentServiceReceipt.segment(source.taskId()) + "/peers?skill="
+            + URLEncoder.encode(skill, StandardCharsets.UTF_8);
+        var response = agentServiceRequest("GET", path, null, null, null);
+        try { return AgentPeerSelectionOption.parse(objectMapper.readTree(response.body()), skill); }
+        catch (IOException e) { throw new ActeonException("invalid agent peer discovery response", e); }
+    }
+    /** Submit from an accepted source-agent task without sending authority fields. */
+    public AgentPeerSendReceipt agentServiceSendPeer(AgentServiceReceipt source, String target, String skill, Map<String, Object> message) throws ActeonException {
+        if (source == null) throw new IllegalArgumentException("agent service source receipt required");
+        String path = AgentServiceReceipt.base(source.namespace(), source.tenant(), source.agent())
+            + "/tasks/" + AgentServiceReceipt.segment(source.taskId())
+            + "/peers/" + AgentServiceReceipt.segment(target)
+            + "/" + AgentServiceReceipt.segment(skill) + "/message:send";
+        var response = agentServiceRequest("POST", path, Map.of("message", message), null, null);
+        try { return AgentPeerSendReceipt.parse(objectMapper.readTree(response.body()), source.namespace(), source.tenant()); }
+        catch (IOException e) { throw new ActeonException("invalid agent peer response", e); }
+    }
+    /** Observe and journal an accepted remote task without resubmitting work. */
+    public AgentPeerSendReceipt agentServiceRefreshPeer(AgentServiceReceipt source, String target, String skill, AgentPeerSendReceipt peer) throws ActeonException {
+        if (source == null || peer == null) throw new IllegalArgumentException("agent peer source and receipt required");
+        if (peer.submissionId() == null || !peer.submissionId().matches("[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"))
+            throw new IllegalArgumentException("invalid agent peer submission identity");
+        AgentServiceReceipt.verifyTask(peer.task(), source.namespace(), source.tenant(), null);
+        String path = AgentServiceReceipt.base(source.namespace(), source.tenant(), source.agent())
+            + "/tasks/" + AgentServiceReceipt.segment(source.taskId())
+            + "/peers/" + AgentServiceReceipt.segment(target)
+            + "/" + AgentServiceReceipt.segment(skill)
+            + "/submissions/" + peer.submissionId() + ":refresh";
+        var response = agentServiceRequest("POST", path, null, null, null);
+        try {
+            var refreshed = AgentPeerSendReceipt.parse(objectMapper.readTree(response.body()), source.namespace(), source.tenant());
+            if (!refreshed.submissionId().equals(peer.submissionId())) throw new IllegalArgumentException("agent peer submission identity mismatch");
+            boolean sameDisposition = refreshed.state().equals(peer.state()) && switch (peer.state()) {
+                case "uncertain" -> true;
+                case "accepted" -> peer.task() != null && refreshed.task() != null
+                    && peer.task().path("id").asText().equals(refreshed.task().path("id").asText());
+                case "rejected" -> java.util.Objects.equals(peer.code(), refreshed.code());
+                default -> false;
+            };
+            if (!sameDisposition) throw new IllegalArgumentException("agent peer refresh changed durable disposition");
+            return refreshed;
+        } catch (IOException e) { throw new ActeonException("invalid agent peer response", e); }
+    }
+    /** Persist and deliver at most one remote cancellation; never retry ambiguity automatically. */
+    public AgentPeerCancelReceipt agentServiceCancelPeer(AgentServiceReceipt source, String target, String skill, AgentPeerSendReceipt peer) throws ActeonException {
+        if (source == null || peer == null || !"accepted".equals(peer.state()) || peer.task() == null)
+            throw new IllegalArgumentException("agent peer cancellation requires an accepted peer receipt");
+        if (peer.submissionId() == null || !peer.submissionId().matches("[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"))
+            throw new IllegalArgumentException("invalid agent peer submission identity");
+        String path = AgentServiceReceipt.base(source.namespace(), source.tenant(), source.agent())
+            + "/tasks/" + AgentServiceReceipt.segment(source.taskId())
+            + "/peers/" + AgentServiceReceipt.segment(target)
+            + "/" + AgentServiceReceipt.segment(skill)
+            + "/submissions/" + peer.submissionId() + ":cancel";
+        var response = agentServiceRequest("POST", path, null, null, null);
+        try { return AgentPeerCancelReceipt.parse(objectMapper.readTree(response.body()), source, peer); }
+        catch (IOException e) { throw new ActeonException("invalid agent peer cancellation response", e); }
+    }
+    /** Stop future starts; explicitly retry the original receipt after response loss. */
+    public AgentServiceStopReceipt agentServiceStopTask(AgentServiceReceipt receipt) throws ActeonException {
+        var response = agentServiceRequest("POST", AgentServiceReceipt.base(receipt.namespace(), receipt.tenant(), receipt.agent())+"/tasks/"+AgentServiceReceipt.segment(receipt.taskId())+"/stop", null, AgentServiceReceipt.source(receipt.sourceContext()), null);
+        try {
+            var value = objectMapper.readTree(response.body());
+            if (value == null || !value.path("future_starts_blocked").isBoolean() || !value.path("future_starts_blocked").booleanValue())
+                throw new ActeonException("agent service stop acknowledgement missing or malformed");
+            var task = AgentServiceReceipt.verifyTask(value.path("task"), receipt.namespace(), receipt.tenant(), receipt.taskId());
+            return new AgentServiceStopReceipt(task, true, AgentServiceProviderAbort.parse(value.path("provider_abort")));
+        } catch (IOException e) { throw new ActeonException("invalid agent service response", e); }
+    }
+
+    /** Observe the retained job without provider execution or global header mutation. */
+    public com.fasterxml.jackson.databind.JsonNode agentServiceGetTask(AgentServiceReceipt receipt) throws ActeonException {
+        var response = agentServiceRequest("GET", AgentServiceReceipt.base(receipt.namespace(), receipt.tenant(), receipt.agent())+"/tasks/"+AgentServiceReceipt.segment(receipt.taskId()), null, AgentServiceReceipt.source(receipt.sourceContext()), null);
+        try { return AgentServiceReceipt.verifyTask(objectMapper.readTree(response.body()), receipt.namespace(), receipt.tenant(), receipt.taskId()); }
+        catch (IOException e) { throw new ActeonException("invalid agent service response", e); }
+    }
+    private HttpResponse<String> agentServiceRequest(String method, String path, Object body, String source, AgentServiceParent parent) throws ActeonException {
+        if (httpClient.followRedirects() != HttpClient.Redirect.NEVER) throw new ActeonException("agent services require redirects disabled");
+        try {
+            var builder = requestBuilder(path).header(A2A.VERSION_HEADER, A2A.PROTOCOL_VERSION);
+            if (source != null) builder.header(AgentServiceReceipt.SOURCE_CONTEXT_HEADER, source);
+            if (parent != null) {
+                String context = parent.executionContext();
+                if (context == null || context.isEmpty() || context.length() > 8192 || !context.matches("[A-Za-z0-9_-]+"))
+                    throw new IllegalArgumentException("parent execution context is malformed");
+                if (parent.permits().isEmpty()) throw new IllegalArgumentException("parent permits are required");
+                builder.header("x-acteon-execution-context", context);
+                builder.header("x-acteon-execution-permits", objectMapper.writeValueAsString(parent.permits()));
+            }
+            var response = httpClient.send(builder.method(method, body == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body))).build(), HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() < 200 || response.statusCode() >= 300) throw new HttpException(response.statusCode(), response.body());
+            if (!response.headers().firstValue(A2A.VERSION_HEADER).orElse("").equals(A2A.PROTOCOL_VERSION)) throw new ActeonException("agent service response version missing or unsupported");
+            return response;
         } catch (IOException e) { throw new ConnectionException(e.getMessage(), e); }
         catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new ConnectionException("Request interrupted", e); }
     }
@@ -274,6 +392,38 @@ public class ActeonClient implements AutoCloseable {
             Map.of("execution_id", executionId, "ordinal", Long.toString(ordinal)), Map.of("namespace", List.of(namespace), "tenant", List.of(tenant)), request);
         try { return objectMapper.treeToValue(node, ProviderExecutionHistory.Receipt.class); }
         catch (IOException e) { throw new ConnectionException("Malformed reconciliation receipt", e); }
+    }
+    public Governance.RegistryProjectionView registryProjection(String namespace, String tenant, String agentId, String projection) throws ActeonException {
+        var node = platformRequest(PlatformOperation.GOVERNANCE_REGISTRY_PROJECTION, Map.of("agent_id", agentId),
+            Map.of("namespace", List.of(namespace), "tenant", List.of(tenant), "projection", List.of(projection)), null);
+        try {
+            var r = objectMapper.treeToValue(node, Governance.RegistryProjectionView.class);
+            if (!namespace.equals(r.namespace()) || !tenant.equals(r.tenant()) || !agentId.equals(r.agentId()) || !projection.equals(r.projection())
+                || !new Governance.Resource("agent", namespace, tenant, agentId).equals(r.agentResource())
+                || !node.path("registry_revision").isIntegralNumber() || !node.path("registry_revision").canConvertToLong() || r.registryRevision() < 0
+                || (!node.path("qualification_retired").isNull() && !node.path("qualification_retired").isBoolean())
+                || (r.registryRevision() == 0) != (r.qualificationRetired() == null)
+                || (!node.path("version").isNull() && (!node.path("version").isIntegralNumber() || !node.path("version").canConvertToLong()))
+                || !node.has("value") || (r.version() != null && r.version() <= 0) || (r.version() == null) != (r.value() == null || r.value().isNull())
+                || (r.value() != null && !r.value().isNull() && !r.value().isObject()))
+                throw new ConnectionException("Registry observation identity or version mismatch", null);
+            return r;
+        } catch (IOException e) { throw new ConnectionException("Malformed registry observation", e); }
+    }
+    /** Send once; preserve the same request and change ID for explicit recovery. */
+    public Governance.RegistryMutationReceipt mutateRegistry(Governance.RegistryMutationRequest request) throws ActeonException {
+        var node = platformRequest(PlatformOperation.GOVERNANCE_MUTATE_REGISTRY, null, null, request);
+        try {
+            var r = objectMapper.treeToValue(node, Governance.RegistryMutationReceipt.class);
+            if (!request.namespace().equals(r.namespace()) || !request.tenant().equals(r.tenant()) || !request.agentId().equals(r.agentId())
+                || !request.changeId().equals(r.changeId()) || !request.projection().equals(r.projection())
+                || !node.path("expected_registry_revision").isIntegralNumber() || !node.path("expected_registry_revision").canConvertToLong()
+                || r.expectedRegistryRevision() < 0 || r.expectedRegistryRevision() != request.expectedRegistryRevision()
+                || !node.path("delivery_complete").isBoolean() || !node.path("applied").isBoolean() || !r.deliveryComplete() || !r.applied()
+                || r.actor() == null || r.actor().isEmpty() || r.inputDigest() == null || !r.inputDigest().matches("[0-9a-f]{64}"))
+                throw new ConnectionException("Unmatched or incomplete registry mutation receipt", null);
+            return r;
+        } catch (IOException e) { throw new ConnectionException("Malformed registry mutation receipt", e); }
     }
     public Governance.ChangeReceipt publishGovernancePermit(Governance.PublishPermitRequest request) throws ActeonException {
         var node = platformRequest(PlatformOperation.GOVERNANCE_PUBLISH_PERMIT, null, null, request);

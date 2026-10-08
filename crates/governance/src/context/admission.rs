@@ -32,6 +32,30 @@ pub struct IdempotentRootAdmission<'a> {
 }
 
 impl TrustedContextStore {
+    /// Inspect a signed first-admission record by its host-owned idempotency key.
+    /// This is correlation only: it does not restore context state, allocate a
+    /// budget, or authorize a new effect.
+    pub async fn inspect_root_admission(
+        &self,
+        admission_key: &str,
+    ) -> Result<Option<VerifiedExecutionContext>, ContextError> {
+        let (key, key_id) = self.root_admission_key(admission_key)?;
+        let Some(raw) = self.store.get(&key).await? else {
+            return Ok(None);
+        };
+        let record = self.open_admission(&raw, &key_id)?;
+        let snapshot = self.coordinator.snapshot().await?;
+        if record.format != ADMISSION_FORMAT
+            || record.context.namespace != snapshot.namespace
+            || record.context.tenant != snapshot.tenant
+            || record.context.authority.incarnation != snapshot.incarnation
+        {
+            return Err(ContextError::Conflict);
+        }
+        self.validate(&record.context)?;
+        Ok(Some(VerifiedExecutionContext(record.context)))
+    }
+
     /// Pin first admission in the configured state backend before publishing
     /// its context and budget. A lost acknowledgement reuses the same identity
     /// and deadline. Recovery rechecks exact current permits and credentials;

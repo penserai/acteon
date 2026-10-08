@@ -6,7 +6,15 @@ use acteon_core::{
 use acteon_executor::{
     ExecutorConfig, RetryStrategy,
     delegation::{ApprovedPeerBinding, ApprovedServicePlan},
-    governed::{BoundProvider, GovernedProviderStatus, governed_provider_input_digest},
+    governed::{
+        BoundProvider, GovernedProviderError, GovernedProviderStatus,
+        abort::{ProviderAbortAdapter, ProviderAbortDisposition, ProviderAbortStatus},
+        governed_provider_input_digest,
+        reconciliation::{
+            HmacFinalityVerifier, ProviderFinality, ProviderReconciliationVerifier,
+            ReconciliationAttempt, sign_finality_receipt,
+        },
+    },
 };
 use acteon_gateway::{
     TaskEngine, TaskScope,
@@ -186,6 +194,45 @@ struct Counter {
     blocking: AtomicBool,
     entered: tokio::sync::Notify,
     release: tokio::sync::Semaphore,
+}
+
+struct FinalityAbort {
+    calls: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl ProviderAbortAdapter for FinalityAbort {
+    fn revision(&self) -> &'static str {
+        "abort-v1"
+    }
+
+    async fn abort(
+        &self,
+        attempt: &ReconciliationAttempt,
+    ) -> Result<ProviderAbortDisposition, GovernedProviderError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(ProviderAbortDisposition::FinalityProof(
+            sign_finality_receipt(
+                attempt.clone(),
+                ProviderFinality::NoEffect {
+                    reason: "peer fenced the exact attempt".into(),
+                },
+                "finality-v1",
+                "provider",
+                &[17; 32],
+            )?,
+        ))
+    }
+}
+
+fn finality_verifier() -> Arc<dyn ProviderReconciliationVerifier> {
+    Arc::new(
+        HmacFinalityVerifier::new_trusted(
+            "finality-v1",
+            std::collections::BTreeMap::from([("provider".into(), vec![17; 32])]),
+        )
+        .unwrap(),
+    )
 }
 #[async_trait::async_trait]
 impl DynProvider for Counter {
@@ -1085,5 +1132,478 @@ async fn independent_redis_runtime_recovers_lost_acceptance_and_known_or_uncerta
                 GovernedProviderStatus::ReconciliationRequired { .. }
             ));
         }
+    }
+}
+
+#[tokio::test]
+async fn observation_retains_original_source_without_starting_even_after_source_revocation() {
+    let f = Fixture::new(false).await;
+    let runtime = f.runtime();
+    let task = f.accept(&runtime).await;
+    let source = runtime
+        .source_context(f.child.execution_id())
+        .await
+        .unwrap();
+    assert_eq!(source.reference().unwrap(), f.parent.reference().unwrap());
+    f.coordinator
+        .change(
+            "source-offboard",
+            AuthorityChange::RevokeSubject {
+                subject: "caller".into(),
+            },
+            "operator",
+            "offboard",
+        )
+        .await
+        .unwrap();
+    let observed = runtime.observe(f.child.execution_id()).await.unwrap();
+    assert_eq!(observed.task.id, task.id);
+    assert_eq!(observed.task.status.state, TaskState::Submitted);
+    assert!(observed.execution.is_none());
+    assert_eq!(f.counter.calls.load(Ordering::SeqCst), 0);
+    assert!(
+        Box::pin(runtime.resume(f.child.execution_id()))
+            .await
+            .is_err()
+    );
+    assert_eq!(f.counter.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn observation_rejects_fake_terminal_projection_and_repairs_known_result_without_execution() {
+    let f = Fixture::new(false).await;
+    let runtime = f.runtime();
+    let task = f.accept(&runtime).await;
+    let key = StateKey::new("city", "tenant", KeyKind::A2aTask, &task.id);
+    let mut fake = task.clone();
+    fake.status.state = TaskState::Completed;
+    f.state
+        .set(&key, &serde_json::to_string(&fake).unwrap(), None)
+        .await
+        .unwrap();
+    assert!(runtime.observe(f.child.execution_id()).await.is_err());
+    assert_eq!(f.counter.calls.load(Ordering::SeqCst), 0);
+    f.state
+        .set(&key, &serde_json::to_string(&task).unwrap(), None)
+        .await
+        .unwrap();
+    let original = Box::pin(runtime.resume(f.child.execution_id()))
+        .await
+        .unwrap();
+    f.state.delete(&key).await.unwrap();
+    let observed = runtime.observe(f.child.execution_id()).await.unwrap();
+    assert_eq!(observed.task.status.state, TaskState::Completed);
+    assert_eq!(
+        serde_json::to_value(&observed.task.artifacts).unwrap(),
+        serde_json::to_value(&original.task.artifacts).unwrap()
+    );
+    assert_eq!(f.counter.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn requester_stop_is_durable_idempotent_and_prevents_queued_effects() {
+    let f = Fixture::new(false).await;
+    let runtime = f.runtime();
+    f.accept(&runtime).await;
+    // A recipient's own context cannot substitute for its original source.
+    assert!(
+        runtime
+            .stop(f.child.execution_id(), &f.child)
+            .await
+            .is_err()
+    );
+    assert!(
+        !f.coordinator.snapshot().await.unwrap().roots[&f.child.execution_id().to_string()]
+            .cancelled
+    );
+    let stopped = runtime
+        .stop(f.child.execution_id(), &f.parent)
+        .await
+        .unwrap();
+    assert!(stopped.future_starts_blocked);
+    assert_eq!(stopped.task.status.state, TaskState::Submitted);
+    let generation = f.coordinator.snapshot().await.unwrap().generation;
+    let restarted = f.runtime();
+    assert!(
+        restarted
+            .stop(f.child.execution_id(), &f.parent)
+            .await
+            .unwrap()
+            .future_starts_blocked
+    );
+    assert_eq!(
+        f.coordinator.snapshot().await.unwrap().generation,
+        generation
+    );
+    assert!(
+        Box::pin(restarted.resume(f.child.execution_id()))
+            .await
+            .is_err()
+    );
+    assert_eq!(f.counter.calls.load(Ordering::SeqCst), 0);
+    let state = f.coordinator.snapshot().await.unwrap();
+    assert!(state.starts.is_empty());
+    assert!(!state.roots[&f.parent.execution_id().to_string()].cancelled);
+    assert!(
+        restarted
+            .observe(f.child.execution_id())
+            .await
+            .unwrap()
+            .future_starts_blocked
+    );
+}
+
+#[tokio::test]
+async fn requester_stop_preserves_uncertain_delivery_and_shared_capacity() {
+    let f = Fixture::new(true).await;
+    let runtime = f.runtime();
+    f.accept(&runtime).await;
+    Box::pin(runtime.resume(f.child.execution_id()))
+        .await
+        .unwrap();
+    let stopped = runtime
+        .stop(f.child.execution_id(), &f.parent)
+        .await
+        .unwrap();
+    assert!(stopped.future_starts_blocked);
+    assert_eq!(
+        stopped.provider_abort,
+        Some(ProviderAbortStatus::RestrictedOnly)
+    );
+    assert_eq!(stopped.task.status.state, TaskState::Working);
+    let restarted = f.runtime();
+    let observed = Box::pin(restarted.resume(f.child.execution_id()))
+        .await
+        .unwrap();
+    assert!(observed.future_starts_blocked);
+    assert!(matches!(
+        observed.execution.unwrap().status,
+        GovernedProviderStatus::ReconciliationRequired { .. }
+    ));
+    assert_eq!(f.counter.calls.load(Ordering::SeqCst), 1);
+    let state = f.coordinator.snapshot().await.unwrap();
+    for id in [f.parent.execution_id(), f.child.execution_id()] {
+        assert_eq!(state.roots[&id.to_string()].active_attempts, 1);
+        assert_eq!(state.roots[&id.to_string()].spent_units, 1);
+    }
+}
+
+#[tokio::test]
+async fn requester_stop_reports_only_reconciliation_verified_provider_abort() {
+    let f = Fixture::new(false).await;
+    f.counter.blocking.store(true, Ordering::SeqCst);
+    let aborter = Arc::new(FinalityAbort {
+        calls: AtomicUsize::new(0),
+    });
+    let runtime = f
+        .runtime()
+        .with_trusted_provider_abort(aborter.clone(), finality_verifier())
+        .unwrap();
+    f.accept(&runtime).await;
+    let id = f.child.execution_id();
+    let running = tokio::spawn(async move { Box::pin(runtime.resume(id)).await });
+    f.counter.entered.notified().await;
+    let stopped = f
+        .runtime()
+        .with_trusted_provider_abort(aborter.clone(), finality_verifier())
+        .unwrap()
+        .stop(id, &f.parent)
+        .await
+        .unwrap();
+    assert!(matches!(
+        stopped.provider_abort,
+        Some(ProviderAbortStatus::Reconciled { .. })
+    ));
+    assert_eq!(stopped.task.status.state, TaskState::Failed);
+    assert_eq!(aborter.calls.load(Ordering::SeqCst), 1);
+    f.counter.release.add_permits(1);
+    let late = running.await.unwrap().unwrap();
+    assert_eq!(late.task.status.state, TaskState::Failed);
+    assert_eq!(aborter.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn requester_stop_racing_delivered_work_does_not_replace_its_known_result() {
+    let f = Fixture::new(false).await;
+    f.counter.blocking.store(true, Ordering::SeqCst);
+    let runtime = f.runtime();
+    f.accept(&runtime).await;
+    let id = f.child.execution_id();
+    let running = tokio::spawn(async move { Box::pin(runtime.resume(id)).await });
+    f.counter.entered.notified().await;
+    let stopped = f.runtime().stop(id, &f.parent).await.unwrap();
+    assert!(stopped.future_starts_blocked);
+    assert_eq!(stopped.task.status.state, TaskState::Working);
+    assert_eq!(
+        f.coordinator.snapshot().await.unwrap().roots[&id.to_string()].active_attempts,
+        1
+    );
+    f.counter.release.add_permits(1);
+    let completed = running.await.unwrap().unwrap();
+    assert!(completed.future_starts_blocked);
+    assert_eq!(completed.task.status.state, TaskState::Completed);
+    assert_eq!(completed.task.artifacts.len(), 1);
+    let replay = f.runtime().stop(id, &f.parent).await.unwrap();
+    assert_eq!(replay.task.status.state, TaskState::Completed);
+    assert_eq!(replay.task.artifacts.len(), 1);
+    assert_eq!(f.counter.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        f.coordinator.snapshot().await.unwrap().roots[&id.to_string()].active_attempts,
+        0
+    );
+}
+
+#[tokio::test]
+async fn requester_stop_recovers_a_lost_control_write_acknowledgement() {
+    for timing in [FaultTiming::Before, FaultTiming::After] {
+        let f = Fixture::new(false).await;
+        let runtime = f.runtime();
+        f.accept(&runtime).await;
+        f.state
+            .fail_next(
+                KeyKind::Custom(acteon_governance::COORDINATOR_KIND.into()),
+                WriteOperation::CompareAndSwap,
+                timing,
+            )
+            .unwrap();
+        assert!(
+            runtime
+                .stop(f.child.execution_id(), &f.parent)
+                .await
+                .is_err()
+        );
+        let persisted = f.coordinator.snapshot().await.unwrap();
+        assert_eq!(
+            persisted.roots[&f.child.execution_id().to_string()].cancelled,
+            timing == FaultTiming::After
+        );
+        let replacement = f.runtime();
+        assert!(
+            replacement
+                .stop(f.child.execution_id(), &f.parent)
+                .await
+                .unwrap()
+                .future_starts_blocked
+        );
+        assert!(
+            Box::pin(replacement.resume(f.child.execution_id()))
+                .await
+                .is_err()
+        );
+        assert_eq!(f.counter.calls.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[tokio::test]
+async fn simultaneous_requester_stops_publish_one_control_event() {
+    let f = Fixture::new(false).await;
+    let first = f.runtime();
+    let second = f.runtime();
+    f.accept(&first).await;
+    let generation = f.coordinator.snapshot().await.unwrap().generation;
+    let (a, b) = tokio::join!(
+        first.stop(f.child.execution_id(), &f.parent),
+        second.stop(f.child.execution_id(), &f.parent),
+    );
+    assert!(a.unwrap().future_starts_blocked);
+    assert!(b.unwrap().future_starts_blocked);
+    let snapshot = f.coordinator.snapshot().await.unwrap();
+    assert_eq!(snapshot.generation, generation + 1);
+    assert_eq!(
+        snapshot
+            .changes
+            .values()
+            .filter(|r| matches!(r.change, AuthorityChange::CancelExecution { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(f.counter.calls.load(Ordering::SeqCst), 0);
+}
+
+async fn qualify_registry_fixture(f: &Fixture, revision: u64, digest: String) {
+    use acteon_governance::registry::{AgentRegistryIssuanceCeiling, AgentRegistryQualification};
+    let q = AgentRegistryQualification {
+        agent: resource(ResourceKind::Agent, "notifier"),
+        target: actor("worker"),
+        revision,
+        bindings: std::collections::BTreeMap::from([("notify".into(), digest)]),
+    };
+    let ceiling = AgentRegistryIssuanceCeiling {
+        issuer: actor("operator"),
+        approved: vec![q.clone()],
+        valid_from_ms: 0,
+        deadline_ms: 10_000,
+    };
+    f.coordinator
+        .publish_agent_registry(
+            &format!("registry-{revision}"),
+            q,
+            revision - 1,
+            &ceiling,
+            &f.coordinator.snapshot().await.unwrap().stamp(),
+            "qualified fixed runtime",
+            f.clock.as_ref(),
+        )
+        .await
+        .unwrap();
+}
+async fn retire_registry_fixture(f: &Fixture) {
+    f.coordinator
+        .change(
+            "registry-retire",
+            AuthorityChange::RetireAgentRegistry {
+                agent: resource(ResourceKind::Agent, "notifier"),
+                expected_revision: 1,
+            },
+            "operator",
+            "registry changed",
+        )
+        .await
+        .unwrap();
+}
+#[tokio::test]
+async fn registry_retirement_and_new_binding_block_old_accepted_provider_starts() {
+    let f = Fixture::new(false).await;
+    let runtime = f.runtime();
+    qualify_registry_fixture(&f, 1, runtime.binding_digest().into()).await;
+    f.accept(&runtime).await;
+    retire_registry_fixture(&f).await;
+    assert!(
+        Box::pin(f.runtime().resume(f.child.execution_id()))
+            .await
+            .is_err()
+    );
+    qualify_registry_fixture(&f, 2, "c".repeat(64)).await;
+    assert!(
+        Box::pin(f.runtime().resume(f.child.execution_id()))
+            .await
+            .is_err()
+    );
+    assert_eq!(f.counter.calls.load(Ordering::SeqCst), 0);
+    assert!(f.coordinator.snapshot().await.unwrap().starts.is_empty());
+    // Restriction does not hide durable accepted work from its legitimate host.
+    assert_eq!(
+        f.runtime()
+            .observe(f.child.execution_id())
+            .await
+            .unwrap()
+            .task
+            .id,
+        f.child.execution_id().to_string()
+    );
+}
+#[tokio::test]
+async fn registry_retirement_does_not_certify_an_uncertain_result_or_release_capacity() {
+    let f = Fixture::new(true).await;
+    let runtime = f.runtime();
+    qualify_registry_fixture(&f, 1, runtime.binding_digest().into()).await;
+    f.accept(&runtime).await;
+    Box::pin(runtime.resume(f.child.execution_id()))
+        .await
+        .unwrap();
+    retire_registry_fixture(&f).await;
+    let observed = Box::pin(f.runtime().resume(f.child.execution_id()))
+        .await
+        .unwrap();
+    assert_eq!(observed.task.status.state, TaskState::Working);
+    assert!(matches!(
+        observed.execution.unwrap().status,
+        GovernedProviderStatus::ReconciliationRequired { .. }
+    ));
+    assert_eq!(f.counter.calls.load(Ordering::SeqCst), 1);
+    assert!(
+        f.coordinator
+            .snapshot()
+            .await
+            .unwrap()
+            .roots
+            .values()
+            .all(|r| r.active_attempts == 1 && r.spent_units == 1)
+    );
+}
+#[tokio::test]
+async fn registry_retirement_during_an_in_flight_call_preserves_its_known_completion() {
+    let f = Fixture::new(false).await;
+    let runtime = f.runtime();
+    qualify_registry_fixture(&f, 1, runtime.binding_digest().into()).await;
+    f.accept(&runtime).await;
+    f.counter.blocking.store(true, Ordering::SeqCst);
+    let id = f.child.execution_id();
+    let running = tokio::spawn(async move { Box::pin(runtime.resume(id)).await });
+    f.counter.entered.notified().await;
+    retire_registry_fixture(&f).await;
+    f.counter.release.add_permits(1);
+    assert_eq!(
+        running.await.unwrap().unwrap().task.status.state,
+        TaskState::Completed
+    );
+    assert_eq!(
+        f.runtime().observe(id).await.unwrap().task.artifacts.len(),
+        1
+    );
+    assert_eq!(f.counter.calls.load(Ordering::SeqCst), 1);
+}
+#[tokio::test]
+async fn protocol_ten_and_eleven_upgrades_preserve_funded_contexts_and_execution_receipts() {
+    for (ambiguous, source_version) in [(false, 10), (false, 11), (true, 10), (true, 11)] {
+        let f = Fixture::new(ambiguous).await;
+        let runtime = f.runtime();
+        if source_version == 11 {
+            qualify_registry_fixture(&f, 1, runtime.binding_digest().into()).await;
+        }
+        f.accept(&runtime).await;
+        Box::pin(runtime.resume(f.child.execution_id()))
+            .await
+            .unwrap();
+        let before = f.coordinator.snapshot().await.unwrap();
+        let key = StateKey::new(
+            "city",
+            "tenant",
+            KeyKind::Custom(acteon_governance::COORDINATOR_KIND.into()),
+            "authority",
+        );
+        let mut raw = serde_json::to_value(&before).unwrap();
+        raw["schema_version"] = source_version.into();
+        if source_version == 10 {
+            raw.as_object_mut().unwrap().remove("agent_registry");
+        }
+        f.state
+            .set(&key, &serde_json::to_string(&raw).unwrap(), None)
+            .await
+            .unwrap();
+        let plan = AuthorityCoordinator::plan_scope_upgrade(
+            f.state.clone(),
+            "city",
+            "tenant",
+            acteon_governance::ScopePurpose::Execution,
+            "operator",
+            "registry protocol upgrade",
+        )
+        .await
+        .unwrap();
+        assert_eq!(plan.report().from_protocol, source_version);
+        assert_eq!(plan.report().to_protocol, 12);
+        plan.apply(&plan.report().review_digest).await.unwrap();
+        let after = f.coordinator.snapshot().await.unwrap();
+        assert_eq!(before.incarnation, after.incarnation);
+        assert_eq!(before.budget_parents, after.budget_parents);
+        assert_eq!(before.agent_registry, after.agent_registry);
+        for (id, root) in &before.roots {
+            assert_eq!(root.active_attempts, after.roots[id].active_attempts);
+            assert_eq!(root.spent_units, after.roots[id].spent_units);
+            assert_eq!(root.accepted_context, after.roots[id].accepted_context);
+        }
+        let observed = Box::pin(f.runtime().resume(f.child.execution_id()))
+            .await
+            .unwrap();
+        assert_eq!(
+            observed.task.status.state,
+            if ambiguous {
+                TaskState::Working
+            } else {
+                TaskState::Completed
+            }
+        );
+        assert_eq!(f.counter.calls.load(Ordering::SeqCst), 1);
     }
 }

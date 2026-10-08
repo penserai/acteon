@@ -8,6 +8,7 @@ from urllib.parse import quote
 import httpx
 
 from .a2a import _A2AClientMixin, _AsyncA2AClientMixin
+from .agent_services import _AgentServicesMixin, _AsyncAgentServicesMixin
 from .bus import _AsyncBusClientMixin, _BusClientMixin
 from .errors import ApiError, ConnectionError, HttpError
 from .governance import _AsyncGovernanceMixin, _GovernanceMixin
@@ -125,6 +126,7 @@ def _permit_headers(permits: list[PermitReference] | None) -> dict[str, str] | N
 
 
 class ActeonClient(
+    _AgentServicesMixin,
     _WorkforceMixin,
     _GovernanceMixin,
     _PlatformMixin,
@@ -227,6 +229,7 @@ class ActeonClient(
                 json=json,
                 params=params,
                 headers=headers,
+                follow_redirects=False,
             )
             return response
         except httpx.ConnectError as e:
@@ -2603,6 +2606,7 @@ class ActeonClient(
 
 
 class AsyncActeonClient(
+    _AsyncAgentServicesMixin,
     _AsyncWorkforceMixin,
     _AsyncGovernanceMixin,
     _AsyncPlatformMixin,
@@ -2694,6 +2698,7 @@ class AsyncActeonClient(
                 json=json,
                 params=params,
                 headers=headers,
+                follow_redirects=False,
             )
             return response
         except httpx.ConnectError as e:

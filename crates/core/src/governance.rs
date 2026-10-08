@@ -175,3 +175,61 @@ mod tests {
         assert_eq!(serde_json::to_value(view).unwrap(), permitted);
     }
 }
+
+/// One fixed metadata projection. The selector never grants control authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum GovernanceRegistryProjection {
+    Agent,
+    Card,
+}
+
+/// Stable operator intent. Retain this exact request when an acknowledgement is lost.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct GovernanceRegistryMutationRequest {
+    pub namespace: String,
+    pub tenant: String,
+    pub agent_id: String,
+    pub change_id: String,
+    pub expected_registry_revision: u64,
+    pub projection: GovernanceRegistryProjection,
+    pub expected_projection_version: Option<u64>,
+    /// A complete validated Agent/AgentCard. Null requests deletion.
+    pub value: Option<serde_json::Value>,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct GovernanceRegistryProjectionView {
+    pub namespace: String,
+    pub tenant: String,
+    pub agent_id: String,
+    pub agent_resource: ResourceRef,
+    pub projection: GovernanceRegistryProjection,
+    pub registry_revision: u64,
+    pub qualification_retired: Option<bool>,
+    pub version: Option<u64>,
+    pub value: Option<serde_json::Value>,
+}
+
+/// Known applied metadata, independent of any later agent requalification.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct GovernanceRegistryMutationReceipt {
+    pub namespace: String,
+    pub tenant: String,
+    pub agent_id: String,
+    pub change_id: String,
+    pub projection: GovernanceRegistryProjection,
+    pub expected_registry_revision: u64,
+    pub input_digest: String,
+    pub actor: String,
+    pub delivery_complete: bool,
+    pub applied: bool,
+}

@@ -146,4 +146,51 @@ class GovernanceTest {
         var fenced = mapper.treeToValue(fixture.get("no_effect_receipt"), ProviderExecutionHistory.Receipt.class);
         assertTrue(fenced.status().outcome().isFailed());
     }
+    @Test void registryRequestsAndCompletedReceiptsPreserveOriginalIdentity() throws Exception {
+        var mapper = new ObjectMapper();
+        var fixture = mapper.readTree(Files.readString(Path.of("../contract-fixtures/governance-registry.json")));
+        var request = mapper.treeToValue(fixture.get("request"), Governance.RegistryMutationRequest.class);
+        var receipt = new java.util.concurrent.atomic.AtomicReference<>(fixture.get("receipt"));
+        var view = new java.util.concurrent.atomic.AtomicReference<>(fixture.get("view"));
+        var status = new AtomicInteger(200);
+        var calls = new AtomicInteger();
+        var server = HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
+        server.createContext("/v1/governance/registry", exchange -> {
+            calls.incrementAndGet();
+            assertEquals("Bearer operator-key", exchange.getRequestHeaders().getFirst("Authorization"));
+            boolean read = exchange.getRequestMethod().equals("GET");
+            if (read) {
+                assertEquals("/v1/governance/registry/maya", exchange.getRequestURI().getPath());
+                for (var part : new String[]{"namespace=prod","tenant=acme","projection=card"}) assertTrue(exchange.getRequestURI().getQuery().contains(part));
+            } else assertEquals(fixture.get("request"), mapper.readTree(exchange.getRequestBody()));
+            byte[] body=(read ? view.get() : receipt.get()).toString().getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add("Location","/redirected");
+            exchange.sendResponseHeaders(read ? 200 : status.get(),body.length);
+            exchange.getResponseBody().write(body); exchange.close();
+        }); server.start();
+        try (var client = new ActeonClient("http://127.0.0.1:"+server.getAddress().getPort(),"operator-key")) {
+            assertEquals(fixture.get("view"),mapper.readTree(mapper.writeValueAsString(client.registryProjection("prod","acme","maya","card"))));
+            for (var field : new String[]{"tenant","version","qualification_retired","registry_revision","value"}) {
+                var bad = (com.fasterxml.jackson.databind.node.ObjectNode) fixture.get("view").deepCopy();
+                if (field.equals("tenant")) bad.put(field,"other"); else if (field.equals("qualification_retired")) bad.putNull(field); else if (field.equals("value")) bad.put(field,"invalid"); else bad.put(field,0);
+                view.set(bad); int before=calls.get();
+                assertThrows(com.acteon.client.exceptions.ActeonException.class,()->client.registryProjection("prod","acme","maya","card"));
+                assertEquals(before+1,calls.get());
+            }
+            for (int i=0;i<2;i++) assertEquals(fixture.get("receipt"),mapper.readTree(mapper.writeValueAsString(client.mutateRegistry(request))));
+            for (var field : new String[]{"delivery_complete","applied","change_id","tenant","input_digest"}) {
+                var bad = (com.fasterxml.jackson.databind.node.ObjectNode) fixture.get("receipt").deepCopy();
+                if (field.equals("delivery_complete") || field.equals("applied")) bad.put(field,false); else bad.put(field,"bad");
+                receipt.set(bad); int before=calls.get();
+                assertThrows(com.acteon.client.exceptions.ActeonException.class,()->client.mutateRegistry(request));
+                assertEquals(before+1,calls.get());
+            }
+            for (int errorStatus : new int[]{401,403,409,503,307}) {
+                status.set(errorStatus); int before=calls.get();
+                assertEquals(errorStatus,assertThrows(HttpException.class,()->client.mutateRegistry(request)).getStatus());
+                assertEquals(before+1,calls.get());
+            }
+        } finally {server.stop(0);}
+    }
+
 }

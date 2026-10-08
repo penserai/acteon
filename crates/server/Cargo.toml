@@ -138,6 +138,7 @@ zeroize = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+acteon-client.workspace = true
 sqlx = { workspace = true }
 acteon-audit = { workspace = true }
 acteon-audit-memory = { workspace = true }

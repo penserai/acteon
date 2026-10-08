@@ -115,3 +115,40 @@ export function parseProviderExecutionHistory(data: ProviderExecutionHistoryWire
     })),
   };
 }
+
+
+export type RegistryProjection = "agent" | "card";
+export interface GovernanceRegistryMutationRequest {
+  namespace: string; tenant: string; agent_id: string; change_id: string;
+  expected_registry_revision: number; projection: RegistryProjection;
+  expected_projection_version: number | null; value: Record<string, unknown> | null; reason: string;
+}
+export interface GovernanceRegistryProjectionView {
+  namespace: string; tenant: string; agent_id: string; agent_resource: GovernanceResource;
+  projection: RegistryProjection; registry_revision: number; qualification_retired: boolean | null;
+  version: number | null; value: Record<string, unknown> | null;
+}
+export interface GovernanceRegistryMutationReceipt {
+  namespace: string; tenant: string; agent_id: string; change_id: string; projection: RegistryProjection;
+  expected_registry_revision: number; input_digest: string; actor: string; delivery_complete: boolean; applied: boolean;
+}
+export function parseRegistryProjection(data: unknown, namespace: string, tenant: string, agentId: string, projection: RegistryProjection): GovernanceRegistryProjectionView {
+  const r = data as GovernanceRegistryProjectionView;
+  if (!r || r.namespace !== namespace || r.tenant !== tenant || r.agent_id !== agentId || r.projection !== projection
+    || !r.agent_resource || r.agent_resource.kind !== "agent" || r.agent_resource.namespace !== namespace || r.agent_resource.tenant !== tenant || r.agent_resource.id !== agentId
+    || !("value" in r) || !Number.isSafeInteger(r.registry_revision) || r.registry_revision < 0
+    || (r.registry_revision === 0) !== (r.qualification_retired === null)
+    || (r.qualification_retired !== null && typeof r.qualification_retired !== "boolean")
+    || (r.version !== null && (!Number.isSafeInteger(r.version) || r.version <= 0))
+    || (r.version === null) !== (r.value === null)
+    || (r.value !== null && (typeof r.value !== "object" || Array.isArray(r.value)))) throw new Error("registry observation identity or version mismatch");
+  return r;
+}
+export function parseRegistryMutationReceipt(data: unknown, request: GovernanceRegistryMutationRequest): GovernanceRegistryMutationReceipt {
+  const r = data as GovernanceRegistryMutationReceipt;
+  if (!r || r.namespace !== request.namespace || r.tenant !== request.tenant || r.agent_id !== request.agent_id || r.change_id !== request.change_id || r.projection !== request.projection
+    || r.expected_registry_revision !== request.expected_registry_revision || !Number.isSafeInteger(r.expected_registry_revision) || r.expected_registry_revision < 0
+    || r.delivery_complete !== true || r.applied !== true || typeof r.actor !== "string" || !r.actor
+    || typeof r.input_digest !== "string" || !/^[0-9a-f]{64}$/.test(r.input_digest)) throw new Error("unmatched or incomplete registry mutation receipt");
+  return r;
+}

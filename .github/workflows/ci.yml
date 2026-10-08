@@ -166,6 +166,8 @@ jobs:
       - run: cd ui && npx playwright install chromium
         if: github.head_ref == 'codex/consolidated-build-deps'
       - run: cd ui && npm run test:smoke
+      - name: Governed agent task browser contract
+        run: cd ui && ACTEON_UI_TEST_PORT=5184 npx playwright test agent-services.spec.ts --project=chromium --project=mobile-chrome --reporter=line
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
@@ -252,6 +254,7 @@ jobs:
           test -n "$ACTEON_KAFKA_BOOTSTRAP"
           cargo test --locked -p acteon-bus --lib --tests
           cargo test --locked -p acteon-server --features bus --test bus_session_tests --test bus_stage_tests
+          cargo test --locked -p acteon-server --features bus --test execution_management registry_http_all_legacy_bus_metadata_writers
       - name: Kafka broker logs
         if: always()
         run: docker logs "${{ job.services.kafka.id }}"
@@ -354,6 +357,10 @@ jobs:
         env:
           ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
         run: cargo test --locked -p acteon-server --test execution_preparation independent_redis_root_admission_passes_the_contract -- --ignored
+      - name: Registry mutation multi-client Redis contract
+        env:
+          ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
+        run: cargo test --locked -p acteon-governance --test registry_mutations independent_redis_registry_lifecycle_recovers_without_duplicate_writes -- --ignored
       - name: Governance credential authority multi-client Redis contract
         env:
           ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
@@ -366,6 +373,10 @@ jobs:
         env:
           ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
         run: cargo test --locked -p acteon-gateway --test agent_runtime independent_redis_runtime_recovers_lost_acceptance_and_known_or_uncertain_results -- --ignored
+      - name: Authenticated agent services restart, ambiguity and storage contracts
+        env:
+          ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
+        run: cargo test --locked -p acteon-server --test agent_services_http -- --ignored
       - name: Cross-principal delegation multi-client Redis contract
         env:
           ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
@@ -386,6 +397,8 @@ jobs:
         run: cargo test --locked -p acteon-server --features postgres --test auth_authority independent_postgres_authentication_replicas_pass_the_contract -- --ignored
       - name: Root admission multi-client PostgreSQL contract
         run: cargo test --locked -p acteon-server --features postgres --test execution_preparation independent_postgres_root_admission_passes_the_contract -- --ignored
+      - name: Registry mutation multi-client PostgreSQL contract
+        run: cargo test --locked -p acteon-governance --test registry_mutations independent_postgres_registry_lifecycle_recovers_without_duplicate_writes -- --ignored
       - name: Authenticated workforce admission with PostgreSQL and no Redis feature
         run: cargo test --locked -p acteon-server --no-default-features --features postgres --test execution_preparation independent_postgres_authenticated_workforce_passes_the_contract -- --ignored
       - name: Governed HTTP dispatch survives PostgreSQL server restart
@@ -410,6 +423,13 @@ jobs:
           AWS_EC2_METADATA_DISABLED: 'true'
       - name: Root admission multi-client DynamoDB contract
         run: cargo test --locked -p acteon-server --features dynamodb --test execution_preparation independent_dynamodb_root_admission_passes_the_contract -- --ignored
+        env:
+          DYNAMODB_ENDPOINT: http://127.0.0.1:8000
+          AWS_ACCESS_KEY_ID: acteonlocaltest
+          AWS_SECRET_ACCESS_KEY: acteon-local-test
+          AWS_EC2_METADATA_DISABLED: 'true'
+      - name: Registry mutation multi-client DynamoDB contract
+        run: cargo test --locked -p acteon-governance --test registry_mutations independent_dynamodb_registry_lifecycle_recovers_without_duplicate_writes -- --ignored
         env:
           DYNAMODB_ENDPOINT: http://127.0.0.1:8000
           AWS_ACCESS_KEY_ID: acteonlocaltest

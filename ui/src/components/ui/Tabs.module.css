@@ -2,7 +2,7 @@
 
 
 .tabList {
-  @apply flex border-b;
+  @apply flex overflow-x-auto border-b;
   border-color: var(--border-default);
 }
 

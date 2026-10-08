@@ -1,3 +1,5 @@
+import { parseRegistryProjection, parseRegistryMutationReceipt, type RegistryProjection, type GovernanceRegistryMutationRequest, type GovernanceRegistryProjectionView, type GovernanceRegistryMutationReceipt } from "./governance.js";
+import { AGENT_EXECUTION_CONTEXT_HEADER, AGENT_SOURCE_CONTEXT_HEADER, agentExecutionContext, agentPeerCancelReceipt, agentPeerOptions, agentPeerReceipt, agentProviderAbort, agentSource, agentTask, agentServiceBase, type AgentPeerCancelReceipt, type AgentPeerSelectionOption, type AgentPeerSendReceipt, type AgentServiceReceipt, type AgentServiceStopReceipt } from "./agent_services.js";
 import { parseProviderHistoryReceipt, type ProviderHistoryReceipt, type ProviderReconciliationCorrelation, type ProviderReconciliationRequest } from "./governance.js";
 import { parseProviderExecutionHistory, type ProviderExecutionHistory, type ProviderExecutionHistoryWire } from "./governance.js";
 import type { WorkforceScopeView, WorkforceChangeRequest } from "./workforce.js";
@@ -167,6 +169,7 @@ import {
 import { ApiError, ConnectionError, HttpError } from "./errors.js";
 import {
   A2A_HEADERS,
+  A2A_PROTOCOL_VERSION,
   a2aSegment,
   unwrapJsonRpc,
   type JsonRpcReply,
@@ -272,6 +275,12 @@ import {
 export interface PermitReference {
   id: string;
   acceptedRevision: number;
+}
+
+/** Existing verified authority for one delegated agent-service invocation. */
+export interface AgentServiceParentOptions {
+  executionContext: string;
+  permits: PermitReference[];
 }
 
 export interface DispatchOptions {
@@ -382,10 +391,101 @@ export class ActeonClient {
   /** Complete finite HTTP API, using wire field names. Never automatically retries. */
   async platformRequest(operation: PlatformOperation, options: PlatformRequestOptions = {}): Promise<unknown> {
     const parts = platformRequestParts(operation, options);
-    const response = await this.request(parts.method, parts.path, { params: parts.params, body: options.body });
+    const response = await this.request(parts.method, parts.path, { params: parts.params, body: options.body, redirect: operation === "governance_mutate_registry" || operation === "governance_registry_projection" ? "error" : "follow" });
     if (!response.ok) throw new HttpError(response.status, await response.text());
     if (response.status === 204) return null;
     return parts.response === "text" ? response.text() : response.json();
+  }
+
+  /** Submit once. Persist the receipt in host state; preserve message ID on response loss. */
+  async agentServiceSendMessage(namespace: string, tenant: string, agent: string, message: Record<string, unknown>, parent?: AgentServiceParentOptions): Promise<AgentServiceReceipt> {
+    const parentHeaders = parent === undefined ? undefined : permitHeaders(parent.permits);
+    if (parent !== undefined && (!parentHeaders || parent.permits.length === 0)) throw new Error("delegated agent service invocation requires permits");
+    const response = await this.request("POST", agentServiceBase(namespace, tenant, agent) + "/message:send", { body: { message }, extraHeaders: { ...A2A_HEADERS, ...(parentHeaders ?? {}), ...(parent ? { [AGENT_EXECUTION_CONTEXT_HEADER]: agentExecutionContext(parent.executionContext) } : {}) }, redirect: "error" });
+    if (!response.ok) throw new HttpError(response.status, await response.text());
+    if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent service response version missing or unsupported");
+    const task = agentTask(await response.json(), namespace, tenant);
+    return Object.freeze({ namespace, tenant, agent, taskId: task.id as string, sourceContext: agentSource(response.headers.get(AGENT_SOURCE_CONTEXT_HEADER)), task });
+  }
+  /** List current safe registry options. Descriptions are untrusted data. */
+  async agentServiceDiscoverPeers(source: AgentServiceReceipt, skill: string): Promise<readonly AgentPeerSelectionOption[]> {
+    if (!/^[A-Za-z0-9._-]{1,120}$/.test(skill) || skill === "*") throw new Error("invalid exact peer skill");
+    const segment = (value: string) => {
+      if (!value || value === "." || value === "..") throw new Error("invalid agent peer path segment");
+      return encodeURIComponent(value);
+    };
+    const path = agentServiceBase(source.namespace, source.tenant, source.agent) + "/tasks/" + segment(source.taskId) + "/peers";
+    const response = await this.request("GET", path, { params: new URLSearchParams({ skill }), extraHeaders: A2A_HEADERS, redirect: "error" });
+    if (!response.ok) throw new HttpError(response.status, await response.text());
+    if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent peer discovery response version missing or unsupported");
+    return agentPeerOptions(await response.json(), skill);
+  }
+  /** Submit from an accepted source task. Authority remains in server state. */
+  async agentServiceSendPeer(source: AgentServiceReceipt, target: string, skill: string, message: Record<string, unknown>): Promise<AgentPeerSendReceipt> {
+    const segment = (value: string) => {
+      if (!value || value === "." || value === "..") throw new Error("invalid agent peer path segment");
+      return encodeURIComponent(value);
+    };
+    const response = await this.request("POST", agentServiceBase(source.namespace, source.tenant, source.agent) + "/tasks/" + segment(source.taskId) + "/peers/" + segment(target) + "/" + segment(skill) + "/message:send", { body: { message }, extraHeaders: A2A_HEADERS, redirect: "error" });
+    if (!response.ok) throw new HttpError(response.status, await response.text());
+    if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent peer response version missing or unsupported");
+    return agentPeerReceipt(await response.json(), source.namespace, source.tenant);
+  }
+  /** Observe and journal one accepted remote task without resubmitting work. */
+  async agentServiceRefreshPeer(source: AgentServiceReceipt, target: string, skill: string, peer: AgentPeerSendReceipt): Promise<AgentPeerSendReceipt> {
+    const segment = (value: string) => {
+      if (!value || value === "." || value === "..") throw new Error("invalid agent peer path segment");
+      return encodeURIComponent(value);
+    };
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(peer.submissionId)) throw new Error("invalid agent peer submission identity");
+    const path = agentServiceBase(source.namespace, source.tenant, source.agent) + "/tasks/" + segment(source.taskId) + "/peers/" + segment(target) + "/" + segment(skill) + "/submissions/" + peer.submissionId + ":refresh";
+    const response = await this.request("POST", path, { extraHeaders: A2A_HEADERS, redirect: "error" });
+    if (!response.ok) throw new HttpError(response.status, await response.text());
+    if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent peer response version missing or unsupported");
+    const refreshed = agentPeerReceipt(await response.json(), source.namespace, source.tenant);
+    if (refreshed.submissionId !== peer.submissionId) throw new Error("agent peer submission identity mismatch");
+    const sameDisposition =
+      (peer.status.state === "uncertain" && refreshed.status.state === "uncertain") ||
+      (peer.status.state === "accepted" && refreshed.status.state === "accepted" && peer.status.task.id === refreshed.status.task.id) ||
+      (peer.status.state === "rejected" && refreshed.status.state === "rejected" && peer.status.code === refreshed.status.code);
+    if (!sameDisposition) throw new Error("agent peer refresh changed durable disposition");
+    return refreshed;
+  }
+  /** Persist and deliver at most one remote cancellation; never retries an ambiguous result. */
+  async agentServiceCancelPeer(source: AgentServiceReceipt, target: string, skill: string, peer: AgentPeerSendReceipt): Promise<AgentPeerCancelReceipt> {
+    const segment = (value: string) => {
+      if (!value || value === "." || value === "..") throw new Error("invalid agent peer path segment");
+      return encodeURIComponent(value);
+    };
+    if (peer.status.state !== "accepted" || !/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(peer.submissionId)) throw new Error("agent peer cancellation requires an accepted peer receipt");
+    agentTask(peer.status.task, source.namespace, source.tenant);
+    const path = agentServiceBase(source.namespace, source.tenant, source.agent) + "/tasks/" + segment(source.taskId) + "/peers/" + segment(target) + "/" + segment(skill) + "/submissions/" + peer.submissionId + ":cancel";
+    const response = await this.request("POST", path, { extraHeaders: A2A_HEADERS, redirect: "error" });
+    if (!response.ok) throw new HttpError(response.status, await response.text());
+    if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent peer cancellation response version missing or unsupported");
+    return agentPeerCancelReceipt(await response.json(), source.namespace, source.tenant, peer);
+  }
+  /** Stop future starts for the original job; retry explicitly with the same receipt on response loss. */
+  async agentServiceStopTask(receipt: AgentServiceReceipt): Promise<AgentServiceStopReceipt> {
+    const taskId = receipt.taskId;
+    if (!taskId || taskId === "." || taskId === "..") throw new Error("invalid agent service task ID");
+    const response = await this.request("POST", agentServiceBase(receipt.namespace, receipt.tenant, receipt.agent) + "/tasks/" + encodeURIComponent(taskId) + "/stop", { extraHeaders: { ...A2A_HEADERS, [AGENT_SOURCE_CONTEXT_HEADER]: agentSource(receipt.sourceContext) }, redirect: "error" });
+    if (!response.ok) throw new HttpError(response.status, await response.text());
+    if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent service response version missing or unsupported");
+    const value = await response.json() as { task?: unknown; future_starts_blocked?: unknown; provider_abort?: unknown } | null;
+    if (!value || value.future_starts_blocked !== true) throw new Error("agent service stop acknowledgement missing or malformed");
+    const providerAbort = agentProviderAbort(value.provider_abort);
+    return Object.freeze({ task: agentTask(value.task, receipt.namespace, receipt.tenant, taskId), futureStartsBlocked: true as const, ...(providerAbort ? { providerAbort } : {}) });
+  }
+
+  /** Observe one retained job; never starts work or changes global headers. */
+  async agentServiceGetTask(receipt: AgentServiceReceipt): Promise<Record<string, unknown>> {
+    const taskId = receipt.taskId;
+    if (!taskId || taskId === "." || taskId === "..") throw new Error("invalid agent service task ID");
+    const response = await this.request("GET", agentServiceBase(receipt.namespace, receipt.tenant, receipt.agent) + "/tasks/" + encodeURIComponent(taskId), { extraHeaders: { ...A2A_HEADERS, [AGENT_SOURCE_CONTEXT_HEADER]: agentSource(receipt.sourceContext) }, redirect: "error" });
+    if (!response.ok) throw new HttpError(response.status, await response.text());
+    if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent service response version missing or unsupported");
+    return agentTask(await response.json(), receipt.namespace, receipt.tenant, taskId);
   }
 
   /** Inspect only the routes and permits within current independent management policy. */
@@ -396,6 +496,16 @@ export class ActeonClient {
     return await this.platformRequest("workforce_change", { body: request }) as GovernanceChangeReceipt;
   }
 
+  async registryProjection(namespace: string, tenant: string, agentId: string, projection: RegistryProjection): Promise<GovernanceRegistryProjectionView> {
+    const data = await this.platformRequest("governance_registry_projection", { path: { agent_id: agentId }, query: { namespace, tenant, projection } });
+    return parseRegistryProjection(data, namespace, tenant, agentId, projection);
+  }
+  /** Send once; retain the same request and change ID for explicit recovery. */
+  async mutateRegistry(request: GovernanceRegistryMutationRequest): Promise<GovernanceRegistryMutationReceipt> {
+    const sent = structuredClone(request);
+    const data = await this.platformRequest("governance_mutate_registry", { body: sent });
+    return parseRegistryMutationReceipt(data, sent);
+  }
   async governance(namespace: string, tenant: string): Promise<GovernanceScopeView> {
     return await this.platformRequest("governance_inspect", { query: { namespace, tenant } }) as GovernanceScopeView;
   }
@@ -468,6 +578,7 @@ export class ActeonClient {
       body?: unknown;
       params?: URLSearchParams;
       extraHeaders?: Record<string, string>;
+      redirect?: "error" | "follow" | "manual";
       /**
        * When true, suppress the `Authorization` header. Used by the
        * A2A unauthenticated discovery endpoint
@@ -495,6 +606,7 @@ export class ActeonClient {
       const fetchOptions: RequestInit & { dispatcher?: unknown } = {
         method,
         headers,
+        redirect: options?.redirect ?? "follow",
         body: options?.body !== undefined ? JSON.stringify(options.body) : undefined,
         signal: controller.signal,
       };

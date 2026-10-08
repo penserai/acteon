@@ -17,6 +17,13 @@ class PlatformOperation(StrEnum):
     A2A_PUSH_REST_LIST_PUSH_CONFIGS = "a2a_push_rest_list_push_configs"
     A2A_PUSH_REST_LIST_PUSH_DLQ = "a2a_push_rest_list_push_dlq"
     A2A_PUSH_REST_SET_PUSH_CONFIG = "a2a_push_rest_set_push_config"
+    AGENT_SERVICES_MESSAGE_SEND = "agent_services_message_send"
+    AGENT_SERVICES_PEER_CANCEL = "agent_services_peer_cancel"
+    AGENT_SERVICES_PEER_DISCOVER = "agent_services_peer_discover"
+    AGENT_SERVICES_PEER_REFRESH = "agent_services_peer_refresh"
+    AGENT_SERVICES_PEER_SEND = "agent_services_peer_send"
+    AGENT_SERVICES_TASK_GET = "agent_services_task_get"
+    AGENT_SERVICES_TASK_STOP = "agent_services_task_stop"
     ANALYTICS_QUERY_ANALYTICS = "analytics_query_analytics"
     APPROVALS_APPROVE = "approvals_approve"
     APPROVALS_GET_APPROVAL = "approvals_get_approval"
@@ -116,9 +123,11 @@ class PlatformOperation(StrEnum):
     GOVERNANCE_ACCEPT_RECONCILIATION = "governance_accept_reconciliation"
     GOVERNANCE_INSPECT = "governance_inspect"
     GOVERNANCE_INTERVENE = "governance_intervene"
+    GOVERNANCE_MUTATE_REGISTRY = "governance_mutate_registry"
     GOVERNANCE_PROVIDER_HISTORY = "governance_provider_history"
     GOVERNANCE_PUBLISH_PERMIT = "governance_publish_permit"
     GOVERNANCE_RECONCILIATION_CORRELATION = "governance_reconciliation_correlation"
+    GOVERNANCE_REGISTRY_PROJECTION = "governance_registry_projection"
     GROUPS_FLUSH_GROUP = "groups_flush_group"
     GROUPS_GET_GROUP = "groups_get_group"
     GROUPS_LIST_GROUPS = "groups_list_groups"
@@ -284,6 +293,48 @@ OPERATIONS = {
         "POST",
         "/a2a/{namespace}/{tenant}/v1/tasks/{id}/pushNotificationConfigs",
         ("namespace", "tenant", "id"),
+        "json",
+    ),
+    PlatformOperation.AGENT_SERVICES_MESSAGE_SEND: (
+        "POST",
+        "/a2a/{namespace}/{tenant}/agents/{agent}/v1/message:send",
+        ("namespace", "tenant", "agent"),
+        "json",
+    ),
+    PlatformOperation.AGENT_SERVICES_PEER_CANCEL: (
+        "POST",
+        "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:cancel",
+        ("namespace", "tenant", "agent", "id", "target", "skill", "submission"),
+        "json",
+    ),
+    PlatformOperation.AGENT_SERVICES_PEER_DISCOVER: (
+        "GET",
+        "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers",
+        ("namespace", "tenant", "agent", "id"),
+        "json",
+    ),
+    PlatformOperation.AGENT_SERVICES_PEER_REFRESH: (
+        "POST",
+        "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:refresh",
+        ("namespace", "tenant", "agent", "id", "target", "skill", "submission"),
+        "json",
+    ),
+    PlatformOperation.AGENT_SERVICES_PEER_SEND: (
+        "POST",
+        "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/message:send",
+        ("namespace", "tenant", "agent", "id", "target", "skill"),
+        "json",
+    ),
+    PlatformOperation.AGENT_SERVICES_TASK_GET: (
+        "GET",
+        "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}",
+        ("namespace", "tenant", "agent", "id"),
+        "json",
+    ),
+    PlatformOperation.AGENT_SERVICES_TASK_STOP: (
+        "POST",
+        "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/stop",
+        ("namespace", "tenant", "agent", "id"),
         "json",
     ),
     PlatformOperation.ANALYTICS_QUERY_ANALYTICS: ("GET", "/v1/analytics", (), "json"),
@@ -725,6 +776,7 @@ OPERATIONS = {
     ),
     PlatformOperation.GOVERNANCE_INSPECT: ("GET", "/v1/governance", (), "json"),
     PlatformOperation.GOVERNANCE_INTERVENE: ("POST", "/v1/governance/changes", (), "json"),
+    PlatformOperation.GOVERNANCE_MUTATE_REGISTRY: ("POST", "/v1/governance/registry", (), "json"),
     PlatformOperation.GOVERNANCE_PROVIDER_HISTORY: (
         "GET",
         "/v1/governance/executions/{execution_id}",
@@ -736,6 +788,12 @@ OPERATIONS = {
         "GET",
         "/v1/governance/executions/{execution_id}/attempts/{ordinal}/correlation",
         ("execution_id", "ordinal"),
+        "json",
+    ),
+    PlatformOperation.GOVERNANCE_REGISTRY_PROJECTION: (
+        "GET",
+        "/v1/governance/registry/{agent_id}",
+        ("agent_id",),
         "json",
     ),
     PlatformOperation.GROUPS_FLUSH_GROUP: (

@@ -8,6 +8,17 @@ from .a2a import (
     make_part_url,
     make_push_config,
 )
+from .agent_services import (
+    AGENT_EXECUTION_CONTEXT_HEADER,
+    AGENT_SOURCE_CONTEXT_HEADER,
+    AgentPeerCancelReceipt,
+    AgentPeerSelectionOption,
+    AgentPeerSendReceipt,
+    AgentServiceParent,
+    AgentServiceProviderAbort,
+    AgentServiceReceipt,
+    AgentServiceStopReceipt,
+)
 from .bus_models import (
     AppendBusConversationMessage,
     BusAgent,
@@ -82,6 +93,15 @@ from .governance import (
     GovernancePermitView as GovernancePermitView,
 )
 from .governance import (
+    GovernanceRegistryMutationReceipt as GovernanceRegistryMutationReceipt,
+)
+from .governance import (
+    GovernanceRegistryMutationRequest as GovernanceRegistryMutationRequest,
+)
+from .governance import (
+    GovernanceRegistryProjectionView as GovernanceRegistryProjectionView,
+)
+from .governance import (
     GovernanceResource as GovernanceResource,
 )
 from .governance import (
@@ -117,6 +137,7 @@ from .governance import (
 from .governance import (
     PublishGovernancePermitRequest as PublishGovernancePermitRequest,
 )
+from .governance import RegistryProjection as RegistryProjection
 from .models import (
     Action,
     ActionOutcome,
@@ -467,4 +488,24 @@ __all__ += [
     "ProviderReconciliationCorrelation",
     "ProviderReconciliationRequest",
     "ProviderHistoryAttempt",
+]
+
+
+__all__ += [
+    "AGENT_EXECUTION_CONTEXT_HEADER",
+    "AGENT_SOURCE_CONTEXT_HEADER",
+    "AgentPeerCancelReceipt",
+    "AgentPeerSelectionOption",
+    "AgentPeerSendReceipt",
+    "AgentServiceParent",
+    "AgentServiceProviderAbort",
+    "AgentServiceReceipt",
+    "AgentServiceStopReceipt",
+]
+
+__all__ += [
+    "GovernanceRegistryMutationRequest",
+    "GovernanceRegistryProjectionView",
+    "GovernanceRegistryMutationReceipt",
+    "RegistryProjection",
 ]

@@ -192,6 +192,7 @@ dependencies = [
  "acteon-crypto",
  "async-trait",
  "axum 0.8.9",
+ "base64 0.22.1",
  "chrono",
  "futures",
  "percent-encoding",
@@ -393,6 +394,7 @@ version = "0.1.0"
 dependencies = [
  "acteon-core",
  "acteon-state",
+ "acteon-state-dynamodb",
  "acteon-state-memory",
  "acteon-state-postgres",
  "acteon-state-redis",
@@ -602,6 +604,7 @@ dependencies = [
  "acteon-aws",
  "acteon-azure",
  "acteon-bus",
+ "acteon-client",
  "acteon-core",
  "acteon-crypto",
  "acteon-discord",

@@ -6,6 +6,78 @@ same configured state backend and atomic authority boundary as governed
 execution. A closure that commits before an effect starts prevents that start.
 An effect that started first may finish.
 
+## Carry authority between agent services
+
+A host invoking a registered peer agent can attach the current opaque execution
+context and explicit permit references to message admission. Acteon recovers
+the sealed parent from the configured state backend, verifies that the private
+caller still represents its principal, and rechecks current permit revisions,
+registry state, delegation grant, closures, and budgets before creating a child.
+
+The headers form one contract: `x-acteon-execution-context` and
+`x-acteon-execution-permits` must either both be present or both be absent. The
+context is a reference, not a bearer token. Keep it in host state; model output,
+message content, task metadata, and registry cards cannot provide authority.
+Ordinary external admission without a parent creates a new governed root after
+the same private caller checks.
+
+All five SDKs expose this path through `AgentServiceParent` or the corresponding
+typed options. See [SDK coverage](../api/sdk-coverage.md#retain-an-authenticated-agent-service-receipt).
+
+For agent-to-agent calls made inside an accepted service, declare exact outbound
+edges on the source service. The target must independently grant that source
+principal access, and one of the source service's recipient permits must name
+the target:
+
+```toml
+[execution_authority.peer_transport]
+enabled = true
+timeout_ms = 10000
+adapter_revision = "acteon-peer-http-v1"
+
+[[execution_authority.scopes.agent_services]]
+# card, principal, endpoint, route, credential and recipient permits omitted
+onward_agents = ["resolver"]
+submission_capability = "at_most_once"
+```
+
+Preparation seals the full reachable provider footprint, each immediate peer's
+`agent.invoke` effect, and the exact target grants into the source service
+context. A changed call graph changes the deployment policy and binding digest.
+At runtime, `submit_agent_peer` recovers the host-retained source context,
+rechecks its current service binding, grants, permits, closures, registry state
+and budget, journals the intent in the configured state backend, then calls the
+exact guarded target adapter. `observe_agent_peer` performs the same current
+checks without network traffic. `replay_agent_peer_idempotent` is available only
+when the operator has qualified that target endpoint as replay-idempotent.
+
+The Rust host constructs `AgentPeerInvocation`; it has no wire deserializer.
+Agents call `POST
+/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{source_task}/peers/{target}/{skill}/message:send`
+with only `{"message": ...}`. The accepted source task is an opaque lookup
+handle, and current private authentication must match that task's recipient
+context. The server supplies source identity, permits, credential, endpoint and
+opaque context. Models never send those authority fields.
+
+For accepted submissions, `POST
+/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{source_task}/peers/{target}/{skill}/submissions/{submission}:refresh`
+performs at most one guarded remote task read. Terminal snapshots return without
+network traffic. The submission ID is only a journal key.
+The runtime repeats all current source and target checks, derives the task URL
+from the qualified REST endpoint, rejects task identity changes or state
+regressions, and persists the new snapshot with compare-and-swap. A failed read
+does not erase the last accepted snapshot or resend work.
+
+For an accepted remote task, `POST
+/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{source_task}/peers/{target}/{skill}/submissions/{submission}:cancel`
+persists one cancellation intent before delivery and never automatically sends
+it twice. Every call repeats current authentication, source binding, permit,
+onward-agent grant, registry-card and target-binding checks. The receipt keeps
+`unsupported`, definitive `rejected`, ambiguous `uncertain`, and `reconciled`
+terminal task states separate. After ambiguity, the same endpoint performs safe
+task observation on a later explicit call; the refresh endpoint remains
+available for ordinary lifecycle observation.
+
 ## Declare independent management rights
 
 First enable [execution permits](execution-permits.md) and shared authentication.
@@ -275,8 +347,14 @@ establish that identity.
 
 `ApprovedPeerRegistry` reads the existing agent and card records through the
 configured `StateStore`. Discovery checks current administrative state, online
-status and the exact approved card digest. Changed cards need renewed host
-approval. The candidate contains bounded descriptive data, the binding digest
+status and the exact approved card digest. It reads the actual card even when
+the separate `has_agent_card` presence hint is stale. The hint grants no
+authority: a missing or changed card produces no candidate, and an enrolled
+registry qualification must still be current and active. Changed cards need
+renewed host approval. Governed HTTP metadata writes enforce the same 64 KiB
+limit on the normalized record, measured in UTF-8 bytes, before staging a
+qualification retirement. Older larger records remain inspectable and deletable
+under exact manager permissions. The candidate contains bounded descriptive data, the binding digest
 and the observed authority revision. Treat descriptions as untrusted data.
 
 ```rust
@@ -301,12 +379,20 @@ denied candidates are omitted.
 
 Discovery is advisory and writes no reservations, children or start leases.
 The returned revision describes the observation; it is not authority to invoke
-a peer. Cross-participant child admission must preserve both authority sources
-and establish shared sponsorship before a transport adapter can register a send.
-That admission and real A2A runtime handoff remain subsequent implementation work.
-This host integration currently has no HTTP discovery route or model-callable
-runtime tool. HTTPS URL syntax approval also requires a separately qualified
-transport with network confinement, endpoint authentication and protocol checks.
+a peer. Configured agent services preserve cross-participant lineage and shared
+sponsorship at child admission. The installed durable transport repeats current
+source, registry and binding checks before registering a send.
+
+Authenticated agent services expose a narrower model-facing view at `GET
+/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{source_task}/peers?skill={skill}`.
+The host's reviewed onward-agent allowlist bounds the candidates before the
+runtime reads current agent and card records. The caller's API grant filters the
+result again. The response contains only agent ID, exact skill, card version,
+binding digest, observation time, and optional `description_untrusted`; it never
+contains endpoints, credentials, permits, principals, or authority handles.
+Corrupt or unavailable state fails the whole read. Ordinary denials and retired,
+offline, or changed cards are omitted. The view grants no authority, and the
+send path performs admission again against current state.
 
 
 ### Service delegation and shared sponsorship
@@ -354,12 +440,13 @@ starts recheck each source's ingress authority, each ancestor's original and
 current service intent, and the final recipient's direct authority. Same-actor
 workflow continuations preserve the delegation proof and sponsorship.
 
-These are trusted Rust runtime APIs. Registry selection, input qualification,
-agent-specific runtime binding and A2A transport must supply the approved plan
-and independently authenticated recipient acceptance. The existing advisory
-registry preview is separate from child admission. Public delegation routes,
-client tooling and the durable peer transport belong to the mesh integration
-phase.
+These are trusted Rust runtime APIs. Configured services now bind registry
+selection, the complete call graph, agent-specific runtime identity and durable
+A2A submission to the approved plan and independently authenticated recipient
+acceptance. The advisory registry preview remains separate from child admission.
+Remote polling now journals bounded task snapshots, including progress,
+interrupt, artifact and terminal-result fields. Event cursors, input/auth
+responses and cancellation remain part of the mesh integration phase.
 
 New contexts use signed format 5. Previously accepted formats 2–4 remain readable;
 new grants cannot be attached to an old acceptance by replay. Upgrade and drain
@@ -393,6 +480,75 @@ or its payer. Discovery creates no context, budget allocation, or effect start.
 Ordinary peer bindings retain their existing intersection-based preview.
 
 
+### Managing registry projections
+
+Operators manage agent metadata through the same configured `StateStore` used
+by execution authority. The deployment grants each manager an explicit `agents`
+list and `can_intervene = true` within its scope. An operator role or provider
+route permission alone does not grant access to an agent's metadata.
+
+`GET /v1/governance/registry/{agent_id}` takes `namespace`, `tenant`, and
+`projection=agent|card`. It returns the metadata, its backend `version`, and the
+current qualification revision and retirement state. `POST
+/v1/governance/registry` accepts a complete projection or `value: null` for
+removal, together with the observed versions and a caller-owned `change_id`.
+
+| SDK | Inspect | Mutate |
+|---|---|---|
+| Rust | `registry_projection` | `mutate_registry` |
+| Python sync/async | `registry_projection` | `mutate_registry` |
+| TypeScript | `registryProjection` | `mutateRegistry` |
+| Go | `RegistryProjection` | `MutateRegistry` |
+| Java | `registryProjection` | `mutateRegistry` |
+
+The Admin UI exposes the same flow under **Governance → Registry metadata**.
+Inspect an exact agent and projection, edit the object or choose removal, add a
+reason, and review the complete intent before sending. Once attempted, the
+editor is locked to the reviewed change ID and versions. An unavailable or
+invalid acknowledgement exposes only **Retry same registry change** or
+**Discard and inspect again**. Success also requires a fresh inspection before
+another intent. Before sending, the UI journals the reviewed request in browser
+storage and restores it after a reload; if it cannot retain the request, it
+does not send. The browser refuses redirects and does not retry automatically.
+
+For example, removing an advertisement with the Python SDK:
+
+```python
+from uuid import uuid4
+from acteon_client import GovernanceRegistryMutationRequest
+
+view = client.registry_projection("prod", "acme", "maya", "card")
+request = GovernanceRegistryMutationRequest(
+    namespace="prod", tenant="acme", agent_id="maya",
+    change_id=str(uuid4()),
+    expected_registry_revision=view.registry_revision,
+    projection="card", expected_projection_version=view.version,
+    value=None, reason="Remove the outdated advertisement",
+)
+# Save this complete request in the host's durable operation journal before sending.
+receipt = client.mutate_registry(request)
+```
+
+Retain that exact request for recovery. The helpers send once, refuse redirects,
+and require a completed applied receipt matching its scope, agent, projection,
+change ID, and qualification revision. They preserve HTTP refusals. A lost
+completion acknowledgement can be recovered by explicitly sending the original
+request again. An unresolved write remains unavailable and is never resent;
+matching metadata is not proof that the write completed. A version conflict
+requires inspection and a new reviewed intent rather than a silent version refresh.
+The same create, compare-and-swap, and compare-and-delete lifecycle contract runs
+against memory, Redis, PostgreSQL, and DynamoDB. It verifies independent clients,
+paused delivery, restart, exact replay without another projection write, deletion,
+recreation, and requalification after a known result.
+
+Staging a metadata mutation retires the current qualification. Successful
+metadata publication does not restore execution permission: the host must
+independently approve a new qualification epoch. The `agent` and `card`
+projections have separate versions. Card presence is checked from the actual
+card record. Metadata publication does not provision a Kafka inbox or certify
+provider abort. In governed scopes, legacy bus registry writes return a conflict
+requiring the governed mutation API.
+
 ### Durable individual-agent task execution
 
 `AgentProviderRuntime` connects an authenticated recipient context to a qualified
@@ -420,8 +576,83 @@ from that evidence without another provider call. The reaper also checks the
 acceptance journal, so removing a projection's metadata cannot certify an
 uncertain outcome.
 
-This is a trusted Rust host adapter for one qualified provider operation.
-Agent-specific HTTP/A2A configuration, authenticated network envelopes, transport
-qualification, cancellation acknowledgment, and adapters for other runtime
-families remain separate integration work. No new client SDK wire API is exposed
-by this adapter.
+#### Provider abort delivery and finality
+
+Stopping an agent-service task first writes the execution restriction through
+the authority coordinator. Only after that durable fence exists can the governed
+executor invoke an optional, host-installed `ProviderAbortAdapter` for the exact
+qualified provider binding. The adapter receives the stable registered attempt
+identity. Public messages cannot choose an abort destination, credential,
+adapter revision, or finality verifier.
+
+Acteon persists the abort intent in the configured StateStore before calling the
+adapter. It makes at most one automatic call and bounds that call with the
+binding's configured execution timeout. A process crash, timeout, adapter error,
+or lost response remains `uncertain` and is never automatically resent.
+An unsupported binding reports `restricted_only`: future starts are blocked, but
+an already delivered operation may still complete. A provider can report
+`reconciled` only by returning proof accepted by the binding's independently
+installed reconciliation verifier. The proof is durably retained before the
+existing reconciliation CAS settles the attempt, so restart can finish a lost
+settlement acknowledgement without another abort call.
+
+The stop response keeps these facts separate:
+
+```json
+{
+  "task": {"id": "...", "status": {"state": "working"}},
+  "future_starts_blocked": true,
+  "provider_abort": {
+    "state": "uncertain",
+    "attempt_id": "f47ac10b-58cc-5372-a567-0e02b2c3d479"
+  }
+}
+```
+
+`provider_abort` is absent when no registered provider attempt needs
+intervention. Rust, Python, TypeScript, Go, Java, and the browser validate and
+display `restricted_only`, `uncertain`, and `reconciled`. Attempt IDs use the
+canonical lowercase UUIDv5 representation, and proof digests use lowercase
+SHA-256 hex. Concrete provider adapters still need to qualify their external
+attempt mapping and irrevocable finality source.
+
+#### Replacing a configured service binding
+
+When a service card, registry revision, endpoint identity, or qualified provider
+footprint changes, keep the former binding in the scope's
+`retained_agent_services` list. Each retained entry contains the former card,
+registry revision, principal, skill, endpoint, endpoint ID and route plus the
+exact 64-character `binding_digest` published in the former registry
+qualification. `PreparedExecutionScope::agent_service_binding_digest` exposes
+the same reviewed value during deployment preparation.
+
+A retained entry installs a recovery runtime keyed by `(agent_id,
+binding_digest)`. It is excluded from new agent admission bounds, deployment
+permits, registry qualification and delegation-grant publication. Its old
+ingress footprint remains in the publisher ceiling only so the next
+authentication revision can withdraw the previous credential projection.
+Prepare fails if the digest does not match the reconstructed binding, if the
+route no longer resolves to the exact qualified provider operation, or if the
+retained epoch is not older than the active epoch.
+
+For the active replacement, increment `registry_revision`, increment the source
+permit revision, and issue a new delegation-grant ID. A grant ID cannot be
+retargeted to another binding. Increment `authority_revision` when the projected
+authentication policy changes. Preserve every retained entry until no accepted
+task references its digest.
+
+Task reads, stops, driver recovery and exact same-message replay select the
+runtime from the immutable acceptance journal rather than the active service
+definition. The replay path verifies signed root and child admissions, current
+requester authentication, the original credential ID and auth method, the exact
+message digest, and the complete acceptance before returning the original task.
+A changed message under the same ID conflicts. New message IDs always use the
+active binding. If every active declaration is removed, exact replay and task
+controls still work through retained bindings while fresh sends are refused.
+Retention does not revive authority: an old queued start still
+passes current credential, permit, grant, budget and resource checks, and may
+remain submitted or working when those checks refuse it.
+
+This is a trusted host adapter for qualified provider operations. Concrete abort
+adapter qualification, outbound transport, and adapters for other runtime
+families remain separate integration work.

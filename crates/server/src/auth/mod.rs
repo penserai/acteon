@@ -354,6 +354,18 @@ impl AuthProvider {
         })
     }
 
+    /// Resolve a host-owned service secret through the same private proof path
+    /// as middleware. Neither a credential ID nor public `CallerIdentity` suffices.
+    pub(crate) async fn authenticate_service_key(
+        &self,
+        key: &str,
+    ) -> Result<projection::AuthenticatedExecutionConfiguration, String> {
+        self.authenticate_api_key_bound(key)
+            .await
+            .and_then(|caller| caller.scopes)
+            .ok_or_else(|| "service authentication unavailable".into())
+    }
+
     fn bind_scopes(
         tables: &AuthTables,
         credential: Option<&enrollment::AuthenticatedCredential>,

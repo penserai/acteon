@@ -774,7 +774,9 @@ async fn legacy_control_fixture(state: &Arc<dyn StateStore>) -> (acteon_state::S
     let mut legacy = serde_json::to_value(coordinator.snapshot().await.unwrap()).unwrap();
     legacy["schema_version"] = 7.into();
     legacy.as_object_mut().unwrap().remove("workforce");
+    legacy.as_object_mut().unwrap().remove("agent_registry");
     legacy.as_object_mut().unwrap().remove("budget_parents");
+    legacy.as_object_mut().unwrap().remove("agent_registry");
     legacy.as_object_mut().unwrap().remove("purpose");
     let key = StateKey::new(
         "legacy-control",
@@ -1224,6 +1226,7 @@ fn manager_intervention_footprints_must_fit_before_authority_publication() {
     scope
         .managers
         .push(acteon_server::config::ExecutionManagerConfig {
+            agents: vec![],
             principal: scope.subjects[0].clone(),
             subjects: scope.subjects.clone(),
             routes: scope.routes.clone(),
@@ -1765,7 +1768,7 @@ async fn authenticated_chain_root_contract(state: Arc<dyn StateStore>, peer: Arc
         .unwrap(),
     );
     let binding = authenticated_binding(auth_provider).await;
-    runtime.publish_deployment_permits().await.unwrap();
+    runtime.publish_deployment_permits(None).await.unwrap();
     let scope = AuthorityCoordinator::connect(state.clone(), "prod", "acme")
         .await
         .unwrap();
@@ -2004,4 +2007,239 @@ async fn independent_postgres_authenticated_chain_root_contract() {
         .unwrap();
     }
     pool.close().await;
+}
+
+fn agent_service_configuration() -> ExecutionAuthorityConfig {
+    let mut config = configuration();
+    let scope = &mut config.scopes[0];
+    scope.bootstrap = true;
+    let source = scope.subjects[0].clone();
+    let recipient = PrincipalIdentity::new("agent/notifier", PrincipalKind::Agent).unwrap();
+    scope.subjects.push(recipient.clone());
+    let mut card = acteon_core::AgentCard::new("notifier", "prod", "acme", "Notifier", "1");
+    card.skills.push(acteon_core::Skill::new("notify"));
+    card.interfaces.push(acteon_core::AgentCardInterface {
+        kind: "rest".into(),
+        url: "https://agents.example/notifier".into(),
+    });
+    scope.agent_services = serde_json::from_value(json!([{
+        "card":card,"principal":recipient,"skill":"notify","endpoint":"https://agents.example/notifier",
+        "endpoint_id":"notifier-api","route":scope.routes[0],"recipient_key_env":"ACTEON_TEST_AGENT_RECIPIENT",
+        "recipient_permits":[{"id":"worker-provider","accepted_revision":1}],
+        "grants":[{"id":"maya-notifier","revision":1,"source":source,"source_permits":[{"id":"maya-service","accepted_revision":1}],
+            "valid_from_ms":0,"limits":scope.credential_limits,"max_depth":4}]
+    }])).unwrap();
+    scope.permits = serde_json::from_value(json!([
+        {"id":"maya-service","revision":1,"subject":source,"routes":[],"agents":["notifier"],"valid_from_ms":0,"limits":scope.credential_limits},
+        {"id":"worker-provider","revision":1,"subject":recipient,"routes":scope.routes,"valid_from_ms":0,"limits":scope.credential_limits}
+    ])).unwrap();
+    config
+}
+
+fn agent_mesh_configuration() -> ExecutionAuthorityConfig {
+    let mut config = agent_service_configuration();
+    let scope = &mut config.scopes[0];
+    let resolve_route: acteon_server::config::ExecutionRouteConfig =
+        serde_json::from_value(json!({
+            "provider":"incident", "action_type":"resolve"
+        }))
+        .unwrap();
+    scope.routes.push(resolve_route.clone());
+    let notifier = scope.agent_services[0].principal.clone();
+    let resolver = PrincipalIdentity::new("agent/resolver", PrincipalKind::Agent).unwrap();
+    scope.subjects.push(resolver.clone());
+    let mut card = acteon_core::AgentCard::new("resolver", "prod", "acme", "Resolver", "1");
+    card.skills.push(acteon_core::Skill::new("resolve"));
+    card.interfaces.push(acteon_core::AgentCardInterface {
+        kind: "rest".into(),
+        url: "https://agents.example/resolver".into(),
+    });
+    scope.agent_services[0].onward_agents = vec!["resolver".into()];
+    scope.agent_services.push(
+        serde_json::from_value(json!({
+            "card":card,"principal":resolver,"skill":"resolve",
+            "endpoint":"https://agents.example/resolver","endpoint_id":"resolver-api",
+            "route":resolve_route,"recipient_key_env":"ACTEON_TEST_RESOLVER_RECIPIENT",
+            "recipient_permits":[{"id":"resolver-provider","accepted_revision":1}],
+            "submission_capability":"verified_idempotent",
+            "grants":[{"id":"notifier-resolver","revision":1,"source":notifier,
+                "source_permits":[{"id":"worker-provider","accepted_revision":1}],
+                "valid_from_ms":0,"limits":scope.credential_limits,"max_depth":4}]
+        }))
+        .unwrap(),
+    );
+    scope.permits[1].agents.push("resolver".into());
+    scope.permits.push(
+        serde_json::from_value(json!({
+            "id":"resolver-provider","revision":1,"subject":resolver,
+            "routes":[resolve_route],"valid_from_ms":0,"limits":scope.credential_limits
+        }))
+        .unwrap(),
+    );
+    config
+}
+
+#[test]
+fn agent_mesh_qualification_seals_onward_intent_and_target_grant() {
+    let (registry, _) = registry();
+    let configured = agent_mesh_configuration();
+    let prepared = registry
+        .prepare(&configured, ("auth-control", "deployment"), &[8; 32])
+        .unwrap();
+    let mesh_digest = prepared[0]
+        .agent_service_binding_digest("notifier")
+        .unwrap()
+        .to_owned();
+
+    let mut without_onward = configured.clone();
+    without_onward.scopes[0].agent_services[0]
+        .onward_agents
+        .clear();
+    let prepared = registry
+        .prepare(&without_onward, ("auth-control", "deployment"), &[8; 32])
+        .unwrap();
+    assert_ne!(
+        mesh_digest,
+        prepared[0]
+            .agent_service_binding_digest("notifier")
+            .unwrap()
+    );
+
+    let mut missing_grant = configured;
+    missing_grant.scopes[0].agent_services[1].grants[0].source =
+        missing_grant.scopes[0].subjects[0].clone();
+    assert!(
+        registry
+            .prepare(&missing_grant, ("auth-control", "deployment"), &[8; 32])
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn agent_service_publication_requires_private_auth_before_any_permits_or_grants() {
+    use acteon_server::execution_authority::{
+        ExecutionAuthorityRuntime, ExecutionRuntimeDependencies,
+    };
+    let state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let (registry, _) = registry();
+    let config = agent_service_configuration();
+    let prepared = registry
+        .prepare(&config, ("auth-control", "deployment"), &[8; 32])
+        .unwrap();
+    let runtime = ExecutionAuthorityRuntime::install(
+        &registry,
+        prepared,
+        ExecutionRuntimeDependencies {
+            state: state.clone(),
+            executor: acteon_executor::ExecutorConfig::default(),
+            clock: Arc::new(acteon_time::SystemClock::default()),
+            encryptor: None,
+            signing_key: vec![8; 32].into(),
+        },
+    )
+    .await
+    .unwrap();
+    let scope = AuthorityCoordinator::connect(state, "prod", "acme")
+        .await
+        .unwrap();
+    let before = serde_json::to_value(scope.snapshot().await.unwrap()).unwrap();
+    assert!(runtime.publish_deployment_permits(None).await.is_err());
+    let snapshot = scope.snapshot().await.unwrap();
+    assert!(snapshot.permits.is_empty());
+    assert!(snapshot.agent_registry.is_empty());
+    assert_eq!(
+        serde_json::to_value(&snapshot.changes).unwrap(),
+        before["changes"]
+    );
+    assert!(snapshot.roots.is_empty());
+}
+
+#[test]
+fn agent_service_preparation_rejects_binding_and_independent_bound_substitution() {
+    let (registry, _) = registry();
+    let configuration = agent_service_configuration();
+    let original = registry
+        .prepare(&configuration, ("auth-control", "deployment"), &[8; 32])
+        .unwrap();
+    for variant in 0..9 {
+        let mut config = configuration.clone();
+        let scope = &mut config.scopes[0];
+        match variant {
+            0 => scope.agent_services[0].principal = scope.subjects[0].clone(),
+            1 => scope.agent_services[0].route.provider = "undeclared".into(),
+            2 => scope.agent_services[0].recipient_key_env = "INVALID=VALUE".into(),
+            3 => scope.agent_services[0].grants[0].limits.max_units += 1,
+            4 => scope.agent_services[0].grants[0].revision = 0,
+            5 => scope.agent_services[0].endpoint = "https://unapproved.example".into(),
+            6 => scope.agent_services[0].card.tenant = "another".into(),
+            7 => scope.agent_services[0].registry_revision = 0,
+            _ => scope.permits[0].subject = scope.subjects[1].clone(),
+        }
+        assert!(
+            registry
+                .prepare(&config, ("auth-control", "deployment"), &[8; 32])
+                .is_err(),
+            "variant {variant}"
+        );
+    }
+    let mut config = configuration;
+    config.scopes[0].agent_services[0].card.version = "2".into();
+    let changed = registry
+        .prepare(&config, ("auth-control", "deployment"), &[8; 32])
+        .unwrap();
+    assert_ne!(
+        original[0].policy_fingerprint(),
+        changed[0].policy_fingerprint()
+    );
+}
+
+#[test]
+fn retained_agent_service_requires_an_exact_prior_qualified_binding() {
+    let (registry, _) = registry();
+    let mut original = agent_service_configuration();
+    let prepared = registry
+        .prepare(&original, ("auth-control", "deployment"), &[8; 32])
+        .unwrap();
+    let digest = prepared[0]
+        .agent_service_binding_digest("notifier")
+        .unwrap()
+        .to_owned();
+    let current = original.scopes[0].agent_services[0].clone();
+    original.scopes[0].agent_services[0].registry_revision = 2;
+    original.scopes[0].agent_services[0].card.version = "2".into();
+    original.scopes[0].retained_agent_services = serde_json::from_value(json!([{
+        "card": current.card,
+        "registry_revision": current.registry_revision,
+        "principal": current.principal,
+        "skill": current.skill,
+        "endpoint": current.endpoint,
+        "endpoint_id": current.endpoint_id,
+        "route": current.route,
+        "binding_digest": digest,
+    }]))
+    .unwrap();
+    let replacement = registry
+        .prepare(&original, ("auth-control", "deployment"), &[8; 32])
+        .unwrap();
+    assert_ne!(
+        replacement[0]
+            .agent_service_binding_digest("notifier")
+            .unwrap(),
+        digest
+    );
+
+    let mut wrong_digest = original.clone();
+    wrong_digest.scopes[0].retained_agent_services[0].binding_digest = "f".repeat(64);
+    assert!(
+        registry
+            .prepare(&wrong_digest, ("auth-control", "deployment"), &[8; 32])
+            .is_err()
+    );
+    let mut non_historical = original;
+    non_historical.scopes[0].retained_agent_services[0].registry_revision = 2;
+    assert!(
+        registry
+            .prepare(&non_historical, ("auth-control", "deployment"), &[8; 32])
+            .is_err()
+    );
 }

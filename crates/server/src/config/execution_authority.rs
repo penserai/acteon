@@ -11,7 +11,88 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExecutionAuthorityConfig {
+    #[serde(default)]
+    pub agent_driver: AgentServiceDriverConfig,
+    #[serde(default)]
+    pub peer_transport: AgentPeerTransportConfig,
     pub scopes: Vec<ExecutionScopeConfig>,
+}
+
+/// Host-owned agent-to-agent delivery controls. Credentials and exact endpoints
+/// remain on qualified service declarations and never enter invocation input.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AgentPeerTransportConfig {
+    pub enabled: bool,
+    pub timeout_ms: u64,
+    pub adapter_revision: String,
+    pub internal_hosts: Vec<String>,
+}
+impl Default for AgentPeerTransportConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            timeout_ms: 10_000,
+            adapter_revision: "acteon-peer-http-v1".into(),
+            internal_hosts: Vec::new(),
+        }
+    }
+}
+impl AgentPeerTransportConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        let hosts = self.internal_hosts.iter().collect::<BTreeSet<_>>();
+        if !(100..=120_000).contains(&self.timeout_ms)
+            || self.adapter_revision.is_empty()
+            || self.adapter_revision.len() > 120
+            || self.adapter_revision.trim() != self.adapter_revision
+            || self.adapter_revision.chars().any(char::is_control)
+            || self.internal_hosts.len() > 64
+            || hosts.len() != self.internal_hosts.len()
+            || self.internal_hosts.iter().any(|host| {
+                host.is_empty()
+                    || host.len() > 253
+                    || host.trim() != host
+                    || host.contains('/')
+                    || host.contains('@')
+                    || host.chars().any(char::is_control)
+            })
+        {
+            return Err("invalid bounded agent peer transport configuration".into());
+        }
+        Ok(())
+    }
+}
+
+/// Host scheduling controls, separate from agent permits and service identity.
+/// Disabling the driver parks accepted work; it never certifies cancellation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AgentServiceDriverConfig {
+    pub enabled: bool,
+    pub poll_interval_ms: u64,
+    pub max_parallel: usize,
+    pub scan_batch_size: usize,
+}
+impl Default for AgentServiceDriverConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            poll_interval_ms: 500,
+            max_parallel: 4,
+            scan_batch_size: 64,
+        }
+    }
+}
+impl AgentServiceDriverConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        if !(50..=60_000).contains(&self.poll_interval_ms)
+            || !(1..=32).contains(&self.max_parallel)
+            || !(1..=256).contains(&self.scan_batch_size)
+        {
+            return Err("invalid bounded agent driver configuration".into());
+        }
+        Ok(())
+    }
 }
 
 /// Independent publication bounds are explicit, rather than inferred from
@@ -36,6 +117,13 @@ pub struct ExecutionScopeConfig {
     /// Explicit chain start bounds. Provider routes never imply chain rights.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub chains: Vec<ExecutionChainDeclaration>,
+    /// Explicit individual-agent runtime and service delegation declarations.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_services: Vec<crate::execution_authority::agent_services::AgentServiceDeclaration>,
+    /// Exact prior service bindings available only to already accepted work.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retained_agent_services:
+        Vec<crate::execution_authority::agent_services::RetainedAgentServiceDeclaration>,
     #[serde(default)]
     pub historical_effects: Vec<AcceptedEffect>,
     pub valid_from_ms: i64,
@@ -80,6 +168,8 @@ pub struct ExecutionPermitDeclaration {
     pub routes: Vec<ExecutionRouteConfig>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub chains: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agents: Vec<String>,
     pub valid_from_ms: i64,
     pub limits: RootBudgetLimits,
 }
@@ -89,6 +179,9 @@ pub struct ExecutionPermitDeclaration {
 // Independent additive permissions retain the established wire/config contract.
 #[allow(clippy::struct_excessive_bools)]
 pub struct ExecutionManagerConfig {
+    /// Exact independent registry/control footprint; routes do not imply agent management.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agents: Vec<String>,
     pub principal: PrincipalIdentity,
     pub subjects: Vec<PrincipalIdentity>,
     pub routes: Vec<ExecutionRouteConfig>,
@@ -135,12 +228,15 @@ pub struct ExecutionRouteConfig {
 
 impl ExecutionAuthorityConfig {
     pub fn validate(&self, control_scope: (&str, &str)) -> Result<(), String> {
+        self.agent_driver.validate()?;
+        self.peer_transport.validate()?;
         if self.scopes.is_empty() || self.scopes.len() > 128 {
             return Err("execution authority requires 1..128 declared scopes".into());
         }
         let mut scopes = BTreeSet::new();
         for scope in &self.scopes {
             scope.validate_chains()?;
+            scope.validate_agents()?;
             scope.validate_permits()?;
             scope.validate_managers()?;
             scope.validate_history_only()?;
@@ -228,6 +324,8 @@ impl ExecutionScopeConfig {
                 || self.bootstrap
                 || !self.routes.is_empty()
                 || !self.chains.is_empty()
+                || !self.agent_services.is_empty()
+                || !self.retained_agent_services.is_empty()
                 || !self.permits.is_empty()
                 || self.historical_effects.is_empty()
                 || self.managers.is_empty()
@@ -248,6 +346,8 @@ impl ExecutionScopeConfig {
             && (self.bootstrap
                 || !self.routes.is_empty()
                 || !self.chains.is_empty()
+                || !self.agent_services.is_empty()
+                || !self.retained_agent_services.is_empty()
                 || !self.permits.is_empty()
                 || self.historical_effects.is_empty()
                 || self.managers.is_empty()
@@ -260,6 +360,71 @@ impl ExecutionScopeConfig {
                 }))
         {
             return Err("history-only scopes require retained effects and read-only managers, with no bootstrap or live work".into());
+        }
+        Ok(())
+    }
+
+    fn validate_agents(&self) -> Result<(), String> {
+        let mut agents = BTreeSet::new();
+        let mut grants = BTreeSet::new();
+        if self.agent_services.len() > 128
+            || self.retained_agent_services.len() > 128
+            || self.agent_services.len() + self.retained_agent_services.len() > 256
+        {
+            return Err("too many declared agent services".into());
+        }
+        for service in &self.agent_services {
+            service.validate(self)?;
+            if !agents.insert(&service.card.agent_id)
+                || service.grants.iter().any(|grant| !grants.insert(&grant.id))
+            {
+                return Err("agent service and grant identities must be unique".into());
+            }
+        }
+        for source in &self.agent_services {
+            let onward = source.onward_agents.iter().collect::<BTreeSet<_>>();
+            if source.onward_agents.len() > 16 || onward.len() != source.onward_agents.len() {
+                return Err("agent onward service bindings must be unique and bounded".into());
+            }
+            for target_id in onward {
+                let target = self
+                    .agent_services
+                    .iter()
+                    .find(|candidate| &candidate.card.agent_id == target_id)
+                    .ok_or("agent onward service must name a current declared service")?;
+                if target.card.agent_id == source.card.agent_id
+                    || !target
+                        .grants
+                        .iter()
+                        .any(|grant| grant.source == source.principal)
+                    || !source.recipient_permits.iter().any(|reference| {
+                        self.permits.iter().any(|permit| {
+                            permit.id == reference.id
+                                && permit.revision == reference.accepted_revision
+                                && permit.subject == source.principal
+                                && permit.agents.contains(target_id)
+                        })
+                    })
+                {
+                    return Err(
+                        "agent onward service requires an explicit target grant and permit".into(),
+                    );
+                }
+            }
+        }
+        let mut retained_epochs = BTreeSet::new();
+        let mut retained_digests = BTreeSet::new();
+        for service in &self.retained_agent_services {
+            service.validate(self)?;
+            if !retained_epochs.insert((&service.card.agent_id, service.registry_revision))
+                || !retained_digests.insert(&service.binding_digest)
+                || self.agent_services.iter().any(|current| {
+                    current.card.agent_id == service.card.agent_id
+                        && service.registry_revision >= current.registry_revision
+                })
+            {
+                return Err("retained agent service bindings must be unique prior epochs".into());
+            }
         }
         Ok(())
     }
@@ -311,6 +476,14 @@ impl ExecutionScopeConfig {
                     .len()
                     != manager.subjects.len()
                 || manager.subjects.iter().any(|s| !self.subjects.contains(s))
+                || manager.agents.len() > 128
+                || manager.agents.iter().collect::<BTreeSet<_>>().len() != manager.agents.len()
+                || (!manager.agents.is_empty() && !manager.can_intervene)
+                || manager.agents.iter().any(|id| {
+                    id.contains('*')
+                        || ResourceRef::new(ResourceKind::Agent, &self.namespace, &self.tenant, id)
+                            .is_err()
+                })
                 || manager.routes.len() > 128
                 || manager.routes.iter().collect::<BTreeSet<_>>().len() != manager.routes.len()
                 || manager.routes.iter().any(|r| !self.routes.contains(r))
@@ -387,12 +560,24 @@ impl ExecutionScopeConfig {
             if !permit_ids.insert(&permit.id)
                 || permit.revision == 0
                 || !self.subjects.contains(&permit.subject)
-                || (permit.routes.is_empty() && permit.chains.is_empty())
-                || permit.routes.len() + permit.chains.len() > 128
+                || (permit.routes.is_empty()
+                    && permit.chains.is_empty()
+                    && permit.agents.is_empty())
+                || permit.routes.len() + permit.chains.len() + permit.agents.len() > 128
                 || permit.chains.iter().collect::<BTreeSet<_>>().len() != permit.chains.len()
                 || permit.chains.iter().any(|name| {
                     !self.chains.iter().any(|chain| {
                         chain.name == *name && chain.subjects.contains(&permit.subject)
+                    })
+                })
+                || permit.agents.iter().collect::<BTreeSet<_>>().len() != permit.agents.len()
+                || permit.agents.iter().any(|id| {
+                    !self.agent_services.iter().any(|service| {
+                        service.card.agent_id == *id
+                            && service
+                                .grants
+                                .iter()
+                                .any(|grant| grant.source == permit.subject)
                     })
                 })
                 || permit.routes.iter().any(|r| !self.routes.contains(r))

@@ -83,7 +83,13 @@ impl ControlChangeAuthorization<'_> {
             return Err(CoordinationError::Restricted);
         }
         let allowed = match change {
-            AuthorityChange::CloseResource { resource }
+            AuthorityChange::BeginAgentRegistryMutation {
+                agent: resource, ..
+            }
+            | AuthorityChange::RetireAgentRegistry {
+                agent: resource, ..
+            }
+            | AuthorityChange::CloseResource { resource }
             | AuthorityChange::ReopenResource { resource } => {
                 self.ceiling.resources.contains(resource)
             }
@@ -100,7 +106,8 @@ impl ControlChangeAuthorization<'_> {
                 .credentials
                 .get(credential_id)
                 .is_some_and(|record| self.ceiling.covers_policy(&record.authority.ceiling)),
-            AuthorityChange::CancelExecution { .. }
+            AuthorityChange::PublishAgentRegistry { .. }
+            | AuthorityChange::CancelExecution { .. }
             | AuthorityChange::UpgradeProtocol { .. }
             | AuthorityChange::Workforce { .. }
             | AuthorityChange::ReserveScope { .. }

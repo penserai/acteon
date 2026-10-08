@@ -21,8 +21,18 @@ use acteon_state::{KeyKind, StateKey, StateStore};
 use acteon_time::Clock;
 use sha2::{Digest, Sha256};
 
+pub mod transport;
+pub use transport::{
+    DurablePeerTransport, PeerCancelDisposition, PeerCancelReceipt, PeerCancelStatus,
+    PeerSendDisposition, PeerSendReceipt, PeerSendRequest, PeerSendStatus,
+    PeerSubmissionCapability, PeerTaskRequest, PeerTransportAdapter, PeerTransportDependencies,
+    PeerTransportError,
+};
+
 const MAX_BINDINGS: usize = 128;
-const MAX_RECORD_BYTES: usize = 64 * 1024;
+/// Maximum serialized UTF-8 bytes in an approved agent/card registry record.
+/// Hosts publishing discoverable metadata must enforce this bound before writes.
+pub const MAX_PEER_REGISTRY_RECORD_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PeerDiscoveryError {
@@ -40,6 +50,7 @@ pub enum PeerDiscoveryError {
 /// No `Deserialize`: model fields or a published card cannot install approval.
 /// Credential exchange and actual network confinement belong to the subsequent
 /// transport adapter; this object alone grants neither execution nor networking.
+#[derive(Clone)]
 pub struct ApprovedPeerBinding {
     namespace: String,
     tenant: String,
@@ -154,6 +165,12 @@ impl ApprovedPeerBinding {
         binding.service = Some(plan);
         Ok(binding)
     }
+    /// Complete approved invocation footprint; observation supplies no authority.
+    #[must_use]
+    pub fn ingress_effect(&self) -> &AcceptedEffect {
+        &self.effect
+    }
+
     #[must_use]
     pub fn target(&self) -> &PrincipalIdentity {
         &self.target
@@ -211,6 +228,7 @@ impl ApprovedPeerBinding {
 }
 /// Operator-approved service footprint. No deserialization or mutable fields:
 /// agent advertisements cannot extend this intent after approval.
+#[derive(Clone)]
 pub struct ApprovedServicePlan {
     intent: Vec<AcceptedEffect>,
     direct_effects: Vec<AcceptedEffect>,
@@ -266,12 +284,13 @@ impl ApprovedServicePlan {
 }
 fn value_digest(value: &serde_json::Value) -> Result<String, PeerDiscoveryError> {
     let bytes = crate::plan::canonical_bytes(value).map_err(|_| PeerDiscoveryError::Binding)?;
-    if bytes.len() > MAX_RECORD_BYTES {
+    if bytes.len() > MAX_PEER_REGISTRY_RECORD_BYTES {
         return Err(PeerDiscoveryError::Capacity);
     }
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
-fn card_digest(card: &AgentCard) -> Result<String, PeerDiscoveryError> {
+/// Deterministic complete-card digest; hashing supplies no execution approval.
+pub fn card_digest(card: &AgentCard) -> Result<String, PeerDiscoveryError> {
     value_digest(&serde_json::to_value(card).map_err(|_| PeerDiscoveryError::Binding)?)
 }
 
@@ -298,6 +317,19 @@ pub struct PeerCandidate {
     pub binding_digest: String,
     pub accepted_grant: Option<DelegationGrantReference>,
     pub observed_authority: AuthorityStamp,
+    pub checked_at_ms: i64,
+}
+
+/// Safe model-facing selection data. Descriptions are untrusted registry text;
+/// endpoints, credentials, permits, principals and authority handles are
+/// deliberately absent. A returned option is advisory and authorizes no send.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerSelectionOption {
+    pub agent_id: String,
+    pub skill: String,
+    pub description_untrusted: Option<String>,
+    pub card_version: String,
+    pub binding_digest: String,
     pub checked_at_ms: i64,
 }
 
@@ -390,7 +422,7 @@ impl ApprovedPeerRegistry {
             .await
             .map_err(|_| PeerDiscoveryError::Unavailable)?;
         raw.map(|raw| {
-            if raw.len() > MAX_RECORD_BYTES {
+            if raw.len() > MAX_PEER_REGISTRY_RECORD_BYTES {
                 return Err(PeerDiscoveryError::Unavailable);
             }
             serde_json::from_str(&raw).map_err(|_| PeerDiscoveryError::Unavailable)
@@ -417,7 +449,6 @@ impl ApprovedPeerRegistry {
             || agent.agent_id != binding.agent_id
             || agent.namespace != self.namespace
             || agent.tenant != self.tenant
-            || !agent.has_agent_card
         {
             return Err(PeerDiscoveryError::Unavailable);
         }
@@ -428,6 +459,71 @@ impl ApprovedPeerRegistry {
             return Ok(None);
         }
         Ok(Some(card))
+    }
+
+    /// List source-authorized, operator-approved and currently routable peer
+    /// options. The host supplies the source's reviewed onward-agent allowlist.
+    /// Recipient admission is still checked independently when a send arrives.
+    pub async fn discover_source_options(
+        &self,
+        skill: &str,
+        allowed_agents: &[String],
+        coordinator: &AuthorityCoordinator,
+        parent: &VerifiedExecutionContext,
+        parent_permits: &[PermitReference],
+        clock: &dyn Clock,
+    ) -> Result<Vec<PeerSelectionOption>, PeerDiscoveryError> {
+        if skill.is_empty()
+            || skill.len() > 120
+            || skill.trim() != skill
+            || skill == "*"
+            || skill.chars().any(char::is_control)
+            || allowed_agents.is_empty()
+            || allowed_agents.len() > MAX_BINDINGS
+        {
+            return Err(PeerDiscoveryError::Binding);
+        }
+        let allowed = allowed_agents
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        if allowed.len() != allowed_agents.len() {
+            return Err(PeerDiscoveryError::Binding);
+        }
+        let checked_at_ms = clock.now().timestamp_millis();
+        if checked_at_ms < 0 {
+            return Err(PeerDiscoveryError::Binding);
+        }
+        let mut options = Vec::new();
+        for binding in self
+            .bindings
+            .values()
+            .filter(|binding| binding.skill == skill && allowed.contains(&binding.agent_id))
+        {
+            match binding
+                .check_source(coordinator, parent, parent_permits, clock)
+                .await
+            {
+                Ok(()) => {}
+                Err(error) if ordinary_denial(&error) => continue,
+                Err(error) => return Err(PeerDiscoveryError::Authority(error)),
+            }
+            let Some(card) = self.inspect_binding(binding, clock).await? else {
+                continue;
+            };
+            options.push(PeerSelectionOption {
+                agent_id: binding.agent_id.clone(),
+                skill: binding.skill.clone(),
+                description_untrusted: card
+                    .skills
+                    .iter()
+                    .find(|candidate| candidate.name == binding.skill)
+                    .and_then(|candidate| candidate.description.clone()),
+                card_version: card.version,
+                binding_digest: binding.digest.clone(),
+                checked_at_ms,
+            });
+        }
+        Ok(options)
     }
     /// Enumerate the bounded approved registry and filter individual candidates
     /// through both participants' current ceilings. No partial response survives

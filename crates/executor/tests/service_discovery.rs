@@ -1,11 +1,14 @@
 //! Service discovery composes real signed source grants with independent recipient authority.
 use acteon_core::{
-    Agent, AgentCard, PrincipalIdentity, PrincipalKind, ResourceKind, ResourceRef, Skill,
-    bus_agent_card::Interface,
+    Agent, AgentCard, PrincipalIdentity, PrincipalKind, ResourceKind, ResourceRef, Skill, Task,
+    TaskMessage, TaskRole, TaskState, bus_agent_card::Interface,
 };
 use acteon_executor::delegation::{
-    ApprovedPeerBinding, ApprovedPeerRegistry, ApprovedServicePlan, PeerCandidateQuery,
-    PeerDiscoveryError, PeerRecipientResolver, RecipientDiscoveryContext,
+    ApprovedPeerBinding, ApprovedPeerRegistry, ApprovedServicePlan, DurablePeerTransport,
+    PeerCancelDisposition, PeerCancelStatus, PeerCandidateQuery, PeerDiscoveryError,
+    PeerRecipientResolver, PeerSendDisposition, PeerSendRequest, PeerSendStatus,
+    PeerSubmissionCapability, PeerTaskRequest, PeerTransportAdapter, PeerTransportDependencies,
+    PeerTransportError, RecipientDiscoveryContext,
 };
 use acteon_governance::{
     AuthorityChange, AuthorityCoordinator, CoordinatorLimits, RootBudgetLimits,
@@ -26,7 +29,7 @@ use acteon_state_memory::MemoryStateStore;
 use acteon_time::{Clock, ManualClock};
 use std::sync::{
     Arc,
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicU8, AtomicUsize, Ordering},
 };
 fn actor(id: &str) -> PrincipalIdentity {
     PrincipalIdentity::new(
@@ -192,6 +195,27 @@ fn card() -> AgentCard {
     });
     card
 }
+fn live_agent(clock: &ManualClock) -> Agent {
+    let mut agent = Agent::new("responder", "city", "tenant");
+    agent.has_agent_card = true;
+    agent.last_heartbeat_at = Some(clock.now());
+    agent
+}
+async fn publish_registry(store: &dyn StateStore, agent: &Agent, card: &AgentCard) {
+    for (kind, value) in [
+        (KeyKind::BusAgent, serde_json::to_string(agent).unwrap()),
+        (KeyKind::BusAgentCard, serde_json::to_string(card).unwrap()),
+    ] {
+        store
+            .set(
+                &StateKey::new("city", "tenant", kind, "responder"),
+                &value,
+                None,
+            )
+            .await
+            .unwrap();
+    }
+}
 fn binding(card: &AgentCard, direct: Vec<AcceptedEffect>) -> ApprovedPeerBinding {
     ApprovedPeerBinding::new_service_trusted(
         card,
@@ -204,13 +228,18 @@ fn binding(card: &AgentCard, direct: Vec<AcceptedEffect>) -> ApprovedPeerBinding
     )
     .unwrap()
 }
+fn registry(store: Arc<dyn StateStore>, binding: ApprovedPeerBinding) -> ApprovedPeerRegistry {
+    ApprovedPeerRegistry::new_trusted(store, "city", "tenant", vec![binding]).unwrap()
+}
 struct Fixture {
+    store: Arc<dyn StateStore>,
     coordinator: AuthorityCoordinator,
     contexts: TrustedContextStore,
     clock: ManualClock,
     parent: VerifiedExecutionContext,
     recipient: VerifiedExecutionContext,
     grant: DelegationGrant,
+    binding: ApprovedPeerBinding,
     registry: ApprovedPeerRegistry,
 }
 impl Fixture {
@@ -279,34 +308,17 @@ impl Fixture {
             )
             .await
             .unwrap();
-        let mut agent = Agent::new("responder", "city", "tenant");
-        agent.has_agent_card = true;
-        agent.last_heartbeat_at = Some(clock.now());
-        store
-            .set(
-                &StateKey::new("city", "tenant", KeyKind::BusAgent, "responder"),
-                &serde_json::to_string(&agent).unwrap(),
-                None,
-            )
-            .await
-            .unwrap();
-        store
-            .set(
-                &StateKey::new("city", "tenant", KeyKind::BusAgentCard, "responder"),
-                &serde_json::to_string(&approved_card).unwrap(),
-                None,
-            )
-            .await
-            .unwrap();
-        let registry =
-            ApprovedPeerRegistry::new_trusted(store, "city", "tenant", vec![binding]).unwrap();
+        publish_registry(store.as_ref(), &live_agent(&clock), &approved_card).await;
+        let registry = registry(store.clone(), binding.clone());
         Self {
+            store,
             coordinator,
             contexts,
             clock,
             parent,
             recipient,
             grant,
+            binding,
             registry,
         }
     }
@@ -484,6 +496,804 @@ async fn service_discovery_checks_ingress_and_private_effects_without_borrowing_
         0
     );
 }
+
+struct TransportAdapter {
+    digest: String,
+    capability: PeerSubmissionCapability,
+    outcome: AtomicU8,
+    calls: AtomicUsize,
+    observation_calls: AtomicUsize,
+    cancellation_calls: AtomicUsize,
+    observed: std::sync::Mutex<Option<Task>>,
+}
+impl TransportAdapter {
+    fn new(
+        binding: &ApprovedPeerBinding,
+        capability: PeerSubmissionCapability,
+        outcome: u8,
+    ) -> Self {
+        Self {
+            digest: binding.digest().into(),
+            capability,
+            outcome: AtomicU8::new(outcome),
+            calls: AtomicUsize::new(0),
+            observation_calls: AtomicUsize::new(0),
+            cancellation_calls: AtomicUsize::new(0),
+            observed: std::sync::Mutex::new(None),
+        }
+    }
+}
+#[async_trait::async_trait]
+impl PeerTransportAdapter for TransportAdapter {
+    fn revision(&self) -> &'static str {
+        "test-a2a-v1"
+    }
+    fn binding_digest(&self) -> &str {
+        &self.digest
+    }
+    fn submission_capability(&self) -> PeerSubmissionCapability {
+        self.capability
+    }
+    async fn send(
+        &self,
+        request: PeerSendRequest<'_>,
+    ) -> Result<PeerSendDisposition, PeerTransportError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(request.endpoint, "https://peer.example/a2a");
+        assert_eq!(request.transport, "rest");
+        assert_eq!(request.message.message_id, "peer-message");
+        if self.outcome.load(Ordering::SeqCst) == 4 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            return Ok(PeerSendDisposition::Uncertain);
+        }
+        match self.outcome.load(Ordering::SeqCst) {
+            0 => {
+                let task = Task::new(
+                    "remote-task",
+                    request.parent.namespace(),
+                    request.parent.tenant(),
+                );
+                *self.observed.lock().unwrap() = Some(task.clone());
+                Ok(PeerSendDisposition::Accepted {
+                    task: Box::new(task),
+                    source_context: request.parent.clone(),
+                })
+            }
+            1 => Ok(PeerSendDisposition::Uncertain),
+            2 => Ok(PeerSendDisposition::Rejected {
+                code: "peer_denied".into(),
+            }),
+            _ => Ok(PeerSendDisposition::Accepted {
+                task: Box::new(Task::new(
+                    "remote-task",
+                    request.parent.namespace(),
+                    "wrong-tenant",
+                )),
+                source_context: request.parent.clone(),
+            }),
+        }
+    }
+
+    async fn observe_task(&self, request: PeerTaskRequest<'_>) -> Result<Task, PeerTransportError> {
+        self.observation_calls.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(request.endpoint, "https://peer.example/a2a");
+        assert_eq!(request.transport, "rest");
+        assert_eq!(request.task_id, "remote-task");
+        assert_eq!(request.source_context.namespace(), "city");
+        let mut task = self
+            .observed
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or(PeerTransportError::Unavailable)?;
+        let outcome = self.outcome.load(Ordering::SeqCst);
+        match outcome {
+            5 => task.transition_to(TaskState::Working, None).unwrap(),
+            6 => task.transition_to(TaskState::Completed, None).unwrap(),
+            7 => task.id = "substituted-task".into(),
+            _ => {}
+        }
+        if outcome != 7 {
+            *self.observed.lock().unwrap() = Some(task.clone());
+        }
+        Ok(task)
+    }
+
+    async fn cancel_task(
+        &self,
+        request: PeerTaskRequest<'_>,
+    ) -> Result<PeerCancelDisposition, PeerTransportError> {
+        self.cancellation_calls.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(request.task_id, "remote-task");
+        assert_eq!(request.source_context.namespace(), "city");
+        match self.outcome.load(Ordering::SeqCst) {
+            8 => {
+                let mut task = self.observed.lock().unwrap().clone().unwrap();
+                task.transition_to(TaskState::Canceled, None).unwrap();
+                *self.observed.lock().unwrap() = Some(task.clone());
+                Ok(PeerCancelDisposition::Final {
+                    task: Box::new(task),
+                })
+            }
+            9 => Ok(PeerCancelDisposition::Uncertain),
+            10 => Ok(PeerCancelDisposition::Unsupported),
+            11 => Ok(PeerCancelDisposition::Rejected {
+                code: "remote_cancel_denied".into(),
+            }),
+            12 => {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                Ok(PeerCancelDisposition::Uncertain)
+            }
+            _ => Err(PeerTransportError::Unavailable),
+        }
+    }
+}
+
+fn peer_message(text: &str) -> TaskMessage {
+    TaskMessage::text("peer-message", TaskRole::User, text)
+}
+
+fn peer_transport(f: &Fixture, adapter: Arc<dyn PeerTransportAdapter>) -> DurablePeerTransport {
+    DurablePeerTransport::new_trusted(
+        PeerTransportDependencies {
+            state: f.store.clone(),
+            coordinator: f.coordinator.clone(),
+            clock: Arc::new(f.clock.clone()),
+            encryptor: None,
+        },
+        adapter,
+        std::time::Duration::from_secs(1),
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn durable_peer_submission_sends_once_and_conflicts_on_changed_input() {
+    let f = Fixture::new().await;
+    let adapter = Arc::new(TransportAdapter::new(
+        &f.binding,
+        PeerSubmissionCapability::AtMostOnce,
+        0,
+    ));
+    let transport = peer_transport(&f, adapter.clone());
+    let receipt = transport
+        .submit(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            &peer_message("diagnose"),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(receipt.status, PeerSendStatus::Accepted { .. }));
+    let replay = transport
+        .submit(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            &peer_message("diagnose"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(replay.submission_id, receipt.submission_id);
+    assert_eq!(adapter.calls.load(Ordering::SeqCst), 1);
+    let observed = transport
+        .observe(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            &peer_message("diagnose"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(observed.submission_id, receipt.submission_id);
+    assert_eq!(adapter.calls.load(Ordering::SeqCst), 1);
+    assert!(matches!(
+        transport
+            .submit(
+                &f.registry,
+                "responder",
+                "notify",
+                &f.parent,
+                &permits("caller"),
+                &peer_message("changed")
+            )
+            .await,
+        Err(PeerTransportError::Conflict)
+    ));
+    let key = StateKey::new(
+        "city",
+        "tenant",
+        KeyKind::Custom(acteon_executor::delegation::transport::PEER_SEND_KIND.into()),
+        receipt.submission_id.to_string(),
+    );
+    let mut corrupted: serde_json::Value =
+        serde_json::from_str(&f.store.get(&key).await.unwrap().unwrap()).unwrap();
+    corrupted["state"]["task"]["tenant"] = "other".into();
+    f.store
+        .set(&key, &corrupted.to_string(), None)
+        .await
+        .unwrap();
+    assert!(matches!(
+        transport
+            .submit(
+                &f.registry,
+                "responder",
+                "notify",
+                &f.parent,
+                &permits("caller"),
+                &peer_message("diagnose")
+            )
+            .await,
+        Err(PeerTransportError::Conflict)
+    ));
+}
+
+#[tokio::test]
+async fn remote_task_refresh_rechecks_authority_and_journals_forward_progress() {
+    let f = Fixture::new().await;
+    let adapter = Arc::new(TransportAdapter::new(
+        &f.binding,
+        PeerSubmissionCapability::AtMostOnce,
+        0,
+    ));
+    let transport = peer_transport(&f, adapter.clone());
+    let receipt = transport
+        .submit(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            &peer_message("diagnose"),
+        )
+        .await
+        .unwrap();
+    adapter.outcome.store(5, Ordering::SeqCst);
+    let refreshed = transport
+        .refresh_task(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            receipt.submission_id,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        refreshed.status,
+        PeerSendStatus::Accepted { task, .. } if task.status.state == TaskState::Working
+    ));
+    assert_eq!(adapter.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(adapter.observation_calls.load(Ordering::SeqCst), 1);
+
+    adapter.outcome.store(6, Ordering::SeqCst);
+    let terminal = transport
+        .refresh_task(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            receipt.submission_id,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        terminal.status,
+        PeerSendStatus::Accepted { task, .. } if task.status.state == TaskState::Completed
+    ));
+    let terminal_again = transport
+        .refresh_task(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            receipt.submission_id,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        terminal_again.status,
+        PeerSendStatus::Accepted { task, .. } if task.status.state == TaskState::Completed
+    ));
+    assert_eq!(adapter.observation_calls.load(Ordering::SeqCst), 2);
+
+    assert!(matches!(
+        transport
+            .refresh_task(
+                &f.registry,
+                "responder",
+                "notify",
+                &f.parent,
+                &permits("caller"),
+                uuid::Uuid::new_v4(),
+            )
+            .await,
+        Err(PeerTransportError::Conflict)
+    ));
+    f.retire().await;
+    assert!(matches!(
+        transport
+            .refresh_task(
+                &f.registry,
+                "responder",
+                "notify",
+                &f.parent,
+                &permits("caller"),
+                receipt.submission_id,
+            )
+            .await,
+        Err(PeerTransportError::Refused)
+    ));
+    assert_eq!(adapter.observation_calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn remote_task_refresh_rejects_identity_substitution_without_overwriting_snapshot() {
+    let f = Fixture::new().await;
+    let adapter = Arc::new(TransportAdapter::new(
+        &f.binding,
+        PeerSubmissionCapability::AtMostOnce,
+        0,
+    ));
+    let transport = peer_transport(&f, adapter.clone());
+    let accepted = transport
+        .submit(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            &peer_message("diagnose"),
+        )
+        .await
+        .unwrap();
+    adapter.outcome.store(7, Ordering::SeqCst);
+    assert!(matches!(
+        transport
+            .refresh_task(
+                &f.registry,
+                "responder",
+                "notify",
+                &f.parent,
+                &permits("caller"),
+                accepted.submission_id,
+            )
+            .await,
+        Err(PeerTransportError::Unavailable)
+    ));
+    adapter.outcome.store(0, Ordering::SeqCst);
+    let retained = transport
+        .refresh_task(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            accepted.submission_id,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        retained.status,
+        PeerSendStatus::Accepted { task, .. }
+            if task.id == "remote-task" && task.status.state == TaskState::Submitted
+    ));
+}
+
+#[tokio::test]
+async fn remote_cancel_is_durable_at_most_once_and_projects_terminal_task() {
+    let f = Fixture::new().await;
+    let adapter = Arc::new(TransportAdapter::new(
+        &f.binding,
+        PeerSubmissionCapability::AtMostOnce,
+        0,
+    ));
+    let transport = peer_transport(&f, adapter.clone());
+    let accepted = transport
+        .submit(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            &peer_message("diagnose"),
+        )
+        .await
+        .unwrap();
+    adapter.outcome.store(8, Ordering::SeqCst);
+    let canceled = transport
+        .cancel_task(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            accepted.submission_id,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        canceled.cancellation_id,
+        uuid::Uuid::new_v5(&accepted.submission_id, b"acteon.peer-cancel.v1")
+    );
+    assert!(matches!(
+        canceled.status,
+        PeerCancelStatus::Reconciled { task } if task.status.state == TaskState::Canceled
+    ));
+    let replay = transport
+        .cancel_task(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            accepted.submission_id,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(replay.status, PeerCancelStatus::Reconciled { .. }));
+    assert_eq!(adapter.cancellation_calls.load(Ordering::SeqCst), 1);
+    let projected = transport
+        .refresh_task(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            accepted.submission_id,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        projected.status,
+        PeerSendStatus::Accepted { task, .. } if task.status.state == TaskState::Canceled
+    ));
+    assert_eq!(adapter.observation_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn concurrent_remote_cancel_claims_exactly_one_delivery() {
+    let f = Fixture::new().await;
+    let adapter = Arc::new(TransportAdapter::new(
+        &f.binding,
+        PeerSubmissionCapability::AtMostOnce,
+        0,
+    ));
+    let transport = peer_transport(&f, adapter.clone());
+    let accepted = transport
+        .submit(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            &peer_message("diagnose"),
+        )
+        .await
+        .unwrap();
+    adapter.outcome.store(12, Ordering::SeqCst);
+    let parent_permits = permits("caller");
+    let cancel = || {
+        transport.cancel_task(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &parent_permits,
+            accepted.submission_id,
+        )
+    };
+    let (first, second) = tokio::join!(cancel(), cancel());
+    assert!(matches!(first.unwrap().status, PeerCancelStatus::Uncertain));
+    assert!(matches!(
+        second.unwrap().status,
+        PeerCancelStatus::Uncertain
+    ));
+    assert_eq!(adapter.cancellation_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn ambiguous_remote_cancel_is_never_resent_and_rechecks_current_authority() {
+    let f = Fixture::new().await;
+    let adapter = Arc::new(TransportAdapter::new(
+        &f.binding,
+        PeerSubmissionCapability::AtMostOnce,
+        0,
+    ));
+    let transport = peer_transport(&f, adapter.clone());
+    let accepted = transport
+        .submit(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            &peer_message("diagnose"),
+        )
+        .await
+        .unwrap();
+    adapter.outcome.store(9, Ordering::SeqCst);
+    let parent_permits = permits("caller");
+    let cancel = || {
+        transport.cancel_task(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &parent_permits,
+            accepted.submission_id,
+        )
+    };
+    assert!(matches!(
+        cancel().await.unwrap().status,
+        PeerCancelStatus::Uncertain
+    ));
+    assert!(matches!(
+        cancel().await.unwrap().status,
+        PeerCancelStatus::Uncertain
+    ));
+    adapter.outcome.store(5, Ordering::SeqCst);
+    assert!(matches!(
+        cancel().await.unwrap().status,
+        PeerCancelStatus::Uncertain
+    ));
+    adapter.outcome.store(6, Ordering::SeqCst);
+    assert!(matches!(
+        cancel().await.unwrap().status,
+        PeerCancelStatus::Reconciled { task } if task.status.state == TaskState::Completed
+    ));
+    assert_eq!(adapter.cancellation_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(adapter.observation_calls.load(Ordering::SeqCst), 3);
+    f.retire().await;
+    assert!(matches!(
+        transport
+            .cancel_task(
+                &f.registry,
+                "responder",
+                "notify",
+                &f.parent,
+                &permits("caller"),
+                accepted.submission_id,
+            )
+            .await,
+        Err(PeerTransportError::Refused)
+    ));
+    assert_eq!(adapter.cancellation_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn remote_cancel_preserves_definitive_unsupported_and_rejected_outcomes() {
+    for (outcome, expected) in [(10, "unsupported"), (11, "rejected")] {
+        let f = Fixture::new().await;
+        let adapter = Arc::new(TransportAdapter::new(
+            &f.binding,
+            PeerSubmissionCapability::AtMostOnce,
+            0,
+        ));
+        let transport = peer_transport(&f, adapter.clone());
+        let accepted = transport
+            .submit(
+                &f.registry,
+                "responder",
+                "notify",
+                &f.parent,
+                &permits("caller"),
+                &peer_message("diagnose"),
+            )
+            .await
+            .unwrap();
+        adapter.outcome.store(outcome, Ordering::SeqCst);
+        let receipt = transport
+            .cancel_task(
+                &f.registry,
+                "responder",
+                "notify",
+                &f.parent,
+                &permits("caller"),
+                accepted.submission_id,
+            )
+            .await
+            .unwrap();
+        assert!(match receipt.status {
+            PeerCancelStatus::Unsupported => expected == "unsupported",
+            PeerCancelStatus::Rejected { ref code } => {
+                expected == "rejected" && code == "remote_cancel_denied"
+            }
+            _ => false,
+        });
+        assert_eq!(adapter.cancellation_calls.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[tokio::test]
+async fn ambiguous_peer_submission_requires_explicit_qualified_replay() {
+    let f = Fixture::new().await;
+    let adapter = Arc::new(TransportAdapter::new(
+        &f.binding,
+        PeerSubmissionCapability::VerifiedIdempotent,
+        1,
+    ));
+    let transport = peer_transport(&f, adapter.clone());
+    let message = peer_message("diagnose");
+    let uncertain = transport
+        .submit(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            &message,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(uncertain.status, PeerSendStatus::Uncertain));
+    assert_eq!(adapter.calls.load(Ordering::SeqCst), 1);
+    adapter.outcome.store(0, Ordering::SeqCst);
+    let accepted = transport
+        .replay_idempotent(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            &message,
+        )
+        .await
+        .unwrap();
+    assert_eq!(accepted.submission_id, uncertain.submission_id);
+    assert!(matches!(accepted.status, PeerSendStatus::Accepted { .. }));
+    assert_eq!(adapter.calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn send_time_authority_and_at_most_once_ambiguity_fail_closed() {
+    let f = Fixture::new().await;
+    let adapter = Arc::new(TransportAdapter::new(
+        &f.binding,
+        PeerSubmissionCapability::AtMostOnce,
+        1,
+    ));
+    let transport = peer_transport(&f, adapter.clone());
+    let message = peer_message("diagnose");
+    assert!(matches!(
+        transport
+            .replay_idempotent(
+                &f.registry,
+                "responder",
+                "notify",
+                &f.parent,
+                &permits("caller"),
+                &message
+            )
+            .await,
+        Err(PeerTransportError::Refused)
+    ));
+    let mut suspended = live_agent(&f.clock);
+    suspended.admin_state = acteon_core::AgentAdminState::Suspended;
+    publish_registry(f.store.as_ref(), &suspended, &card()).await;
+    assert!(matches!(
+        transport
+            .submit(
+                &f.registry,
+                "responder",
+                "notify",
+                &f.parent,
+                &permits("caller"),
+                &message
+            )
+            .await,
+        Err(PeerTransportError::Refused)
+    ));
+    publish_registry(f.store.as_ref(), &live_agent(&f.clock), &card()).await;
+    f.retire().await;
+    assert!(matches!(
+        transport
+            .submit(
+                &f.registry,
+                "responder",
+                "notify",
+                &f.parent,
+                &permits("caller"),
+                &message
+            )
+            .await,
+        Err(PeerTransportError::Refused)
+    ));
+    assert_eq!(adapter.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn concurrent_submission_has_one_sender_and_malformed_acceptance_is_uncertain() {
+    let f = Fixture::new().await;
+    let adapter = Arc::new(TransportAdapter::new(
+        &f.binding,
+        PeerSubmissionCapability::AtMostOnce,
+        0,
+    ));
+    let transport = peer_transport(&f, adapter.clone());
+    let message = peer_message("diagnose");
+    let parent_permits = permits("caller");
+    let (left, right) = tokio::join!(
+        transport.submit(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &parent_permits,
+            &message
+        ),
+        transport.submit(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &parent_permits,
+            &message
+        ),
+    );
+    assert!(left.is_ok() && right.is_ok());
+    assert_eq!(adapter.calls.load(Ordering::SeqCst), 1);
+
+    let other = Fixture::new().await;
+    let malformed = Arc::new(TransportAdapter::new(
+        &other.binding,
+        PeerSubmissionCapability::AtMostOnce,
+        3,
+    ));
+    let receipt = peer_transport(&other, malformed)
+        .submit(
+            &other.registry,
+            "responder",
+            "notify",
+            &other.parent,
+            &permits("caller"),
+            &message,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(receipt.status, PeerSendStatus::Uncertain));
+
+    let timeout_fixture = Fixture::new().await;
+    let slow = Arc::new(TransportAdapter::new(
+        &timeout_fixture.binding,
+        PeerSubmissionCapability::AtMostOnce,
+        4,
+    ));
+    let timeout_transport = DurablePeerTransport::new_trusted(
+        PeerTransportDependencies {
+            state: timeout_fixture.store.clone(),
+            coordinator: timeout_fixture.coordinator.clone(),
+            clock: Arc::new(timeout_fixture.clock.clone()),
+            encryptor: None,
+        },
+        slow.clone(),
+        std::time::Duration::from_millis(1),
+    )
+    .unwrap();
+    let timed_out = timeout_transport
+        .submit(
+            &timeout_fixture.registry,
+            "responder",
+            "notify",
+            &timeout_fixture.parent,
+            &permits("caller"),
+            &message,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(timed_out.status, PeerSendStatus::Uncertain));
+    assert_eq!(slow.calls.load(Ordering::SeqCst), 1);
+}
 #[tokio::test]
 async fn unaccepted_or_retired_service_grants_do_not_resolve_private_recipient() {
     let f = Fixture::new().await;
@@ -627,4 +1437,161 @@ fn direct_operation_selection_is_part_of_service_binding_digest() {
     assert_ne!(first.digest(), second.digest());
     assert_eq!(first.service_plan().unwrap().direct_effects(), &[execute]);
     assert_eq!(first.service_plan().unwrap().intent().len(), 2);
+}
+
+#[tokio::test]
+async fn approved_service_discovery_reads_actual_card_instead_of_presence_hint() {
+    let f = Fixture::new().await;
+    let agent_key = StateKey::new("city", "tenant", KeyKind::BusAgent, "responder");
+    let card_key = StateKey::new("city", "tenant", KeyKind::BusAgentCard, "responder");
+    let mut agent: Agent =
+        serde_json::from_str(&f.store.get(&agent_key).await.unwrap().unwrap()).unwrap();
+    let approved_card = f.store.get(&card_key).await.unwrap().unwrap();
+    agent.has_agent_card = false;
+    f.store
+        .set(&agent_key, &serde_json::to_string(&agent).unwrap(), None)
+        .await
+        .unwrap();
+    let before = serde_json::to_value(f.coordinator.snapshot().await.unwrap()).unwrap();
+    let resolver = Resolver::new(&f);
+    assert_eq!(f.discover(&f.parent, &resolver).await.len(), 1);
+    // Removing the actual card must hide the candidate even with a true hint.
+    agent.has_agent_card = true;
+    f.store
+        .set(&agent_key, &serde_json::to_string(&agent).unwrap(), None)
+        .await
+        .unwrap();
+    f.store.delete(&card_key).await.unwrap();
+    assert!(f.discover(&f.parent, &resolver).await.is_empty());
+    // A changed card cannot borrow approval from either hint value.
+    let mut changed: AgentCard = serde_json::from_str(&approved_card).unwrap();
+    changed.name = "different unapproved card".into();
+    f.store
+        .set(&card_key, &serde_json::to_string(&changed).unwrap(), None)
+        .await
+        .unwrap();
+    assert!(f.discover(&f.parent, &resolver).await.is_empty());
+    f.store.set(&card_key, &approved_card, None).await.unwrap();
+    f.retire().await;
+    assert!(f.discover(&f.parent, &resolver).await.is_empty());
+    // Discovery itself never allocates or spends an execution attempt.
+    let after = f.coordinator.snapshot().await.unwrap();
+    let prior: serde_json::Value = before;
+    assert_eq!(serde_json::to_value(&after.roots).unwrap(), prior["roots"]);
+    assert!(after.starts.is_empty());
+}
+
+#[tokio::test]
+async fn source_peer_options_expose_only_safe_reviewed_registry_fields() {
+    let f = Fixture::new().await;
+    let allowed = vec!["responder".to_owned()];
+    let options = f
+        .registry
+        .discover_source_options(
+            "notify",
+            &allowed,
+            &f.coordinator,
+            &f.parent,
+            &permits("caller"),
+            &f.clock,
+        )
+        .await
+        .unwrap();
+    assert_eq!(options.len(), 1);
+    let option = &options[0];
+    assert_eq!(option.agent_id, "responder");
+    assert_eq!(option.skill, "notify");
+    assert_eq!(option.description_untrusted, None);
+    assert_eq!(option.binding_digest, f.binding.digest());
+    assert_eq!(option.checked_at_ms, f.clock.now().timestamp_millis());
+    assert!(
+        f.registry
+            .discover_source_options(
+                "notify",
+                &["responder".into(), "responder".into()],
+                &f.coordinator,
+                &f.parent,
+                &permits("caller"),
+                &f.clock,
+            )
+            .await
+            .is_err()
+    );
+    f.retire().await;
+    let retired = f
+        .registry
+        .discover_source_options(
+            "notify",
+            &allowed,
+            &f.coordinator,
+            &f.parent,
+            &permits("caller"),
+            &f.clock,
+        )
+        .await
+        .unwrap();
+    assert_eq!(retired.len(), 0);
+}
+
+#[tokio::test]
+async fn actual_approved_card_cannot_override_registry_retirement() {
+    use acteon_governance::{
+        control::{ControlChangeAuthorization, ControlChangeCeiling},
+        registry::{AgentRegistryIssuanceCeiling, AgentRegistryQualification},
+    };
+    let f = Fixture::new().await;
+    let qualification = AgentRegistryQualification {
+        agent: f.grant.agent_resource.clone(),
+        target: f.grant.target.clone(),
+        revision: 1,
+        bindings: std::collections::BTreeMap::from([(
+            f.grant.skill.clone(),
+            f.grant.binding_digest.clone(),
+        )]),
+    };
+    let ceiling = AgentRegistryIssuanceCeiling {
+        issuer: actor("operator"),
+        approved: vec![qualification.clone()],
+        valid_from_ms: 0,
+        deadline_ms: 10_000,
+    };
+    f.coordinator
+        .publish_agent_registry(
+            "qualify-registry",
+            qualification,
+            0,
+            &ceiling,
+            &f.coordinator.snapshot().await.unwrap().stamp(),
+            "reviewed registry",
+            &f.clock,
+        )
+        .await
+        .unwrap();
+    let resolver = Resolver::new(&f);
+    assert_eq!(f.discover(&f.parent, &resolver).await.len(), 1);
+    let bounds = ControlChangeCeiling {
+        actor: actor("operator"),
+        subjects: vec![],
+        resources: vec![f.grant.agent_resource.clone()],
+        valid_from_ms: 0,
+        deadline_ms: 10_000,
+    };
+    f.coordinator
+        .change_evaluated(
+            "retire-registry",
+            AuthorityChange::RetireAgentRegistry {
+                agent: f.grant.agent_resource.clone(),
+                expected_revision: 1,
+            },
+            "retire reviewed epoch",
+            ControlChangeAuthorization {
+                ceiling: &bounds,
+                evaluated_authority: &f.coordinator.snapshot().await.unwrap().stamp(),
+                clock: &f.clock,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(f.discover(&f.parent, &resolver).await.is_empty());
+    assert!(f.coordinator.snapshot().await.unwrap().starts.is_empty());
 }

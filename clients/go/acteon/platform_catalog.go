@@ -18,6 +18,13 @@ const (
 	OpA2aPushRestListPushConfigs PlatformOperation = "a2a_push_rest_list_push_configs"
 	OpA2aPushRestListPushDlq PlatformOperation = "a2a_push_rest_list_push_dlq"
 	OpA2aPushRestSetPushConfig PlatformOperation = "a2a_push_rest_set_push_config"
+	OpAgentServicesMessageSend PlatformOperation = "agent_services_message_send"
+	OpAgentServicesPeerCancel PlatformOperation = "agent_services_peer_cancel"
+	OpAgentServicesPeerDiscover PlatformOperation = "agent_services_peer_discover"
+	OpAgentServicesPeerRefresh PlatformOperation = "agent_services_peer_refresh"
+	OpAgentServicesPeerSend PlatformOperation = "agent_services_peer_send"
+	OpAgentServicesTaskGet PlatformOperation = "agent_services_task_get"
+	OpAgentServicesTaskStop PlatformOperation = "agent_services_task_stop"
 	OpAnalyticsQueryAnalytics PlatformOperation = "analytics_query_analytics"
 	OpApprovalsApprove PlatformOperation = "approvals_approve"
 	OpApprovalsGetApproval PlatformOperation = "approvals_get_approval"
@@ -117,9 +124,11 @@ const (
 	OpGovernanceAcceptReconciliation PlatformOperation = "governance_accept_reconciliation"
 	OpGovernanceInspect PlatformOperation = "governance_inspect"
 	OpGovernanceIntervene PlatformOperation = "governance_intervene"
+	OpGovernanceMutateRegistry PlatformOperation = "governance_mutate_registry"
 	OpGovernanceProviderHistory PlatformOperation = "governance_provider_history"
 	OpGovernancePublishPermit PlatformOperation = "governance_publish_permit"
 	OpGovernanceReconciliationCorrelation PlatformOperation = "governance_reconciliation_correlation"
+	OpGovernanceRegistryProjection PlatformOperation = "governance_registry_projection"
 	OpGroupsFlushGroup PlatformOperation = "groups_flush_group"
 	OpGroupsGetGroup PlatformOperation = "groups_get_group"
 	OpGroupsListGroups PlatformOperation = "groups_list_groups"
@@ -217,6 +226,13 @@ var platformOperations = map[PlatformOperation]platformDescriptor{
 	OpA2aPushRestListPushConfigs: {"GET", "/a2a/{namespace}/{tenant}/v1/tasks/{id}/pushNotificationConfigs", []string{"namespace", "tenant", "id"}, false},
 	OpA2aPushRestListPushDlq: {"GET", "/v1/a2a/{namespace}/{tenant}/push-dlq", []string{"namespace", "tenant"}, false},
 	OpA2aPushRestSetPushConfig: {"POST", "/a2a/{namespace}/{tenant}/v1/tasks/{id}/pushNotificationConfigs", []string{"namespace", "tenant", "id"}, false},
+	OpAgentServicesMessageSend: {"POST", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/message:send", []string{"namespace", "tenant", "agent"}, false},
+	OpAgentServicesPeerCancel: {"POST", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:cancel", []string{"namespace", "tenant", "agent", "id", "target", "skill", "submission"}, false},
+	OpAgentServicesPeerDiscover: {"GET", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers", []string{"namespace", "tenant", "agent", "id"}, false},
+	OpAgentServicesPeerRefresh: {"POST", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:refresh", []string{"namespace", "tenant", "agent", "id", "target", "skill", "submission"}, false},
+	OpAgentServicesPeerSend: {"POST", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/message:send", []string{"namespace", "tenant", "agent", "id", "target", "skill"}, false},
+	OpAgentServicesTaskGet: {"GET", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}", []string{"namespace", "tenant", "agent", "id"}, false},
+	OpAgentServicesTaskStop: {"POST", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/stop", []string{"namespace", "tenant", "agent", "id"}, false},
 	OpAnalyticsQueryAnalytics: {"GET", "/v1/analytics", []string{}, false},
 	OpApprovalsApprove: {"POST", "/v1/approvals/{namespace}/{tenant}/{id}/approve", []string{"namespace", "tenant", "id"}, false},
 	OpApprovalsGetApproval: {"GET", "/v1/approvals/{namespace}/{tenant}/{id}", []string{"namespace", "tenant", "id"}, false},
@@ -316,9 +332,11 @@ var platformOperations = map[PlatformOperation]platformDescriptor{
 	OpGovernanceAcceptReconciliation: {"POST", "/v1/governance/executions/{execution_id}/attempts/{ordinal}/reconciliation", []string{"execution_id", "ordinal"}, false},
 	OpGovernanceInspect: {"GET", "/v1/governance", []string{}, false},
 	OpGovernanceIntervene: {"POST", "/v1/governance/changes", []string{}, false},
+	OpGovernanceMutateRegistry: {"POST", "/v1/governance/registry", []string{}, false},
 	OpGovernanceProviderHistory: {"GET", "/v1/governance/executions/{execution_id}", []string{"execution_id"}, false},
 	OpGovernancePublishPermit: {"POST", "/v1/governance/permits", []string{}, false},
 	OpGovernanceReconciliationCorrelation: {"GET", "/v1/governance/executions/{execution_id}/attempts/{ordinal}/correlation", []string{"execution_id", "ordinal"}, false},
+	OpGovernanceRegistryProjection: {"GET", "/v1/governance/registry/{agent_id}", []string{"agent_id"}, false},
 	OpGroupsFlushGroup: {"DELETE", "/v1/groups/{group_key}", []string{"group_key"}, false},
 	OpGroupsGetGroup: {"GET", "/v1/groups/{group_key}", []string{"group_key"}, false},
 	OpGroupsListGroups: {"GET", "/v1/groups", []string{}, false},

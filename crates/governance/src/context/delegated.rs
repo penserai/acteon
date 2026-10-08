@@ -66,6 +66,16 @@ impl VerifiedExecutionContext {
     pub fn original_requester(&self) -> &PrincipalIdentity {
         original_actor(&self.0)
     }
+    /// Original immediate service requester, recovered from signed lineage.
+    /// This provenance is for observation; executing it still requires current
+    /// context, credential, permit, workforce and budget checks.
+    #[must_use]
+    pub fn immediate_service_source(&self) -> Option<Self> {
+        self.0
+            .delegated_from
+            .as_ref()
+            .map(|lineage| Self((*lineage.source).clone()))
+    }
     pub(crate) fn matches_service_runtime(
         &self,
         state: &CoordinatorSnapshot,
@@ -245,6 +255,8 @@ fn grant_pair<'a>(
         delegation_policy::original(state, reference).ok_or(CoordinationError::Restricted)?;
     let (current, revoked) =
         delegation_policy::current(state, &reference.id).ok_or(CoordinationError::Restricted)?;
+    crate::registry::validate_grant(state, original)?;
+    crate::registry::validate_grant(state, &current)?;
     if revoked
         || current.revision < original.revision
         || now < original.valid_from_ms

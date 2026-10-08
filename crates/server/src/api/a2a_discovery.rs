@@ -202,6 +202,11 @@ pub async fn put_agent_card(
     if let Err(e) = card.validate() {
         return bad_request(validation_message(&e));
     }
+    if let Some(response) =
+        super::registry_guard::refuse_unjournaled_write(&state, &namespace, &tenant).await
+    {
+        return response;
+    }
     let store: Arc<dyn StateStore> = {
         let gw = state.gateway.read().await;
         gw.state_store().clone()
@@ -265,6 +270,11 @@ pub async fn delete_agent_card(
         authorize_card_op(&identity, &namespace, &tenant, Permission::OperationsManage)
     {
         return resp;
+    }
+    if let Some(response) =
+        super::registry_guard::refuse_unjournaled_write(&state, &namespace, &tenant).await
+    {
+        return response;
     }
     let store: Arc<dyn StateStore> = {
         let gw = state.gateway.read().await;

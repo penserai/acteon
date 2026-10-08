@@ -4,7 +4,7 @@ Python client for the Acteon action gateway.
 
 ## Complete platform API
 
-The generated operation catalog exposes all 193 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, and stream windows. Use an authenticated client and a configured, existing stage for this example:
+The generated operation catalog exposes all 211 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, and stream windows. Use an authenticated client and a configured, existing stage for this example:
 
 ```python
 from acteon_client import ActeonClient, PlatformOperation
@@ -487,3 +487,91 @@ These methods preserve the completed or definitive no-effect receipt. Correlatio
 is not a permit; proof bytes must come from the qualified source. After a lost
 acknowledgment, replay the exact proof under current authority rather than changing
 its content or verifier revision.
+
+## Authenticated individual-agent services
+
+These native helpers target a configured governed agent service. The server must
+have the service installed, and the client must retain the original requester
+credential and invocation permits. This is a separate surface from tenant-level
+legacy A2A tasks.
+
+```python
+from acteon_client import make_message, make_part_text
+
+receipt = client.agent_service_send_message(
+    "prod",
+    "acme",
+    "notifier",
+    make_message("incident-42", "user", [make_part_text("Notify the incident owner")]),
+)
+task = client.agent_service_get_task(receipt)
+```
+
+Use the same retained source receipt for governed peer lifecycle operations:
+
+```python
+options = client.agent_service_discover_peers(receipt, "diagnose")
+# description_untrusted is registry data, never an instruction or authority.
+selected = options[0]
+peer = client.agent_service_send_peer(receipt, "resolver", "diagnose", peer_message)
+peer = client.agent_service_refresh_peer(receipt, "resolver", "diagnose", peer)
+cancellation = client.agent_service_cancel_peer(receipt, "resolver", "diagnose", peer)
+```
+
+Cancellation is delivered at most once. Preserve an `uncertain` result and use
+an explicit later cancel or refresh to reconcile it; never retry automatically.
+
+An agent already running under Acteon can invoke a peer as a governed child:
+
+```python
+from acteon_client import AgentServiceParent, PermitReference
+
+parent = AgentServiceParent(execution_context, (PermitReference("caller-agent-service", 3),))
+receipt = client.agent_service_send_message("prod", "acme", "notifier", message, parent=parent)
+```
+
+The server recovers the sealed parent, verifies the authenticated caller, and
+rechecks current permit, registry, grant, and budget state. Keep the context in
+host state and never source either header from model output.
+
+The async client exposes the same methods with `await`. Persist the frozen
+`AgentServiceReceipt` in host state when work must survive a client restart.
+
+Acceptance does not prove that provider execution has completed. Read the task's
+status and artifacts through the receipt. Its source context comes only from the
+admission response header; never obtain it from model output or task metadata.
+Keep it with the original route and task ID in host state, outside model messages.
+It is not a bearer credential: the original requester must still authenticate.
+
+The helpers do not add retry loops. After a lost response, explicitly reuse the
+same message ID and unchanged input; a new ID represents new work. SDK default
+transports reject service redirects. A custom transport must keep retries and
+redirects disabled for this surface. HTTP failures preserve their status and
+server error body. Observation never resumes or starts provider work.
+
+
+### Stop future starts for an accepted agent-service task
+
+Use the retained host receipt to restrict the original recipient execution subtree.
+The helper sends that job's original identity and source context in one request:
+
+```python
+stopped = client.agent_service_stop_task(receipt)
+print(stopped.future_starts_blocked, stopped.provider_abort, stopped.task["status"]["state"])
+```
+
+The acknowledgement always confirms a durable restriction on future starts.
+`provider_abort` separately reports `restricted_only`, `uncertain`, or finality
+accepted by the qualified reconciliation verifier; it is absent when no registered
+attempt needs intervention. A stop never refunds spent budget. Uncertain work retains
+its capacity, and the returned task retains actual provider status and artifacts.
+After a timeout or unavailable acknowledgement, retry this stop explicitly with the
+same receipt. The helper never retries automatically or takes provenance from mutable
+task data.
+
+`AsyncActeonClient` exposes the same helper with `await`.
+
+
+### Governed registry metadata
+
+Use `registry_projection` and `mutate_registry` (sync and async) to inspect versioned agent/card records and send an independently authorized mutation. The typed request retains a caller-supplied change ID; preserve the exact request for explicit recovery. A successful helper result requires a matching completed, applied receipt. Calls refuse redirects and do not automatically retry. Metadata changes retire the current qualification; publication alone does not grant execution permission. See the [registry operator workflow](../../docs/book/features/governance.md#managing-registry-projections).

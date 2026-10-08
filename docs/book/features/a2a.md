@@ -60,6 +60,10 @@ Mirrors the JSON-RPC methods on resource-shaped paths:
 
 ```text
 POST   /a2a/{ns}/{tenant}/v1/message:send
+GET    /a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers?skill={exact-skill}
+POST   /a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/message:send
+POST   /a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:refresh
+POST   /a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:cancel
 GET    /a2a/{ns}/{tenant}/v1/tasks/{id}
 POST   /a2a/{ns}/{tenant}/v1/tasks/{id}:cancel
 GET    /a2a/{ns}/{tenant}/v1/tasks/{id}/events            # SSE
@@ -68,6 +72,32 @@ GET    /a2a/{ns}/{tenant}/v1/tasks/{id}/pushNotificationConfigs
 GET    /a2a/{ns}/{tenant}/v1/tasks/{id}/pushNotificationConfigs/{cfgId}
 DELETE /a2a/{ns}/{tenant}/v1/tasks/{id}/pushNotificationConfigs/{cfgId}
 ```
+
+The agent-service routes are Acteon's governed peer tools. Discovery returns
+only source-approved, currently online registry entries whose installed binding
+still matches the current card. It exposes a bounded agent ID, exact skill,
+card version, binding digest, observation time, and optional untrusted
+description. It never returns an endpoint, credential, permit, recipient
+principal, or authority handle. The result is advisory; every send repeats all
+current authority and binding checks.
+
+A configured agent calls from one accepted source task and supplies only a message. The server
+recovers the source context and permits, resolves the reviewed target binding and
+credential, and journals the send before network delivery. Its response is
+accepted, rejected, or uncertain; uncertainty is never an instruction to retry.
+After acceptance, the refresh route rechecks the current source credential,
+permit, grant, registry card and installed binding before reading the exact
+remote task. It rejects identity changes and lifecycle regressions and retains
+the last valid snapshot when the remote read is unavailable.
+
+The cancel route uses the same recovered authority and exact accepted send
+record. Acteon journals cancellation intent and a delivery claim before making
+one remote call. `unsupported` and `rejected` are definitive; `uncertain` means
+delivery may have occurred and is never retried automatically. A later explicit
+cancel call may use safe task observation to return `reconciled` with the exact
+terminal task. That terminal task can be completed, failed, canceled, or
+rejected: reconciliation proves finality, while only the task state says whether
+the cancellation took effect.
 
 ### Discovery (unauthenticated)
 

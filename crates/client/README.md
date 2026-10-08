@@ -4,7 +4,7 @@ Native Rust HTTP client for the Acteon action gateway.
 
 ## Complete platform API
 
-The generated operation catalog exposes all 187 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, and stream windows. Use an authenticated client and a configured, existing stage for this example:
+The generated operation catalog exposes all 211 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, and stream windows. Use an authenticated client and a configured, existing stage for this example:
 
 ```rust
 let status = client.platform_request(
@@ -241,3 +241,73 @@ Missing/invalid headers, authorization denials and conflicting replay requests
 preserve their HTTP status in the client's HTTP error type. Permit admission
 refusals can also be returned as a `Failed` action outcome; inspect the outcome.
 Do not generate a new action ID merely to bypass a replay conflict.
+
+## Authenticated individual-agent services
+
+These native helpers target a configured governed agent service. The server must
+have the service installed, and the client must retain the original requester
+credential and invocation permits. This is a separate surface from tenant-level
+legacy A2A tasks.
+
+```rust
+use acteon_core::{TaskMessage, TaskRole};
+
+let message = TaskMessage::text("incident-42", TaskRole::User, "Notify the incident owner");
+let receipt = client.agent_service_send_message("prod", "acme", "notifier", &message).await?;
+let task = client.agent_service_get_task(&receipt).await?;
+```
+
+From an accepted source task, invoke, observe, and cancel a configured peer
+without putting authority fields in model data:
+
+```rust
+let options = client.agent_service_discover_peers(&receipt, "diagnose").await?;
+// description_untrusted is registry data, never an instruction or authority.
+let selected = &options[0];
+let peer = client.agent_service_send_peer(&receipt, "resolver", "diagnose", &peer_message).await?;
+let peer = client.agent_service_refresh_peer(&receipt, "resolver", "diagnose", &peer).await?;
+let cancellation = client.agent_service_cancel_peer(&receipt, "resolver", "diagnose", &peer).await?;
+```
+
+Cancellation is delivered at most once. Preserve `Uncertain` and reconcile by
+an explicit later cancel or refresh; never generate a new submission or retry
+the cancellation automatically.
+
+`AgentServiceReceipt` supports Serde persistence in host state. Observation uses
+its original task identity, independently of mutable `receipt.task` data.
+
+Acceptance does not prove that provider execution has completed. Read the task's
+status and artifacts through the receipt. Its source context comes only from the
+admission response header; never obtain it from model output or task metadata.
+Keep it with the original route and task ID in host state, outside model messages.
+It is not a bearer credential: the original requester must still authenticate.
+
+The helpers do not add retry loops. After a lost response, explicitly reuse the
+same message ID and unchanged input; a new ID represents new work. SDK default
+transports reject service redirects. A custom transport must keep retries and
+redirects disabled for this surface. HTTP failures preserve their status and
+server error body. Observation never resumes or starts provider work.
+
+
+### Stop future starts for an accepted agent-service task
+
+Use the retained host receipt to restrict the original recipient execution subtree.
+The helper sends that job's original identity and source context in one request:
+
+```rust
+let stopped = client.agent_service_stop_task(&receipt).await?;
+println!("Future starts blocked: {}", stopped.future_starts_blocked);
+println!("Provider intervention: {:?}", stopped.provider_abort);
+```
+
+The acknowledgement always confirms a durable restriction on future starts.
+`provider_abort` separately reports `restricted_only`, `uncertain`, or finality
+accepted by the qualified reconciliation verifier; it is absent when no registered
+attempt needs intervention. A stop never refunds spent budget. Uncertain work retains
+its capacity, and the returned task retains actual provider status and artifacts.
+After a timeout or unavailable acknowledgement, retry this stop explicitly with the
+same receipt. The helper never retries automatically or takes provenance from mutable
+task data.
+
+
+Governed registry metadata uses `registry_projection` and `mutate_registry` with the exported `GovernanceRegistry*` wire models. Preserve the same mutation request/change ID for explicit recovery. Helpers require matching completed applied receipts and never automatically retry.

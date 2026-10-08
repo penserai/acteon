@@ -1,6 +1,20 @@
 //! Shared server installation against the configured backend, without wire proof.
+mod agent_driver;
+mod agent_service_error;
+pub use agent_service_error::AgentServiceError;
+mod agent_services;
+pub use agent_driver::AgentServiceDriver;
+pub use agent_services::{
+    AgentServiceAcceptance, AgentServiceObservation, AgentServiceParent, AgentServiceRequest,
+};
 mod management;
 pub use management::{ManagementError, TrustedReconciliationInstallation};
+mod peer_transport;
+pub use peer_transport::{
+    AgentPeerCancelInvocation, AgentPeerCancelRequest, AgentPeerDiscoveryInvocation,
+    AgentPeerDiscoveryRequest, AgentPeerInvocation, AgentPeerRefreshInvocation,
+    AgentPeerRefreshRequest, AgentPeerToolRequest, AgentPeerTransportError,
+};
 use std::{collections::BTreeMap, sync::Arc};
 
 use acteon_core::{Action, ActionOutcome};
@@ -69,7 +83,16 @@ struct InstalledScope {
     contexts: Arc<TrustedContextStore>,
     handoffs: Arc<acteon_executor::plan::handoff::PlanHandoffStore>,
     history: acteon_executor::governed::history::HistoricalProviderStore,
+    agents: BTreeMap<String, Arc<acteon_gateway::agent_runtime::AgentProviderRuntime>>,
+    agent_bindings:
+        BTreeMap<(String, String), Arc<acteon_gateway::agent_runtime::AgentProviderRuntime>>,
+    peer_mesh: InstalledPeerMesh,
     reconciliation: Option<acteon_executor::governed::reconciliation::ProviderReconciliationStore>,
+}
+type PeerTransportKey = (String, String, String);
+struct InstalledPeerMesh {
+    registry: Option<Arc<acteon_executor::delegation::ApprovedPeerRegistry>>,
+    transports: BTreeMap<PeerTransportKey, Arc<acteon_executor::delegation::DurablePeerTransport>>,
 }
 pub struct ExecutionAuthorityRuntime {
     state: Arc<dyn StateStore>,
@@ -82,6 +105,8 @@ pub struct ExecutionAuthorityRuntime {
 impl ExecutionAuthorityRuntime {
     /// Prepare must already have validated the entire deployment. Qualification,
     /// context keys and executor settings are checked before backend mutation.
+    // Keep the ordered qualification and authority checks visible together.
+    #[allow(clippy::too_many_lines)]
     pub async fn install(
         registry: &ExecutionProviderRegistry,
         prepared: Vec<PreparedExecutionScope>,
@@ -154,6 +179,63 @@ impl ExecutionAuthorityRuntime {
                     .map_err(|_| "invalid execution driver")?,
                 );
             }
+            let mut agents = BTreeMap::new();
+            let mut agent_bindings = BTreeMap::new();
+            for (id, agent) in &prepared.agents {
+                let runtime = acteon_gateway::agent_runtime::AgentProviderRuntime::new_trusted(
+                    acteon_gateway::agent_runtime::AgentRuntimeDependencies {
+                        state: dependencies.state.clone(),
+                        coordinator: coordinator.clone(),
+                        contexts: contexts.clone(),
+                        clock: dependencies.clock.clone(),
+                    },
+                    agent.binding.clone(),
+                    agent.bound.clone(),
+                    dependencies.executor.clone(),
+                )
+                .map_err(|_| "invalid agent runtime")?;
+                let runtime = Arc::new(runtime);
+                if agent_bindings.values().any(
+                    |installed: &Arc<acteon_gateway::agent_runtime::AgentProviderRuntime>| {
+                        installed.binding_digest() == agent.binding.digest()
+                    },
+                ) {
+                    return Err("duplicate agent runtime binding".into());
+                }
+                agent_bindings.insert(
+                    (id.clone(), agent.binding.digest().to_owned()),
+                    runtime.clone(),
+                );
+                agents.insert(id.clone(), runtime);
+            }
+            for ((id, digest), agent) in &prepared.retained_agents {
+                let runtime = Arc::new(
+                    acteon_gateway::agent_runtime::AgentProviderRuntime::new_trusted(
+                        acteon_gateway::agent_runtime::AgentRuntimeDependencies {
+                            state: dependencies.state.clone(),
+                            coordinator: coordinator.clone(),
+                            contexts: contexts.clone(),
+                            clock: dependencies.clock.clone(),
+                        },
+                        agent.binding.clone(),
+                        agent.bound.clone(),
+                        dependencies.executor.clone(),
+                    )
+                    .map_err(|_| "invalid retained agent runtime")?,
+                );
+                if agent.agent_id != *id
+                    || agent.binding.digest() != digest
+                    || agent_bindings
+                        .values()
+                        .any(|installed| installed.binding_digest() == agent.binding.digest())
+                    || agent_bindings
+                        .insert((id.clone(), digest.clone()), runtime)
+                        .is_some()
+                {
+                    return Err("duplicate retained agent runtime".into());
+                }
+            }
+            let peer_mesh = Self::install_peer_transports(&prepared, &coordinator, &dependencies)?;
             let handoffs = dependencies.handoffs(&declaration.namespace, &declaration.tenant)?;
             let history = dependencies.history(&coordinator, contexts.clone());
             scopes.insert(
@@ -164,6 +246,9 @@ impl ExecutionAuthorityRuntime {
                     contexts,
                     handoffs,
                     history,
+                    agents,
+                    agent_bindings,
+                    peer_mesh,
                     reconciliation: None,
                 },
             );
@@ -228,11 +313,121 @@ impl ExecutionAuthorityRuntime {
         }
         Ok(())
     }
+
+    fn install_peer_transports(
+        prepared: &PreparedExecutionScope,
+        coordinator: &AuthorityCoordinator,
+        dependencies: &ExecutionRuntimeDependencies,
+    ) -> Result<InstalledPeerMesh, String> {
+        use acteon_executor::delegation::{
+            ApprovedPeerRegistry, DurablePeerTransport, PeerTransportDependencies,
+        };
+        if !prepared.peer_transport.enabled || prepared.agents.is_empty() {
+            return Ok(InstalledPeerMesh {
+                registry: None,
+                transports: BTreeMap::new(),
+            });
+        }
+        let declaration = prepared.declaration();
+        let registry = Arc::new(
+            ApprovedPeerRegistry::new_trusted(
+                dependencies.state.clone(),
+                &declaration.namespace,
+                &declaration.tenant,
+                prepared
+                    .agents
+                    .values()
+                    .map(|agent| agent.binding.clone())
+                    .collect(),
+            )
+            .map_err(|_| "invalid installed peer registry")?,
+        );
+        let policy = acteon_http::OutboundPolicy {
+            internal_hosts: prepared.peer_transport.internal_hosts.clone(),
+        };
+        let timeout = std::time::Duration::from_millis(prepared.peer_transport.timeout_ms);
+        let mut transports = BTreeMap::new();
+        for (source_id, source) in &prepared.agents {
+            if source.declaration.onward_agents.is_empty() {
+                continue;
+            }
+            let credential = zeroize::Zeroizing::new(
+                std::env::var(&source.declaration.recipient_key_env)
+                    .map_err(|_| "agent peer source credential unavailable")?,
+            );
+            for target_id in &source.declaration.onward_agents {
+                let target = prepared
+                    .agents
+                    .get(target_id)
+                    .ok_or("agent peer target lost qualification")?;
+                policy
+                    .validate_url(target.binding.endpoint())
+                    .map_err(|_| "agent peer target refused by outbound policy")?;
+                let capability = target.declaration.submission_capability;
+                let capability_revision = match capability {
+                    acteon_executor::delegation::PeerSubmissionCapability::AtMostOnce => {
+                        "at-most-once"
+                    }
+                    acteon_executor::delegation::PeerSubmissionCapability::VerifiedIdempotent => {
+                        "verified-idempotent"
+                    }
+                };
+                let adapter_revision = format!(
+                    "{}-{capability_revision}",
+                    prepared.peer_transport.adapter_revision
+                );
+                let adapter = Arc::new(
+                    super::ActeonPeerHttpAdapter::new_trusted(
+                        target.binding.digest(),
+                        &adapter_revision,
+                        acteon_crypto::SecretString::new(credential.as_str().to_owned().into()),
+                        capability,
+                        policy.clone(),
+                        timeout,
+                    )
+                    .map_err(|_| "invalid agent peer HTTP adapter")?,
+                );
+                let transport = DurablePeerTransport::new_trusted(
+                    PeerTransportDependencies {
+                        state: dependencies.state.clone(),
+                        coordinator: coordinator.clone(),
+                        clock: dependencies.clock.clone(),
+                        encryptor: dependencies.encryptor.clone(),
+                    },
+                    adapter,
+                    timeout,
+                )
+                .map_err(|_| "invalid durable agent peer transport")?;
+                let key = (
+                    source_id.clone(),
+                    target_id.clone(),
+                    target.declaration.skill.clone(),
+                );
+                if transports.insert(key, Arc::new(transport)).is_some() {
+                    return Err("duplicate installed agent peer transport".into());
+                }
+            }
+        }
+        Ok(InstalledPeerMesh {
+            registry: Some(registry),
+            transports,
+        })
+    }
     /// Publish independent permits only after authentication configuration and
     /// every scope projection have succeeded, before exposing the listener.
-    pub async fn publish_deployment_permits(&self) -> Result<(), String> {
+    pub async fn publish_deployment_permits(
+        &self,
+        authentication: Option<&crate::auth::AuthProvider>,
+    ) -> Result<(), String> {
+        self.validate_agent_credentials(authentication).await?;
+        for scope in self.scopes.values() {
+            Self::publish_agent_registry(&scope.prepared, &scope.coordinator, self.clock.as_ref())
+                .await?;
+        }
         for scope in self.scopes.values() {
             Self::publish_permits(&scope.prepared, &scope.coordinator, self.clock.as_ref()).await?;
+            Self::publish_agent_grants(&scope.prepared, &scope.coordinator, self.clock.as_ref())
+                .await?;
         }
         Ok(())
     }
@@ -268,6 +463,21 @@ impl ExecutionAuthorityRuntime {
                     .find(|chain| chain.name == *name && chain.subjects.contains(&permit.subject))
                     .ok_or("permit chain is not declared")?;
                 effects.push(chain.effect(&declaration.namespace, &declaration.tenant)?);
+            }
+            for name in &permit.agents {
+                let agent = prepared
+                    .agents
+                    .get(name)
+                    .ok_or("permit agent is not declared")?;
+                if !agent
+                    .declaration
+                    .grants
+                    .iter()
+                    .any(|grant| grant.source == permit.subject)
+                {
+                    return Err("permit agent source is not declared".into());
+                }
+                effects.push(agent.binding.ingress_effect().clone());
             }
             let change = format!(
                 "deployment-permit/{:x}",

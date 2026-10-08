@@ -246,7 +246,9 @@ struct TaskIdParams {
 /// task transitions land on the same hash chain as action records.
 async fn task_engine(state: &AppState) -> TaskEngine {
     let gw = state.gateway.read().await;
-    let mut engine = TaskEngine::new(gw.state_store().clone()).with_clock(gw.clock());
+    let mut engine = TaskEngine::new(gw.state_store().clone())
+        .with_clock(gw.clock())
+        .with_legacy_task_access();
     if let Some(audit) = gw.audit_store() {
         engine = engine.with_audit(audit);
     }

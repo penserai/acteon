@@ -17,7 +17,7 @@ use acteon_executor::{
     },
 };
 use acteon_governance::{
-    AuthorityCoordinator, CoordinationError,
+    AuthorityChange, AuthorityCoordinator, CoordinationError,
     context::{ContextError, TrustedContextStore, VerifiedExecutionContext},
     permit::{PermitReference, matches_effect, permit_revision_tag},
 };
@@ -36,6 +36,26 @@ pub struct AgentRuntimeDependencies {
     pub coordinator: AuthorityCoordinator,
     pub contexts: Arc<TrustedContextStore>,
     pub clock: Arc<dyn Clock>,
+}
+
+/// Identify accepted governed work from its durable journal, including when a
+/// task projection is missing or its display metadata has been damaged. This
+/// observation supplies no authority to inspect or mutate the task itself.
+pub async fn is_governed_agent_task(
+    state: &dyn StateStore,
+    namespace: &str,
+    tenant: &str,
+    task_id: &str,
+) -> Result<bool, StateError> {
+    state
+        .get(&StateKey::new(
+            namespace,
+            tenant,
+            KeyKind::Custom(ACCEPTANCE_KIND.into()),
+            task_id,
+        ))
+        .await
+        .map(|value| value.is_some())
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -71,6 +91,30 @@ struct Acceptance {
     initial_task: Task,
 }
 
+#[derive(Deserialize)]
+struct AcceptanceRoutingHint {
+    binding_digest: String,
+}
+
+/// Read the bounded binding selector used by a trusted recovery host. This is
+/// only a routing hint; the selected runtime must decode and verify the complete
+/// immutable acceptance before returning data or starting an effect.
+pub fn accepted_agent_binding_digest(raw: &str) -> Result<String, AgentRuntimeError> {
+    if raw.len() > MAX_ACCEPTANCE_BYTES {
+        return Err(AgentRuntimeError::Invalid);
+    }
+    let hint: AcceptanceRoutingHint = serde_json::from_str(raw)?;
+    if hint.binding_digest.len() != 64
+        || !hint
+            .binding_digest
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err(AgentRuntimeError::Invalid);
+    }
+    Ok(hint.binding_digest)
+}
+
 /// An individual agent bound to one qualified provider operation. Other runtime
 /// families (chains, workers, external runtimes) need their own adapters.
 /// Requests cannot select providers, endpoints, executing identities, or plans.
@@ -85,6 +129,17 @@ pub struct AgentProviderRuntime {
 pub struct AgentTaskReceipt {
     pub task: Task,
     pub execution: Option<GovernedProviderReceipt>,
+    /// Durable coordinator restriction, independent of provider outcome.
+    pub future_starts_blocked: bool,
+}
+
+/// Acknowledgement of a restrictive control write, not a provider abort.
+#[derive(Serialize)]
+pub struct AgentTaskStopReceipt {
+    pub task: Task,
+    pub future_starts_blocked: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_abort: Option<acteon_executor::governed::abort::ProviderAbortStatus>,
 }
 
 impl AgentProviderRuntime {
@@ -120,6 +175,23 @@ impl AgentProviderRuntime {
             executor,
             tasks,
         })
+    }
+
+    /// Install a host-qualified provider abort adapter and matching finality
+    /// verifier before sharing this runtime. The adapter can request an abort;
+    /// only the verifier can establish provider finality.
+    pub fn with_trusted_provider_abort(
+        mut self,
+        adapter: Arc<dyn acteon_executor::governed::abort::ProviderAbortAdapter>,
+        verifier: Arc<
+            dyn acteon_executor::governed::reconciliation::ProviderReconciliationVerifier,
+        >,
+    ) -> Result<Self, AgentRuntimeError> {
+        self.executor = self
+            .executor
+            .with_trusted_reconciliation_verifier(verifier)?
+            .with_trusted_abort_adapter(adapter)?;
+        Ok(self)
     }
 
     /// Fixed message-to-provider mapping, v1. The complete validated message is
@@ -223,7 +295,10 @@ impl AgentProviderRuntime {
             .verify_service_runtime_binding(
                 &context,
                 self.binding.digest(),
-                std::slice::from_ref(self.bound.effect()),
+                self.binding
+                    .service_plan()
+                    .ok_or(AgentRuntimeError::Invalid)?
+                    .direct_effects(),
             )
             .await?;
         Ok(())
@@ -347,9 +422,41 @@ impl AgentProviderRuntime {
         }
     }
 
-    /// Recover original accepted work. Provider execution retains its existing
-    /// immutable operation/attempt journal and coordinator start checkpoint.
-    pub async fn resume(&self, task_id: uuid::Uuid) -> Result<AgentTaskReceipt, AgentRuntimeError> {
+    /// Recover the immediate requester from the immutable signed acceptance.
+    /// Hosts must authenticate observation before returning any task contents.
+    pub async fn source_context(
+        &self,
+        task_id: uuid::Uuid,
+    ) -> Result<VerifiedExecutionContext, AgentRuntimeError> {
+        let accepted = self.load_acceptance(task_id).await?;
+        let context = self
+            .dependencies
+            .contexts
+            .recover_reference_for_observation(&accepted.reference)
+            .await?;
+        context
+            .immediate_service_source()
+            .ok_or(AgentRuntimeError::Conflict)
+    }
+
+    /// Recover the current recipient context for a host-owned tool invocation.
+    /// The task ID is an opaque lookup handle, never an authority token.
+    pub async fn recipient_context(
+        &self,
+        task_id: uuid::Uuid,
+    ) -> Result<VerifiedExecutionContext, AgentRuntimeError> {
+        let accepted = self.load_acceptance(task_id).await?;
+        self.dependencies
+            .contexts
+            .recover_reference(
+                &accepted.reference,
+                self.dependencies.clock.now().timestamp_millis(),
+            )
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn load_acceptance(&self, task_id: uuid::Uuid) -> Result<Acceptance, AgentRuntimeError> {
         let raw = self
             .dependencies
             .state
@@ -361,6 +468,114 @@ impl AgentProviderRuntime {
             return Err(AgentRuntimeError::Conflict);
         }
         self.verify(&accepted).await?;
+        Ok(accepted)
+    }
+
+    /// Restrict this accepted recipient subtree using its original signed source.
+    /// Trusted hosts must authenticate the current requester before calling this.
+    /// This does not settle attempts, refund budgets, release capacity, or assert
+    /// that an already delivered provider effect has been cancelled.
+    pub async fn stop(
+        &self,
+        task_id: uuid::Uuid,
+        requester: &VerifiedExecutionContext,
+    ) -> Result<AgentTaskStopReceipt, AgentRuntimeError> {
+        let accepted = self.load_acceptance(task_id).await?;
+        let recipient = self
+            .dependencies
+            .contexts
+            .recover_reference_for_observation(&accepted.reference)
+            .await?;
+        let source = recipient
+            .immediate_service_source()
+            .ok_or(AgentRuntimeError::Conflict)?;
+        if source.reference()? != requester.reference()? {
+            return Err(AgentRuntimeError::Conflict);
+        }
+        self.dependencies
+            .coordinator
+            .change(
+                &format!("agent-service-stop:{task_id}"),
+                AuthorityChange::CancelExecution {
+                    execution_id: task_id.to_string(),
+                },
+                source.principal().id(),
+                "original requester stopped future agent-service starts",
+            )
+            .await?;
+        let provider_abort = self
+            .executor
+            .abort_restricted(&accepted.reference, recipient.principal())
+            .await?
+            .map(|receipt| receipt.abort);
+        let observed = self.observe(task_id).await?;
+        Ok(AgentTaskStopReceipt {
+            task: observed.task,
+            future_starts_blocked: observed.future_starts_blocked,
+            provider_abort,
+        })
+    }
+
+    async fn future_starts_blocked(
+        &self,
+        accepted: &Acceptance,
+    ) -> Result<bool, AgentRuntimeError> {
+        let snapshot = self.dependencies.coordinator.snapshot().await?;
+        let root = snapshot
+            .roots
+            .get(&accepted.reference.execution_id().to_string())
+            .ok_or(AgentRuntimeError::Conflict)?;
+        Ok(root.cancelled)
+    }
+
+    /// Read and repair evidence without invoking a provider or reserving capacity.
+    /// Current revocation can deny a start without hiding already accepted work.
+    pub async fn observe(
+        &self,
+        task_id: uuid::Uuid,
+    ) -> Result<AgentTaskReceipt, AgentRuntimeError> {
+        let accepted = self.load_acceptance(task_id).await?;
+        let scope = TaskScope::new(accepted.reference.namespace(), accepted.reference.tenant());
+        let task = self.materialize(&accepted).await?;
+        let execution = self
+            .executor
+            .inspect(&accepted.reference, self.binding.target())
+            .await?;
+        if task.status.state.is_terminal()
+            && !execution.as_ref().is_some_and(|receipt| matches!(&receipt.status,
+                GovernedProviderStatus::Completed { outcome } if task.status.state == terminal_state(outcome))) {
+            return Err(AgentRuntimeError::Conflict);
+        }
+        match execution {
+            Some(execution) => {
+                self.project_execution(&scope, &accepted.initial_task, task, execution)
+                    .await
+            }
+            None if task.status.state.is_terminal() => Err(AgentRuntimeError::Conflict),
+            None => Ok(AgentTaskReceipt {
+                task,
+                execution: None,
+                future_starts_blocked: self.future_starts_blocked(&accepted).await?,
+            }),
+        }
+    }
+
+    /// Routing hint for a trusted recovery driver. Full qualification is repeated
+    /// by observation/resume before any projection or provider operation.
+    pub fn acceptance_task_id(&self, raw: &str) -> Result<uuid::Uuid, AgentRuntimeError> {
+        let accepted = self.decode(raw)?;
+        Ok(accepted.reference.execution_id())
+    }
+
+    #[must_use]
+    pub fn binding_digest(&self) -> &str {
+        self.binding.digest()
+    }
+
+    /// Recover original accepted work. Provider execution retains its existing
+    /// immutable operation/attempt journal and coordinator start checkpoint.
+    pub async fn resume(&self, task_id: uuid::Uuid) -> Result<AgentTaskReceipt, AgentRuntimeError> {
+        let accepted = self.load_acceptance(task_id).await?;
         let scope = TaskScope::new(accepted.reference.namespace(), accepted.reference.tenant());
         let mut task = self.materialize(&accepted).await?;
         let previous = self
@@ -384,7 +599,11 @@ impl AgentProviderRuntime {
                     self.project_execution(&scope, &accepted.initial_task, task, execution)
                         .await
                 }
-                execution => Ok(AgentTaskReceipt { task, execution }),
+                execution => Ok(AgentTaskReceipt {
+                    task,
+                    execution,
+                    future_starts_blocked: self.future_starts_blocked(&accepted).await?,
+                }),
             };
         }
         if task.status.state == TaskState::Submitted {
@@ -466,6 +685,15 @@ impl AgentProviderRuntime {
                 return Ok(AgentTaskReceipt {
                     task,
                     execution: Some(execution),
+                    future_starts_blocked: self
+                        .dependencies
+                        .coordinator
+                        .snapshot()
+                        .await?
+                        .roots
+                        .get(&expected.id)
+                        .ok_or(AgentRuntimeError::Conflict)?
+                        .cancelled,
                 });
             }
             task = self
@@ -476,6 +704,15 @@ impl AgentProviderRuntime {
         Ok(AgentTaskReceipt {
             task,
             execution: Some(execution),
+            future_starts_blocked: self
+                .dependencies
+                .coordinator
+                .snapshot()
+                .await?
+                .roots
+                .get(&expected.id)
+                .ok_or(AgentRuntimeError::Conflict)?
+                .cancelled,
         })
     }
 }

@@ -1,8 +1,15 @@
 //! Production preparation from validated declarations and actual registrations.
 //! Preparation is read-only; publication is a later, explicitly ordered stage.
+pub mod agent_services;
+mod peer_http;
 mod runtime;
+pub use peer_http::ActeonPeerHttpAdapter;
 pub use runtime::{
-    ExecutionAuthorityRuntime, ExecutionRuntimeDependencies, ManagementError,
+    AgentPeerCancelInvocation, AgentPeerCancelRequest, AgentPeerDiscoveryInvocation,
+    AgentPeerDiscoveryRequest, AgentPeerInvocation, AgentPeerRefreshInvocation,
+    AgentPeerRefreshRequest, AgentPeerToolRequest, AgentPeerTransportError, AgentServiceAcceptance,
+    AgentServiceDriver, AgentServiceError, AgentServiceObservation, AgentServiceParent,
+    AgentServiceRequest, ExecutionAuthorityRuntime, ExecutionRuntimeDependencies, ManagementError,
     TrustedReconciliationInstallation,
 };
 use std::{collections::BTreeMap, sync::Arc};
@@ -45,6 +52,15 @@ fn validate_management_footprints(
                     .any(|r| r.provider == d.provider && r.action_type == d.action_type)
             })
             .flat_map(|d| d.effect.resources.iter().cloned())
+            .chain(manager.agents.iter().map(|id| {
+                acteon_core::ResourceRef::new(
+                    acteon_core::ResourceKind::Agent,
+                    &declaration.namespace,
+                    &declaration.tenant,
+                    id,
+                )
+                .expect("validated manager agent")
+            }))
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect();
@@ -95,6 +111,8 @@ impl ExecutionProviderRegistry {
 
     /// Resolve and validate all scopes before any coordinator is initialized or
     /// any source epoch is published. Unsupported adapters remain unqualified.
+    // Keep the ordered qualification and authority checks visible together.
+    #[allow(clippy::too_many_lines)]
     pub fn prepare(
         &self,
         configuration: &ExecutionAuthorityConfig,
@@ -139,6 +157,142 @@ impl ExecutionProviderRegistry {
                     QualifiedProviderCatalog::new_trusted(bindings)
                         .map_err(|_| "invalid execution scope catalog")?
                 };
+                let mut agent_operations = BTreeMap::new();
+                for service in &declaration.agent_services {
+                    let actual = &self
+                        .entries
+                        .get(&service.route.provider)
+                        .ok_or("agent provider unavailable")?
+                        .actual;
+                    let action = Action::new(
+                        declaration.namespace.as_str(),
+                        declaration.tenant.as_str(),
+                        service.route.provider.as_str(),
+                        &service.route.action_type,
+                        serde_json::Value::Null,
+                    );
+                    let bound = catalog
+                        .resolve(&action, actual)
+                        .map_err(|_| "agent operation is not qualified")?
+                        .clone();
+                    agent_operations
+                        .insert(service.card.agent_id.clone(), (service.clone(), bound));
+                }
+                let mut reachability = BTreeMap::new();
+                for agent_id in agent_operations.keys() {
+                    let mut reachable = std::collections::BTreeSet::new();
+                    let mut pending = vec![agent_id.as_str()];
+                    while let Some(candidate) = pending.pop() {
+                        if !reachable.insert(candidate.to_owned()) {
+                            continue;
+                        }
+                        let (declaration, _) = agent_operations
+                            .get(candidate)
+                            .ok_or("agent onward service lost qualification")?;
+                        pending.extend(declaration.onward_agents.iter().map(String::as_str));
+                    }
+                    reachability.insert(agent_id.clone(), reachable);
+                }
+                let mut ingresses = BTreeMap::new();
+                for (agent_id, reachable) in &reachability {
+                    let mut resources = Vec::new();
+                    for target_id in reachable {
+                        let (target, operation) = agent_operations
+                            .get(target_id)
+                            .ok_or("agent onward service is not qualified")?;
+                        resources.extend(operation.effect().resources.iter().cloned());
+                        resources.extend(target.ingress_effect(Vec::new())?.resources);
+                    }
+                    let (service, _) = &agent_operations[agent_id];
+                    ingresses.insert(agent_id.clone(), service.ingress_effect(resources)?);
+                }
+                let mut agents = BTreeMap::new();
+                for (agent_id, (service, bound)) in &agent_operations {
+                    let reachable = &reachability[agent_id];
+                    let mut intent: Vec<_> = reachable
+                        .iter()
+                        .map(|id| {
+                            agent_operations
+                                .get(id)
+                                .map(|(_, operation)| operation.effect().clone())
+                                .ok_or("agent onward service is not qualified")
+                        })
+                        .collect::<Result<_, _>>()?;
+                    intent.extend(
+                        reachable
+                            .iter()
+                            .filter(|target_id| *target_id != agent_id)
+                            .map(|target_id| ingresses[target_id].clone()),
+                    );
+                    let mut direct = vec![bound.effect().clone()];
+                    direct.extend(
+                        service
+                            .onward_agents
+                            .iter()
+                            .map(|target_id| ingresses[target_id].clone()),
+                    );
+                    intent.sort_by(|left, right| {
+                        left.operation
+                            .cmp(&right.operation)
+                            .then(left.resources.cmp(&right.resources))
+                    });
+                    intent.dedup();
+                    direct.sort_by(|left, right| {
+                        left.operation
+                            .cmp(&right.operation)
+                            .then(left.resources.cmp(&right.resources))
+                    });
+                    direct.dedup();
+                    let binding = service.qualify_with_plan(bound, intent, direct)?;
+                    if binding.ingress_effect() != &ingresses[agent_id] {
+                        return Err("agent service graph footprint is not canonical".into());
+                    }
+                    agents.insert(
+                        agent_id.clone(),
+                        agent_services::PreparedAgentService {
+                            declaration: service.clone(),
+                            binding,
+                            bound: bound.clone(),
+                        },
+                    );
+                }
+                let mut retained_agents = BTreeMap::new();
+                for service in &declaration.retained_agent_services {
+                    let actual = &self
+                        .entries
+                        .get(&service.route.provider)
+                        .ok_or("retained agent provider unavailable")?
+                        .actual;
+                    let action = Action::new(
+                        declaration.namespace.as_str(),
+                        declaration.tenant.as_str(),
+                        service.route.provider.as_str(),
+                        &service.route.action_type,
+                        serde_json::Value::Null,
+                    );
+                    let bound = catalog
+                        .resolve(&action, actual)
+                        .map_err(|_| "retained agent operation is not qualified")?
+                        .clone();
+                    let binding = service.qualify(&bound)?;
+                    let key = (service.card.agent_id.clone(), binding.digest().to_owned());
+                    if agents.values().any(|current| {
+                        current.declaration.card.agent_id == service.card.agent_id
+                            && current.binding.digest() == binding.digest()
+                    }) || retained_agents
+                        .insert(
+                            key,
+                            agent_services::PreparedRetainedAgentService {
+                                agent_id: service.card.agent_id.clone(),
+                                binding,
+                                bound,
+                            },
+                        )
+                        .is_some()
+                    {
+                        return Err("duplicate retained agent binding".into());
+                    }
+                }
                 let mut effects: Vec<_> = catalog
                     .definitions(&declaration.namespace, &declaration.tenant)
                     .into_iter()
@@ -148,6 +302,20 @@ impl ExecutionProviderRegistry {
                     effects.push(chain.effect(&declaration.namespace, &declaration.tenant)?);
                 }
                 effects.extend(declaration.historical_effects.clone());
+                effects.extend(
+                    agents
+                        .values()
+                        .map(|agent| agent.binding.ingress_effect().clone()),
+                );
+                // Retain the previous footprint in the publisher ceiling so a
+                // new authentication revision can withdraw its old credential
+                // effects. Retained bindings are excluded from agent admission
+                // bounds, permits, registry publication, and delegation grants.
+                effects.extend(
+                    retained_agents
+                        .values()
+                        .map(|agent| agent.binding.ingress_effect().clone()),
+                );
                 effects.sort_by(|a, b| {
                     a.operation
                         .cmp(&b.operation)
@@ -182,18 +350,29 @@ impl ExecutionProviderRegistry {
                 if declaration.reconciliation_only {
                     policy["reconciliation_only"] = serde_json::json!(true);
                 }
+                if !declaration.agent_services.is_empty() {
+                    policy["agent_services"] = serde_json::json!(declaration.agent_services);
+                }
+                if !declaration.retained_agent_services.is_empty() {
+                    policy["retained_agent_services"] =
+                        serde_json::json!(declaration.retained_agent_services);
+                }
                 if !declaration.chains.is_empty() {
                     policy["chains"] = serde_json::json!(declaration.chains);
                 }
                 if !declaration.managers.is_empty() {
                     policy["managers"] = serde_json::json!(declaration.managers);
                 }
+                policy["peer_transport"] = serde_json::json!(configuration.peer_transport);
                 let bytes = serde_json::to_vec(&policy)
                     .map_err(|_| "invalid execution deployment policy")?;
                 Ok(PreparedExecutionScope {
                     declaration,
+                    peer_transport: configuration.peer_transport.clone(),
                     catalog,
                     issuance,
+                    agents,
+                    retained_agents,
                     policy_fingerprint: format!("{:x}", Sha256::digest(bytes)),
                 })
             })
@@ -371,12 +550,24 @@ impl<'a> AuthenticatedProviderAdmission<'a> {
 /// Private construction keeps preparation evidence separate from wire metadata.
 pub struct PreparedExecutionScope {
     declaration: ExecutionScopeConfig,
+    peer_transport: crate::config::AgentPeerTransportConfig,
     catalog: QualifiedProviderCatalog,
+    agents: BTreeMap<String, agent_services::PreparedAgentService>,
+    retained_agents: BTreeMap<(String, String), agent_services::PreparedRetainedAgentService>,
     issuance: PermitIssuanceCeiling,
     policy_fingerprint: String,
 }
 
 impl PreparedExecutionScope {
+    /// Exact reviewed service digest operators retain when replacing a binding.
+    /// The digest is correlation data only and grants no authority by itself.
+    #[must_use]
+    pub fn agent_service_binding_digest(&self, agent_id: &str) -> Option<&str> {
+        self.agents
+            .get(agent_id)
+            .map(|agent| agent.binding.digest())
+    }
+
     /// Qualify complete pinned plans against this scope's actual registrations.
     /// This is preparation metadata; authentication and current permits are
     /// still required for root admission and every subsequent effect.
@@ -451,6 +642,20 @@ impl PreparedExecutionScope {
             return Err("authenticated scope differs from prepared execution policy".into());
         }
         binding.verify_execution_scope(coordinator, now_ms).await
+    }
+
+    pub(crate) async fn verify_authenticated_scope_typed(
+        &self,
+        binding: &ScopedCredentialBinding,
+        coordinator: &AuthorityCoordinator,
+        now_ms: i64,
+    ) -> Result<acteon_governance::AuthorityStamp, acteon_governance::CoordinationError> {
+        if !binding.matches_deployment_policy(&self.policy_fingerprint) {
+            return Err(acteon_governance::CoordinationError::Restricted);
+        }
+        binding
+            .verify_execution_scope_typed(coordinator, now_ms)
+            .await
     }
 
     /// Admit actual selected work with original authentication and explicit
@@ -743,11 +948,31 @@ impl PreparedExecutionScope {
                     .iter()
                     .map(|chain| (chain.name.clone(), chain.subjects.clone()))
                     .collect(),
+            )?
+            .with_agent_admission_bounds(
+                self.agents
+                    .iter()
+                    .map(|(id, agent)| {
+                        (
+                            id.clone(),
+                            (
+                                agent.binding.ingress_effect().clone(),
+                                agent
+                                    .declaration
+                                    .grants
+                                    .iter()
+                                    .map(|grant| grant.source.clone())
+                                    .collect(),
+                            ),
+                        )
+                    })
+                    .collect(),
             )
     }
 }
 
 fn canonicalize_manager(manager: &mut crate::config::ExecutionManagerConfig) {
+    manager.agents.sort();
     manager.subjects.sort_by(|a, b| a.id().cmp(b.id()));
     manager.routes.sort();
     if let Some(workforce) = &mut manager.workforce {
@@ -770,10 +995,28 @@ fn canonicalize_declaration(declaration: &mut ExecutionScopeConfig) {
         .managers
         .iter_mut()
         .for_each(canonicalize_manager);
+    declaration
+        .agent_services
+        .sort_by(|a, b| a.card.agent_id.cmp(&b.card.agent_id));
+    for service in &mut declaration.agent_services {
+        service.recipient_permits.sort_by(|a, b| a.id.cmp(&b.id));
+        service.grants.sort_by(|a, b| a.id.cmp(&b.id));
+        for grant in &mut service.grants {
+            grant.source_permits.sort_by(|a, b| a.id.cmp(&b.id));
+        }
+    }
+    declaration.retained_agent_services.sort_by(|a, b| {
+        a.card
+            .agent_id
+            .cmp(&b.card.agent_id)
+            .then(a.registry_revision.cmp(&b.registry_revision))
+            .then(a.binding_digest.cmp(&b.binding_digest))
+    });
     declaration.permits.sort_by(|a, b| a.id.cmp(&b.id));
     for permit in &mut declaration.permits {
         permit.routes.sort();
         permit.chains.sort();
+        permit.agents.sort();
     }
     for effect in &mut declaration.historical_effects {
         effect.resources.sort();

@@ -3,7 +3,11 @@ use acteon_core::{
     ProviderResponse, ResourceKind, ResourceRef,
 };
 use acteon_crypto::{PayloadEncryptor, parse_master_key};
+use acteon_executor::governed::abort::{
+    ProviderAbortAdapter, ProviderAbortDisposition, ProviderAbortStatus,
+};
 use acteon_executor::governed::history::{HistoricalProviderStore, OperationIntegrity};
+use acteon_executor::governed::reconciliation::ReconciliationAttempt;
 use acteon_executor::governed::{
     BoundProvider, GovernedProviderError, GovernedProviderExecutor, GovernedProviderStatus,
     OPERATION_KIND, ProviderFailureContract, RESULT_KIND, governed_provider_input_digest,
@@ -92,6 +96,56 @@ impl ProviderFailureContract for KnownRateLimit {
     }
     fn known_rejected(&self, error: &ProviderError) -> bool {
         matches!(error, ProviderError::RateLimited)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum AbortMode {
+    Unsupported,
+    Finality,
+    Block,
+}
+struct AbortAdapter {
+    mode: AbortMode,
+    calls: AtomicUsize,
+    entered: Notify,
+    release: Semaphore,
+}
+impl AbortAdapter {
+    fn new(mode: AbortMode) -> Self {
+        Self {
+            mode,
+            calls: AtomicUsize::new(0),
+            entered: Notify::new(),
+            release: Semaphore::new(0),
+        }
+    }
+}
+#[async_trait]
+impl ProviderAbortAdapter for AbortAdapter {
+    fn revision(&self) -> &'static str {
+        "abort-adapter-v1"
+    }
+
+    async fn abort(
+        &self,
+        attempt: &ReconciliationAttempt,
+    ) -> Result<ProviderAbortDisposition, GovernedProviderError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.entered.notify_one();
+        match self.mode {
+            AbortMode::Unsupported => Ok(ProviderAbortDisposition::Unsupported),
+            AbortMode::Finality => Ok(ProviderAbortDisposition::FinalityProof(finality_proof(
+                attempt.clone(),
+                acteon_executor::governed::reconciliation::ProviderFinality::NoEffect {
+                    reason: "provider confirmed the attempt cannot take effect".into(),
+                },
+            ))),
+            AbortMode::Block => {
+                self.release.acquire().await.unwrap().forget();
+                Ok(ProviderAbortDisposition::Uncertain)
+            }
+        }
     }
 }
 fn actor() -> PrincipalIdentity {
@@ -1709,6 +1763,359 @@ fn finality_proof(
         &[47; 32],
     )
     .unwrap()
+}
+
+#[tokio::test]
+async fn provider_abort_requires_restriction_and_settles_only_with_qualified_finality() {
+    let provider = Arc::new(Counting::new(Mode::Block));
+    let aborter = Arc::new(AbortAdapter::new(AbortMode::Finality));
+    let f = Arc::new(
+        fixture(
+            Arc::new(MemoryStateStore::new()),
+            provider.clone(),
+            false,
+            config(),
+        )
+        .await,
+    );
+    let driver = Arc::new(
+        f.driver(provider.clone(), None)
+            .with_trusted_reconciliation_verifier(finality_verifier())
+            .unwrap()
+            .with_trusted_abort_adapter(aborter.clone())
+            .unwrap(),
+    );
+    let running = {
+        let f = f.clone();
+        let driver = driver.clone();
+        tokio::spawn(async move {
+            driver
+                .execute(&f.reference, &references(), &f.action, &actor())
+                .await
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(5), provider.entered.notified())
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        driver.abort_restricted(&f.reference, &actor()).await,
+        Err(GovernedProviderError::Admission(_))
+    ));
+    assert_eq!(aborter.calls.load(Ordering::SeqCst), 0);
+    f.coordinator
+        .change(
+            "cancel-for-provider-abort",
+            AuthorityChange::CancelExecution {
+                execution_id: f.reference.execution_id().to_string(),
+            },
+            "host",
+            "stop and request provider abort",
+        )
+        .await
+        .unwrap();
+
+    let receipt = driver
+        .abort_restricted(&f.reference, &actor())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        receipt.abort,
+        ProviderAbortStatus::Reconciled { .. }
+    ));
+    let GovernedProviderStatus::Completed {
+        outcome: ActionOutcome::Failed(error),
+    } = receipt.execution.status
+    else {
+        panic!("qualified no-effect finality must settle the attempt")
+    };
+    assert_eq!(error.code, "RECONCILED_NO_EFFECT");
+    assert_eq!(aborter.calls.load(Ordering::SeqCst), 1);
+
+    assert!(matches!(
+        driver
+            .abort_restricted(&f.reference, &actor())
+            .await
+            .unwrap()
+            .unwrap()
+            .abort,
+        ProviderAbortStatus::Reconciled { .. }
+    ));
+    assert_eq!(aborter.calls.load(Ordering::SeqCst), 1);
+    provider.release.add_permits(1);
+    let late = running.await.unwrap().unwrap();
+    assert!(matches!(
+        late.status,
+        GovernedProviderStatus::Completed {
+            outcome: ActionOutcome::Failed(_)
+        }
+    ));
+}
+
+#[tokio::test]
+async fn provider_abort_replays_retained_proof_without_resending_after_restart() {
+    let provider = Arc::new(Counting::new(Mode::Block));
+    let aborter = Arc::new(AbortAdapter::new(AbortMode::Finality));
+    let f = Arc::new(
+        fixture(
+            Arc::new(MemoryStateStore::new()),
+            provider.clone(),
+            false,
+            config(),
+        )
+        .await,
+    );
+    let driver = Arc::new(
+        f.driver(provider.clone(), None)
+            .with_trusted_abort_adapter(aborter.clone())
+            .unwrap(),
+    );
+    let running = {
+        let f = f.clone();
+        let driver = driver.clone();
+        tokio::spawn(async move {
+            driver
+                .execute(&f.reference, &references(), &f.action, &actor())
+                .await
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(5), provider.entered.notified())
+        .await
+        .unwrap();
+    f.coordinator
+        .change(
+            "cancel-before-retained-abort-proof",
+            AuthorityChange::CancelExecution {
+                execution_id: f.reference.execution_id().to_string(),
+            },
+            "host",
+            "stop and retain provider abort finality",
+        )
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        driver.abort_restricted(&f.reference, &actor()).await,
+        Err(GovernedProviderError::Admission(_))
+    ));
+    assert_eq!(aborter.calls.load(Ordering::SeqCst), 1);
+
+    let restarted = f
+        .driver(provider.clone(), None)
+        .with_trusted_reconciliation_verifier(finality_verifier())
+        .unwrap();
+    assert!(matches!(
+        restarted
+            .abort_restricted(&f.reference, &actor())
+            .await
+            .unwrap()
+            .unwrap()
+            .abort,
+        ProviderAbortStatus::Reconciled { .. }
+    ));
+    assert_eq!(aborter.calls.load(Ordering::SeqCst), 1);
+    provider.release.add_permits(1);
+    assert!(matches!(
+        running.await.unwrap().unwrap().status,
+        GovernedProviderStatus::Completed {
+            outcome: ActionOutcome::Failed(_)
+        }
+    ));
+}
+
+#[tokio::test]
+async fn provider_abort_crash_is_uncertain_and_never_automatically_resent() {
+    let provider = Arc::new(Counting::new(Mode::Block));
+    let aborter = Arc::new(AbortAdapter::new(AbortMode::Block));
+    let f = Arc::new(
+        fixture(
+            Arc::new(MemoryStateStore::new()),
+            provider.clone(),
+            false,
+            config(),
+        )
+        .await,
+    );
+    let driver = Arc::new(
+        f.driver(provider.clone(), None)
+            .with_trusted_reconciliation_verifier(finality_verifier())
+            .unwrap()
+            .with_trusted_abort_adapter(aborter.clone())
+            .unwrap(),
+    );
+    let running = {
+        let f = f.clone();
+        let driver = driver.clone();
+        tokio::spawn(async move {
+            driver
+                .execute(&f.reference, &references(), &f.action, &actor())
+                .await
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(5), provider.entered.notified())
+        .await
+        .unwrap();
+    f.coordinator
+        .change(
+            "cancel-before-lost-abort-response",
+            AuthorityChange::CancelExecution {
+                execution_id: f.reference.execution_id().to_string(),
+            },
+            "host",
+            "stop and request provider abort",
+        )
+        .await
+        .unwrap();
+    let delivery = {
+        let f = f.clone();
+        let driver = driver.clone();
+        tokio::spawn(async move { driver.abort_restricted(&f.reference, &actor()).await })
+    };
+    tokio::time::timeout(Duration::from_secs(5), aborter.entered.notified())
+        .await
+        .unwrap();
+    delivery.abort();
+    assert!(delivery.await.unwrap_err().is_cancelled());
+
+    let restarted = f
+        .driver(provider.clone(), None)
+        .with_trusted_reconciliation_verifier(finality_verifier())
+        .unwrap();
+    let receipt = restarted
+        .abort_restricted(&f.reference, &actor())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        receipt.abort,
+        ProviderAbortStatus::Uncertain { .. }
+    ));
+    assert_eq!(aborter.calls.load(Ordering::SeqCst), 1);
+    provider.release.add_permits(1);
+    completed(&running.await.unwrap().unwrap().status);
+}
+
+#[tokio::test]
+async fn provider_abort_timeout_is_uncertain_and_never_automatically_resent() {
+    let provider = Arc::new(Counting::new(Mode::Connection));
+    let aborter = Arc::new(AbortAdapter::new(AbortMode::Block));
+    let mut settings = config();
+    settings.execution_timeout = Duration::from_millis(20);
+    let f = fixture(
+        Arc::new(MemoryStateStore::new()),
+        provider.clone(),
+        false,
+        settings,
+    )
+    .await;
+    let driver = f
+        .driver(provider, None)
+        .with_trusted_abort_adapter(aborter.clone())
+        .unwrap();
+    assert!(matches!(
+        driver
+            .execute(&f.reference, &references(), &f.action, &actor())
+            .await
+            .unwrap()
+            .status,
+        GovernedProviderStatus::ReconciliationRequired { .. }
+    ));
+    f.coordinator
+        .change(
+            "cancel-before-abort-timeout",
+            AuthorityChange::CancelExecution {
+                execution_id: f.reference.execution_id().to_string(),
+            },
+            "host",
+            "bound provider abort delivery",
+        )
+        .await
+        .unwrap();
+
+    let receipt = driver
+        .abort_restricted(&f.reference, &actor())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        receipt.abort,
+        ProviderAbortStatus::Uncertain { .. }
+    ));
+    assert_eq!(aborter.calls.load(Ordering::SeqCst), 1);
+    assert!(matches!(
+        driver
+            .abort_restricted(&f.reference, &actor())
+            .await
+            .unwrap()
+            .unwrap()
+            .abort,
+        ProviderAbortStatus::Uncertain { .. }
+    ));
+    assert_eq!(aborter.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn unsupported_provider_abort_reports_restriction_without_claiming_cancellation() {
+    let provider = Arc::new(Counting::new(Mode::Block));
+    let aborter = Arc::new(AbortAdapter::new(AbortMode::Unsupported));
+    let f = Arc::new(
+        fixture(
+            Arc::new(MemoryStateStore::new()),
+            provider.clone(),
+            false,
+            config(),
+        )
+        .await,
+    );
+    let driver = Arc::new(
+        f.driver(provider.clone(), None)
+            .with_trusted_abort_adapter(aborter.clone())
+            .unwrap(),
+    );
+    let running = {
+        let f = f.clone();
+        let driver = driver.clone();
+        tokio::spawn(async move {
+            driver
+                .execute(&f.reference, &references(), &f.action, &actor())
+                .await
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(5), provider.entered.notified())
+        .await
+        .unwrap();
+    f.coordinator
+        .change(
+            "cancel-unsupported-provider-abort",
+            AuthorityChange::CancelExecution {
+                execution_id: f.reference.execution_id().to_string(),
+            },
+            "host",
+            "stop without provider abort capability",
+        )
+        .await
+        .unwrap();
+    let receipt = driver
+        .abort_restricted(&f.reference, &actor())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(receipt.abort, ProviderAbortStatus::RestrictedOnly);
+    assert_eq!(aborter.calls.load(Ordering::SeqCst), 1);
+    assert!(matches!(
+        receipt.execution.status,
+        GovernedProviderStatus::InFlight { .. }
+    ));
+    let replay = driver
+        .abort_restricted(&f.reference, &actor())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(replay.abort, ProviderAbortStatus::RestrictedOnly);
+    assert_eq!(aborter.calls.load(Ordering::SeqCst), 1);
+    provider.release.add_permits(1);
+    completed(&running.await.unwrap().unwrap().status);
 }
 
 #[tokio::test]

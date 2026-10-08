@@ -23,6 +23,7 @@ chrono.workspace = true
 acteon-state-memory.workspace = true
 acteon-state-redis.workspace = true
 acteon-state-postgres.workspace = true
+acteon-state-dynamodb.workspace = true
 sqlx.workspace = true
 tokio.workspace = true
 

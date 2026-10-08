@@ -26,6 +26,14 @@ Implemented on `feat/governed-executor-boundary`:
 
 Evidence lives in `crates/server/tests/api_tests.rs`, role and route-permission
 unit tests, `scripts/ci/route_permissions.py`, and `scripts/ci/agent_guide.py`.
+
+Remote agent work now has a state-backend journal for at-most-once cancellation.
+The cancellation path rechecks current permits, closures, source service
+binding, onward-agent grant, registry card and exact target binding. Ambiguous
+delivery is retained as uncertain and reconciled only by safe task observation;
+it is never automatically resent. The public route and all five SDKs preserve
+unsupported, rejection, uncertainty, and observed terminal finality as separate
+outcomes.
 These verify endpoint least privilege and existing execution paths. Those first-slice checks do not
 verify per-effect permits, revocation during a chain, closures or mesh execution.
 
@@ -1430,3 +1438,393 @@ these boundaries, including lost acceptance acknowledgment and both known and
 uncertain outcomes. Redis uses an isolated UUID prefix and the contract is wired
 into CI. This verifies this adapter on memory and Redis; it does not establish
 network A2A or all-backend qualification.
+
+### Durable runtime released; authenticated service admission underway
+
+PR #432 merged on October 6, 2026 as
+`91674147d449b332f754e3f2db89705cbf475822`. All 28 reviewed-head checks
+completed (25 successful, three intentionally skipped). Documentation deployment
+37532453477 succeeded for that merge; the public governance article matched the
+reviewed strict build. This supersedes the earlier in-progress release status.
+
+Draft PR #433 implements configured individual-agent service admission. Deployment
+publication first authenticates every configured recipient against its own
+principal, scoped credential policy, and qualified operation. Missing, wrong,
+or unqualified recipient credentials prevent listener startup. A source's
+`agent.<id>/invoke` grant does not authorize the recipient's private provider.
+The individual REST endpoint durably accepts and replays the same message with
+no provider effect start; actual starts remain governed executor work.
+
+Review found that tenant-level A2A endpoints could otherwise access governed
+service projections. The legacy adapter and push-config storage now check the
+durable acceptance identity. Isolation also covers damaged display metadata,
+substituted display IDs, and missing projections. Real-server contracts exercise
+legacy get, cancel, continuation, event subscription, and callback configuration.
+Generated route catalogs include the new operation in all five SDKs; native
+service lifecycle helpers and UI still depend on the completed wire contract.
+
+This is admission progress, not the Phase 4 completion gate. Required work remains:
+requester-isolated observation/control, a durable driver and restart recovery,
+registry revision fencing, qualified outbound transport, cancellation ambiguity,
+and a real peer lifecycle. The complete city/workforce objective remains active.
+
+
+### Requester observation and server driver checkpoint
+
+The PR #433 branch adds authenticated requester observation and a configurable
+server driver over the existing durable acceptance journal. Observation checks
+source principal, credential identity, authentication method, and, for agent
+callers, the exact source context returned in the admission response header.
+GET requests cannot start provider work. Known completion receipts can restore a
+missing task projection and artifacts atomically without another provider call.
+
+The driver schedules eligible acceptances through the existing governed runtime,
+with bounded concurrency and fair cursors. Completed, in-flight, and uncertain
+receipts are retained rather than automatically resent. The state backend scan
+API still collects whole scopes, so this does not claim bounded storage scanning
+or production scale qualification. Cancellation, typed wire errors, native SDK
+header retention, UI, registry revision fencing, and the qualified outbound peer
+lifecycle remain before release. PR #433 remains a draft.
+
+
+### Typed service failures and actual response-loss recovery
+
+The PR #433 branch now preserves typed failure categories from authentication,
+scope evaluation, context admission, and the durable runtime through the HTTP
+boundary. Storage failure no longer claims missing work, and invalid messages no
+longer look like accepted-input conflicts. Requester ownership failures still
+conceal foreign work. Error bodies contain stable public codes, and service task
+responses prohibit caching.
+
+Three independently connected Redis contracts passed locally: queued work and
+known artifacts survive server restart; a fully received HTTP operation whose
+response is lost remains uncertain across restart without resend or capacity
+release; and an unreadable task projection returns 503 and recovers after repair
+without a provider start. These contracts are now included in CI. This proves
+these inbound adapter behaviors on Redis, rather than outbound A2A lifecycle or
+all-backend qualification. The full city/workforce objective remains active;
+requester cancellation, native SDK/header integration, UI, registry revision
+fencing, and qualified outbound peer lifecycle remain required.
+
+
+### Native agent-service receipt lifecycle integration
+
+All five SDKs now have dedicated service acceptance and observation helpers;
+Python covers sync and async clients. Receipts retain response provenance in
+host state separately from mutable task data. Observation uses the original
+route and task identity with per-request headers. Missing provenance cannot be
+filled from model metadata, and the service helpers do not retry or follow
+redirects. Default Rust and Python transports also refuse automatic redirects;
+custom transports must retain the documented constraints.
+
+The agent detail UI now accepts governed service work and observes retained jobs
+using the current browser identity. An explicit retry preserves its exact message
+ID and content. A new request requires an explicit user action. Context is kept
+out of the rendered task data. Configured CORS origins can read receipt/version
+headers; the real server contract checks that a reference without the original
+requester credential remains denied.
+
+This completes acceptance/observation integration, not cancellation or complete
+peer lifecycle. Registry revision fencing, qualified outbound A2A, unsupported
+and response-lost cancellation, host tools, production backend qualification and
+broader workforce/aggregate funding requirements remain active.
+
+
+### Original-requester stop boundary
+
+An accepted service requester can now restrict future starts for its recipient
+execution subtree through the configured StateStore coordinator. The original
+private credential and signed per-job source context bind this control to its
+accepted task; another job or recipient cannot substitute authority. Concurrent
+and repeated stops share one durable control event. Recovery scheduling skips
+stopped jobs, while observation continues to preserve provider evidence.
+
+Stop is distinct from a provider abort acknowledgement. A task with an uncertain
+external effect stays working and keeps its source and recipient reservations;
+a delivered operation may still complete after the restriction. This checkpoint
+adds the safe restriction boundary. Provider abort/reconciliation, native stop
+SDK/UI helpers, all-backend qualification, registry fencing, qualified outbound
+A2A, and the full workforce objective remain required. PR #433 remains draft.
+
+
+### Receipt-aware stop SDK and browser controls
+
+Every native SDK now stops the original job using its retained host receipt,
+without deriving authority from mutable task data or sharing job headers.
+Helpers require the exact original task identity and a true restriction
+acknowledgement; failed HTTP responses, redirects, false flags and foreign task
+identities cannot return a successful stop receipt. Python covers sync and async.
+
+The browser's per-job **Stop future starts** action retains the same target and
+context on an explicit retry. It acknowledges only the durable future-start
+restriction and keeps actual provider status visible. A later completed result
+preserves the local stopped indication rather than replacing it with Cancelled.
+Desktop and mobile contracts cover this path and keep source contexts out of the
+rendered page. Receipt retention remains local to the open view.
+
+Provider abort/reconciliation, response-lost peer cancellation, registry revision
+fencing, qualified outbound A2A, all-backend/scale qualification, and the complete
+city/workforce requirements remain active. This completes native future-start
+stop integration, not the complete peer lifecycle or Phase 4 release gate.
+
+
+### Registry authority foundation (integration in progress)
+
+The coordinator now retains independently approved agent revisions and exact
+skill binding digests through the configured StateStore. Publication requires a
+trusted host approval and the evaluated authority stamp; ordinary registry
+metadata cannot publish qualification. Retirement and delegated effect starts
+share the coordinator CAS. A retired or replaced qualified binding blocks new
+starts, while known completion and uncertain accounting remain observable.
+Previously published digests cannot be reused to revive old accepted work.
+
+This advances the persisted authority protocol to 11. Existing protocol 10
+scopes require the explicit reviewed upgrade, preserving their incarnation,
+funded child budget links, opaque execution contexts and known or uncertain
+receipts. Startup does not migrate authority automatically.
+
+This is a kernel checkpoint. Mandatory qualification of configured mesh
+services, fencing registry mutation routes before updating their projections,
+and revision-aware service enrollment remain required integration work.
+Abstract trusted delegation can still operate without a registry record; this
+checkpoint does not establish registry fencing for every deployed service.
+Phase 4 and the full governed-city objective remain open.
+
+
+### Mandatory configured-service registry enrollment (integration in progress)
+
+Configured agent services publish their independently qualified registry record
+before deployment grants. Their explicit `registry_revision` defaults to 1 and
+is bound into the complete approved service digest through an enclosing route
+resource. Requalification requires a new epoch and newly reviewed credentials,
+permits and grant revisions wherever their approved footprint changes. Replaying
+a retired or replaced epoch refuses startup rather than reopening it.
+
+Admission requires the exact current qualification before allocating source
+work. The retirement contract uses a real server and an independent Redis
+coordinator: new requests are denied without new roots, accepted history remains
+readable, and a restart under the retired declaration refuses to listen.
+
+Registry mutation-route fencing, retained historical bindings after replacement,
+qualified outbound transport, provider abort/reconciliation and the remaining
+city/workforce phase gates remain required. This completes configured-service
+enrollment, not the full registry or peer lifecycle.
+
+
+### Registry metadata mutation control effects (integration in progress)
+
+The coordinator now stages a digest-pinned agent or card mutation, including
+its expected metadata version, before delivering the separate projection write.
+Staging retires an existing qualification; an intent for an agent that is not
+yet qualified also blocks new qualification. Competing pending intents for the
+same agent are rejected. The same authority CAS gates delegated starts and
+qualification publication.
+
+Delivery requires current independently bounded operator authority and creates
+one durable control-effect receipt. Creation uses StateStore check-and-set,
+replacement uses compare-and-swap, and removal uses compare-and-delete. A known
+version conflict certifies no effect without overwriting newer metadata. A
+successful acknowledgement and matching projection complete the fence. Known
+receipts recover interrupted completion without another write. In-flight or
+uncertain delivery retains the fence and capacity; matching metadata alone,
+including an absent deleted row, cannot certify finality. Secondary delivery
+acknowledgements cannot clear mutation intents. Control authority can remove a
+closed agent's metadata without reopening agent execution.
+
+Focused contracts cover paused writes and independent concurrent workers,
+qualification exclusion, original operator/resource bounds, changed inputs,
+registration and completion acknowledgement loss, uncertain replacement and
+deletion, stale metadata versions, forged completion and explicit legacy
+cutover. An independently connected live Redis race runs under an isolated UUID
+prefix and is included in CI.
+
+Authority protocol 12 has an explicit reviewed cutover from protocols 10 and 11.
+The real delegated runtime contract preserves funded source/recipient budget
+links, opaque context references, registry qualifications and known or uncertain
+receipts under both source versions, with one provider invocation and no resend.
+
+This is the mutation protocol prerequisite. Registry HTTP mutation handlers,
+operator agent-management bounds, receipt-aware SDK/UI recovery and qualified
+reconciliation for ambiguous metadata writes remain required integrations.
+At this checkpoint, retained service bindings across replacement, outbound A2A,
+provider abort and the complete city/workforce phases remained open.
+
+
+### Governed registry operator and backend completion
+
+The registry mutation prerequisite is now integrated through the public HTTP
+boundary with exact manager agent bounds. Governed scopes fence the six legacy
+agent/card writers. Approved discovery reads the actual card, verifies the pinned
+digest and current qualification, and treats the separate presence hint as
+advisory. Agent and card projections keep separate backend versions and share a
+64 KiB discovery/write limit; older larger records remain inspectable and
+removable.
+
+Rust, Python, TypeScript, Go and Java expose typed inspect/mutate helpers with
+correlated receipts, redirect refusal and no automatic retry. The Governance UI
+adds reviewed update/removal, validates responses, journals the exact request
+before send, restores it after reload, prevents duplicate activation and requires
+reinspection before a new intent. Desktop and mobile contracts cover redirect,
+response-loss, false-completion and exact-replay paths.
+
+A shared registry lifecycle contract now passes on memory and independently
+connected Redis, PostgreSQL and DynamoDB stores. It exercises create, a paused
+concurrent replacement, restart, replay without another projection write,
+delete/recreate, restart again and requalification only after known completion. The
+production backend variants use isolated storage and run in CI.
+
+This closes the governed registry mutation/operator/backend building block.
+Provider abort/reconciliation and qualified outbound A2A remain required for the
+full peer lifecycle and city objective.
+
+
+### Retained service bindings across replacement
+
+Execution scopes can now retain up to 128 exact prior agent-service bindings in
+addition to their active services. Each host declaration reconstructs the old
+card, registry epoch, agent principal, endpoint, route and provider operation and
+must match its pinned 64-character binding digest. Preparation refuses forged
+digests, duplicate epochs, nonhistorical revisions and provider substitutions.
+
+Retained bindings install runtimes for accepted-work recovery only. They are
+excluded from new admission bounds, permits, registry qualification and grant
+publication. Their ingress effects remain in the publisher ceiling so a newer
+authentication configuration can withdraw the former credential projection.
+Replacement uses a new registry epoch, source permit revision, authentication
+authority revision and delegation-grant ID; immutable grant IDs cannot be
+retargeted.
+
+Task observation, future-start stop, the recovery driver and exact message replay
+route by the binding digest sealed in the durable acceptance. Read-only signed
+root/child admission inspection correlates a response-lost replay without
+restoring contexts or budgets. Current authentication, original credential ID
+and method, source lineage, task identity, binding and input digest are all
+verified before the original receipt is returned. A changed payload conflicts,
+and a fresh message uses only the active binding. Exact replays and task controls
+continue after all active declarations are removed; fresh sends are refused.
+
+A real server replacement contract on Redis accepts work under revision 1,
+restarts with revision 2 plus the retained binding, observes, stops and exactly
+replays original tasks, executes new work once under the new digest, removes the
+active service while preserving exact replay, and repeats old observations after
+another restart. A superseded queued task cannot borrow the new authority; when
+current checks refuse its first provider start, it stays retained without a
+provider call.
+
+This closes historical service binding retention. Governed parent-context
+handoff, qualified outbound A2A transport, and provider abort/reconciliation
+remain required for the complete peer lifecycle.
+
+
+### Durable provider-abort delivery foundation
+
+The governed executor now exposes a provider-independent abort adapter contract
+for work already fenced by the coordinator. It records the exact reconciliation
+attempt and adapter revision in the configured StateStore before making one
+external call. Unsupported adapters report restriction only. Any crash, timeout,
+error, or lost response remains uncertain and is not resent automatically. The
+host-controlled execution timeout also bounds adapter delivery.
+
+An adapter cannot settle work by claiming success. It must return proof accepted
+by the exact binding's existing finality verifier. Acteon persists that proof
+before reconciliation, replays only the idempotent settlement CAS after restart,
+and retains the proof digest in the abort receipt. Focused contracts prove abort
+is refused before restriction, qualified no-effect finality wins over a late
+provider return, unsupported capability stays distinct, and a crash during the
+adapter call produces one invocation and an uncertain receipt after restart.
+The retained-proof recovery contract also proves that a verifier unavailable at
+delivery time can finish settlement after restart without resending the abort.
+
+Agent-service stop now exposes this distinction as optional `provider_abort`
+state. Rust, Python sync/async, TypeScript, Go, Java, and the browser validate and
+render restriction-only, uncertain, and reconciled states while preserving the
+task's actual provider evidence.
+
+This closes the generic durable abort-delivery and client lifecycle building
+block. Concrete adapters must still qualify external attempt mapping and
+finality against every supported production backend. Qualified outbound A2A
+remains required for the complete peer lifecycle.
+
+### Governed parent-context handoff
+
+The individual-agent admission surface now accepts a paired opaque execution
+context and explicit permit references. It recovers sealed parent authority from
+the configured state backend and rechecks authenticated principal binding,
+permit revisions, registry state, delegation grants, closures, and budgets before
+creating a child. It rejects duplicate or malformed contexts, either header on
+its own, and empty permit sets.
+
+Rust, Python sync/async, TypeScript, Go, and Java expose typed parent invocation
+helpers backed by one cross-language fixture. Context stays in host state and is
+never inferred from model messages or task metadata. This closes the public
+authority-handoff contract needed by outbound peer invocation. Qualified durable
+transport, delivery recovery, and remote finality remain the next platform gap.
+
+### Durable qualified peer-transport foundation
+
+The Rust host now has a backend-neutral durable peer-send journal over the
+configured `StateStore`. It rechecks the approved live registry binding and
+current source delegation authority, persists the complete send intent before
+network delivery, uses a CAS claim for one sender, and retains the exact remote
+task/source mapping only after validating it. Repeated or concurrent submission
+observes the same stable record; the same message ID with different content
+conflicts.
+
+Timeouts, adapter errors, malformed successes, crash-visible registered or
+delivering records, and settlement loss remain uncertain. They are never
+reported as rejection and are not resent by a normal retry. Explicit redelivery
+is available only for an exact host adapter that declares a reviewed idempotent
+submission contract, and it rechecks registry and authority before its CAS claim.
+At-most-once peers cannot use that path.
+
+Focused contracts cover concurrency, changed input, corrupt retained mappings,
+grant retirement, registry suspension, malformed acceptance, ambiguity, and
+qualified idempotent recovery. See
+[Durable qualified peer transport](durable-peer-transport.md).
+
+This closes the generic outbound intent, claim, ambiguity, and remote-acceptance
+mapping foundation. The first concrete adapter now uses the guarded outbound
+client, exact host credential, disabled redirects, bounded response reads, and
+native parent-context headers. It accepts only a typed task and source mapping;
+redirects, 5xx, malformed responses, and transport failures remain uncertain.
+The remote lifecycle bridge, a real two-server restart scenario, and
+durable-backend qualification are still required before the autonomous mesh is
+complete.
+
+### Installed governed peer handoff
+
+Configured agent services now declare exact `onward_agents`. Preparation walks
+that bounded graph, seals the transitive provider intent and immediate peer
+ingress effects, and rejects an edge without the target's grant and a matching
+source permit. Accepted service children retain only those exact onward grant
+references. This closes the authority gap where provider-only intent could not
+authorize the target's full `agent.invoke` effect.
+
+The server installs an approved registry and one durable guarded transport for
+each configured source/target edge. It resolves the source credential from host
+configuration, pins the target binding and replay capability into the adapter
+revision, and shares the configured state backend, coordinator, clock and
+encryption boundary. `AgentPeerInvocation` is a trusted non-deserializable host
+input: the host injects source identity and opaque context while model-selected
+data is limited to the installed target, skill and message. Submit, observe and
+qualified idempotent replay recover and verify the current source service context
+before reaching the journal.
+
+The protected peer-send route resolves that trusted invocation from an accepted
+source task and the calling agent's current private credential. The request body
+contains only the message; source context, permits, endpoint, binding and
+credentials cannot be deserialized from model output. Rust, Python sync/async,
+TypeScript, Go and Java expose typed one-shot helpers and validate the versioned
+accepted, rejected or uncertain receipt without automatic retry.
+
+Accepted sends can now be refreshed by stable submission ID. The runtime
+repeats source authentication, permit, grant, binding and registry checks,
+derives the remote task URL from the exact qualified REST endpoint, performs a
+single guarded read and compare-and-swap journals only valid forward task
+progress. Remote failure preserves the last accepted snapshot. All five clients
+expose the refresh operation without accepting authority fields.
+
+Focused preparation and strict Clippy checks cover call-graph digest changes,
+missing target grants/permits and the compiled runtime integration. The remaining
+mesh work is event-cursor projection, input/auth responses, cancellation, a
+two-server lost-response/restart scenario and production-backend qualification.

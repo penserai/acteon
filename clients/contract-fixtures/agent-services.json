@@ -1,0 +1,98 @@
+{
+  "namespace": "prod",
+  "tenant": "acme",
+  "agent": "notifier",
+  "parent": {
+    "execution_context": "eyJjb250ZXh0X2lkIjoiMTExMTExMTEtMTExMS00MTExLTgxMTEtMTExMTExMTExMTExIiwiZXhlY3V0aW9uX2lkIjoiMjIyMjIyMjItMjIyMi00MjIyLTgyMjItMjIyMjIyMjIyMjIyIiwibmFtZXNwYWNlIjoicHJvZCIsInRlbmFudCI6ImFjbWUiLCJwcmluY2lwYWwiOnsiaWQiOiJjYWxsZXItYWdlbnQiLCJraW5kIjoiYWdlbnQifSwicmVxdWVzdF9kaWdlc3QiOiJhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhIn0",
+    "permits": [
+      {
+        "id": "caller-agent-service",
+        "accepted_revision": 3
+      }
+    ]
+  },
+  "jobs": [
+    {
+      "source_context": "eyJqb2IiOiIxIn0",
+      "task": {
+        "id": "job-1",
+        "namespace": "prod",
+        "tenant": "acme",
+        "status": {
+          "state": "submitted",
+          "timestamp": "2026-10-07T00:00:00Z"
+        },
+        "createdAt": "2026-10-07T00:00:00Z",
+        "updatedAt": "2026-10-07T00:00:00Z",
+        "metadata": {
+          "source_context": "forged-model-token"
+        }
+      },
+      "stop_response": {
+        "task": {
+          "id": "job-1",
+          "namespace": "prod",
+          "tenant": "acme",
+          "status": {
+            "state": "submitted",
+            "timestamp": "2026-10-07T00:00:00Z"
+          },
+          "createdAt": "2026-10-07T00:00:00Z",
+          "updatedAt": "2026-10-07T00:00:00Z",
+          "metadata": {
+            "source_context": "forged-model-token"
+          }
+        },
+        "future_starts_blocked": true,
+        "provider_abort": {
+          "state": "restricted_only"
+        }
+      }
+    },
+    {
+      "source_context": "eyJqb2IiOiIyIn0",
+      "task": {
+        "id": "job-2",
+        "namespace": "prod",
+        "tenant": "acme",
+        "status": {
+          "state": "submitted",
+          "timestamp": "2026-10-07T00:00:00Z"
+        },
+        "createdAt": "2026-10-07T00:00:00Z",
+        "updatedAt": "2026-10-07T00:00:00Z",
+        "metadata": {
+          "source_context": "forged-model-token"
+        }
+      },
+      "stop_response": {
+        "task": {
+          "id": "job-2",
+          "namespace": "prod",
+          "tenant": "acme",
+          "status": {
+            "state": "submitted",
+            "timestamp": "2026-10-07T00:00:00Z"
+          },
+          "createdAt": "2026-10-07T00:00:00Z",
+          "updatedAt": "2026-10-07T00:00:00Z",
+          "metadata": {
+            "source_context": "forged-model-token"
+          }
+        },
+        "future_starts_blocked": true,
+        "provider_abort": {
+          "state": "uncertain",
+          "attempt_id": "f47ac10b-58cc-5372-a567-0e02b2c3d479"
+        }
+      }
+    }
+  ],
+  "error_statuses": [
+    403,
+    404,
+    409,
+    429,
+    503
+  ]
+}

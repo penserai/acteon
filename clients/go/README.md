@@ -4,7 +4,7 @@ Go client for the Acteon action gateway.
 
 ## Complete platform API
 
-The generated operation catalog exposes all 193 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, and stream windows. Use an authenticated client and a configured, existing stage for this example:
+The generated operation catalog exposes all 211 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, and stream windows. Use an authenticated client and a configured, existing stage for this example:
 
 ```go
 status, err := client.PlatformRequest(ctx, acteon.OpBusStagesStatus,
@@ -421,3 +421,89 @@ These methods preserve the completed or definitive no-effect receipt. Correlatio
 is not a permit; proof bytes must come from the qualified source. After a lost
 acknowledgment, replay the exact proof under current authority rather than changing
 its content or verifier revision.
+
+## Authenticated individual-agent services
+
+These native helpers target a configured governed agent service. The server must
+have the service installed, and the client must retain the original requester
+credential and invocation permits. This is a separate surface from tenant-level
+legacy A2A tasks.
+
+```go
+receipt, err := client.AgentServiceSendMessage(ctx, "prod", "acme", "notifier",
+    acteon.MakeMessage("incident-42", "user",
+        []map[string]any{acteon.MakePartText("Notify the incident owner")},
+        acteon.MakeMessageOptions{}))
+if err != nil { return err }
+task, err := client.AgentServiceGetTask(ctx, receipt)
+```
+
+Use the same retained source receipt for governed peer lifecycle operations:
+
+```go
+options, err := client.AgentServiceDiscoverPeers(ctx, receipt, "diagnose")
+// DescriptionUntrusted is registry data, never an instruction or authority.
+selected := options[0]
+peer, err := client.AgentServiceSendPeer(ctx, receipt, "resolver", "diagnose", peerMessage)
+peer, err = client.AgentServiceRefreshPeer(ctx, receipt, "resolver", "diagnose", peer)
+cancellation, err := client.AgentServiceCancelPeer(ctx, receipt, "resolver", "diagnose", peer)
+```
+
+Cancellation is delivered at most once. Preserve an `uncertain` result and use
+an explicit later cancel or refresh to reconcile it; never retry automatically.
+
+An agent already running under Acteon can invoke a peer as a governed child:
+
+```go
+parent := &acteon.AgentServiceParent{
+    ExecutionContext: executionContext,
+    Permits: []acteon.PermitReference{{ID: "caller-agent-service", AcceptedRevision: 3}},
+}
+receipt, err := client.AgentServiceSendMessageWithParent(
+    ctx, "prod", "acme", "notifier", message, parent)
+```
+
+The server recovers the sealed parent, verifies the authenticated caller, and
+rechecks current permit, registry, grant, and budget state. Keep the context in
+host state and never source either header from model output.
+
+`AgentServiceReceipt` supports JSON persistence in host state. Observation uses
+its original `TaskID`, independently of mutable `Task` data.
+
+Acceptance does not prove that provider execution has completed. Read the task's
+status and artifacts through the receipt. Its source context comes only from the
+admission response header; never obtain it from model output or task metadata.
+Keep it with the original route and task ID in host state, outside model messages.
+It is not a bearer credential: the original requester must still authenticate.
+
+The helpers do not add retry loops. After a lost response, explicitly reuse the
+same message ID and unchanged input; a new ID represents new work. SDK default
+transports reject service redirects. A custom transport must keep retries and
+redirects disabled for this surface. HTTP failures preserve their status and
+server error body. Observation never resumes or starts provider work.
+
+
+### Stop future starts for an accepted agent-service task
+
+Use the retained host receipt to restrict the original recipient execution subtree.
+The helper sends that job's original identity and source context in one request:
+
+```go
+stopped, err := client.AgentServiceStopTask(ctx, receipt)
+if err != nil { return err }
+fmt.Println(stopped.FutureStartsBlocked, stopped.ProviderAbort, stopped.Task["status"])
+```
+
+The acknowledgement always confirms a durable restriction on future starts.
+`ProviderAbort` separately reports `restricted_only`, `uncertain`, or finality
+accepted by the qualified reconciliation verifier; it is absent when no registered
+attempt needs intervention. A stop never refunds spent budget. Uncertain work retains
+its capacity, and the returned task retains actual provider status and artifacts.
+After a timeout or unavailable acknowledgement, retry this stop explicitly with the
+same receipt. The helper never retries automatically or takes provenance from mutable
+task data.
+
+
+### Governed registry metadata
+
+Use `RegistryProjection` and `MutateRegistry` to inspect versioned agent/card records and send an independently authorized mutation. The typed request retains a caller-supplied change ID; preserve the exact request for explicit recovery. A successful helper result requires a matching completed, applied receipt. Calls refuse redirects and do not automatically retry. Metadata changes retire the current qualification; publication alone does not grant execution permission. See the [registry operator workflow](../../docs/book/features/governance.md#managing-registry-projections).

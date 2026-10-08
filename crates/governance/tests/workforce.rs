@@ -722,6 +722,7 @@ async fn claimed_protocol_eight_requires_reviewed_cutover_and_preserves_accounti
     let mut source = serde_json::to_value(&original).unwrap();
     source["schema_version"] = 8.into();
     source.as_object_mut().unwrap().remove("workforce");
+    source.as_object_mut().unwrap().remove("agent_registry");
     source.as_object_mut().unwrap().remove("budget_parents");
     let key = StateKey::new(
         "prod",
@@ -746,7 +747,7 @@ async fn claimed_protocol_eight_requires_reviewed_cutover_and_preserves_accounti
     .await
     .unwrap();
     assert_eq!(plan.report().from_protocol, 8);
-    assert_eq!(plan.report().to_protocol, 10);
+    assert_eq!(plan.report().to_protocol, 12);
     let before = store.get_versioned(&key).await.unwrap();
     assert!(plan.apply("unreviewed").await.is_err());
     assert_eq!(store.get_versioned(&key).await.unwrap(), before);
@@ -1199,6 +1200,7 @@ async fn protocol_nine_cutover_preserves_workforce_and_live_accounting() {
     let mut source = serde_json::to_value(&original).unwrap();
     source["schema_version"] = 9.into();
     source.as_object_mut().unwrap().remove("budget_parents");
+    source.as_object_mut().unwrap().remove("agent_registry");
     let key = StateKey::new(
         "prod",
         "acme",
@@ -1222,7 +1224,7 @@ async fn protocol_nine_cutover_preserves_workforce_and_live_accounting() {
     .await
     .unwrap();
     assert_eq!(plan.report().from_protocol, 9);
-    assert_eq!(plan.report().to_protocol, 10);
+    assert_eq!(plan.report().to_protocol, 12);
     assert_eq!(plan.report().unsettled_starts, 1);
     assert!(plan.apply(&plan.report().review_digest).await.unwrap());
     let recovered = AuthorityCoordinator::connect(store, "prod", "acme")

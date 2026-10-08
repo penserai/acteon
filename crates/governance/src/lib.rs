@@ -20,6 +20,7 @@ pub mod delegation;
 pub mod delegation_policy;
 pub mod permit;
 pub mod reconciliation;
+pub mod registry;
 mod scope;
 mod upgrade;
 pub mod workforce;
@@ -30,7 +31,7 @@ pub use budget::{
 pub use scope::ScopePurpose;
 pub use upgrade::{ScopeUpgradePlan, ScopeUpgradeReport};
 
-const FORMAT: u32 = 10;
+const FORMAT: u32 = 12;
 const MAX_ATTEMPT_RESOURCES: usize = 16;
 const RETRIES: usize = 32;
 const CONTROL_RECORD_RESERVE: usize = 16;
@@ -64,6 +65,21 @@ impl Default for CoordinatorLimits {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AuthorityChange {
+    PublishAgentRegistry {
+        qualification: registry::AgentRegistryQualification,
+    },
+    /// Restrict starts and qualification while a separate registry projection is written.
+    BeginAgentRegistryMutation {
+        agent: ResourceRef,
+        expected_revision: u64,
+        projection: registry::RegistryProjectionKind,
+        expected_projection_version: Option<u64>,
+        input_digest: String,
+    },
+    RetireAgentRegistry {
+        agent: ResourceRef,
+        expected_revision: u64,
+    },
     /// Written only by the reviewed protocol-cutover plan.
     UpgradeProtocol {
         from_protocol: u32,
@@ -222,6 +238,7 @@ pub struct CoordinatorSnapshot {
     pub credentials: BTreeMap<String, credential::CredentialRecord>,
     pub credential_configurations: BTreeMap<String, configuration::CredentialConfigurationRecord>,
     pub workforce: workforce::WorkforceState,
+    pub agent_registry: BTreeMap<String, registry::AgentRegistryRecord>,
 }
 
 impl CoordinatorSnapshot {
@@ -234,6 +251,7 @@ impl CoordinatorSnapshot {
             + self.credentials.len()
             + self.credential_configurations.len()
             + self.workforce.record_count()
+            + self.agent_registry.len()
     }
     #[must_use]
     pub fn stamp(&self) -> AuthorityStamp {
@@ -274,6 +292,9 @@ pub enum CoordinationError {
     StaleAuthority,
     #[error("subject or destination is restricted")]
     Restricted,
+    /// A registered registry write has no known result; observing it must not resend.
+    #[error("registry mutation delivery unresolved; retain the original change identifier")]
+    RegistryMutationUnresolved,
     #[error("coordinator capacity exhausted")]
     Capacity,
     #[error("root attempt units exhausted")]
@@ -439,6 +460,7 @@ impl AuthorityCoordinator {
             credentials: BTreeMap::new(),
             credential_configurations: BTreeMap::new(),
             workforce: workforce::WorkforceState::default(),
+            agent_registry: BTreeMap::new(),
             budget_parents: BTreeMap::new(),
         };
         let coordinator = Self { store, key };
@@ -536,6 +558,7 @@ impl AuthorityCoordinator {
                 .any(|r| self.validate_resource_scope(r).is_err())
             || !self.valid_start_accounting(&state)
             || !self.valid_permit_history(&state)
+            || !self.valid_registry_history(&state)
             || !self.valid_credential_history(&state)
             || !self.valid_delegation_history(&state)
             || !self.valid_workforce_history(&state)
@@ -543,7 +566,26 @@ impl AuthorityCoordinator {
                 AuthorityChange::UpgradeProtocol {
                     from_protocol,
                     to_protocol,
-                } => !matches!((*from_protocol, *to_protocol), (7 | 8, 9 | 10) | (9, 10)),
+                } => !matches!(
+                    (*from_protocol, *to_protocol),
+                    (7 | 8, 9..=12) | (9, 10..=12) | (10, 11 | 12) | (11, 12)
+                ),
+                AuthorityChange::PublishAgentRegistry { qualification } => {
+                    self.validate_resource_scope(&qualification.agent).is_err()
+                }
+                AuthorityChange::BeginAgentRegistryMutation {
+                    agent,
+                    input_digest,
+                    ..
+                } => {
+                    self.validate_resource_scope(agent).is_err()
+                        || agent.kind() != acteon_core::ResourceKind::Agent
+                        || !registry::valid_digest(input_digest)
+                }
+                AuthorityChange::RetireAgentRegistry {
+                    agent,
+                    expected_revision,
+                } => self.validate_resource_scope(agent).is_err() || *expected_revision == 0,
                 AuthorityChange::CancelExecution { execution_id } => {
                     !valid_text(execution_id)
                         || !state
@@ -754,6 +796,28 @@ impl AuthorityCoordinator {
 
     fn validate_change(&self, change: &AuthorityChange) -> Result<(), CoordinationError> {
         match change {
+            AuthorityChange::BeginAgentRegistryMutation {
+                agent,
+                input_digest,
+                ..
+            } => {
+                self.validate_resource_scope(agent)?;
+                if agent.kind() != acteon_core::ResourceKind::Agent
+                    || !registry::valid_digest(input_digest)
+                {
+                    return Err(CoordinationError::Invalid("registry mutation".into()));
+                }
+            }
+
+            AuthorityChange::RetireAgentRegistry {
+                agent,
+                expected_revision,
+            } => {
+                self.validate_resource_scope(agent)?;
+                if agent.kind() != acteon_core::ResourceKind::Agent || *expected_revision == 0 {
+                    return Err(CoordinationError::Invalid("registry revision".into()));
+                }
+            }
             AuthorityChange::CancelExecution { execution_id } => {
                 if !valid_text(execution_id) {
                     return Err(CoordinationError::Invalid("execution identity".into()));
@@ -767,7 +831,8 @@ impl AuthorityCoordinator {
                 return Err(CoordinationError::Invalid("subject".into()));
             }
             AuthorityChange::RevokeSubject { .. } => {}
-            AuthorityChange::UpgradeProtocol { .. }
+            AuthorityChange::PublishAgentRegistry { .. }
+            | AuthorityChange::UpgradeProtocol { .. }
             | AuthorityChange::Workforce { .. }
             | AuthorityChange::ReserveScope { .. }
             | AuthorityChange::PublishPermit { .. }
@@ -806,6 +871,8 @@ impl AuthorityCoordinator {
         self.change_internal(id, change, actor, reason, None).await
     }
 
+    // Keep the single authority-change transaction visible across all change kinds.
+    #[allow(clippy::too_many_lines)]
     async fn change_internal(
         &self,
         id: &str,
@@ -829,6 +896,11 @@ impl AuthorityCoordinator {
                 }
                 return Ok(old.clone());
             }
+            if let AuthorityChange::BeginAgentRegistryMutation { agent, .. } = &change
+                && registry::mutation_pending(&state, agent)
+            {
+                return Err(CoordinationError::Conflict);
+            }
             if state.record_count() >= state.limits.max_records {
                 return Err(CoordinationError::Capacity);
             }
@@ -837,6 +909,19 @@ impl AuthorityCoordinator {
                 .checked_add(1)
                 .ok_or(CoordinationError::Capacity)?;
             match &change {
+                AuthorityChange::BeginAgentRegistryMutation {
+                    agent,
+                    expected_revision,
+                    ..
+                } => {
+                    Self::begin_registry_mutation(&mut state, agent, *expected_revision)?;
+                }
+                AuthorityChange::RetireAgentRegistry {
+                    agent,
+                    expected_revision,
+                } => {
+                    Self::retire_registry(&mut state, agent, *expected_revision)?;
+                }
                 AuthorityChange::CancelExecution { execution_id } => {
                     state
                         .roots
@@ -879,7 +964,8 @@ impl AuthorityCoordinator {
                     }
                     record.revoked = true;
                 }
-                AuthorityChange::UpgradeProtocol { .. }
+                AuthorityChange::PublishAgentRegistry { .. }
+                | AuthorityChange::UpgradeProtocol { .. }
                 | AuthorityChange::Workforce { .. }
                 | AuthorityChange::ReserveScope { .. }
                 | AuthorityChange::PublishPermit { .. }
@@ -1095,6 +1181,12 @@ impl AuthorityCoordinator {
                 .changes
                 .get_mut(id)
                 .ok_or(CoordinationError::Conflict)?;
+            if matches!(
+                record.change,
+                AuthorityChange::BeginAgentRegistryMutation { .. }
+            ) {
+                return Err(CoordinationError::Restricted);
+            }
             if !record.pending {
                 return Ok(());
             }

@@ -22,7 +22,7 @@
  * ```
  */
 
-export { ActeonClient, type ActeonClientOptions, type PermitReference, type DispatchOptions } from "./client.js";
+export { ActeonClient, type ActeonClientOptions, type AgentServiceParentOptions, type PermitReference, type DispatchOptions } from "./client.js";
 export {
   ActeonError,
   ConnectionError,
@@ -232,3 +232,5 @@ export { type PrincipalIdentity, type CredentialIdentity, parseCredentialIdentit
 export * from "./governance.js";
 
 export * from "./workforce.js";
+
+export { AGENT_EXECUTION_CONTEXT_HEADER, AGENT_SOURCE_CONTEXT_HEADER, type AgentPeerCancelReceipt, type AgentPeerCancelStatus, type AgentPeerSelectionOption, type AgentPeerSendReceipt, type AgentPeerSendStatus, type AgentServiceProviderAbort, type AgentServiceReceipt, type AgentServiceStopReceipt } from "./agent_services.js";

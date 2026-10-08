@@ -3,7 +3,9 @@ package acteon
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/url"
+	"regexp"
 	"strconv"
 )
 
@@ -245,4 +247,99 @@ func (c *Client) AcceptProviderReconciliation(ctx context.Context, namespace, te
 	var result ProviderHistoryReceipt
 	err = json.Unmarshal(data, &result)
 	return &result, err
+}
+
+// RegistryProjection selects one independently versioned metadata record.
+type RegistryProjection string
+
+const (
+	RegistryProjectionAgent RegistryProjection = "agent"
+	RegistryProjectionCard  RegistryProjection = "card"
+)
+
+type GovernanceRegistryMutationRequest struct {
+	Namespace                 string             `json:"namespace"`
+	Tenant                    string             `json:"tenant"`
+	AgentID                   string             `json:"agent_id"`
+	ChangeID                  string             `json:"change_id"`
+	ExpectedRegistryRevision  uint64             `json:"expected_registry_revision"`
+	Projection                RegistryProjection `json:"projection"`
+	ExpectedProjectionVersion *uint64            `json:"expected_projection_version"`
+	Value                     json.RawMessage    `json:"value"`
+	Reason                    string             `json:"reason"`
+}
+type GovernanceRegistryProjectionView struct {
+	Namespace            string             `json:"namespace"`
+	Tenant               string             `json:"tenant"`
+	AgentID              string             `json:"agent_id"`
+	AgentResource        GovernanceResource `json:"agent_resource"`
+	Projection           RegistryProjection `json:"projection"`
+	RegistryRevision     uint64             `json:"registry_revision"`
+	QualificationRetired *bool              `json:"qualification_retired"`
+	Version              *uint64            `json:"version"`
+	Value                json.RawMessage    `json:"value"`
+}
+type GovernanceRegistryMutationReceipt struct {
+	Namespace                string             `json:"namespace"`
+	Tenant                   string             `json:"tenant"`
+	AgentID                  string             `json:"agent_id"`
+	ChangeID                 string             `json:"change_id"`
+	Projection               RegistryProjection `json:"projection"`
+	ExpectedRegistryRevision uint64             `json:"expected_registry_revision"`
+	InputDigest              string             `json:"input_digest"`
+	Actor                    string             `json:"actor"`
+	DeliveryComplete         bool               `json:"delivery_complete"`
+	Applied                  bool               `json:"applied"`
+}
+
+var registryReceiptDigest = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+func (c *Client) RegistryProjection(ctx context.Context, namespace, tenant, agentID string, projection RegistryProjection) (*GovernanceRegistryProjectionView, error) {
+	data, err := c.PlatformRequest(ctx, OpGovernanceRegistryProjection, map[string]string{"agent_id": agentID}, url.Values{"namespace": {namespace}, "tenant": {tenant}, "projection": {string(projection)}}, nil)
+	if err != nil {
+		return nil, err
+	}
+	var result GovernanceRegistryProjectionView
+	if err = json.Unmarshal(data, &result); err != nil {
+		return nil, err
+	}
+	var fields map[string]json.RawMessage
+	if err = json.Unmarshal(data, &fields); err != nil {
+		return nil, err
+	}
+	for _, key := range []string{"registry_revision", "qualification_retired", "version", "value"} {
+		if len(fields[key]) == 0 {
+			return nil, fmt.Errorf("incomplete registry observation")
+		}
+	}
+	if string(fields["registry_revision"]) == "null" {
+		return nil, fmt.Errorf("invalid registry revision")
+	}
+	valueIsNull := len(result.Value) == 0 || string(result.Value) == "null"
+	var valueObject map[string]json.RawMessage
+	valueIsObject := valueIsNull || json.Unmarshal(result.Value, &valueObject) == nil && valueObject != nil
+	if result.Namespace != namespace || result.Tenant != tenant || result.AgentID != agentID || result.Projection != projection || (result.RegistryRevision == 0) != (result.QualificationRetired == nil) || result.AgentResource != (GovernanceResource{"agent", namespace, tenant, agentID}) || (result.Version != nil && *result.Version == 0) || (result.Version == nil) != valueIsNull || !valueIsObject {
+		return nil, fmt.Errorf("registry observation identity or version mismatch")
+	}
+	return &result, nil
+}
+
+// MutateRegistry sends once. Retain this exact request/change ID for explicit recovery.
+func (c *Client) MutateRegistry(ctx context.Context, request GovernanceRegistryMutationRequest) (*GovernanceRegistryMutationReceipt, error) {
+	data, err := c.PlatformRequest(ctx, OpGovernanceMutateRegistry, nil, nil, request)
+	if err != nil {
+		return nil, err
+	}
+	var result GovernanceRegistryMutationReceipt
+	if err = json.Unmarshal(data, &result); err != nil {
+		return nil, err
+	}
+	var fields map[string]json.RawMessage
+	if err = json.Unmarshal(data, &fields); err != nil {
+		return nil, err
+	}
+	if len(fields["expected_registry_revision"]) == 0 || string(fields["expected_registry_revision"]) == "null" || result.Namespace != request.Namespace || result.Tenant != request.Tenant || result.AgentID != request.AgentID || result.ChangeID != request.ChangeID || result.Projection != request.Projection || result.ExpectedRegistryRevision != request.ExpectedRegistryRevision || !result.DeliveryComplete || !result.Applied || result.Actor == "" || !registryReceiptDigest.MatchString(result.InputDigest) {
+		return nil, fmt.Errorf("unmatched or incomplete registry mutation receipt")
+	}
+	return &result, nil
 }
