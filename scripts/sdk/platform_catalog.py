@@ -20,8 +20,25 @@ STREAMING = {
     "subscribe_subscribe",
 }
 
+# Some protocol operations share one framework route because their action verb
+# is encoded as a suffix on the final path segment. Keep the generated client
+# catalog at the protocol-operation level while permission checks inventory the
+# single route that Axum actually matches.
+LOGICAL_ROUTE_VARIANTS = {
+    "agent_services_peer_submission_action": [
+        {
+            "name": "agent_services_peer_cancel",
+            "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:cancel",
+        },
+        {
+            "name": "agent_services_peer_refresh",
+            "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:refresh",
+        },
+    ]
+}
 
-def operations():
+
+def registered_operations():
     source = (ROOT / "crates/server/src/api/mod.rs").read_text()
     chunks = re.split(r'\.route\(\s*"', source)[1:]
     result = []
@@ -52,6 +69,26 @@ def operations():
                     else "text"
                     if module == "prometheus"
                     else "json",
+                }
+            )
+    assert len({x["name"] for x in result}) == len(result), "Duplicate operation names"
+    return sorted(result, key=lambda x: x["name"])
+
+
+def operations():
+    result = []
+    for operation in registered_operations():
+        variants = LOGICAL_ROUTE_VARIANTS.get(operation["name"])
+        if variants is None:
+            result.append(operation)
+            continue
+        for variant in variants:
+            path = variant["path"]
+            result.append(
+                {
+                    **operation,
+                    **variant,
+                    "parameters": re.findall(r"\{(\w+)\}", path),
                 }
             )
     assert len({x["name"] for x in result}) == len(result), "Duplicate operation names"
@@ -194,7 +231,7 @@ def main():
             target.write_text(content)
     if failed:
         raise SystemExit("Stale platform catalog: " + ", ".join(failed))
-    print(f"Platform catalog: {len(operations())} registered operations accounted for")
+    print(f"Platform catalog: {len(operations())} logical operations accounted for")
 
 
 if __name__ == "__main__":

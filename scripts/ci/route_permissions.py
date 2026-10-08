@@ -9,14 +9,17 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts/sdk"))
-from platform_catalog import operations  # noqa: E402
+from platform_catalog import registered_operations  # noqa: E402
 
 
 def main():
     rows = json.loads(
         (ROOT / "crates/server/src/auth/route_permissions.json").read_text()
     )
-    actual = [{k: op[k] for k in ("name", "method", "path")} for op in operations()]
+    actual = [
+        {k: op[k] for k in ("name", "method", "path")}
+        for op in registered_operations()
+    ]
     expected = [{k: op[k] for k in ("name", "method", "path")} for op in rows]
     assert actual == expected, "Registered routes and permission inventory differ"
     assert len({(r["method"], r["path"]) for r in rows}) == len(rows)

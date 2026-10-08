@@ -368,6 +368,58 @@ async fn missing_wrong_or_unqualified_recipient_prevents_listener_startup() {
 }
 
 #[tokio::test]
+async fn peer_submission_action_suffixes_reach_the_governed_handlers() {
+    let (url, calls, webhook_task) = webhook().await;
+    let mut server = Server::start(&url, Some("notifier-secret"), "incident");
+    let client = reqwest::Client::new();
+    server.ready(&client).await;
+    let task = "11111111-1111-4111-8111-111111111111";
+    let submission = "22222222-2222-4222-8222-222222222222";
+    let base = format!(
+        "{}/a2a/prod/acme/agents/notifier/v1/tasks/{task}/peers/notifier/notify/submissions/{submission}",
+        server.url
+    );
+
+    for action in ["refresh", "cancel"] {
+        let response = client
+            .post(format!("{base}:{action}"))
+            .bearer_auth("alice-secret")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 404);
+        assert_eq!(
+            response.json::<Value>().await.unwrap(),
+            json!({"error":"agent_peer_source_unavailable"})
+        );
+    }
+    let response = client
+        .post(format!("{base}:unknown"))
+        .bearer_auth("alice-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 400);
+    assert_eq!(
+        response.json::<Value>().await.unwrap(),
+        json!({"error":"invalid_agent_peer_request"})
+    );
+    let response = client
+        .post(format!("{base}:unknown"))
+        .bearer_auth("observer-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 403);
+    assert_eq!(
+        response.json::<Value>().await.unwrap(),
+        json!({"error":"agent_peer_authority_required"})
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    webhook_task.abort();
+}
+
+#[tokio::test]
 #[allow(clippy::too_many_lines)] // One admitted task and its complete refusal/replay contract.
 async fn authenticated_individual_service_accepts_and_replays_without_effect_start() {
     let (url, calls, webhook_task) = webhook().await;

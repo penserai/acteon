@@ -265,6 +265,79 @@ pub async fn peer_discover(
     }
 }
 
+/// Axum treats an entire path segment as a parameter, so A2A-style action
+/// suffixes (`{id}:refresh`) are split here instead of in the route pattern.
+pub async fn peer_submission_action(
+    State(state): State<AppState>,
+    Extension(identity): Extension<CallerIdentity>,
+    proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
+    Path((namespace, tenant, agent, task_id, target, skill, submission_action)): Path<(
+        String,
+        String,
+        String,
+        uuid::Uuid,
+        String,
+        String,
+        String,
+    )>,
+    headers: HeaderMap,
+) -> Response {
+    // Preserve the resource-authorization ordering of the logical handlers so
+    // malformed action suffixes do not become a target-discovery side channel.
+    if headers
+        .get("a2a-version")
+        .is_some_and(|value| value != A2A_PROTOCOL_VERSION)
+    {
+        return error(StatusCode::BAD_REQUEST, "unsupported_a2a_version");
+    }
+    if !identity.role.has_permission(Permission::Dispatch)
+        || !identity.is_authorized(&tenant, &namespace, &format!("agent.{target}"), "invoke")
+    {
+        return error(StatusCode::FORBIDDEN, "agent_peer_authority_required");
+    }
+    if proof.is_none() {
+        return error(StatusCode::FORBIDDEN, "private_authentication_required");
+    }
+    let Some((submission_id, action)) = parse_peer_submission_action(&submission_action) else {
+        return error(StatusCode::BAD_REQUEST, "invalid_agent_peer_request");
+    };
+    let path = Path((
+        namespace,
+        tenant,
+        agent,
+        task_id,
+        target,
+        skill,
+        submission_id,
+    ));
+    match action {
+        PeerSubmissionAction::Refresh => {
+            peer_refresh(State(state), Extension(identity), proof, path, headers).await
+        }
+        PeerSubmissionAction::Cancel => {
+            peer_cancel(State(state), Extension(identity), proof, path, headers).await
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum PeerSubmissionAction {
+    Refresh,
+    Cancel,
+}
+
+fn parse_peer_submission_action(value: &str) -> Option<(uuid::Uuid, PeerSubmissionAction)> {
+    let (submission, action) = if let Some(submission) = value.strip_suffix(":refresh") {
+        (submission, PeerSubmissionAction::Refresh)
+    } else {
+        let submission = value.strip_suffix(":cancel")?;
+        (submission, PeerSubmissionAction::Cancel)
+    };
+    uuid::Uuid::parse_str(submission)
+        .ok()
+        .map(|submission| (submission, action))
+}
+
 #[utoipa::path(
     post, path = "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:refresh", tag = "Governance",
     params(("namespace" = String, Path), ("tenant" = String, Path), ("agent" = String, Path),
@@ -782,5 +855,27 @@ mod tests {
             "[{\"id\":\"p\",\"accepted_revision\":1}]".parse().unwrap(),
         );
         assert!(matches!(parse_parent(&paired), Ok(Some(_))));
+    }
+
+    #[test]
+    fn peer_submission_actions_require_a_uuid_and_known_suffix() {
+        let id = "11111111-1111-4111-8111-111111111111";
+        assert_eq!(
+            parse_peer_submission_action(&format!("{id}:refresh")),
+            Some((
+                uuid::Uuid::parse_str(id).unwrap(),
+                PeerSubmissionAction::Refresh
+            ))
+        );
+        assert_eq!(
+            parse_peer_submission_action(&format!("{id}:cancel")),
+            Some((
+                uuid::Uuid::parse_str(id).unwrap(),
+                PeerSubmissionAction::Cancel
+            ))
+        );
+        assert_eq!(parse_peer_submission_action(id), None);
+        assert_eq!(parse_peer_submission_action(&format!("{id}:unknown")), None);
+        assert_eq!(parse_peer_submission_action("not-a-uuid:refresh"), None);
     }
 }

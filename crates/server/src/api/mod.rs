@@ -247,13 +247,11 @@ pub fn router(state: AppState) -> Router {
             "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers",
             get(agent_services::peer_discover),
         )
+        // Axum captures the submission UUID and A2A action suffix as one
+        // segment. The handler validates and dispatches `:refresh`/`:cancel`.
         .route(
-            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:refresh",
-            post(agent_services::peer_refresh),
-        )
-        .route(
-            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:cancel",
-            post(agent_services::peer_cancel),
+            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission_action}",
+            post(agent_services::peer_submission_action),
         )
         .route(
             "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}",

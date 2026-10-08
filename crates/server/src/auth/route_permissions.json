@@ -102,27 +102,21 @@
     "permission": "Dispatch"
   },
   {
-    "name": "agent_services_peer_cancel",
-    "method": "POST",
-    "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:cancel",
-    "permission": "Dispatch"
-  },
-  {
     "name": "agent_services_peer_discover",
     "method": "GET",
     "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers",
     "permission": "Dispatch"
   },
   {
-    "name": "agent_services_peer_refresh",
-    "method": "POST",
-    "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:refresh",
-    "permission": "Dispatch"
-  },
-  {
     "name": "agent_services_peer_send",
     "method": "POST",
     "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/message:send",
+    "permission": "Dispatch"
+  },
+  {
+    "name": "agent_services_peer_submission_action",
+    "method": "POST",
+    "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission_action}",
     "permission": "Dispatch"
   },
   {
