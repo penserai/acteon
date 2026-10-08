@@ -3,7 +3,9 @@
 use super::ExecutionAuthorityRuntime;
 use crate::auth::projection::AuthenticatedExecutionConfiguration;
 use acteon_core::{ExecutionContextReference, TaskMessage};
-use acteon_executor::delegation::{PeerCancelReceipt, PeerSendReceipt, PeerTransportError};
+use acteon_executor::delegation::{
+    PeerCancelReceipt, PeerDiscoveryError, PeerSelectionOption, PeerSendReceipt, PeerTransportError,
+};
 
 /// Trusted host input. This type intentionally has no wire deserializer: a
 /// model-facing tool supplies only target, skill and message while the host
@@ -78,6 +80,29 @@ pub struct AgentPeerCancelInvocation<'a> {
     pub skill: &'a str,
     pub parent: &'a ExecutionContextReference,
     pub submission_id: uuid::Uuid,
+}
+
+/// Agent-facing registry query. Skill is selection data; source authority and
+/// the onward-agent allowlist come from the accepted task and host config.
+pub struct AgentPeerDiscoveryRequest<'a> {
+    pub namespace: &'a str,
+    pub tenant: &'a str,
+    pub source_agent_id: &'a str,
+    pub source_task_id: uuid::Uuid,
+    pub skill: &'a str,
+    pub authentication: &'a AuthenticatedExecutionConfiguration,
+    /// Host-level visibility filter applied before any target registry read.
+    pub target_authorized: &'a (dyn Fn(&str) -> bool + Sync),
+}
+
+/// Trusted host input after the source task and caller have been matched.
+pub struct AgentPeerDiscoveryInvocation<'a> {
+    pub namespace: &'a str,
+    pub tenant: &'a str,
+    pub source_agent_id: &'a str,
+    pub skill: &'a str,
+    pub parent: &'a ExecutionContextReference,
+    pub target_authorized: &'a (dyn Fn(&str) -> bool + Sync),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -185,6 +210,34 @@ impl ExecutionAuthorityRuntime {
             skill: request.skill,
             parent: &reference,
             submission_id: request.submission_id,
+        })
+        .await
+    }
+
+    /// Return safe current peer-selection data for an accepted source task.
+    pub async fn discover_agent_peers_tool(
+        &self,
+        request: AgentPeerDiscoveryRequest<'_>,
+    ) -> Result<Vec<PeerSelectionOption>, AgentPeerTransportError> {
+        let parent = self
+            .agent_peer_tool_parent(
+                request.namespace,
+                request.tenant,
+                request.source_agent_id,
+                request.source_task_id,
+                request.authentication,
+            )
+            .await?;
+        let reference = parent
+            .reference()
+            .map_err(|_| AgentPeerTransportError::Unavailable)?;
+        self.discover_agent_peers(AgentPeerDiscoveryInvocation {
+            namespace: request.namespace,
+            tenant: request.tenant,
+            source_agent_id: request.source_agent_id,
+            skill: request.skill,
+            parent: &reference,
+            target_authorized: request.target_authorized,
         })
         .await
     }
@@ -430,6 +483,76 @@ impl ExecutionAuthorityRuntime {
             .map_err(Into::into)
     }
 
+    /// Enumerate only source-authorized and currently routable approved peers.
+    /// The result remains advisory; submission repeats all authority checks.
+    pub async fn discover_agent_peers(
+        &self,
+        invocation: AgentPeerDiscoveryInvocation<'_>,
+    ) -> Result<Vec<PeerSelectionOption>, AgentPeerTransportError> {
+        if invocation.namespace.is_empty()
+            || invocation.tenant.is_empty()
+            || invocation.source_agent_id.is_empty()
+            || invocation.skill.is_empty()
+            || invocation.parent.namespace() != invocation.namespace
+            || invocation.parent.tenant() != invocation.tenant
+        {
+            return Err(AgentPeerTransportError::Invalid);
+        }
+        let scope = self
+            .scopes
+            .get(&(invocation.namespace.into(), invocation.tenant.into()))
+            .ok_or(AgentPeerTransportError::Unavailable)?;
+        let source = scope
+            .prepared
+            .agents
+            .get(invocation.source_agent_id)
+            .ok_or(AgentPeerTransportError::Forbidden)?;
+        let parent = scope
+            .contexts
+            .recover_reference(invocation.parent, self.clock.now().timestamp_millis())
+            .await
+            .map_err(|_| AgentPeerTransportError::Forbidden)?;
+        if parent.principal() != &source.declaration.principal {
+            return Err(AgentPeerTransportError::Forbidden);
+        }
+        let direct = source
+            .binding
+            .service_plan()
+            .ok_or(AgentPeerTransportError::Unavailable)?
+            .direct_effects();
+        scope
+            .coordinator
+            .verify_service_runtime_binding(&parent, source.binding.digest(), direct)
+            .await
+            .map_err(|_| AgentPeerTransportError::Forbidden)?;
+        let allowed_agents = source
+            .declaration
+            .onward_agents
+            .iter()
+            .filter(|target| (invocation.target_authorized)(target))
+            .cloned()
+            .collect::<Vec<_>>();
+        if allowed_agents.is_empty() {
+            return Ok(Vec::new());
+        }
+        let registry = scope
+            .peer_mesh
+            .registry
+            .as_ref()
+            .ok_or(AgentPeerTransportError::Unavailable)?;
+        registry
+            .discover_source_options(
+                invocation.skill,
+                &allowed_agents,
+                &scope.coordinator,
+                &parent,
+                &source.declaration.recipient_permits,
+                self.clock.as_ref(),
+            )
+            .await
+            .map_err(Into::into)
+    }
+
     // Keep context recovery, runtime-binding verification and transport lookup
     // in one ordered authority boundary.
     #[allow(clippy::too_many_lines)]
@@ -547,6 +670,24 @@ impl From<PeerTransportError> for AgentPeerTransportError {
             PeerTransportError::Conflict => Self::Conflict,
             PeerTransportError::Refused => Self::Forbidden,
             PeerTransportError::Unavailable => Self::Unavailable,
+        }
+    }
+}
+
+impl From<PeerDiscoveryError> for AgentPeerTransportError {
+    fn from(error: PeerDiscoveryError) -> Self {
+        match error {
+            PeerDiscoveryError::Binding => Self::Invalid,
+            PeerDiscoveryError::Authority(
+                acteon_governance::CoordinationError::Restricted
+                | acteon_governance::CoordinationError::PermitDenied(_)
+                | acteon_governance::CoordinationError::BudgetExhausted
+                | acteon_governance::CoordinationError::ConcurrencyExhausted
+                | acteon_governance::CoordinationError::DeadlineExceeded,
+            ) => Self::Forbidden,
+            PeerDiscoveryError::Capacity
+            | PeerDiscoveryError::Unavailable
+            | PeerDiscoveryError::Authority(_) => Self::Unavailable,
         }
     }
 }

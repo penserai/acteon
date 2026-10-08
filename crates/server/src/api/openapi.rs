@@ -95,6 +95,7 @@ use acteon_core::{
     paths(
         super::agent_services::message_send,
         super::agent_services::peer_send,
+        super::agent_services::peer_discover,
         super::agent_services::peer_refresh,
         super::agent_services::peer_cancel,
         super::agent_services::task_get,

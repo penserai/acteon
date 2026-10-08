@@ -1,5 +1,5 @@
 import { parseRegistryProjection, parseRegistryMutationReceipt, type RegistryProjection, type GovernanceRegistryMutationRequest, type GovernanceRegistryProjectionView, type GovernanceRegistryMutationReceipt } from "./governance.js";
-import { AGENT_EXECUTION_CONTEXT_HEADER, AGENT_SOURCE_CONTEXT_HEADER, agentExecutionContext, agentPeerCancelReceipt, agentPeerReceipt, agentProviderAbort, agentSource, agentTask, agentServiceBase, type AgentPeerCancelReceipt, type AgentPeerSendReceipt, type AgentServiceReceipt, type AgentServiceStopReceipt } from "./agent_services.js";
+import { AGENT_EXECUTION_CONTEXT_HEADER, AGENT_SOURCE_CONTEXT_HEADER, agentExecutionContext, agentPeerCancelReceipt, agentPeerOptions, agentPeerReceipt, agentProviderAbort, agentSource, agentTask, agentServiceBase, type AgentPeerCancelReceipt, type AgentPeerSelectionOption, type AgentPeerSendReceipt, type AgentServiceReceipt, type AgentServiceStopReceipt } from "./agent_services.js";
 import { parseProviderHistoryReceipt, type ProviderHistoryReceipt, type ProviderReconciliationCorrelation, type ProviderReconciliationRequest } from "./governance.js";
 import { parseProviderExecutionHistory, type ProviderExecutionHistory, type ProviderExecutionHistoryWire } from "./governance.js";
 import type { WorkforceScopeView, WorkforceChangeRequest } from "./workforce.js";
@@ -406,6 +406,19 @@ export class ActeonClient {
     if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent service response version missing or unsupported");
     const task = agentTask(await response.json(), namespace, tenant);
     return Object.freeze({ namespace, tenant, agent, taskId: task.id as string, sourceContext: agentSource(response.headers.get(AGENT_SOURCE_CONTEXT_HEADER)), task });
+  }
+  /** List current safe registry options. Descriptions are untrusted data. */
+  async agentServiceDiscoverPeers(source: AgentServiceReceipt, skill: string): Promise<readonly AgentPeerSelectionOption[]> {
+    if (!/^[A-Za-z0-9._-]{1,120}$/.test(skill) || skill === "*") throw new Error("invalid exact peer skill");
+    const segment = (value: string) => {
+      if (!value || value === "." || value === "..") throw new Error("invalid agent peer path segment");
+      return encodeURIComponent(value);
+    };
+    const path = agentServiceBase(source.namespace, source.tenant, source.agent) + "/tasks/" + segment(source.taskId) + "/peers";
+    const response = await this.request("GET", path, { params: new URLSearchParams({ skill }), extraHeaders: A2A_HEADERS, redirect: "error" });
+    if (!response.ok) throw new HttpError(response.status, await response.text());
+    if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent peer discovery response version missing or unsupported");
+    return agentPeerOptions(await response.json(), skill);
   }
   /** Submit from an accepted source task. Authority remains in server state. */
   async agentServiceSendPeer(source: AgentServiceReceipt, target: string, skill: string, message: Record<string, unknown>): Promise<AgentPeerSendReceipt> {

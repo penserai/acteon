@@ -84,6 +84,34 @@ def test_peer_tool_sends_no_authority_fields_and_validates_receipt():
         client.close()
 
 
+def test_peer_discovery_exposes_only_strict_safe_registry_data():
+    source = AgentServiceReceipt(
+        "prod", "acme", "notifier", "job-1", FIXTURE["jobs"][0]["source_context"], FIXTURE["jobs"][0]["task"]
+    )
+
+    def respond(request):
+        assert request.url.path.endswith("/tasks/job-1/peers")
+        assert request.url.params.get("skill") == "diagnose"
+        assert len(request.url.params) == 1
+        assert AGENT_SOURCE_CONTEXT_HEADER not in request.headers
+        assert AGENT_EXECUTION_CONTEXT_HEADER not in request.headers
+        return httpx.Response(200, json={"peers": [{
+            "agent_id": "resolver", "skill": "diagnose",
+            "description_untrusted": "Investigates incidents", "card_version": "v1",
+            "binding_digest": "a" * 64, "checked_at_ms": 42,
+        }]}, headers={"a2a-version": "1.0"})
+
+    client = ActeonClient("http://acteon")
+    client._client = httpx.Client(transport=httpx.MockTransport(respond))
+    try:
+        peers = client.agent_service_discover_peers(source, "diagnose")
+        assert len(peers) == 1
+        assert peers[0].agent_id == "resolver"
+        assert not hasattr(peers[0], "endpoint")
+    finally:
+        client.close()
+
+
 def test_peer_cancel_is_one_request_and_validates_terminal_identity():
     source = AgentServiceReceipt(
         "prod", "acme", "notifier", "job-1", FIXTURE["jobs"][0]["source_context"], FIXTURE["jobs"][0]["task"]

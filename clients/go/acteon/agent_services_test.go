@@ -27,6 +27,20 @@ func TestAgentServiceReceiptsPreserveHeadersAndIdentity(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
+		if r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/peers") {
+			if r.URL.Query().Get("skill") != "diagnose" {
+				t.Errorf("unexpected discovery query: %s", r.URL.RawQuery)
+			}
+			if r.Header.Get(AgentSourceContextHeader) != "" || r.Header.Get(AgentExecutionContextHeader) != "" || r.Header.Get("x-acteon-execution-permits") != "" {
+				t.Error("authority fields leaked into peer discovery")
+			}
+			w.Header().Set(A2AVersionHeader, A2AProtocolVersion)
+			json.NewEncoder(w).Encode(map[string]any{"peers": []any{map[string]any{
+				"agent_id": "resolver", "skill": "diagnose", "description_untrusted": "Investigates incidents",
+				"card_version": "v1", "binding_digest": strings.Repeat("a", 64), "checked_at_ms": 42,
+			}}})
+			return
+		}
 		if r.Header.Get("Authorization") != "Bearer caller-key" || r.Header.Get(A2AVersionHeader) != "1.0" {
 			t.Error("original authentication/version missing")
 		}
@@ -180,16 +194,20 @@ func TestAgentServicePeerToolCarriesNoAuthorityFields(t *testing.T) {
 		})
 	}))
 	defer server.Close()
+	peers, err := NewClient(server.URL).AgentServiceDiscoverPeers(context.Background(), source, "diagnose")
+	if err != nil || len(peers) != 1 || peers[0].AgentID != "resolver" || calls.Load() != 1 {
+		t.Fatalf("peer discovery mismatch: %#v %v", peers, err)
+	}
 	receipt, err := NewClient(server.URL).AgentServiceSendPeer(context.Background(), source, "team/resolver", "diagnose", map[string]any{"messageId": "peer-1"})
-	if err != nil || receipt.Status.State != "accepted" || calls.Load() != 1 {
+	if err != nil || receipt.Status.State != "accepted" || calls.Load() != 2 {
 		t.Fatalf("peer receipt mismatch: %#v %v", receipt, err)
 	}
 	refreshed, err := NewClient(server.URL).AgentServiceRefreshPeer(context.Background(), source, "team/resolver", "diagnose", receipt)
-	if err != nil || refreshed.SubmissionID != receipt.SubmissionID || calls.Load() != 2 {
+	if err != nil || refreshed.SubmissionID != receipt.SubmissionID || calls.Load() != 3 {
 		t.Fatalf("peer refresh mismatch: %#v %v", refreshed, err)
 	}
 	canceled, err := NewClient(server.URL).AgentServiceCancelPeer(context.Background(), source, "team/resolver", "diagnose", receipt)
-	if err != nil || canceled.Status.State != "reconciled" || calls.Load() != 3 {
+	if err != nil || canceled.Status.State != "reconciled" || calls.Load() != 4 {
 		t.Fatalf("peer cancellation mismatch: %#v %v", canceled, err)
 	}
 }

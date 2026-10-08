@@ -19,6 +19,7 @@ class PlatformOperation(StrEnum):
     A2A_PUSH_REST_SET_PUSH_CONFIG = "a2a_push_rest_set_push_config"
     AGENT_SERVICES_MESSAGE_SEND = "agent_services_message_send"
     AGENT_SERVICES_PEER_CANCEL = "agent_services_peer_cancel"
+    AGENT_SERVICES_PEER_DISCOVER = "agent_services_peer_discover"
     AGENT_SERVICES_PEER_REFRESH = "agent_services_peer_refresh"
     AGENT_SERVICES_PEER_SEND = "agent_services_peer_send"
     AGENT_SERVICES_TASK_GET = "agent_services_task_get"
@@ -304,6 +305,12 @@ OPERATIONS = {
         "POST",
         "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:cancel",
         ("namespace", "tenant", "agent", "id", "target", "skill", "submission"),
+        "json",
+    ),
+    PlatformOperation.AGENT_SERVICES_PEER_DISCOVER: (
+        "GET",
+        "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers",
+        ("namespace", "tenant", "agent", "id"),
         "json",
     ),
     PlatformOperation.AGENT_SERVICES_PEER_REFRESH: (

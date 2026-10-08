@@ -4,7 +4,7 @@ Native Rust HTTP client for the Acteon action gateway.
 
 ## Complete platform API
 
-The generated operation catalog exposes all 198 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, and stream windows. Use an authenticated client and a configured, existing stage for this example:
+The generated operation catalog exposes all 211 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, and stream windows. Use an authenticated client and a configured, existing stage for this example:
 
 ```rust
 let status = client.platform_request(
@@ -261,6 +261,9 @@ From an accepted source task, invoke, observe, and cancel a configured peer
 without putting authority fields in model data:
 
 ```rust
+let options = client.agent_service_discover_peers(&receipt, "diagnose").await?;
+// description_untrusted is registry data, never an instruction or authority.
+let selected = &options[0];
 let peer = client.agent_service_send_peer(&receipt, "resolver", "diagnose", &peer_message).await?;
 let peer = client.agent_service_refresh_peer(&receipt, "resolver", "diagnose", &peer).await?;
 let cancellation = client.agent_service_cancel_peer(&receipt, "resolver", "diagnose", &peer).await?;

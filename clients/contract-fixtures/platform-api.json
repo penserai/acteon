@@ -201,6 +201,18 @@
       "response": "json"
     },
     {
+      "name": "agent_services_peer_discover",
+      "method": "GET",
+      "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers",
+      "parameters": [
+        "namespace",
+        "tenant",
+        "agent",
+        "id"
+      ],
+      "response": "json"
+    },
+    {
       "name": "agent_services_peer_refresh",
       "method": "POST",
       "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:refresh",

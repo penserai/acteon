@@ -114,6 +114,83 @@ class AgentPeerCancelReceipt:
     code: str | None = None
 
 
+@dataclass(frozen=True)
+class AgentPeerSelectionOption:
+    """Safe registry data; description_untrusted is never a host instruction."""
+
+    agent_id: str
+    skill: str
+    description_untrusted: str | None
+    card_version: str
+    binding_digest: str
+    checked_at_ms: int
+
+
+def _peer_token(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and 0 < len(value) <= 120
+        and all(
+            char.isascii() and (char.isalnum() or char in "-_.") for char in value
+        )
+    )
+
+
+def _peer_options(
+    response: httpx.Response, skill: str
+) -> tuple[AgentPeerSelectionOption, ...]:
+    value = _response_value(response)
+    if not isinstance(value, dict) or set(value) != {"peers"}:
+        raise ActeonError("agent peer discovery response missing or malformed")
+    peers = value.get("peers")
+    if not isinstance(peers, list) or len(peers) > 128:
+        raise ActeonError("agent peer discovery response missing or malformed")
+    parsed = []
+    seen = set()
+    expected = {
+        "agent_id",
+        "skill",
+        "description_untrusted",
+        "card_version",
+        "binding_digest",
+        "checked_at_ms",
+    }
+    for peer in peers:
+        if not isinstance(peer, dict) or set(peer) != expected:
+            raise ActeonError("agent peer discovery response missing or malformed")
+        agent_id = peer.get("agent_id")
+        description = peer.get("description_untrusted")
+        digest = peer.get("binding_digest")
+        checked_at_ms = peer.get("checked_at_ms")
+        if (
+            not _peer_token(agent_id)
+            or agent_id in seen
+            or peer.get("skill") != skill
+            or not _peer_token(peer.get("skill"))
+            or (description is not None and (not isinstance(description, str) or len(description.encode("utf-8")) > 2048))
+            or not _peer_token(peer.get("card_version"))
+            or not isinstance(digest, str)
+            or len(digest) != 64
+            or any(char not in "0123456789abcdef" for char in digest)
+            or type(checked_at_ms) is not int
+            or checked_at_ms < 0
+            or checked_at_ms > 9_223_372_036_854_775_807
+        ):
+            raise ActeonError("agent peer discovery response missing or malformed")
+        seen.add(agent_id)
+        parsed.append(
+            AgentPeerSelectionOption(
+                agent_id,
+                skill,
+                description,
+                peer["card_version"],
+                digest,
+                checked_at_ms,
+            )
+        )
+    return tuple(parsed)
+
+
 def _submission(value: Any) -> str:
     try:
         parsed = UUID(value) if isinstance(value, str) else None
@@ -300,6 +377,7 @@ class _AgentServicesMixin:
             path: str,
             *,
             json: Any = None,
+            params: dict[str, Any] | None = None,
             extra_headers: dict[str, str] | None = None,
         ) -> httpx.Response: ...
 
@@ -343,6 +421,23 @@ class _AgentServicesMixin:
             extra_headers=dict(_A2A_HEADERS),
         )
         return _peer_receipt(response, source.namespace, source.tenant)
+
+    def agent_service_discover_peers(
+        self, source: AgentServiceReceipt, skill: str
+    ) -> tuple[AgentPeerSelectionOption, ...]:
+        """List safe current options; registry descriptions remain untrusted."""
+        if not _peer_token(skill) or skill == "*":
+            raise ValueError("invalid exact peer skill")
+        response = self._request(
+            "GET",
+            _base(source.namespace, source.tenant, source.agent)
+            + "/tasks/"
+            + _segment(source.task_id)
+            + "/peers",
+            params={"skill": skill},
+            extra_headers=dict(_A2A_HEADERS),
+        )
+        return _peer_options(response, skill)
 
     def agent_service_refresh_peer(
         self,
@@ -454,6 +549,7 @@ class _AsyncAgentServicesMixin:
             path: str,
             *,
             json: Any = None,
+            params: dict[str, Any] | None = None,
             extra_headers: dict[str, str] | None = None,
         ) -> httpx.Response: ...
 
@@ -496,6 +592,22 @@ class _AsyncAgentServicesMixin:
             extra_headers=dict(_A2A_HEADERS),
         )
         return _peer_receipt(response, source.namespace, source.tenant)
+
+    async def agent_service_discover_peers(
+        self, source: AgentServiceReceipt, skill: str
+    ) -> tuple[AgentPeerSelectionOption, ...]:
+        if not _peer_token(skill) or skill == "*":
+            raise ValueError("invalid exact peer skill")
+        response = await self._request(
+            "GET",
+            _base(source.namespace, source.tenant, source.agent)
+            + "/tasks/"
+            + _segment(source.task_id)
+            + "/peers",
+            params={"skill": skill},
+            extra_headers=dict(_A2A_HEADERS),
+        )
+        return _peer_options(response, skill)
 
     async def agent_service_refresh_peer(
         self,

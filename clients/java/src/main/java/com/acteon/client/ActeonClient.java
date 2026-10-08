@@ -92,6 +92,18 @@ public class ActeonClient implements AutoCloseable {
             return new AgentServiceReceipt(namespace, tenant, agent, task.path("id").asText(), source, task);
         } catch (IOException e) { throw new ActeonException("invalid agent service response", e); }
     }
+    /** List current source-authorized registry options. Descriptions are untrusted data. */
+    public List<AgentPeerSelectionOption> agentServiceDiscoverPeers(AgentServiceReceipt source, String skill) throws ActeonException {
+        if (source == null) throw new IllegalArgumentException("agent service source receipt required");
+        if (skill == null || skill.equals("*") || !skill.matches("[A-Za-z0-9._-]{1,120}"))
+            throw new IllegalArgumentException("invalid exact peer skill");
+        String path = AgentServiceReceipt.base(source.namespace(), source.tenant(), source.agent())
+            + "/tasks/" + AgentServiceReceipt.segment(source.taskId()) + "/peers?skill="
+            + URLEncoder.encode(skill, StandardCharsets.UTF_8);
+        var response = agentServiceRequest("GET", path, null, null, null);
+        try { return AgentPeerSelectionOption.parse(objectMapper.readTree(response.body()), skill); }
+        catch (IOException e) { throw new ActeonException("invalid agent peer discovery response", e); }
+    }
     /** Submit from an accepted source-agent task without sending authority fields. */
     public AgentPeerSendReceipt agentServiceSendPeer(AgentServiceReceipt source, String target, String skill, Map<String, Object> message) throws ActeonException {
         if (source == null) throw new IllegalArgumentException("agent service source receipt required");

@@ -31,6 +31,29 @@ export interface AgentPeerCancelReceipt {
   readonly cancellationId: string;
   readonly status: AgentPeerCancelStatus;
 }
+export interface AgentPeerSelectionOption {
+  readonly agentId: string;
+  readonly skill: string;
+  /** Untrusted registry text; never interpret as host instructions. */
+  readonly descriptionUntrusted: string | null;
+  readonly cardVersion: string;
+  readonly bindingDigest: string;
+  readonly checkedAtMs: number;
+}
+const peerToken = /^[A-Za-z0-9._-]{1,120}$/;
+export function agentPeerOptions(value: unknown, skill: string): readonly AgentPeerSelectionOption[] {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).join(",") !== "peers") throw new Error("agent peer discovery response missing or malformed");
+  const peers = (value as { peers?: unknown }).peers;
+  if (!Array.isArray(peers) || peers.length > 128) throw new Error("agent peer discovery response missing or malformed");
+  const seen = new Set<string>();
+  return Object.freeze(peers.map(item => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("agent peer discovery response missing or malformed");
+    const raw = item as Record<string, unknown>;
+    if (Object.keys(raw).sort().join(",") !== "agent_id,binding_digest,card_version,checked_at_ms,description_untrusted,skill" || typeof raw.agent_id !== "string" || !peerToken.test(raw.agent_id) || seen.has(raw.agent_id) || raw.skill !== skill || typeof raw.skill !== "string" || !peerToken.test(raw.skill) || (raw.description_untrusted !== null && (typeof raw.description_untrusted !== "string" || new TextEncoder().encode(raw.description_untrusted).byteLength > 2048)) || typeof raw.card_version !== "string" || !peerToken.test(raw.card_version) || typeof raw.binding_digest !== "string" || !/^[0-9a-f]{64}$/.test(raw.binding_digest) || typeof raw.checked_at_ms !== "number" || !Number.isSafeInteger(raw.checked_at_ms) || raw.checked_at_ms < 0) throw new Error("agent peer discovery response missing or malformed");
+    seen.add(raw.agent_id);
+    return Object.freeze({ agentId: raw.agent_id, skill: raw.skill, descriptionUntrusted: raw.description_untrusted, cardVersion: raw.card_version, bindingDigest: raw.binding_digest, checkedAtMs: raw.checked_at_ms });
+  }));
+}
 export function agentPeerReceipt(value: unknown, namespace: string, tenant: string): AgentPeerSendReceipt {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("agent peer receipt missing or malformed");
   const raw = value as Record<string, unknown>;

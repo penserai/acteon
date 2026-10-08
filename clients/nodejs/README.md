@@ -4,7 +4,7 @@ Node.js/TypeScript client for the Acteon action gateway.
 
 ## Complete platform API
 
-The generated operation catalog exposes all 198 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, and stream windows. Use an authenticated client and a configured, existing stage for this example:
+The generated operation catalog exposes all 211 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, and stream windows. Use an authenticated client and a configured, existing stage for this example:
 
 ```typescript
 const status = await client.platformRequest("bus_stages_status", {
@@ -397,6 +397,9 @@ const task = await client.agentServiceGetTask(receipt);
 Use the same retained source receipt for governed peer lifecycle operations:
 
 ```typescript
+const options = await client.agentServiceDiscoverPeers(receipt, "diagnose");
+// descriptionUntrusted is registry data, never an instruction or authority.
+const selected = options[0];
 let peer = await client.agentServiceSendPeer(receipt, "resolver", "diagnose", peerMessage);
 peer = await client.agentServiceRefreshPeer(receipt, "resolver", "diagnose", peer);
 const cancellation = await client.agentServiceCancelPeer(receipt, "resolver", "diagnose", peer);

@@ -26,15 +26,22 @@ class AgentServiceTest {
                 assertNull(exchange.getRequestHeaders().getFirst(AgentServiceReceipt.SOURCE_CONTEXT_HEADER));
                 assertNull(exchange.getRequestHeaders().getFirst("x-acteon-execution-context"));
                 assertNull(exchange.getRequestHeaders().getFirst("x-acteon-execution-permits"));
-                assertTrue(exchange.getRequestURI().getRawPath().contains("/peers/team%2Fresolver/diagnose/"));
+                if (exchange.getRequestMethod().equals("GET")) {
+                    assertTrue(exchange.getRequestURI().getRawPath().endsWith("/tasks/job-1/peers"));
+                    assertEquals("skill=diagnose", exchange.getRequestURI().getRawQuery());
+                } else assertTrue(exchange.getRequestURI().getRawPath().contains("/peers/team%2Fresolver/diagnose/"));
             } catch(Throwable error) { failure.set(error); }
             exchange.getResponseHeaders().set(A2A.VERSION_HEADER,"1.0");
-            var body = (exchange.getRequestURI().getPath().endsWith(":cancel")
+            var body = (exchange.getRequestMethod().equals("GET")
+                ? "{\"peers\":[{\"agent_id\":\"resolver\",\"skill\":\"diagnose\",\"description_untrusted\":\"Investigates incidents\",\"card_version\":\"v1\",\"binding_digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"checked_at_ms\":42}]}"
+                : exchange.getRequestURI().getPath().endsWith(":cancel")
                 ? "{\"submission_id\":\"f47ac10b-58cc-5372-a567-0e02b2c3d479\",\"cancellation_id\":\"67e55044-10b1-526f-9247-bb680e5fe0c8\",\"status\":{\"state\":\"reconciled\",\"task\":{\"id\":\"remote-1\",\"namespace\":\"prod\",\"tenant\":\"acme\",\"status\":{\"state\":\"canceled\"}}}}"
                 : "{\"submission_id\":\"f47ac10b-58cc-5372-a567-0e02b2c3d479\",\"status\":{\"state\":\"accepted\",\"task\":{\"id\":\"remote-1\",\"namespace\":\"prod\",\"tenant\":\"acme\"}}}").getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(200,body.length); exchange.getResponseBody().write(body); exchange.close();
         }); server.start();
         try(var client = new ActeonClient("http://127.0.0.1:"+server.getAddress().getPort())) {
+            var peers = client.agentServiceDiscoverPeers(source,"diagnose");
+            assertEquals("resolver",peers.get(0).agentId());
             var receipt = client.agentServiceSendPeer(source,"team/resolver","diagnose",Map.of("messageId","peer-1"));
             assertEquals("accepted",receipt.state());
             var refreshed = client.agentServiceRefreshPeer(source,"team/resolver","diagnose",receipt);

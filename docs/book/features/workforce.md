@@ -216,9 +216,13 @@ The current profile covers qualified immediate provider execution within one
 coordinator namespace and tenant. Workforce records in separate execution scopes
 are independently governed: sharing a team reference does not make offboarding
 atomic across them. A registry entry does not itself issue a mandate or permit.
-Autonomous registry-backed A2A handoff, delegated initiators, shared team or
-child budgets, protected deferred execution and cross-scope workforce coordination
-remain separate platform work. This profile does not claim those guarantees.
+The governed A2A service can now give an accepted source agent a safe,
+source-authorized registry view and can carry the selected peer through durable
+send, refresh, and cancellation. Selection policy remains the agent or host's
+responsibility; a discovery result does not create authority. Shared team or
+child budgets, protected deferred execution, and cross-scope workforce
+coordination remain separate platform work. This profile does not claim those
+guarantees.
 
 Run the [workforce simulation](../guides/agent-workforce.md) to see personal
 offboarding, independent standing mandates and resource closures against a real

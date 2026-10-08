@@ -2,7 +2,7 @@
 
 Use Acteon's SDKs to connect agents, services, and workers to the same execution and governance platform. Start with the typed helpers for dispatch, rules, audit, approvals, and bus operations. Use the complete **platform operation API** for controls that do not yet have a dedicated helper in your language.
 
-The current source tree provides a generated catalog for **210 finite HTTP operations** in Rust, Python, TypeScript, Go, and Java. It includes receipt sessions, managed-stage recovery, workflow and execution controls, inference profiles, stream windows, and operator APIs. Six streaming or polymorphic RPC routes use the existing streaming and A2A clients instead. Server configuration, authorization, and optional build features still determine which operations are available on your deployment.
+The current source tree provides a generated catalog for **211 finite HTTP operations** in Rust, Python, TypeScript, Go, and Java. It includes receipt sessions, managed-stage recovery, workflow and execution controls, inference profiles, stream windows, and operator APIs. Six streaming or polymorphic RPC routes use the existing streaming and A2A clients instead. Server configuration, authorization, and optional build features still determine which operations are available on your deployment.
 
 ## Choose the right interface
 
@@ -230,6 +230,20 @@ An accepted agent can invoke one configured peer without receiving those
 authority references. The helper uses the source service receipt only to address
 the accepted task; it sends the target, skill and message while current private
 authentication proves the source recipient:
+
+Before selection, the SDKs can request current safe options for one exact skill.
+The server intersects the source agent's reviewed onward list, live registry and
+card state, installed binding, and caller grant. Returned descriptions are
+explicitly untrusted. Options contain no endpoint or authority material and do
+not authorize a later send.
+
+| SDK | Safe peer discovery |
+| --- | --- |
+| Rust | `agent_service_discover_peers(&source, skill)` |
+| Python, sync/async | `agent_service_discover_peers(source, skill)` |
+| TypeScript | `agentServiceDiscoverPeers(source, skill)` |
+| Go | `AgentServiceDiscoverPeers(ctx, source, skill)` |
+| Java | `agentServiceDiscoverPeers(source, skill)` |
 
 | SDK | Governed peer submission |
 | --- | --- |

@@ -4,7 +4,7 @@ Python client for the Acteon action gateway.
 
 ## Complete platform API
 
-The generated operation catalog exposes all 198 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, and stream windows. Use an authenticated client and a configured, existing stage for this example:
+The generated operation catalog exposes all 211 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, and stream windows. Use an authenticated client and a configured, existing stage for this example:
 
 ```python
 from acteon_client import ActeonClient, PlatformOperation
@@ -510,6 +510,9 @@ task = client.agent_service_get_task(receipt)
 Use the same retained source receipt for governed peer lifecycle operations:
 
 ```python
+options = client.agent_service_discover_peers(receipt, "diagnose")
+# description_untrusted is registry data, never an instruction or authority.
+selected = options[0]
 peer = client.agent_service_send_peer(receipt, "resolver", "diagnose", peer_message)
 peer = client.agent_service_refresh_peer(receipt, "resolver", "diagnose", peer)
 cancellation = client.agent_service_cancel_peer(receipt, "resolver", "diagnose", peer)

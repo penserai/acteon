@@ -40,6 +40,21 @@ it("sends peer tool input without authority fields and validates the durable rec
   expect(fetch.mock.calls[1][0]).toContain("/submissions/f47ac10b-58cc-5372-a567-0e02b2c3d479:refresh");
   expect(fetch).toHaveBeenCalledTimes(2);
 });
+it("discovers only strict safe peer options without authority fields", async () => {
+  const source = { namespace: "prod", tenant: "acme", agent: "notifier", taskId: "job-1", sourceContext: fixture.jobs[0].source_context, task: fixture.jobs[0].task };
+  const fetch = vi.fn(async (input: string, init: RequestInit) => {
+    expect(input).toContain("/tasks/job-1/peers?skill=diagnose");
+    const headers = init.headers as Record<string, string>;
+    expect(headers[AGENT_SOURCE_CONTEXT_HEADER]).toBeUndefined();
+    expect(headers[AGENT_EXECUTION_CONTEXT_HEADER]).toBeUndefined();
+    expect(headers["x-acteon-execution-permits"]).toBeUndefined();
+    return new Response(JSON.stringify({peers:[{agent_id:"resolver",skill:"diagnose",description_untrusted:"Investigates incidents",card_version:"v1",binding_digest:"a".repeat(64),checked_at_ms:42}]}), {headers:{"a2a-version":"1.0"}});
+  });
+  vi.stubGlobal("fetch", fetch);
+  const peers = await new ActeonClient("http://acteon").agentServiceDiscoverPeers(source, "diagnose");
+  expect(peers).toEqual([{agentId:"resolver",skill:"diagnose",descriptionUntrusted:"Investigates incidents",cardVersion:"v1",bindingDigest:"a".repeat(64),checkedAtMs:42}]);
+  expect(Object.keys(peers[0]!)).not.toContain("endpoint");
+});
 it("cancels an accepted peer at most once and validates reconciled task identity", async () => {
   const source = { namespace: "prod", tenant: "acme", agent: "notifier", taskId: "job-1", sourceContext: fixture.jobs[0].source_context, task: fixture.jobs[0].task };
   const peer = { submissionId: "f47ac10b-58cc-5372-a567-0e02b2c3d479", status: { state: "accepted" as const, task: fixture.jobs[1].task } };

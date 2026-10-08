@@ -4,7 +4,7 @@ Go client for the Acteon action gateway.
 
 ## Complete platform API
 
-The generated operation catalog exposes all 198 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, and stream windows. Use an authenticated client and a configured, existing stage for this example:
+The generated operation catalog exposes all 211 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, and stream windows. Use an authenticated client and a configured, existing stage for this example:
 
 ```go
 status, err := client.PlatformRequest(ctx, acteon.OpBusStagesStatus,
@@ -441,6 +441,9 @@ task, err := client.AgentServiceGetTask(ctx, receipt)
 Use the same retained source receipt for governed peer lifecycle operations:
 
 ```go
+options, err := client.AgentServiceDiscoverPeers(ctx, receipt, "diagnose")
+// DescriptionUntrusted is registry data, never an instruction or authority.
+selected := options[0]
 peer, err := client.AgentServiceSendPeer(ctx, receipt, "resolver", "diagnose", peerMessage)
 peer, err = client.AgentServiceRefreshPeer(ctx, receipt, "resolver", "diagnose", peer)
 cancellation, err := client.AgentServiceCancelPeer(ctx, receipt, "resolver", "diagnose", peer)

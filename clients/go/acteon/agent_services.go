@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/url"
 	"regexp"
 	"strings"
@@ -17,6 +18,7 @@ const AgentExecutionContextHeader = "x-acteon-execution-context"
 var agentSourcePattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 var agentAttemptPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 var agentProofPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+var agentPeerTokenPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,120}$`)
 
 // AgentServiceReceipt belongs in host state, separately from model data.
 // TaskID is the original accepted identity, independent of mutable Task data.
@@ -87,6 +89,77 @@ type AgentPeerCancelReceipt struct {
 	SubmissionID   string                `json:"submission_id"`
 	CancellationID string                `json:"cancellation_id"`
 	Status         AgentPeerCancelStatus `json:"status"`
+}
+
+// AgentPeerSelectionOption is safe registry data. DescriptionUntrusted is
+// untrusted text and the option itself grants no authority.
+type AgentPeerSelectionOption struct {
+	AgentID              string
+	Skill                string
+	DescriptionUntrusted *string
+	CardVersion          string
+	BindingDigest        string
+	CheckedAtMS          int64
+}
+
+// AgentServiceDiscoverPeers lists current source-authorized registry options.
+func (c *Client) AgentServiceDiscoverPeers(ctx context.Context, source *AgentServiceReceipt, skill string) ([]AgentPeerSelectionOption, error) {
+	if source == nil {
+		return nil, fmt.Errorf("agent service source receipt required")
+	}
+	if !agentPeerTokenPattern.MatchString(skill) || skill == "*" {
+		return nil, fmt.Errorf("invalid exact peer skill")
+	}
+	base, err := agentServiceBase(source.Namespace, source.Tenant, source.Agent)
+	if err != nil {
+		return nil, err
+	}
+	taskID, err := agentSegment(source.TaskID)
+	if err != nil {
+		return nil, err
+	}
+	value, _, err := c.agentServiceRequest(ctx, "GET", base+"/tasks/"+taskID+"/peers?skill="+url.QueryEscape(skill), nil, "", nil)
+	if err != nil {
+		return nil, err
+	}
+	if len(value) != 1 {
+		return nil, fmt.Errorf("agent peer discovery response missing or malformed")
+	}
+	rawPeers, ok := value["peers"].([]any)
+	if !ok || len(rawPeers) > 128 {
+		return nil, fmt.Errorf("agent peer discovery response missing or malformed")
+	}
+	seen := map[string]struct{}{}
+	options := make([]AgentPeerSelectionOption, 0, len(rawPeers))
+	for _, item := range rawPeers {
+		raw, ok := item.(map[string]any)
+		if !ok || len(raw) != 6 {
+			return nil, fmt.Errorf("agent peer discovery response missing or malformed")
+		}
+		agentID, agentOK := raw["agent_id"].(string)
+		peerSkill, skillOK := raw["skill"].(string)
+		cardVersion, versionOK := raw["card_version"].(string)
+		digest, digestOK := raw["binding_digest"].(string)
+		checked, checkedOK := raw["checked_at_ms"].(float64)
+		_, descriptionPresent := raw["description_untrusted"]
+		if !agentOK || !agentPeerTokenPattern.MatchString(agentID) || !skillOK || peerSkill != skill || !agentPeerTokenPattern.MatchString(peerSkill) || !versionOK || !agentPeerTokenPattern.MatchString(cardVersion) || !digestOK || !agentProofPattern.MatchString(digest) || !checkedOK || !descriptionPresent || checked < 0 || checked > float64(1<<53) || math.Trunc(checked) != checked {
+			return nil, fmt.Errorf("agent peer discovery response missing or malformed")
+		}
+		if _, duplicate := seen[agentID]; duplicate {
+			return nil, fmt.Errorf("agent peer discovery response missing or malformed")
+		}
+		seen[agentID] = struct{}{}
+		var description *string
+		if raw["description_untrusted"] != nil {
+			text, ok := raw["description_untrusted"].(string)
+			if !ok || len(text) > 2048 {
+				return nil, fmt.Errorf("agent peer discovery response missing or malformed")
+			}
+			description = &text
+		}
+		options = append(options, AgentPeerSelectionOption{AgentID: agentID, Skill: peerSkill, DescriptionUntrusted: description, CardVersion: cardVersion, BindingDigest: digest, CheckedAtMS: int64(checked)})
+	}
+	return options, nil
 }
 
 func (c *Client) agentServiceRequest(ctx context.Context, method, path string, body any, source string, parent *AgentServiceParent) (map[string]any, string, error) {

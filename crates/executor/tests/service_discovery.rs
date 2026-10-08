@@ -1482,6 +1482,58 @@ async fn approved_service_discovery_reads_actual_card_instead_of_presence_hint()
 }
 
 #[tokio::test]
+async fn source_peer_options_expose_only_safe_reviewed_registry_fields() {
+    let f = Fixture::new().await;
+    let allowed = vec!["responder".to_owned()];
+    let options = f
+        .registry
+        .discover_source_options(
+            "notify",
+            &allowed,
+            &f.coordinator,
+            &f.parent,
+            &permits("caller"),
+            &f.clock,
+        )
+        .await
+        .unwrap();
+    assert_eq!(options.len(), 1);
+    let option = &options[0];
+    assert_eq!(option.agent_id, "responder");
+    assert_eq!(option.skill, "notify");
+    assert_eq!(option.description_untrusted, None);
+    assert_eq!(option.binding_digest, f.binding.digest());
+    assert_eq!(option.checked_at_ms, f.clock.now().timestamp_millis());
+    assert!(
+        f.registry
+            .discover_source_options(
+                "notify",
+                &["responder".into(), "responder".into()],
+                &f.coordinator,
+                &f.parent,
+                &permits("caller"),
+                &f.clock,
+            )
+            .await
+            .is_err()
+    );
+    f.retire().await;
+    let retired = f
+        .registry
+        .discover_source_options(
+            "notify",
+            &allowed,
+            &f.coordinator,
+            &f.parent,
+            &permits("caller"),
+            &f.clock,
+        )
+        .await
+        .unwrap();
+    assert_eq!(retired.len(), 0);
+}
+
+#[tokio::test]
 async fn actual_approved_card_cannot_override_registry_retirement() {
     use acteon_governance::{
         control::{ControlChangeAuthorization, ControlChangeCeiling},

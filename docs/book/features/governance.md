@@ -381,9 +381,18 @@ Discovery is advisory and writes no reservations, children or start leases.
 The returned revision describes the observation; it is not authority to invoke
 a peer. Configured agent services preserve cross-participant lineage and shared
 sponsorship at child admission. The installed durable transport repeats current
-source, registry and binding checks before registering a send. There is no HTTP
-discovery route for this reviewed registry; the model-callable send route accepts
-only a configured target, skill and message and keeps authority data server-side.
+source, registry and binding checks before registering a send.
+
+Authenticated agent services expose a narrower model-facing view at `GET
+/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{source_task}/peers?skill={skill}`.
+The host's reviewed onward-agent allowlist bounds the candidates before the
+runtime reads current agent and card records. The caller's API grant filters the
+result again. The response contains only agent ID, exact skill, card version,
+binding digest, observation time, and optional `description_untrusted`; it never
+contains endpoints, credentials, permits, principals, or authority handles.
+Corrupt or unavailable state fails the whole read. Ordinary denials and retired,
+offline, or changed cards are omitted. The view grants no authority, and the
+send path performs admission again against current state.
 
 
 ### Service delegation and shared sponsorship

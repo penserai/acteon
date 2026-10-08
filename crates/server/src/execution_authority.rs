@@ -5,11 +5,12 @@ mod peer_http;
 mod runtime;
 pub use peer_http::ActeonPeerHttpAdapter;
 pub use runtime::{
-    AgentPeerCancelInvocation, AgentPeerCancelRequest, AgentPeerInvocation,
-    AgentPeerRefreshInvocation, AgentPeerRefreshRequest, AgentPeerToolRequest,
-    AgentPeerTransportError, AgentServiceAcceptance, AgentServiceDriver, AgentServiceError,
-    AgentServiceObservation, AgentServiceParent, AgentServiceRequest, ExecutionAuthorityRuntime,
-    ExecutionRuntimeDependencies, ManagementError, TrustedReconciliationInstallation,
+    AgentPeerCancelInvocation, AgentPeerCancelRequest, AgentPeerDiscoveryInvocation,
+    AgentPeerDiscoveryRequest, AgentPeerInvocation, AgentPeerRefreshInvocation,
+    AgentPeerRefreshRequest, AgentPeerToolRequest, AgentPeerTransportError, AgentServiceAcceptance,
+    AgentServiceDriver, AgentServiceError, AgentServiceObservation, AgentServiceParent,
+    AgentServiceRequest, ExecutionAuthorityRuntime, ExecutionRuntimeDependencies, ManagementError,
+    TrustedReconciliationInstallation,
 };
 use std::{collections::BTreeMap, sync::Arc};
 

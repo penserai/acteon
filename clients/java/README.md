@@ -4,7 +4,7 @@ Java client for the Acteon action gateway.
 
 ## Complete platform API
 
-The generated operation catalog exposes all 198 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, and stream windows. Use an authenticated client and a configured, existing stage for this example:
+The generated operation catalog exposes all 211 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, and stream windows. Use an authenticated client and a configured, existing stage for this example:
 
 ```java
 var status = client.platformRequest(PlatformOperation.BUS_STAGES_STATUS,
@@ -442,6 +442,9 @@ var task = client.agentServiceGetTask(receipt);
 Use the same retained source receipt for governed peer lifecycle operations:
 
 ```java
+var options = client.agentServiceDiscoverPeers(receipt, "diagnose");
+// descriptionUntrusted is registry data, never an instruction or authority.
+var selected = options.get(0);
 var peer = client.agentServiceSendPeer(receipt, "resolver", "diagnose", peerMessage);
 peer = client.agentServiceRefreshPeer(receipt, "resolver", "diagnose", peer);
 var cancellation = client.agentServiceCancelPeer(receipt, "resolver", "diagnose", peer);

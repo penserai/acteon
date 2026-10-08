@@ -10,6 +10,7 @@ from .a2a import (
 )
 from .agent_services import (
     AgentPeerCancelReceipt,
+    AgentPeerSelectionOption,
     AgentPeerSendReceipt,
     AGENT_EXECUTION_CONTEXT_HEADER,
     AGENT_SOURCE_CONTEXT_HEADER,
@@ -494,6 +495,7 @@ __all__ += [
     "AGENT_EXECUTION_CONTEXT_HEADER",
     "AGENT_SOURCE_CONTEXT_HEADER",
     "AgentPeerCancelReceipt",
+    "AgentPeerSelectionOption",
     "AgentPeerSendReceipt",
     "AgentServiceParent",
     "AgentServiceProviderAbort",

@@ -320,6 +320,19 @@ pub struct PeerCandidate {
     pub checked_at_ms: i64,
 }
 
+/// Safe model-facing selection data. Descriptions are untrusted registry text;
+/// endpoints, credentials, permits, principals and authority handles are
+/// deliberately absent. A returned option is advisory and authorizes no send.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerSelectionOption {
+    pub agent_id: String,
+    pub skill: String,
+    pub description_untrusted: Option<String>,
+    pub card_version: String,
+    pub binding_digest: String,
+    pub checked_at_ms: i64,
+}
+
 /// Trusted independently authenticated ceilings supplied by the host. The
 /// recipient's current permission is checked separately from the caller's.
 pub struct PeerDiscoveryAuthority<'a> {
@@ -446,6 +459,71 @@ impl ApprovedPeerRegistry {
             return Ok(None);
         }
         Ok(Some(card))
+    }
+
+    /// List source-authorized, operator-approved and currently routable peer
+    /// options. The host supplies the source's reviewed onward-agent allowlist.
+    /// Recipient admission is still checked independently when a send arrives.
+    pub async fn discover_source_options(
+        &self,
+        skill: &str,
+        allowed_agents: &[String],
+        coordinator: &AuthorityCoordinator,
+        parent: &VerifiedExecutionContext,
+        parent_permits: &[PermitReference],
+        clock: &dyn Clock,
+    ) -> Result<Vec<PeerSelectionOption>, PeerDiscoveryError> {
+        if skill.is_empty()
+            || skill.len() > 120
+            || skill.trim() != skill
+            || skill == "*"
+            || skill.chars().any(char::is_control)
+            || allowed_agents.is_empty()
+            || allowed_agents.len() > MAX_BINDINGS
+        {
+            return Err(PeerDiscoveryError::Binding);
+        }
+        let allowed = allowed_agents
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        if allowed.len() != allowed_agents.len() {
+            return Err(PeerDiscoveryError::Binding);
+        }
+        let checked_at_ms = clock.now().timestamp_millis();
+        if checked_at_ms < 0 {
+            return Err(PeerDiscoveryError::Binding);
+        }
+        let mut options = Vec::new();
+        for binding in self
+            .bindings
+            .values()
+            .filter(|binding| binding.skill == skill && allowed.contains(&binding.agent_id))
+        {
+            match binding
+                .check_source(coordinator, parent, parent_permits, clock)
+                .await
+            {
+                Ok(()) => {}
+                Err(error) if ordinary_denial(&error) => continue,
+                Err(error) => return Err(PeerDiscoveryError::Authority(error)),
+            }
+            let Some(card) = self.inspect_binding(binding, clock).await? else {
+                continue;
+            };
+            options.push(PeerSelectionOption {
+                agent_id: binding.agent_id.clone(),
+                skill: binding.skill.clone(),
+                description_untrusted: card
+                    .skills
+                    .iter()
+                    .find(|candidate| candidate.name == binding.skill)
+                    .and_then(|candidate| candidate.description.clone()),
+                card_version: card.version,
+                binding_digest: binding.digest.clone(),
+                checked_at_ms,
+            });
+        }
+        Ok(options)
     }
     /// Enumerate the bounded approved registry and filter individual candidates
     /// through both participants' current ceilings. No partial response survives

@@ -60,6 +60,7 @@ Mirrors the JSON-RPC methods on resource-shaped paths:
 
 ```text
 POST   /a2a/{ns}/{tenant}/v1/message:send
+GET    /a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers?skill={exact-skill}
 POST   /a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/message:send
 POST   /a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:refresh
 POST   /a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:cancel
@@ -72,8 +73,15 @@ GET    /a2a/{ns}/{tenant}/v1/tasks/{id}/pushNotificationConfigs/{cfgId}
 DELETE /a2a/{ns}/{tenant}/v1/tasks/{id}/pushNotificationConfigs/{cfgId}
 ```
 
-The longer agent-service route is Acteon's governed peer tool. A configured
-agent calls from one accepted source task and supplies only a message. The server
+The agent-service routes are Acteon's governed peer tools. Discovery returns
+only source-approved, currently online registry entries whose installed binding
+still matches the current card. It exposes a bounded agent ID, exact skill,
+card version, binding digest, observation time, and optional untrusted
+description. It never returns an endpoint, credential, permit, recipient
+principal, or authority handle. The result is advisory; every send repeats all
+current authority and binding checks.
+
+A configured agent calls from one accepted source task and supplies only a message. The server
 recovers the source context and permits, resolves the reviewed target binding and
 credential, and journals the send before network delivery. Its response is
 accepted, rejected, or uncertain; uncertainty is never an instruction to retry.

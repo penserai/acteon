@@ -64,6 +64,25 @@ pub struct AgentPeerCancelReceipt {
     pub status: AgentPeerCancelStatus,
 }
 
+/// Safe registry data for model selection. `description_untrusted` must never
+/// be interpreted as host instructions, and this option authorizes no send.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentPeerSelectionOption {
+    pub agent_id: String,
+    pub skill: String,
+    pub description_untrusted: Option<String>,
+    pub card_version: String,
+    pub binding_digest: String,
+    pub checked_at_ms: i64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AgentPeerDiscoveryResponse {
+    peers: Vec<AgentPeerSelectionOption>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AgentPeerCancelStatus {
@@ -106,6 +125,31 @@ fn valid_attempt_id(value: &str) -> bool {
         && bytes.iter().enumerate().all(|(i, b)| {
             [8, 13, 18, 23].contains(&i) || b.is_ascii_digit() || (b'a'..=b'f').contains(b)
         })
+}
+
+fn valid_peer_token(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 120
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+        })
+}
+
+fn valid_peer_option(option: &AgentPeerSelectionOption, skill: &str) -> bool {
+    valid_peer_token(&option.agent_id)
+        && valid_peer_token(&option.skill)
+        && option.skill == skill
+        && option
+            .description_untrusted
+            .as_ref()
+            .is_none_or(|description| description.len() <= 2048)
+        && valid_peer_token(&option.card_version)
+        && option.binding_digest.len() == 64
+        && option
+            .binding_digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        && option.checked_at_ms >= 0
 }
 
 impl std::fmt::Debug for AgentServiceReceipt {
@@ -289,6 +333,73 @@ async fn peer_cancel_response(
     Ok(receipt)
 }
 impl ActeonClient {
+    /// List current safe selection options for an accepted source task. The
+    /// returned registry description is untrusted and a later send rechecks all
+    /// authority.
+    pub async fn agent_service_discover_peers(
+        &self,
+        source: &AgentServiceReceipt,
+        skill: &str,
+    ) -> Result<Vec<AgentPeerSelectionOption>, Error> {
+        if !valid_peer_token(skill) || skill == "*" {
+            return Err(Error::Configuration("invalid exact peer skill".into()));
+        }
+        let path = format!(
+            "/a2a/{}/{}/agents/{}/v1/tasks/{}/peers",
+            segment(&source.namespace)?,
+            segment(&source.tenant)?,
+            segment(&source.agent)?,
+            segment(&source.task_id)?,
+        );
+        let response = self
+            .add_auth(self.client.get(format!("{}{path}", self.base_url)))
+            .header("a2a-version", A2A_PROTOCOL_VERSION)
+            .query(&[("skill", skill)])
+            .send()
+            .await
+            .map_err(|error| Error::Connection(error.to_string()))?;
+        if !response.status().is_success() {
+            return Err(Error::Http {
+                status: response.status().as_u16(),
+                message: response
+                    .text()
+                    .await
+                    .map_err(|error| Error::Connection(error.to_string()))?,
+            });
+        }
+        if response
+            .headers()
+            .get("a2a-version")
+            .and_then(|value| value.to_str().ok())
+            != Some(A2A_PROTOCOL_VERSION)
+        {
+            return Err(Error::Deserialization(
+                "agent peer discovery response version missing or unsupported".into(),
+            ));
+        }
+        let discovered: AgentPeerDiscoveryResponse = response
+            .json()
+            .await
+            .map_err(|error| Error::Deserialization(error.to_string()))?;
+        let unique = discovered
+            .peers
+            .iter()
+            .map(|option| option.agent_id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        if discovered.peers.len() > 128
+            || unique.len() != discovered.peers.len()
+            || !discovered
+                .peers
+                .iter()
+                .all(|option| valid_peer_option(option, skill))
+        {
+            return Err(Error::Deserialization(
+                "agent peer discovery response missing or malformed".into(),
+            ));
+        }
+        Ok(discovered.peers)
+    }
+
     /// Submit from an accepted source-agent task to one configured peer. The
     /// source task is an opaque host lookup; no authority fields are sent.
     pub async fn agent_service_send_peer(
@@ -969,6 +1080,23 @@ mod tests {
         ] {
             assert!(!status.valid());
         }
+    }
+    #[test]
+    fn peer_discovery_accepts_only_safe_exact_registry_options() {
+        let option: AgentPeerSelectionOption = serde_json::from_value(serde_json::json!({
+            "agent_id":"resolver", "skill":"diagnose",
+            "description_untrusted":"Investigates incidents", "card_version":"v1",
+            "binding_digest":"a".repeat(64), "checked_at_ms":42
+        }))
+        .unwrap();
+        assert!(valid_peer_option(&option, "diagnose"));
+        assert!(!valid_peer_option(&option, "remediate"));
+        assert!(
+            serde_json::to_value(option)
+                .unwrap()
+                .get("endpoint")
+                .is_none()
+        );
     }
     #[tokio::test]
     async fn missing_header_errors_and_redirects_never_return_fake_receipts_or_retry() {
