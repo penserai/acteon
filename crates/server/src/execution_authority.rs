@@ -1,7 +1,9 @@
 //! Production preparation from validated declarations and actual registrations.
 //! Preparation is read-only; publication is a later, explicitly ordered stage.
 pub mod agent_services;
+mod peer_http;
 mod runtime;
+pub use peer_http::ActeonPeerHttpAdapter;
 pub use runtime::{
     AgentServiceAcceptance, AgentServiceDriver, AgentServiceError, AgentServiceObservation,
     AgentServiceParent, AgentServiceRequest, ExecutionAuthorityRuntime,

@@ -32,7 +32,10 @@ Implemented so far:
   the approved binding and adapter revision, persists intent before delivery,
   claims one sender with CAS, records validated remote mapping or uncertainty,
   and permits explicit replay only for a qualified idempotent adapter. The
-  guarded HTTP adapter and lifecycle bridge remain follow-ups.
+  first HTTP adapter uses guarded outbound networking, a redacted host
+  credential, disabled redirects, bounded responses, and native parent headers.
+  Configuration installation, the host-tool surface, and lifecycle bridge remain
+  follow-ups.
 - A configurable server driver discovers durable acceptances from the configured
   state backend and resumes them through governed execution. It retains in-flight
   and uncertain receipts rather than resending them. Scheduling uses fair cursors

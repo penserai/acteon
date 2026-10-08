@@ -1775,6 +1775,10 @@ qualified idempotent recovery. See
 [Durable qualified peer transport](durable-peer-transport.md).
 
 This closes the generic outbound intent, claim, ambiguity, and remote-acceptance
-mapping foundation. A guarded Acteon HTTP adapter, host tool/API, remote lifecycle
-bridge, real two-server restart scenario, and durable-backend qualification are
-still required before the autonomous mesh is complete.
+mapping foundation. The first concrete adapter now uses the guarded outbound
+client, exact host credential, disabled redirects, bounded response reads, and
+native parent-context headers. It accepts only a typed task and source mapping;
+redirects, 5xx, malformed responses, and transport failures remain uncertain.
+Configuration installation, a host tool/API, the remote lifecycle bridge, a real
+two-server restart scenario, and durable-backend qualification are still required
+before the autonomous mesh is complete.

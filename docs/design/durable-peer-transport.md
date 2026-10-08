@@ -1,7 +1,7 @@
 # Durable qualified peer transport
 
-**Status:** Rust host foundation implemented; server adapter and public host-tool
-surface remain follow-up work.
+**Status:** Rust host journal and guarded Acteon HTTP adapter implemented;
+configuration wiring and public host-tool surface remain follow-up work.
 
 Acteon needs a transport boundary between governed peer selection and a real A2A
 network call. Discovery is advisory. A live card, endpoint URL, or model-selected
@@ -78,6 +78,15 @@ The adapter receives typed host state. Models and public request bodies cannot
 select an endpoint, credential, binding digest, adapter revision, parent context,
 or permit set.
 
+`ActeonPeerHttpAdapter` supplies the first concrete implementation. It holds a
+redacted host credential for one binding, uses `GuardedClient` with redirects
+disabled, enforces the configured outbound network policy at URL and connection
+time, and sends the A2A version, opaque parent context, explicit permits, and
+message in their native wire format. Success bodies and error bodies are bounded.
+Only a typed task plus one valid source-context response is accepted. Selected
+4xx responses are retained as known rejection; redirects, 5xx, transport errors,
+malformed success, and oversized response remain uncertain.
+
 ## Evidence
 
 Focused contracts cover:
@@ -94,9 +103,8 @@ Focused contracts cover:
 
 This foundation does not yet complete the autonomous mesh. The next slices are:
 
-1. an Acteon A2A HTTP adapter using the guarded outbound client, exact configured
-   source credential reference, disabled redirects, bounded response reads, and
-   the parent-context headers;
+1. configuration that resolves and installs the exact source credential and
+   adapter for each allowed source/target binding;
 2. a host tool/API that resolves the caller's opaque context and never accepts
    authority fields from model output;
 3. durable remote observation, progress cursor, bounded artifact transfer,
