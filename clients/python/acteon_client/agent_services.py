@@ -262,7 +262,19 @@ def _peer_cancel_receipt(
     if state in ("restricted", "reconciled") and set(status) == {"state", "task"}:
         task = _task_value(status.get("task"), source.namespace, source.tenant, accepted_task_id)
         task_status = task.get("status")
-        terminal = isinstance(task_status, dict) and task_status.get("state") in {
+        task_state = task_status.get("state") if isinstance(task_status, dict) else None
+        if task_state not in {
+            "submitted",
+            "working",
+            "completed",
+            "failed",
+            "canceled",
+            "input_required",
+            "auth_required",
+            "rejected",
+        }:
+            raise ActeonError("agent peer cancellation receipt missing or malformed")
+        terminal = task_state in {
             "completed",
             "failed",
             "canceled",

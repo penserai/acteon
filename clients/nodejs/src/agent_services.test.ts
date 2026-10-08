@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { ActeonClient } from "./client.js";
-import { AGENT_EXECUTION_CONTEXT_HEADER, AGENT_SOURCE_CONTEXT_HEADER, agentProviderAbort } from "./agent_services.js";
+import { AGENT_EXECUTION_CONTEXT_HEADER, AGENT_SOURCE_CONTEXT_HEADER, agentPeerCancelReceipt, agentProviderAbort } from "./agent_services.js";
 import { HttpError } from "./errors.js";
 const fixture = JSON.parse(readFileSync(new URL("../../contract-fixtures/agent-services.json", import.meta.url), "utf8"));
 afterEach(() => vi.unstubAllGlobals());
@@ -67,6 +67,9 @@ it("cancels an accepted peer at most once and validates restricted task identity
   vi.stubGlobal("fetch", fetch);
   const receipt = await new ActeonClient("http://acteon").agentServiceCancelPeer(source, "team/resolver", "diagnose", peer);
   expect(receipt.status.state).toBe("restricted");
+  const malformedTask = structuredClone(task) as Record<string, unknown>;
+  delete malformedTask.status;
+  expect(() => agentPeerCancelReceipt({ submission_id: peer.submissionId, cancellation_id: "67e55044-10b1-526f-9247-bb680e5fe0c8", status: { state: "restricted", task: malformedTask } }, "prod", "acme", peer)).toThrow("missing or malformed");
   await expect(new ActeonClient("http://acteon").agentServiceCancelPeer(source, "team/resolver", "diagnose", { ...peer, status: { state: "accepted", task: { ...peer.status.task, id: "" } } })).rejects.toThrow("identity mismatch");
   expect(fetch).toHaveBeenCalledTimes(1);
 });

@@ -438,11 +438,14 @@ func (c *Client) AgentServiceCancelPeer(ctx context.Context, source *AgentServic
 			return nil, err
 		}
 		taskStatus, ok := task["status"].(map[string]any)
-		terminal := false
-		if ok {
-			state, _ := taskStatus["state"].(string)
-			terminal = state == "completed" || state == "failed" || state == "canceled" || state == "rejected"
+		if !ok {
+			return nil, fmt.Errorf("agent peer cancellation receipt missing or malformed")
 		}
+		taskState, ok := taskStatus["state"].(string)
+		if !ok || (taskState != "submitted" && taskState != "working" && taskState != "completed" && taskState != "failed" && taskState != "canceled" && taskState != "input_required" && taskState != "auth_required" && taskState != "rejected") {
+			return nil, fmt.Errorf("agent peer cancellation receipt missing or malformed")
+		}
+		terminal := taskState == "completed" || taskState == "failed" || taskState == "canceled" || taskState == "rejected"
 		if (state == "restricted" && terminal) || (state == "reconciled" && !terminal) {
 			return nil, fmt.Errorf("agent peer cancellation receipt missing or malformed")
 		}

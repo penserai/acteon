@@ -32,6 +32,8 @@ public record AgentPeerCancelReceipt(
                 if (status.size() != 2) throw new IllegalArgumentException("agent peer cancellation receipt missing or malformed");
                 JsonNode task = AgentServiceReceipt.verifyTask(status.path("task"), source.namespace(), source.tenant(), peer.task().path("id").asText());
                 String taskState = task.path("status").path("state").asText("");
+                if (!java.util.Set.of("submitted", "working", "completed", "failed", "canceled", "input_required", "auth_required", "rejected").contains(taskState))
+                    throw new IllegalArgumentException("agent peer cancellation receipt missing or malformed");
                 boolean terminal = java.util.Set.of("completed", "failed", "canceled", "rejected").contains(taskState);
                 if (("restricted".equals(state) && terminal) || ("reconciled".equals(state) && !terminal))
                     throw new IllegalArgumentException("agent peer cancellation receipt missing or malformed");

@@ -83,7 +83,9 @@ export function agentPeerCancelReceipt(value: unknown, namespace: string, tenant
   else if ((status.state === "restricted" || status.state === "reconciled") && keys === "state,task") {
     const task = agentTask(status.task, namespace, tenant, acceptedTask.id as string);
     const taskStatus = task.status as Record<string, unknown> | undefined;
-    const terminal = !!taskStatus && ["completed", "failed", "canceled", "rejected"].includes(String(taskStatus.state));
+    const taskState = taskStatus?.state;
+    if (typeof taskState !== "string" || !["submitted", "working", "completed", "failed", "canceled", "input_required", "auth_required", "rejected"].includes(taskState)) throw new Error("agent peer cancellation receipt missing or malformed");
+    const terminal = ["completed", "failed", "canceled", "rejected"].includes(taskState);
     if ((status.state === "restricted" && terminal) || (status.state === "reconciled" && !terminal)) throw new Error("agent peer cancellation receipt missing or malformed");
     parsed = status.state === "restricted"
       ? Object.freeze({ state: "restricted", task })
