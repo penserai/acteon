@@ -170,6 +170,26 @@ func TestAgentServicePeerToolCarriesNoAuthorityFields(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/peers") {
+			if r.URL.Query().Get("skill") != "diagnose" {
+				t.Errorf("unexpected discovery query: %s", r.URL.RawQuery)
+			}
+			if r.Header.Get(AgentSourceContextHeader) != "" ||
+				r.Header.Get(AgentExecutionContextHeader) != "" ||
+				r.Header.Get("x-acteon-execution-permits") != "" {
+				t.Error("authority fields leaked into peer discovery")
+			}
+			w.Header().Set(A2AVersionHeader, A2AProtocolVersion)
+			json.NewEncoder(w).Encode(map[string]any{"peers": []any{map[string]any{
+				"agent_id":              "resolver",
+				"skill":                 "diagnose",
+				"description_untrusted": "Investigates incidents",
+				"card_version":          "v1",
+				"binding_digest":        strings.Repeat("a", 64),
+				"checked_at_ms":         42,
+			}}})
+			return
+		}
 		if !strings.Contains(r.URL.Path, "/tasks/job-1/peers/team/resolver/diagnose/") &&
 			!strings.Contains(r.URL.RawPath, "/tasks/job-1/peers/team%2Fresolver/diagnose/") {
 			t.Errorf("unexpected peer path: %s", r.URL.Path)

@@ -527,9 +527,7 @@ An agent already running under Acteon can invoke a peer as a governed child:
 from acteon_client import AgentServiceParent, PermitReference
 
 parent = AgentServiceParent(execution_context, (PermitReference("caller-agent-service", 3),))
-receipt = client.agent_service_send_message(
-    "prod", "acme", "notifier", message, parent=parent
-)
+receipt = client.agent_service_send_message("prod", "acme", "notifier", message, parent=parent)
 ```
 
 The server recovers the sealed parent, verifies the authenticated caller, and
