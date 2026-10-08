@@ -72,11 +72,14 @@ For an accepted remote task, `POST
 /a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{source_task}/peers/{target}/{skill}/submissions/{submission}:cancel`
 persists one cancellation intent before delivery and never automatically sends
 it twice. Every call repeats current authentication, source binding, permit,
-onward-agent grant, registry-card and target-binding checks. The receipt keeps
-`unsupported`, definitive `rejected`, ambiguous `uncertain`, and `reconciled`
-terminal task states separate. After ambiguity, the same endpoint performs safe
-task observation on a later explicit call; the refresh endpoint remains
-available for ordinary lifecycle observation.
+onward-agent grant, registry-card and target-binding checks. It calls the
+target's native stop route and keeps `unsupported`, definitive `rejected`,
+ambiguous `uncertain`, durably fenced `restricted`, and terminal `reconciled`
+states separate. `restricted` carries the current nonterminal task and proves
+future starts are blocked without claiming an in-flight effect stopped. After
+ambiguity or restriction, the same endpoint performs safe task observation on a
+later explicit call; the refresh endpoint remains available for ordinary
+lifecycle observation.
 
 ## Declare independent management rights
 

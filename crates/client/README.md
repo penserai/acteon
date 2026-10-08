@@ -269,9 +269,11 @@ let peer = client.agent_service_refresh_peer(&receipt, "resolver", "diagnose", &
 let cancellation = client.agent_service_cancel_peer(&receipt, "resolver", "diagnose", &peer).await?;
 ```
 
-Cancellation is delivered at most once. Preserve `Uncertain` and reconcile by
-an explicit later cancel or refresh; never generate a new submission or retry
-the cancellation automatically.
+Cancellation is delivered at most once. `Restricted` proves the target durably
+blocked future starts and carries its current nonterminal task; it does not claim
+that an already-running provider effect stopped. Preserve `Uncertain` and
+reconcile by an explicit later cancel or refresh; never generate a new submission
+or retry the cancellation automatically.
 
 `AgentServiceReceipt` supports Serde persistence in host state. Observation uses
 its original task identity, independently of mutable `receipt.task` data.

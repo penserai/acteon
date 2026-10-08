@@ -92,8 +92,11 @@ the last valid snapshot when the remote read is unavailable.
 
 The cancel route uses the same recovered authority and exact accepted send
 record. Acteon journals cancellation intent and a delivery claim before making
-one remote call. `unsupported` and `rejected` are definitive; `uncertain` means
-delivery may have occurred and is never retried automatically. A later explicit
+one remote call to the target service's native stop route. `unsupported` and
+`rejected` are definitive; `uncertain` means delivery may have occurred and is
+never retried automatically. `restricted` proves the target durably fenced
+future provider starts and carries its exact current nonterminal task. It does
+not claim that an already-started provider effect stopped. A later explicit
 cancel call may use safe task observation to return `reconciled` with the exact
 terminal task. That terminal task can be completed, failed, canceled, or
 rejected: reconciliation proves finality, while only the task state says whether

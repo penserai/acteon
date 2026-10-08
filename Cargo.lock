@@ -656,6 +656,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "proptest",
+ "rcgen",
  "reqwest 0.12.28",
  "rustls",
  "serde",

@@ -267,12 +267,14 @@ Accepted peer receipts also support durable cancellation through
 `agent_service_cancel_peer`, `agentServiceCancelPeer`, or
 `AgentServiceCancelPeer`. The helper sends one request and validates the stable
 submission and cancellation UUIDs, exact remote task identity, tenant scope,
-and terminal state. It exposes `unsupported`, `rejected`, `uncertain`, and
-`reconciled` without collapsing them. Never retry an uncertain cancellation
-automatically. Call cancellation explicitly again to let Acteon reconcile by a
-safe task read, or call peer refresh when only the latest lifecycle snapshot is
-needed. A reconciled `completed` or `failed` task means the task became final
-before cancellation took effect.
+and lifecycle state. It exposes `unsupported`, `rejected`, `uncertain`,
+`restricted`, and `reconciled` without collapsing them. `restricted` proves the
+remote service durably blocked future starts and carries the current nonterminal
+task; it does not claim an in-flight provider effect stopped. Never retry an
+uncertain cancellation automatically. Call cancellation explicitly again to let
+Acteon reconcile by a safe task read, or call peer refresh when only the latest
+lifecycle snapshot is needed. A reconciled `completed` or `failed` task means
+the task became final before cancellation took effect.
 
 The admin UI's **Governed tasks** tab on an agent detail page accepts work and
 refreshes accepted tasks using the current browser identity. The server enforces

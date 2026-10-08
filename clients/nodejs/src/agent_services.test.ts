@@ -55,19 +55,18 @@ it("discovers only strict safe peer options without authority fields", async () 
   expect(peers).toEqual([{agentId:"resolver",skill:"diagnose",descriptionUntrusted:"Investigates incidents",cardVersion:"v1",bindingDigest:"a".repeat(64),checkedAtMs:42}]);
   expect(Object.keys(peers[0]!)).not.toContain("endpoint");
 });
-it("cancels an accepted peer at most once and validates reconciled task identity", async () => {
+it("cancels an accepted peer at most once and validates restricted task identity", async () => {
   const source = { namespace: "prod", tenant: "acme", agent: "notifier", taskId: "job-1", sourceContext: fixture.jobs[0].source_context, task: fixture.jobs[0].task };
   const peer = { submissionId: "f47ac10b-58cc-5372-a567-0e02b2c3d479", status: { state: "accepted" as const, task: fixture.jobs[1].task } };
   const task = structuredClone(fixture.jobs[1].task);
-  task.status.state = "canceled";
   const fetch = vi.fn(async (input: string, init: RequestInit) => {
     expect(input).toContain("/submissions/f47ac10b-58cc-5372-a567-0e02b2c3d479:cancel");
     expect(init.body).toBeUndefined();
-    return new Response(JSON.stringify({ submission_id: peer.submissionId, cancellation_id: "67e55044-10b1-526f-9247-bb680e5fe0c8", status: { state: "reconciled", task } }), { headers: { "a2a-version": "1.0" } });
+    return new Response(JSON.stringify({ submission_id: peer.submissionId, cancellation_id: "67e55044-10b1-526f-9247-bb680e5fe0c8", status: { state: "restricted", task } }), { headers: { "a2a-version": "1.0" } });
   });
   vi.stubGlobal("fetch", fetch);
   const receipt = await new ActeonClient("http://acteon").agentServiceCancelPeer(source, "team/resolver", "diagnose", peer);
-  expect(receipt.status.state).toBe("reconciled");
+  expect(receipt.status.state).toBe("restricted");
   await expect(new ActeonClient("http://acteon").agentServiceCancelPeer(source, "team/resolver", "diagnose", { ...peer, status: { state: "accepted", task: { ...peer.status.task, id: "" } } })).rejects.toThrow("identity mismatch");
   expect(fetch).toHaveBeenCalledTimes(1);
 });

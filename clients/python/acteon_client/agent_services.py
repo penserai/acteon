@@ -109,7 +109,7 @@ class AgentPeerCancelReceipt:
 
     submission_id: str
     cancellation_id: str
-    state: Literal["unsupported", "rejected", "uncertain", "reconciled"]
+    state: Literal["unsupported", "rejected", "uncertain", "restricted", "reconciled"]
     task: dict[str, Any] | None = None
     code: str | None = None
 
@@ -259,15 +259,16 @@ def _peer_cancel_receipt(
             and not any(unicodedata.category(char) == "Cc" for char in code)
         ):
             return AgentPeerCancelReceipt(peer.submission_id, cancellation_id, state, code=code)
-    if state == "reconciled" and set(status) == {"state", "task"}:
+    if state in ("restricted", "reconciled") and set(status) == {"state", "task"}:
         task = _task_value(status.get("task"), source.namespace, source.tenant, accepted_task_id)
         task_status = task.get("status")
-        if isinstance(task_status, dict) and task_status.get("state") in {
+        terminal = isinstance(task_status, dict) and task_status.get("state") in {
             "completed",
             "failed",
             "canceled",
             "rejected",
-        }:
+        }
+        if (state == "restricted" and not terminal) or (state == "reconciled" and terminal):
             return AgentPeerCancelReceipt(peer.submission_id, cancellation_id, state, task=task)
     raise ActeonError("agent peer cancellation receipt missing or malformed")
 

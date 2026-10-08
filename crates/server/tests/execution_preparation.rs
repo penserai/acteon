@@ -1688,6 +1688,7 @@ async fn authenticated_chain_root_contract(state: Arc<dyn StateStore>, peer: Arc
             executor: acteon_executor::ExecutorConfig::default(),
             clock: Arc::new(acteon_time::SystemClock::default()),
             encryptor: None,
+            outbound_tls: None,
             signing_key: vec![8; 32].into(),
         },
     )
@@ -1868,6 +1869,7 @@ async fn authenticated_chain_root_contract(state: Arc<dyn StateStore>, peer: Arc
             executor: acteon_executor::ExecutorConfig::default(),
             clock: Arc::new(acteon_time::SystemClock::default()),
             encryptor: None,
+            outbound_tls: None,
             signing_key: vec![8; 32].into(),
         },
     )
@@ -2134,6 +2136,7 @@ async fn agent_service_publication_requires_private_auth_before_any_permits_or_g
             executor: acteon_executor::ExecutorConfig::default(),
             clock: Arc::new(acteon_time::SystemClock::default()),
             encryptor: None,
+            outbound_tls: None,
             signing_key: vec![8; 32].into(),
         },
     )

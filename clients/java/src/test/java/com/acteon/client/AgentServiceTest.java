@@ -35,7 +35,7 @@ class AgentServiceTest {
             var body = (exchange.getRequestMethod().equals("GET")
                 ? "{\"peers\":[{\"agent_id\":\"resolver\",\"skill\":\"diagnose\",\"description_untrusted\":\"Investigates incidents\",\"card_version\":\"v1\",\"binding_digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"checked_at_ms\":42}]}"
                 : exchange.getRequestURI().getPath().endsWith(":cancel")
-                ? "{\"submission_id\":\"f47ac10b-58cc-5372-a567-0e02b2c3d479\",\"cancellation_id\":\"67e55044-10b1-526f-9247-bb680e5fe0c8\",\"status\":{\"state\":\"reconciled\",\"task\":{\"id\":\"remote-1\",\"namespace\":\"prod\",\"tenant\":\"acme\",\"status\":{\"state\":\"canceled\"}}}}"
+                ? "{\"submission_id\":\"f47ac10b-58cc-5372-a567-0e02b2c3d479\",\"cancellation_id\":\"67e55044-10b1-526f-9247-bb680e5fe0c8\",\"status\":{\"state\":\"restricted\",\"task\":{\"id\":\"remote-1\",\"namespace\":\"prod\",\"tenant\":\"acme\",\"status\":{\"state\":\"submitted\"}}}}"
                 : "{\"submission_id\":\"f47ac10b-58cc-5372-a567-0e02b2c3d479\",\"status\":{\"state\":\"accepted\",\"task\":{\"id\":\"remote-1\",\"namespace\":\"prod\",\"tenant\":\"acme\"}}}").getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(200,body.length); exchange.getResponseBody().write(body); exchange.close();
         }); server.start();
@@ -47,7 +47,7 @@ class AgentServiceTest {
             var refreshed = client.agentServiceRefreshPeer(source,"team/resolver","diagnose",receipt);
             assertEquals(receipt.submissionId(),refreshed.submissionId());
             var canceled = client.agentServiceCancelPeer(source,"team/resolver","diagnose",receipt);
-            assertEquals("reconciled",canceled.state());
+            assertEquals("restricted",canceled.state());
             if(failure.get()!=null) throw new AssertionError(failure.get());
         } finally { server.stop(0); }
     }

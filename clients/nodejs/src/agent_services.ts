@@ -25,6 +25,7 @@ export type AgentPeerCancelStatus =
   | Readonly<{ state: "unsupported" }>
   | Readonly<{ state: "rejected"; code: string }>
   | Readonly<{ state: "uncertain" }>
+  | Readonly<{ state: "restricted"; task: Record<string, unknown> }>
   | Readonly<{ state: "reconciled"; task: Record<string, unknown> }>;
 export interface AgentPeerCancelReceipt {
   readonly submissionId: string;
@@ -79,11 +80,14 @@ export function agentPeerCancelReceipt(value: unknown, namespace: string, tenant
   if (status.state === "unsupported" && keys === "state") parsed = Object.freeze({ state: "unsupported" });
   else if (status.state === "uncertain" && keys === "state") parsed = Object.freeze({ state: "uncertain" });
   else if (status.state === "rejected" && keys === "code,state" && typeof status.code === "string" && status.code.length > 0 && status.code.length <= 1024 && status.code.trim() === status.code && !/\p{Cc}/u.test(status.code)) parsed = Object.freeze({ state: "rejected", code: status.code });
-  else if (status.state === "reconciled" && keys === "state,task") {
+  else if ((status.state === "restricted" || status.state === "reconciled") && keys === "state,task") {
     const task = agentTask(status.task, namespace, tenant, acceptedTask.id as string);
     const taskStatus = task.status as Record<string, unknown> | undefined;
-    if (!taskStatus || !["completed", "failed", "canceled", "rejected"].includes(String(taskStatus.state))) throw new Error("agent peer cancellation receipt missing or malformed");
-    parsed = Object.freeze({ state: "reconciled", task });
+    const terminal = !!taskStatus && ["completed", "failed", "canceled", "rejected"].includes(String(taskStatus.state));
+    if ((status.state === "restricted" && terminal) || (status.state === "reconciled" && !terminal)) throw new Error("agent peer cancellation receipt missing or malformed");
+    parsed = status.state === "restricted"
+      ? Object.freeze({ state: "restricted", task })
+      : Object.freeze({ state: "reconciled", task });
   } else throw new Error("agent peer cancellation receipt missing or malformed");
   return Object.freeze({ submissionId: peer.submissionId, cancellationId: raw.cancellation_id, status: parsed });
 }

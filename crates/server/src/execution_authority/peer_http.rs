@@ -9,6 +9,7 @@ use acteon_executor::delegation::{
 use acteon_http::{GuardedClient, OutboundPolicy};
 use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use serde::Deserialize;
 use std::time::Duration;
 
 const MAX_TASK_BYTES: usize = 2 * 1024 * 1024;
@@ -33,6 +34,26 @@ impl ActeonPeerHttpAdapter {
         policy: OutboundPolicy,
         timeout: Duration,
     ) -> Result<Self, PeerTransportError> {
+        Self::new_trusted_with_builder(
+            binding_digest,
+            revision,
+            credential,
+            capability,
+            reqwest::Client::builder(),
+            policy,
+            timeout,
+        )
+    }
+
+    pub fn new_trusted_with_builder(
+        binding_digest: &str,
+        revision: &str,
+        credential: SecretString,
+        capability: PeerSubmissionCapability,
+        builder: reqwest::ClientBuilder,
+        policy: OutboundPolicy,
+        timeout: Duration,
+    ) -> Result<Self, PeerTransportError> {
         if !valid_digest(binding_digest)
             || !valid_text(revision)
             || credential.expose_secret().is_empty()
@@ -40,8 +61,8 @@ impl ActeonPeerHttpAdapter {
         {
             return Err(PeerTransportError::Invalid);
         }
-        let client =
-            GuardedClient::new(policy, timeout).map_err(|_| PeerTransportError::Invalid)?;
+        let client = GuardedClient::from_builder(builder.timeout(timeout), policy, false)
+            .map_err(|_| PeerTransportError::Invalid)?;
         Ok(Self {
             binding_digest: binding_digest.into(),
             revision: revision.into(),
@@ -160,10 +181,7 @@ impl PeerTransportAdapter for ActeonPeerHttpAdapter {
         if request.transport != "rest" {
             return Ok(PeerCancelDisposition::Unsupported);
         }
-        let endpoint = format!(
-            "{}:cancel",
-            task_endpoint(request.endpoint, request.task_id)?
-        );
+        let endpoint = stop_endpoint(request.endpoint, request.task_id)?;
         let context =
             serde_json::to_vec(request.source_context).map_err(|_| PeerTransportError::Invalid)?;
         let Ok(builder) = self.client.request(reqwest::Method::POST, &endpoint) else {
@@ -194,13 +212,22 @@ impl PeerTransportAdapter for ActeonPeerHttpAdapter {
                 return Ok(PeerCancelDisposition::Uncertain);
             }
             return Ok(match read_bounded(response, MAX_TASK_BYTES).await {
-                Ok(raw) => {
-                    serde_json::from_slice(&raw).map_or(PeerCancelDisposition::Uncertain, |task| {
-                        PeerCancelDisposition::Final {
-                            task: Box::new(task),
+                Ok(raw) => serde_json::from_slice::<PeerStopResponse>(&raw).map_or(
+                    PeerCancelDisposition::Uncertain,
+                    |receipt| {
+                        if !receipt.future_starts_blocked {
+                            PeerCancelDisposition::Uncertain
+                        } else if receipt.task.status.state.is_terminal() {
+                            PeerCancelDisposition::Final {
+                                task: Box::new(receipt.task),
+                            }
+                        } else {
+                            PeerCancelDisposition::Restricted {
+                                task: Box::new(receipt.task),
+                            }
                         }
-                    })
-                }
+                    },
+                ),
                 Err(_) => PeerCancelDisposition::Uncertain,
             });
         }
@@ -214,6 +241,15 @@ impl PeerTransportAdapter for ActeonPeerHttpAdapter {
         }
         Ok(PeerCancelDisposition::Uncertain)
     }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PeerStopResponse {
+    task: Task,
+    future_starts_blocked: bool,
+    #[serde(default, rename = "provider_abort")]
+    _provider_abort: Option<serde_json::Value>,
 }
 
 fn task_endpoint(endpoint: &str, task_id: &str) -> Result<String, PeerTransportError> {
@@ -238,6 +274,10 @@ fn task_endpoint(endpoint: &str, task_id: &str) -> Result<String, PeerTransportE
         segments.pop().push("tasks").push(task_id);
     }
     Ok(url.into())
+}
+
+fn stop_endpoint(endpoint: &str, task_id: &str) -> Result<String, PeerTransportError> {
+    Ok(format!("{}/stop", task_endpoint(endpoint, task_id)?))
 }
 
 async fn accepted(response: reqwest::Response) -> Result<PeerSendDisposition, PeerTransportError> {
@@ -387,11 +427,8 @@ mod tests {
         }
         assert!(task_endpoint("https://peer.example/v1/message:send", "..").is_err());
         assert_eq!(
-            format!(
-                "{}:cancel",
-                task_endpoint("https://peer.example/v1/message:send", "task/one").unwrap()
-            ),
-            "https://peer.example/v1/tasks/task%2Fone:cancel"
+            stop_endpoint("https://peer.example/v1/message:send", "task/one").unwrap(),
+            "https://peer.example/v1/tasks/task%2Fone/stop"
         );
     }
 
@@ -496,6 +533,52 @@ mod tests {
         for path in ["unavailable", "redirect", "malformed"] {
             assert!(matches!(send(path).await, PeerSendDisposition::Uncertain));
         }
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn guarded_adapter_uses_native_stop_and_preserves_restriction_only_truth() {
+        let parent = parent();
+        let encoded = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&parent).unwrap());
+        let source = encoded.clone();
+        let app = Router::new().route(
+            "/a2a/city/tenant/agents/responder/v1/tasks/remote-task/stop",
+            post(move |headers: HeaderMap| {
+                let source = source.clone();
+                async move {
+                    assert_eq!(headers["authorization"], "Bearer caller-secret");
+                    assert_eq!(headers["a2a-version"], "1.0");
+                    assert_eq!(headers["x-acteon-agent-source-context"], source);
+                    (
+                        StatusCode::OK,
+                        [("a2a-version", "1.0")],
+                        Json(serde_json::json!({
+                            "task": Task::new("remote-task", "city", "tenant"),
+                            "future_starts_blocked": true,
+                            "provider_abort": {"state": "restricted_only"}
+                        })),
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let endpoint = format!("http://{address}/a2a/city/tenant/agents/responder/v1/message:send");
+        let disposition = adapter()
+            .cancel_task(PeerTaskRequest {
+                endpoint: &endpoint,
+                transport: "rest",
+                task_id: "remote-task",
+                source_context: &parent,
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            disposition,
+            PeerCancelDisposition::Restricted { task }
+                if task.id == "remote-task" && task.status.state == acteon_core::TaskState::Submitted
+        ));
         server.abort();
     }
 
