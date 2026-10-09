@@ -52,6 +52,13 @@ docker run -d --name acteon-postgres -p 5432:5432 \
 | **Mutual Exclusion** | ACID-guaranteed |
 | **Feature Flag** | `postgres` |
 
+The governed agent-service lifecycle is exercised in CI with two independent
+HTTPS server processes sharing PostgreSQL. The contract covers approved peer
+discovery, child submission, native cancellation restriction, source restart,
+and exact recovery of the durable cancellation receipt. This is the same
+backend-neutral lifecycle used with Redis; selecting PostgreSQL does not install
+a separate agent execution path.
+
 ## Why PostgreSQL for State?
 
 1. **Locks survive failover** — PostgreSQL advisory locks and row-level locks are ACID-compliant. A failover to a replica preserves lock state.
