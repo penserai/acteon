@@ -58,9 +58,13 @@ response observed for challenge A from silently satisfying a later challenge B.
 
 `AuthRequired` is not resolved by `resolve_input`. Text, data parts, metadata and
 model output are not proof of authorization, and raw credentials must not enter
-Task history or the peer journal. The authorization follow-up needs a host-owned
-reference bound to the Task, challenge, recipient and credential authority plus
-a trusted verifier that rechecks current scope and revocation before resumption.
+Task history or the peer journal. The
+[verifier-backed Task Engine operation](a2a-authorization-challenges.md) now
+persists a host-owned requirement bound to the Task, challenge, recipient,
+credential authority, audience, scopes, and exact verifier revision. It
+rechecks current external authorization before resumption and stores only a
+stable decision plus the opaque request digest. Authenticated server/SDK and
+remote-peer handoff remain the next exposure layer.
 
 ## Durable peer continuation
 

@@ -190,6 +190,8 @@ async fn park_tool_call(
         envelope: Some(BusApprovalEnvelope::ToolCall(call)),
         task_id: None,
         task_resolution: None,
+        authorization_requirement: None,
+        authorization_resolution: None,
         status: BusApprovalStatus::Pending,
         created_at: now,
         expires_at: now + chrono::Duration::hours(1),

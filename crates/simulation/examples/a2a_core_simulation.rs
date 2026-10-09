@@ -37,8 +37,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use acteon_core::{
-    Artifact, PauseKind, StreamEvent, StreamEventType, Task, TaskArtifactUpdateEvent, TaskMessage,
-    TaskPart, TaskPushNotificationConfig, TaskRole, TaskState,
+    Artifact, PauseKind, PrincipalIdentity, PrincipalKind, StreamEvent, StreamEventType, Task,
+    TaskArtifactUpdateEvent, TaskAuthorizationRequirement, TaskMessage, TaskPart,
+    TaskPushNotificationConfig, TaskRole, TaskState,
 };
 use acteon_gateway::{TaskEngine, TaskScope};
 use acteon_state::{KeyKind, StateKey, StateStore};
@@ -204,10 +205,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .transition_task(&scope, auth_task_id, TaskState::Working, None)
         .await?;
     let (_, auth_challenge) = engine
-        .pause_for_human(
+        .pause_for_authorization(
             &scope,
             auth_task_id,
-            PauseKind::UserAuth,
+            TaskAuthorizationRequirement {
+                verifier_id: "oauth-introspection".into(),
+                verifier_revision: 1,
+                authorization_request_id: "simulation-auth-session".into(),
+                recipient: PrincipalIdentity::new("demo-agent", PrincipalKind::Agent)?,
+                credential_authority: "simulation-idp".into(),
+                audience: "demo-api".into(),
+                required_scopes: vec!["demo.read".into()],
+            },
             Some("Re-authorize through the trusted OAuth flow.".into()),
             None,
         )

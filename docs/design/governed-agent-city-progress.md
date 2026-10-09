@@ -45,7 +45,7 @@ verify per-effect permits, revocation during a chain, closures or mesh execution
 | 1: Actors/context | Executor role, stable principals, credential enrollment, signed root contexts, shared authentication and private scope projection merged | Remaining deferred propagation, teams, memberships, mandates and delegated lineage |
 | 2: Permits/checkpoints | Current permits/credentials/configuration snapshots, qualified static-webhook adapter and common gateway mediation merged; standalone runtime and authenticated governance management with SDK/UI merged | Broader effect coverage, workforce representation, deferred execution and recovery |
 | 3: Closures/intervention | Serialized resource restrictions, durable control events and authenticated public close/reopen/revocation | Overlapping named closures, intervention recovery, drain/pause/cancel semantics and acknowledgments |
-| 4: Autonomous mesh | Governed target discovery/submission, state-backed progress cursors, native cancellation, and exact local structured-input resolution implemented | Durable peer continuation, verifier-backed auth fulfillment, federation trust/revocation and broader recovery proof |
+| 4: Autonomous mesh | Governed target discovery/submission, state-backed progress cursors, native cancellation, durable peer input continuation, and local verifier-backed authorization resolution implemented | Authenticated auth handoff, federation trust/revocation and broader recovery proof |
 | 5: Production/federation | Not implemented | Verified backend and peer capability matrix, trust/revocation protocol and failure tests |
 
 Next work should integrate trusted execution context into deferred paths and
@@ -1935,3 +1935,27 @@ endpoint remains intentionally live-only; durable catch-up returns the complete
 task snapshot rather than claiming an event-by-event replay. Structured input
 and authentication challenge responses are the next local mesh extension;
 federation and later governed-city phases remain open.
+
+### Verifier-backed `AuthRequired` task substrate
+
+The Task Engine now separates authorization from message content. A
+host-issued requirement pins the exact verifier revision, opaque authorization
+request, recipient, credential authority, audience, and scopes before a task
+enters `AuthRequired`. Only the matching trusted verifier can supply a current
+decision. The recoverable approval/task protocol retains a stable decision and
+request digest, resumes the task once, and never stores credential material or
+treats a model/user message as proof.
+
+Verifier denial leaves both rows untouched. Legacy unbound auth pauses cannot
+be fulfilled. Pre-commit recovery rechecks current authorization and permits
+fresh validity timestamps only for the same verifier, request digest, decision,
+and subject. Post-commit recovery finalizes without a second verifier call.
+Expired evidence cannot cross the final task CAS; expired challenges fail the
+still-matching task.
+
+Focused memory tests and explicitly executed independent-client Redis and
+PostgreSQL contracts cover success, denial, unbound refusal, idempotent retry,
+and refreshed recovery. CI runs both backend contracts. This is the reusable
+host substrate, not yet the public mesh handoff: server configuration,
+authenticated routes, five SDKs, hosted-agent challenge creation, two-server
+restart/lost-response evidence, and federation trust remain open.
