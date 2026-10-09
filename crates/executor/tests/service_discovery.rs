@@ -5,7 +5,8 @@ use acteon_core::{
 };
 use acteon_executor::delegation::{
     ApprovedPeerBinding, ApprovedPeerRegistry, ApprovedServicePlan, DurablePeerTransport,
-    PeerCancelDisposition, PeerCancelStatus, PeerCandidateQuery, PeerDiscoveryError,
+    PeerCancelDisposition, PeerCancelStatus, PeerCandidateQuery, PeerContinuationDisposition,
+    PeerContinuationInput, PeerContinuationRequest, PeerContinuationStatus, PeerDiscoveryError,
     PeerRecipientResolver, PeerSendDisposition, PeerSendRequest, PeerSendStatus,
     PeerSubmissionCapability, PeerTaskObservation, PeerTaskRequest, PeerTransportAdapter,
     PeerTransportDependencies, PeerTransportError, RecipientDiscoveryContext,
@@ -504,6 +505,7 @@ struct TransportAdapter {
     calls: AtomicUsize,
     observation_calls: AtomicUsize,
     cancellation_calls: AtomicUsize,
+    continuation_calls: AtomicUsize,
     observed: std::sync::Mutex<Option<Task>>,
 }
 impl TransportAdapter {
@@ -519,6 +521,7 @@ impl TransportAdapter {
             calls: AtomicUsize::new(0),
             observation_calls: AtomicUsize::new(0),
             cancellation_calls: AtomicUsize::new(0),
+            continuation_calls: AtomicUsize::new(0),
             observed: std::sync::Mutex::new(None),
         }
     }
@@ -596,6 +599,8 @@ impl PeerTransportAdapter for TransportAdapter {
             assert!(request.progress_cursor.is_some());
         } else if outcome == 14 {
             assert!(request.progress_cursor.is_none());
+        } else if outcome == 15 {
+            assert_eq!(request.progress_cursor, Some("\"cursor-1\""));
         } else {
             assert_eq!(
                 request.progress_cursor,
@@ -624,7 +629,7 @@ impl PeerTransportAdapter for TransportAdapter {
             task: Box::new(task),
             progress_cursor: Some(
                 match outcome {
-                    5 | 7 | 14 => "\"cursor-2\"",
+                    5 | 7 | 14 | 15 => "\"cursor-2\"",
                     6 => "\"cursor-3\"",
                     _ => "\"cursor-1\"",
                 }
@@ -660,6 +665,48 @@ impl PeerTransportAdapter for TransportAdapter {
             }
             13 => Ok(PeerCancelDisposition::Restricted {
                 task: Box::new(self.observed.lock().unwrap().clone().unwrap()),
+            }),
+            _ => Err(PeerTransportError::Unavailable),
+        }
+    }
+
+    async fn continue_task(
+        &self,
+        request: PeerContinuationRequest<'_>,
+    ) -> Result<PeerContinuationDisposition, PeerTransportError> {
+        self.continuation_calls.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(request.endpoint, "https://peer.example/a2a");
+        assert_eq!(request.transport, "rest");
+        assert_eq!(request.task_id, "remote-task");
+        assert_eq!(request.challenge_id, "input-approval");
+        assert_eq!(request.progress_cursor, Some("\"cursor-2\""));
+        assert_eq!(request.message.task_id.as_deref(), Some("remote-task"));
+        assert_eq!(
+            request
+                .message
+                .metadata
+                .get(acteon_core::TASK_CHALLENGE_ID_METADATA_KEY)
+                .and_then(serde_json::Value::as_str),
+            Some("input-approval")
+        );
+        match self.outcome.load(Ordering::SeqCst) {
+            20 => {
+                let mut task = self.observed.lock().unwrap().clone().unwrap();
+                task.append_history(request.message.clone()).unwrap();
+                task.transition_to(TaskState::Working, None).unwrap();
+                *self.observed.lock().unwrap() = Some(task.clone());
+                Ok(PeerContinuationDisposition::Accepted {
+                    task: Box::new(task),
+                    progress_cursor: "\"cursor-3\"".into(),
+                })
+            }
+            21 => Ok(PeerContinuationDisposition::Uncertain),
+            22 => Ok(PeerContinuationDisposition::Rejected {
+                code: "remote_input_denied".into(),
+            }),
+            23 => Ok(PeerContinuationDisposition::Accepted {
+                task: Box::new(self.observed.lock().unwrap().clone().unwrap()),
+                progress_cursor: "\"cursor-3\"".into(),
             }),
             _ => Err(PeerTransportError::Unavailable),
         }
@@ -700,6 +747,373 @@ async fn refresh_peer(
         )
         .await
         .unwrap()
+}
+
+async fn pause_remote_for_input(
+    f: &Fixture,
+    transport: &DurablePeerTransport,
+    adapter: &TransportAdapter,
+    submission_id: uuid::Uuid,
+) {
+    {
+        let mut task = adapter.observed.lock().unwrap().clone().unwrap();
+        task.transition_to(TaskState::Working, None).unwrap();
+        task.set_pending_approval("input-approval");
+        task.transition_to(TaskState::InputRequired, None).unwrap();
+        *adapter.observed.lock().unwrap() = Some(task);
+    }
+    adapter.outcome.store(15, Ordering::SeqCst);
+    let refreshed = refresh_peer(f, transport, submission_id).await;
+    assert!(matches!(
+        refreshed.status,
+        PeerSendStatus::Accepted { task, .. }
+            if task.status.state == TaskState::InputRequired
+                && task.pending_approval_id.as_deref() == Some("input-approval")
+    ));
+}
+
+async fn corrupt_continuation_prior_task(f: &Fixture, continuation_id: uuid::Uuid) {
+    let key = StateKey::new(
+        "city",
+        "tenant",
+        KeyKind::Custom(acteon_executor::delegation::transport::PEER_CONTINUATION_KIND.into()),
+        continuation_id.to_string(),
+    );
+    let mut value: serde_json::Value =
+        serde_json::from_str(&f.store.get(&key).await.unwrap().unwrap()).unwrap();
+    value["prior_task"]["id"] = serde_json::json!("substituted-task");
+    f.store
+        .set(&key, &serde_json::to_string(&value).unwrap(), None)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn peer_input_continuation_is_pinned_delivered_once_and_replayable() {
+    let f = Fixture::new().await;
+    let adapter = Arc::new(TransportAdapter::new(
+        &f.binding,
+        PeerSubmissionCapability::AtMostOnce,
+        0,
+    ));
+    let transport = peer_transport(&f, adapter.clone());
+    let accepted = transport
+        .submit(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            &peer_message("diagnose"),
+        )
+        .await
+        .unwrap();
+    pause_remote_for_input(&f, &transport, &adapter, accepted.submission_id).await;
+    adapter.outcome.store(20, Ordering::SeqCst);
+    let response = TaskMessage::text("input-response", TaskRole::User, "service is payments");
+    let continued = transport
+        .continue_task(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            PeerContinuationInput {
+                submission_id: accepted.submission_id,
+                response: &response,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        continued.status,
+        PeerContinuationStatus::Accepted { ref task, ref progress_cursor }
+            if task.status.state == TaskState::Working
+                && progress_cursor == "\"cursor-3\""
+                && task.history.iter().any(|message| {
+                    message.message_id == "input-response"
+                        && message.task_id.as_deref() == Some("remote-task")
+                        && message.metadata
+                            .get(acteon_core::TASK_CHALLENGE_ID_METADATA_KEY)
+                            .and_then(serde_json::Value::as_str)
+                            == Some("input-approval")
+                })
+    ));
+    let replay = transport
+        .continue_task(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            PeerContinuationInput {
+                submission_id: accepted.submission_id,
+                response: &response,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(replay.continuation_id, continued.continuation_id);
+    assert!(matches!(
+        replay.status,
+        PeerContinuationStatus::Accepted { .. }
+    ));
+    assert_eq!(adapter.continuation_calls.load(Ordering::SeqCst), 1);
+    corrupt_continuation_prior_task(&f, replay.continuation_id).await;
+    assert!(matches!(
+        transport
+            .continue_task(
+                &f.registry,
+                "responder",
+                "notify",
+                &f.parent,
+                &permits("caller"),
+                PeerContinuationInput {
+                    submission_id: accepted.submission_id,
+                    response: &response,
+                },
+            )
+            .await,
+        Err(PeerTransportError::Conflict)
+    ));
+}
+
+#[tokio::test]
+async fn peer_input_continuation_preserves_ambiguity_and_rejects_caller_authority() {
+    let f = Fixture::new().await;
+    let adapter = Arc::new(TransportAdapter::new(
+        &f.binding,
+        PeerSubmissionCapability::AtMostOnce,
+        0,
+    ));
+    let transport = peer_transport(&f, adapter.clone());
+    let accepted = transport
+        .submit(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            &peer_message("diagnose"),
+        )
+        .await
+        .unwrap();
+    pause_remote_for_input(&f, &transport, &adapter, accepted.submission_id).await;
+    let mut injected = TaskMessage::text("input-response", TaskRole::User, "payments");
+    injected.task_id = Some("remote-task".into());
+    assert!(matches!(
+        transport
+            .continue_task(
+                &f.registry,
+                "responder",
+                "notify",
+                &f.parent,
+                &permits("caller"),
+                PeerContinuationInput {
+                    submission_id: accepted.submission_id,
+                    response: &injected,
+                },
+            )
+            .await,
+        Err(PeerTransportError::Invalid)
+    ));
+    adapter.outcome.store(21, Ordering::SeqCst);
+    let response = TaskMessage::text("input-response", TaskRole::User, "payments");
+    for _ in 0..2 {
+        let receipt = transport
+            .continue_task(
+                &f.registry,
+                "responder",
+                "notify",
+                &f.parent,
+                &permits("caller"),
+                PeerContinuationInput {
+                    submission_id: accepted.submission_id,
+                    response: &response,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(matches!(receipt.status, PeerContinuationStatus::Uncertain));
+    }
+    assert!(matches!(
+        transport
+            .continue_task(
+                &f.registry,
+                "responder",
+                "notify",
+                &f.parent,
+                &permits("caller"),
+                PeerContinuationInput {
+                    submission_id: accepted.submission_id,
+                    response: &TaskMessage::text("different-response", TaskRole::User, "orders",),
+                },
+            )
+            .await,
+        Err(PeerTransportError::Conflict)
+    ));
+    assert_eq!(adapter.continuation_calls.load(Ordering::SeqCst), 1);
+    f.retire().await;
+    assert!(matches!(
+        transport
+            .continue_task(
+                &f.registry,
+                "responder",
+                "notify",
+                &f.parent,
+                &permits("caller"),
+                PeerContinuationInput {
+                    submission_id: accepted.submission_id,
+                    response: &response,
+                },
+            )
+            .await,
+        Err(PeerTransportError::Refused)
+    ));
+    assert_eq!(adapter.continuation_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn peer_input_continuation_requires_a_new_bound_task_snapshot() {
+    let f = Fixture::new().await;
+    let adapter = Arc::new(TransportAdapter::new(
+        &f.binding,
+        PeerSubmissionCapability::AtMostOnce,
+        0,
+    ));
+    let transport = peer_transport(&f, adapter.clone());
+    let accepted = transport
+        .submit(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            &peer_message("diagnose"),
+        )
+        .await
+        .unwrap();
+    pause_remote_for_input(&f, &transport, &adapter, accepted.submission_id).await;
+    adapter.outcome.store(23, Ordering::SeqCst);
+    let receipt = transport
+        .continue_task(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            PeerContinuationInput {
+                submission_id: accepted.submission_id,
+                response: &TaskMessage::text("input-response", TaskRole::User, "payments"),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(receipt.status, PeerContinuationStatus::Uncertain));
+    assert_eq!(adapter.continuation_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn concurrent_peer_input_continuation_has_one_delivery_claim() {
+    let f = Fixture::new().await;
+    let adapter = Arc::new(TransportAdapter::new(
+        &f.binding,
+        PeerSubmissionCapability::AtMostOnce,
+        0,
+    ));
+    let transport = peer_transport(&f, adapter.clone());
+    let accepted = transport
+        .submit(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            &peer_message("diagnose"),
+        )
+        .await
+        .unwrap();
+    pause_remote_for_input(&f, &transport, &adapter, accepted.submission_id).await;
+    adapter.outcome.store(20, Ordering::SeqCst);
+    let response = TaskMessage::text("input-response", TaskRole::User, "payments");
+    let parent_permits = permits("caller");
+    let continue_once = || {
+        transport.continue_task(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &parent_permits,
+            PeerContinuationInput {
+                submission_id: accepted.submission_id,
+                response: &response,
+            },
+        )
+    };
+    let (first, second) = tokio::join!(continue_once(), continue_once());
+    let first = first.unwrap();
+    let second = second.unwrap();
+    assert_eq!(first.continuation_id, second.continuation_id);
+    assert!(matches!(
+        &first.status,
+        PeerContinuationStatus::Accepted { .. } | PeerContinuationStatus::Uncertain
+    ));
+    assert!(matches!(
+        &second.status,
+        PeerContinuationStatus::Accepted { .. } | PeerContinuationStatus::Uncertain
+    ));
+    assert!(
+        matches!(&first.status, PeerContinuationStatus::Accepted { .. })
+            || matches!(&second.status, PeerContinuationStatus::Accepted { .. })
+    );
+    assert_eq!(adapter.continuation_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn definitive_peer_input_rejection_is_durable() {
+    let f = Fixture::new().await;
+    let adapter = Arc::new(TransportAdapter::new(
+        &f.binding,
+        PeerSubmissionCapability::AtMostOnce,
+        0,
+    ));
+    let transport = peer_transport(&f, adapter.clone());
+    let accepted = transport
+        .submit(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            &peer_message("diagnose"),
+        )
+        .await
+        .unwrap();
+    pause_remote_for_input(&f, &transport, &adapter, accepted.submission_id).await;
+    adapter.outcome.store(22, Ordering::SeqCst);
+    let response = TaskMessage::text("input-response", TaskRole::User, "payments");
+    for _ in 0..2 {
+        let receipt = transport
+            .continue_task(
+                &f.registry,
+                "responder",
+                "notify",
+                &f.parent,
+                &permits("caller"),
+                PeerContinuationInput {
+                    submission_id: accepted.submission_id,
+                    response: &response,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            receipt.status,
+            PeerContinuationStatus::Rejected { ref code }
+                if code == "remote_input_denied"
+        ));
+    }
+    assert_eq!(adapter.continuation_calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

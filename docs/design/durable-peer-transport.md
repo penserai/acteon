@@ -136,25 +136,33 @@ Focused contracts cover:
 - live grant retirement and registry suspension immediately before send;
 - uncertain handling for ambiguous and malformed acceptance;
 - refusal of replay for at-most-once peers;
-- explicit successful recovery through a verified-idempotent adapter; and
+- explicit successful recovery through a verified-idempotent adapter;
 - rejection of corrupt retained remote task mappings;
-- current authority revalidation before remote observation; and
+- current authority revalidation before remote observation;
 - monotonic task projection with compare-and-swap persistence of the latest
   valid snapshot;
 - cursor recovery through a reconstructed source transport, including a
-  conditional unchanged result without a journal rewrite; and
+  conditional unchanged result without a journal rewrite;
 - real two-server Redis and PostgreSQL contracts that observe one conditional
-  task read and one `304` after source restart.
+  task read and one `304` after source restart;
+- one continuation delivery across concurrent and repeated calls, with the
+  exact normalized response present in the accepted forward snapshot;
+- durable uncertain and rejected continuation outcomes without implicit
+  resend; and
+- conflict on a competing response for the same accepted challenge plus
+  current-authority refusal after registry retirement.
 
 ## Remaining integration
 
 The local governed mesh now has durable submission, cursor-aware observation,
 native cancellation, restart/lost-response tests, and Redis/PostgreSQL
-qualification. The local Task Engine also supplies exact, idempotent
-`InputRequired` resolution with durable digest intent and an explicit refusal to
-treat messages as authorization. The remaining transport step must journal a
-continuation against the original accepted submission, recheck current
-authority, and deliver it to the exact remote Task without accepting an
-endpoint, credential, context, Task, or challenge identity from model output.
-Verifier-backed authentication handoff, broader backend qualification, and
-federation trust and revocation protocols remain later work.
+qualification. The local Task Engine supplies exact, idempotent `InputRequired`
+resolution with durable digest intent and an explicit refusal to treat messages
+as authorization. The source transport now also journals one normalized
+continuation per accepted challenge, rechecks current authority, preserves
+ambiguous delivery without resending, and accepts only an exact same-Task
+forward snapshot with a new cursor. The HTTP adapter and hosted agent runtime
+must still consume the response through a separately governed provider
+operation before the peer route is exposed. Verifier-backed authentication
+handoff, continuation backend qualification, and federation trust and
+revocation protocols remain later work.

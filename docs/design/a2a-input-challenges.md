@@ -1,7 +1,8 @@
 # Governed A2A structured-input challenges
 
-**Status:** local Task resolution implemented; durable peer continuation and
-authorization fulfillment remain separate follow-ups.
+**Status:** local Task resolution and the source-side durable continuation
+journal are implemented. Target runtime handoff, HTTP exposure, and
+authorization fulfillment remain follow-ups.
 
 An agent may pause a Task because it needs typed user data. That pause must not
 turn a late message into authority to resume some newer challenge, duplicate the
@@ -60,25 +61,33 @@ Task history or the peer journal. The authorization follow-up needs a host-owned
 reference bound to the Task, challenge, recipient and credential authority plus
 a trusted verifier that rechecks current scope and revocation before resumption.
 
-## Peer continuation follow-up
+## Durable peer continuation
 
-The source-side mesh operation will bind a continuation to the original durable
-peer submission and accepted remote Task. It must:
+The source-side mesh operation binds a continuation to the original durable
+peer submission and accepted remote Task. It:
 
-1. require the latest accepted snapshot to be `InputRequired` and pin its exact
+1. requires the latest accepted snapshot to be `InputRequired` and pins its exact
    `pendingApprovalId`;
-2. recheck the source credential, context, permits, service binding, onward
+2. rechecks the source credential, context, permits, service binding, onward
    grant, registry card and target binding;
-3. persist a digest-pinned continuation intent before network delivery;
-4. derive the remote `message:send` URL and Task identity from the accepted
-   journal, never request content;
-5. classify response loss as uncertain and avoid automatic resend unless the
-   installed adapter explicitly qualifies identical continuation delivery as
-   idempotent; and
-6. accept only a valid same-Task forward snapshot and new opaque progress
+3. persists a digest-pinned continuation intent before network delivery;
+4. derives the remote endpoint, Task identity, context and challenge from the
+   accepted journal, never request content;
+5. classifies response loss as uncertain and does not automatically resend;
+   and
+6. accepts only a valid same-Task forward snapshot and new opaque progress
    cursor.
 
-The hosted individual-agent runtime also needs a qualified continuation adapter
+The durable identity is one continuation per `(submission, challenge)`, rather
+than per response message. After any delivery claim, a different response to
+that challenge conflicts and cannot cause another network call. The journal
+stores the normalized response and its canonical digest through the configured
+payload encryptor. The remote snapshot is accepted only when it contains that
+exact normalized response, advances the same Task, and replaces the prior
+cursor. Repeating an accepted response recovers the same receipt from Task
+history and the continuation journal.
+
+The hosted individual-agent runtime still needs a qualified continuation adapter
 whose provider operation consumes the added input. Moving the Task back to
 `Working` without a runtime capable of using that input would create false
 progress, so the peer route must not be exposed until both halves exist.
