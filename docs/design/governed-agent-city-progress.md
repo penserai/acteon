@@ -1905,3 +1905,33 @@ This closes the production-backend prerequisite and the Phase 4 local governed
 A2A mesh completion gate. Event cursor projection and structured input/auth
 challenge responses remain planned mesh extensions; federation and the later
 city phases remain open.
+
+### Durable peer progress cursors
+
+Authenticated task acceptance and task observation now return a strong opaque
+ETag derived from the exact task row version in the configured `StateStore`.
+The guarded Acteon peer adapter captures that cursor, the backend-neutral peer
+journal retains it beside the last accepted remote snapshot, and refresh sends
+it back as `If-None-Match`. A matching target snapshot returns `304 Not
+Modified`; changed state returns the complete task plus its replacement cursor.
+
+Cursor updates remain behind the same current credential, permit, grant,
+registry-card and binding checks as every peer refresh. The source rejects
+cursor removal after adoption, a mismatched `304`, the same cursor with
+different content, identity substitution and lifecycle regression. Existing schema-1 send records
+without cursors remain readable and migrate on the next successful cursor-aware
+update. A cancellation-derived terminal snapshot clears the older polling
+cursor rather than attaching it to content it never validated.
+
+Focused contracts cover full and history-trimmed representation validators,
+guarded conditional HTTP observation, durable unchanged recovery through a
+reconstructed source transport, and forward cursor replacement. The real
+two-server Redis response-loss and PostgreSQL lifecycle contracts now assert
+one conditional task observation, a target `304`, no second stop and no provider
+start after source restart.
+
+This closes the planned event-cursor projection extension. The per-task SSE
+endpoint remains intentionally live-only; durable catch-up returns the complete
+task snapshot rather than claiming an event-by-event replay. Structured input
+and authentication challenge responses are the next local mesh extension;
+federation and later governed-city phases remain open.

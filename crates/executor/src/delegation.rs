@@ -25,8 +25,8 @@ pub mod transport;
 pub use transport::{
     DurablePeerTransport, PeerCancelDisposition, PeerCancelReceipt, PeerCancelStatus,
     PeerSendDisposition, PeerSendReceipt, PeerSendRequest, PeerSendStatus,
-    PeerSubmissionCapability, PeerTaskRequest, PeerTransportAdapter, PeerTransportDependencies,
-    PeerTransportError,
+    PeerSubmissionCapability, PeerTaskObservation, PeerTaskRequest, PeerTransportAdapter,
+    PeerTransportDependencies, PeerTransportError,
 };
 
 const MAX_BINDINGS: usize = 128;

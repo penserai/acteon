@@ -974,6 +974,8 @@ struct ResponseLossProxyState {
     lose_next_stop_response: AtomicBool,
     stop_deliveries: AtomicUsize,
     task_observations: AtomicUsize,
+    conditional_task_observations: AtomicUsize,
+    not_modified_observations: AtomicUsize,
     committed_stop: Mutex<Option<Value>>,
 }
 
@@ -1025,6 +1027,8 @@ impl ResponseLossProxy {
             lose_next_stop_response: AtomicBool::new(lose_next_stop_response),
             stop_deliveries: AtomicUsize::new(0),
             task_observations: AtomicUsize::new(0),
+            conditional_task_observations: AtomicUsize::new(0),
+            not_modified_observations: AtomicUsize::new(0),
             committed_stop: Mutex::new(None),
         });
         let app = Router::new()
@@ -1075,6 +1079,8 @@ async fn proxy_peer_request(
     let is_task_observation = parts.method == Method::GET
         && parts.uri.path().contains("/tasks/")
         && !parts.uri.path().ends_with("/stop");
+    let is_conditional_task_observation =
+        is_task_observation && parts.headers.contains_key(header::IF_NONE_MATCH);
     let Ok(body) = to_bytes(body, 2 * 1024 * 1024).await else {
         return StatusCode::BAD_REQUEST.into_response();
     };
@@ -1104,6 +1110,16 @@ async fn proxy_peer_request(
     };
     if is_task_observation {
         state.task_observations.fetch_add(1, Ordering::SeqCst);
+        if is_conditional_task_observation {
+            state
+                .conditional_task_observations
+                .fetch_add(1, Ordering::SeqCst);
+        }
+        if status == StatusCode::NOT_MODIFIED {
+            state
+                .not_modified_observations
+                .fetch_add(1, Ordering::SeqCst);
+        }
     }
     if is_stop {
         state.stop_deliveries.fetch_add(1, Ordering::SeqCst);
@@ -1142,6 +1158,7 @@ fn response_with_forwarded_headers(
     let mut response = Response::builder().status(status);
     for name in [
         header::CONTENT_TYPE,
+        header::ETAG,
         header::HeaderName::from_static("a2a-version"),
         header::HeaderName::from_static("x-acteon-agent-source-context"),
     ] {
@@ -1417,6 +1434,17 @@ async fn two_server_peer_cancel_restart_contract(state: Value, store: Arc<dyn St
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     assert_eq!(proxy.state.stop_deliveries.load(Ordering::SeqCst), 1);
     assert_eq!(proxy.state.task_observations.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        proxy
+            .state
+            .conditional_task_observations
+            .load(Ordering::SeqCst),
+        1
+    );
+    assert_eq!(
+        proxy.state.not_modified_observations.load(Ordering::SeqCst),
+        1
+    );
     webhook_task.abort();
 }
 
@@ -1544,6 +1572,17 @@ async fn redis_peer_cancel_response_loss_survives_restart_without_redelivery() {
     assert_eq!(replayed, uncertain);
     assert_eq!(proxy.state.stop_deliveries.load(Ordering::SeqCst), 1);
     assert_eq!(proxy.state.task_observations.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        proxy
+            .state
+            .conditional_task_observations
+            .load(Ordering::SeqCst),
+        1
+    );
+    assert_eq!(
+        proxy.state.not_modified_observations.load(Ordering::SeqCst),
+        1
+    );
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     webhook_task.abort();
 }

@@ -521,17 +521,16 @@ pub async fn message_send(
     let parent = parent_input
         .as_ref()
         .map(|(context, permits)| AgentServiceParent { context, permits });
-    match runtime
-        .accept_agent_service(AgentServiceRequest {
-            namespace: &namespace,
-            tenant: &tenant,
-            agent_id: &agent,
-            message: &request.message,
-            authentication: &proof,
-            auth_provider: authentication,
-            parent,
-        })
-        .await
+    match Box::pin(runtime.accept_agent_service(AgentServiceRequest {
+        namespace: &namespace,
+        tenant: &tenant,
+        agent_id: &agent,
+        message: &request.message,
+        authentication: &proof,
+        auth_provider: authentication,
+        parent,
+    }))
+    .await
     {
         Ok(accepted) => {
             let Ok(source) = serde_json::to_vec(&accepted.source_context) else {
@@ -540,12 +539,14 @@ pub async fn message_send(
                     "source_context_unavailable",
                 );
             };
+            let cursor = super::a2a::task_cursor(accepted.task_version, None);
             (
                 StatusCode::OK,
                 [
                     ("a2a-version", A2A_PROTOCOL_VERSION.to_string()),
                     ("cache-control", "no-store".to_string()),
                     (SOURCE_CONTEXT_HEADER, URL_SAFE_NO_PAD.encode(source)),
+                    ("etag", cursor),
                 ],
                 Json(accepted.task),
             )
@@ -639,15 +640,34 @@ pub async fn task_get(
         })
         .await
     {
-        Ok(task) => (
-            StatusCode::OK,
-            [
-                ("a2a-version", A2A_PROTOCOL_VERSION),
-                ("cache-control", "no-store"),
-            ],
-            Json(task),
-        )
-            .into_response(),
+        Ok(observed) => {
+            let cursor = super::a2a::task_cursor(observed.task_version, None);
+            if headers
+                .get(axum::http::header::IF_NONE_MATCH)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value == cursor)
+            {
+                return (
+                    StatusCode::NOT_MODIFIED,
+                    [
+                        ("a2a-version", A2A_PROTOCOL_VERSION.to_string()),
+                        ("cache-control", "no-store".to_string()),
+                        ("etag", cursor),
+                    ],
+                )
+                    .into_response();
+            }
+            (
+                StatusCode::OK,
+                [
+                    ("a2a-version", A2A_PROTOCOL_VERSION.to_string()),
+                    ("cache-control", "no-store".to_string()),
+                    ("etag", cursor),
+                ],
+                Json(observed.task),
+            )
+                .into_response()
+        }
         Err(cause) => service_error(cause),
     }
 }

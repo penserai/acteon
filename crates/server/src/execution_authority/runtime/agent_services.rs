@@ -45,7 +45,13 @@ pub struct AgentServiceRequest<'a> {
 /// Transport receipt; the host retains source provenance separately from model data.
 pub struct AgentServiceAcceptance {
     pub task: Task,
+    pub task_version: u64,
     pub source_context: ExecutionContextReference,
+}
+
+pub struct AgentServiceTaskObservation {
+    pub task: Task,
+    pub task_version: u64,
 }
 
 pub struct AgentServiceObservation<'a> {
@@ -541,12 +547,16 @@ impl ExecutionAuthorityRuntime {
             )
             .await
             .map_err(AgentServiceError::from)?;
-        Ok(AgentServiceAcceptance {
-            task,
-            source_context: parent
+        self.accepted_service_snapshot(
+            request.namespace,
+            request.tenant,
+            child.execution_id(),
+            &task,
+            parent
                 .reference()
                 .map_err(|_| AgentServiceError::Unavailable)?,
-        })
+        )
+        .await
     }
 
     async fn replay_source_context(
@@ -562,13 +572,7 @@ impl ExecutionAuthorityRuntime {
                 .recover_reference_for_observation(parent.context)
                 .await
                 .map_err(AgentServiceError::from)?;
-            if context.principal() != actor
-                || context
-                    .credential_authority()
-                    .map(|credential| credential.id.as_str())
-                    != Some(caller.credential_reference().id.as_str())
-                || context.auth_method() != caller.authentication_source().auth_method()
-            {
+            if !Self::service_source_matches(&context, caller) {
                 return Err(AgentServiceError::Forbidden);
             }
             Ok(Some(context))
@@ -586,24 +590,28 @@ impl ExecutionAuthorityRuntime {
         }
     }
 
+    fn service_source_matches(
+        source: &acteon_governance::context::VerifiedExecutionContext,
+        caller: &ScopedCredentialBinding,
+    ) -> bool {
+        source.principal() == caller.authentication_source().principal()
+            && source
+                .credential_authority()
+                .is_some_and(|credential| credential.id == caller.credential_reference().id)
+            && source.auth_method() == caller.authentication_source().auth_method()
+    }
+
     async fn replay_accepted_agent_service(
         &self,
         scope: &InstalledScope,
         request: &AgentServiceRequest<'_>,
         caller: &ScopedCredentialBinding,
     ) -> Result<Option<AgentServiceAcceptance>, AgentServiceError> {
-        let actor = caller.authentication_source().principal();
         let source = Self::replay_source_context(scope, request, caller).await?;
         let Some(source) = source else {
             return Ok(None);
         };
-        if source.principal() != actor
-            || source
-                .credential_authority()
-                .map(|credential| credential.id.as_str())
-                != Some(caller.credential_reference().id.as_str())
-            || source.auth_method() != caller.authentication_source().auth_method()
-        {
+        if !Self::service_source_matches(&source, caller) {
             return Err(AgentServiceError::Conflict);
         }
         let child_key = service_key(
@@ -676,17 +684,39 @@ impl ExecutionAuthorityRuntime {
                 return Err(AgentServiceError::Conflict);
             }
         }
-        let task = runtime
+        let observed = runtime
             .observe(child.execution_id())
             .await
-            .map_err(AgentServiceError::observation)?
-            .task;
-        Ok(Some(AgentServiceAcceptance {
-            task,
-            source_context: source
+            .map_err(AgentServiceError::observation)?;
+        self.accepted_service_snapshot(
+            request.namespace,
+            request.tenant,
+            child.execution_id(),
+            &observed.task,
+            source
                 .reference()
                 .map_err(|_| AgentServiceError::Unavailable)?,
-        }))
+        )
+        .await
+        .map(Some)
+    }
+
+    async fn accepted_service_snapshot(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        task_id: uuid::Uuid,
+        observed: &Task,
+        source_context: ExecutionContextReference,
+    ) -> Result<AgentServiceAcceptance, AgentServiceError> {
+        let versioned = self
+            .load_versioned_service_task(namespace, tenant, task_id, observed)
+            .await?;
+        Ok(AgentServiceAcceptance {
+            task: versioned.task,
+            task_version: versioned.task_version,
+            source_context,
+        })
     }
 
     /// Observe only the authenticated original source. Shared agents must also
@@ -694,14 +724,46 @@ impl ExecutionAuthorityRuntime {
     pub async fn observe_agent_service(
         &self,
         request: AgentServiceObservation<'_>,
-    ) -> Result<Task, AgentServiceError> {
+    ) -> Result<AgentServiceTaskObservation, AgentServiceError> {
         let task_id = request.task_id;
         let (runtime, _) = self.authorize_service_observation(request).await?;
         let observed = runtime
             .observe(task_id)
             .await
             .map_err(AgentServiceError::observation)?;
-        Ok(observed.task)
+        self.load_versioned_service_task(
+            &observed.task.namespace,
+            &observed.task.tenant,
+            task_id,
+            &observed.task,
+        )
+        .await
+    }
+
+    async fn load_versioned_service_task(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        task_id: uuid::Uuid,
+        observed: &Task,
+    ) -> Result<AgentServiceTaskObservation, AgentServiceError> {
+        let key = StateKey::new(namespace, tenant, KeyKind::A2aTask, task_id.to_string());
+        let (raw, task_version) = self
+            .state
+            .get_versioned(&key)
+            .await
+            .map_err(|_| AgentServiceError::Unavailable)?
+            .ok_or(AgentServiceError::NotFound)?;
+        let task: Task = serde_json::from_str(&raw).map_err(|_| AgentServiceError::Unavailable)?;
+        if task.validate().is_err()
+            || task.id != task_id.to_string()
+            || task.namespace != namespace
+            || task.tenant != tenant
+            || task.updated_at < observed.updated_at
+        {
+            return Err(AgentServiceError::Conflict);
+        }
+        Ok(AgentServiceTaskObservation { task, task_version })
     }
 
     /// Stop only the original accepted recipient subtree. Current private

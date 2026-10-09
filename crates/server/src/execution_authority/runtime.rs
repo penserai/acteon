@@ -6,6 +6,7 @@ mod agent_services;
 pub use agent_driver::AgentServiceDriver;
 pub use agent_services::{
     AgentServiceAcceptance, AgentServiceObservation, AgentServiceParent, AgentServiceRequest,
+    AgentServiceTaskObservation,
 };
 mod management;
 pub use management::{ManagementError, TrustedReconciliationInstallation};

@@ -429,15 +429,31 @@ impl TaskEngine {
         scope: &TaskScope,
         task_id: &str,
     ) -> Result<Option<Task>, TaskEngineError> {
+        Ok(self
+            .get_task_versioned(scope, task_id)
+            .await?
+            .map(|(task, _)| task))
+    }
+
+    /// Fetch a task together with its authoritative state-store version.
+    ///
+    /// The version is an opaque monotonic cursor within this task key. HTTP
+    /// adapters use it for conditional observation; callers must not infer
+    /// task state from the number itself.
+    pub async fn get_task_versioned(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+    ) -> Result<Option<(Task, u64)>, TaskEngineError> {
         if self.hidden_governed_task(scope, task_id).await? {
             return Ok(None);
         }
         let key = scope.task_key(task_id);
-        let Some(raw) = self.state.get(&key).await? else {
+        let Some((raw, version)) = self.state.get_versioned(&key).await? else {
             return Ok(None);
         };
         let task: Task = serde_json::from_str(&raw)?;
-        Ok(Some(task))
+        Ok(Some((task, version)))
     }
 
     /// List all tasks in a scope. O(N) scan of `A2aTask` keys for the

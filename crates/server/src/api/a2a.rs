@@ -32,7 +32,7 @@
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::sse::{KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
@@ -57,6 +57,15 @@ pub const A2A_PROTOCOL_VERSION: &str = "1.0";
 /// Header carrying the negotiated A2A protocol version. Compared
 /// case-insensitively by `HeaderMap`.
 const A2A_VERSION_HEADER: &str = "a2a-version";
+
+/// Strong validator for one authoritative A2A task-row version. The value is
+/// opaque to clients; only the target that issued it interprets it.
+pub(crate) fn task_cursor(version: u64, history_length: Option<usize>) -> String {
+    history_length.map_or_else(
+        || format!("\"acteon-task-v1-{version}-full\""),
+        |limit| format!("\"acteon-task-v1-{version}-h{limit}\""),
+    )
+}
 
 /// Hard cap on an A2A request body. A JSON-RPC `message/send` carries
 /// a [`TaskMessage`]; legitimate ones are well under this. The cap is
@@ -1037,6 +1046,26 @@ fn rest_result(outcome: Result<Task, A2aError>) -> Response {
     }
 }
 
+fn versioned_task_response(task: Task, version: u64, history_length: Option<usize>) -> Response {
+    let mut response = (StatusCode::OK, version_header(), Json(task)).into_response();
+    response.headers_mut().insert(
+        header::ETAG,
+        HeaderValue::from_str(&task_cursor(version, history_length))
+            .expect("fixed task cursor is a valid header"),
+    );
+    response
+}
+
+fn task_not_modified_response(version: u64, history_length: Option<usize>) -> Response {
+    let mut response = (StatusCode::NOT_MODIFIED, version_header()).into_response();
+    response.headers_mut().insert(
+        header::ETAG,
+        HeaderValue::from_str(&task_cursor(version, history_length))
+            .expect("fixed task cursor is a valid header"),
+    );
+    response
+}
+
 /// `POST /a2a/{namespace}/{tenant}/v1/message:send` — REST binding for
 /// `message/send`.
 pub async fn a2a_rest_message_send(
@@ -1059,7 +1088,15 @@ pub async fn a2a_rest_message_send(
     }
     let scope = TaskScope::new(&namespace, &tenant);
     let engine = task_engine(&state).await;
-    rest_result(method_message_send(&engine, &scope, params).await)
+    let task = match method_message_send(&engine, &scope, params).await {
+        Ok(task) => task,
+        Err(error) => return rest_result(Err(error)),
+    };
+    match engine.get_task_versioned(&scope, &task.id).await {
+        Ok(Some((task, version))) => versioned_task_response(task, version, None),
+        Ok(None) => rest_result(Err(A2aError::task_not_found(&task.id))),
+        Err(error) => rest_result(Err(error.into())),
+    }
 }
 
 /// Query string for the REST `tasks/get`.
@@ -1087,11 +1124,28 @@ pub async fn a2a_rest_task_get(
     }
     let scope = TaskScope::new(&namespace, &tenant);
     let engine = task_engine(&state).await;
-    let params = TaskQueryParams {
-        id,
-        history_length: query.history_length,
+    let Some((mut task, version)) = (match engine.get_task_versioned(&scope, &id).await {
+        Ok(task) => task,
+        Err(error) => return rest_result(Err(error.into())),
+    }) else {
+        return rest_result(Err(A2aError::task_not_found(&id)));
     };
-    rest_result(method_tasks_get(&engine, &scope, params).await)
+    let history_length = query.history_length;
+    let cursor = task_cursor(version, history_length);
+    if headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value == cursor)
+    {
+        return task_not_modified_response(version, history_length);
+    }
+    if let Some(limit) = history_length
+        && task.history.len() > limit
+    {
+        let drop = task.history.len() - limit;
+        task.history.drain(0..drop);
+    }
+    versioned_task_response(task, version, history_length)
 }
 
 /// `POST /a2a/{namespace}/{tenant}/v1/tasks/{id}:cancel` — REST

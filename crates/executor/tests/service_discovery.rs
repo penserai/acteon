@@ -7,8 +7,8 @@ use acteon_executor::delegation::{
     ApprovedPeerBinding, ApprovedPeerRegistry, ApprovedServicePlan, DurablePeerTransport,
     PeerCancelDisposition, PeerCancelStatus, PeerCandidateQuery, PeerDiscoveryError,
     PeerRecipientResolver, PeerSendDisposition, PeerSendRequest, PeerSendStatus,
-    PeerSubmissionCapability, PeerTaskRequest, PeerTransportAdapter, PeerTransportDependencies,
-    PeerTransportError, RecipientDiscoveryContext,
+    PeerSubmissionCapability, PeerTaskObservation, PeerTaskRequest, PeerTransportAdapter,
+    PeerTransportDependencies, PeerTransportError, RecipientDiscoveryContext,
 };
 use acteon_governance::{
     AuthorityChange, AuthorityCoordinator, CoordinatorLimits, RootBudgetLimits,
@@ -557,6 +557,7 @@ impl PeerTransportAdapter for TransportAdapter {
                 Ok(PeerSendDisposition::Accepted {
                     task: Box::new(task),
                     source_context: request.parent.clone(),
+                    progress_cursor: Some("\"cursor-1\"".into()),
                 })
             }
             1 => Ok(PeerSendDisposition::Uncertain),
@@ -570,11 +571,15 @@ impl PeerTransportAdapter for TransportAdapter {
                     "wrong-tenant",
                 )),
                 source_context: request.parent.clone(),
+                progress_cursor: Some("\"cursor-1\"".into()),
             }),
         }
     }
 
-    async fn observe_task(&self, request: PeerTaskRequest<'_>) -> Result<Task, PeerTransportError> {
+    async fn observe_task(
+        &self,
+        request: PeerTaskRequest<'_>,
+    ) -> Result<PeerTaskObservation, PeerTransportError> {
         self.observation_calls.fetch_add(1, Ordering::SeqCst);
         assert_eq!(request.endpoint, "https://peer.example/a2a");
         assert_eq!(request.transport, "rest");
@@ -587,8 +592,27 @@ impl PeerTransportAdapter for TransportAdapter {
             .clone()
             .ok_or(PeerTransportError::Unavailable)?;
         let outcome = self.outcome.load(Ordering::SeqCst);
+        if outcome == 13 {
+            assert!(request.progress_cursor.is_some());
+        } else if outcome == 14 {
+            assert!(request.progress_cursor.is_none());
+        } else {
+            assert_eq!(
+                request.progress_cursor,
+                Some(if outcome == 6 {
+                    "\"cursor-2\""
+                } else {
+                    "\"cursor-1\""
+                })
+            );
+        }
+        if outcome == 13 {
+            return Ok(PeerTaskObservation::Unchanged {
+                progress_cursor: request.progress_cursor.unwrap().into(),
+            });
+        }
         match outcome {
-            5 => task.transition_to(TaskState::Working, None).unwrap(),
+            5 | 14 => task.transition_to(TaskState::Working, None).unwrap(),
             6 => task.transition_to(TaskState::Completed, None).unwrap(),
             7 => task.id = "substituted-task".into(),
             _ => {}
@@ -596,7 +620,17 @@ impl PeerTransportAdapter for TransportAdapter {
         if outcome != 7 {
             *self.observed.lock().unwrap() = Some(task.clone());
         }
-        Ok(task)
+        Ok(PeerTaskObservation::Updated {
+            task: Box::new(task),
+            progress_cursor: Some(
+                match outcome {
+                    5 | 7 | 14 => "\"cursor-2\"",
+                    6 => "\"cursor-3\"",
+                    _ => "\"cursor-1\"",
+                }
+                .into(),
+            ),
+        })
     }
 
     async fn cancel_task(
@@ -648,6 +682,24 @@ fn peer_transport(f: &Fixture, adapter: Arc<dyn PeerTransportAdapter>) -> Durabl
         std::time::Duration::from_secs(1),
     )
     .unwrap()
+}
+
+async fn refresh_peer(
+    f: &Fixture,
+    transport: &DurablePeerTransport,
+    submission_id: uuid::Uuid,
+) -> acteon_executor::delegation::PeerSendReceipt {
+    transport
+        .refresh_task(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            submission_id,
+        )
+        .await
+        .unwrap()
 }
 
 #[tokio::test]
@@ -759,17 +811,7 @@ async fn remote_task_refresh_rechecks_authority_and_journals_forward_progress() 
         .await
         .unwrap();
     adapter.outcome.store(5, Ordering::SeqCst);
-    let refreshed = transport
-        .refresh_task(
-            &f.registry,
-            "responder",
-            "notify",
-            &f.parent,
-            &permits("caller"),
-            receipt.submission_id,
-        )
-        .await
-        .unwrap();
+    let refreshed = refresh_peer(&f, &transport, receipt.submission_id).await;
     assert!(matches!(
         refreshed.status,
         PeerSendStatus::Accepted { task, .. } if task.status.state == TaskState::Working
@@ -777,41 +819,30 @@ async fn remote_task_refresh_rechecks_authority_and_journals_forward_progress() 
     assert_eq!(adapter.calls.load(Ordering::SeqCst), 1);
     assert_eq!(adapter.observation_calls.load(Ordering::SeqCst), 1);
 
+    adapter.outcome.store(13, Ordering::SeqCst);
+    let recovered_transport = peer_transport(&f, adapter.clone());
+    let unchanged = refresh_peer(&f, &recovered_transport, receipt.submission_id).await;
+    assert!(matches!(
+        unchanged.status,
+        PeerSendStatus::Accepted { task, .. } if task.status.state == TaskState::Working
+    ));
+    assert_eq!(adapter.observation_calls.load(Ordering::SeqCst), 2);
+
     adapter.outcome.store(6, Ordering::SeqCst);
-    let terminal = transport
-        .refresh_task(
-            &f.registry,
-            "responder",
-            "notify",
-            &f.parent,
-            &permits("caller"),
-            receipt.submission_id,
-        )
-        .await
-        .unwrap();
+    let terminal = refresh_peer(&f, &recovered_transport, receipt.submission_id).await;
     assert!(matches!(
         terminal.status,
         PeerSendStatus::Accepted { task, .. } if task.status.state == TaskState::Completed
     ));
-    let terminal_again = transport
-        .refresh_task(
-            &f.registry,
-            "responder",
-            "notify",
-            &f.parent,
-            &permits("caller"),
-            receipt.submission_id,
-        )
-        .await
-        .unwrap();
+    let terminal_again = refresh_peer(&f, &recovered_transport, receipt.submission_id).await;
     assert!(matches!(
         terminal_again.status,
         PeerSendStatus::Accepted { task, .. } if task.status.state == TaskState::Completed
     ));
-    assert_eq!(adapter.observation_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(adapter.observation_calls.load(Ordering::SeqCst), 3);
 
     assert!(matches!(
-        transport
+        recovered_transport
             .refresh_task(
                 &f.registry,
                 "responder",
@@ -825,7 +856,7 @@ async fn remote_task_refresh_rechecks_authority_and_journals_forward_progress() 
     ));
     f.retire().await;
     assert!(matches!(
-        transport
+        recovered_transport
             .refresh_task(
                 &f.registry,
                 "responder",
@@ -837,7 +868,67 @@ async fn remote_task_refresh_rechecks_authority_and_journals_forward_progress() 
             .await,
         Err(PeerTransportError::Refused)
     ));
-    assert_eq!(adapter.observation_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(adapter.observation_calls.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn schema_one_peer_record_without_cursor_migrates_on_refresh() {
+    let f = Fixture::new().await;
+    let adapter = Arc::new(TransportAdapter::new(
+        &f.binding,
+        PeerSubmissionCapability::AtMostOnce,
+        0,
+    ));
+    let transport = peer_transport(&f, adapter.clone());
+    let receipt = transport
+        .submit(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            &peer_message("diagnose"),
+        )
+        .await
+        .unwrap();
+    let key = StateKey::new(
+        "city",
+        "tenant",
+        KeyKind::Custom("governed_peer_send".into()),
+        receipt.submission_id.to_string(),
+    );
+    let mut legacy: serde_json::Value =
+        serde_json::from_str(&f.store.get(&key).await.unwrap().unwrap()).unwrap();
+    legacy["schema"] = serde_json::json!(1);
+    legacy["state"]
+        .as_object_mut()
+        .unwrap()
+        .remove("progress_cursor");
+    f.store
+        .set(&key, &serde_json::to_string(&legacy).unwrap(), None)
+        .await
+        .unwrap();
+
+    adapter.outcome.store(14, Ordering::SeqCst);
+    let recovered = peer_transport(&f, adapter.clone())
+        .refresh_task(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            receipt.submission_id,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        recovered.status,
+        PeerSendStatus::Accepted { task, .. } if task.status.state == TaskState::Working
+    ));
+    let migrated: serde_json::Value =
+        serde_json::from_str(&f.store.get(&key).await.unwrap().unwrap()).unwrap();
+    assert_eq!(migrated["schema"], 2);
+    assert_eq!(migrated["state"]["progress_cursor"], "\"cursor-2\"");
 }
 
 #[tokio::test]
