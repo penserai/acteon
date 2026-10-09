@@ -6,9 +6,10 @@ mod peer_http;
 mod runtime;
 pub use peer_http::ActeonPeerHttpAdapter;
 pub use runtime::{
-    AgentPeerCancelInvocation, AgentPeerCancelRequest, AgentPeerContinuationInvocation,
-    AgentPeerContinuationRequest, AgentPeerDiscoveryInvocation, AgentPeerDiscoveryRequest,
-    AgentPeerInvocation, AgentPeerRefreshInvocation, AgentPeerRefreshRequest, AgentPeerToolRequest,
+    AgentPeerAuthorizationInvocation, AgentPeerAuthorizationRequest, AgentPeerCancelInvocation,
+    AgentPeerCancelRequest, AgentPeerContinuationInvocation, AgentPeerContinuationRequest,
+    AgentPeerDiscoveryInvocation, AgentPeerDiscoveryRequest, AgentPeerInvocation,
+    AgentPeerRefreshInvocation, AgentPeerRefreshRequest, AgentPeerToolRequest,
     AgentPeerTransportError, AgentServiceAcceptance, AgentServiceAuthorizationOpen,
     AgentServiceAuthorizationResolve, AgentServiceContinuation, AgentServiceDriver,
     AgentServiceError, AgentServiceObservation, AgentServiceParent, AgentServiceRequest,

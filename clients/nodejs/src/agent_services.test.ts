@@ -97,6 +97,20 @@ it("continues peer challenges without client-supplied bindings and retains direc
   expect((await client.agentServiceContinueTask(source, message)).id).toBe("job-1");
   expect(fetch).toHaveBeenCalledTimes(2);
 });
+it("resolves peer authorization with only an opaque challenge selector", async () => {
+  const source = { namespace: "prod", tenant: "acme", agent: "notifier", taskId: "job-1", sourceContext: fixture.jobs[0].source_context, task: fixture.jobs[0].task };
+  const peer = { submissionId: "f47ac10b-58cc-5372-a567-0e02b2c3d479", status: { state: "accepted" as const, task: fixture.jobs[1].task } };
+  const fetch = vi.fn(async (input: string, init: RequestInit) => {
+    expect(input).toContain(peer.submissionId + "/authorization:resolve");
+    expect(JSON.parse(init.body as string)).toEqual({ challengeId: "challenge-42" });
+    expect((init.headers as Record<string, string>)[AGENT_SOURCE_CONTEXT_HEADER]).toBeUndefined();
+    return new Response(JSON.stringify({ submission_id: peer.submissionId, authorization_id: "67e55044-10b1-526f-9247-bb680e5fe0c8", status: { state: "resolved", task: { ...peer.status.task, status: { state: "working" } }, progress_cursor: '"job-2:2"' } }), { headers: { "a2a-version": "1.0" } });
+  });
+  vi.stubGlobal("fetch", fetch);
+  const receipt = await new ActeonClient("http://acteon").agentServiceAuthorizePeer(source, "team/resolver", "diagnose", peer, "challenge-42");
+  expect(receipt.status.state).toBe("resolved");
+  expect(fetch).toHaveBeenCalledTimes(1);
+});
 it("keeps authorization credentials out of both typed calls", async () => {
   const source = { namespace: "prod", tenant: "acme", agent: "notifier", taskId: "job-1", sourceContext: fixture.jobs[0].source_context, task: fixture.jobs[0].task };
   const fetch = vi.fn(async (input: string, init: RequestInit) => {

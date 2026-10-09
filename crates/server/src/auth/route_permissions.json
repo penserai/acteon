@@ -102,6 +102,12 @@
     "permission": "Dispatch"
   },
   {
+    "name": "agent_services_peer_authorization_resolve",
+    "method": "POST",
+    "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/authorization:resolve",
+    "permission": "Dispatch"
+  },
+  {
     "name": "agent_services_peer_continue",
     "method": "POST",
     "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/message:send",

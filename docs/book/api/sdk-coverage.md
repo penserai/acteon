@@ -2,7 +2,7 @@
 
 Use Acteon's SDKs to connect agents, services, and workers to the same execution and governance platform. Start with the typed helpers for dispatch, rules, audit, approvals, and bus operations. Use the complete **platform operation API** for controls that do not yet have a dedicated helper in your language.
 
-The current source tree provides a generated catalog for **215 finite HTTP operations** in Rust, Python, TypeScript, Go, and Java. It includes receipt sessions, managed-stage recovery, workflow and execution controls, inference profiles, stream windows, and operator APIs. Six streaming or polymorphic RPC routes use the existing streaming and A2A clients instead. Server configuration, authorization, and optional build features still determine which operations are available on your deployment.
+The current source tree provides a generated catalog for **216 finite HTTP operations** in Rust, Python, TypeScript, Go, and Java. It includes receipt sessions, managed-stage recovery, workflow and execution controls, inference profiles, stream windows, and operator APIs. Six streaming or polymorphic RPC routes use the existing streaming and A2A clients instead. Server configuration, authorization, and optional build features still determine which operations are available on your deployment.
 
 ## Choose the right interface
 
@@ -11,7 +11,7 @@ The current source tree provides a generated catalog for **215 finite HTTP opera
 | Typed dispatch, batch, rules, audit and bus helpers | Yes | Yes | Yes | Yes | Yes |
 | Complete finite HTTP operation catalog | Yes | Yes, sync and async | Yes | Yes | Yes |
 | Native streaming and A2A helpers | Yes | Yes | Yes | Yes | Yes |
-| Authenticated agent-service receipts, input continuation, verifier-backed authorization and future-start stop | Yes | Yes, sync and async | Yes | Yes | Yes |
+| Authenticated agent-service receipts, input continuation, local and remote verifier-backed authorization, and future-start stop | Yes | Yes, sync and async | Yes | Yes | Yes |
 | Governed registry inspection, mutation and explicit recovery | Yes | Yes, sync and async | Yes | Yes | Yes |
 | Code-defined workflow runner | — | Yes | Yes | — | — |
 | Managed stream-processing adapter | `stream-processing` feature | — | — | — | — |
@@ -294,6 +294,23 @@ preserves `accepted`, `rejected`, and `uncertain`; an accepted result validates
 the exact remote task and a new strong progress cursor. Directly retained tasks
 use `agent_service_continue_task`, `agentServiceContinueTask`, or
 `AgentServiceContinueTask`, which sends the original host-owned source context.
+
+Accepted peer tasks in `AuthRequired` use the distinct authorization helper:
+
+| SDK | Remote authorization helper |
+| --- | --- |
+| Rust | `agent_service_authorize_peer(&source, target, skill, &peer, challenge)` |
+| Python, sync/async | `agent_service_authorize_peer(source, target, skill, peer, challenge)` |
+| TypeScript | `agentServiceAuthorizePeer(source, target, skill, peer, challenge)` |
+| Go | `AgentServiceAuthorizePeer(ctx, source, target, skill, peer, challenge)` |
+| Java | `agentServiceAuthorizePeer(source, target, skill, peer, challenge)` |
+
+These helpers accept only the exact challenge selector. The source SDK never
+handles a credential, authorization request handle, scope, or verifier
+evidence. The receipt keeps `resolved`, `rejected`, and `uncertain` distinct and
+validates the stable authorization UUID, remote task identity, and progress
+cursor. Repeating an uncertain handoff asks Acteon to reconcile by observation;
+it does not tell the platform to call the verifier again.
 
 The admin UI's **Governed tasks** tab on an agent detail page accepts work and
 refreshes accepted tasks using the current browser identity. The server enforces

@@ -25,6 +25,7 @@ use uuid::Uuid;
 pub const PEER_SEND_KIND: &str = "governed_peer_send";
 pub const PEER_CANCEL_KIND: &str = "governed_peer_cancel";
 pub const PEER_CONTINUATION_KIND: &str = "governed_peer_continuation";
+pub const PEER_AUTHORIZATION_KIND: &str = "governed_peer_authorization";
 const MAX_RECORD_BYTES: usize = 2 * 1024 * 1024;
 const PEER_SEND_SCHEMA: u32 = 2;
 
@@ -76,6 +77,20 @@ pub enum PeerContinuationDisposition {
     },
 }
 
+/// Result of asking the remote host to resolve one exact `AuthRequired`
+/// challenge. Credentials and verifier evidence remain entirely at the target.
+#[derive(Debug, Clone)]
+pub enum PeerAuthorizationDisposition {
+    Rejected {
+        code: String,
+    },
+    Uncertain,
+    Resolved {
+        task: Box<Task>,
+        progress_cursor: String,
+    },
+}
+
 pub struct PeerSendRequest<'a> {
     pub endpoint: &'a str,
     pub transport: &'a str,
@@ -113,6 +128,24 @@ pub struct PeerContinuationRequest<'a> {
 pub struct PeerContinuationInput<'a> {
     pub submission_id: Uuid,
     pub response: &'a TaskMessage,
+}
+
+/// Opaque selectors for an authorization already opened by the remote host.
+/// The source cannot provide credentials, verifier evidence, or routing data.
+pub struct PeerAuthorizationInput<'a> {
+    pub submission_id: Uuid,
+    pub challenge_id: &'a str,
+}
+
+/// Host-owned authorization resolution request derived from the accepted send
+/// journal and its exact remote `AuthRequired` snapshot.
+pub struct PeerAuthorizationRequest<'a> {
+    pub endpoint: &'a str,
+    pub transport: &'a str,
+    pub source_context: &'a ExecutionContextReference,
+    pub task_id: &'a str,
+    pub challenge_id: &'a str,
+    pub progress_cursor: Option<&'a str>,
 }
 
 /// Result of a conditional remote task observation.
@@ -154,6 +187,12 @@ pub trait PeerTransportAdapter: Send + Sync {
         &self,
         _request: PeerContinuationRequest<'_>,
     ) -> Result<PeerContinuationDisposition, PeerTransportError> {
+        Err(PeerTransportError::Unavailable)
+    }
+    async fn resolve_authorization(
+        &self,
+        _request: PeerAuthorizationRequest<'_>,
+    ) -> Result<PeerAuthorizationDisposition, PeerTransportError> {
         Err(PeerTransportError::Unavailable)
     }
 }
@@ -330,6 +369,63 @@ struct ContinuedTaskProjection<'a> {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+enum AuthorizationState {
+    Registered,
+    Delivering {
+        claim_id: Uuid,
+    },
+    Rejected {
+        code: String,
+    },
+    Uncertain,
+    Resolved {
+        task: Box<Task>,
+        progress_cursor: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthorizationRecord {
+    schema: u32,
+    submission_id: Uuid,
+    authorization_id: Uuid,
+    binding_digest: String,
+    adapter_revision: String,
+    endpoint: String,
+    transport: String,
+    source_context: ExecutionContextReference,
+    task_id: String,
+    challenge_id: String,
+    prior_task: Box<Task>,
+    prior_progress_cursor: Option<String>,
+    requested_at_ms: i64,
+    state: AuthorizationState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PeerAuthorizationStatus {
+    Rejected {
+        code: String,
+    },
+    Uncertain,
+    Resolved {
+        task: Box<Task>,
+        progress_cursor: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PeerAuthorizationReceipt {
+    pub submission_id: Uuid,
+    pub authorization_id: Uuid,
+    pub status: PeerAuthorizationStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PeerContinuationStatus {
     Rejected {
         code: String,
@@ -422,6 +518,15 @@ fn continuation_id(submission_id: Uuid, challenge_id: &str) -> Uuid {
         "challenge_id":challenge_id,
     }))
     .expect("fixed peer continuation identity must serialize");
+    Uuid::new_v5(&submission_id, &identity)
+}
+
+fn authorization_id(submission_id: Uuid, challenge_id: &str) -> Uuid {
+    let identity = serde_json::to_vec(&serde_json::json!({
+        "domain":"acteon.peer-authorization.v1",
+        "challenge_id":challenge_id,
+    }))
+    .expect("fixed peer authorization identity must serialize");
     Uuid::new_v5(&submission_id, &identity)
 }
 
@@ -659,6 +764,143 @@ impl DurablePeerTransport {
             input,
         })
         .await
+    }
+
+    /// Resolve the exact active `AuthRequired` challenge for an accepted peer
+    /// task. The source persists only an opaque challenge selector. The target
+    /// keeps credentials and verifier evidence, and an ambiguous delivery is
+    /// reconciled by observation without automatically replaying the verifier.
+    #[allow(clippy::too_many_lines)]
+    pub async fn resolve_authorization(
+        &self,
+        registry: &ApprovedPeerRegistry,
+        agent_id: &str,
+        skill: &str,
+        parent: &VerifiedExecutionContext,
+        permits: &[PermitReference],
+        input: PeerAuthorizationInput<'_>,
+    ) -> Result<PeerAuthorizationReceipt, PeerTransportError> {
+        if !valid_text(input.challenge_id) {
+            return Err(PeerTransportError::Invalid);
+        }
+        let (binding, reference, send_key, send) = self
+            .authorized_existing(
+                registry,
+                agent_id,
+                skill,
+                parent,
+                permits,
+                input.submission_id,
+            )
+            .await?;
+        let SendState::Accepted {
+            task: current_task,
+            source_context,
+            progress_cursor,
+        } = &send.state
+        else {
+            return Err(PeerTransportError::Conflict);
+        };
+        let id = authorization_id(input.submission_id, input.challenge_id);
+        let key = Self::authorization_key(&reference, id);
+        if let Some((record, _)) = self.load_authorization_versioned(&key).await? {
+            self.authorize_existing_authorization(
+                &record,
+                binding,
+                source_context,
+                &current_task.id,
+                &input,
+            )?;
+            let mut receipt = if matches!(record.state, AuthorizationState::Registered) {
+                self.claim_and_authorize(&key, &record).await?
+            } else {
+                Self::authorization_receipt(&record)
+            };
+            if matches!(receipt.status, PeerAuthorizationStatus::Uncertain) {
+                receipt = self
+                    .reconcile_authorization(
+                        registry, agent_id, skill, parent, permits, &key, &record,
+                    )
+                    .await?;
+            }
+            if let PeerAuthorizationStatus::Resolved {
+                task,
+                progress_cursor,
+            } = &receipt.status
+            {
+                self.persist_authorized_task(
+                    &send_key,
+                    binding,
+                    &reference,
+                    &record,
+                    task,
+                    progress_cursor,
+                )
+                .await?;
+            }
+            return Ok(receipt);
+        }
+        if current_task.status.state != TaskState::AuthRequired
+            || current_task.pending_approval_id.as_deref() != Some(input.challenge_id)
+        {
+            return Err(PeerTransportError::Conflict);
+        }
+        let requested_at_ms = self.dependencies.clock.now().timestamp_millis();
+        if requested_at_ms < 0 {
+            return Err(PeerTransportError::Invalid);
+        }
+        let candidate = AuthorizationRecord {
+            schema: 1,
+            submission_id: input.submission_id,
+            authorization_id: id,
+            binding_digest: binding.digest().into(),
+            adapter_revision: self.adapter.revision().into(),
+            endpoint: binding.endpoint().into(),
+            transport: binding.transport().into(),
+            source_context: source_context.clone(),
+            task_id: current_task.id.clone(),
+            challenge_id: input.challenge_id.into(),
+            prior_task: current_task.clone(),
+            prior_progress_cursor: progress_cursor.clone(),
+            requested_at_ms,
+            state: AuthorizationState::Registered,
+        };
+        let created = self
+            .dependencies
+            .state
+            .check_and_set(&key, &self.encode_authorization(&candidate)?, None)
+            .await
+            .map_err(|_| PeerTransportError::Unavailable)?;
+        let receipt = if created {
+            self.claim_and_authorize(&key, &candidate).await?
+        } else {
+            let (record, _) = self
+                .load_authorization_versioned(&key)
+                .await?
+                .ok_or(PeerTransportError::Unavailable)?;
+            self.same_authorization_intent(&record, &candidate)?;
+            if matches!(record.state, AuthorizationState::Registered) {
+                self.claim_and_authorize(&key, &record).await?
+            } else {
+                Self::authorization_receipt(&record)
+            }
+        };
+        if let PeerAuthorizationStatus::Resolved {
+            task,
+            progress_cursor,
+        } = &receipt.status
+        {
+            self.persist_authorized_task(
+                &send_key,
+                binding,
+                &reference,
+                &candidate,
+                task,
+                progress_cursor,
+            )
+            .await?;
+        }
+        Ok(receipt)
     }
 
     // Keep intent construction, durable claim selection, and accepted-snapshot
@@ -1125,6 +1367,201 @@ impl DurablePeerTransport {
         }
     }
 
+    async fn claim_and_authorize(
+        &self,
+        key: &StateKey,
+        expected: &AuthorizationRecord,
+    ) -> Result<PeerAuthorizationReceipt, PeerTransportError> {
+        let (current, version) = self
+            .load_authorization_versioned(key)
+            .await?
+            .ok_or(PeerTransportError::Unavailable)?;
+        self.same_authorization_intent(&current, expected)?;
+        if !matches!(current.state, AuthorizationState::Registered) {
+            return Ok(Self::authorization_receipt(&current));
+        }
+        let mut claimed = current;
+        claimed.state = AuthorizationState::Delivering {
+            claim_id: Uuid::new_v4(),
+        };
+        match self
+            .dependencies
+            .state
+            .compare_and_swap(key, version, &self.encode_authorization(&claimed)?, None)
+            .await
+            .map_err(|_| PeerTransportError::Unavailable)?
+        {
+            CasResult::Ok => {}
+            CasResult::Conflict { .. } => {
+                let (record, _) = self
+                    .load_authorization_versioned(key)
+                    .await?
+                    .ok_or(PeerTransportError::Unavailable)?;
+                self.same_authorization_intent(&record, expected)?;
+                return Ok(Self::authorization_receipt(&record));
+            }
+        }
+        let delivery = tokio::time::timeout(
+            self.timeout,
+            self.adapter
+                .resolve_authorization(PeerAuthorizationRequest {
+                    endpoint: &claimed.endpoint,
+                    transport: &claimed.transport,
+                    source_context: &claimed.source_context,
+                    task_id: &claimed.task_id,
+                    challenge_id: &claimed.challenge_id,
+                    progress_cursor: claimed.prior_progress_cursor.as_deref(),
+                }),
+        )
+        .await;
+        let state = match delivery {
+            Ok(Ok(PeerAuthorizationDisposition::Resolved {
+                task,
+                progress_cursor,
+            })) if Self::valid_authorization_observation(&claimed, &task, &progress_cursor) => {
+                AuthorizationState::Resolved {
+                    task,
+                    progress_cursor,
+                }
+            }
+            Ok(Ok(PeerAuthorizationDisposition::Rejected { code })) if valid_text(&code) => {
+                AuthorizationState::Rejected { code }
+            }
+            _ => AuthorizationState::Uncertain,
+        };
+        let mut settled = claimed;
+        settled.state = state;
+        match self
+            .dependencies
+            .state
+            .compare_and_swap(
+                key,
+                version + 1,
+                &self.encode_authorization(&settled)?,
+                None,
+            )
+            .await
+            .map_err(|_| PeerTransportError::Unavailable)?
+        {
+            CasResult::Ok => Ok(Self::authorization_receipt(&settled)),
+            CasResult::Conflict { .. } => {
+                let (record, _) = self
+                    .load_authorization_versioned(key)
+                    .await?
+                    .ok_or(PeerTransportError::Unavailable)?;
+                self.same_authorization_intent(&record, expected)?;
+                Ok(Self::authorization_receipt(&record))
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn reconcile_authorization(
+        &self,
+        registry: &ApprovedPeerRegistry,
+        agent_id: &str,
+        skill: &str,
+        parent: &VerifiedExecutionContext,
+        permits: &[PermitReference],
+        key: &StateKey,
+        expected: &AuthorizationRecord,
+    ) -> Result<PeerAuthorizationReceipt, PeerTransportError> {
+        let _ = self
+            .refresh_task(
+                registry,
+                agent_id,
+                skill,
+                parent,
+                permits,
+                expected.submission_id,
+            )
+            .await?;
+        let reference = parent
+            .reference()
+            .map_err(|_| PeerTransportError::Invalid)?;
+        let send_key = StateKey::new(
+            reference.namespace(),
+            reference.tenant(),
+            KeyKind::Custom(PEER_SEND_KIND.into()),
+            expected.submission_id.to_string(),
+        );
+        let (send, _) = self
+            .load_versioned(&send_key)
+            .await?
+            .ok_or(PeerTransportError::Conflict)?;
+        let SendState::Accepted {
+            task,
+            progress_cursor: Some(progress_cursor),
+            ..
+        } = send.state
+        else {
+            return Ok(Self::authorization_receipt(expected));
+        };
+        if !Self::valid_authorization_observation(expected, &task, &progress_cursor) {
+            return Ok(Self::authorization_receipt(expected));
+        }
+        for _ in 0..16 {
+            let (current, version) = self
+                .load_authorization_versioned(key)
+                .await?
+                .ok_or(PeerTransportError::Unavailable)?;
+            self.same_authorization_intent(&current, expected)?;
+            if matches!(current.state, AuthorizationState::Resolved { .. }) {
+                return Ok(Self::authorization_receipt(&current));
+            }
+            if !matches!(
+                current.state,
+                AuthorizationState::Delivering { .. } | AuthorizationState::Uncertain
+            ) {
+                return Ok(Self::authorization_receipt(&current));
+            }
+            let mut resolved = current;
+            resolved.state = AuthorizationState::Resolved {
+                task: task.clone(),
+                progress_cursor: progress_cursor.clone(),
+            };
+            if matches!(
+                self.dependencies
+                    .state
+                    .compare_and_swap(key, version, &self.encode_authorization(&resolved)?, None,)
+                    .await
+                    .map_err(|_| PeerTransportError::Unavailable)?,
+                CasResult::Ok
+            ) {
+                return Ok(Self::authorization_receipt(&resolved));
+            }
+        }
+        Err(PeerTransportError::Unavailable)
+    }
+
+    fn valid_authorization_progress(
+        record: &AuthorizationRecord,
+        observed: &Task,
+        cursor: &str,
+    ) -> bool {
+        valid_progress_cursor(cursor)
+            && record.prior_progress_cursor.as_deref() != Some(cursor)
+            && valid_task_progress(&record.prior_task, observed)
+            && observed.updated_at > record.prior_task.updated_at
+            && (observed.status.state != TaskState::AuthRequired
+                || observed.pending_approval_id.as_deref() != Some(record.challenge_id.as_str()))
+    }
+
+    fn valid_authorization_observation(
+        record: &AuthorizationRecord,
+        observed: &Task,
+        cursor: &str,
+    ) -> bool {
+        Self::valid_authorization_progress(record, observed, cursor)
+            && matches!(
+                observed.status.state,
+                TaskState::Working
+                    | TaskState::Completed
+                    | TaskState::InputRequired
+                    | TaskState::AuthRequired
+            )
+    }
+
     fn valid_continuation_result(
         record: &ContinuationRecord,
         prior: &Task,
@@ -1207,6 +1644,73 @@ impl DurablePeerTransport {
             next.state = SendState::Accepted {
                 task: Box::new(continued_task.clone()),
                 source_context: continuation.source_context.clone(),
+                progress_cursor: Some(progress_cursor.into()),
+            };
+            if matches!(
+                self.dependencies
+                    .state
+                    .compare_and_swap(key, version, &self.encode(&next)?, None)
+                    .await
+                    .map_err(|_| PeerTransportError::Unavailable)?,
+                CasResult::Ok
+            ) {
+                return Ok(());
+            }
+        }
+        Err(PeerTransportError::Unavailable)
+    }
+
+    async fn persist_authorized_task(
+        &self,
+        key: &StateKey,
+        binding: &ApprovedPeerBinding,
+        parent: &ExecutionContextReference,
+        authorization: &AuthorizationRecord,
+        resolved_task: &Task,
+        progress_cursor: &str,
+    ) -> Result<(), PeerTransportError> {
+        for _ in 0..16 {
+            let (current, version) = self
+                .load_versioned(key)
+                .await?
+                .ok_or(PeerTransportError::Conflict)?;
+            self.authorize_existing(&current, binding, parent, authorization.submission_id)?;
+            let SendState::Accepted {
+                task,
+                source_context,
+                progress_cursor: current_cursor,
+            } = &current.state
+            else {
+                return Err(PeerTransportError::Conflict);
+            };
+            if serde_json::to_value(task).map_err(|_| PeerTransportError::Unavailable)?
+                == serde_json::to_value(resolved_task)
+                    .map_err(|_| PeerTransportError::Unavailable)?
+                && current_cursor.as_deref() == Some(progress_cursor)
+            {
+                return Ok(());
+            }
+            if valid_task_progress(resolved_task, task) {
+                return Ok(());
+            }
+            if serde_json::to_value(task).map_err(|_| PeerTransportError::Unavailable)?
+                != serde_json::to_value(&authorization.prior_task)
+                    .map_err(|_| PeerTransportError::Unavailable)?
+                || source_context != &authorization.source_context
+                || current_cursor != &authorization.prior_progress_cursor
+                || !Self::valid_authorization_observation(
+                    authorization,
+                    resolved_task,
+                    progress_cursor,
+                )
+            {
+                return Err(PeerTransportError::Conflict);
+            }
+            let mut next = current;
+            next.schema = PEER_SEND_SCHEMA;
+            next.state = SendState::Accepted {
+                task: Box::new(resolved_task.clone()),
+                source_context: authorization.source_context.clone(),
                 progress_cursor: Some(progress_cursor.into()),
             };
             if matches!(
@@ -1503,6 +2007,15 @@ impl DurablePeerTransport {
         )
     }
 
+    fn authorization_key(parent: &ExecutionContextReference, authorization_id: Uuid) -> StateKey {
+        StateKey::new(
+            parent.namespace(),
+            parent.tenant(),
+            KeyKind::Custom(PEER_AUTHORIZATION_KIND.into()),
+            authorization_id.to_string(),
+        )
+    }
+
     async fn claim_and_send(
         &self,
         key: &StateKey,
@@ -1694,6 +2207,116 @@ impl DurablePeerTransport {
             return Err(PeerTransportError::Conflict);
         }
         Ok(())
+    }
+
+    fn authorize_existing_authorization(
+        &self,
+        record: &AuthorizationRecord,
+        binding: &ApprovedPeerBinding,
+        source_context: &ExecutionContextReference,
+        task_id: &str,
+        input: &PeerAuthorizationInput<'_>,
+    ) -> Result<(), PeerTransportError> {
+        if !self.valid_authorization_record(record)
+            || record.submission_id != input.submission_id
+            || record.authorization_id != authorization_id(input.submission_id, input.challenge_id)
+            || record.binding_digest != binding.digest()
+            || record.endpoint != binding.endpoint()
+            || record.transport != binding.transport()
+            || &record.source_context != source_context
+            || record.task_id != task_id
+            || record.challenge_id != input.challenge_id
+        {
+            return Err(PeerTransportError::Conflict);
+        }
+        Ok(())
+    }
+
+    fn same_authorization_intent(
+        &self,
+        actual: &AuthorizationRecord,
+        expected: &AuthorizationRecord,
+    ) -> Result<(), PeerTransportError> {
+        if !self.valid_authorization_record(actual)
+            || !self.valid_authorization_record(expected)
+            || actual.schema != expected.schema
+            || actual.submission_id != expected.submission_id
+            || actual.authorization_id != expected.authorization_id
+            || actual.binding_digest != expected.binding_digest
+            || actual.adapter_revision != expected.adapter_revision
+            || actual.endpoint != expected.endpoint
+            || actual.transport != expected.transport
+            || actual.source_context != expected.source_context
+            || actual.task_id != expected.task_id
+            || actual.challenge_id != expected.challenge_id
+            || serde_json::to_value(&actual.prior_task).map_err(|_| PeerTransportError::Conflict)?
+                != serde_json::to_value(&expected.prior_task)
+                    .map_err(|_| PeerTransportError::Conflict)?
+            || actual.prior_progress_cursor != expected.prior_progress_cursor
+        {
+            return Err(PeerTransportError::Conflict);
+        }
+        Ok(())
+    }
+
+    fn valid_authorization_record(&self, record: &AuthorizationRecord) -> bool {
+        let state_valid = match &record.state {
+            AuthorizationState::Rejected { code } => valid_text(code),
+            AuthorizationState::Resolved {
+                task,
+                progress_cursor,
+            } => Self::valid_authorization_observation(record, task, progress_cursor),
+            AuthorizationState::Registered
+            | AuthorizationState::Delivering { .. }
+            | AuthorizationState::Uncertain => true,
+        };
+        record.schema == 1
+            && record.authorization_id
+                == authorization_id(record.submission_id, &record.challenge_id)
+            && record.binding_digest == self.adapter.binding_digest()
+            && record.adapter_revision == self.adapter.revision()
+            && valid_digest(&record.binding_digest)
+            && valid_text(&record.adapter_revision)
+            && valid_endpoint(&record.endpoint)
+            && matches!(record.transport.as_str(), "rest" | "json-rpc")
+            && valid_text(&record.task_id)
+            && valid_text(&record.challenge_id)
+            && record.prior_task.validate().is_ok()
+            && record.prior_task.id == record.task_id
+            && record.prior_task.namespace == record.source_context.namespace()
+            && record.prior_task.tenant == record.source_context.tenant()
+            && record.prior_task.status.state == TaskState::AuthRequired
+            && record.prior_task.pending_approval_id.as_deref()
+                == Some(record.challenge_id.as_str())
+            && record
+                .prior_progress_cursor
+                .as_deref()
+                .is_none_or(valid_progress_cursor)
+            && record.requested_at_ms >= 0
+            && state_valid
+    }
+
+    fn authorization_receipt(record: &AuthorizationRecord) -> PeerAuthorizationReceipt {
+        let status = match &record.state {
+            AuthorizationState::Rejected { code } => {
+                PeerAuthorizationStatus::Rejected { code: code.clone() }
+            }
+            AuthorizationState::Resolved {
+                task,
+                progress_cursor,
+            } => PeerAuthorizationStatus::Resolved {
+                task: task.clone(),
+                progress_cursor: progress_cursor.clone(),
+            },
+            AuthorizationState::Registered
+            | AuthorizationState::Delivering { .. }
+            | AuthorizationState::Uncertain => PeerAuthorizationStatus::Uncertain,
+        };
+        PeerAuthorizationReceipt {
+            submission_id: record.submission_id,
+            authorization_id: record.authorization_id,
+            status,
+        }
     }
 
     fn valid_continuation_record(&self, record: &ContinuationRecord) -> bool {
@@ -2011,6 +2634,24 @@ impl DurablePeerTransport {
             })
     }
 
+    fn encode_authorization(
+        &self,
+        record: &AuthorizationRecord,
+    ) -> Result<String, PeerTransportError> {
+        let raw = serde_json::to_string(record).map_err(|_| PeerTransportError::Invalid)?;
+        if raw.len() > MAX_RECORD_BYTES {
+            return Err(PeerTransportError::Invalid);
+        }
+        self.dependencies
+            .encryptor
+            .as_ref()
+            .map_or(Ok(raw.clone()), |encryptor| {
+                encryptor
+                    .encrypt_str(&raw)
+                    .map_err(|_| PeerTransportError::Unavailable)
+            })
+    }
+
     fn decode(&self, raw: &str) -> Result<SendRecord, PeerTransportError> {
         if raw.len() > MAX_RECORD_BYTES * 2 {
             return Err(PeerTransportError::Conflict);
@@ -2065,6 +2706,24 @@ impl DurablePeerTransport {
         serde_json::from_str(&decoded).map_err(|_| PeerTransportError::Conflict)
     }
 
+    fn decode_authorization(&self, raw: &str) -> Result<AuthorizationRecord, PeerTransportError> {
+        if raw.len() > MAX_RECORD_BYTES * 2 {
+            return Err(PeerTransportError::Conflict);
+        }
+        let decoded = self.dependencies.encryptor.as_ref().map_or_else(
+            || Ok(raw.to_owned()),
+            |encryptor| {
+                encryptor
+                    .decrypt_str(raw)
+                    .map_err(|_| PeerTransportError::Unavailable)
+            },
+        )?;
+        if decoded.len() > MAX_RECORD_BYTES {
+            return Err(PeerTransportError::Conflict);
+        }
+        serde_json::from_str(&decoded).map_err(|_| PeerTransportError::Conflict)
+    }
+
     async fn load_versioned(
         &self,
         key: &StateKey,
@@ -2102,6 +2761,22 @@ impl DurablePeerTransport {
             .map_err(|_| PeerTransportError::Unavailable)?
             .map(|(raw, version)| {
                 self.decode_continuation(&raw)
+                    .map(|record| (record, version))
+            })
+            .transpose()
+    }
+
+    async fn load_authorization_versioned(
+        &self,
+        key: &StateKey,
+    ) -> Result<Option<(AuthorizationRecord, u64)>, PeerTransportError> {
+        self.dependencies
+            .state
+            .get_versioned(key)
+            .await
+            .map_err(|_| PeerTransportError::Unavailable)?
+            .map(|(raw, version)| {
+                self.decode_authorization(&raw)
                     .map(|record| (record, version))
             })
             .transpose()

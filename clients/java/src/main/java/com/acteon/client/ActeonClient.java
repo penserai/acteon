@@ -176,6 +176,24 @@ public class ActeonClient implements AutoCloseable {
         try { return AgentPeerContinuationReceipt.parse(objectMapper.readTree(response.body()), source, peer); }
         catch (IOException e) { throw new ActeonException("invalid agent peer continuation response", e); }
     }
+    /** Resolve one exact remote authorization challenge; credentials remain at the target. */
+    public AgentPeerAuthorizationReceipt agentServiceAuthorizePeer(AgentServiceReceipt source, String target, String skill, AgentPeerSendReceipt peer, String challengeId) throws ActeonException {
+        if (source == null || peer == null || !"accepted".equals(peer.state()) || peer.task() == null
+                || peer.submissionId() == null || !peer.submissionId().matches("[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
+                || challengeId == null || challengeId.isEmpty() || challengeId.length() > 1024
+                || !challengeId.equals(challengeId.trim()) || "*".equals(challengeId)
+                || challengeId.chars().anyMatch(Character::isISOControl))
+            throw new IllegalArgumentException("agent peer authorization requires an accepted peer and challenge");
+        AgentServiceReceipt.verifyTask(peer.task(), source.namespace(), source.tenant(), null);
+        String path = AgentServiceReceipt.base(source.namespace(), source.tenant(), source.agent())
+            + "/tasks/" + AgentServiceReceipt.segment(source.taskId())
+            + "/peers/" + AgentServiceReceipt.segment(target)
+            + "/" + AgentServiceReceipt.segment(skill)
+            + "/submissions/" + peer.submissionId() + "/authorization:resolve";
+        var response = agentServiceRequest("POST", path, Map.of("challengeId", challengeId), null, null);
+        try { return AgentPeerAuthorizationReceipt.parse(objectMapper.readTree(response.body()), source, peer, challengeId); }
+        catch (IOException e) { throw new ActeonException("invalid agent peer authorization response", e); }
+    }
     /** Stop future starts; explicitly retry the original receipt after response loss. */
     public AgentServiceStopReceipt agentServiceStopTask(AgentServiceReceipt receipt) throws ActeonException {
         var response = agentServiceRequest("POST", AgentServiceReceipt.base(receipt.namespace(), receipt.tenant(), receipt.agent())+"/tasks/"+AgentServiceReceipt.segment(receipt.taskId())+"/stop", null, AgentServiceReceipt.source(receipt.sourceContext()), null);

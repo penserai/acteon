@@ -423,6 +423,8 @@ jobs:
         run: cargo test --locked -p acteon-server --no-default-features --features postgres --test agent_services_http postgres_two_server_peer_cancel_survives_source_restart_as_a_durable_restriction -- --ignored
       - name: Governed peer continuation with PostgreSQL and no Redis feature
         run: cargo test --locked -p acteon-server --no-default-features --features postgres --test agent_services_http postgres_two_server_peer_continuation_survives_source_restart -- --ignored
+      - name: Governed peer authorization with PostgreSQL and no Redis feature
+        run: cargo test --locked -p acteon-server --no-default-features --features postgres --test agent_services_http postgres_two_server_peer_authorization_survives_restart_denial_revocation_and_response_loss -- --ignored
       - name: Governed HTTP dispatch survives PostgreSQL server restart
         run: cargo test --locked -p acteon-server --no-default-features --features postgres --test execution_http -- --include-ignored
       - name: PostgreSQL audit-store conformance

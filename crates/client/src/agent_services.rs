@@ -1,7 +1,7 @@
 //! Authenticated individual-agent services. Receipts are host-owned provenance;
 //! never derive their source context from model messages or task metadata.
 use crate::{ActeonClient, Error, PermitReference, a2a::A2A_PROTOCOL_VERSION};
-use acteon_core::{ExecutionContextReference, Task, TaskMessage};
+use acteon_core::{ExecutionContextReference, Task, TaskMessage, TaskState};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 
@@ -86,6 +86,29 @@ pub enum AgentPeerContinuationStatus {
     },
 }
 
+/// Durable handoff of one exact remote authorization challenge. No credential
+/// or verifier evidence is represented by this receipt.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentPeerAuthorizationReceipt {
+    pub submission_id: String,
+    pub authorization_id: String,
+    pub status: AgentPeerAuthorizationStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AgentPeerAuthorizationStatus {
+    Uncertain,
+    Resolved {
+        task: Box<Task>,
+        progress_cursor: String,
+    },
+    Rejected {
+        code: String,
+    },
+}
+
 /// Safe registry data for model selection. `description_untrusted` must never
 /// be interpreted as host instructions, and this option authorizes no send.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -156,6 +179,14 @@ fn valid_peer_token(value: &str) -> bool {
         && value.chars().all(|character| {
             character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
         })
+}
+
+fn valid_challenge_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 1024
+        && value.trim() == value
+        && value != "*"
+        && !value.chars().any(char::is_control)
 }
 
 fn valid_peer_option(option: &AgentPeerSelectionOption, skill: &str) -> bool {
@@ -439,6 +470,83 @@ async fn peer_continuation_response(
     {
         return Err(Error::Deserialization(
             "agent peer continuation receipt missing or malformed".into(),
+        ));
+    }
+    Ok(receipt)
+}
+
+async fn peer_authorization_response(
+    response: reqwest::Response,
+    source: &AgentServiceReceipt,
+    peer: &AgentPeerSendReceipt,
+    challenge_id: &str,
+) -> Result<AgentPeerAuthorizationReceipt, Error> {
+    if !response.status().is_success() {
+        return Err(Error::Http {
+            status: response.status().as_u16(),
+            message: response
+                .text()
+                .await
+                .map_err(|error| Error::Connection(error.to_string()))?,
+        });
+    }
+    if response
+        .headers()
+        .get("a2a-version")
+        .and_then(|value| value.to_str().ok())
+        != Some(A2A_PROTOCOL_VERSION)
+    {
+        return Err(Error::Deserialization(
+            "agent peer authorization response version missing or unsupported".into(),
+        ));
+    }
+    let receipt: AgentPeerAuthorizationReceipt = response
+        .json()
+        .await
+        .map_err(|error| Error::Deserialization(error.to_string()))?;
+    let accepted_task_id = match &peer.status {
+        AgentPeerSendStatus::Accepted { task } => task.id.as_str(),
+        _ => {
+            return Err(Error::Configuration(
+                "agent peer authorization requires an accepted peer receipt".into(),
+            ));
+        }
+    };
+    let valid_status = match &receipt.status {
+        AgentPeerAuthorizationStatus::Uncertain => true,
+        AgentPeerAuthorizationStatus::Resolved {
+            task,
+            progress_cursor,
+        } => {
+            task_matches(
+                task,
+                &source.namespace,
+                &source.tenant,
+                Some(accepted_task_id),
+            ) && valid_progress_cursor(progress_cursor)
+                && matches!(
+                    task.status.state,
+                    TaskState::Working
+                        | TaskState::Completed
+                        | TaskState::InputRequired
+                        | TaskState::AuthRequired
+                )
+                && (task.status.state != TaskState::AuthRequired
+                    || task.pending_approval_id.as_deref() != Some(challenge_id))
+        }
+        AgentPeerAuthorizationStatus::Rejected { code } => {
+            !code.is_empty()
+                && code.len() <= 1024
+                && code.trim() == code
+                && !code.chars().any(char::is_control)
+        }
+    };
+    if receipt.submission_id != peer.submission_id
+        || !valid_attempt_id(&receipt.authorization_id)
+        || !valid_status
+    {
+        return Err(Error::Deserialization(
+            "agent peer authorization receipt missing or malformed".into(),
         ));
     }
     Ok(receipt)
@@ -757,6 +865,48 @@ impl ActeonClient {
             .await
             .map_err(|error| Error::Connection(error.to_string()))?;
         peer_continuation_response(wire, source, peer).await
+    }
+
+    /// Ask the remote host to resolve one exact authorization challenge. The
+    /// challenge is an opaque selector; credentials remain at the target.
+    pub async fn agent_service_authorize_peer(
+        &self,
+        source: &AgentServiceReceipt,
+        target: &str,
+        skill: &str,
+        peer: &AgentPeerSendReceipt,
+        challenge_id: &str,
+    ) -> Result<AgentPeerAuthorizationReceipt, Error> {
+        if !valid_attempt_id(&peer.submission_id)
+            || !valid_challenge_id(challenge_id)
+            || !matches!(
+                &peer.status,
+                AgentPeerSendStatus::Accepted { task }
+                    if task_matches(task, &source.namespace, &source.tenant, None)
+            )
+        {
+            return Err(Error::Configuration(
+                "agent peer authorization requires an accepted peer and valid challenge".into(),
+            ));
+        }
+        let path = format!(
+            "/a2a/{}/{}/agents/{}/v1/tasks/{}/peers/{}/{}/submissions/{}/authorization:resolve",
+            segment(&source.namespace)?,
+            segment(&source.tenant)?,
+            segment(&source.agent)?,
+            segment(&source.task_id)?,
+            segment(target)?,
+            segment(skill)?,
+            segment(&peer.submission_id)?,
+        );
+        let wire = self
+            .add_auth(self.client.post(format!("{}{path}", self.base_url)))
+            .header("a2a-version", A2A_PROTOCOL_VERSION)
+            .json(&serde_json::json!({"challengeId":challenge_id}))
+            .send()
+            .await
+            .map_err(|error| Error::Connection(error.to_string()))?;
+        peer_authorization_response(wire, source, peer, challenge_id).await
     }
 
     /// Submit once with a stable message ID; retain the receipt separately from
@@ -1079,8 +1229,9 @@ mod tests {
                     let raw = to_bytes(request.into_body(), 2 * 1024 * 1024)
                         .await
                         .unwrap();
-                    if path.ends_with("/authorization:request")
-                        || path.ends_with("/authorization:resolve")
+                    if !path.contains("/peers/")
+                        && (path.ends_with("/authorization:request")
+                            || path.ends_with("/authorization:resolve"))
                     {
                         let body: serde_json::Value = serde_json::from_slice(&raw).unwrap();
                         if path.ends_with("/authorization:request") {
@@ -1109,10 +1260,14 @@ mod tests {
                         } else {
                             let body: serde_json::Value = serde_json::from_slice(&raw).unwrap();
                             assert_eq!(body.as_object().unwrap().len(), 1);
-                            assert!(matches!(
-                                body["message"]["messageId"].as_str(),
-                                Some("peer-1" | "response-1")
-                            ));
+                            if path.ends_with("/authorization:resolve") {
+                                assert_eq!(body["challengeId"], "challenge-42");
+                            } else {
+                                assert!(matches!(
+                                    body["message"]["messageId"].as_str(),
+                                    Some("peer-1" | "response-1")
+                                ));
+                            }
                         }
                         let payload = if path.ends_with(":cancel") {
                             serde_json::json!({
@@ -1126,6 +1281,15 @@ mod tests {
                                 "submission_id":"f47ac10b-58cc-5372-a567-0e02b2c3d479",
                                 "continuation_id":"67e55044-10b1-526f-9247-bb680e5fe0c8",
                                 "status":{"state":"accepted", "task":wire["jobs"][0]["task"],
+                                    "progress_cursor":"\"task:2\""}
+                            })
+                        } else if path.ends_with("/authorization:resolve") {
+                            let mut task = wire["jobs"][0]["task"].clone();
+                            task["status"]["state"] = serde_json::json!("working");
+                            serde_json::json!({
+                                "submission_id":"f47ac10b-58cc-5372-a567-0e02b2c3d479",
+                                "authorization_id":"67e55044-10b1-526f-9247-bb680e5fe0c8",
+                                "status":{"state":"resolved", "task":task,
                                     "progress_cursor":"\"task:2\""}
                             })
                         } else {
@@ -1273,6 +1437,24 @@ mod tests {
         ));
         assert!(fixture.calls.lock().unwrap()[4].0.ends_with(
             "/peers/team/resolver/diagnose/submissions/f47ac10b-58cc-5372-a567-0e02b2c3d479/message:send"
+        ));
+        let authorized = fixture
+            .client
+            .agent_service_authorize_peer(
+                &source,
+                "team/resolver",
+                "diagnose",
+                &receipt,
+                "challenge-42",
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            authorized.status,
+            AgentPeerAuthorizationStatus::Resolved { .. }
+        ));
+        assert!(fixture.calls.lock().unwrap()[5].0.ends_with(
+            "/peers/team/resolver/diagnose/submissions/f47ac10b-58cc-5372-a567-0e02b2c3d479/authorization:resolve"
         ));
     }
 

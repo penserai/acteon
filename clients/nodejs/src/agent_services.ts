@@ -41,6 +41,15 @@ export interface AgentPeerContinuationReceipt {
   readonly continuationId: string;
   readonly status: AgentPeerContinuationStatus;
 }
+export type AgentPeerAuthorizationStatus =
+  | Readonly<{ state: "uncertain" }>
+  | Readonly<{ state: "resolved"; task: Record<string, unknown>; progressCursor: string }>
+  | Readonly<{ state: "rejected"; code: string }>;
+export interface AgentPeerAuthorizationReceipt {
+  readonly submissionId: string;
+  readonly authorizationId: string;
+  readonly status: AgentPeerAuthorizationStatus;
+}
 export interface AgentPeerSelectionOption {
   readonly agentId: string;
   readonly skill: string;
@@ -118,6 +127,26 @@ export function agentPeerContinuationReceipt(value: unknown, namespace: string, 
     parsed = Object.freeze({ state: "accepted", task, progressCursor: status.progress_cursor });
   } else throw new Error("agent peer continuation receipt missing or malformed");
   return Object.freeze({ submissionId: peer.submissionId, continuationId: raw.continuation_id, status: parsed });
+}
+export function agentPeerAuthorizationReceipt(value: unknown, namespace: string, tenant: string, peer: AgentPeerSendReceipt, challengeId: string): AgentPeerAuthorizationReceipt {
+  if (!value || typeof value !== "object" || Array.isArray(value) || peer.status.state !== "accepted") throw new Error("agent peer authorization receipt missing or malformed");
+  const raw = value as Record<string, unknown>;
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  if (Object.keys(raw).sort().join(",") !== "authorization_id,status,submission_id" || raw.submission_id !== peer.submissionId || typeof raw.authorization_id !== "string" || !uuid.test(raw.authorization_id) || !raw.status || typeof raw.status !== "object" || Array.isArray(raw.status)) throw new Error("agent peer authorization receipt missing or malformed");
+  const accepted = agentTask(peer.status.task, namespace, tenant);
+  const status = raw.status as Record<string, unknown>;
+  const keys = Object.keys(status).sort().join(",");
+  let parsed: AgentPeerAuthorizationStatus;
+  if (status.state === "uncertain" && keys === "state") parsed = Object.freeze({ state: "uncertain" });
+  else if (status.state === "rejected" && keys === "code,state" && typeof status.code === "string" && status.code.length > 0 && status.code.length <= 1024 && status.code.trim() === status.code && !/\p{Cc}/u.test(status.code)) parsed = Object.freeze({ state: "rejected", code: status.code });
+  else if (status.state === "resolved" && keys === "progress_cursor,state,task" && typeof status.progress_cursor === "string" && status.progress_cursor.length <= 512 && /^"[A-Za-z0-9_.:-]+"$/.test(status.progress_cursor)) {
+    const task = agentTask(status.task, namespace, tenant, accepted.id as string);
+    const taskStatus = task.status;
+    const taskState = taskStatus && typeof taskStatus === "object" && !Array.isArray(taskStatus) ? (taskStatus as Record<string, unknown>).state : undefined;
+    if (typeof taskState !== "string" || !["working", "completed", "input_required", "auth_required"].includes(taskState) || (taskState === "auth_required" && task.pendingApprovalId === challengeId)) throw new Error("agent peer authorization receipt missing or malformed");
+    parsed = Object.freeze({ state: "resolved", task, progressCursor: status.progress_cursor });
+  } else throw new Error("agent peer authorization receipt missing or malformed");
+  return Object.freeze({ submissionId: peer.submissionId, authorizationId: raw.authorization_id, status: parsed });
 }
 export function assertUnboundPeerResponse(message: Record<string, unknown>): void {
   const metadata = message.metadata;

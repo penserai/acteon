@@ -1,5 +1,5 @@
 import { parseRegistryProjection, parseRegistryMutationReceipt, type RegistryProjection, type GovernanceRegistryMutationRequest, type GovernanceRegistryProjectionView, type GovernanceRegistryMutationReceipt } from "./governance.js";
-import { AGENT_EXECUTION_CONTEXT_HEADER, AGENT_SOURCE_CONTEXT_HEADER, agentExecutionContext, agentPeerCancelReceipt, agentPeerContinuationReceipt, agentPeerOptions, agentPeerReceipt, agentProviderAbort, agentSource, agentTask, agentServiceBase, assertUnboundPeerResponse, type AgentPeerCancelReceipt, type AgentPeerContinuationReceipt, type AgentPeerSelectionOption, type AgentPeerSendReceipt, type AgentServiceReceipt, type AgentServiceStopReceipt } from "./agent_services.js";
+import { AGENT_EXECUTION_CONTEXT_HEADER, AGENT_SOURCE_CONTEXT_HEADER, agentExecutionContext, agentPeerAuthorizationReceipt, agentPeerCancelReceipt, agentPeerContinuationReceipt, agentPeerOptions, agentPeerReceipt, agentProviderAbort, agentSource, agentTask, agentServiceBase, assertUnboundPeerResponse, type AgentPeerAuthorizationReceipt, type AgentPeerCancelReceipt, type AgentPeerContinuationReceipt, type AgentPeerSelectionOption, type AgentPeerSendReceipt, type AgentServiceReceipt, type AgentServiceStopReceipt } from "./agent_services.js";
 import { parseProviderHistoryReceipt, type ProviderHistoryReceipt, type ProviderReconciliationCorrelation, type ProviderReconciliationRequest } from "./governance.js";
 import { parseProviderExecutionHistory, type ProviderExecutionHistory, type ProviderExecutionHistoryWire } from "./governance.js";
 import type { WorkforceScopeView, WorkforceChangeRequest } from "./workforce.js";
@@ -479,6 +479,20 @@ export class ActeonClient {
     if (!response.ok) throw new HttpError(response.status, await response.text());
     if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent peer continuation response version missing or unsupported");
     return agentPeerContinuationReceipt(await response.json(), source.namespace, source.tenant, peer);
+  }
+  /** Resolve one exact remote authorization challenge; credentials stay at the target. */
+  async agentServiceAuthorizePeer(source: AgentServiceReceipt, target: string, skill: string, peer: AgentPeerSendReceipt, challengeId: string): Promise<AgentPeerAuthorizationReceipt> {
+    const segment = (value: string) => {
+      if (!value || value === "." || value === "..") throw new Error("invalid agent peer path segment");
+      return encodeURIComponent(value);
+    };
+    if (peer.status.state !== "accepted" || !/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(peer.submissionId) || !challengeId || challengeId.length > 1024 || challengeId.trim() !== challengeId || challengeId === "*" || /\p{Cc}/u.test(challengeId)) throw new Error("agent peer authorization requires an accepted peer and challenge");
+    agentTask(peer.status.task, source.namespace, source.tenant);
+    const path = agentServiceBase(source.namespace, source.tenant, source.agent) + "/tasks/" + segment(source.taskId) + "/peers/" + segment(target) + "/" + segment(skill) + "/submissions/" + peer.submissionId + "/authorization:resolve";
+    const response = await this.request("POST", path, { body: { challengeId }, extraHeaders: A2A_HEADERS, redirect: "error" });
+    if (!response.ok) throw new HttpError(response.status, await response.text());
+    if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent peer authorization response version missing or unsupported");
+    return agentPeerAuthorizationReceipt(await response.json(), source.namespace, source.tenant, peer, challengeId);
   }
   /** Stop future starts for the original job; retry explicitly with the same receipt on response loss. */
   async agentServiceStopTask(receipt: AgentServiceReceipt): Promise<AgentServiceStopReceipt> {

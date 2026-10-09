@@ -5,11 +5,13 @@ use acteon_core::{
 };
 use acteon_executor::delegation::{
     ApprovedPeerBinding, ApprovedPeerRegistry, ApprovedServicePlan, DurablePeerTransport,
-    PeerCancelDisposition, PeerCancelStatus, PeerCandidateQuery, PeerContinuationDisposition,
-    PeerContinuationInput, PeerContinuationRequest, PeerContinuationStatus, PeerDiscoveryError,
-    PeerRecipientResolver, PeerSendDisposition, PeerSendRequest, PeerSendStatus,
-    PeerSubmissionCapability, PeerTaskObservation, PeerTaskRequest, PeerTransportAdapter,
-    PeerTransportDependencies, PeerTransportError, RecipientDiscoveryContext,
+    PeerAuthorizationDisposition, PeerAuthorizationInput, PeerAuthorizationRequest,
+    PeerAuthorizationStatus, PeerCancelDisposition, PeerCancelStatus, PeerCandidateQuery,
+    PeerContinuationDisposition, PeerContinuationInput, PeerContinuationRequest,
+    PeerContinuationStatus, PeerDiscoveryError, PeerRecipientResolver, PeerSendDisposition,
+    PeerSendRequest, PeerSendStatus, PeerSubmissionCapability, PeerTaskObservation,
+    PeerTaskRequest, PeerTransportAdapter, PeerTransportDependencies, PeerTransportError,
+    RecipientDiscoveryContext,
 };
 use acteon_governance::{
     AuthorityChange, AuthorityCoordinator, CoordinatorLimits, RootBudgetLimits,
@@ -506,6 +508,7 @@ struct TransportAdapter {
     observation_calls: AtomicUsize,
     cancellation_calls: AtomicUsize,
     continuation_calls: AtomicUsize,
+    authorization_calls: AtomicUsize,
     observed: std::sync::Mutex<Option<Task>>,
 }
 impl TransportAdapter {
@@ -522,6 +525,7 @@ impl TransportAdapter {
             observation_calls: AtomicUsize::new(0),
             cancellation_calls: AtomicUsize::new(0),
             continuation_calls: AtomicUsize::new(0),
+            authorization_calls: AtomicUsize::new(0),
             observed: std::sync::Mutex::new(None),
         }
     }
@@ -601,6 +605,8 @@ impl PeerTransportAdapter for TransportAdapter {
             assert!(request.progress_cursor.is_none());
         } else if outcome == 15 {
             assert_eq!(request.progress_cursor, Some("\"cursor-1\""));
+        } else if matches!(outcome, 30..=34) {
+            assert_eq!(request.progress_cursor, Some("\"cursor-2\""));
         } else {
             assert_eq!(
                 request.progress_cursor,
@@ -620,6 +626,7 @@ impl PeerTransportAdapter for TransportAdapter {
             5 | 14 => task.transition_to(TaskState::Working, None).unwrap(),
             6 => task.transition_to(TaskState::Completed, None).unwrap(),
             7 => task.id = "substituted-task".into(),
+            34 => task.transition_to(TaskState::Canceled, None).unwrap(),
             _ => {}
         }
         if outcome != 7 {
@@ -630,7 +637,7 @@ impl PeerTransportAdapter for TransportAdapter {
             progress_cursor: Some(
                 match outcome {
                     5 | 7 | 14 | 15 => "\"cursor-2\"",
-                    6 => "\"cursor-3\"",
+                    6 | 30..=34 => "\"cursor-3\"",
                     _ => "\"cursor-1\"",
                 }
                 .into(),
@@ -711,6 +718,44 @@ impl PeerTransportAdapter for TransportAdapter {
             _ => Err(PeerTransportError::Unavailable),
         }
     }
+
+    async fn resolve_authorization(
+        &self,
+        request: PeerAuthorizationRequest<'_>,
+    ) -> Result<PeerAuthorizationDisposition, PeerTransportError> {
+        self.authorization_calls.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(request.endpoint, "https://peer.example/a2a");
+        assert_eq!(request.transport, "rest");
+        assert_eq!(request.task_id, "remote-task");
+        assert_eq!(request.challenge_id, "authorization-approval");
+        assert_eq!(request.progress_cursor, Some("\"cursor-2\""));
+        match self.outcome.load(Ordering::SeqCst) {
+            30 => {
+                let mut task = self.observed.lock().unwrap().clone().unwrap();
+                task.transition_to(TaskState::Working, None).unwrap();
+                *self.observed.lock().unwrap() = Some(task.clone());
+                Ok(PeerAuthorizationDisposition::Resolved {
+                    task: Box::new(task),
+                    progress_cursor: "\"cursor-3\"".into(),
+                })
+            }
+            31 => {
+                let mut task = self.observed.lock().unwrap().clone().unwrap();
+                task.transition_to(TaskState::Working, None).unwrap();
+                *self.observed.lock().unwrap() = Some(task);
+                Ok(PeerAuthorizationDisposition::Uncertain)
+            }
+            32 => Ok(PeerAuthorizationDisposition::Rejected {
+                code: "authorization_revoked".into(),
+            }),
+            33 => Ok(PeerAuthorizationDisposition::Resolved {
+                task: Box::new(self.observed.lock().unwrap().clone().unwrap()),
+                progress_cursor: "\"cursor-3\"".into(),
+            }),
+            34 => Ok(PeerAuthorizationDisposition::Uncertain),
+            _ => Err(PeerTransportError::Unavailable),
+        }
+    }
 }
 
 fn peer_message(text: &str) -> TaskMessage {
@@ -770,6 +815,325 @@ async fn pause_remote_for_input(
             if task.status.state == TaskState::InputRequired
                 && task.pending_approval_id.as_deref() == Some("input-approval")
     ));
+}
+
+async fn pause_remote_for_authorization(
+    f: &Fixture,
+    transport: &DurablePeerTransport,
+    adapter: &TransportAdapter,
+    submission_id: uuid::Uuid,
+) {
+    {
+        let mut task = adapter.observed.lock().unwrap().clone().unwrap();
+        task.transition_to(TaskState::Working, None).unwrap();
+        task.set_pending_approval("authorization-approval");
+        task.transition_to(TaskState::AuthRequired, None).unwrap();
+        *adapter.observed.lock().unwrap() = Some(task);
+    }
+    adapter.outcome.store(15, Ordering::SeqCst);
+    let refreshed = refresh_peer(f, transport, submission_id).await;
+    assert!(matches!(
+        refreshed.status,
+        PeerSendStatus::Accepted { task, .. }
+            if task.status.state == TaskState::AuthRequired
+                && task.pending_approval_id.as_deref() == Some("authorization-approval")
+    ));
+}
+
+#[tokio::test]
+async fn peer_authorization_is_opaque_durable_and_delivered_once() {
+    let f = Fixture::new().await;
+    let adapter = Arc::new(TransportAdapter::new(
+        &f.binding,
+        PeerSubmissionCapability::AtMostOnce,
+        0,
+    ));
+    let transport = peer_transport(&f, adapter.clone());
+    let accepted = transport
+        .submit(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            &peer_message("diagnose"),
+        )
+        .await
+        .unwrap();
+    pause_remote_for_authorization(&f, &transport, &adapter, accepted.submission_id).await;
+    adapter.outcome.store(30, Ordering::SeqCst);
+    let parent_permits = permits("caller");
+    let authorize = || {
+        transport.resolve_authorization(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &parent_permits,
+            PeerAuthorizationInput {
+                submission_id: accepted.submission_id,
+                challenge_id: "authorization-approval",
+            },
+        )
+    };
+    let resolved = authorize().await.unwrap();
+    assert!(matches!(
+        resolved.status,
+        PeerAuthorizationStatus::Resolved { ref task, ref progress_cursor }
+            if task.status.state == TaskState::Working && progress_cursor == "\"cursor-3\""
+    ));
+    let replay = authorize().await.unwrap();
+    assert_eq!(replay.authorization_id, resolved.authorization_id);
+    assert!(matches!(
+        replay.status,
+        PeerAuthorizationStatus::Resolved { .. }
+    ));
+    assert_eq!(adapter.authorization_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn peer_authorization_reconciles_lost_response_without_verifier_replay() {
+    let f = Fixture::new().await;
+    let adapter = Arc::new(TransportAdapter::new(
+        &f.binding,
+        PeerSubmissionCapability::AtMostOnce,
+        0,
+    ));
+    let transport = peer_transport(&f, adapter.clone());
+    let accepted = transport
+        .submit(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            &peer_message("diagnose"),
+        )
+        .await
+        .unwrap();
+    pause_remote_for_authorization(&f, &transport, &adapter, accepted.submission_id).await;
+    adapter.outcome.store(31, Ordering::SeqCst);
+    let input = PeerAuthorizationInput {
+        submission_id: accepted.submission_id,
+        challenge_id: "authorization-approval",
+    };
+    let uncertain = transport
+        .resolve_authorization(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            input,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        uncertain.status,
+        PeerAuthorizationStatus::Uncertain
+    ));
+    let recovered = transport
+        .resolve_authorization(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            PeerAuthorizationInput {
+                submission_id: accepted.submission_id,
+                challenge_id: "authorization-approval",
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        recovered.status,
+        PeerAuthorizationStatus::Resolved { ref task, .. }
+            if task.status.state == TaskState::Working
+    ));
+    assert_eq!(adapter.authorization_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(adapter.observation_calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn peer_authorization_does_not_treat_ambiguous_cancellation_as_resolution() {
+    let f = Fixture::new().await;
+    let adapter = Arc::new(TransportAdapter::new(
+        &f.binding,
+        PeerSubmissionCapability::AtMostOnce,
+        0,
+    ));
+    let transport = peer_transport(&f, adapter.clone());
+    let accepted = transport
+        .submit(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            &peer_message("diagnose"),
+        )
+        .await
+        .unwrap();
+    pause_remote_for_authorization(&f, &transport, &adapter, accepted.submission_id).await;
+    adapter.outcome.store(34, Ordering::SeqCst);
+    let input = PeerAuthorizationInput {
+        submission_id: accepted.submission_id,
+        challenge_id: "authorization-approval",
+    };
+    let first = transport
+        .resolve_authorization(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            input,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(first.status, PeerAuthorizationStatus::Uncertain));
+
+    let replay = transport
+        .resolve_authorization(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            PeerAuthorizationInput {
+                submission_id: accepted.submission_id,
+                challenge_id: "authorization-approval",
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(replay.status, PeerAuthorizationStatus::Uncertain));
+    assert_eq!(adapter.authorization_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn peer_authorization_rejects_a_success_response_without_safe_task_progress() {
+    let f = Fixture::new().await;
+    let adapter = Arc::new(TransportAdapter::new(
+        &f.binding,
+        PeerSubmissionCapability::AtMostOnce,
+        0,
+    ));
+    let transport = peer_transport(&f, adapter.clone());
+    let accepted = transport
+        .submit(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            &peer_message("diagnose"),
+        )
+        .await
+        .unwrap();
+    pause_remote_for_authorization(&f, &transport, &adapter, accepted.submission_id).await;
+    adapter.outcome.store(33, Ordering::SeqCst);
+    let receipt = transport
+        .resolve_authorization(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            PeerAuthorizationInput {
+                submission_id: accepted.submission_id,
+                challenge_id: "authorization-approval",
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(receipt.status, PeerAuthorizationStatus::Uncertain));
+    assert_eq!(adapter.authorization_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn peer_authorization_denial_is_durable_and_revocation_blocks_delivery() {
+    let f = Fixture::new().await;
+    let adapter = Arc::new(TransportAdapter::new(
+        &f.binding,
+        PeerSubmissionCapability::AtMostOnce,
+        0,
+    ));
+    let transport = peer_transport(&f, adapter.clone());
+    let accepted = transport
+        .submit(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            &peer_message("diagnose"),
+        )
+        .await
+        .unwrap();
+    pause_remote_for_authorization(&f, &transport, &adapter, accepted.submission_id).await;
+    adapter.outcome.store(32, Ordering::SeqCst);
+    for _ in 0..2 {
+        let denied = transport
+            .resolve_authorization(
+                &f.registry,
+                "responder",
+                "notify",
+                &f.parent,
+                &permits("caller"),
+                PeerAuthorizationInput {
+                    submission_id: accepted.submission_id,
+                    challenge_id: "authorization-approval",
+                },
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            denied.status,
+            PeerAuthorizationStatus::Rejected { ref code }
+                if code == "authorization_revoked"
+        ));
+    }
+    assert_eq!(adapter.authorization_calls.load(Ordering::SeqCst), 1);
+
+    let f = Fixture::new().await;
+    let adapter = Arc::new(TransportAdapter::new(
+        &f.binding,
+        PeerSubmissionCapability::AtMostOnce,
+        0,
+    ));
+    let transport = peer_transport(&f, adapter.clone());
+    let accepted = transport
+        .submit(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            &peer_message("diagnose"),
+        )
+        .await
+        .unwrap();
+    pause_remote_for_authorization(&f, &transport, &adapter, accepted.submission_id).await;
+    f.retire().await;
+    assert!(matches!(
+        transport
+            .resolve_authorization(
+                &f.registry,
+                "responder",
+                "notify",
+                &f.parent,
+                &permits("caller"),
+                PeerAuthorizationInput {
+                    submission_id: accepted.submission_id,
+                    challenge_id: "authorization-approval",
+                },
+            )
+            .await,
+        Err(PeerTransportError::Refused)
+    ));
+    assert_eq!(adapter.authorization_calls.load(Ordering::SeqCst), 0);
 }
 
 async fn corrupt_continuation_prior_task(f: &Fixture, continuation_id: uuid::Uuid) {

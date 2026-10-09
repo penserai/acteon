@@ -99,6 +99,7 @@ use acteon_core::{
         super::agent_services::peer_refresh,
         super::agent_services::peer_cancel,
         super::agent_services::peer_continue,
+        super::agent_services::peer_authorization_resolve,
         super::agent_services::task_get,
         super::agent_services::task_continue,
         super::agent_services::task_authorization_request,

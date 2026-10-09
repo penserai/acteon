@@ -235,4 +235,4 @@ export * from "./governance.js";
 
 export * from "./workforce.js";
 
-export { AGENT_EXECUTION_CONTEXT_HEADER, AGENT_SOURCE_CONTEXT_HEADER, type AgentPeerCancelReceipt, type AgentPeerCancelStatus, type AgentPeerContinuationReceipt, type AgentPeerContinuationStatus, type AgentPeerSelectionOption, type AgentPeerSendReceipt, type AgentPeerSendStatus, type AgentServiceProviderAbort, type AgentServiceReceipt, type AgentServiceStopReceipt } from "./agent_services.js";
+export { AGENT_EXECUTION_CONTEXT_HEADER, AGENT_SOURCE_CONTEXT_HEADER, type AgentPeerAuthorizationReceipt, type AgentPeerAuthorizationStatus, type AgentPeerCancelReceipt, type AgentPeerCancelStatus, type AgentPeerContinuationReceipt, type AgentPeerContinuationStatus, type AgentPeerSelectionOption, type AgentPeerSendReceipt, type AgentPeerSendStatus, type AgentServiceProviderAbort, type AgentServiceReceipt, type AgentServiceStopReceipt } from "./agent_services.js";

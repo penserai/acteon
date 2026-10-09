@@ -186,6 +186,21 @@
       "response": "json"
     },
     {
+      "name": "agent_services_peer_authorization_resolve",
+      "method": "POST",
+      "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/authorization:resolve",
+      "parameters": [
+        "namespace",
+        "tenant",
+        "agent",
+        "id",
+        "target",
+        "skill",
+        "submission"
+      ],
+      "response": "json"
+    },
+    {
       "name": "agent_services_peer_cancel",
       "method": "POST",
       "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:cancel",

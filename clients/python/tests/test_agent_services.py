@@ -255,6 +255,52 @@ def test_peer_and_direct_continuation_preserve_host_owned_bindings():
         client.close()
 
 
+def test_peer_authorization_sends_only_the_challenge_and_validates_receipt():
+    source = AgentServiceReceipt(
+        "prod",
+        "acme",
+        "notifier",
+        "job-1",
+        FIXTURE["jobs"][0]["source_context"],
+        FIXTURE["jobs"][0]["task"],
+    )
+    peer = AgentPeerSendReceipt(
+        "f47ac10b-58cc-5372-a567-0e02b2c3d479", "accepted", task=FIXTURE["jobs"][1]["task"]
+    )
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        assert request.url.path.endswith(peer.submission_id + "/authorization:resolve")
+        assert json.loads(request.content) == {"challengeId": "challenge-42"}
+        assert AGENT_SOURCE_CONTEXT_HEADER not in request.headers
+        return httpx.Response(
+            200,
+            json={
+                "submission_id": peer.submission_id,
+                "authorization_id": "67e55044-10b1-526f-9247-bb680e5fe0c8",
+                "status": {
+                    "state": "resolved",
+                    "task": {**peer.task, "status": {"state": "working"}},
+                    "progress_cursor": '"job-2:2"',
+                },
+            },
+            headers={"a2a-version": "1.0"},
+        )
+
+    client = ActeonClient("http://acteon")
+    client._client = httpx.Client(transport=httpx.MockTransport(respond))
+    try:
+        receipt = client.agent_service_authorize_peer(
+            source, "team/resolver", "diagnose", peer, "challenge-42"
+        )
+        assert receipt.state == "resolved"
+        assert receipt.task["id"] == peer.task["id"]
+        assert len(calls) == 1
+    finally:
+        client.close()
+
+
 def handler(request):
     assert request.headers["authorization"] == "Bearer caller-key"
     assert request.headers["a2a-version"] == "1.0"

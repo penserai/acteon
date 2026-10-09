@@ -417,6 +417,15 @@ returns a `run_id` immediately. Any proposed production mutation must come back
 through Acteon as a new action, where rules, quotas, and approval gates apply.
 Agent prose is never itself an authorization.
 
+If the investigation agent delegates to a specialist over A2A, retain the
+governed peer submission receipt and use peer refresh to observe its exact task.
+`InputRequired` resumes through the typed peer-continuation helper.
+`AuthRequired` uses the distinct peer-authorization helper with only the exact
+challenge ID; the specialist host keeps credentials and verifier evidence. A
+lost response remains `uncertain` until Acteon reconciles the target task, so
+the detector path cannot turn a timeout into permission or a second verifier
+attempt.
+
 ### 10. Measure the whole decision system
 
 Record these fields for every window: source offsets, feature version, model

@@ -143,7 +143,7 @@ impl Server {
             configuration["execution_authority"]["scopes"][0]["agent_services"][0]["authorization"] = json!({
                 "verifier_id":"city-workload","verifier_revision":3,
                 "credential_authority":"city-identity","audience":"incident-api",
-                "required_scopes":["incident.resolve"],"challenge_ttl_ms":300000
+                "required_scopes":["incident.resolve"],"challenge_ttl_ms":300_000
             });
             // The provider consumes the root's only unit before authorization
             // resolves; rechecking an existing effect must not demand a new unit.
@@ -428,6 +428,63 @@ async fn authorization_verifier() -> (String, Arc<AtomicUsize>, tokio::task::Joi
     let address = listener.local_addr().unwrap();
     let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     (format!("http://{address}/verify"), calls, task)
+}
+
+#[cfg(any(feature = "redis", feature = "postgres"))]
+async fn controlled_peer_authorization_verifier() -> (
+    String,
+    Arc<AtomicUsize>,
+    Arc<AtomicBool>,
+    tokio::task::JoinHandle<()>,
+) {
+    use sha2::Digest;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let allowed = Arc::new(AtomicBool::new(true));
+    let counter = calls.clone();
+    let decision = allowed.clone();
+    let app = Router::new().route(
+        "/verify",
+        post(
+            move |headers: axum::http::HeaderMap, Json(body): Json<Value>| {
+                let counter = counter.clone();
+                let decision = decision.clone();
+                async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    assert_eq!(headers["authorization"], "Bearer verifier-secret");
+                    assert_eq!(body["requirement"]["verifierId"], "city-workload");
+                    assert_eq!(
+                        body["requirement"]["recipient"]["id"],
+                        "agent/resolver"
+                    );
+                    if !decision.load(Ordering::SeqCst) {
+                        return (
+                            StatusCode::FORBIDDEN,
+                            Json(json!({"error":"authorization_revoked"})),
+                        );
+                    }
+                    let request_id = body["requirement"]["authorizationRequestId"]
+                        .as_str()
+                        .unwrap();
+                    let now = chrono::Utc::now();
+                    (
+                        StatusCode::OK,
+                        Json(json!({
+                            "schema":1,"taskId":body["taskId"],"challengeId":body["challengeId"],
+                            "authorizationRequestDigest":hex::encode(sha2::Sha256::digest(request_id.as_bytes())),
+                            "requirementDigest":body["requirementDigest"],
+                            "decisionId":"peer-decision-42",
+                            "subject":{"id":"agent/resolver","kind":"agent"},
+                            "verifiedAt":now,"validUntil":now+chrono::Duration::minutes(5)
+                        })),
+                    )
+                }
+            },
+        ),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (format!("http://{address}/verify"), calls, allowed, task)
 }
 
 async fn pausing_webhook() -> (
@@ -945,7 +1002,7 @@ impl Drop for PeerMeshServer {
 
 #[cfg(any(feature = "redis", feature = "postgres"))]
 impl PeerMeshServer {
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    #[allow(clippy::too_many_arguments)]
     fn start(
         own_port: u16,
         notifier_port: u16,
@@ -955,6 +1012,56 @@ impl PeerMeshServer {
         credential_hashes: &[String; 3],
         bootstrap: bool,
         driver: bool,
+    ) -> Self {
+        Self::start_inner(
+            own_port,
+            notifier_port,
+            resolver_endpoint_port,
+            webhook,
+            state,
+            credential_hashes,
+            bootstrap,
+            driver,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn start_authorization(
+        own_port: u16,
+        notifier_port: u16,
+        resolver_endpoint_port: u16,
+        webhook: &str,
+        state: &Value,
+        credential_hashes: &[String; 3],
+        bootstrap: bool,
+        driver: bool,
+        verifier: &str,
+    ) -> Self {
+        Self::start_inner(
+            own_port,
+            notifier_port,
+            resolver_endpoint_port,
+            webhook,
+            state,
+            credential_hashes,
+            bootstrap,
+            driver,
+            Some(verifier),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    fn start_inner(
+        own_port: u16,
+        notifier_port: u16,
+        resolver_endpoint_port: u16,
+        webhook: &str,
+        state: &Value,
+        credential_hashes: &[String; 3],
+        bootstrap: bool,
+        driver: bool,
+        verifier: Option<&str>,
     ) -> Self {
         let directory =
             std::env::temp_dir().join(format!("acteon-peer-mesh-{}", uuid::Uuid::new_v4()));
@@ -1001,7 +1108,7 @@ impl PeerMeshServer {
         let resolver_principal = json!({"id":"agent/resolver","kind":"agent"});
         let notify_route = json!({"provider":"incident","action_type":"execute"});
         let resolve_route = json!({"provider":"resolver","action_type":"execute"});
-        let configuration = json!({
+        let mut configuration = json!({
             "server":{"host":"127.0.0.1","port":own_port},
             "tls":{"enabled":true,
                 "server":{"cert_path":cert_path,"key_path":key_path},
@@ -1048,6 +1155,18 @@ impl PeerMeshServer {
                 }]
             }
         });
+        if let Some(endpoint) = verifier {
+            configuration["execution_authority"]["authorization_verifiers"] = json!([{
+                "id":"city-workload","revision":3,"endpoint":endpoint,
+                "credential_env":"ACTEON_TEST_AUTH_VERIFIER","timeout_ms":2000,
+                "internal_hosts":["127.0.0.1"]
+            }]);
+            configuration["execution_authority"]["scopes"][0]["agent_services"][1]["authorization"] = json!({
+                "verifier_id":"city-workload","verifier_revision":3,
+                "credential_authority":"city-identity","audience":"incident-api",
+                "required_scopes":["incident.resolve"],"challenge_ttl_ms":300_000
+            });
+        }
         fs::write(
             directory.join("acteon.toml"),
             toml::to_string(&configuration).unwrap(),
@@ -1126,6 +1245,7 @@ actions = ["execute"]
             )
             .env("ACTEON_TEST_AGENT_RECIPIENT", "notifier-secret")
             .env("ACTEON_TEST_RESOLVER_RECIPIENT", "resolver-secret")
+            .env("ACTEON_TEST_AUTH_VERIFIER", "verifier-secret")
             .stdout(Stdio::from(log.try_clone().unwrap()))
             .stderr(Stdio::from(log))
             .spawn()
@@ -1167,7 +1287,9 @@ struct ResponseLossProxyState {
     upstream: String,
     client: reqwest::Client,
     lose_next_stop_response: AtomicBool,
+    lose_next_authorization_response: AtomicBool,
     stop_deliveries: AtomicUsize,
+    authorization_deliveries: AtomicUsize,
     task_observations: AtomicUsize,
     conditional_task_observations: AtomicUsize,
     not_modified_observations: AtomicUsize,
@@ -1220,7 +1342,9 @@ impl ResponseLossProxy {
                 .build()
                 .unwrap(),
             lose_next_stop_response: AtomicBool::new(lose_next_stop_response),
+            lose_next_authorization_response: AtomicBool::new(false),
             stop_deliveries: AtomicUsize::new(0),
+            authorization_deliveries: AtomicUsize::new(0),
             task_observations: AtomicUsize::new(0),
             conditional_task_observations: AtomicUsize::new(0),
             not_modified_observations: AtomicUsize::new(0),
@@ -1261,6 +1385,7 @@ impl ResponseLossProxy {
 }
 
 #[cfg(any(feature = "redis", feature = "postgres"))]
+#[allow(clippy::too_many_lines)]
 async fn proxy_peer_request(
     State(state): State<Arc<ResponseLossProxyState>>,
     request: Request,
@@ -1271,6 +1396,8 @@ async fn proxy_peer_request(
         .path_and_query()
         .map_or_else(|| "/".into(), ToString::to_string);
     let is_stop = parts.method == Method::POST && parts.uri.path().ends_with("/stop");
+    let is_authorization =
+        parts.method == Method::POST && parts.uri.path().ends_with("/authorization:resolve");
     let is_task_observation = parts.method == Method::GET
         && parts.uri.path().contains("/tasks/")
         && !parts.uri.path().ends_with("/stop");
@@ -1332,6 +1459,28 @@ async fn proxy_peer_request(
                 Err::<Bytes, std::io::Error>(std::io::Error::new(
                     std::io::ErrorKind::ConnectionReset,
                     "injected response loss after target commit",
+                ))
+            });
+            return response_with_forwarded_headers(
+                status,
+                &upstream_headers,
+                Body::from_stream(failed),
+            );
+        }
+    }
+    if is_authorization {
+        state
+            .authorization_deliveries
+            .fetch_add(1, Ordering::SeqCst);
+        if state
+            .lose_next_authorization_response
+            .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            let failed = futures::stream::once(async {
+                Err::<Bytes, std::io::Error>(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionReset,
+                    "injected authorization response loss after target commit",
                 ))
             });
             return response_with_forwarded_headers(
@@ -1534,6 +1683,291 @@ async fn postgres_two_server_peer_continuation_survives_source_restart() {
     if let Err(payload) = contract {
         std::panic::resume_unwind(payload);
     }
+}
+
+#[tokio::test]
+#[cfg(feature = "redis")]
+#[ignore = "requires ACTEON_GOVERNANCE_REDIS_URL; two authenticated HTTPS servers and verifier"]
+async fn redis_two_server_peer_authorization_survives_restart_denial_revocation_and_response_loss()
+{
+    let (state, redis_config) = redis_state();
+    let store = Arc::new(acteon_state_redis::RedisStateStore::new(&redis_config).unwrap());
+    two_server_peer_authorization_contract(state, store).await;
+}
+
+#[tokio::test]
+#[cfg(feature = "postgres")]
+#[ignore = "requires DATABASE_URL; two authenticated HTTPS servers and verifier"]
+async fn postgres_two_server_peer_authorization_survives_restart_denial_revocation_and_response_loss()
+ {
+    let config = acteon_state_postgres::PostgresConfig {
+        url: std::env::var("DATABASE_URL").expect("set DATABASE_URL"),
+        table_prefix: format!("peer_authorize_{}_", uuid::Uuid::new_v4().simple()),
+        ..Default::default()
+    };
+    let state = json!({"backend":"postgres","url":config.url,"prefix":config.table_prefix});
+    let store = Arc::new(
+        acteon_state_postgres::PostgresStateStore::new(config.clone())
+            .await
+            .unwrap(),
+    );
+    let contract =
+        std::panic::AssertUnwindSafe(two_server_peer_authorization_contract(state, store))
+            .catch_unwind()
+            .await;
+    let pool = sqlx::PgPool::connect(&config.url).await.unwrap();
+    for suffix in ["state", "locks", "timeout_index", "chain_ready_index"] {
+        sqlx::query(&format!(
+            "DROP TABLE public.{}{suffix}",
+            config.table_prefix
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    pool.close().await;
+    if let Err(payload) = contract {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[cfg(any(feature = "redis", feature = "postgres"))]
+#[allow(clippy::too_many_lines)]
+async fn two_server_peer_authorization_contract(state: Value, store: Arc<dyn StateStore>) {
+    let (webhook_url, provider_calls, webhook_task) = webhook().await;
+    let (verifier_url, verifier_calls, verifier_allowed, verifier_task) =
+        controlled_peer_authorization_verifier().await;
+    let notifier_port = reserve_port();
+    let resolver_port = reserve_port();
+    let proxy_port = reserve_port();
+    let credential_hashes = [
+        acteon_server::auth::api_key::hash_api_key("alice-secret"),
+        acteon_server::auth::api_key::hash_api_key("notifier-secret"),
+        acteon_server::auth::api_key::hash_api_key("resolver-secret"),
+    ];
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .build()
+        .unwrap();
+    let mut resolver = PeerMeshServer::start_authorization(
+        resolver_port,
+        notifier_port,
+        proxy_port,
+        &webhook_url,
+        &state,
+        &credential_hashes,
+        true,
+        false,
+        &verifier_url,
+    );
+    resolver.ready(&client).await;
+    let proxy = ResponseLossProxy::start(proxy_port, resolver.url.clone(), false).await;
+    proxy.ready(&client).await;
+    let mut notifier = PeerMeshServer::start_authorization(
+        notifier_port,
+        notifier_port,
+        proxy_port,
+        &webhook_url,
+        &state,
+        &credential_hashes,
+        true,
+        false,
+        &verifier_url,
+    );
+    notifier.ready(&client).await;
+    let config: toml::Value =
+        toml::from_str(&fs::read_to_string(resolver.directory.join("acteon.toml")).unwrap())
+            .unwrap();
+    publish_peer_cards(store.as_ref(), &config).await;
+
+    let root_response = client
+        .post(format!(
+            "{}/a2a/prod/acme/agents/notifier/v1/message:send",
+            notifier.url
+        ))
+        .bearer_auth("alice-secret")
+        .json(&message("authorize-root"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        root_response.status(),
+        200,
+        "{}",
+        root_response.text().await.unwrap()
+    );
+    let root: Value = root_response.json().await.unwrap();
+    let peer_base = format!(
+        "{}/a2a/prod/acme/agents/notifier/v1/tasks/{}/peers",
+        notifier.url,
+        root["id"].as_str().unwrap()
+    );
+    let engine = TaskEngine::new(store.clone());
+    let scope = TaskScope::new("prod", "acme");
+
+    let denied_send = client
+        .post(format!("{peer_base}/resolver/resolve/message:send"))
+        .bearer_auth("notifier-secret")
+        .json(&message("authorize-denied-child"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(denied_send.status(), 200);
+    let denied_peer: Value = denied_send.json().await.unwrap();
+    let denied_remote = denied_peer["status"]["task"]["id"].as_str().unwrap();
+    engine
+        .transition_task(&scope, denied_remote, TaskState::Working, None)
+        .await
+        .unwrap();
+    let denied_open = client
+        .post(format!(
+            "{}/a2a/prod/acme/agents/resolver/v1/tasks/{denied_remote}/authorization:request",
+            resolver.url
+        ))
+        .bearer_auth("resolver-secret")
+        .header("a2a-version", "1.0")
+        .json(&json!({"authorizationRequestId":"revoked-peer-flow"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(denied_open.status(), 200);
+    let denied_open: Value = denied_open.json().await.unwrap();
+    let denied_challenge = denied_open["pendingApprovalId"].as_str().unwrap();
+    let denied_submission = denied_peer["submission_id"].as_str().unwrap();
+    let denied_refresh = client
+        .post(format!(
+            "{peer_base}/resolver/resolve/submissions/{denied_submission}:refresh"
+        ))
+        .bearer_auth("notifier-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(denied_refresh.status(), 200);
+    verifier_allowed.store(false, Ordering::SeqCst);
+    let denied = client
+        .post(format!(
+            "{peer_base}/resolver/resolve/submissions/{denied_submission}/authorization:resolve"
+        ))
+        .bearer_auth("notifier-secret")
+        .json(&json!({"challengeId":denied_challenge}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), 200, "{}", denied.text().await.unwrap());
+    let denied: Value = denied.json().await.unwrap();
+    assert_eq!(denied["status"]["state"], "rejected");
+    assert_eq!(
+        engine
+            .get_task(&scope, denied_remote)
+            .await
+            .unwrap()
+            .unwrap()
+            .status
+            .state,
+        TaskState::AuthRequired
+    );
+    assert_eq!(verifier_calls.load(Ordering::SeqCst), 1);
+
+    verifier_allowed.store(true, Ordering::SeqCst);
+    let accepted_send = client
+        .post(format!("{peer_base}/resolver/resolve/message:send"))
+        .bearer_auth("notifier-secret")
+        .json(&message("authorize-success-child"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(accepted_send.status(), 200);
+    let accepted_peer: Value = accepted_send.json().await.unwrap();
+    let accepted_remote = accepted_peer["status"]["task"]["id"].as_str().unwrap();
+    engine
+        .transition_task(&scope, accepted_remote, TaskState::Working, None)
+        .await
+        .unwrap();
+    let accepted_open = client
+        .post(format!(
+            "{}/a2a/prod/acme/agents/resolver/v1/tasks/{accepted_remote}/authorization:request",
+            resolver.url
+        ))
+        .bearer_auth("resolver-secret")
+        .header("a2a-version", "1.0")
+        .json(&json!({"authorizationRequestId":"successful-peer-flow"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(accepted_open.status(), 200);
+    let accepted_open: Value = accepted_open.json().await.unwrap();
+    let accepted_challenge = accepted_open["pendingApprovalId"].as_str().unwrap();
+    let accepted_submission = accepted_peer["submission_id"].as_str().unwrap();
+    let accepted_refresh = client
+        .post(format!(
+            "{peer_base}/resolver/resolve/submissions/{accepted_submission}:refresh"
+        ))
+        .bearer_auth("notifier-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(accepted_refresh.status(), 200);
+    proxy
+        .state
+        .lose_next_authorization_response
+        .store(true, Ordering::SeqCst);
+    let authorization_url = format!(
+        "{peer_base}/resolver/resolve/submissions/{accepted_submission}/authorization:resolve"
+    );
+    let first = client
+        .post(&authorization_url)
+        .bearer_auth("notifier-secret")
+        .json(&json!({"challengeId":accepted_challenge}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first.status(), 200, "{}", first.text().await.unwrap());
+    let first: Value = first.json().await.unwrap();
+    assert_eq!(first["status"]["state"], "uncertain");
+    assert_eq!(
+        engine
+            .get_task(&scope, accepted_remote)
+            .await
+            .unwrap()
+            .unwrap()
+            .status
+            .state,
+        TaskState::Working
+    );
+    assert_eq!(verifier_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        proxy.state.authorization_deliveries.load(Ordering::SeqCst),
+        2
+    );
+
+    notifier.restart();
+    notifier.ready(&client).await;
+    let recovered = client
+        .post(&authorization_url)
+        .bearer_auth("notifier-secret")
+        .json(&json!({"challengeId":accepted_challenge}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        recovered.status(),
+        200,
+        "{}",
+        recovered.text().await.unwrap()
+    );
+    let recovered: Value = recovered.json().await.unwrap();
+    assert_eq!(recovered["status"]["state"], "resolved");
+    assert_eq!(recovered["status"]["task"]["id"], accepted_remote);
+    assert_eq!(recovered["status"]["task"]["status"]["state"], "working");
+    assert_eq!(verifier_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        proxy.state.authorization_deliveries.load(Ordering::SeqCst),
+        2
+    );
+    assert!(proxy.state.task_observations.load(Ordering::SeqCst) >= 1);
+    assert_eq!(provider_calls.load(Ordering::SeqCst), 0);
+    webhook_task.abort();
+    verifier_task.abort();
 }
 
 #[cfg(any(feature = "redis", feature = "postgres"))]
