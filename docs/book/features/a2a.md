@@ -247,12 +247,42 @@ Two of the eight Task states represent agent-initiated pauses:
 - **`AuthRequired`** — the agent needs the user to authenticate (e.g.
   re-authorize an OAuth grant).
 
-A pause writes a `BusApproval` row alongside the Task transition in
-one atomic step, so a pause never leaves an orphan approval and a
-resolved approval is always paired with a Task move.
+A pause writes a `BusApproval` row and then compare-and-swap transitions the
+Task. If the CAS acknowledgement is lost, Acteon reads the Task back and
+accepts only the exact matching pause; a proven unused approval is removed
+best-effort. A non-empty pause reason is also returned as the agent-authored
+`status.message`, while `pendingApprovalId` names the exact challenge.
 
-Resume by sending a normal `message/send` that drives the state
-transition back to `Working`.
+To answer `InputRequired`, send `message/send` with the same `taskId` and
+`contextId`, role `user`, and echo `pendingApprovalId` as
+`metadata["acteon.challengeId"]`:
+
+```json
+{
+  "messageId": "response-01",
+  "taskId": "task-alpha",
+  "contextId": "incident-42",
+  "role": "user",
+  "parts": [{ "data": { "region": "us-west-2" } }],
+  "metadata": { "acteon.challengeId": "019a…" }
+}
+```
+
+The Task Engine binds the response to that exact pending approval, stores a
+canonical content digest in the approval, appends the full response once to Task
+history, and moves `InputRequired → Working`. The approval moves
+`Pending → Approving → Approved`. An identical retry repairs an interruption
+between the Task and approval writes without duplicating history. A stale
+challenge ID, changed body under the same message ID, mismatched context, agent
+role, or terminal Task is rejected without resuming work. Expiration closes the
+approval and moves the still-paused Task to `Failed`; cancellation during the
+two-row handoff closes the claimed approval instead of leaving it in
+`Approving`.
+
+`AuthRequired` has a separate trust boundary. Message content cannot grant
+authority and is never treated as a credential. A trusted authorization flow
+must verify an out-of-band credential or authorization reference before that
+Task can resume; that verifier-backed operation remains a mesh follow-up.
 
 ## Artifact streaming
 
@@ -414,8 +444,8 @@ mTLS publishes the scheme on its per-agent card.
 
 ## Try it locally
 
-The simulation example exercises the entire surface in-process,
-in ~200 ms:
+The simulation example exercises the core Task lifecycle in-process, including
+structured-input resolution and the authorization boundary, in ~200 ms:
 
 ```bash
 cargo run -p acteon-simulation --example a2a_core_simulation

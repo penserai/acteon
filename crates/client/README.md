@@ -249,6 +249,11 @@ have the service installed, and the client must retain the original requester
 credential and invocation permits. This is a separate surface from tenant-level
 legacy A2A tasks.
 
+For a tenant-level Task in `InputRequired`, build the continuation with
+`a2a_input_response(...)` and the Task's current `pending_approval_id`. The
+helper binds `taskId`, `contextId`, user role and `acteon.challengeId` together;
+send the result with `a2a_send_message`.
+
 ```rust
 use acteon_core::{TaskMessage, TaskRole};
 

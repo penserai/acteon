@@ -12,6 +12,7 @@ from typing import Any
 
 from acteon_client import (
     A2A_PROTOCOL_VERSION,
+    make_input_response,
     make_message,
     make_part_data,
     make_part_text,
@@ -121,6 +122,19 @@ class TestFactories(unittest.TestCase):
             task_id="task-alpha",
         )
         self.assertEqual(msg["taskId"], "task-alpha")
+
+    def test_make_input_response_binds_challenge(self):
+        msg = make_input_response(
+            "response-1",
+            "task-alpha",
+            "challenge-1",
+            [make_part_data({"region": "us-west-2"})],
+            context_id="incident-42",
+        )
+        self.assertEqual(msg["role"], "user")
+        self.assertEqual(msg["taskId"], "task-alpha")
+        self.assertEqual(msg["contextId"], "incident-42")
+        self.assertEqual(msg["metadata"], {"acteon.challengeId": "challenge-1"})
 
     def test_make_push_config_minimal(self):
         cfg = make_push_config("https://hook/x")

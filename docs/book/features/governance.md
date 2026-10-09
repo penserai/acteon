@@ -453,8 +453,11 @@ also retains the target's opaque state-backed progress cursor. Refresh sends it
 as a conditional read, persists a replacement only with valid forward progress,
 and recovers unchanged snapshots across source restart without rewriting the
 journal. Native cancellation and its distinct restricted, uncertain and final
-receipts are implemented. Structured input and authentication challenge
-responses remain part of the mesh integration phase.
+receipts are implemented. The backend-neutral Task Engine now resolves a
+structured-input challenge through an exact approval binding, digest-pinned
+intent and recoverable two-row handoff. Routing that continuation through the
+durable peer journal and verifier-backed authentication fulfillment remain mesh
+integration work.
 
 New contexts use signed format 5. Previously accepted formats 2–4 remain readable;
 new grants cannot be attached to an old acceptance by replay. Upgrade and drain

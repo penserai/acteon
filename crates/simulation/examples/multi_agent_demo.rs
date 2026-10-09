@@ -287,6 +287,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         reason: Some("refund — operator review required".into()),
         envelope: Some(BusApprovalEnvelope::ToolCall(pay_request.clone())),
         task_id: None,
+        task_resolution: None,
         status: BusApprovalStatus::Pending,
         created_at: now,
         expires_at: now + chrono::Duration::hours(1),

@@ -77,6 +77,20 @@ func TestMakeMessageThreadsTaskID(t *testing.T) {
 	}
 }
 
+func TestMakeInputResponseBindsChallenge(t *testing.T) {
+	got := MakeInputResponse(
+		"response-1", "task-alpha", "incident-42", "challenge-1",
+		[]map[string]any{MakePartData(map[string]any{"region": "us-west-2"}, "")},
+	)
+	metadata, ok := got["metadata"].(map[string]any)
+	if !ok || metadata[A2AChallengeIDMetadataKey] != "challenge-1" {
+		t.Fatalf("challenge metadata: got %v", got["metadata"])
+	}
+	if got["role"] != "user" || got["taskId"] != "task-alpha" || got["contextId"] != "incident-42" {
+		t.Errorf("bound response: got %v", got)
+	}
+}
+
 func TestMakePushConfigMinimal(t *testing.T) {
 	got := MakePushConfig("https://hook/x", MakePushConfigOptions{})
 	if len(got) != 1 || got["url"] != "https://hook/x" {

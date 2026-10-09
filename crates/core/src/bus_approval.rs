@@ -64,15 +64,14 @@ use crate::bus_tool::ToolCall;
 pub enum BusApprovalStatus {
     /// Awaiting an operator decision.
     Pending,
-    /// Operator decided "approve"; produce to Kafka is in flight or
-    /// has been retried but not yet observed succeeded. The envelope
-    /// is no longer eligible for `reject`. The reconciler retries the
-    /// produce until it succeeds (idempotent producer prevents
-    /// duplicate Kafka records on retry) and then transitions the
-    /// row to `Approved`.
+    /// A decision is durably claimed and its side effect is in flight. For an
+    /// operator approval this means Kafka production; for structured task
+    /// input it means the response intent is fixed while the task-row update
+    /// is completed. The row is no longer eligible for `reject`.
     Approving,
-    /// Approved; the parked envelope landed on Kafka and the
-    /// produced offset is recorded on the row.
+    /// Decision completed. For an operator approval, the parked envelope
+    /// landed on Kafka and its offset is recorded. For structured task input,
+    /// the bound response was committed to Task history and the Task resumed.
     Approved,
     /// Rejected; the parked envelope will never reach Kafka.
     Rejected,
@@ -173,6 +172,21 @@ pub enum BusApprovalEnvelope {
     ToolCall(ToolCall),
 }
 
+/// Durable intent recorded while a paused A2A task is being resumed.
+///
+/// The response body is deliberately absent: user input lives once in the
+/// Task history.  The approval stores only the stable message identity and a
+/// canonical content digest, which lets a retry finish an interrupted
+/// two-row update without accepting a different response for the same
+/// challenge.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct TaskPauseResolution {
+    pub message_id: String,
+    pub content_digest: String,
+}
+
 impl BusApprovalEnvelope {
     /// Return the underlying envelope's `call_id` / `stream_id` for
     /// audit + log correlation. Tool-calls expose `call_id`; future
@@ -227,6 +241,10 @@ pub struct BusApproval {
     /// Task and its approval point at each other.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
+    /// Response intent for a task pause once resolution has started.  Raw
+    /// input and credentials are never copied into the approval row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_resolution: Option<TaskPauseResolution>,
     pub status: BusApprovalStatus,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
@@ -287,6 +305,8 @@ pub enum BusApprovalValidationError {
         "a task-pause row requires a non-empty `task_id` and must not carry `envelope` or `conversation_id`"
     )]
     TaskPauseShape,
+    #[error("task-pause resolution does not match kind or status")]
+    TaskPauseResolutionShape,
 }
 
 impl BusApproval {
@@ -320,6 +340,7 @@ impl BusApproval {
             reason,
             envelope: None,
             task_id: Some(task_id.into()),
+            task_resolution: None,
             status: BusApprovalStatus::Pending,
             created_at,
             expires_at,
@@ -370,6 +391,7 @@ impl BusApproval {
                 if self.envelope.is_none()
                     || self.conversation_id.is_none()
                     || self.task_id.is_some()
+                    || self.task_resolution.is_some()
                 {
                     return Err(BusApprovalValidationError::OperatorApprovalShape);
                 }
@@ -380,6 +402,30 @@ impl BusApproval {
                     || self.conversation_id.is_some()
                 {
                     return Err(BusApprovalValidationError::TaskPauseShape);
+                }
+                if let Some(resolution) = &self.task_resolution
+                    && (resolution.message_id.is_empty()
+                        || resolution.message_id.len() > 120
+                        || resolution.content_digest.len() != 64
+                        || !resolution
+                            .content_digest
+                            .bytes()
+                            .all(|byte| byte.is_ascii_hexdigit()))
+                {
+                    return Err(BusApprovalValidationError::TaskPauseShape);
+                }
+                let resolution_shape_is_valid = match (self.kind, self.status) {
+                    (
+                        PauseKind::UserInput,
+                        BusApprovalStatus::Approving | BusApprovalStatus::Approved,
+                    ) => self.task_resolution.is_some(),
+                    (PauseKind::UserAuth | PauseKind::UserInput, _) => {
+                        self.task_resolution.is_none()
+                    }
+                    (PauseKind::OperatorApproval, _) => unreachable!(),
+                };
+                if !resolution_shape_is_valid {
+                    return Err(BusApprovalValidationError::TaskPauseResolutionShape);
                 }
             }
         }
@@ -434,6 +480,7 @@ mod tests {
             reason: Some("paid action".into()),
             envelope: Some(BusApprovalEnvelope::ToolCall(call)),
             task_id: None,
+            task_resolution: None,
             status: BusApprovalStatus::Pending,
             created_at: now,
             expires_at: now + chrono::Duration::hours(1),
@@ -616,6 +663,40 @@ mod tests {
         assert_eq!(back.task_id.as_deref(), Some("task-9"));
         assert!(back.envelope.is_none());
         back.validate().unwrap();
+    }
+
+    #[test]
+    fn input_resolution_requires_claimed_status_and_valid_digest() {
+        let mut a = sample_task_pause(PauseKind::UserInput);
+        a.task_resolution = Some(TaskPauseResolution {
+            message_id: "response-1".into(),
+            content_digest: "a".repeat(64),
+        });
+        assert_eq!(
+            a.validate(),
+            Err(BusApprovalValidationError::TaskPauseResolutionShape)
+        );
+        a.status = BusApprovalStatus::Approving;
+        a.validate().unwrap();
+        a.task_resolution.as_mut().unwrap().content_digest = "not-a-digest".into();
+        assert_eq!(
+            a.validate(),
+            Err(BusApprovalValidationError::TaskPauseShape)
+        );
+    }
+
+    #[test]
+    fn auth_pause_never_carries_message_resolution() {
+        let mut a = sample_task_pause(PauseKind::UserAuth);
+        a.status = BusApprovalStatus::Approving;
+        a.task_resolution = Some(TaskPauseResolution {
+            message_id: "response-1".into(),
+            content_digest: "a".repeat(64),
+        });
+        assert_eq!(
+            a.validate(),
+            Err(BusApprovalValidationError::TaskPauseResolutionShape)
+        );
     }
 
     #[test]

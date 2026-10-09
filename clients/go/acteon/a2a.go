@@ -30,6 +30,9 @@ const A2AProtocolVersion = "1.0"
 // A2A protocol version.
 const A2AVersionHeader = "A2A-Version"
 
+// A2AChallengeIDMetadataKey binds an input response to the exact observed challenge.
+const A2AChallengeIDMetadataKey = "acteon.challengeId"
+
 // a2aHeaders is the header set every authenticated A2A call sends.
 var a2aHeaders = map[string]string{A2AVersionHeader: A2AProtocolVersion}
 
@@ -85,6 +88,13 @@ func MakeMessage(messageID, role string, parts []map[string]any, opts MakeMessag
 		msg["contextId"] = opts.ContextID
 	}
 	return msg
+}
+
+// MakeInputResponse builds a user response bound to one exact InputRequired challenge.
+func MakeInputResponse(messageID, taskID, contextID, challengeID string, parts []map[string]any) map[string]any {
+	message := MakeMessage(messageID, "user", parts, MakeMessageOptions{TaskID: taskID, ContextID: contextID})
+	message["metadata"] = map[string]any{A2AChallengeIDMetadataKey: challengeID}
+	return message
 }
 
 // MakePushConfigOptions carries the optional fields for

@@ -7735,6 +7735,7 @@ async fn park_tool_call_for_approval(
         reason,
         envelope: Some(acteon_core::BusApprovalEnvelope::ToolCall(envelope.clone())),
         task_id: None,
+        task_resolution: None,
         status: acteon_core::BusApprovalStatus::Pending,
         created_at: now,
         expires_at,

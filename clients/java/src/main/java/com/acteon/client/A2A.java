@@ -30,6 +30,7 @@ public final class A2A {
     /** HTTP header name carrying the negotiated A2A protocol
      *  version. Sent on every authenticated A2A call. */
     public static final String VERSION_HEADER = "A2A-Version";
+    public static final String CHALLENGE_ID_METADATA_KEY = "acteon.challengeId";
 
     // ------------------------------------------------------------------
     // Factory helpers
@@ -114,6 +115,22 @@ public final class A2A {
         List<Map<String, Object>> parts
     ) {
         return makeMessage(messageId, role, parts, null);
+    }
+
+    /** Build a user response bound to one exact {@code InputRequired} challenge. */
+    public static Map<String, Object> makeInputResponse(
+        String messageId,
+        String taskId,
+        String contextId,
+        String challengeId,
+        List<Map<String, Object>> parts
+    ) {
+        MessageOptions options = new MessageOptions().taskId(taskId).contextId(contextId);
+        Map<String, Object> message = makeMessage(messageId, "user", parts, options);
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put(CHALLENGE_ID_METADATA_KEY, challengeId);
+        message.put("metadata", metadata);
+        return message;
     }
 
     /** Optional fields for {@link #makePushConfig}. */

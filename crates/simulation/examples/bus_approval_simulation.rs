@@ -189,6 +189,7 @@ async fn park_tool_call(
         reason: reason.map(str::to_string),
         envelope: Some(BusApprovalEnvelope::ToolCall(call)),
         task_id: None,
+        task_resolution: None,
         status: BusApprovalStatus::Pending,
         created_at: now,
         expires_at: now + chrono::Duration::hours(1),

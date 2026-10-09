@@ -348,7 +348,7 @@ export interface BusStreamEnvelopeReceipt {
 // Phase 6c: HITL approvals
 // =============================================================================
 
-export type BusApprovalStatus = "pending" | "approved" | "rejected" | "expired";
+export type BusApprovalStatus = "pending" | "approving" | "approved" | "rejected" | "expired";
 
 /** Why a {@link BusApprovalView} exists — an operator gate on a bus
  * tool-call, or an A2A Task paused waiting on the user. */

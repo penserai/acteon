@@ -157,9 +157,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // SCENARIO 5 — Pause for user input, then resume.
     //
     // A2A's `InputRequired` interrupt: the engine carves out the
-    // pause as a `BusApproval` row + a Task transition, both
-    // committed atomically. Resuming is a normal transition back
-    // to Working with the resuming message.
+    // pause as a `BusApproval` row + a Task transition. Resolution
+    // binds the exact challenge and uses a recoverable two-row
+    // protocol; retrying the same response is idempotent.
     // ============================================================
     banner("5. Pause for user input (Working → InputRequired) and resume");
     let (paused, approval) = engine
@@ -183,30 +183,58 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     resume_msg.task_id = Some(task_id.to_string());
     engine
-        .transition_task(&scope, task_id, TaskState::Working, Some(resume_msg))
+        .resolve_input(
+            &scope,
+            task_id,
+            &approval.approval_id,
+            resume_msg,
+            "simulation-user",
+        )
         .await?;
     settle().await;
-    info!("  resumed → Working.");
+    info!("  exact challenge resolved once → Working.");
 
     // ============================================================
-    // SCENARIO 6 — Pause for auth, then resume.
+    // SCENARIO 6 — Auth cannot be satisfied by message content.
     // ============================================================
-    banner("6. Pause for user auth (Working → AuthRequired) and resume");
+    banner("6. AuthRequired rejects an ordinary message");
+    let auth_task_id = "task-auth";
+    engine.create_task(seed_task(auth_task_id)).await?;
     engine
-        .pause_for_human(&scope, task_id, PauseKind::UserAuth, None, None)
+        .transition_task(&scope, auth_task_id, TaskState::Working, None)
+        .await?;
+    let (_, auth_challenge) = engine
+        .pause_for_human(
+            &scope,
+            auth_task_id,
+            PauseKind::UserAuth,
+            Some("Re-authorize through the trusted OAuth flow.".into()),
+            None,
+        )
         .await?;
     settle().await;
     let mut auth_msg = TaskMessage::text(
-        "msg-6-resume".to_string(),
+        "msg-6-rejected".to_string(),
         TaskRole::User,
-        "Auth ok, here is the token.",
+        "An ordinary message is not authorization.",
     );
-    auth_msg.task_id = Some(task_id.to_string());
-    engine
-        .transition_task(&scope, task_id, TaskState::Working, Some(auth_msg))
-        .await?;
-    settle().await;
-    info!("  AuthRequired pause resumed → Working.");
+    auth_msg.task_id = Some(auth_task_id.to_string());
+    let refusal = engine
+        .resolve_input(
+            &scope,
+            auth_task_id,
+            &auth_challenge.approval_id,
+            auth_msg,
+            "simulation-user",
+        )
+        .await
+        .expect_err("input resolver must refuse an authentication challenge");
+    let auth_task = engine
+        .get_task(&scope, auth_task_id)
+        .await?
+        .expect("auth task remains visible");
+    assert_eq!(auth_task.status.state, TaskState::AuthRequired);
+    info!("  refused ({refusal}); task remains AuthRequired and no secret was stored.");
 
     // ============================================================
     // SCENARIO 7 — Complete the task.
@@ -353,8 +381,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("Recap — every A2A TaskState reached");
     info!("  Submitted     scenario 1   (mint)");
     info!("  Working       scenario 2   (transition)");
-    info!("  InputRequired scenario 5   (pause UserInput)");
-    info!("  AuthRequired  scenario 6   (pause UserAuth)");
+    info!("  InputRequired scenario 5   (exact challenge resolution)");
+    info!("  AuthRequired  scenario 6   (message cannot grant authority)");
     info!("  Completed     scenario 7   (terminal — clean)");
     info!("  Rejected      scenario 8   (terminal — validation failure)");
     info!("  Canceled      scenario 9   (terminal — explicit cancel)");

@@ -67,13 +67,14 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use futures::stream::{self, StreamExt, TryStreamExt};
+use sha2::{Digest, Sha256};
 use tracing::{debug, warn};
 
 use acteon_audit::{AuditError, store::AuditStore};
 use acteon_core::{
-    Artifact, BusApproval, BusApprovalValidationError, DEFAULT_APPROVAL_TTL_MS,
+    Artifact, BusApproval, BusApprovalStatus, BusApprovalValidationError, DEFAULT_APPROVAL_TTL_MS,
     MAX_APPROVAL_TTL_MS, MAX_REFERENCE_DEPTH, PauseKind, Task, TaskArtifactUpdateEvent,
-    TaskMessage, TaskRole, TaskState, TaskValidationError,
+    TaskMessage, TaskPauseResolution, TaskRole, TaskState, TaskValidationError,
 };
 use acteon_state::{CasResult, KeyKind, StateError, StateKey, StateStore};
 
@@ -118,6 +119,27 @@ pub const MAX_REFERENCE_GRAPH_NODES: usize = 256;
 /// narrower than this — they complete in a single batch, so the walk
 /// costs O(depth) round-trips rather than O(nodes).
 const REFERENCE_GRAPH_FETCH_CONCURRENCY: usize = 32;
+
+fn canonical_json(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => {
+            let sorted = map
+                .iter()
+                .map(|(key, value)| (key.clone(), canonical_json(value)))
+                .collect();
+            serde_json::Value::Object(sorted)
+        }
+        serde_json::Value::Array(values) => {
+            serde_json::Value::Array(values.iter().map(canonical_json).collect())
+        }
+        scalar => scalar.clone(),
+    }
+}
+
+fn task_message_digest(message: &TaskMessage) -> Result<String, serde_json::Error> {
+    let value = canonical_json(&serde_json::to_value(message)?);
+    Ok(hex::encode(Sha256::digest(serde_json::to_vec(&value)?)))
+}
 
 /// Tenant scoping for a Task. Mirrors the
 /// `(namespace, tenant)` pair used by every other bus primitive so
@@ -815,14 +837,15 @@ impl TaskEngine {
     ///
     /// The two writes are not one transaction (separate state keys —
     /// the same trade-off the bus's park flow accepts). The approval
-    /// row is written first; if the task mutation then fails — the
-    /// task is missing, the transition is illegal, or CAS contention
-    /// is exhausted — the orphan approval row and its index entry are
-    /// deleted best-effort before the error propagates, so a failed
-    /// pause leaves no dangling "waiting on human" record.
+    /// row is written first. After a task-mutation error, Acteon reads
+    /// the Task back: an exact matching pause proves a lost acknowledgement
+    /// and is returned as success; a definitive non-match allows the orphan
+    /// approval and index to be deleted. If that read is also unavailable,
+    /// the approval is retained rather than risking deletion of a live gate.
     ///
     /// `ttl` defaults to [`DEFAULT_APPROVAL_TTL_MS`] and is clamped to
     /// [`MAX_APPROVAL_TTL_MS`].
+    #[allow(clippy::too_many_lines)]
     pub async fn pause_for_human(
         &self,
         scope: &TaskScope,
@@ -847,6 +870,7 @@ impl TaskEngine {
         let expires_at =
             now + chrono::Duration::milliseconds(i64::try_from(ttl_ms).unwrap_or(i64::MAX));
         let approval_id = uuid::Uuid::now_v7().to_string();
+        let challenge_reason = reason.clone();
         let approval = BusApproval::new_task_pause(
             &approval_id,
             &scope.namespace,
@@ -894,53 +918,595 @@ impl TaskEngine {
         // one CAS closure, so both land atomically on the task row.
         let key = scope.task_key(task_id);
         let stamp_id = approval_id.clone();
+        let prompt_id = format!("{approval_id}.challenge");
         let mutated = self
             .cas_mutate(&key, task_id, "pause", move |task: &mut Task, now| {
-                task.transition_to_at(target_state, None, now)?;
+                let prompt = challenge_reason.as_ref().map(|reason| {
+                    let mut message =
+                        TaskMessage::text(prompt_id.clone(), TaskRole::Agent, reason.clone());
+                    message.task_id = Some(task.id.clone());
+                    message.context_id.clone_from(&task.context_id);
+                    message
+                });
+                task.transition_to_at(target_state, prompt, now)?;
                 task.set_pending_approval(stamp_id.clone());
                 Ok(())
             })
             .await;
 
-        match mutated {
-            Ok(task) => {
-                debug!(
-                    task_id = %task_id,
-                    approval_id = %approval_id,
-                    kind = kind.as_str(),
-                    "task paused for human",
+        let (task, recovered) = match mutated {
+            Ok(task) => (task, false),
+            Err(e) => match self.get_task(scope, task_id).await {
+                Ok(Some(task))
+                    if task.status.state == target_state
+                        && task.pending_approval_id.as_deref() == Some(approval_id.as_str()) =>
+                {
+                    (task, true)
+                }
+                Err(read_error) => {
+                    warn!(%task_id, %approval_id, %e, %read_error, "task pause outcome is uncertain; retaining approval gate");
+                    return Err(e);
+                }
+                Ok(_) => {
+                    if let Err(del) = self.state.delete(&approval_key).await {
+                        warn!(
+                            approval_id = %approval_id,
+                            error = %del,
+                            "failed to delete orphan approval row after task pause failed",
+                        );
+                    }
+                    let _ = self.state.delete(&index_key).await;
+                    return Err(e);
+                }
+            },
+        };
+        if recovered {
+            self.emit_audit(&task, "pause", Some(TaskState::Working))
+                .await;
+        }
+        debug!(
+            task_id = %task_id,
+            approval_id = %approval_id,
+            kind = kind.as_str(),
+            recovered,
+            "task paused for human",
+        );
+        // A successful pause always transitions `Working -> target_state`.
+        self.emit_stream(
+            &scope.namespace,
+            &scope.tenant,
+            task_id,
+            acteon_core::StreamEventType::TaskTransitioned {
+                task_id: task_id.to_string(),
+                from: TaskState::Working,
+                to: target_state,
+            },
+        );
+        Ok((task, approval))
+    }
+
+    /// Consume the exact pending `UserInput` challenge, append its response,
+    /// and resume the task in one task-row CAS.
+    ///
+    /// The approval row is first moved to `Approving` with a digest-only
+    /// response intent.  A crash at either side of the two-row boundary is
+    /// recoverable by retrying the same `(approval_id, message)`; a different
+    /// response is rejected.  Raw input is stored once, in task history.
+    /// `UserAuth` pauses deliberately cannot use this operation because an A2A
+    /// message is not proof that an authorization challenge was satisfied.
+    pub async fn resolve_input(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        approval_id: &str,
+        message: TaskMessage,
+        decided_by: impl Into<String>,
+    ) -> Result<(Task, BusApproval), TaskEngineError> {
+        let resolution = self
+            .prepare_input_resolution(scope, task_id, approval_id, &message)
+            .await?;
+        let actor = decided_by.into();
+        if let Err(error) = self
+            .claim_input_resolution(scope, task_id, approval_id, &resolution, &actor)
+            .await
+        {
+            if matches!(
+                error,
+                TaskEngineError::ChallengeExpired(_)
+                    | TaskEngineError::ChallengeClosed {
+                        status: BusApprovalStatus::Expired,
+                        ..
+                    }
+            ) && let Err(expire_error) = self
+                .fail_expired_input_challenge(scope, task_id, approval_id)
+                .await
+            {
+                warn!(%task_id, %approval_id, %expire_error, "failed to project expired input challenge onto task");
+            }
+            return Err(error);
+        }
+        let task = match self
+            .apply_input_resolution(scope, task_id, approval_id, &resolution, message)
+            .await
+        {
+            Ok(task) => task,
+            Err(error) => {
+                // These failures are definitive reads/validation failures: no
+                // task-row CAS may have committed. Close the claimed intent so
+                // a concurrent cancellation or replacement challenge cannot
+                // strand the approval in Approving forever. Backend, serde and
+                // CAS-exhaustion errors stay Approving because their commit
+                // outcome may be uncertain and an identical retry can repair.
+                if matches!(
+                    error,
+                    TaskEngineError::NotFound(_)
+                        | TaskEngineError::Validation(_)
+                        | TaskEngineError::ChallengeMismatch { .. }
+                        | TaskEngineError::ChallengeResponseConflict(_)
+                        | TaskEngineError::ChallengeResponseContextMismatch
+                ) && let Err(close_error) = self
+                    .reject_abandoned_input_resolution(scope, task_id, approval_id, &resolution)
+                    .await
+                {
+                    warn!(%task_id, %approval_id, %close_error, "failed to close abandoned task input resolution");
+                }
+                return Err(error);
+            }
+        };
+        let approval = self
+            .finish_input_resolution(scope, task_id, approval_id, &resolution)
+            .await?;
+
+        let index_key = StateKey::new(
+            scope.namespace.clone(),
+            scope.tenant.clone(),
+            KeyKind::PendingBusApprovals,
+            approval_id,
+        );
+        if let Err(error) = self.state.delete(&index_key).await {
+            warn!(%approval_id, %error, "failed to remove resolved task challenge from pending index");
+        }
+        debug!(%task_id, %approval_id, message_id = %resolution.message_id, "task input challenge resolved");
+        Ok((task, approval))
+    }
+
+    async fn prepare_input_resolution(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        approval_id: &str,
+        message: &TaskMessage,
+    ) -> Result<TaskPauseResolution, TaskEngineError> {
+        if message.task_id.as_deref() != Some(task_id) {
+            return Err(TaskEngineError::ChallengeResponseTaskMismatch);
+        }
+        if message.role != TaskRole::User {
+            return Err(TaskEngineError::ChallengeResponseRole);
+        }
+        message.validate_in_task(task_id)?;
+        let resolution = TaskPauseResolution {
+            message_id: message.message_id.clone(),
+            content_digest: task_message_digest(message)?,
+        };
+
+        let current = self
+            .get_task(scope, task_id)
+            .await?
+            .ok_or_else(|| TaskEngineError::NotFound(task_id.to_string()))?;
+        match current.status.state {
+            TaskState::InputRequired | TaskState::AuthRequired
+                if current.pending_approval_id.as_deref() == Some(approval_id) => {}
+            TaskState::Working if current.pending_approval_id.is_none() => {}
+            _ => {
+                let _ = self
+                    .reject_abandoned_input_resolution(scope, task_id, approval_id, &resolution)
+                    .await;
+                return Err(TaskEngineError::ChallengeMismatch {
+                    task_id: task_id.to_string(),
+                    approval_id: approval_id.to_string(),
+                });
+            }
+        }
+        if message.context_id != current.context_id {
+            let _ = self
+                .reject_abandoned_input_resolution(scope, task_id, approval_id, &resolution)
+                .await;
+            return Err(TaskEngineError::ChallengeResponseContextMismatch);
+        }
+
+        let seed: Vec<&str> = message
+            .reference_task_ids
+            .iter()
+            .map(String::as_str)
+            .collect();
+        self.check_reference_graph(scope, task_id, &seed).await?;
+
+        if current.status.state == TaskState::InputRequired
+            && current
+                .history
+                .iter()
+                .any(|item| item.message_id == resolution.message_id)
+        {
+            return Err(TaskEngineError::ChallengeResponseConflict(
+                approval_id.to_string(),
+            ));
+        }
+        if current.status.state == TaskState::Working {
+            let Some(applied) = current
+                .history
+                .iter()
+                .find(|item| item.message_id == resolution.message_id)
+            else {
+                return Err(TaskEngineError::ChallengeMismatch {
+                    task_id: task_id.to_string(),
+                    approval_id: approval_id.to_string(),
+                });
+            };
+            if task_message_digest(applied)? != resolution.content_digest {
+                return Err(TaskEngineError::ChallengeResponseConflict(
+                    approval_id.to_string(),
+                ));
+            }
+        }
+        Ok(resolution)
+    }
+
+    async fn claim_input_resolution(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        approval_id: &str,
+        resolution: &TaskPauseResolution,
+        actor: &str,
+    ) -> Result<BusApproval, TaskEngineError> {
+        let key = StateKey::new(
+            scope.namespace.clone(),
+            scope.tenant.clone(),
+            KeyKind::BusApproval,
+            approval_id,
+        );
+        for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
+            let Some((raw, version)) = self.state.get_versioned(&key).await? else {
+                return Err(TaskEngineError::ChallengeNotFound(approval_id.to_string()));
+            };
+            let mut approval: BusApproval = serde_json::from_str(&raw)?;
+            Self::validate_input_approval(scope, task_id, approval_id, &approval)?;
+            match approval.status {
+                BusApprovalStatus::Pending => {
+                    let now = self.clock.now();
+                    if now >= approval.expires_at {
+                        approval.status = BusApprovalStatus::Expired;
+                        approval.decided_at = Some(now);
+                        let payload = serde_json::to_string(&approval)?;
+                        if matches!(
+                            self.state
+                                .compare_and_swap(&key, version, &payload, None)
+                                .await?,
+                            CasResult::Ok
+                        ) {
+                            let index_key = StateKey::new(
+                                scope.namespace.clone(),
+                                scope.tenant.clone(),
+                                KeyKind::PendingBusApprovals,
+                                approval_id,
+                            );
+                            let _ = self.state.delete(&index_key).await;
+                            return Err(TaskEngineError::ChallengeExpired(approval_id.to_string()));
+                        }
+                        continue;
+                    }
+                    approval.status = BusApprovalStatus::Approving;
+                    approval.task_resolution = Some(resolution.clone());
+                    approval.decided_by = Some(actor.to_string());
+                    approval.decided_at = Some(now);
+                    approval.validate()?;
+                    let payload = serde_json::to_string(&approval)?;
+                    if matches!(
+                        self.state
+                            .compare_and_swap(&key, version, &payload, None)
+                            .await?,
+                        CasResult::Ok
+                    ) {
+                        return Ok(approval);
+                    }
+                }
+                BusApprovalStatus::Approving | BusApprovalStatus::Approved => {
+                    if approval.task_resolution.as_ref() != Some(resolution) {
+                        return Err(TaskEngineError::ChallengeResponseConflict(
+                            approval_id.to_string(),
+                        ));
+                    }
+                    return Ok(approval);
+                }
+                BusApprovalStatus::Rejected | BusApprovalStatus::Expired => {
+                    return Err(TaskEngineError::ChallengeClosed {
+                        approval_id: approval_id.to_string(),
+                        status: approval.status,
+                    });
+                }
+            }
+        }
+        Err(TaskEngineError::ChallengeCasExhausted(
+            approval_id.to_string(),
+        ))
+    }
+
+    fn validate_input_approval(
+        scope: &TaskScope,
+        task_id: &str,
+        approval_id: &str,
+        approval: &BusApproval,
+    ) -> Result<(), TaskEngineError> {
+        approval.validate()?;
+        if approval.approval_id != approval_id
+            || approval.namespace != scope.namespace
+            || approval.tenant != scope.tenant
+            || approval.task_id.as_deref() != Some(task_id)
+        {
+            return Err(TaskEngineError::ChallengeMismatch {
+                task_id: task_id.to_string(),
+                approval_id: approval_id.to_string(),
+            });
+        }
+        if approval.kind != PauseKind::UserInput {
+            return Err(TaskEngineError::ChallengeKind {
+                approval_id: approval_id.to_string(),
+                actual: approval.kind,
+            });
+        }
+        Ok(())
+    }
+
+    async fn apply_input_resolution(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        approval_id: &str,
+        resolution: &TaskPauseResolution,
+        message: TaskMessage,
+    ) -> Result<Task, TaskEngineError> {
+        let key = scope.task_key(task_id);
+        for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
+            let Some((raw, version)) = self.state.get_versioned(&key).await? else {
+                return Err(TaskEngineError::NotFound(task_id.to_string()));
+            };
+            let mut task: Task = serde_json::from_str(&raw)?;
+            if task.context_id != message.context_id {
+                return Err(TaskEngineError::ChallengeResponseContextMismatch);
+            }
+            if task.status.state == TaskState::Working && task.pending_approval_id.is_none() {
+                let Some(applied) = task
+                    .history
+                    .iter()
+                    .find(|item| item.message_id == resolution.message_id)
+                else {
+                    return Err(TaskEngineError::ChallengeMismatch {
+                        task_id: task_id.to_string(),
+                        approval_id: approval_id.to_string(),
+                    });
+                };
+                if task_message_digest(applied)? != resolution.content_digest {
+                    return Err(TaskEngineError::ChallengeResponseConflict(
+                        approval_id.to_string(),
+                    ));
+                }
+                return Ok(task);
+            }
+            if task.status.state != TaskState::InputRequired
+                || task.pending_approval_id.as_deref() != Some(approval_id)
+            {
+                return Err(TaskEngineError::ChallengeMismatch {
+                    task_id: task_id.to_string(),
+                    approval_id: approval_id.to_string(),
+                });
+            }
+            if task
+                .history
+                .iter()
+                .any(|item| item.message_id == resolution.message_id)
+            {
+                return Err(TaskEngineError::ChallengeResponseConflict(
+                    approval_id.to_string(),
+                ));
+            }
+            task.append_history_at(message.clone(), self.clock.now())?;
+            let now = self.clock.now();
+            task.transition_to_at(TaskState::Working, None, now)?;
+            task.updated_at = now;
+            let payload = serde_json::to_string(&task)?;
+            if matches!(
+                self.state
+                    .compare_and_swap(&key, version, &payload, None)
+                    .await?,
+                CasResult::Ok
+            ) {
+                self.emit_audit(&task, "resolve_input", Some(TaskState::InputRequired))
+                    .await;
+                self.emit_stream(
+                    &scope.namespace,
+                    &scope.tenant,
+                    task_id,
+                    acteon_core::StreamEventType::TaskHistoryAppended {
+                        task_id: task_id.to_string(),
+                        message_id: resolution.message_id.clone(),
+                    },
                 );
-                // A successful pause always transitions `Working ->
-                // target_state` (the gate inside `transition_to` rejects
-                // any other origin). Emit the transition for streaming
-                // subscribers; carries `from = Working` unconditionally.
                 self.emit_stream(
                     &scope.namespace,
                     &scope.tenant,
                     task_id,
                     acteon_core::StreamEventType::TaskTransitioned {
                         task_id: task_id.to_string(),
-                        from: TaskState::Working,
-                        to: target_state,
+                        from: TaskState::InputRequired,
+                        to: TaskState::Working,
                     },
                 );
-                Ok((task, approval))
-            }
-            Err(e) => {
-                // The task didn't move — drop the orphan approval row
-                // and its index entry so a failed pause leaves no
-                // dangling row behind.
-                if let Err(del) = self.state.delete(&approval_key).await {
-                    warn!(
-                        approval_id = %approval_id,
-                        error = %del,
-                        "failed to delete orphan approval row after task pause failed",
-                    );
-                }
-                let _ = self.state.delete(&index_key).await;
-                Err(e)
+                return Ok(task);
             }
         }
+        Err(TaskEngineError::CasExhausted(task_id.to_string()))
+    }
+
+    async fn finish_input_resolution(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        approval_id: &str,
+        resolution: &TaskPauseResolution,
+    ) -> Result<BusApproval, TaskEngineError> {
+        let key = StateKey::new(
+            scope.namespace.clone(),
+            scope.tenant.clone(),
+            KeyKind::BusApproval,
+            approval_id,
+        );
+        for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
+            let Some((raw, version)) = self.state.get_versioned(&key).await? else {
+                return Err(TaskEngineError::ChallengeNotFound(approval_id.to_string()));
+            };
+            let mut approval: BusApproval = serde_json::from_str(&raw)?;
+            Self::validate_input_approval(scope, task_id, approval_id, &approval)?;
+            if approval.task_resolution.as_ref() != Some(resolution) {
+                return Err(TaskEngineError::ChallengeResponseConflict(
+                    approval_id.to_string(),
+                ));
+            }
+            match approval.status {
+                BusApprovalStatus::Approved => return Ok(approval),
+                BusApprovalStatus::Approving => {
+                    approval.status = BusApprovalStatus::Approved;
+                    approval.validate()?;
+                    let payload = serde_json::to_string(&approval)?;
+                    if matches!(
+                        self.state
+                            .compare_and_swap(&key, version, &payload, None)
+                            .await?,
+                        CasResult::Ok
+                    ) {
+                        return Ok(approval);
+                    }
+                }
+                status => {
+                    return Err(TaskEngineError::ChallengeClosed {
+                        approval_id: approval_id.to_string(),
+                        status,
+                    });
+                }
+            }
+        }
+        Err(TaskEngineError::ChallengeCasExhausted(
+            approval_id.to_string(),
+        ))
+    }
+
+    async fn reject_abandoned_input_resolution(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        approval_id: &str,
+        resolution: &TaskPauseResolution,
+    ) -> Result<(), TaskEngineError> {
+        let key = StateKey::new(
+            scope.namespace.clone(),
+            scope.tenant.clone(),
+            KeyKind::BusApproval,
+            approval_id,
+        );
+        for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
+            let Some((raw, version)) = self.state.get_versioned(&key).await? else {
+                return Ok(());
+            };
+            let mut approval: BusApproval = serde_json::from_str(&raw)?;
+            Self::validate_input_approval(scope, task_id, approval_id, &approval)?;
+            match approval.status {
+                BusApprovalStatus::Approving
+                    if approval.task_resolution.as_ref() == Some(resolution) =>
+                {
+                    approval.status = BusApprovalStatus::Rejected;
+                    approval.task_resolution = None;
+                    approval.validate()?;
+                    let payload = serde_json::to_string(&approval)?;
+                    if matches!(
+                        self.state
+                            .compare_and_swap(&key, version, &payload, None)
+                            .await?,
+                        CasResult::Ok
+                    ) {
+                        let index_key = StateKey::new(
+                            scope.namespace.clone(),
+                            scope.tenant.clone(),
+                            KeyKind::PendingBusApprovals,
+                            approval_id,
+                        );
+                        let _ = self.state.delete(&index_key).await;
+                        return Ok(());
+                    }
+                }
+                BusApprovalStatus::Approving => {
+                    return Err(TaskEngineError::ChallengeResponseConflict(
+                        approval_id.to_string(),
+                    ));
+                }
+                _ => return Ok(()),
+            }
+        }
+        Err(TaskEngineError::ChallengeCasExhausted(
+            approval_id.to_string(),
+        ))
+    }
+
+    async fn fail_expired_input_challenge(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        approval_id: &str,
+    ) -> Result<(), TaskEngineError> {
+        let key = scope.task_key(task_id);
+        for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
+            let Some((raw, version)) = self.state.get_versioned(&key).await? else {
+                return Ok(());
+            };
+            let mut task: Task = serde_json::from_str(&raw)?;
+            if task.status.state != TaskState::InputRequired
+                || task.pending_approval_id.as_deref() != Some(approval_id)
+            {
+                return Ok(());
+            }
+            let mut message = TaskMessage::text(
+                format!("{approval_id}.expired"),
+                TaskRole::Agent,
+                "The required-input challenge expired before it was resolved.",
+            );
+            message.task_id = Some(task_id.to_string());
+            message.context_id.clone_from(&task.context_id);
+            task.transition_to_at(TaskState::Failed, Some(message), self.clock.now())?;
+            let payload = serde_json::to_string(&task)?;
+            if matches!(
+                self.state
+                    .compare_and_swap(&key, version, &payload, None)
+                    .await?,
+                CasResult::Ok
+            ) {
+                self.emit_audit(
+                    &task,
+                    "input_challenge_expired",
+                    Some(TaskState::InputRequired),
+                )
+                .await;
+                self.emit_stream(
+                    &scope.namespace,
+                    &scope.tenant,
+                    task_id,
+                    acteon_core::StreamEventType::TaskTransitioned {
+                        task_id: task_id.to_string(),
+                        from: TaskState::InputRequired,
+                        to: TaskState::Failed,
+                    },
+                );
+                return Ok(());
+            }
+        }
+        Err(TaskEngineError::CasExhausted(task_id.to_string()))
     }
 
     /// Set the linked Acteon Chain id on a Task. Pass `Some(chain_id)`
@@ -1386,6 +1952,35 @@ pub enum TaskEngineError {
     Approval(#[from] BusApprovalValidationError),
     #[error("generated approval id '{0}' collided with an existing row")]
     ApprovalConflict(String),
+    #[error("task challenge '{0}' not found")]
+    ChallengeNotFound(String),
+    #[error("challenge '{approval_id}' is not the active challenge for task '{task_id}'")]
+    ChallengeMismatch {
+        task_id: String,
+        approval_id: String,
+    },
+    #[error("challenge '{approval_id}' has kind {actual:?}; structured input requires UserInput")]
+    ChallengeKind {
+        approval_id: String,
+        actual: PauseKind,
+    },
+    #[error("challenge '{approval_id}' is closed with status {status:?}")]
+    ChallengeClosed {
+        approval_id: String,
+        status: BusApprovalStatus,
+    },
+    #[error("challenge '{0}' expired before it was claimed")]
+    ChallengeExpired(String),
+    #[error("challenge '{0}' was already claimed by a different response")]
+    ChallengeResponseConflict(String),
+    #[error("challenge response taskId must match the task being resumed")]
+    ChallengeResponseTaskMismatch,
+    #[error("challenge response contextId must exactly match the paused task")]
+    ChallengeResponseContextMismatch,
+    #[error("challenge response must have role 'user'")]
+    ChallengeResponseRole,
+    #[error("CAS contention exceeded {MAX_CAS_RETRY_ATTEMPTS} retries for challenge '{0}'")]
+    ChallengeCasExhausted(String),
 }
 
 // `PartialEq` for testing assertions. Stringly-compared so error
@@ -1483,6 +2078,18 @@ impl ScopedTaskEngine {
             .await
     }
 
+    pub async fn resolve_input(
+        &self,
+        task_id: &str,
+        approval_id: &str,
+        message: TaskMessage,
+        decided_by: impl Into<String>,
+    ) -> Result<(Task, BusApproval), TaskEngineError> {
+        self.engine
+            .resolve_input(&self.scope, task_id, approval_id, message, decided_by)
+            .await
+    }
+
     pub async fn link_to_chain(
         &self,
         task_id: &str,
@@ -1510,6 +2117,7 @@ mod tests {
 
     use super::*;
     use acteon_core::{Artifact, TaskPart as Part, TaskRole as Role};
+    use acteon_state::testing::faults::{FaultStore, FaultTiming, WriteOperation};
     use acteon_state_memory::MemoryStateStore;
 
     fn engine() -> TaskEngine {
@@ -2577,6 +3185,10 @@ mod tests {
         assert_eq!(approval.status, BusApprovalStatus::Pending);
         assert!(approval.envelope.is_none());
         assert!(approval.conversation_id.is_none());
+        let prompt = task.status.message.as_ref().unwrap();
+        assert_eq!(prompt.role, TaskRole::Agent);
+        assert_eq!(prompt.task_id.as_deref(), Some("t1"));
+        assert_eq!(prompt.parts[0].text.as_deref(), Some("clarify the date"));
         // The row is persisted, not just returned, and is well-formed.
         let stored = stored_approval(&e, &approval.approval_id).await.unwrap();
         assert_eq!(stored.kind, PauseKind::UserInput);
@@ -2611,6 +3223,37 @@ mod tests {
             &approval.approval_id,
         );
         assert!(e.state.get(&idx).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn pause_for_human_recovers_a_lost_task_cas_acknowledgement() {
+        let faults = Arc::new(FaultStore::new(Arc::new(MemoryStateStore::new())));
+        let e = TaskEngine::new(faults.clone());
+        working_task(&e, "t1").await;
+        faults
+            .fail_next(
+                KeyKind::A2aTask,
+                WriteOperation::CompareAndSwap,
+                FaultTiming::After,
+            )
+            .unwrap();
+
+        let (task, approval) = e
+            .pause_for_human(&scope(), "t1", PauseKind::UserInput, None, None)
+            .await
+            .unwrap();
+        assert_eq!(task.status.state, TaskState::InputRequired);
+        assert_eq!(
+            task.pending_approval_id.as_deref(),
+            Some(approval.approval_id.as_str())
+        );
+        assert_eq!(
+            stored_approval(&e, &approval.approval_id)
+                .await
+                .unwrap()
+                .status,
+            BusApprovalStatus::Pending
+        );
     }
 
     #[tokio::test]
@@ -2671,6 +3314,275 @@ mod tests {
             .unwrap();
         assert_eq!(task.status.state, TaskState::AuthRequired);
         assert_eq!(approval.kind, PauseKind::UserAuth);
+    }
+
+    fn input_response(task_id: &str, message_id: &str, text: &str) -> TaskMessage {
+        let mut message = TaskMessage::text(message_id, TaskRole::User, text);
+        message.task_id = Some(task_id.to_string());
+        message
+    }
+
+    #[tokio::test]
+    async fn resolve_input_resumes_task_and_closes_approval() {
+        let e = engine();
+        working_task(&e, "t1").await;
+        let (_, challenge) = e
+            .pause_for_human(&scope(), "t1", PauseKind::UserInput, None, None)
+            .await
+            .unwrap();
+        let (task, approval) = e
+            .resolve_input(
+                &scope(),
+                "t1",
+                &challenge.approval_id,
+                input_response("t1", "response-1", "2027-01-04"),
+                "alice",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(task.status.state, TaskState::Working);
+        assert!(task.pending_approval_id.is_none());
+        assert_eq!(task.history.last().unwrap().message_id, "response-1");
+        assert_eq!(approval.status, BusApprovalStatus::Approved);
+        assert_eq!(approval.decided_by.as_deref(), Some("alice"));
+        assert_eq!(
+            approval.task_resolution.as_ref().unwrap().message_id,
+            "response-1"
+        );
+        let idx = StateKey::new(
+            "agents",
+            "demo",
+            KeyKind::PendingBusApprovals,
+            &challenge.approval_id,
+        );
+        assert!(e.state.get(&idx).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn resolve_input_retry_is_idempotent() {
+        let e = engine();
+        working_task(&e, "t1").await;
+        let (_, challenge) = e
+            .pause_for_human(&scope(), "t1", PauseKind::UserInput, None, None)
+            .await
+            .unwrap();
+        let response = input_response("t1", "response-1", "same answer");
+        e.resolve_input(
+            &scope(),
+            "t1",
+            &challenge.approval_id,
+            response.clone(),
+            "alice",
+        )
+        .await
+        .unwrap();
+        let (task, approval) = e
+            .resolve_input(&scope(), "t1", &challenge.approval_id, response, "alice")
+            .await
+            .unwrap();
+        assert_eq!(
+            task.history
+                .iter()
+                .filter(|message| message.message_id == "response-1")
+                .count(),
+            1
+        );
+        assert_eq!(approval.status, BusApprovalStatus::Approved);
+    }
+
+    #[tokio::test]
+    async fn resolve_input_recovers_after_task_commit_before_approval_finalize() {
+        let e = engine();
+        working_task(&e, "t1").await;
+        let (_, challenge) = e
+            .pause_for_human(&scope(), "t1", PauseKind::UserInput, None, None)
+            .await
+            .unwrap();
+        let response = input_response("t1", "response-1", "recover me");
+        let resolution = TaskPauseResolution {
+            message_id: response.message_id.clone(),
+            content_digest: task_message_digest(&response).unwrap(),
+        };
+        e.claim_input_resolution(&scope(), "t1", &challenge.approval_id, &resolution, "alice")
+            .await
+            .unwrap();
+        e.apply_input_resolution(
+            &scope(),
+            "t1",
+            &challenge.approval_id,
+            &resolution,
+            response.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            stored_approval(&e, &challenge.approval_id)
+                .await
+                .unwrap()
+                .status,
+            BusApprovalStatus::Approving
+        );
+
+        let (task, approval) = e
+            .resolve_input(&scope(), "t1", &challenge.approval_id, response, "alice")
+            .await
+            .unwrap();
+        assert_eq!(task.status.state, TaskState::Working);
+        assert_eq!(approval.status, BusApprovalStatus::Approved);
+    }
+
+    #[tokio::test]
+    async fn resolve_input_closes_claim_if_task_is_canceled_before_commit() {
+        let e = engine();
+        working_task(&e, "t1").await;
+        let (_, challenge) = e
+            .pause_for_human(&scope(), "t1", PauseKind::UserInput, None, None)
+            .await
+            .unwrap();
+        let response = input_response("t1", "response-1", "too late");
+        let resolution = TaskPauseResolution {
+            message_id: response.message_id.clone(),
+            content_digest: task_message_digest(&response).unwrap(),
+        };
+        e.claim_input_resolution(&scope(), "t1", &challenge.approval_id, &resolution, "alice")
+            .await
+            .unwrap();
+        e.transition_task(&scope(), "t1", TaskState::Canceled, None)
+            .await
+            .unwrap();
+
+        let error = e
+            .resolve_input(&scope(), "t1", &challenge.approval_id, response, "alice")
+            .await
+            .unwrap_err();
+        assert!(matches!(error, TaskEngineError::ChallengeMismatch { .. }));
+        assert_eq!(
+            stored_approval(&e, &challenge.approval_id)
+                .await
+                .unwrap()
+                .status,
+            BusApprovalStatus::Rejected
+        );
+        let index = StateKey::new(
+            "agents",
+            "demo",
+            KeyKind::PendingBusApprovals,
+            &challenge.approval_id,
+        );
+        assert!(e.state.get(&index).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn resolve_input_rejects_conflicting_retry() {
+        let e = engine();
+        working_task(&e, "t1").await;
+        let (_, challenge) = e
+            .pause_for_human(&scope(), "t1", PauseKind::UserInput, None, None)
+            .await
+            .unwrap();
+        e.resolve_input(
+            &scope(),
+            "t1",
+            &challenge.approval_id,
+            input_response("t1", "response-1", "first"),
+            "alice",
+        )
+        .await
+        .unwrap();
+        let error = e
+            .resolve_input(
+                &scope(),
+                "t1",
+                &challenge.approval_id,
+                input_response("t1", "response-1", "changed"),
+                "alice",
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            TaskEngineError::ChallengeResponseConflict(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn resolve_input_refuses_auth_challenge() {
+        let e = engine();
+        working_task(&e, "t1").await;
+        let (_, challenge) = e
+            .pause_for_human(&scope(), "t1", PauseKind::UserAuth, None, None)
+            .await
+            .unwrap();
+        let error = e
+            .resolve_input(
+                &scope(),
+                "t1",
+                &challenge.approval_id,
+                input_response("t1", "response-1", "secret"),
+                "alice",
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, TaskEngineError::ChallengeKind { .. }));
+        let task = e.get_task(&scope(), "t1").await.unwrap().unwrap();
+        assert_eq!(task.status.state, TaskState::AuthRequired);
+        assert_eq!(
+            stored_approval(&e, &challenge.approval_id)
+                .await
+                .unwrap()
+                .status,
+            BusApprovalStatus::Pending
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_input_expires_challenge_without_resuming_task() {
+        let clock = Arc::new(acteon_time::ManualClock::new(
+            DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
+        ));
+        let e = TaskEngine::new(Arc::new(MemoryStateStore::new())).with_clock(clock.clone());
+        working_task(&e, "t1").await;
+        let (_, challenge) = e
+            .pause_for_human(
+                &scope(),
+                "t1",
+                PauseKind::UserInput,
+                None,
+                Some(Duration::from_secs(1)),
+            )
+            .await
+            .unwrap();
+        clock.advance_to(Duration::from_secs(1)).unwrap();
+
+        let error = e
+            .resolve_input(
+                &scope(),
+                "t1",
+                &challenge.approval_id,
+                input_response("t1", "response-1", "too late"),
+                "alice",
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, TaskEngineError::ChallengeExpired(_)));
+        let task = e.get_task(&scope(), "t1").await.unwrap().unwrap();
+        assert_eq!(task.status.state, TaskState::Failed);
+        assert!(task.pending_approval_id.is_none());
+        assert_eq!(
+            stored_approval(&e, &challenge.approval_id)
+                .await
+                .unwrap()
+                .status,
+            BusApprovalStatus::Expired
+        );
+        let index = StateKey::new(
+            "agents",
+            "demo",
+            KeyKind::PendingBusApprovals,
+            &challenge.approval_id,
+        );
+        assert!(e.state.get(&index).await.unwrap().is_none());
     }
 
     // --- SSE event emission (Phase 3.2.a) ---

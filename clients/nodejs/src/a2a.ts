@@ -21,6 +21,7 @@ export const A2A_PROTOCOL_VERSION = "1.0";
  *  Sent on every authenticated A2A call so the server's version
  *  negotiation honours a version-pinned caller. */
 export const A2A_VERSION_HEADER = "A2A-Version";
+export const A2A_CHALLENGE_ID_METADATA_KEY = "acteon.challengeId";
 
 /** Header object the client mixes into every authenticated request.
  *  Exported so callers writing their own integration can reuse the
@@ -74,6 +75,19 @@ export function makeMessage(
   if (options.taskId !== undefined) msg.taskId = options.taskId;
   if (options.contextId !== undefined) msg.contextId = options.contextId;
   return msg;
+}
+
+/** Build a user response bound to one exact `InputRequired` challenge. */
+export function makeInputResponse(
+  messageId: string,
+  taskId: string,
+  challengeId: string,
+  parts: Record<string, unknown>[],
+  contextId?: string,
+): Record<string, unknown> {
+  const message = makeMessage(messageId, "user", parts, { taskId, contextId });
+  message.metadata = { [A2A_CHALLENGE_ID_METADATA_KEY]: challengeId };
+  return message;
 }
 
 /** Options accepted by {@link makePushConfig}. */

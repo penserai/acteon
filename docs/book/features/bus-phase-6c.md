@@ -18,7 +18,7 @@ the wire format or building a parallel pipeline.
 
 | Surface | Shape |
 |---|---|
-| Core types | `acteon_core::BusApproval`, `acteon_core::BusApprovalEnvelope::ToolCall`, `acteon_core::BusApprovalStatus ∈ {Pending, Approved, Rejected, Expired}` |
+| Core types | `acteon_core::BusApproval`, `acteon_core::BusApprovalEnvelope::ToolCall`, `acteon_core::BusApprovalStatus ∈ {Pending, Approving, Approved, Rejected, Expired}` |
 | State key | `KeyKind::BusApproval` keyed by server-generated UUID v7 |
 | HTTP | `POST /v1/bus/conversations/.../tool-calls` gains `require_approval` / `approval_reason` / `approval_ttl_ms`; `GET /v1/bus/approvals/{ns}/{t}`, `GET .../{id}`, `POST .../{id}/approve`, `POST .../{id}/reject` |
 | Headers | Approved records gain `acteon.approval.id` so audit pipelines can correlate the produced Kafka record back to the row that gated it |
