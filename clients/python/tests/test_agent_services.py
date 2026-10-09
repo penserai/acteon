@@ -151,7 +151,7 @@ def test_peer_discovery_exposes_only_strict_safe_registry_data():
         client.close()
 
 
-def test_peer_cancel_is_one_request_and_validates_terminal_identity():
+def test_peer_cancel_is_one_request_and_validates_restricted_identity():
     source = AgentServiceReceipt(
         "prod",
         "acme",
@@ -160,13 +160,7 @@ def test_peer_cancel_is_one_request_and_validates_terminal_identity():
         FIXTURE["jobs"][0]["source_context"],
         FIXTURE["jobs"][0]["task"],
     )
-    remote = {
-        **FIXTURE["jobs"][1]["task"],
-        "status": {
-            **FIXTURE["jobs"][1]["task"]["status"],
-            "state": "canceled",
-        },
-    }
+    remote = FIXTURE["jobs"][1]["task"]
     peer = AgentPeerSendReceipt(
         "f47ac10b-58cc-5372-a567-0e02b2c3d479", "accepted", task=FIXTURE["jobs"][1]["task"]
     )
@@ -181,7 +175,7 @@ def test_peer_cancel_is_one_request_and_validates_terminal_identity():
             json={
                 "submission_id": peer.submission_id,
                 "cancellation_id": "67e55044-10b1-526f-9247-bb680e5fe0c8",
-                "status": {"state": "reconciled", "task": remote},
+                "status": {"state": "restricted", "task": remote},
             },
             headers={"a2a-version": "1.0"},
         )
@@ -190,7 +184,7 @@ def test_peer_cancel_is_one_request_and_validates_terminal_identity():
     client._client = httpx.Client(transport=httpx.MockTransport(respond))
     try:
         canceled = client.agent_service_cancel_peer(source, "team/resolver", "diagnose", peer)
-        assert canceled.state == "reconciled"
+        assert canceled.state == "restricted"
         assert canceled.task["id"] == peer.task["id"]
         malformed = AgentPeerSendReceipt(
             peer.submission_id, "accepted", task={**peer.task, "id": ""}

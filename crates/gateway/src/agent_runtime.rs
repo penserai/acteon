@@ -150,9 +150,16 @@ impl AgentProviderRuntime {
         settings: ExecutorConfig,
     ) -> Result<Self, AgentRuntimeError> {
         let plan = binding.service_plan().ok_or(AgentRuntimeError::Invalid)?;
+        let provider_effects = plan
+            .direct_effects()
+            .iter()
+            .filter(|effect| matches_effect(effect, bound.effect()))
+            .count();
         if bound.catalog_version().is_none()
-            || plan.direct_effects().len() != 1
-            || !matches_effect(&plan.direct_effects()[0], bound.effect())
+            || provider_effects != 1
+            || plan.direct_effects().iter().any(|effect| {
+                !matches_effect(effect, bound.effect()) && effect.operation != "agent.invoke"
+            })
         {
             return Err(AgentRuntimeError::Invalid);
         }

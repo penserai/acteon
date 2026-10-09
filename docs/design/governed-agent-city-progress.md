@@ -1828,3 +1828,37 @@ Focused preparation and strict Clippy checks cover call-graph digest changes,
 missing target grants/permits and the compiled runtime integration. The remaining
 mesh work is event-cursor projection, input/auth responses, cancellation, a
 two-server lost-response/restart scenario and production-backend qualification.
+
+### Governed peer lifecycle release and native cancellation bridge
+
+PR #433 merged as `238594fd59c4086a59312a72f41dcd3c975758ae` on October 8,
+2026. The release includes authenticated individual-agent services, durable
+driver recovery, requester-isolated observation and stop, retained historical
+bindings, provider-abort evidence, parent-context handoff, safe peer discovery,
+and guarded durable peer send, refresh, and cancellation tools. The public A2A
+documentation deployment completed successfully after the merge.
+
+The next lifecycle increment connects durable peer cancellation to the target
+Acteon service's native `/stop` route. A successful stop with a nonterminal task
+is retained as `restricted`: the target has durably fenced future provider
+starts, while an already-running external effect may still be active. This state
+is distinct from ambiguous `uncertain`, definitive refusal, and terminal
+`reconciled`. Repeated explicit cancellation observes the exact task and may
+promote a restricted record to reconciled finality without delivering a second
+remote stop. Rust, Python, TypeScript, Go, and Java validate the same strict wire
+contract.
+
+The same increment adds a real two-server HTTPS contract over the configured
+Redis `StateStore`. Two independently launched replicas use one deterministic
+deployment policy, discover the reviewed peer, create a governed child on the
+remote server, persist a restriction through the native stop route, restart the
+source server, and recover the identical cancellation receipt without starting
+either provider. The contract also proves peer adapters use the deployment's
+outbound TLS trust configuration and that services with qualified
+`onward_agents` install successfully at runtime.
+
+The Phase 4 completion gate remains open. A two-server response-lost fault
+injection contract and production-backend qualification beyond Redis still
+remain. Event cursor projection and structured input/auth challenge responses
+remain later mesh capabilities rather than prerequisites for truthful
+cancellation.

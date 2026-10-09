@@ -102,6 +102,7 @@ async fn runtime_with_clock(
             executor: acteon_executor::ExecutorConfig::default(),
             clock,
             encryptor: None,
+            outbound_tls: None,
             signing_key: vec![9; 32].into(),
         },
     )
@@ -947,6 +948,7 @@ async fn history_only_requires_existing_state_and_does_not_bootstrap_a_new_scope
             executor: acteon_executor::ExecutorConfig::default(),
             clock: Arc::new(acteon_time::SystemClock::default()),
             encryptor: None,
+            outbound_tls: None,
             signing_key: vec![9; 32].into(),
         },
     )
@@ -2092,6 +2094,7 @@ async fn reconciliation_only_requires_existing_state_without_bootstrap() {
             executor: acteon_executor::ExecutorConfig::default(),
             clock: Arc::new(acteon_time::SystemClock::default()),
             encryptor: None,
+            outbound_tls: None,
             signing_key: vec![9; 32].into(),
         },
     )

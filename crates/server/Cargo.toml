@@ -146,6 +146,7 @@ axum-test = { workspace = true }
 proptest = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 serde_yaml_ng = { workspace = true }
+rcgen = "0.13"
 
 [lints]
 workspace = true

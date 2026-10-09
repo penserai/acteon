@@ -624,6 +624,9 @@ impl PeerTransportAdapter for TransportAdapter {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 Ok(PeerCancelDisposition::Uncertain)
             }
+            13 => Ok(PeerCancelDisposition::Restricted {
+                task: Box::new(self.observed.lock().unwrap().clone().unwrap()),
+            }),
             _ => Err(PeerTransportError::Unavailable),
         }
     }
@@ -1069,6 +1072,80 @@ async fn ambiguous_remote_cancel_is_never_resent_and_rechecks_current_authority(
         Err(PeerTransportError::Refused)
     ));
     assert_eq!(adapter.cancellation_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn restricted_remote_cancel_is_durable_and_can_reconcile_by_observation() {
+    let f = Fixture::new().await;
+    let adapter = Arc::new(TransportAdapter::new(
+        &f.binding,
+        PeerSubmissionCapability::AtMostOnce,
+        0,
+    ));
+    let transport = peer_transport(&f, adapter.clone());
+    let accepted = transport
+        .submit(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            &peer_message("diagnose"),
+        )
+        .await
+        .unwrap();
+    adapter.outcome.store(13, Ordering::SeqCst);
+    let restricted = transport
+        .cancel_task(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            accepted.submission_id,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        restricted.status,
+        PeerCancelStatus::Restricted { task } if task.status.state == TaskState::Submitted
+    ));
+    assert_eq!(adapter.cancellation_calls.load(Ordering::SeqCst), 1);
+
+    adapter.outcome.store(5, Ordering::SeqCst);
+    let still_restricted = transport
+        .cancel_task(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            accepted.submission_id,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        still_restricted.status,
+        PeerCancelStatus::Restricted { task } if task.status.state == TaskState::Working
+    ));
+    adapter.outcome.store(6, Ordering::SeqCst);
+    let reconciled = transport
+        .cancel_task(
+            &f.registry,
+            "responder",
+            "notify",
+            &f.parent,
+            &permits("caller"),
+            accepted.submission_id,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        reconciled.status,
+        PeerCancelStatus::Reconciled { task } if task.status.state == TaskState::Completed
+    ));
+    assert_eq!(adapter.cancellation_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(adapter.observation_calls.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]

@@ -77,6 +77,7 @@ pub enum AgentPeerCancelStatus {
     Unsupported,
     Rejected { code: String },
     Uncertain,
+    Restricted { task: Box<acteon_core::Task> },
     Reconciled { task: Box<acteon_core::Task> },
 }
 
@@ -89,6 +90,7 @@ impl From<acteon_executor::delegation::PeerCancelReceipt> for AgentPeerCancelRec
                 PeerCancelStatus::Unsupported => AgentPeerCancelStatus::Unsupported,
                 PeerCancelStatus::Rejected { code } => AgentPeerCancelStatus::Rejected { code },
                 PeerCancelStatus::Uncertain => AgentPeerCancelStatus::Uncertain,
+                PeerCancelStatus::Restricted { task } => AgentPeerCancelStatus::Restricted { task },
                 PeerCancelStatus::Reconciled { task } => AgentPeerCancelStatus::Reconciled { task },
             },
         }

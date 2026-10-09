@@ -405,8 +405,11 @@ peer = await client.agentServiceRefreshPeer(receipt, "resolver", "diagnose", pee
 const cancellation = await client.agentServiceCancelPeer(receipt, "resolver", "diagnose", peer);
 ```
 
-Cancellation is delivered at most once. Preserve an `uncertain` result and use
-an explicit later cancel or refresh to reconcile it; never retry automatically.
+Cancellation is delivered at most once. A `restricted` receipt proves the target
+durably blocked future starts and carries its current nonterminal task; it does
+not claim that an already-running provider effect stopped. Preserve an
+`uncertain` result and use an explicit later cancel or refresh to reconcile it;
+never retry automatically.
 
 An agent already running under Acteon can invoke a peer as a governed child by
 passing its host-owned execution context and explicit permits:

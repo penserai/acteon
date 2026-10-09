@@ -43,13 +43,15 @@ pub enum PeerSendDisposition {
     Uncertain,
 }
 
-/// Result of one remote cancellation delivery. Transport failures and any
-/// response that cannot prove a terminal task are `Uncertain`.
+/// Result of one remote cancellation delivery. A restriction acknowledges
+/// that future starts are fenced without claiming an in-flight effect stopped.
+/// Transport failures and unverified responses remain `Uncertain`.
 #[derive(Debug, Clone)]
 pub enum PeerCancelDisposition {
     Unsupported,
     Rejected { code: String },
     Uncertain,
+    Restricted { task: Box<Task> },
     Final { task: Box<Task> },
 }
 
@@ -168,6 +170,7 @@ enum CancelState {
     Unsupported,
     Rejected { code: String },
     Uncertain,
+    Restricted { task: Box<Task> },
     Reconciled { task: Box<Task> },
 }
 
@@ -193,6 +196,7 @@ pub enum PeerCancelStatus {
     Unsupported,
     Rejected { code: String },
     Uncertain,
+    Restricted { task: Box<Task> },
     Reconciled { task: Box<Task> },
 }
 
@@ -534,19 +538,25 @@ impl DurablePeerTransport {
             }
         };
         if !created
-            && matches!(receipt.status, PeerCancelStatus::Uncertain)
+            && matches!(
+                receipt.status,
+                PeerCancelStatus::Uncertain | PeerCancelStatus::Restricted { .. }
+            )
             && let Ok(refreshed) = self
                 .refresh_task(registry, agent_id, skill, parent, permits, submission_id)
                 .await
-            && let PeerSendStatus::Accepted {
-                task: final_task, ..
-            } = refreshed.status
-            && final_task.status.state.is_terminal()
-            && valid_task_progress(accepted_task, &final_task)
+            && let PeerSendStatus::Accepted { task: observed, .. } = refreshed.status
+            && valid_task_progress(accepted_task, &observed)
         {
-            receipt = self
-                .reconcile_cancel(&key, &candidate, final_task.as_ref())
-                .await?;
+            if observed.status.state.is_terminal() {
+                receipt = self
+                    .reconcile_cancel(&key, &candidate, observed.as_ref())
+                    .await?;
+            } else if matches!(receipt.status, PeerCancelStatus::Restricted { .. }) {
+                receipt = self
+                    .refresh_restricted_cancel(&key, &candidate, observed.as_ref())
+                    .await?;
+            }
         }
         if let PeerCancelStatus::Reconciled { task } = &receipt.status {
             self.persist_final_task(&send_key, binding, &reference, submission_id, task)
@@ -661,6 +671,11 @@ impl DurablePeerTransport {
             Ok(Ok(PeerCancelDisposition::Rejected { code })) if valid_text(&code) => {
                 CancelState::Rejected { code }
             }
+            Ok(Ok(PeerCancelDisposition::Restricted { task }))
+                if !task.status.state.is_terminal() && valid_task_progress(current_task, &task) =>
+            {
+                CancelState::Restricted { task }
+            }
             Ok(Ok(PeerCancelDisposition::Final { task }))
                 if task.status.state.is_terminal() && valid_task_progress(current_task, &task) =>
             {
@@ -705,7 +720,9 @@ impl DurablePeerTransport {
                 .ok_or(PeerTransportError::Unavailable)?;
             self.same_cancel_intent(&current, expected)?;
             match current.state {
-                CancelState::Uncertain | CancelState::Delivering { .. } => {}
+                CancelState::Uncertain
+                | CancelState::Delivering { .. }
+                | CancelState::Restricted { .. } => {}
                 _ => return Ok(Self::cancel_receipt(&current)),
             }
             if !final_task.status.state.is_terminal()
@@ -718,6 +735,45 @@ impl DurablePeerTransport {
             let mut next = current;
             next.state = CancelState::Reconciled {
                 task: Box::new(final_task.clone()),
+            };
+            let encoded = self
+                .encode_cancel(&next)
+                .map_err(|_| PeerTransportError::Unavailable)?;
+            if matches!(
+                self.dependencies
+                    .state
+                    .compare_and_swap(key, version, &encoded, None)
+                    .await
+                    .map_err(|_| PeerTransportError::Unavailable)?,
+                CasResult::Ok
+            ) {
+                return Ok(Self::cancel_receipt(&next));
+            }
+        }
+        Err(PeerTransportError::Unavailable)
+    }
+
+    async fn refresh_restricted_cancel(
+        &self,
+        key: &StateKey,
+        expected: &CancelRecord,
+        observed: &Task,
+    ) -> Result<PeerCancelReceipt, PeerTransportError> {
+        for _ in 0..16 {
+            let (current, version) = self
+                .load_cancel_versioned(key)
+                .await?
+                .ok_or(PeerTransportError::Unavailable)?;
+            self.same_cancel_intent(&current, expected)?;
+            let CancelState::Restricted { task } = &current.state else {
+                return Ok(Self::cancel_receipt(&current));
+            };
+            if observed.status.state.is_terminal() || !valid_task_progress(task, observed) {
+                return Err(PeerTransportError::Conflict);
+            }
+            let mut next = current;
+            next.state = CancelState::Restricted {
+                task: Box::new(observed.clone()),
             };
             let encoded = self
                 .encode_cancel(&next)
@@ -994,6 +1050,13 @@ impl DurablePeerTransport {
     fn valid_cancel_record(&self, record: &CancelRecord) -> bool {
         let state_valid = match &record.state {
             CancelState::Rejected { code } => valid_text(code),
+            CancelState::Restricted { task } => {
+                task.validate().is_ok()
+                    && !task.status.state.is_terminal()
+                    && task.id == record.task_id
+                    && task.namespace == record.source_context.namespace()
+                    && task.tenant == record.source_context.tenant()
+            }
             CancelState::Reconciled { task } => {
                 task.validate().is_ok()
                     && task.status.state.is_terminal()
@@ -1023,6 +1086,7 @@ impl DurablePeerTransport {
         let status = match &record.state {
             CancelState::Unsupported => PeerCancelStatus::Unsupported,
             CancelState::Rejected { code } => PeerCancelStatus::Rejected { code: code.clone() },
+            CancelState::Restricted { task } => PeerCancelStatus::Restricted { task: task.clone() },
             CancelState::Reconciled { task } => PeerCancelStatus::Reconciled { task: task.clone() },
             CancelState::Registered | CancelState::Delivering { .. } | CancelState::Uncertain => {
                 PeerCancelStatus::Uncertain

@@ -1,6 +1,8 @@
 //! Real binary and middleware, independently authenticated caller and recipient.
 #![recursion_limit = "256"]
 use acteon_core::{AgentCard, AgentCardInterface, Skill};
+#[cfg(feature = "redis")]
+use acteon_state::StateStore;
 use axum::{Json, Router, routing::post};
 use serde_json::{Value, json};
 use std::{
@@ -717,6 +719,415 @@ fn redis_state() -> (Value, acteon_state_redis::RedisConfig) {
         json!({"backend":"redis","url":config.url,"prefix":config.prefix}),
         config,
     )
+}
+
+struct PeerMeshServer {
+    process: Child,
+    directory: PathBuf,
+    url: String,
+}
+
+impl Drop for PeerMeshServer {
+    fn drop(&mut self) {
+        let _ = self.process.kill();
+        let _ = self.process.wait();
+        let _ = fs::remove_dir_all(&self.directory);
+    }
+}
+
+impl PeerMeshServer {
+    #[allow(clippy::too_many_lines)]
+    fn start(
+        own_port: u16,
+        notifier_port: u16,
+        resolver_port: u16,
+        webhook: &str,
+        state: &Value,
+        credential_hashes: &[String; 3],
+        bootstrap: bool,
+    ) -> Self {
+        let directory =
+            std::env::temp_dir().join(format!("acteon-peer-mesh-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&directory).unwrap();
+        let mut params = rcgen::CertificateParams::new(vec!["localhost".into()]).unwrap();
+        params
+            .subject_alt_names
+            .push(rcgen::SanType::IpAddress("127.0.0.1".parse().unwrap()));
+        let key = rcgen::KeyPair::generate().unwrap();
+        let cert = params.self_signed(&key).unwrap();
+        let cert_path = directory.join("server.crt");
+        let key_path = directory.join("server.key");
+        fs::write(&cert_path, cert.pem()).unwrap();
+        fs::write(&key_path, key.serialize_pem()).unwrap();
+
+        let notifier_endpoint = format!(
+            "https://127.0.0.1:{notifier_port}/a2a/prod/acme/agents/notifier/v1/message:send"
+        );
+        let resolver_endpoint = format!(
+            "https://127.0.0.1:{resolver_port}/a2a/prod/acme/agents/resolver/v1/message:send"
+        );
+        let mut notifier = AgentCard::new("notifier", "prod", "acme", "Notifier", "1");
+        let card_time = chrono::DateTime::parse_from_rfc3339("2026-10-08T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        notifier.created_at = card_time;
+        notifier.updated_at = card_time;
+        notifier.skills.push(Skill::new("notify"));
+        notifier.interfaces.push(AgentCardInterface {
+            kind: "rest".into(),
+            url: notifier_endpoint.clone(),
+        });
+        let mut resolver = AgentCard::new("resolver", "prod", "acme", "Resolver", "1");
+        resolver.created_at = card_time;
+        resolver.updated_at = card_time;
+        resolver.skills.push(Skill::new("resolve"));
+        resolver.interfaces.push(AgentCardInterface {
+            kind: "rest".into(),
+            url: resolver_endpoint.clone(),
+        });
+        let limits = json!({"max_units":8,"max_concurrent":3,"deadline_ms":4_102_444_800_000_i64});
+        let alice = json!({"id":"alice","kind":"human"});
+        let notifier_principal = json!({"id":"agent/notifier","kind":"agent"});
+        let resolver_principal = json!({"id":"agent/resolver","kind":"agent"});
+        let notify_route = json!({"provider":"incident","action_type":"execute"});
+        let resolve_route = json!({"provider":"resolver","action_type":"execute"});
+        let configuration = json!({
+            "server":{"host":"127.0.0.1","port":own_port},
+            "tls":{"enabled":true,
+                "server":{"cert_path":cert_path,"key_path":key_path},
+                "client":{"danger_accept_invalid_certs":true}},
+            "state":state,
+            "ui":{"enabled":false},
+            "auth":{"enabled":true,"config_path":"auth.toml","watch":false,
+                "authority":{"namespace":"auth-control","tenant":"deployment","source_id":"peer-mesh-auth","bootstrap":bootstrap}},
+            "providers":[
+                {"name":"incident","type":"webhook","url":webhook,"internal_hosts":["127.0.0.1"]},
+                {"name":"resolver","type":"webhook","url":webhook,"internal_hosts":["127.0.0.1"]}
+            ],
+            "execution_authority":{
+                "agent_driver":{"enabled":false,"poll_interval_ms":100,"max_parallel":2,"scan_batch_size":8},
+                "peer_transport":{"enabled":true,"timeout_ms":3000,"adapter_revision":"peer-mesh-test-v1","internal_hosts":["127.0.0.1"]},
+                "scopes":[{
+                    "namespace":"prod","tenant":"acme","bootstrap":bootstrap,
+                    "publisher":{"id":"operator","kind":"human"},
+                    "subjects":[alice,notifier_principal,resolver_principal],
+                    "routes":[notify_route,resolve_route],"valid_from_ms":0,
+                    "credential_limits":limits,"root_max_units":8,"root_max_concurrent":2,"root_lifetime_ms":60000,
+                    "agent_services":[
+                        {"card":notifier,"principal":notifier_principal,"skill":"notify",
+                         "endpoint":notifier_endpoint,"endpoint_id":"notifier-api","route":notify_route,
+                         "recipient_key_env":"ACTEON_TEST_AGENT_RECIPIENT",
+                         "recipient_permits":[{"id":"notifier-provider","accepted_revision":1}],
+                         "onward_agents":["resolver"],
+                         "grants":[{"id":"alice-notifier","revision":1,"source":alice,
+                           "source_permits":[{"id":"alice-service","accepted_revision":1}],
+                           "valid_from_ms":0,"limits":limits,"max_depth":4}]},
+                        {"card":resolver,"principal":resolver_principal,"skill":"resolve",
+                         "endpoint":resolver_endpoint,"endpoint_id":"resolver-api","route":resolve_route,
+                         "recipient_key_env":"ACTEON_TEST_RESOLVER_RECIPIENT",
+                         "recipient_permits":[{"id":"resolver-provider","accepted_revision":1}],
+                         "grants":[{"id":"notifier-resolver","revision":1,"source":notifier_principal,
+                           "source_permits":[{"id":"notifier-provider","accepted_revision":1}],
+                           "valid_from_ms":0,"limits":limits,"max_depth":4}]}
+                    ],
+                    "permits":[
+                        {"id":"alice-service","revision":1,"subject":alice,"routes":[],"agents":["notifier"],"valid_from_ms":0,"limits":limits},
+                        {"id":"notifier-provider","revision":1,"subject":notifier_principal,"routes":[notify_route],"agents":["resolver"],"valid_from_ms":0,"limits":limits},
+                        {"id":"resolver-provider","revision":1,"subject":resolver_principal,"routes":[resolve_route],"valid_from_ms":0,"limits":limits}
+                    ]
+                }]
+            }
+        });
+        fs::write(
+            directory.join("acteon.toml"),
+            toml::to_string(&configuration).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            directory.join("auth.toml"),
+            format!(
+                r#"authority_revision = 1
+[settings]
+jwt_secret = "test-jwt-secret-at-least-32-bytes"
+[[api_keys]]
+name = "alice"
+authority_id = "credential/alice"
+principal = {{id="alice",kind="human"}}
+key_hash = {:?}
+role = "executor"
+[[api_keys.grants]]
+namespaces = ["prod"]
+tenants = ["acme"]
+providers = ["agent.notifier"]
+actions = ["invoke"]
+[[api_keys]]
+name = "notifier"
+authority_id = "credential/notifier"
+principal = {{id="agent/notifier",kind="agent"}}
+key_hash = {:?}
+role = "executor"
+[[api_keys.grants]]
+namespaces = ["prod"]
+tenants = ["acme"]
+providers = ["incident"]
+actions = ["execute"]
+[[api_keys.grants]]
+namespaces = ["prod"]
+tenants = ["acme"]
+providers = ["agent.resolver"]
+actions = ["invoke"]
+[[api_keys]]
+name = "resolver"
+authority_id = "credential/resolver"
+principal = {{id="agent/resolver",kind="agent"}}
+key_hash = {:?}
+role = "executor"
+[[api_keys.grants]]
+namespaces = ["prod"]
+tenants = ["acme"]
+providers = ["resolver"]
+actions = ["execute"]
+"#,
+                credential_hashes[0], credential_hashes[1], credential_hashes[2]
+            ),
+        )
+        .unwrap();
+        let process = Self::launch(&directory);
+        Self {
+            process,
+            directory,
+            url: format!("https://127.0.0.1:{own_port}"),
+        }
+    }
+
+    fn launch(directory: &std::path::Path) -> Child {
+        let log = fs::File::create(directory.join("server.log")).unwrap();
+        Command::new(env!("CARGO_BIN_EXE_acteon-server"))
+            .arg("-c")
+            .arg(directory.join("acteon.toml"))
+            .env("ACTEON_AUTH_KEY", "11".repeat(32))
+            .env(
+                "ACTEON_AUTH_AUTHORITY_KEY",
+                "peer-mesh-auth-fingerprint-at-least-32-bytes",
+            )
+            .env(
+                "ACTEON_EXECUTION_AUTHORITY_KEY",
+                "peer-mesh-context-signing-at-least-32-bytes",
+            )
+            .env("ACTEON_TEST_AGENT_RECIPIENT", "notifier-secret")
+            .env("ACTEON_TEST_RESOLVER_RECIPIENT", "resolver-secret")
+            .stdout(Stdio::from(log.try_clone().unwrap()))
+            .stderr(Stdio::from(log))
+            .spawn()
+            .unwrap()
+    }
+
+    async fn ready(&mut self, client: &reqwest::Client) {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                assert!(self.process.try_wait().unwrap().is_none(), "{}", self.log());
+                if client
+                    .get(format!("{}/health", self.url))
+                    .send()
+                    .await
+                    .is_ok()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    fn restart(&mut self) {
+        self.process.kill().unwrap();
+        self.process.wait().unwrap();
+        self.process = Self::launch(&self.directory);
+    }
+
+    fn log(&self) -> String {
+        fs::read_to_string(self.directory.join("server.log")).unwrap()
+    }
+}
+
+fn reserve_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+#[tokio::test]
+#[cfg(feature = "redis")]
+#[ignore = "requires ACTEON_GOVERNANCE_REDIS_URL; two real HTTPS servers sharing Redis"]
+async fn redis_two_server_peer_cancel_survives_source_restart_as_a_durable_restriction() {
+    let (webhook_url, calls, webhook_task) = webhook().await;
+    let (state, redis_config) = redis_state();
+    let notifier_port = reserve_port();
+    let resolver_port = reserve_port();
+    assert_ne!(notifier_port, resolver_port);
+    let credential_hashes = [
+        acteon_server::auth::api_key::hash_api_key("alice-secret"),
+        acteon_server::auth::api_key::hash_api_key("notifier-secret"),
+        acteon_server::auth::api_key::hash_api_key("resolver-secret"),
+    ];
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .build()
+        .unwrap();
+    let mut resolver = PeerMeshServer::start(
+        resolver_port,
+        notifier_port,
+        resolver_port,
+        &webhook_url,
+        &state,
+        &credential_hashes,
+        true,
+    );
+    resolver.ready(&client).await;
+    let mut notifier = PeerMeshServer::start(
+        notifier_port,
+        notifier_port,
+        resolver_port,
+        &webhook_url,
+        &state,
+        &credential_hashes,
+        true,
+    );
+    assert_eq!(
+        fs::read_to_string(resolver.directory.join("auth.toml")).unwrap(),
+        fs::read_to_string(notifier.directory.join("auth.toml")).unwrap()
+    );
+    let resolver_config: toml::Value =
+        toml::from_str(&fs::read_to_string(resolver.directory.join("acteon.toml")).unwrap())
+            .unwrap();
+    let notifier_config: toml::Value =
+        toml::from_str(&fs::read_to_string(notifier.directory.join("acteon.toml")).unwrap())
+            .unwrap();
+    assert_eq!(
+        resolver_config["execution_authority"],
+        notifier_config["execution_authority"]
+    );
+    assert_eq!(resolver_config["providers"], notifier_config["providers"]);
+    let store = acteon_state_redis::RedisStateStore::new(&redis_config).unwrap();
+    for index in 0..2 {
+        let card: AgentCard = serde_json::from_value(
+            serde_json::to_value(
+                &resolver_config["execution_authority"]["scopes"][0]["agent_services"][index]
+                    ["card"],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let mut agent = acteon_core::Agent::new(&card.agent_id, "prod", "acme");
+        agent.last_heartbeat_at = Some(chrono::Utc::now());
+        agent.has_agent_card = true;
+        store
+            .set(
+                &acteon_state::StateKey::new(
+                    "prod",
+                    "acme",
+                    acteon_state::KeyKind::BusAgent,
+                    &card.agent_id,
+                ),
+                &serde_json::to_string(&agent).unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+        store
+            .set(
+                &acteon_state::StateKey::new(
+                    "prod",
+                    "acme",
+                    acteon_state::KeyKind::BusAgentCard,
+                    &card.agent_id,
+                ),
+                &serde_json::to_string(&card).unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    notifier.ready(&client).await;
+
+    let response = client
+        .post(format!(
+            "{}/a2a/prod/acme/agents/notifier/v1/message:send",
+            notifier.url
+        ))
+        .bearer_auth("alice-secret")
+        .json(&message("mesh-root"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let root: Value = response.json().await.unwrap();
+    let root_id = root["id"].as_str().unwrap();
+
+    let peer_base = format!(
+        "{}/a2a/prod/acme/agents/notifier/v1/tasks/{root_id}/peers",
+        notifier.url
+    );
+    let response = client
+        .get(&peer_base)
+        .query(&[("skill", "resolve")])
+        .bearer_auth("notifier-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let discovered: Value = response.json().await.unwrap();
+    assert_eq!(discovered["peers"].as_array().unwrap().len(), 1);
+    assert_eq!(discovered["peers"][0]["agent_id"], "resolver");
+    assert!(discovered["peers"][0].get("endpoint").is_none());
+
+    let response = client
+        .post(format!("{peer_base}/resolver/resolve/message:send"))
+        .bearer_auth("notifier-secret")
+        .json(&message("mesh-child"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let peer: Value = response.json().await.unwrap();
+    assert_eq!(peer["status"]["state"], "accepted");
+    assert_eq!(peer["status"]["task"]["status"]["state"], "submitted");
+    let submission = peer["submission_id"].as_str().unwrap();
+    let cancel_url = format!("{peer_base}/resolver/resolve/submissions/{submission}:cancel");
+    let response = client
+        .post(&cancel_url)
+        .bearer_auth("notifier-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let canceled: Value = response.json().await.unwrap();
+    assert_eq!(canceled["status"]["state"], "restricted");
+    assert_eq!(
+        canceled["status"]["task"]["id"],
+        peer["status"]["task"]["id"]
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+    let cancellation_id = canceled["cancellation_id"].clone();
+    notifier.restart();
+    notifier.ready(&client).await;
+    let response = client
+        .post(&cancel_url)
+        .bearer_auth("notifier-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let replayed: Value = response.json().await.unwrap();
+    assert_eq!(replayed["cancellation_id"], cancellation_id);
+    assert_eq!(replayed["status"], canceled["status"]);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    webhook_task.abort();
 }
 
 #[tokio::test]

@@ -77,7 +77,8 @@ type AgentPeerSendReceipt struct {
 	Status       AgentPeerSendStatus `json:"status"`
 }
 
-// AgentPeerCancelStatus preserves definitive refusal, ambiguity, and observed finality.
+// AgentPeerCancelStatus preserves definitive refusal, a future-start fence,
+// ambiguity, and observed finality.
 type AgentPeerCancelStatus struct {
 	State string         `json:"state"`
 	Task  map[string]any `json:"task,omitempty"`
@@ -427,7 +428,7 @@ func (c *Client) AgentServiceCancelPeer(ctx context.Context, source *AgentServic
 			}
 		}
 		status.Code = code
-	case "reconciled":
+	case "restricted", "reconciled":
 		task, ok := rawStatus["task"].(map[string]any)
 		expected, _ := peer.Status.Task["id"].(string)
 		if !ok || len(rawStatus) != 2 || expected == "" {
@@ -437,12 +438,15 @@ func (c *Client) AgentServiceCancelPeer(ctx context.Context, source *AgentServic
 			return nil, err
 		}
 		taskStatus, ok := task["status"].(map[string]any)
-		terminal := false
-		if ok {
-			state, _ := taskStatus["state"].(string)
-			terminal = state == "completed" || state == "failed" || state == "canceled" || state == "rejected"
+		if !ok {
+			return nil, fmt.Errorf("agent peer cancellation receipt missing or malformed")
 		}
-		if !terminal {
+		taskState, ok := taskStatus["state"].(string)
+		if !ok || (taskState != "submitted" && taskState != "working" && taskState != "completed" && taskState != "failed" && taskState != "canceled" && taskState != "input_required" && taskState != "auth_required" && taskState != "rejected") {
+			return nil, fmt.Errorf("agent peer cancellation receipt missing or malformed")
+		}
+		terminal := taskState == "completed" || taskState == "failed" || taskState == "canceled" || taskState == "rejected"
+		if (state == "restricted" && terminal) || (state == "reconciled" && !terminal) {
 			return nil, fmt.Errorf("agent peer cancellation receipt missing or malformed")
 		}
 		status.Task = task

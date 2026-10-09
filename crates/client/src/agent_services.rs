@@ -89,6 +89,7 @@ pub enum AgentPeerCancelStatus {
     Unsupported,
     Rejected { code: String },
     Uncertain,
+    Restricted { task: Box<Task> },
     Reconciled { task: Box<Task> },
 }
 
@@ -312,6 +313,14 @@ async fn peer_cancel_response(
                 && code.len() <= 1024
                 && code.trim() == code
                 && !code.chars().any(char::is_control)
+        }
+        AgentPeerCancelStatus::Restricted { task } => {
+            task_matches(
+                task,
+                &source.namespace,
+                &source.tenant,
+                Some(accepted_task_id),
+            ) && !task.status.state.is_terminal()
         }
         AgentPeerCancelStatus::Reconciled { task } => {
             task_matches(
@@ -812,12 +821,10 @@ mod tests {
                             assert_eq!(body["message"]["messageId"], "peer-1");
                         }
                         let payload = if path.ends_with(":cancel") {
-                            let mut task = wire["jobs"][0]["task"].clone();
-                            task["status"]["state"] = serde_json::json!("canceled");
                             serde_json::json!({
                                 "submission_id":"f47ac10b-58cc-5372-a567-0e02b2c3d479",
                                 "cancellation_id":"67e55044-10b1-526f-9247-bb680e5fe0c8",
-                                "status":{"state":"reconciled", "task":task}
+                                "status":{"state":"restricted", "task":wire["jobs"][0]["task"]}
                             })
                         } else {
                             serde_json::json!({
@@ -936,7 +943,7 @@ mod tests {
             .unwrap();
         assert!(matches!(
             canceled.status,
-            AgentPeerCancelStatus::Reconciled { .. }
+            AgentPeerCancelStatus::Restricted { .. }
         ));
         assert!(fixture.calls.lock().unwrap()[3].0.ends_with(
             "/peers/team/resolver/diagnose/submissions/f47ac10b-58cc-5372-a567-0e02b2c3d479:cancel"

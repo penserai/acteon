@@ -202,8 +202,8 @@ func TestAgentServicePeerToolCarriesNoAuthorityFields(t *testing.T) {
 			json.NewEncoder(w).Encode(map[string]any{
 				"submission_id":   "f47ac10b-58cc-5372-a567-0e02b2c3d479",
 				"cancellation_id": "67e55044-10b1-526f-9247-bb680e5fe0c8",
-				"status": map[string]any{"state": "reconciled", "task": map[string]any{
-					"id": "remote-1", "namespace": "prod", "tenant": "acme", "status": map[string]any{"state": "canceled"},
+				"status": map[string]any{"state": "restricted", "task": map[string]any{
+					"id": "remote-1", "namespace": "prod", "tenant": "acme", "status": map[string]any{"state": "submitted"},
 				}},
 			})
 			return
@@ -227,7 +227,7 @@ func TestAgentServicePeerToolCarriesNoAuthorityFields(t *testing.T) {
 		t.Fatalf("peer refresh mismatch: %#v %v", refreshed, err)
 	}
 	canceled, err := NewClient(server.URL).AgentServiceCancelPeer(context.Background(), source, "team/resolver", "diagnose", receipt)
-	if err != nil || canceled.Status.State != "reconciled" || calls.Load() != 4 {
+	if err != nil || canceled.Status.State != "restricted" || calls.Load() != 4 {
 		t.Fatalf("peer cancellation mismatch: %#v %v", canceled, err)
 	}
 }

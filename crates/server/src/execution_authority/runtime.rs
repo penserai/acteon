@@ -43,6 +43,7 @@ pub struct ExecutionRuntimeDependencies {
     pub executor: ExecutorConfig,
     pub clock: Arc<dyn Clock>,
     pub encryptor: Option<Arc<acteon_crypto::PayloadEncryptor>>,
+    pub outbound_tls: Option<Arc<acteon_crypto::tls::LoadedTlsClientConfig>>,
     pub signing_key: zeroize::Zeroizing<Vec<u8>>,
 }
 impl ExecutionRuntimeDependencies {
@@ -376,12 +377,14 @@ impl ExecutionAuthorityRuntime {
                     "{}-{capability_revision}",
                     prepared.peer_transport.adapter_revision
                 );
+                let builder = peer_http_builder(dependencies)?;
                 let adapter = Arc::new(
-                    super::ActeonPeerHttpAdapter::new_trusted(
+                    super::ActeonPeerHttpAdapter::new_trusted_with_builder(
                         target.binding.digest(),
                         &adapter_revision,
                         acteon_crypto::SecretString::new(credential.as_str().to_owned().into()),
                         capability,
+                        builder,
                         policy.clone(),
                         timeout,
                     )
@@ -691,6 +694,18 @@ impl ExecutionAuthorityRuntime {
             .dispatch_with_execution_admission(action, Some(caller), &admission)
             .await
     }
+}
+
+fn peer_http_builder(
+    dependencies: &ExecutionRuntimeDependencies,
+) -> Result<reqwest::ClientBuilder, String> {
+    dependencies.outbound_tls.as_ref().map_or_else(
+        || Ok(reqwest::Client::builder()),
+        |tls| {
+            tls.client_builder()
+                .map_err(|_| "invalid agent peer TLS client".into())
+        },
+    )
 }
 
 /// Reserve replay ownership only after current permits and durable root admission
