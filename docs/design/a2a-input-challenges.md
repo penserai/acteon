@@ -1,8 +1,9 @@
 # Governed A2A structured-input challenges
 
-**Status:** local Task resolution and the source-side durable continuation
-journal are implemented. Target runtime handoff, HTTP exposure, and
-authorization fulfillment remain follow-ups.
+**Status:** local Task resolution, the source-side durable continuation journal,
+the hosted target runtime handoff, and independent Redis/PostgreSQL recovery
+contracts are implemented. HTTP exposure and authorization fulfillment remain
+follow-ups.
 
 An agent may pause a Task because it needs typed user data. That pause must not
 turn a late message into authority to resume some newer challenge, duplicate the
@@ -31,8 +32,9 @@ message and authenticated actor. Before mutation it requires:
 
 The approval first moves `Pending → Approving` and records
 `TaskPauseResolution { messageId, contentDigest }`. The digest is computed from
-canonical JSON. The full input remains only in Task history. A Task-row CAS then
-appends the response and performs `InputRequired → Working` together. Finally,
+canonical JSON. Within this local resolution primitive, the full input remains
+only in Task history. A Task-row CAS then appends the response and performs
+`InputRequired → Working` together. Finally,
 the approval moves `Approving → Approved` and its pending index entry is removed.
 
 This is an intentionally recoverable two-row protocol over the configured
@@ -87,7 +89,24 @@ exact normalized response, advances the same Task, and replaces the prior
 cursor. Repeating an accepted response recovers the same receipt from Task
 history and the continuation journal.
 
-The hosted individual-agent runtime still needs a qualified continuation adapter
-whose provider operation consumes the added input. Moving the Task back to
-`Working` without a runtime capable of using that input would create false
-progress, so the peer route must not be exposed until both halves exist.
+## Hosted target execution
+
+The hosted individual-agent runtime persists the exact normalized response,
+paused Task snapshot, provider action, child identity, permits and budget limits
+before resolving the Task. Its recovery driver can therefore finish the same
+continuation after a lost acknowledgement or process restart, including when
+the visible Task is still `InputRequired`.
+
+Each challenge becomes a deterministic same-principal child execution under the
+accepted recipient. The child inherits the original permit ceiling and shared
+sponsorship, rechecks current closures and revocations, and gets its own governed
+provider operation journal. The provider payload contains both `a2a_message`
+for compatibility and the complete bounded `a2a_history`, plus an explicit
+task/context/challenge binding. Observation and replay follow the latest child
+execution; concurrent identical calls share one provider attempt, while a
+different response or requester conflicts.
+
+The remaining HTTP adapter must authenticate the original private source and
+bind its opaque cursor before calling this runtime. Until that transport is
+implemented and qualified against durable backends, the peer continuation route
+must remain unexposed.

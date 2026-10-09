@@ -5,8 +5,8 @@
 use std::sync::Arc;
 
 use acteon_core::{
-    Action, ActionOutcome, Artifact, ExecutionContextReference, Task, TaskMessage, TaskPart,
-    TaskState,
+    Action, ActionOutcome, Artifact, ExecutionContextReference, TASK_CHALLENGE_ID_METADATA_KEY,
+    Task, TaskMessage, TaskPart, TaskRole, TaskState,
 };
 use acteon_executor::{
     ExecutorConfig,
@@ -17,19 +17,25 @@ use acteon_executor::{
     },
 };
 use acteon_governance::{
-    AuthorityChange, AuthorityCoordinator, CoordinationError,
-    context::{ContextError, TrustedContextStore, VerifiedExecutionContext},
+    AuthorityChange, AuthorityCoordinator, CoordinationError, RootBudgetLimits,
+    context::{
+        ChildContextAdmission, ContextError, ExecutionContextHandle, TrustedContextStore,
+        VerifiedExecutionContext,
+    },
     permit::{PermitReference, matches_effect, permit_revision_tag},
 };
-use acteon_state::{KeyKind, StateError, StateKey, StateStore};
+use acteon_state::{CasResult, KeyKind, StateError, StateKey, StateStore};
 use acteon_time::Clock;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::{TaskEngine, TaskEngineError, TaskScope};
 
 pub const ACCEPTANCE_KIND: &str = "governed_agent_task_acceptance";
+pub const CONTINUATION_KIND: &str = "governed_agent_task_continuation";
 pub const GOVERNED_TASK_METADATA_KEY: &str = "acteon_governed_execution";
 const MAX_ACCEPTANCE_BYTES: usize = 2 * 1024 * 1024;
+const MAX_CONTINUATION_CAS_ATTEMPTS: usize = 16;
 
 pub struct AgentRuntimeDependencies {
     pub state: Arc<dyn StateStore>,
@@ -96,6 +102,40 @@ struct AcceptanceRoutingHint {
     binding_digest: String,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Continuation {
+    schema: u32,
+    binding_digest: String,
+    task_id: uuid::Uuid,
+    challenge_id: String,
+    parent: ExecutionContextReference,
+    predecessor: ExecutionContextReference,
+    child_handle: ExecutionContextHandle,
+    child_execution_id: uuid::Uuid,
+    limits: RootBudgetLimits,
+    permits: Vec<PermitReference>,
+    prior_task: Task,
+    response_digest: String,
+    response: TaskMessage,
+    action: Action,
+    state: ContinuationState,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "status", deny_unknown_fields)]
+enum ContinuationState {
+    Registered,
+    Admitted {
+        reference: ExecutionContextReference,
+    },
+}
+
+struct CurrentOperation<'a> {
+    reference: &'a ExecutionContextReference,
+    action: &'a Action,
+}
+
 /// Read the bounded binding selector used by a trusted recovery host. This is
 /// only a routing hint; the selected runtime must decode and verify the complete
 /// immutable acceptance before returning data or starting an effect.
@@ -131,6 +171,9 @@ pub struct AgentTaskReceipt {
     pub execution: Option<GovernedProviderReceipt>,
     /// Durable coordinator restriction, independent of provider outcome.
     pub future_starts_blocked: bool,
+    /// A response intent exists and recovery may need to move a still-paused
+    /// task into its governed continuation execution.
+    pub continuation_pending: bool,
 }
 
 /// Acknowledgement of a restrictive control write, not a provider abort.
@@ -232,6 +275,181 @@ impl AgentProviderRuntime {
             KeyKind::Custom(ACCEPTANCE_KIND.into()),
             id.to_string(),
         )
+    }
+
+    fn continuation_key(&self, id: uuid::Uuid) -> StateKey {
+        let resource = self.binding.agent_resource();
+        StateKey::new(
+            resource.namespace(),
+            resource.tenant(),
+            KeyKind::Custom(CONTINUATION_KIND.into()),
+            id.to_string(),
+        )
+    }
+
+    fn continuation_execution_id(task_id: uuid::Uuid, challenge_id: &str) -> uuid::Uuid {
+        uuid::Uuid::new_v5(&task_id, challenge_id.as_bytes())
+    }
+
+    fn message_digest(message: &TaskMessage) -> Result<String, AgentRuntimeError> {
+        fn canonical(value: serde_json::Value) -> serde_json::Value {
+            match value {
+                serde_json::Value::Object(map) => serde_json::Value::Object(
+                    map.into_iter()
+                        .map(|(key, value)| (key, canonical(value)))
+                        .collect(),
+                ),
+                serde_json::Value::Array(values) => {
+                    serde_json::Value::Array(values.into_iter().map(canonical).collect())
+                }
+                scalar => scalar,
+            }
+        }
+        let value = canonical(serde_json::to_value(message)?);
+        Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(&value)?)))
+    }
+
+    fn prepare_continuation_action(
+        &self,
+        task: &Task,
+        challenge_id: &str,
+        response: &TaskMessage,
+    ) -> Result<Action, AgentRuntimeError> {
+        if response.role != TaskRole::User
+            || response.task_id.as_deref() != Some(task.id.as_str())
+            || response.context_id != task.context_id
+            || response
+                .metadata
+                .get(TASK_CHALLENGE_ID_METADATA_KEY)
+                .and_then(serde_json::Value::as_str)
+                != Some(challenge_id)
+        {
+            return Err(AgentRuntimeError::Invalid);
+        }
+        response
+            .validate_in_task(&task.id)
+            .map_err(|_| AgentRuntimeError::Invalid)?;
+        if task
+            .history
+            .iter()
+            .any(|message| message.message_id == response.message_id)
+        {
+            return Err(AgentRuntimeError::Conflict);
+        }
+        let mut history = task.history.clone();
+        history.push(response.clone());
+        let payload = serde_json::json!({
+            "a2a_message": response,
+            "a2a_history": history,
+            "a2a_continuation": {
+                "taskId": task.id,
+                "contextId": task.context_id,
+                "challengeId": challenge_id,
+            },
+        });
+        if serde_json::to_vec(&payload)?.len() > MAX_ACCEPTANCE_BYTES / 2 {
+            return Err(AgentRuntimeError::Invalid);
+        }
+        let resource = self.binding.agent_resource();
+        Ok(Action::new(
+            resource.namespace(),
+            resource.tenant(),
+            self.bound.provider_name(),
+            self.bound.action_type(),
+            payload,
+        ))
+    }
+
+    fn decode_continuation(
+        &self,
+        raw: &str,
+        accepted: &Acceptance,
+    ) -> Result<Continuation, AgentRuntimeError> {
+        if raw.len() > MAX_ACCEPTANCE_BYTES {
+            return Err(AgentRuntimeError::Invalid);
+        }
+        let continuation: Continuation = serde_json::from_str(raw)?;
+        let expected_child =
+            Self::continuation_execution_id(continuation.task_id, &continuation.challenge_id);
+        let expected_predecessor = continuation
+            .prior_task
+            .history
+            .iter()
+            .rev()
+            .find_map(|message| {
+                (message.role == TaskRole::User)
+                    .then(|| {
+                        message
+                            .metadata
+                            .get(TASK_CHALLENGE_ID_METADATA_KEY)
+                            .and_then(serde_json::Value::as_str)
+                    })
+                    .flatten()
+            })
+            .map_or(accepted.reference.execution_id(), |challenge| {
+                Self::continuation_execution_id(continuation.task_id, challenge)
+            });
+        if continuation.schema != 1
+            || continuation.binding_digest != self.binding.digest()
+            || continuation.task_id != accepted.reference.execution_id()
+            || continuation.prior_task.id != continuation.task_id.to_string()
+            || continuation.prior_task.namespace != accepted.reference.namespace()
+            || continuation.prior_task.tenant != accepted.reference.tenant()
+            || continuation.prior_task.status.state != TaskState::InputRequired
+            || continuation.prior_task.pending_approval_id.as_deref()
+                != Some(continuation.challenge_id.as_str())
+            || continuation.child_execution_id != expected_child
+            || continuation.parent.namespace() != accepted.reference.namespace()
+            || continuation.parent.tenant() != accepted.reference.tenant()
+            || continuation.parent.principal() != accepted.reference.principal()
+            || continuation.parent != accepted.reference
+            || continuation.predecessor.execution_id() != expected_predecessor
+            || continuation.predecessor.namespace() != accepted.reference.namespace()
+            || continuation.predecessor.tenant() != accepted.reference.tenant()
+            || continuation.predecessor.principal() != accepted.reference.principal()
+            || continuation.response_digest != Self::message_digest(&continuation.response)?
+            || continuation.permits != accepted.permits
+            || continuation.action.provider.as_str() != self.bound.provider_name()
+            || continuation.action.action_type != self.bound.action_type()
+            || governed_provider_input_digest(&continuation.action)?
+                != governed_provider_input_digest(&self.prepare_continuation_action(
+                    &continuation.prior_task,
+                    &continuation.challenge_id,
+                    &continuation.response,
+                )?)?
+        {
+            return Err(AgentRuntimeError::Conflict);
+        }
+        continuation
+            .prior_task
+            .validate()
+            .map_err(|_| AgentRuntimeError::Invalid)?;
+        TaskEngine::validate_governed_projection(&continuation.prior_task, &accepted.initial_task)
+            .map_err(TaskEngineError::from)?;
+        permit_revision_tag(&continuation.permits)?;
+        if let ContinuationState::Admitted { reference } = &continuation.state
+            && (reference.execution_id() != continuation.child_execution_id
+                || reference.principal() != accepted.reference.principal()
+                || reference.namespace() != accepted.reference.namespace()
+                || reference.tenant() != accepted.reference.tenant()
+                || reference.request_digest()
+                    != governed_provider_input_digest(&continuation.action)?)
+        {
+            return Err(AgentRuntimeError::Conflict);
+        }
+        Ok(continuation)
+    }
+
+    async fn load_continuation_versioned(
+        &self,
+        accepted: &Acceptance,
+    ) -> Result<Option<(Continuation, u64)>, AgentRuntimeError> {
+        self.dependencies
+            .state
+            .get_versioned(&self.continuation_key(accepted.reference.execution_id()))
+            .await?
+            .map(|(raw, version)| Ok((self.decode_continuation(&raw, accepted)?, version)))
+            .transpose()
     }
 
     fn decode(&self, raw: &str) -> Result<Acceptance, AgentRuntimeError> {
@@ -395,20 +613,7 @@ impl AgentProviderRuntime {
         if !task.status.state.is_terminal() {
             return Ok(task);
         }
-        let execution = self
-            .executor
-            .inspect(&original.reference, self.binding.target())
-            .await?
-            .ok_or(AgentRuntimeError::Conflict)?;
-        if !matches!(&execution.status, GovernedProviderStatus::Completed { outcome } if task.status.state == terminal_state(outcome))
-        {
-            return Err(AgentRuntimeError::Conflict);
-        }
-        let scope = TaskScope::new(original.reference.namespace(), original.reference.tenant());
-        Ok(self
-            .project_execution(&scope, &original.initial_task, task, execution)
-            .await?
-            .task)
+        Ok(self.observe(original.reference.execution_id()).await?.task)
     }
 
     async fn materialize(&self, accepted: &Acceptance) -> Result<Task, AgentRuntimeError> {
@@ -478,6 +683,352 @@ impl AgentProviderRuntime {
         Ok(accepted)
     }
 
+    async fn continuation_parent(
+        &self,
+        accepted: &Acceptance,
+    ) -> Result<VerifiedExecutionContext, AgentRuntimeError> {
+        self.dependencies
+            .contexts
+            .recover_reference(
+                &accepted.reference,
+                self.dependencies.clock.now().timestamp_millis(),
+            )
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn completed_continuation_predecessor(
+        &self,
+        accepted: &Acceptance,
+        task: &Task,
+        previous: Option<&Continuation>,
+    ) -> Result<ExecutionContextReference, AgentRuntimeError> {
+        let predecessor = if let Some(record) = previous {
+            let ContinuationState::Admitted { reference } = &record.state else {
+                return Err(AgentRuntimeError::Conflict);
+            };
+            let Some(applied) = task
+                .history
+                .iter()
+                .find(|message| message.message_id == record.response.message_id)
+            else {
+                return Err(AgentRuntimeError::Conflict);
+            };
+            if serde_json::to_value(applied)? != serde_json::to_value(&record.response)? {
+                return Err(AgentRuntimeError::Conflict);
+            }
+            reference
+        } else {
+            &accepted.reference
+        };
+        if !self
+            .executor
+            .inspect(predecessor, self.binding.target())
+            .await?
+            .is_some_and(|receipt| {
+                matches!(receipt.status, GovernedProviderStatus::Completed { .. })
+            })
+        {
+            return Err(AgentRuntimeError::Conflict);
+        }
+        Ok(predecessor.clone())
+    }
+
+    async fn register_continuation(
+        &self,
+        accepted: &Acceptance,
+        task: &Task,
+        challenge_id: &str,
+        response: &TaskMessage,
+    ) -> Result<Continuation, AgentRuntimeError> {
+        let key = self.continuation_key(accepted.reference.execution_id());
+        for _ in 0..MAX_CONTINUATION_CAS_ATTEMPTS {
+            let previous = self.load_continuation_versioned(accepted).await?;
+            if let Some((record, _)) = &previous
+                && record.challenge_id == challenge_id
+            {
+                if record.response_digest != Self::message_digest(response)?
+                    || serde_json::to_value(&record.response)? != serde_json::to_value(response)?
+                {
+                    return Err(AgentRuntimeError::Conflict);
+                }
+                return Ok(record.clone());
+            }
+            let predecessor = self
+                .completed_continuation_predecessor(
+                    accepted,
+                    task,
+                    previous.as_ref().map(|(record, _)| record),
+                )
+                .await?;
+            let parent = self.continuation_parent(accepted).await?;
+            let snapshot = self.dependencies.coordinator.snapshot().await?;
+            let limits = snapshot
+                .roots
+                .get(&parent.execution_id().to_string())
+                .ok_or(AgentRuntimeError::Conflict)?
+                .limits
+                .clone();
+            let action = self.prepare_continuation_action(task, challenge_id, response)?;
+            let proposed = Continuation {
+                schema: 1,
+                binding_digest: self.binding.digest().into(),
+                task_id: accepted.reference.execution_id(),
+                challenge_id: challenge_id.into(),
+                parent: parent.reference()?,
+                predecessor,
+                child_handle: ExecutionContextHandle::new(),
+                child_execution_id: Self::continuation_execution_id(
+                    accepted.reference.execution_id(),
+                    challenge_id,
+                ),
+                limits,
+                permits: accepted.permits.clone(),
+                prior_task: task.clone(),
+                response_digest: Self::message_digest(response)?,
+                response: response.clone(),
+                action,
+                state: ContinuationState::Registered,
+            };
+            let encoded = serde_json::to_string(&proposed)?;
+            if encoded.len() > MAX_ACCEPTANCE_BYTES {
+                return Err(AgentRuntimeError::Invalid);
+            }
+            let stored = match previous {
+                None => {
+                    self.dependencies
+                        .state
+                        .check_and_set(&key, &encoded, None)
+                        .await?
+                }
+                Some((_, version)) => matches!(
+                    self.dependencies
+                        .state
+                        .compare_and_swap(&key, version, &encoded, None)
+                        .await?,
+                    CasResult::Ok
+                ),
+            };
+            if stored {
+                return Ok(proposed);
+            }
+        }
+        Err(AgentRuntimeError::Conflict)
+    }
+
+    async fn admit_continuation(
+        &self,
+        accepted: &Acceptance,
+        mut continuation: Continuation,
+    ) -> Result<Continuation, AgentRuntimeError> {
+        if matches!(continuation.state, ContinuationState::Admitted { .. }) {
+            return Ok(continuation);
+        }
+        let parent = self
+            .dependencies
+            .contexts
+            .recover_reference(
+                &continuation.parent,
+                self.dependencies.clock.now().timestamp_millis(),
+            )
+            .await?;
+        let snapshot = self.dependencies.coordinator.snapshot().await?;
+        if snapshot
+            .roots
+            .get(&parent.execution_id().to_string())
+            .map(|root| &root.limits)
+            != Some(&continuation.limits)
+        {
+            return Err(AgentRuntimeError::Conflict);
+        }
+        let child = self
+            .dependencies
+            .contexts
+            .capture_child(ChildContextAdmission {
+                admission_key: &format!(
+                    "agent-continuation/{}/{}",
+                    continuation.task_id, continuation.challenge_id
+                ),
+                parent: &parent,
+                handle: continuation.child_handle.clone(),
+                execution_id: continuation.child_execution_id,
+                request_digest: governed_provider_input_digest(&continuation.action)?,
+                accepted_effects: vec![self.bound.effect().clone()],
+                restrictions: Vec::new(),
+                permits: &continuation.permits,
+                limits: continuation.limits.clone(),
+                clock: self.dependencies.clock.as_ref(),
+            })
+            .await?;
+        let reference = child.reference()?;
+        let key = self.continuation_key(accepted.reference.execution_id());
+        for _ in 0..MAX_CONTINUATION_CAS_ATTEMPTS {
+            let (current, version) = self
+                .load_continuation_versioned(accepted)
+                .await?
+                .ok_or(AgentRuntimeError::Missing)?;
+            if current.challenge_id != continuation.challenge_id
+                || current.response_digest != continuation.response_digest
+            {
+                return Err(AgentRuntimeError::Conflict);
+            }
+            if matches!(current.state, ContinuationState::Admitted { .. }) {
+                return Ok(current);
+            }
+            continuation = current;
+            continuation.state = ContinuationState::Admitted {
+                reference: reference.clone(),
+            };
+            let encoded = serde_json::to_string(&continuation)?;
+            if matches!(
+                self.dependencies
+                    .state
+                    .compare_and_swap(&key, version, &encoded, None)
+                    .await?,
+                CasResult::Ok
+            ) {
+                return Ok(continuation);
+            }
+        }
+        Err(AgentRuntimeError::Conflict)
+    }
+
+    async fn recover_continuation(
+        &self,
+        accepted: &Acceptance,
+        mut task: Task,
+    ) -> Result<(Task, Option<Continuation>), AgentRuntimeError> {
+        let Some((mut continuation, _)) = self.load_continuation_versioned(accepted).await? else {
+            return Ok((task, None));
+        };
+        let scope = TaskScope::new(accepted.reference.namespace(), accepted.reference.tenant());
+        if matches!(continuation.state, ContinuationState::Registered) {
+            if !self
+                .executor
+                .inspect(&continuation.predecessor, self.binding.target())
+                .await?
+                .is_some_and(|receipt| {
+                    matches!(receipt.status, GovernedProviderStatus::Completed { .. })
+                })
+            {
+                return Err(AgentRuntimeError::Conflict);
+            }
+            let recipient = self
+                .dependencies
+                .contexts
+                .recover_reference(
+                    &accepted.reference,
+                    self.dependencies.clock.now().timestamp_millis(),
+                )
+                .await?;
+            self.dependencies
+                .coordinator
+                .check_queued_effect_authority(
+                    &recipient,
+                    &accepted.permits,
+                    self.bound.effect(),
+                    self.dependencies.clock.as_ref(),
+                )
+                .await?;
+            if self
+                .dependencies
+                .coordinator
+                .snapshot()
+                .await?
+                .roots
+                .get(&recipient.execution_id().to_string())
+                .map(|root| &root.limits)
+                != Some(&continuation.limits)
+            {
+                return Err(AgentRuntimeError::Conflict);
+            }
+            if task.status.state == TaskState::InputRequired
+                && task.pending_approval_id.as_deref() != Some(continuation.challenge_id.as_str())
+            {
+                return Err(AgentRuntimeError::Conflict);
+            }
+            if !matches!(
+                task.status.state,
+                TaskState::InputRequired | TaskState::Working
+            ) {
+                return Err(AgentRuntimeError::Conflict);
+            }
+            let source = recipient
+                .immediate_service_source()
+                .ok_or(AgentRuntimeError::Conflict)?
+                .principal()
+                .id()
+                .to_owned();
+            task = self
+                .tasks
+                .resolve_input(
+                    &scope,
+                    &task.id,
+                    &continuation.challenge_id,
+                    continuation.response.clone(),
+                    source,
+                )
+                .await?
+                .0;
+        }
+        let applied = task
+            .history
+            .iter()
+            .find(|message| message.message_id == continuation.response.message_id)
+            .ok_or(AgentRuntimeError::Conflict)?;
+        if task.status.state != TaskState::Working
+            || serde_json::to_value(applied)? != serde_json::to_value(&continuation.response)?
+        {
+            return Err(AgentRuntimeError::Conflict);
+        }
+        continuation = self.admit_continuation(accepted, continuation).await?;
+        Ok((task, Some(continuation)))
+    }
+
+    /// Consume one exact `InputRequired` response from the authenticated original
+    /// source and run a separately governed provider continuation. Intent is
+    /// durable before the task leaves its paused state, so the recovery driver can
+    /// finish admission and execution after a lost request or process restart.
+    pub async fn continue_input(
+        &self,
+        task_id: uuid::Uuid,
+        challenge_id: &str,
+        response: &TaskMessage,
+        requester: &VerifiedExecutionContext,
+    ) -> Result<AgentTaskReceipt, AgentRuntimeError> {
+        let accepted = self.load_acceptance(task_id).await?;
+        let recipient = self
+            .dependencies
+            .contexts
+            .recover_reference_for_observation(&accepted.reference)
+            .await?;
+        let source = recipient
+            .immediate_service_source()
+            .ok_or(AgentRuntimeError::Conflict)?;
+        if source.reference()? != requester.reference()? {
+            return Err(AgentRuntimeError::Conflict);
+        }
+        let task = self.materialize(&accepted).await?;
+        if let Some((existing, _)) = self.load_continuation_versioned(&accepted).await?
+            && existing.challenge_id == challenge_id
+        {
+            if existing.response_digest != Self::message_digest(response)?
+                || serde_json::to_value(&existing.response)? != serde_json::to_value(response)?
+            {
+                return Err(AgentRuntimeError::Conflict);
+            }
+            return Box::pin(self.resume(task_id)).await;
+        }
+        if task.status.state != TaskState::InputRequired
+            || task.pending_approval_id.as_deref() != Some(challenge_id)
+        {
+            return Err(AgentRuntimeError::Conflict);
+        }
+        self.register_continuation(&accepted, &task, challenge_id, response)
+            .await?;
+        Box::pin(self.resume(task_id)).await
+    }
+
     /// Restrict this accepted recipient subtree using its original signed source.
     /// Trusted hosts must authenticate the current requester before calling this.
     /// This does not settle attempts, refund budgets, release capacity, or assert
@@ -544,10 +1095,33 @@ impl AgentProviderRuntime {
         let accepted = self.load_acceptance(task_id).await?;
         let scope = TaskScope::new(accepted.reference.namespace(), accepted.reference.tenant());
         let task = self.materialize(&accepted).await?;
-        let execution = self
-            .executor
-            .inspect(&accepted.reference, self.binding.target())
-            .await?;
+        let continuation = self.load_continuation_versioned(&accepted).await?;
+        let continuation_pending = continuation
+            .as_ref()
+            .is_some_and(|(record, _)| matches!(record.state, ContinuationState::Registered));
+        let current = match continuation.as_ref().map(|(record, _)| record) {
+            Some(Continuation {
+                state: ContinuationState::Admitted { reference },
+                action,
+                ..
+            }) => Some(CurrentOperation { reference, action }),
+            Some(Continuation {
+                state: ContinuationState::Registered,
+                ..
+            }) => None,
+            None => Some(CurrentOperation {
+                reference: &accepted.reference,
+                action: &accepted.action,
+            }),
+        };
+        let execution = match current {
+            Some(current) => {
+                self.executor
+                    .inspect(current.reference, self.binding.target())
+                    .await?
+            }
+            None => None,
+        };
         if task.status.state.is_terminal()
             && !execution.as_ref().is_some_and(|receipt| matches!(&receipt.status,
                 GovernedProviderStatus::Completed { outcome } if task.status.state == terminal_state(outcome))) {
@@ -563,6 +1137,7 @@ impl AgentProviderRuntime {
                 task,
                 execution: None,
                 future_starts_blocked: self.future_starts_blocked(&accepted).await?,
+                continuation_pending,
             }),
         }
     }
@@ -581,13 +1156,36 @@ impl AgentProviderRuntime {
 
     /// Recover original accepted work. Provider execution retains its existing
     /// immutable operation/attempt journal and coordinator start checkpoint.
+    #[allow(clippy::too_many_lines)]
     pub async fn resume(&self, task_id: uuid::Uuid) -> Result<AgentTaskReceipt, AgentRuntimeError> {
         let accepted = self.load_acceptance(task_id).await?;
         let scope = TaskScope::new(accepted.reference.namespace(), accepted.reference.tenant());
         let mut task = self.materialize(&accepted).await?;
+        let mut continuation = self
+            .load_continuation_versioned(&accepted)
+            .await?
+            .map(|(record, _)| record);
+        if continuation.is_some() && !task.status.state.is_terminal() {
+            (task, continuation) = Box::pin(self.recover_continuation(&accepted, task)).await?;
+        }
+        let current = match continuation.as_ref() {
+            Some(Continuation {
+                state: ContinuationState::Admitted { reference },
+                action,
+                ..
+            }) => CurrentOperation { reference, action },
+            Some(Continuation {
+                state: ContinuationState::Registered,
+                ..
+            }) => return Err(AgentRuntimeError::Conflict),
+            None => CurrentOperation {
+                reference: &accepted.reference,
+                action: &accepted.action,
+            },
+        };
         let previous = self
             .executor
-            .inspect(&accepted.reference, self.binding.target())
+            .inspect(current.reference, self.binding.target())
             .await?;
         // Terminal/paused Task projections do not authorize additional work.
         if task.status.state != TaskState::Submitted && task.status.state != TaskState::Working {
@@ -610,6 +1208,7 @@ impl AgentProviderRuntime {
                     task,
                     execution,
                     future_starts_blocked: self.future_starts_blocked(&accepted).await?,
+                    continuation_pending: false,
                 }),
             };
         }
@@ -622,7 +1221,7 @@ impl AgentProviderRuntime {
         if task.status.state.is_terminal() {
             let latest = self
                 .executor
-                .inspect(&accepted.reference, self.binding.target())
+                .inspect(current.reference, self.binding.target())
                 .await?;
             if !latest.as_ref().is_some_and(|r| match &r.status {
                 GovernedProviderStatus::Completed { outcome } => {
@@ -655,9 +1254,9 @@ impl AgentProviderRuntime {
             _ => {
                 self.executor
                     .execute(
-                        &accepted.reference,
+                        current.reference,
                         &accepted.permits,
-                        &accepted.action,
+                        current.action,
                         self.binding.target(),
                     )
                     .await?
@@ -701,6 +1300,7 @@ impl AgentProviderRuntime {
                         .get(&expected.id)
                         .ok_or(AgentRuntimeError::Conflict)?
                         .cancelled,
+                    continuation_pending: false,
                 });
             }
             task = self
@@ -720,6 +1320,7 @@ impl AgentProviderRuntime {
                 .get(&expected.id)
                 .ok_or(AgentRuntimeError::Conflict)?
                 .cancelled,
+            continuation_pending: false,
         })
     }
 }

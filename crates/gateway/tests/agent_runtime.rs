@@ -1,7 +1,8 @@
 //! Actual governed provider calls behind durable agent-task acceptance.
 use acteon_core::{
-    Action, AgentCard, PrincipalIdentity, PrincipalKind, ProviderResponse, ResourceKind,
-    ResourceRef, Skill, TaskMessage, TaskRole, TaskState, bus_agent_card::Interface,
+    Action, AgentCard, PauseKind, PrincipalIdentity, PrincipalKind, ProviderResponse, ResourceKind,
+    ResourceRef, Skill, TASK_CHALLENGE_ID_METADATA_KEY, TaskMessage, TaskRole, TaskState,
+    bus_agent_card::Interface,
 };
 use acteon_executor::{
     ExecutorConfig, RetryStrategy,
@@ -18,7 +19,9 @@ use acteon_executor::{
 };
 use acteon_gateway::{
     TaskEngine, TaskScope,
-    agent_runtime::{ACCEPTANCE_KIND, AgentProviderRuntime, AgentRuntimeDependencies},
+    agent_runtime::{
+        ACCEPTANCE_KIND, AgentProviderRuntime, AgentRuntimeDependencies, CONTINUATION_KIND,
+    },
 };
 use acteon_governance::{
     AuthorityChange, AuthorityCoordinator, CoordinatorLimits, RootBudgetLimits,
@@ -190,6 +193,7 @@ async fn admission(
 
 struct Counter {
     calls: AtomicUsize,
+    payloads: std::sync::Mutex<Vec<serde_json::Value>>,
     ambiguous: bool,
     blocking: AtomicBool,
     entered: tokio::sync::Notify,
@@ -241,6 +245,7 @@ impl DynProvider for Counter {
     }
     async fn execute(&self, action: &Action) -> Result<ProviderResponse, ProviderError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        self.payloads.lock().unwrap().push(action.payload.clone());
         self.entered.notify_one();
         if self.blocking.load(Ordering::SeqCst) {
             self.release.acquire().await.unwrap().forget();
@@ -364,6 +369,7 @@ impl Fixture {
         );
         let counter = Arc::new(Counter {
             calls: AtomicUsize::new(0),
+            payloads: std::sync::Mutex::new(Vec::new()),
             ambiguous,
             blocking: AtomicBool::new(false),
             entered: tokio::sync::Notify::new(),
@@ -471,6 +477,355 @@ impl Fixture {
             .await
             .unwrap()
     }
+
+    async fn pause_first_invocation(&self) -> (acteon_core::Task, String) {
+        self.counter.blocking.store(true, Ordering::SeqCst);
+        let runtime = self.runtime();
+        self.accept(&runtime).await;
+        let id = self.child.execution_id();
+        let running = tokio::spawn(async move { Box::pin(runtime.resume(id)).await });
+        self.counter.entered.notified().await;
+        let engine = TaskEngine::new(self.state.clone()).with_clock(self.clock.clone());
+        let (paused, challenge) = engine
+            .pause_for_human(
+                &TaskScope::new("city", "tenant"),
+                &id.to_string(),
+                PauseKind::UserInput,
+                Some("Which escalation policy should I use?".into()),
+                None,
+            )
+            .await
+            .unwrap();
+        self.counter.blocking.store(false, Ordering::SeqCst);
+        self.counter.release.add_permits(1);
+        assert!(running.await.unwrap().is_err());
+        assert_eq!(paused.status.state, TaskState::InputRequired);
+        (paused, challenge.approval_id)
+    }
+
+    fn continuation_response(
+        task: &acteon_core::Task,
+        challenge_id: &str,
+        text: &str,
+    ) -> TaskMessage {
+        let mut response = TaskMessage::text("response-1", TaskRole::User, text);
+        response.task_id = Some(task.id.clone());
+        response.context_id.clone_from(&task.context_id);
+        response.metadata.insert(
+            TASK_CHALLENGE_ID_METADATA_KEY.into(),
+            serde_json::Value::String(challenge_id.into()),
+        );
+        response
+    }
+}
+
+async fn independent_clients_recover_registered_continuation(
+    writer: Arc<dyn StateStore>,
+    reader: Arc<dyn StateStore>,
+) {
+    let f = Fixture::new_with_state(Arc::new(FaultStore::new(writer)), false).await;
+    let (paused, challenge_id) = f.pause_first_invocation().await;
+    let response = Fixture::continuation_response(&paused, &challenge_id, "Use policy sev-1.");
+    f.state
+        .fail_next(
+            KeyKind::Custom(CONTINUATION_KIND.into()),
+            WriteOperation::CheckAndSet,
+            FaultTiming::After,
+        )
+        .unwrap();
+    assert!(
+        f.runtime()
+            .continue_input(f.child.execution_id(), &challenge_id, &response, &f.parent,)
+            .await
+            .is_err()
+    );
+    let coordinator = AuthorityCoordinator::connect(reader.clone(), "city", "tenant")
+        .await
+        .unwrap();
+    let contexts = Arc::new(
+        TrustedContextStore::new(
+            reader.clone(),
+            coordinator.clone(),
+            "city-domain".into(),
+            "key".into(),
+            vec![ContextSigningKey::new("key".into(), vec![7; 32]).unwrap()],
+        )
+        .unwrap(),
+    );
+    let replacement = Fixture::create_runtime(
+        reader,
+        coordinator.clone(),
+        contexts,
+        f.clock.clone(),
+        &f.card,
+        &f.bound,
+    );
+    let recovered = Box::pin(replacement.resume(f.child.execution_id()))
+        .await
+        .unwrap();
+    assert_eq!(recovered.task.status.state, TaskState::Completed);
+    assert_eq!(f.counter.calls.load(Ordering::SeqCst), 2);
+    let continuation_id = uuid::Uuid::new_v5(&f.child.execution_id(), challenge_id.as_bytes());
+    let snapshot = coordinator.snapshot().await.unwrap();
+    assert_eq!(
+        snapshot.budget_parents[&continuation_id.to_string()],
+        f.child.execution_id().to_string()
+    );
+    assert_eq!(snapshot.roots[&continuation_id.to_string()].spent_units, 1);
+}
+
+#[tokio::test]
+async fn input_response_runs_as_a_separately_governed_provider_continuation() {
+    let f = Fixture::new(false).await;
+    let (paused, challenge_id) = f.pause_first_invocation().await;
+    let response = Fixture::continuation_response(&paused, &challenge_id, "Use policy sev-1.");
+    let completed = f
+        .runtime()
+        .continue_input(f.child.execution_id(), &challenge_id, &response, &f.parent)
+        .await
+        .unwrap();
+    assert_eq!(completed.task.status.state, TaskState::Completed);
+    assert_eq!(f.counter.calls.load(Ordering::SeqCst), 2);
+    let payloads = f.counter.payloads.lock().unwrap();
+    assert_eq!(payloads[1]["a2a_message"]["messageId"], "response-1");
+    assert_eq!(payloads[1]["a2a_continuation"]["challengeId"], challenge_id);
+    assert_eq!(
+        payloads[1]["a2a_history"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()["parts"][0]["text"],
+        "Use policy sev-1."
+    );
+    drop(payloads);
+    let authority = f.coordinator.snapshot().await.unwrap();
+    let continuation_id = uuid::Uuid::new_v5(&f.child.execution_id(), challenge_id.as_bytes());
+    assert_eq!(
+        authority.budget_parents[&continuation_id.to_string()],
+        paused.id
+    );
+    assert_eq!(authority.roots[&continuation_id.to_string()].spent_units, 1);
+}
+
+#[tokio::test]
+async fn continuation_waits_for_definitive_predecessor_completion() {
+    let f = Fixture::new(false).await;
+    f.counter.blocking.store(true, Ordering::SeqCst);
+    let runtime = f.runtime();
+    f.accept(&runtime).await;
+    let id = f.child.execution_id();
+    let running = tokio::spawn(async move { Box::pin(runtime.resume(id)).await });
+    f.counter.entered.notified().await;
+    let engine = TaskEngine::new(f.state.clone()).with_clock(f.clock.clone());
+    let (paused, challenge) = engine
+        .pause_for_human(
+            &TaskScope::new("city", "tenant"),
+            &id.to_string(),
+            PauseKind::UserInput,
+            Some("Which escalation policy should I use?".into()),
+            None,
+        )
+        .await
+        .unwrap();
+    let response =
+        Fixture::continuation_response(&paused, &challenge.approval_id, "Use policy sev-1.");
+    assert!(
+        f.runtime()
+            .continue_input(id, &challenge.approval_id, &response, &f.parent)
+            .await
+            .is_err()
+    );
+    assert!(
+        f.state
+            .get(&StateKey::new(
+                "city",
+                "tenant",
+                KeyKind::Custom(CONTINUATION_KIND.into()),
+                id.to_string(),
+            ))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    f.counter.blocking.store(false, Ordering::SeqCst);
+    f.counter.release.add_permits(1);
+    assert!(running.await.unwrap().is_err());
+    let completed = f
+        .runtime()
+        .continue_input(id, &challenge.approval_id, &response, &f.parent)
+        .await
+        .unwrap();
+    assert_eq!(completed.task.status.state, TaskState::Completed);
+    assert_eq!(f.counter.calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn continuation_replay_and_concurrency_invoke_the_provider_once() {
+    let f = Fixture::new(false).await;
+    let (paused, challenge_id) = f.pause_first_invocation().await;
+    let response = Fixture::continuation_response(&paused, &challenge_id, "Use policy sev-1.");
+    let first = f.runtime();
+    let second = f.runtime();
+    let (left, right) = tokio::join!(
+        first.continue_input(f.child.execution_id(), &challenge_id, &response, &f.parent,),
+        second.continue_input(f.child.execution_id(), &challenge_id, &response, &f.parent,)
+    );
+    assert_eq!(left.unwrap().task.status.state, TaskState::Completed);
+    assert_eq!(right.unwrap().task.status.state, TaskState::Completed);
+    assert_eq!(f.counter.calls.load(Ordering::SeqCst), 2);
+    let replay = f
+        .runtime()
+        .continue_input(f.child.execution_id(), &challenge_id, &response, &f.parent)
+        .await
+        .unwrap();
+    assert_eq!(replay.task.status.state, TaskState::Completed);
+    assert_eq!(f.counter.calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn durable_registered_continuation_recovers_after_a_lost_write_acknowledgement() {
+    let f = Fixture::new(false).await;
+    let (paused, challenge_id) = f.pause_first_invocation().await;
+    let response = Fixture::continuation_response(&paused, &challenge_id, "Use policy sev-1.");
+    f.state
+        .fail_next(
+            KeyKind::Custom(CONTINUATION_KIND.into()),
+            WriteOperation::CheckAndSet,
+            FaultTiming::After,
+        )
+        .unwrap();
+    assert!(
+        f.runtime()
+            .continue_input(f.child.execution_id(), &challenge_id, &response, &f.parent,)
+            .await
+            .is_err()
+    );
+    assert_eq!(f.counter.calls.load(Ordering::SeqCst), 1);
+    let pending = f.runtime().observe(f.child.execution_id()).await.unwrap();
+    assert_eq!(pending.task.status.state, TaskState::InputRequired);
+    assert!(pending.continuation_pending);
+    let recovered = Box::pin(f.runtime().resume(f.child.execution_id()))
+        .await
+        .unwrap();
+    assert_eq!(recovered.task.status.state, TaskState::Completed);
+    assert_eq!(f.counter.calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn current_authority_is_rechecked_before_a_registered_response_leaves_its_pause() {
+    let f = Fixture::new(false).await;
+    let (paused, challenge_id) = f.pause_first_invocation().await;
+    let response = Fixture::continuation_response(&paused, &challenge_id, "Use policy sev-1.");
+    f.state
+        .fail_next(
+            KeyKind::Custom(CONTINUATION_KIND.into()),
+            WriteOperation::CheckAndSet,
+            FaultTiming::After,
+        )
+        .unwrap();
+    assert!(
+        f.runtime()
+            .continue_input(f.child.execution_id(), &challenge_id, &response, &f.parent,)
+            .await
+            .is_err()
+    );
+    f.coordinator
+        .change(
+            "close-before-continuation",
+            AuthorityChange::CancelExecution {
+                execution_id: f.child.execution_id().to_string(),
+            },
+            "caller",
+            "close accepted agent task",
+        )
+        .await
+        .unwrap();
+    assert!(
+        Box::pin(f.runtime().resume(f.child.execution_id()))
+            .await
+            .is_err()
+    );
+    let task = TaskEngine::new(f.state.clone())
+        .get_task(
+            &TaskScope::new("city", "tenant"),
+            &f.child.execution_id().to_string(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(task.status.state, TaskState::InputRequired);
+    assert_eq!(f.counter.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn corrupt_registered_continuation_fails_before_task_or_provider_progress() {
+    let f = Fixture::new(false).await;
+    let (paused, challenge_id) = f.pause_first_invocation().await;
+    let response = Fixture::continuation_response(&paused, &challenge_id, "Use policy sev-1.");
+    f.state
+        .fail_next(
+            KeyKind::Custom(CONTINUATION_KIND.into()),
+            WriteOperation::CheckAndSet,
+            FaultTiming::After,
+        )
+        .unwrap();
+    assert!(
+        f.runtime()
+            .continue_input(f.child.execution_id(), &challenge_id, &response, &f.parent,)
+            .await
+            .is_err()
+    );
+    let key = StateKey::new(
+        "city",
+        "tenant",
+        KeyKind::Custom(CONTINUATION_KIND.into()),
+        f.child.execution_id().to_string(),
+    );
+    let mut corrupt: serde_json::Value =
+        serde_json::from_str(&f.state.get(&key).await.unwrap().unwrap()).unwrap();
+    corrupt["prior_task"]["history"][0]["parts"][0]["text"] =
+        serde_json::json!("substituted history");
+    f.state.set(&key, &corrupt.to_string(), None).await.unwrap();
+    assert!(
+        Box::pin(f.runtime().resume(f.child.execution_id()))
+            .await
+            .is_err()
+    );
+    let task = TaskEngine::new(f.state.clone())
+        .get_task(
+            &TaskScope::new("city", "tenant"),
+            &f.child.execution_id().to_string(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(task.status.state, TaskState::InputRequired);
+    assert_eq!(f.counter.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn continuation_rejects_a_different_response_and_a_different_requester() {
+    let f = Fixture::new(false).await;
+    let (paused, challenge_id) = f.pause_first_invocation().await;
+    let response = Fixture::continuation_response(&paused, &challenge_id, "Use policy sev-1.");
+    let other = Fixture::continuation_response(&paused, &challenge_id, "Use policy sev-2.");
+    assert!(
+        f.runtime()
+            .continue_input(f.child.execution_id(), &challenge_id, &response, &f.child,)
+            .await
+            .is_err()
+    );
+    f.runtime()
+        .continue_input(f.child.execution_id(), &challenge_id, &response, &f.parent)
+        .await
+        .unwrap();
+    assert!(
+        f.runtime()
+            .continue_input(f.child.execution_id(), &challenge_id, &other, &f.parent,)
+            .await
+            .is_err()
+    );
+    assert_eq!(f.counter.calls.load(Ordering::SeqCst), 2);
 }
 #[tokio::test]
 async fn accepted_task_executes_under_recipient_authority_and_shared_sponsorship() {
@@ -1132,6 +1487,55 @@ async fn independent_redis_runtime_recovers_lost_acceptance_and_known_or_uncerta
                 GovernedProviderStatus::ReconciliationRequired { .. }
             ));
         }
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires ACTEON_GOVERNANCE_REDIS_URL; independent configured Redis clients"]
+async fn independent_redis_runtime_recovers_registered_input_continuation() {
+    use acteon_state_redis::{RedisConfig, RedisStateStore};
+    let config = RedisConfig {
+        url: std::env::var("ACTEON_GOVERNANCE_REDIS_URL").unwrap(),
+        prefix: format!("agent-continuation-{}", uuid::Uuid::new_v4()),
+        ..Default::default()
+    };
+    let writer: Arc<dyn StateStore> = Arc::new(RedisStateStore::new(&config).unwrap());
+    let reader: Arc<dyn StateStore> = Arc::new(RedisStateStore::new(&config).unwrap());
+    independent_clients_recover_registered_continuation(writer, reader).await;
+}
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL; independent configured PostgreSQL clients"]
+async fn independent_postgres_runtime_recovers_registered_input_continuation() {
+    use acteon_state_postgres::{PostgresConfig, PostgresStateStore};
+    use futures::FutureExt;
+    let config = PostgresConfig {
+        url: std::env::var("DATABASE_URL").unwrap(),
+        table_prefix: format!("agent_continuation_{}_", uuid::Uuid::new_v4().simple()),
+        ..Default::default()
+    };
+    let writer: Arc<dyn StateStore> =
+        Arc::new(PostgresStateStore::new(config.clone()).await.unwrap());
+    let reader: Arc<dyn StateStore> =
+        Arc::new(PostgresStateStore::new(config.clone()).await.unwrap());
+    let result = std::panic::AssertUnwindSafe(independent_clients_recover_registered_continuation(
+        writer, reader,
+    ))
+    .catch_unwind()
+    .await;
+    let pool = sqlx::PgPool::connect(&config.url).await.unwrap();
+    for suffix in ["state", "locks", "timeout_index", "chain_ready_index"] {
+        sqlx::query(&format!(
+            "DROP TABLE public.{}{suffix}",
+            config.table_prefix
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    pool.close().await;
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
     }
 }
 

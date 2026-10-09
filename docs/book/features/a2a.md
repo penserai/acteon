@@ -279,6 +279,17 @@ approval and moves the still-paused Task to `Failed`; cancellation during the
 two-row handoff closes the claimed approval instead of leaving it in
 `Approving`.
 
+Hosted governed agents continue through a separate provider execution for each
+accepted challenge. Acteon records that intent before leaving the pause, derives
+a deterministic child execution under the recipient's existing permit ceiling,
+and sends the provider both the exact response and bounded conversation history.
+The background driver recovers a registered continuation even if a crash left
+the Task visibly paused. Identical concurrent calls converge on one provider
+attempt; changed content or a different authenticated requester is refused.
+Cross-server peer delivery remains private until the authenticated HTTP adapter
+and durable-backend contract suite connect this target runtime to the source
+continuation journal.
+
 `AuthRequired` has a separate trust boundary. Message content cannot grant
 authority and is never treated as a credential. A trusted authorization flow
 must verify an out-of-band credential or authorization reference before that
