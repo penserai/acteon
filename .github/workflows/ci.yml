@@ -381,6 +381,10 @@ jobs:
         env:
           ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
         run: cargo test --locked -p acteon-gateway --test task_input_challenges independent_redis_clients_pass_the_input_challenge_contract -- --ignored
+      - name: Verifier-backed authorization challenge multi-client Redis contract
+        env:
+          ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
+        run: cargo test --locked -p acteon-gateway --test task_authorization_challenges independent_redis_clients_pass_the_authorization_challenge_contract -- --ignored
       - name: Authenticated agent services restart, ambiguity and storage contracts
         env:
           ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
@@ -401,6 +405,8 @@ jobs:
         run: cargo test --locked -p acteon-executor --test governed_provider independent_postgres_workers_observe_one_provider_attempt -- --ignored
       - name: Structured input challenge multi-client PostgreSQL contract
         run: cargo test --locked -p acteon-gateway --test task_input_challenges independent_postgres_clients_pass_the_input_challenge_contract -- --ignored
+      - name: Verifier-backed authorization challenge multi-client PostgreSQL contract
+        run: cargo test --locked -p acteon-gateway --test task_authorization_challenges independent_postgres_clients_pass_the_authorization_challenge_contract -- --ignored
       - name: Governed agent continuation multi-client PostgreSQL contract
         run: cargo test --locked -p acteon-gateway --test agent_runtime independent_postgres_runtime_recovers_registered_input_continuation -- --ignored
       - name: Qualified plan multi-client PostgreSQL handoff contract

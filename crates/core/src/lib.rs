@@ -67,7 +67,8 @@ pub use bus_agent_card::{
 pub use bus_approval::{
     BusApproval, BusApprovalEnvelope, BusApprovalStatus, BusApprovalValidationError,
     DEFAULT_APPROVAL_TTL_MS, MAX_APPROVAL_NOTE_BYTES, MAX_APPROVAL_TTL_MS, PauseKind,
-    TaskPauseResolution, validate_approval_id, validate_approval_ttl,
+    TaskAuthorizationRequirement, TaskAuthorizationResolution, TaskPauseResolution,
+    validate_approval_id, validate_approval_ttl,
 };
 pub use bus_conversation::{
     Conversation, ConversationMessage, ConversationState, ConversationTransition,

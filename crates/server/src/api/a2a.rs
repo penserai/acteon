@@ -206,7 +206,15 @@ impl From<TaskEngineError> for A2aError {
             | TaskEngineError::ChallengeResponseConflict(_)
             | TaskEngineError::ChallengeResponseTaskMismatch
             | TaskEngineError::ChallengeResponseContextMismatch
-            | TaskEngineError::ChallengeResponseRole => A2aError::invalid_params(e.to_string()),
+            | TaskEngineError::ChallengeResponseRole
+            | TaskEngineError::AuthorizationChallengeUnbound(_)
+            | TaskEngineError::AuthorizationRequirementRequired
+            | TaskEngineError::AuthorizationVerifierMismatch { .. }
+            | TaskEngineError::AuthorizationEvidenceExpired
+            | TaskEngineError::AuthorizationDecisionConflict(_)
+            | TaskEngineError::AuthorizationVerification(
+                acteon_gateway::TaskAuthorizationVerificationError::Denied,
+            ) => A2aError::invalid_params(e.to_string()),
             // Contention is transient and server-side; the retry count
             // is not useful to the caller.
             TaskEngineError::CasExhausted(_) | TaskEngineError::ChallengeCasExhausted(_) => {
@@ -219,7 +227,11 @@ impl From<TaskEngineError> for A2aError {
             other @ (TaskEngineError::State(_)
             | TaskEngineError::Audit(_)
             | TaskEngineError::Serde(_)
-            | TaskEngineError::ApprovalConflict(_)) => {
+            | TaskEngineError::ApprovalConflict(_)
+            | TaskEngineError::AuthorizationVerification(
+                acteon_gateway::TaskAuthorizationVerificationError::Unavailable
+                | acteon_gateway::TaskAuthorizationVerificationError::Invalid(_),
+            )) => {
                 tracing::error!(error = %other, "a2a task-engine internal error");
                 A2aError::internal("internal error")
             }
@@ -1512,10 +1524,22 @@ mod tests {
         e.transition_task(&scope(), &task_id, TaskState::Working, None)
             .await
             .unwrap();
-        e.pause_for_human(
+        e.pause_for_authorization(
             &scope(),
             &task_id,
-            acteon_core::PauseKind::UserAuth,
+            acteon_core::TaskAuthorizationRequirement {
+                verifier_id: "test-verifier".into(),
+                verifier_revision: 1,
+                authorization_request_id: "request-1".into(),
+                recipient: acteon_core::PrincipalIdentity::new(
+                    "test-agent",
+                    acteon_core::PrincipalKind::Agent,
+                )
+                .unwrap(),
+                credential_authority: "test-authority".into(),
+                audience: "test-audience".into(),
+                required_scopes: vec!["read".into()],
+            },
             None,
             None,
         )

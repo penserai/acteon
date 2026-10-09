@@ -39,6 +39,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::bus_task::TaskState;
 use crate::bus_tool::ToolCall;
+use crate::principal::PrincipalIdentity;
 
 /// Lifecycle status for a pre-publish approval. Transitions:
 ///
@@ -65,13 +66,13 @@ pub enum BusApprovalStatus {
     /// Awaiting an operator decision.
     Pending,
     /// A decision is durably claimed and its side effect is in flight. For an
-    /// operator approval this means Kafka production; for structured task
-    /// input it means the response intent is fixed while the task-row update
+    /// operator approval this means Kafka production; for a task challenge it
+    /// means the input or verifier decision is fixed while the task-row update
     /// is completed. The row is no longer eligible for `reject`.
     Approving,
     /// Decision completed. For an operator approval, the parked envelope
     /// landed on Kafka and its offset is recorded. For structured task input,
-    /// the bound response was committed to Task history and the Task resumed.
+    /// the bound response or authorization decision resumed the Task.
     Approved,
     /// Rejected; the parked envelope will never reach Kafka.
     Rejected,
@@ -187,6 +188,42 @@ pub struct TaskPauseResolution {
     pub content_digest: String,
 }
 
+/// Host-issued requirements for satisfying an `AuthRequired` task pause.
+///
+/// The authorization request is an opaque reference to verifier-owned state,
+/// not a credential. The verifier binds that state to every field here plus
+/// the task and challenge identifiers supplied at verification time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct TaskAuthorizationRequirement {
+    pub verifier_id: String,
+    pub verifier_revision: u64,
+    pub authorization_request_id: String,
+    pub recipient: PrincipalIdentity,
+    pub credential_authority: String,
+    pub audience: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_scopes: Vec<String>,
+}
+
+/// Durable, secret-free intent recorded after a trusted verifier accepts an
+/// authorization request. Acteon retains the opaque request ID in the
+/// requirement and stores only its digest in the decision intent; credential
+/// material remains in the verifier.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct TaskAuthorizationResolution {
+    pub verifier_id: String,
+    pub verifier_revision: u64,
+    pub authorization_request_digest: String,
+    pub decision_id: String,
+    pub subject: PrincipalIdentity,
+    pub verified_at: DateTime<Utc>,
+    pub valid_until: DateTime<Utc>,
+}
+
 impl BusApprovalEnvelope {
     /// Return the underlying envelope's `call_id` / `stream_id` for
     /// audit + log correlation. Tool-calls expose `call_id`; future
@@ -245,6 +282,15 @@ pub struct BusApproval {
     /// input and credentials are never copied into the approval row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_resolution: Option<TaskPauseResolution>,
+    /// Host-owned verifier binding for `UserAuth` pauses. Legacy unbound auth
+    /// pauses deserialize, but cannot be fulfilled by the verifier-backed
+    /// operation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorization_requirement: Option<TaskAuthorizationRequirement>,
+    /// Secret-free verifier decision intent while an authorization is being
+    /// committed to the task row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorization_resolution: Option<TaskAuthorizationResolution>,
     pub status: BusApprovalStatus,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
@@ -341,6 +387,8 @@ impl BusApproval {
             envelope: None,
             task_id: Some(task_id.into()),
             task_resolution: None,
+            authorization_requirement: None,
+            authorization_resolution: None,
             status: BusApprovalStatus::Pending,
             created_at,
             expires_at,
@@ -392,6 +440,8 @@ impl BusApproval {
                     || self.conversation_id.is_none()
                     || self.task_id.is_some()
                     || self.task_resolution.is_some()
+                    || self.authorization_requirement.is_some()
+                    || self.authorization_resolution.is_some()
                 {
                     return Err(BusApprovalValidationError::OperatorApprovalShape);
                 }
@@ -427,10 +477,86 @@ impl BusApproval {
                 if !resolution_shape_is_valid {
                     return Err(BusApprovalValidationError::TaskPauseResolutionShape);
                 }
+                let auth_shape_is_valid = match self.kind {
+                    PauseKind::UserInput => {
+                        self.authorization_requirement.is_none()
+                            && self.authorization_resolution.is_none()
+                    }
+                    PauseKind::UserAuth => match self.authorization_requirement.as_ref() {
+                        Some(requirement) => {
+                            valid_authorization_requirement(requirement)
+                                && match self.status {
+                                    BusApprovalStatus::Approving | BusApprovalStatus::Approved => {
+                                        self.authorization_resolution
+                                            .as_ref()
+                                            .is_some_and(valid_authorization_resolution)
+                                    }
+                                    _ => self.authorization_resolution.is_none(),
+                                }
+                        }
+                        None => {
+                            self.authorization_resolution.is_none()
+                                && !matches!(
+                                    self.status,
+                                    BusApprovalStatus::Approving | BusApprovalStatus::Approved
+                                )
+                        }
+                    },
+                    PauseKind::OperatorApproval => unreachable!(),
+                };
+                if !auth_shape_is_valid {
+                    return Err(BusApprovalValidationError::TaskPauseResolutionShape);
+                }
             }
         }
         Ok(())
     }
+}
+
+fn valid_authorization_requirement(requirement: &TaskAuthorizationRequirement) -> bool {
+    valid_identifier(&requirement.verifier_id)
+        && requirement.verifier_revision > 0
+        && valid_bounded_text(&requirement.authorization_request_id)
+        && valid_bounded_text(&requirement.credential_authority)
+        && valid_bounded_text(&requirement.audience)
+        && requirement.required_scopes.len() <= 32
+        && requirement
+            .required_scopes
+            .iter()
+            .all(|scope| valid_bounded_text(scope))
+        && requirement
+            .required_scopes
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            == requirement.required_scopes.len()
+}
+
+fn valid_authorization_resolution(resolution: &TaskAuthorizationResolution) -> bool {
+    valid_identifier(&resolution.verifier_id)
+        && resolution.verifier_revision > 0
+        && resolution.authorization_request_digest.len() == 64
+        && resolution
+            .authorization_request_digest
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+        && valid_bounded_text(&resolution.decision_id)
+        && resolution.valid_until > resolution.verified_at
+}
+
+fn valid_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 120
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+fn valid_bounded_text(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 512
+        && value.trim() == value
+        && !value.chars().any(char::is_control)
 }
 
 /// Shared id-validation. Mirrors the rule used across the rest of
@@ -481,6 +607,8 @@ mod tests {
             envelope: Some(BusApprovalEnvelope::ToolCall(call)),
             task_id: None,
             task_resolution: None,
+            authorization_requirement: None,
+            authorization_resolution: None,
             status: BusApprovalStatus::Pending,
             created_at: now,
             expires_at: now + chrono::Duration::hours(1),
@@ -693,6 +821,46 @@ mod tests {
             message_id: "response-1".into(),
             content_digest: "a".repeat(64),
         });
+        assert_eq!(
+            a.validate(),
+            Err(BusApprovalValidationError::TaskPauseResolutionShape)
+        );
+    }
+
+    #[test]
+    fn auth_resolution_requires_a_bounded_host_requirement() {
+        let mut a = sample_task_pause(PauseKind::UserAuth);
+        let now = Utc::now();
+        a.authorization_requirement = Some(TaskAuthorizationRequirement {
+            verifier_id: "workload-identity".into(),
+            verifier_revision: 3,
+            authorization_request_id: "auth-session-7".into(),
+            recipient: PrincipalIdentity::new("diagnostic-agent", crate::PrincipalKind::Agent)
+                .unwrap(),
+            credential_authority: "vault-prod".into(),
+            audience: "incident-api".into(),
+            required_scopes: vec!["incidents.read".into()],
+        });
+        a.status = BusApprovalStatus::Approving;
+        assert_eq!(
+            a.validate(),
+            Err(BusApprovalValidationError::TaskPauseResolutionShape)
+        );
+        a.authorization_resolution = Some(TaskAuthorizationResolution {
+            verifier_id: "workload-identity".into(),
+            verifier_revision: 3,
+            authorization_request_digest: "a".repeat(64),
+            decision_id: "decision-7".into(),
+            subject: PrincipalIdentity::new("alice", crate::PrincipalKind::Human).unwrap(),
+            verified_at: now,
+            valid_until: now + chrono::Duration::minutes(5),
+        });
+        a.validate().unwrap();
+        a.authorization_requirement
+            .as_mut()
+            .unwrap()
+            .required_scopes
+            .push("incidents.read".into());
         assert_eq!(
             a.validate(),
             Err(BusApprovalValidationError::TaskPauseResolutionShape)

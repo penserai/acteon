@@ -328,6 +328,8 @@ mod tests {
             envelope: Some(BusApprovalEnvelope::ToolCall(call)),
             task_id: None,
             task_resolution: None,
+            authorization_requirement: None,
+            authorization_resolution: None,
             status: BusApprovalStatus::Approving,
             created_at: now - chrono::Duration::seconds(120),
             expires_at: now + chrono::Duration::hours(1),

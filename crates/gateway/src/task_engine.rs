@@ -46,12 +46,11 @@
 //!
 //! ## Human-in-the-loop pauses
 //!
-//! [`TaskEngine::pause_for_human`] pauses a Task on a human: it
-//! transitions the Task to [`TaskState::AuthRequired`] /
-//! [`TaskState::InputRequired`] and creates the matching
-//! [`acteon_core::BusApproval`] row (a [`PauseKind::UserAuth`] /
-//! [`PauseKind::UserInput`] kind), stamping the approval id onto
-//! `Task.pending_approval_id`. `BusApproval` is the single
+//! [`TaskEngine::pause_for_human`] creates structured-input pauses, while
+//! [`TaskEngine::pause_for_authorization`] requires the host's complete
+//! verifier binding before creating an authorization pause. Both stamp the
+//! matching [`acteon_core::BusApproval`] ID onto `Task.pending_approval_id`.
+//! `BusApproval` is the single
 //! "waiting on a human" record — the same row type the bus's
 //! operator-approval gate uses. The Task transition itself rides the
 //! audit integration above.
@@ -74,12 +73,17 @@ use acteon_audit::{AuditError, store::AuditStore};
 use acteon_core::{
     Artifact, BusApproval, BusApprovalStatus, BusApprovalValidationError, DEFAULT_APPROVAL_TTL_MS,
     MAX_APPROVAL_TTL_MS, MAX_REFERENCE_DEPTH, PauseKind, Task, TaskArtifactUpdateEvent,
-    TaskMessage, TaskPauseResolution, TaskRole, TaskState, TaskValidationError,
+    TaskAuthorizationRequirement, TaskAuthorizationResolution, TaskMessage, TaskPauseResolution,
+    TaskRole, TaskState, TaskValidationError,
 };
 use acteon_state::{CasResult, KeyKind, StateError, StateKey, StateStore};
 
 use crate::audit_helpers::{
     build_task_audit_record, build_task_terminal_audit_record, task_terminal_audit_id,
+};
+use crate::task_authorization::{
+    TaskAuthorizationVerification, TaskAuthorizationVerificationError, TaskAuthorizationVerifier,
+    VerifiedTaskAuthorization,
 };
 
 /// Max number of CAS retry attempts before declaring contention
@@ -811,8 +815,8 @@ impl TaskEngine {
         .await
     }
 
-    /// Pause a Task on a human and create the [`BusApproval`] row
-    /// that represents the pause.
+    /// Pause a Task for structured human input and create its
+    /// [`BusApproval`] row.
     ///
     /// This is the Task-side entry point for the `BusApproval`
     /// generalization. It performs two writes:
@@ -821,18 +825,17 @@ impl TaskEngine {
     ///    `Pending`) at [`KeyKind::BusApproval`], plus a
     ///    [`KeyKind::PendingBusApprovals`] index entry so the row
     ///    appears in `status=pending` listings.
-    /// 2. CAS-mutates the Task: transitions it to the state `kind`
-    ///    maps to ([`TaskState::AuthRequired`] for
-    ///    [`PauseKind::UserAuth`], [`TaskState::InputRequired`] for
-    ///    [`PauseKind::UserInput`]) and stamps the approval id onto
-    ///    `Task.pending_approval_id`.
+    /// 2. CAS-mutates the Task to [`TaskState::InputRequired`] and stamps the
+    ///    approval id onto `Task.pending_approval_id`.
     ///
-    /// `kind` must be a task-pause kind;
+    /// `kind` must be [`PauseKind::UserInput`].
     /// [`PauseKind::OperatorApproval`] returns
-    /// [`TaskEngineError::InvalidPauseKind`].
+    /// [`TaskEngineError::InvalidPauseKind`]; [`PauseKind::UserAuth`] returns
+    /// [`TaskEngineError::AuthorizationRequirementRequired`] so callers use
+    /// [`TaskEngine::pause_for_authorization`] with a host-owned binding.
     ///
     /// The transition itself can be rejected: A2A only allows
-    /// `AuthRequired` / `InputRequired` from `Working`, so a task
+    /// `InputRequired` from `Working`, so a task
     /// still `Submitted` or already terminal cannot be paused.
     ///
     /// The two writes are not one transaction (separate state keys —
@@ -854,6 +857,45 @@ impl TaskEngine {
         reason: Option<String>,
         ttl: Option<Duration>,
     ) -> Result<(Task, BusApproval), TaskEngineError> {
+        if kind == PauseKind::UserAuth {
+            return Err(TaskEngineError::AuthorizationRequirementRequired);
+        }
+        self.pause_task(scope, task_id, kind, reason, ttl, None)
+            .await
+    }
+
+    /// Pause a task on an authorization request whose complete trust binding
+    /// was issued by the host. Only a verifier with the pinned ID and revision
+    /// can later resume it.
+    pub async fn pause_for_authorization(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        requirement: TaskAuthorizationRequirement,
+        reason: Option<String>,
+        ttl: Option<Duration>,
+    ) -> Result<(Task, BusApproval), TaskEngineError> {
+        self.pause_task(
+            scope,
+            task_id,
+            PauseKind::UserAuth,
+            reason,
+            ttl,
+            Some(requirement),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn pause_task(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        kind: PauseKind,
+        reason: Option<String>,
+        ttl: Option<Duration>,
+        authorization_requirement: Option<TaskAuthorizationRequirement>,
+    ) -> Result<(Task, BusApproval), TaskEngineError> {
         // A task-pause kind only — `OperatorApproval` gates a bus
         // tool-call, not a Task, and maps to no task state.
         let Some(target_state) = kind.task_state() else {
@@ -871,7 +913,7 @@ impl TaskEngine {
             now + chrono::Duration::milliseconds(i64::try_from(ttl_ms).unwrap_or(i64::MAX));
         let approval_id = uuid::Uuid::now_v7().to_string();
         let challenge_reason = reason.clone();
-        let approval = BusApproval::new_task_pause(
+        let mut approval = BusApproval::new_task_pause(
             &approval_id,
             &scope.namespace,
             &scope.tenant,
@@ -881,6 +923,7 @@ impl TaskEngine {
             now,
             expires_at,
         );
+        approval.authorization_requirement = authorization_requirement;
         approval.validate()?;
 
         // Write 1: persist the approval row. `check_and_set` so a
@@ -1068,6 +1111,565 @@ impl TaskEngine {
         }
         debug!(%task_id, %approval_id, message_id = %resolution.message_id, "task input challenge resolved");
         Ok((task, approval))
+    }
+
+    /// Verify and consume the exact host-bound `UserAuth` challenge, then
+    /// resume the task without accepting or persisting credential material.
+    ///
+    /// The verifier is selected by the persisted requirement, never by the
+    /// caller. Its successful decision is claimed before the task-row CAS.
+    /// Identical retries recover either side of that two-row boundary.
+    pub async fn resolve_authorization(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        approval_id: &str,
+        verifier: &dyn TaskAuthorizationVerifier,
+    ) -> Result<(Task, BusApproval), TaskEngineError> {
+        let (task, approval, requirement) = self
+            .prepare_authorization_resolution(scope, task_id, approval_id)
+            .await?;
+
+        // A lost response after the task CAS needs no fresh external decision:
+        // the exact claimed verifier result can only be finalized, never used
+        // to mutate another task or challenge.
+        if task.status.state == TaskState::Working && task.pending_approval_id.is_none() {
+            let resolution = approval.authorization_resolution.as_ref().ok_or_else(|| {
+                TaskEngineError::AuthorizationDecisionConflict(approval_id.to_string())
+            })?;
+            let finished = self
+                .finish_authorization_resolution(scope, task_id, approval_id, resolution)
+                .await?;
+            self.remove_pending_challenge(scope, approval_id).await;
+            return Ok((task, finished));
+        }
+
+        if verifier.verifier_id() != requirement.verifier_id
+            || verifier.revision() != requirement.verifier_revision
+        {
+            return Err(TaskEngineError::AuthorizationVerifierMismatch {
+                expected_id: requirement.verifier_id,
+                expected_revision: requirement.verifier_revision,
+            });
+        }
+
+        let request = TaskAuthorizationVerification {
+            scope: scope.clone(),
+            task_id: task_id.to_string(),
+            challenge_id: approval_id.to_string(),
+            requirement: requirement.clone(),
+        };
+        let evidence = verifier.verify(&request).await?;
+        let proposed = self.authorization_resolution(&requirement, evidence)?;
+        let claimed = match self
+            .claim_authorization_resolution(scope, task_id, approval_id, &proposed)
+            .await
+        {
+            Ok(claimed) => claimed,
+            Err(error) => {
+                if matches!(
+                    error,
+                    TaskEngineError::ChallengeExpired(_)
+                        | TaskEngineError::ChallengeClosed {
+                            status: BusApprovalStatus::Expired,
+                            ..
+                        }
+                ) && let Err(expire_error) = self
+                    .fail_expired_authorization_challenge(scope, task_id, approval_id)
+                    .await
+                {
+                    warn!(%task_id, %approval_id, %expire_error, "failed to project expired authorization challenge onto task");
+                }
+                return Err(error);
+            }
+        };
+        let resolution = claimed.authorization_resolution.clone().ok_or_else(|| {
+            TaskEngineError::AuthorizationDecisionConflict(approval_id.to_string())
+        })?;
+
+        let task = match self
+            .apply_authorization_resolution(scope, task_id, approval_id, &resolution)
+            .await
+        {
+            Ok(task) => task,
+            Err(error) => {
+                if matches!(
+                    error,
+                    TaskEngineError::NotFound(_)
+                        | TaskEngineError::Validation(_)
+                        | TaskEngineError::ChallengeMismatch { .. }
+                ) && let Err(close_error) = self
+                    .reject_abandoned_authorization_resolution(
+                        scope,
+                        task_id,
+                        approval_id,
+                        &resolution,
+                    )
+                    .await
+                {
+                    warn!(%task_id, %approval_id, %close_error, "failed to close abandoned authorization resolution");
+                }
+                return Err(error);
+            }
+        };
+        let approval = self
+            .finish_authorization_resolution(scope, task_id, approval_id, &resolution)
+            .await?;
+        self.remove_pending_challenge(scope, approval_id).await;
+        debug!(%task_id, %approval_id, decision_id = %resolution.decision_id, "task authorization challenge resolved");
+        Ok((task, approval))
+    }
+
+    async fn prepare_authorization_resolution(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        approval_id: &str,
+    ) -> Result<(Task, BusApproval, TaskAuthorizationRequirement), TaskEngineError> {
+        let task = self
+            .get_task(scope, task_id)
+            .await?
+            .ok_or_else(|| TaskEngineError::NotFound(task_id.to_string()))?;
+        match task.status.state {
+            TaskState::AuthRequired if task.pending_approval_id.as_deref() == Some(approval_id) => {
+            }
+            TaskState::Working if task.pending_approval_id.is_none() => {}
+            _ => {
+                return Err(TaskEngineError::ChallengeMismatch {
+                    task_id: task_id.to_string(),
+                    approval_id: approval_id.to_string(),
+                });
+            }
+        }
+        let key = StateKey::new(
+            scope.namespace.clone(),
+            scope.tenant.clone(),
+            KeyKind::BusApproval,
+            approval_id,
+        );
+        let raw = self
+            .state
+            .get(&key)
+            .await?
+            .ok_or_else(|| TaskEngineError::ChallengeNotFound(approval_id.to_string()))?;
+        let approval: BusApproval = serde_json::from_str(&raw)?;
+        let requirement =
+            Self::validate_authorization_approval(scope, task_id, approval_id, &approval)?.clone();
+        Ok((task, approval, requirement))
+    }
+
+    fn authorization_resolution(
+        &self,
+        requirement: &TaskAuthorizationRequirement,
+        evidence: VerifiedTaskAuthorization,
+    ) -> Result<TaskAuthorizationResolution, TaskEngineError> {
+        let now = self.clock.now();
+        if evidence.verified_at > now || evidence.valid_until <= now {
+            return Err(TaskEngineError::AuthorizationEvidenceExpired);
+        }
+        let resolution = TaskAuthorizationResolution {
+            verifier_id: requirement.verifier_id.clone(),
+            verifier_revision: requirement.verifier_revision,
+            authorization_request_digest: hex::encode(Sha256::digest(
+                requirement.authorization_request_id.as_bytes(),
+            )),
+            decision_id: evidence.decision_id,
+            subject: evidence.subject,
+            verified_at: evidence.verified_at,
+            valid_until: evidence.valid_until,
+        };
+        // Reuse BusApproval validation as the bounded wire-shape authority.
+        let mut probe = BusApproval::new_task_pause(
+            "authorization-probe",
+            "probe",
+            "probe",
+            PauseKind::UserAuth,
+            "probe",
+            None,
+            now,
+            now + chrono::Duration::seconds(1),
+        );
+        probe.authorization_requirement = Some(requirement.clone());
+        probe.authorization_resolution = Some(resolution.clone());
+        probe.status = BusApprovalStatus::Approving;
+        probe.validate()?;
+        Ok(resolution)
+    }
+
+    fn same_authorization_decision(
+        left: &TaskAuthorizationResolution,
+        right: &TaskAuthorizationResolution,
+    ) -> bool {
+        left.verifier_id == right.verifier_id
+            && left.verifier_revision == right.verifier_revision
+            && left.authorization_request_digest == right.authorization_request_digest
+            && left.decision_id == right.decision_id
+            && left.subject == right.subject
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn claim_authorization_resolution(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        approval_id: &str,
+        resolution: &TaskAuthorizationResolution,
+    ) -> Result<BusApproval, TaskEngineError> {
+        let key = StateKey::new(
+            scope.namespace.clone(),
+            scope.tenant.clone(),
+            KeyKind::BusApproval,
+            approval_id,
+        );
+        for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
+            let Some((raw, version)) = self.state.get_versioned(&key).await? else {
+                return Err(TaskEngineError::ChallengeNotFound(approval_id.to_string()));
+            };
+            let mut approval: BusApproval = serde_json::from_str(&raw)?;
+            Self::validate_authorization_approval(scope, task_id, approval_id, &approval)?;
+            match approval.status {
+                BusApprovalStatus::Pending => {
+                    let now = self.clock.now();
+                    if now >= approval.expires_at {
+                        approval.status = BusApprovalStatus::Expired;
+                        approval.decided_at = Some(now);
+                        approval.validate()?;
+                        let payload = serde_json::to_string(&approval)?;
+                        if matches!(
+                            self.state
+                                .compare_and_swap(&key, version, &payload, None)
+                                .await?,
+                            CasResult::Ok
+                        ) {
+                            self.remove_pending_challenge(scope, approval_id).await;
+                            return Err(TaskEngineError::ChallengeExpired(approval_id.to_string()));
+                        }
+                        continue;
+                    }
+                    approval.status = BusApprovalStatus::Approving;
+                    approval.authorization_resolution = Some(resolution.clone());
+                    approval.decided_by = Some(resolution.subject.id().to_string());
+                    approval.decided_at = Some(now);
+                    approval.validate()?;
+                    let payload = serde_json::to_string(&approval)?;
+                    if matches!(
+                        self.state
+                            .compare_and_swap(&key, version, &payload, None)
+                            .await?,
+                        CasResult::Ok
+                    ) {
+                        return Ok(approval);
+                    }
+                }
+                BusApprovalStatus::Approving | BusApprovalStatus::Approved => {
+                    let Some(claimed) = approval.authorization_resolution.as_ref() else {
+                        return Err(TaskEngineError::AuthorizationDecisionConflict(
+                            approval_id.to_string(),
+                        ));
+                    };
+                    if !Self::same_authorization_decision(claimed, resolution) {
+                        return Err(TaskEngineError::AuthorizationDecisionConflict(
+                            approval_id.to_string(),
+                        ));
+                    }
+                    if approval.status == BusApprovalStatus::Approving {
+                        let now = self.clock.now();
+                        // The stable decision identity stays fixed, while a
+                        // fresh verifier call may update its validity window.
+                        if claimed != resolution {
+                            approval.authorization_resolution = Some(resolution.clone());
+                            approval.decided_at = Some(now);
+                            approval.validate()?;
+                            let payload = serde_json::to_string(&approval)?;
+                            if matches!(
+                                self.state
+                                    .compare_and_swap(&key, version, &payload, None)
+                                    .await?,
+                                CasResult::Ok
+                            ) {
+                                return Ok(approval);
+                            }
+                            continue;
+                        }
+                    }
+                    return Ok(approval);
+                }
+                BusApprovalStatus::Rejected | BusApprovalStatus::Expired => {
+                    return Err(TaskEngineError::ChallengeClosed {
+                        approval_id: approval_id.to_string(),
+                        status: approval.status,
+                    });
+                }
+            }
+        }
+        Err(TaskEngineError::ChallengeCasExhausted(
+            approval_id.to_string(),
+        ))
+    }
+
+    fn validate_authorization_approval<'a>(
+        scope: &TaskScope,
+        task_id: &str,
+        approval_id: &str,
+        approval: &'a BusApproval,
+    ) -> Result<&'a TaskAuthorizationRequirement, TaskEngineError> {
+        approval.validate()?;
+        if approval.approval_id != approval_id
+            || approval.namespace != scope.namespace
+            || approval.tenant != scope.tenant
+            || approval.task_id.as_deref() != Some(task_id)
+        {
+            return Err(TaskEngineError::ChallengeMismatch {
+                task_id: task_id.to_string(),
+                approval_id: approval_id.to_string(),
+            });
+        }
+        if approval.kind != PauseKind::UserAuth {
+            return Err(TaskEngineError::ChallengeKind {
+                approval_id: approval_id.to_string(),
+                actual: approval.kind,
+            });
+        }
+        approval
+            .authorization_requirement
+            .as_ref()
+            .ok_or_else(|| TaskEngineError::AuthorizationChallengeUnbound(approval_id.to_string()))
+    }
+
+    async fn apply_authorization_resolution(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        approval_id: &str,
+        resolution: &TaskAuthorizationResolution,
+    ) -> Result<Task, TaskEngineError> {
+        let key = scope.task_key(task_id);
+        for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
+            let Some((raw, version)) = self.state.get_versioned(&key).await? else {
+                return Err(TaskEngineError::NotFound(task_id.to_string()));
+            };
+            let mut task: Task = serde_json::from_str(&raw)?;
+            if task.status.state == TaskState::Working && task.pending_approval_id.is_none() {
+                return Ok(task);
+            }
+            if task.status.state != TaskState::AuthRequired
+                || task.pending_approval_id.as_deref() != Some(approval_id)
+            {
+                return Err(TaskEngineError::ChallengeMismatch {
+                    task_id: task_id.to_string(),
+                    approval_id: approval_id.to_string(),
+                });
+            }
+            let now = self.clock.now();
+            if resolution.valid_until <= now {
+                return Err(TaskEngineError::AuthorizationEvidenceExpired);
+            }
+            task.transition_to_at(TaskState::Working, None, now)?;
+            task.updated_at = now;
+            let payload = serde_json::to_string(&task)?;
+            if matches!(
+                self.state
+                    .compare_and_swap(&key, version, &payload, None)
+                    .await?,
+                CasResult::Ok
+            ) {
+                self.emit_audit(
+                    &task,
+                    "resolve_authorization",
+                    Some(TaskState::AuthRequired),
+                )
+                .await;
+                self.emit_stream(
+                    &scope.namespace,
+                    &scope.tenant,
+                    task_id,
+                    acteon_core::StreamEventType::TaskTransitioned {
+                        task_id: task_id.to_string(),
+                        from: TaskState::AuthRequired,
+                        to: TaskState::Working,
+                    },
+                );
+                return Ok(task);
+            }
+        }
+        Err(TaskEngineError::CasExhausted(task_id.to_string()))
+    }
+
+    async fn finish_authorization_resolution(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        approval_id: &str,
+        resolution: &TaskAuthorizationResolution,
+    ) -> Result<BusApproval, TaskEngineError> {
+        let key = StateKey::new(
+            scope.namespace.clone(),
+            scope.tenant.clone(),
+            KeyKind::BusApproval,
+            approval_id,
+        );
+        for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
+            let Some((raw, version)) = self.state.get_versioned(&key).await? else {
+                return Err(TaskEngineError::ChallengeNotFound(approval_id.to_string()));
+            };
+            let mut approval: BusApproval = serde_json::from_str(&raw)?;
+            Self::validate_authorization_approval(scope, task_id, approval_id, &approval)?;
+            if !approval
+                .authorization_resolution
+                .as_ref()
+                .is_some_and(|claimed| Self::same_authorization_decision(claimed, resolution))
+            {
+                return Err(TaskEngineError::AuthorizationDecisionConflict(
+                    approval_id.to_string(),
+                ));
+            }
+            match approval.status {
+                BusApprovalStatus::Approved => return Ok(approval),
+                BusApprovalStatus::Approving => {
+                    approval.status = BusApprovalStatus::Approved;
+                    approval.validate()?;
+                    let payload = serde_json::to_string(&approval)?;
+                    if matches!(
+                        self.state
+                            .compare_and_swap(&key, version, &payload, None)
+                            .await?,
+                        CasResult::Ok
+                    ) {
+                        return Ok(approval);
+                    }
+                }
+                status => {
+                    return Err(TaskEngineError::ChallengeClosed {
+                        approval_id: approval_id.to_string(),
+                        status,
+                    });
+                }
+            }
+        }
+        Err(TaskEngineError::ChallengeCasExhausted(
+            approval_id.to_string(),
+        ))
+    }
+
+    async fn reject_abandoned_authorization_resolution(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        approval_id: &str,
+        resolution: &TaskAuthorizationResolution,
+    ) -> Result<(), TaskEngineError> {
+        let key = StateKey::new(
+            scope.namespace.clone(),
+            scope.tenant.clone(),
+            KeyKind::BusApproval,
+            approval_id,
+        );
+        for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
+            let Some((raw, version)) = self.state.get_versioned(&key).await? else {
+                return Ok(());
+            };
+            let mut approval: BusApproval = serde_json::from_str(&raw)?;
+            Self::validate_authorization_approval(scope, task_id, approval_id, &approval)?;
+            match approval.status {
+                BusApprovalStatus::Approving
+                    if approval
+                        .authorization_resolution
+                        .as_ref()
+                        .is_some_and(|claimed| {
+                            Self::same_authorization_decision(claimed, resolution)
+                        }) =>
+                {
+                    approval.status = BusApprovalStatus::Rejected;
+                    approval.authorization_resolution = None;
+                    approval.validate()?;
+                    let payload = serde_json::to_string(&approval)?;
+                    if matches!(
+                        self.state
+                            .compare_and_swap(&key, version, &payload, None)
+                            .await?,
+                        CasResult::Ok
+                    ) {
+                        self.remove_pending_challenge(scope, approval_id).await;
+                        return Ok(());
+                    }
+                }
+                BusApprovalStatus::Approving => {
+                    return Err(TaskEngineError::AuthorizationDecisionConflict(
+                        approval_id.to_string(),
+                    ));
+                }
+                _ => return Ok(()),
+            }
+        }
+        Err(TaskEngineError::ChallengeCasExhausted(
+            approval_id.to_string(),
+        ))
+    }
+
+    async fn fail_expired_authorization_challenge(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        approval_id: &str,
+    ) -> Result<(), TaskEngineError> {
+        let key = scope.task_key(task_id);
+        for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
+            let Some((raw, version)) = self.state.get_versioned(&key).await? else {
+                return Ok(());
+            };
+            let mut task: Task = serde_json::from_str(&raw)?;
+            if task.status.state != TaskState::AuthRequired
+                || task.pending_approval_id.as_deref() != Some(approval_id)
+            {
+                return Ok(());
+            }
+            let mut message = TaskMessage::text(
+                format!("{approval_id}.expired"),
+                TaskRole::Agent,
+                "The authorization challenge expired before it was verified.",
+            );
+            message.task_id = Some(task_id.to_string());
+            message.context_id.clone_from(&task.context_id);
+            task.transition_to_at(TaskState::Failed, Some(message), self.clock.now())?;
+            let payload = serde_json::to_string(&task)?;
+            if matches!(
+                self.state
+                    .compare_and_swap(&key, version, &payload, None)
+                    .await?,
+                CasResult::Ok
+            ) {
+                self.emit_audit(
+                    &task,
+                    "authorization_challenge_expired",
+                    Some(TaskState::AuthRequired),
+                )
+                .await;
+                self.emit_stream(
+                    &scope.namespace,
+                    &scope.tenant,
+                    task_id,
+                    acteon_core::StreamEventType::TaskTransitioned {
+                        task_id: task_id.to_string(),
+                        from: TaskState::AuthRequired,
+                        to: TaskState::Failed,
+                    },
+                );
+                return Ok(());
+            }
+        }
+        Err(TaskEngineError::CasExhausted(task_id.to_string()))
+    }
+
+    async fn remove_pending_challenge(&self, scope: &TaskScope, approval_id: &str) {
+        let index_key = StateKey::new(
+            scope.namespace.clone(),
+            scope.tenant.clone(),
+            KeyKind::PendingBusApprovals,
+            approval_id,
+        );
+        if let Err(error) = self.state.delete(&index_key).await {
+            warn!(%approval_id, %error, "failed to remove resolved task challenge from pending index");
+        }
     }
 
     async fn prepare_input_resolution(
@@ -1979,6 +2581,23 @@ pub enum TaskEngineError {
     ChallengeResponseContextMismatch,
     #[error("challenge response must have role 'user'")]
     ChallengeResponseRole,
+    #[error("authorization challenge '{0}' has no host-owned verifier binding")]
+    AuthorizationChallengeUnbound(String),
+    #[error("UserAuth pauses require a host-owned authorization requirement")]
+    AuthorizationRequirementRequired,
+    #[error(
+        "authorization challenge requires verifier '{expected_id}' revision {expected_revision}"
+    )]
+    AuthorizationVerifierMismatch {
+        expected_id: String,
+        expected_revision: u64,
+    },
+    #[error("authorization verifier evidence is not currently valid")]
+    AuthorizationEvidenceExpired,
+    #[error("authorization challenge '{0}' was claimed by a different verifier decision")]
+    AuthorizationDecisionConflict(String),
+    #[error("authorization verification failed: {0}")]
+    AuthorizationVerification(#[from] TaskAuthorizationVerificationError),
     #[error("CAS contention exceeded {MAX_CAS_RETRY_ATTEMPTS} retries for challenge '{0}'")]
     ChallengeCasExhausted(String),
 }
@@ -2049,6 +2668,17 @@ impl ScopedTaskEngine {
             .await
     }
 
+    pub async fn resolve_authorization(
+        &self,
+        task_id: &str,
+        approval_id: &str,
+        verifier: &dyn TaskAuthorizationVerifier,
+    ) -> Result<(Task, BusApproval), TaskEngineError> {
+        self.engine
+            .resolve_authorization(&self.scope, task_id, approval_id, verifier)
+            .await
+    }
+
     pub async fn append_history(
         &self,
         task_id: &str,
@@ -2075,6 +2705,18 @@ impl ScopedTaskEngine {
     ) -> Result<(Task, BusApproval), TaskEngineError> {
         self.engine
             .pause_for_human(&self.scope, task_id, kind, reason, ttl)
+            .await
+    }
+
+    pub async fn pause_for_authorization(
+        &self,
+        task_id: &str,
+        requirement: TaskAuthorizationRequirement,
+        reason: Option<String>,
+        ttl: Option<Duration>,
+    ) -> Result<(Task, BusApproval), TaskEngineError> {
+        self.engine
+            .pause_for_authorization(&self.scope, task_id, requirement, reason, ttl)
             .await
     }
 
@@ -3161,6 +3803,22 @@ mod tests {
             .unwrap();
     }
 
+    fn authorization_requirement() -> TaskAuthorizationRequirement {
+        TaskAuthorizationRequirement {
+            verifier_id: "test-verifier".into(),
+            verifier_revision: 1,
+            authorization_request_id: "request-1".into(),
+            recipient: acteon_core::PrincipalIdentity::new(
+                "test-agent",
+                acteon_core::PrincipalKind::Agent,
+            )
+            .unwrap(),
+            credential_authority: "test-authority".into(),
+            audience: "test-audience".into(),
+            required_scopes: vec!["read".into()],
+        }
+    }
+
     #[tokio::test]
     async fn pause_for_human_input_required() {
         let e = engine();
@@ -3196,16 +3854,46 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pause_for_human_auth_required() {
+    async fn pause_for_authorization_auth_required() {
         let e = engine();
         working_task(&e, "t1").await;
         let (task, approval) = e
-            .pause_for_human(&scope(), "t1", PauseKind::UserAuth, None, None)
+            .pause_for_authorization(&scope(), "t1", authorization_requirement(), None, None)
             .await
             .unwrap();
         assert_eq!(task.status.state, TaskState::AuthRequired);
         assert_eq!(approval.kind, PauseKind::UserAuth);
         assert_eq!(approval.task_id.as_deref(), Some("t1"));
+        assert_eq!(
+            approval
+                .authorization_requirement
+                .as_ref()
+                .unwrap()
+                .verifier_id,
+            "test-verifier"
+        );
+    }
+
+    #[tokio::test]
+    async fn pause_for_human_refuses_unbound_auth() {
+        let e = engine();
+        working_task(&e, "t1").await;
+        assert_eq!(
+            e.pause_for_human(&scope(), "t1", PauseKind::UserAuth, None, None)
+                .await
+                .unwrap_err(),
+            TaskEngineError::AuthorizationRequirementRequired
+        );
+        assert_eq!(approval_row_count(&e).await, 0);
+        assert_eq!(
+            e.get_task(&scope(), "t1")
+                .await
+                .unwrap()
+                .unwrap()
+                .status
+                .state,
+            TaskState::Working
+        );
     }
 
     #[tokio::test]
@@ -3309,7 +3997,7 @@ mod tests {
         working_task(&e, "t1").await;
         let scoped = ScopedTaskEngine::new(e, scope());
         let (task, approval) = scoped
-            .pause_for_human("t1", PauseKind::UserAuth, None, None)
+            .pause_for_authorization("t1", authorization_requirement(), None, None)
             .await
             .unwrap();
         assert_eq!(task.status.state, TaskState::AuthRequired);
@@ -3511,7 +4199,7 @@ mod tests {
         let e = engine();
         working_task(&e, "t1").await;
         let (_, challenge) = e
-            .pause_for_human(&scope(), "t1", PauseKind::UserAuth, None, None)
+            .pause_for_authorization(&scope(), "t1", authorization_requirement(), None, None)
             .await
             .unwrap();
         let error = e
@@ -3711,7 +4399,7 @@ mod tests {
             .unwrap();
         let _ = rx.recv().await.unwrap();
         // Now pause: emits Working → AuthRequired.
-        e.pause_for_human(&scope(), "t1", PauseKind::UserAuth, None, None)
+        e.pause_for_authorization(&scope(), "t1", authorization_requirement(), None, None)
             .await
             .unwrap();
         let evt = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv())

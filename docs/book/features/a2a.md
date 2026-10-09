@@ -308,7 +308,12 @@ recovery, and one history append.
 `AuthRequired` has a separate trust boundary. Message content cannot grant
 authority and is never treated as a credential. A trusted authorization flow
 must verify an out-of-band credential or authorization reference before that
-Task can resume; that verifier-backed operation remains a mesh follow-up.
+Task can resume. Acteon's Task Engine now provides a verifier-backed host API:
+the pause pins the exact verifier revision, recipient, credential authority,
+audience, scopes, and opaque authorization-request ID; resolution rechecks that
+external authority and stores only a stable decision and request digest. An
+unbound legacy auth pause cannot be resumed. The authenticated REST/SDK and
+remote-peer handoff for this host API remain follow-ups.
 
 ## Artifact streaming
 
