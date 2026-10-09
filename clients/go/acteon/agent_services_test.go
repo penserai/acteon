@@ -231,6 +231,20 @@ func TestAgentServicePeerToolCarriesNoAuthorityFields(t *testing.T) {
 			t.Error("authority fields leaked into peer tool request")
 		}
 		w.Header().Set(A2AVersionHeader, A2AProtocolVersion)
+		if strings.HasSuffix(r.URL.Path, "/authorization:resolve") {
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body) != 1 || body["challengeId"] != "challenge-42" {
+				t.Errorf("unsafe peer authorization: %#v %v", body, err)
+			}
+			json.NewEncoder(w).Encode(map[string]any{
+				"submission_id":    "f47ac10b-58cc-5372-a567-0e02b2c3d479",
+				"authorization_id": "67e55044-10b1-526f-9247-bb680e5fe0c8",
+				"status": map[string]any{"state": "resolved", "task": map[string]any{
+					"id": "remote-1", "namespace": "prod", "tenant": "acme", "status": map[string]any{"state": "working"},
+				}, "progress_cursor": "\"remote-1:2\""},
+			})
+			return
+		}
 		if strings.Contains(r.URL.Path, "/submissions/") && strings.HasSuffix(r.URL.Path, "/message:send") {
 			json.NewEncoder(w).Encode(map[string]any{
 				"submission_id":   "f47ac10b-58cc-5372-a567-0e02b2c3d479",
@@ -279,6 +293,10 @@ func TestAgentServicePeerToolCarriesNoAuthorityFields(t *testing.T) {
 	}
 	if _, err := NewClient(server.URL).AgentServiceContinuePeer(context.Background(), source, "team/resolver", "diagnose", receipt, map[string]any{"messageId": "answer-1", "role": "user", "taskId": "forged"}); err == nil || calls.Load() != 5 {
 		t.Fatal("bound peer response was sent")
+	}
+	authorized, err := NewClient(server.URL).AgentServiceAuthorizePeer(context.Background(), source, "team/resolver", "diagnose", receipt, "challenge-42")
+	if err != nil || authorized.Status.State != "resolved" || authorized.Status.ProgressCursor != "\"remote-1:2\"" || calls.Load() != 6 {
+		t.Fatalf("peer authorization mismatch: %#v %v", authorized, err)
 	}
 }
 

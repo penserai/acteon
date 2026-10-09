@@ -51,7 +51,10 @@ states; SDKs reject malformed attempt identities and proof digests. Browser cont
 cover explicit same-job recovery and later completion.
 
 Peer lifecycle contracts in all five native SDK suites also pin the governed
-send, refresh, and cancel paths. Cancellation accepts only an accepted peer
-receipt, sends no caller-supplied authority fields, validates canonical UUIDv5
-identities and the exact terminal remote task, and makes one HTTP request.
-`unsupported`, `rejected`, `uncertain`, and `reconciled` remain distinct.
+send, refresh, authorization, and cancel paths. Authorization sends only the
+opaque challenge selector through the source host; credentials remain at the
+target, and `resolved`, `rejected`, and `uncertain` stay distinct. Cancellation
+accepts only an accepted peer receipt, sends no caller-supplied authority
+fields, validates canonical UUIDv5 identities and the exact terminal remote
+task, and makes one HTTP request. `unsupported`, `rejected`, `uncertain`, and
+`reconciled` remain distinct cancellation outcomes.

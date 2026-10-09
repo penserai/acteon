@@ -17,6 +17,7 @@ public enum PlatformOperation {
     A2A_PUSH_REST_LIST_PUSH_DLQ("GET", "/v1/a2a/{namespace}/{tenant}/push-dlq", false, new String[]{"namespace", "tenant"}),
     A2A_PUSH_REST_SET_PUSH_CONFIG("POST", "/a2a/{namespace}/{tenant}/v1/tasks/{id}/pushNotificationConfigs", false, new String[]{"namespace", "tenant", "id"}),
     AGENT_SERVICES_MESSAGE_SEND("POST", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/message:send", false, new String[]{"namespace", "tenant", "agent"}),
+    AGENT_SERVICES_PEER_AUTHORIZATION_RESOLVE("POST", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/authorization:resolve", false, new String[]{"namespace", "tenant", "agent", "id", "target", "skill", "submission"}),
     AGENT_SERVICES_PEER_CANCEL("POST", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:cancel", false, new String[]{"namespace", "tenant", "agent", "id", "target", "skill", "submission"}),
     AGENT_SERVICES_PEER_CONTINUE("POST", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/message:send", false, new String[]{"namespace", "tenant", "agent", "id", "target", "skill", "submission"}),
     AGENT_SERVICES_PEER_DISCOVER("GET", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers", false, new String[]{"namespace", "tenant", "agent", "id"}),

@@ -45,7 +45,7 @@ verify per-effect permits, revocation during a chain, closures or mesh execution
 | 1: Actors/context | Executor role, stable principals, credential enrollment, signed root contexts, shared authentication and private scope projection merged | Remaining deferred propagation, teams, memberships, mandates and delegated lineage |
 | 2: Permits/checkpoints | Current permits/credentials/configuration snapshots, qualified static-webhook adapter and common gateway mediation merged; standalone runtime and authenticated governance management with SDK/UI merged | Broader effect coverage, workforce representation, deferred execution and recovery |
 | 3: Closures/intervention | Serialized resource restrictions, durable control events and authenticated public close/reopen/revocation | Overlapping named closures, intervention recovery, drain/pause/cancel semantics and acknowledgments |
-| 4: Autonomous mesh | Governed target discovery/submission, state-backed progress cursors, native cancellation, durable peer input continuation, and local verifier-backed authorization resolution implemented | Authenticated auth handoff, federation trust/revocation and broader recovery proof |
+| 4: Autonomous mesh | Governed target discovery/submission, state-backed progress cursors, native cancellation, durable peer input continuation, hosted verifier-backed authorization, and authenticated remote auth handoff implemented | Federation trust/revocation and broader recovery proof |
 | 5: Production/federation | Not implemented | Verified backend and peer capability matrix, trust/revocation protocol and failure tests |
 
 Next work should integrate trusted execution context into deferred paths and
@@ -1955,7 +1955,32 @@ still-matching task.
 
 Focused memory tests and explicitly executed independent-client Redis and
 PostgreSQL contracts cover success, denial, unbound refusal, idempotent retry,
-and refreshed recovery. CI runs both backend contracts. This is the reusable
-host substrate, not yet the public mesh handoff: server configuration,
-authenticated routes, five SDKs, hosted-agent challenge creation, two-server
-restart/lost-response evidence, and federation trust remain open.
+and refreshed recovery. CI runs both backend contracts.
+
+### Hosted and remote verifier-backed authorization
+
+Operator configuration now installs an exact guarded verifier revision and
+binds a hosted agent service to its recipient, credential authority, audience,
+scopes, and challenge TTL. Authenticated recipient and original-requester routes
+open and resolve the challenge. All five SDKs expose typed helpers, and the
+guarded verifier adapter validates a bounded, schema-closed response while
+keeping its credential in host configuration.
+
+The peer mesh now adds a distinct `governed_peer_authorization` journal. The
+source supplies only the accepted submission and exact challenge selector;
+target routing, authentication, source context, task identity, and conditional
+cursor come from durable host state. Current credentials, permits, closures,
+runtime binding, peer grant, and registry card are rechecked before delivery.
+No credential, authorization request handle, or verifier evidence crosses the
+source API or enters the source journal.
+
+An ambiguous delivery remains `uncertain`. A repeat after source restart reads
+the exact target task and settles `resolved` only when that task has advanced
+beyond the recorded `AuthRequired` challenge. It never automatically invokes
+the verifier a second time. Focused memory contracts prove one delivery claim,
+durable denial, source-authority revocation before networking, and lost-response
+reconciliation. Explicit Redis and PostgreSQL contracts run two authenticated
+HTTPS servers through verifier revocation, committed response loss, source
+restart, and recovery with exactly one verifier call for the successful
+challenge. Federation trust and cross-domain revocation remain the next Phase 4
+boundary.

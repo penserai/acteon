@@ -781,6 +781,17 @@ The authenticated original requester asks Acteon to verify the exact
 `challengeId`. The body contains no credential. A denial leaves the challenge
 pending; transient verifier failure returns `503` without changing task state.
 
+### `POST /a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/authorization:resolve`
+
+The currently authenticated source agent asks the target host to resolve the
+accepted peer task's exact `challengeId`. The body contains no credential or
+verifier evidence. Acteon records an at-most-once handoff in the configured
+state backend. A response is `resolved`, `rejected`, or `uncertain`; after an
+ambiguous response, the same request observes the target and can settle
+`resolved` without replaying the verifier operation. Cancellation, rejection,
+or failure after an ambiguous response remains `uncertain` because it cannot
+prove that authorization succeeded.
+
 ### `GET /a2a/{namespace}/{tenant}/v1/tasks/{id}`
 
 Retrieve task lifecycle status, output artifacts, and sub-task graphs.
@@ -965,6 +976,8 @@ Cancel an active swarm execution run.
 | `POST` | `/a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/message:send` | Governed peer submission from an accepted agent task |
 | `POST` | `/a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:refresh` | Revalidate authority and journal the latest accepted remote task snapshot |
 | `POST` | `/a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:cancel` | Persist and deliver at most one governed remote cancellation; reconcile ambiguity by safe observation |
+| `POST` | `/a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/message:send` | Persist and deliver one exact response to the remote task's active input challenge |
+| `POST` | `/a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/authorization:resolve` | Persist an opaque remote authorization handoff and reconcile response loss without verifier replay |
 | `GET` | `/a2a/{ns}/{tenant}/v1/tasks/{id}` | A2A task details |
 | `GET` | `/a2a/{ns}/{tenant}/.well-known/agent.json` | Public A2A agent card discovery |
 | `GET` | `/v1/bus/topics` | List bus topics |

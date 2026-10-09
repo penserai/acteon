@@ -11,7 +11,9 @@ use crate::{
     execution_authority::{AgentServiceError, AgentServiceObservation, AgentServiceRequest},
 };
 use acteon_core::TaskMessage;
-use acteon_executor::delegation::{PeerCancelStatus, PeerContinuationStatus, PeerSendStatus};
+use acteon_executor::delegation::{
+    PeerAuthorizationStatus, PeerCancelStatus, PeerContinuationStatus, PeerSendStatus,
+};
 use axum::{
     Extension, Json,
     extract::{Path, Query, State},
@@ -64,6 +66,48 @@ pub struct AgentPeerContinuationReceipt {
     pub submission_id: String,
     pub continuation_id: String,
     pub status: AgentPeerContinuationStatus,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct AgentPeerAuthorizationReceipt {
+    pub submission_id: String,
+    pub authorization_id: String,
+    pub status: AgentPeerAuthorizationStatus,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum AgentPeerAuthorizationStatus {
+    Uncertain,
+    Resolved {
+        task: Box<acteon_core::Task>,
+        progress_cursor: String,
+    },
+    Rejected {
+        code: String,
+    },
+}
+
+impl From<acteon_executor::delegation::PeerAuthorizationReceipt> for AgentPeerAuthorizationReceipt {
+    fn from(receipt: acteon_executor::delegation::PeerAuthorizationReceipt) -> Self {
+        Self {
+            submission_id: receipt.submission_id.to_string(),
+            authorization_id: receipt.authorization_id.to_string(),
+            status: match receipt.status {
+                PeerAuthorizationStatus::Uncertain => AgentPeerAuthorizationStatus::Uncertain,
+                PeerAuthorizationStatus::Resolved {
+                    task,
+                    progress_cursor,
+                } => AgentPeerAuthorizationStatus::Resolved {
+                    task,
+                    progress_cursor,
+                },
+                PeerAuthorizationStatus::Rejected { code } => {
+                    AgentPeerAuthorizationStatus::Rejected { code }
+                }
+            },
+        }
+    }
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -606,6 +650,77 @@ pub async fn peer_continue(
 }
 
 #[utoipa::path(
+    post, path = "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/authorization:resolve", tag = "Governance",
+    params(("namespace" = String, Path), ("tenant" = String, Path), ("agent" = String, Path),
+        ("id" = String, Path), ("target" = String, Path), ("skill" = String, Path),
+        ("submission" = String, Path, description = "Stable peer submission UUID")),
+    request_body = AgentAuthorizationResolve,
+    responses((status = 200, body = AgentPeerAuthorizationReceipt, description = "Durable remote authorization handoff receipt"),
+        (status = 400, description = "Invalid challenge selector"), (status = 403, description = "Current peer authority required"),
+        (status = 404, description = "Source task unavailable to this agent"), (status = 409, description = "Challenge conflicts with durable peer state"),
+        (status = 503, description = "Peer transport, target verifier, or state unavailable"))
+)]
+pub async fn peer_authorization_resolve(
+    State(state): State<AppState>,
+    Extension(identity): Extension<CallerIdentity>,
+    proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
+    Path((namespace, tenant, agent, task_id, target, skill, submission_id)): Path<(
+        String,
+        String,
+        String,
+        uuid::Uuid,
+        String,
+        String,
+        uuid::Uuid,
+    )>,
+    headers: HeaderMap,
+    Json(request): Json<AgentAuthorizationResolve>,
+) -> Response {
+    if headers
+        .get("a2a-version")
+        .is_some_and(|value| value != A2A_PROTOCOL_VERSION)
+    {
+        return error(StatusCode::BAD_REQUEST, "unsupported_a2a_version");
+    }
+    if !identity.role.has_permission(Permission::Dispatch)
+        || !identity.is_authorized(&tenant, &namespace, &format!("agent.{target}"), "invoke")
+    {
+        return error(StatusCode::FORBIDDEN, "agent_peer_authority_required");
+    }
+    let Some(Extension(proof)) = proof else {
+        return error(StatusCode::FORBIDDEN, "private_authentication_required");
+    };
+    let Some(runtime) = &state.execution_authority else {
+        return error(StatusCode::SERVICE_UNAVAILABLE, "agent_peer_unavailable");
+    };
+    match runtime
+        .authorize_agent_peer_tool(crate::execution_authority::AgentPeerAuthorizationRequest {
+            namespace: &namespace,
+            tenant: &tenant,
+            source_agent_id: &agent,
+            source_task_id: task_id,
+            target_agent_id: &target,
+            skill: &skill,
+            submission_id,
+            challenge_id: &request.challenge_id,
+            authentication: &proof,
+        })
+        .await
+    {
+        Ok(receipt) => (
+            StatusCode::OK,
+            [
+                ("a2a-version", A2A_PROTOCOL_VERSION),
+                ("cache-control", "no-store"),
+            ],
+            Json(AgentPeerAuthorizationReceipt::from(receipt)),
+        )
+            .into_response(),
+        Err(cause) => peer_error(cause),
+    }
+}
+
+#[utoipa::path(
     post, path = "/a2a/{namespace}/{tenant}/agents/{agent}/v1/message:send", tag = "Governance",
     params(("namespace" = String, Path), ("tenant" = String, Path), ("agent" = String, Path),
         ("x-acteon-execution-context" = Option<String>, Header, description = "URL-safe base64 encoded parent execution-context reference; requires matching private caller authentication"),
@@ -988,6 +1103,28 @@ pub async fn task_authorization_resolve(
             "agent_services_unavailable",
         );
     };
+    if let Some(expected) = headers.get(axum::http::header::IF_MATCH) {
+        let Ok(expected) = expected.to_str() else {
+            return error(StatusCode::BAD_REQUEST, "invalid_task_cursor");
+        };
+        let observed = runtime
+            .observe_agent_service(AgentServiceObservation {
+                namespace: &namespace,
+                tenant: &tenant,
+                agent_id: &agent,
+                task_id,
+                authentication: &proof,
+                source_context: source.as_ref(),
+            })
+            .await;
+        let observed = match observed {
+            Ok(observed) => observed,
+            Err(cause) => return service_error(cause),
+        };
+        if expected != super::a2a::task_cursor(observed.task_version, None) {
+            return error(StatusCode::CONFLICT, "task_cursor_changed");
+        }
+    }
     match runtime
         .resolve_agent_service_authorization(AgentServiceAuthorizationResolve {
             observation: AgentServiceObservation {

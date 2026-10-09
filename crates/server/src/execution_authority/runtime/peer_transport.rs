@@ -4,8 +4,9 @@ use super::ExecutionAuthorityRuntime;
 use crate::auth::projection::AuthenticatedExecutionConfiguration;
 use acteon_core::{ExecutionContextReference, TaskMessage};
 use acteon_executor::delegation::{
-    PeerCancelReceipt, PeerContinuationInput, PeerContinuationReceipt, PeerDiscoveryError,
-    PeerSelectionOption, PeerSendReceipt, PeerTransportError,
+    PeerAuthorizationInput, PeerAuthorizationReceipt, PeerCancelReceipt, PeerContinuationInput,
+    PeerContinuationReceipt, PeerDiscoveryError, PeerSelectionOption, PeerSendReceipt,
+    PeerTransportError,
 };
 
 /// Trusted host input. This type intentionally has no wire deserializer: a
@@ -109,6 +110,33 @@ pub struct AgentPeerContinuationInvocation<'a> {
     pub parent: &'a ExecutionContextReference,
     pub submission_id: uuid::Uuid,
     pub response: &'a TaskMessage,
+}
+
+/// Agent-facing authorization handoff for one exact remote challenge. The
+/// request contains no credential or verifier evidence.
+pub struct AgentPeerAuthorizationRequest<'a> {
+    pub namespace: &'a str,
+    pub tenant: &'a str,
+    pub source_agent_id: &'a str,
+    pub source_task_id: uuid::Uuid,
+    pub target_agent_id: &'a str,
+    pub skill: &'a str,
+    pub submission_id: uuid::Uuid,
+    pub challenge_id: &'a str,
+    pub authentication: &'a AuthenticatedExecutionConfiguration,
+}
+
+/// Trusted host input after current source authentication has been matched to
+/// the accepted source task.
+pub struct AgentPeerAuthorizationInvocation<'a> {
+    pub namespace: &'a str,
+    pub tenant: &'a str,
+    pub source_agent_id: &'a str,
+    pub target_agent_id: &'a str,
+    pub skill: &'a str,
+    pub parent: &'a ExecutionContextReference,
+    pub submission_id: uuid::Uuid,
+    pub challenge_id: &'a str,
 }
 
 /// Agent-facing registry query. Skill is selection data; source authority and
@@ -270,6 +298,37 @@ impl ExecutionAuthorityRuntime {
             parent: &reference,
             submission_id: request.submission_id,
             response: request.response,
+        })
+        .await
+    }
+
+    /// Resolve one remote authorization challenge after re-establishing the
+    /// current private source authority from the accepted local task.
+    pub async fn authorize_agent_peer_tool(
+        &self,
+        request: AgentPeerAuthorizationRequest<'_>,
+    ) -> Result<PeerAuthorizationReceipt, AgentPeerTransportError> {
+        let parent = self
+            .agent_peer_tool_parent(
+                request.namespace,
+                request.tenant,
+                request.source_agent_id,
+                request.source_task_id,
+                request.authentication,
+            )
+            .await?;
+        let reference = parent
+            .reference()
+            .map_err(|_| AgentPeerTransportError::Unavailable)?;
+        self.authorize_agent_peer(AgentPeerAuthorizationInvocation {
+            namespace: request.namespace,
+            tenant: request.tenant,
+            source_agent_id: request.source_agent_id,
+            target_agent_id: request.target_agent_id,
+            skill: request.skill,
+            parent: &reference,
+            submission_id: request.submission_id,
+            challenge_id: request.challenge_id,
         })
         .await
     }
@@ -619,6 +678,89 @@ impl ExecutionAuthorityRuntime {
                 PeerContinuationInput {
                     submission_id: invocation.submission_id,
                     response: invocation.response,
+                },
+            )
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Persist and deliver at most one resolution request for an exact remote
+    /// authorization challenge. Every attempt rechecks current source permits,
+    /// closures, runtime binding and peer registry authority.
+    pub async fn authorize_agent_peer(
+        &self,
+        invocation: AgentPeerAuthorizationInvocation<'_>,
+    ) -> Result<PeerAuthorizationReceipt, AgentPeerTransportError> {
+        if invocation.namespace.is_empty()
+            || invocation.tenant.is_empty()
+            || invocation.source_agent_id.is_empty()
+            || invocation.target_agent_id.is_empty()
+            || invocation.skill.is_empty()
+            || invocation.challenge_id.is_empty()
+            || invocation.parent.namespace() != invocation.namespace
+            || invocation.parent.tenant() != invocation.tenant
+        {
+            return Err(AgentPeerTransportError::Invalid);
+        }
+        let scope = self
+            .scopes
+            .get(&(invocation.namespace.into(), invocation.tenant.into()))
+            .ok_or(AgentPeerTransportError::Unavailable)?;
+        let source = scope
+            .prepared
+            .agents
+            .get(invocation.source_agent_id)
+            .ok_or(AgentPeerTransportError::Forbidden)?;
+        if !source
+            .declaration
+            .onward_agents
+            .iter()
+            .any(|target| target == invocation.target_agent_id)
+        {
+            return Err(AgentPeerTransportError::Forbidden);
+        }
+        let parent = scope
+            .contexts
+            .recover_reference(invocation.parent, self.clock.now().timestamp_millis())
+            .await
+            .map_err(|_| AgentPeerTransportError::Forbidden)?;
+        if parent.principal() != &source.declaration.principal {
+            return Err(AgentPeerTransportError::Forbidden);
+        }
+        let direct = source
+            .binding
+            .service_plan()
+            .ok_or(AgentPeerTransportError::Unavailable)?
+            .direct_effects();
+        scope
+            .coordinator
+            .verify_service_runtime_binding(&parent, source.binding.digest(), direct)
+            .await
+            .map_err(|_| AgentPeerTransportError::Forbidden)?;
+        let registry = scope
+            .peer_mesh
+            .registry
+            .as_ref()
+            .ok_or(AgentPeerTransportError::Unavailable)?;
+        let transport = scope
+            .peer_mesh
+            .transports
+            .get(&(
+                invocation.source_agent_id.into(),
+                invocation.target_agent_id.into(),
+                invocation.skill.into(),
+            ))
+            .ok_or(AgentPeerTransportError::Forbidden)?;
+        transport
+            .resolve_authorization(
+                registry,
+                invocation.target_agent_id,
+                invocation.skill,
+                &parent,
+                &source.declaration.recipient_permits,
+                PeerAuthorizationInput {
+                    submission_id: invocation.submission_id,
+                    challenge_id: invocation.challenge_id,
                 },
             )
             .await

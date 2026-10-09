@@ -1,8 +1,8 @@
 # Verifier-backed A2A authorization challenges
 
 **Status:** the backend-neutral Task Engine primitive, guarded HTTP verifier,
-operator configuration, authenticated hosted-agent routes, and typed helpers in
-all five SDKs are implemented. Remote peer handoff remains a follow-up.
+operator configuration, authenticated hosted-agent routes, durable remote-peer
+handoff, and typed helpers in all five SDKs are implemented.
 
 ## Decision
 
@@ -99,12 +99,12 @@ Unknown response fields, an unsupported content type, a body over 16 KiB, or
 any binding mismatch are invalid evidence. HTTP 400/401/403/404/409 means
 denied; transport errors, 429, and server errors are temporary unavailability.
 
-Remote peer continuation needs a separate source journal. The source may retain
-the remote challenge and an opaque authorization-flow handle, but cannot forward
-credentials or claim that a network timeout means authorization succeeded.
-Ambiguous target acknowledgment must be reconciled by observing the exact task
-and challenge, without automatically replaying a non-idempotent authorization
-exchange.
+Remote peer authorization uses a separate source journal. It retains the exact
+remote task, challenge, conditional cursor, target binding, and source context.
+It does not retain an authorization request handle, credential, or verifier
+evidence. The source writes and claims this intent before contacting the target.
+Ambiguous target acknowledgment is reconciled by observing the exact task and
+challenge; the verifier operation is never replayed automatically.
 
 ## Evidence
 
@@ -118,6 +118,7 @@ exchange.
   and
 - independent Redis and PostgreSQL clients converge on the same result.
 
-CI executes both production-backend contracts explicitly. The remaining peer
-gate stays open until two authenticated servers demonstrate the
-same behavior across restart, denial, revocation, and lost target response.
+The peer transport adds focused memory contracts plus explicit Redis and
+PostgreSQL two-server contracts. They cover durable denial, current-authority
+revocation before delivery, source restart, loss of the target's committed
+response, and observation-only recovery with exactly one verifier invocation.

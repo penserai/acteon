@@ -143,7 +143,8 @@ the immediate execution and intervention loop.
 This establishes an observable control loop for immediate qualified operations.
 The [agent workforce](agent-workforce.md) scenario covers team representation,
 and the governed peer runtime now provides safe registry discovery plus durable
-send, refresh, and at-most-once remote cancellation. This particular runner does
-not invoke those paths. Agents can choose among the returned safe options, while
-the actual send independently rechecks authority and binding state. Shared
-delegated budget conservation remains separate runtime and scenario work.
+send, refresh, input continuation, remote verifier-backed authorization, and
+at-most-once cancellation. This particular runner does not invoke those paths.
+Agents can choose among the returned safe options, while every lifecycle step
+independently rechecks authority and binding state. Shared delegated budget
+conservation remains separate runtime and scenario work.

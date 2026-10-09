@@ -274,6 +274,11 @@ pub fn router(state: AppState) -> Router {
                 .layer(DefaultBodyLimit::max(a2a::A2A_MAX_BODY_BYTES)),
         )
         .route(
+            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/authorization:resolve",
+            post(agent_services::peer_authorization_resolve)
+                .layer(DefaultBodyLimit::max(a2a::A2A_MAX_BODY_BYTES)),
+        )
+        .route(
             "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}",
             get(agent_services::task_get),
         )

@@ -108,6 +108,21 @@ type AgentPeerContinuationReceipt struct {
 	Status         AgentPeerContinuationStatus `json:"status"`
 }
 
+// AgentPeerAuthorizationStatus preserves ambiguity without exposing credentials.
+type AgentPeerAuthorizationStatus struct {
+	State          string         `json:"state"`
+	Task           map[string]any `json:"task,omitempty"`
+	ProgressCursor string         `json:"progress_cursor,omitempty"`
+	Code           string         `json:"code,omitempty"`
+}
+
+// AgentPeerAuthorizationReceipt identifies one durable remote challenge handoff.
+type AgentPeerAuthorizationReceipt struct {
+	SubmissionID    string                       `json:"submission_id"`
+	AuthorizationID string                       `json:"authorization_id"`
+	Status          AgentPeerAuthorizationStatus `json:"status"`
+}
+
 // AgentPeerSelectionOption is safe registry data. DescriptionUntrusted is
 // untrusted text and the option itself grants no authority.
 type AgentPeerSelectionOption struct {
@@ -560,6 +575,95 @@ func (c *Client) AgentServiceContinuePeer(ctx context.Context, source *AgentServ
 		return nil, fmt.Errorf("agent peer continuation receipt missing or malformed")
 	}
 	return &AgentPeerContinuationReceipt{SubmissionID: peer.SubmissionID, ContinuationID: continuationID, Status: status}, nil
+}
+
+// AgentServiceAuthorizePeer asks the target host to resolve an exact challenge.
+// Credentials and verifier evidence never enter this call.
+func (c *Client) AgentServiceAuthorizePeer(ctx context.Context, source *AgentServiceReceipt, target, skill string, peer *AgentPeerSendReceipt, challengeID string) (*AgentPeerAuthorizationReceipt, error) {
+	if source == nil || peer == nil || peer.Status.State != "accepted" || peer.Status.Task == nil || !agentAttemptPattern.MatchString(peer.SubmissionID) || challengeID == "" || len(challengeID) > 1024 || strings.TrimSpace(challengeID) != challengeID || challengeID == "*" {
+		return nil, fmt.Errorf("agent peer authorization requires an accepted peer and challenge")
+	}
+	for _, character := range challengeID {
+		if unicode.IsControl(character) {
+			return nil, fmt.Errorf("agent peer authorization requires an accepted peer and challenge")
+		}
+	}
+	acceptedID, err := agentTask(peer.Status.Task, source.Namespace, source.Tenant, "")
+	if err != nil {
+		return nil, err
+	}
+	base, err := agentServiceBase(source.Namespace, source.Tenant, source.Agent)
+	if err != nil {
+		return nil, err
+	}
+	taskID, err := agentSegment(source.TaskID)
+	if err != nil {
+		return nil, err
+	}
+	targetID, err := agentSegment(target)
+	if err != nil {
+		return nil, err
+	}
+	skillID, err := agentSegment(skill)
+	if err != nil {
+		return nil, err
+	}
+	path := base + "/tasks/" + taskID + "/peers/" + targetID + "/" + skillID + "/submissions/" + peer.SubmissionID + "/authorization:resolve"
+	value, _, err := c.agentServiceRequest(ctx, "POST", path, map[string]any{"challengeId": challengeID}, "", nil)
+	if err != nil {
+		return nil, err
+	}
+	if len(value) != 3 || value["submission_id"] != peer.SubmissionID {
+		return nil, fmt.Errorf("agent peer authorization receipt missing or malformed")
+	}
+	authorizationID, ok := value["authorization_id"].(string)
+	if !ok || !agentAttemptPattern.MatchString(authorizationID) {
+		return nil, fmt.Errorf("agent peer authorization receipt missing or malformed")
+	}
+	raw, ok := value["status"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("agent peer authorization receipt missing or malformed")
+	}
+	state, ok := raw["state"].(string)
+	if !ok {
+		return nil, fmt.Errorf("agent peer authorization receipt missing or malformed")
+	}
+	status := AgentPeerAuthorizationStatus{State: state}
+	switch state {
+	case "uncertain":
+		if len(raw) != 1 {
+			return nil, fmt.Errorf("agent peer authorization receipt missing or malformed")
+		}
+	case "rejected":
+		code, ok := raw["code"].(string)
+		if !ok || code == "" || len(code) > 1024 || strings.TrimSpace(code) != code || len(raw) != 2 {
+			return nil, fmt.Errorf("agent peer authorization receipt missing or malformed")
+		}
+		for _, character := range code {
+			if unicode.IsControl(character) {
+				return nil, fmt.Errorf("agent peer authorization receipt missing or malformed")
+			}
+		}
+		status.Code = code
+	case "resolved":
+		task, taskOK := raw["task"].(map[string]any)
+		cursor, cursorOK := raw["progress_cursor"].(string)
+		if !taskOK || !cursorOK || len(raw) != 3 || !validAgentProgressCursor(cursor) {
+			return nil, fmt.Errorf("agent peer authorization receipt missing or malformed")
+		}
+		if _, err := agentTask(task, source.Namespace, source.Tenant, acceptedID); err != nil {
+			return nil, err
+		}
+		taskStatus, statusOK := task["status"].(map[string]any)
+		taskState, stateOK := taskStatus["state"].(string)
+		if !statusOK || !stateOK || (taskState != "working" && taskState != "completed" && taskState != "input_required" && taskState != "auth_required") || (taskState == "auth_required" && task["pendingApprovalId"] == challengeID) {
+			return nil, fmt.Errorf("agent peer authorization receipt missing or malformed")
+		}
+		status.Task, status.ProgressCursor = task, cursor
+	default:
+		return nil, fmt.Errorf("agent peer authorization receipt missing or malformed")
+	}
+	return &AgentPeerAuthorizationReceipt{SubmissionID: peer.SubmissionID, AuthorizationID: authorizationID, Status: status}, nil
 }
 
 func validAgentProgressCursor(value string) bool {

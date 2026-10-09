@@ -65,6 +65,7 @@ POST   /a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/me
 POST   /a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:refresh
 POST   /a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:cancel
 POST   /a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/message:send
+POST   /a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/authorization:resolve
 POST   /a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/message:send
 GET    /a2a/{ns}/{tenant}/v1/tasks/{id}
 POST   /a2a/{ns}/{tenant}/v1/tasks/{id}:cancel
@@ -318,7 +319,23 @@ POST .../tasks/{id}/authorization:request   # authenticated recipient agent
 POST .../tasks/{id}/authorization:resolve   # authenticated original requester
 ```
 
-Remote-peer authorization handoff remains a separate durable transport step.
+For a remote peer, the source calls the submission-scoped
+`authorization:resolve` route with the exact challenge ID returned by peer
+refresh. Acteon journals the handoff in the configured state backend before
+contacting the target. The source never receives or forwards credentials,
+verifier secrets, evidence, scopes, or an authorization request handle. A
+denial is durable. If the target commits but its response is lost, a retry after
+source restart observes the exact remote task and settles the journal without
+calling the verifier again. Current credentials, permits, closures, service
+binding, peer grant, and registry state are rechecked before every handoff or
+reconciliation. A terminal failure or cancellation does not prove that the
+authorization succeeded, so ambiguous handoffs remain `uncertain` in those
+states.
+
+```text
+POST .../peers/{target}/{skill}/submissions/{submission}/authorization:resolve
+body: { "challengeId": "<exact pending challenge>" }
+```
 
 ## Artifact streaming
 

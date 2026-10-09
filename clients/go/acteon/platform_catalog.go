@@ -19,6 +19,7 @@ const (
 	OpA2aPushRestListPushDlq PlatformOperation = "a2a_push_rest_list_push_dlq"
 	OpA2aPushRestSetPushConfig PlatformOperation = "a2a_push_rest_set_push_config"
 	OpAgentServicesMessageSend PlatformOperation = "agent_services_message_send"
+	OpAgentServicesPeerAuthorizationResolve PlatformOperation = "agent_services_peer_authorization_resolve"
 	OpAgentServicesPeerCancel PlatformOperation = "agent_services_peer_cancel"
 	OpAgentServicesPeerContinue PlatformOperation = "agent_services_peer_continue"
 	OpAgentServicesPeerDiscover PlatformOperation = "agent_services_peer_discover"
@@ -231,6 +232,7 @@ var platformOperations = map[PlatformOperation]platformDescriptor{
 	OpA2aPushRestListPushDlq: {"GET", "/v1/a2a/{namespace}/{tenant}/push-dlq", []string{"namespace", "tenant"}, false},
 	OpA2aPushRestSetPushConfig: {"POST", "/a2a/{namespace}/{tenant}/v1/tasks/{id}/pushNotificationConfigs", []string{"namespace", "tenant", "id"}, false},
 	OpAgentServicesMessageSend: {"POST", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/message:send", []string{"namespace", "tenant", "agent"}, false},
+	OpAgentServicesPeerAuthorizationResolve: {"POST", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/authorization:resolve", []string{"namespace", "tenant", "agent", "id", "target", "skill", "submission"}, false},
 	OpAgentServicesPeerCancel: {"POST", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:cancel", []string{"namespace", "tenant", "agent", "id", "target", "skill", "submission"}, false},
 	OpAgentServicesPeerContinue: {"POST", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/message:send", []string{"namespace", "tenant", "agent", "id", "target", "skill", "submission"}, false},
 	OpAgentServicesPeerDiscover: {"GET", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers", []string{"namespace", "tenant", "agent", "id"}, false},

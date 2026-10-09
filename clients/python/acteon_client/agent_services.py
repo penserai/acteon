@@ -127,6 +127,18 @@ class AgentPeerContinuationReceipt:
 
 
 @dataclass(frozen=True)
+class AgentPeerAuthorizationReceipt:
+    """Durable handoff for one exact remote authorization challenge."""
+
+    submission_id: str
+    authorization_id: str
+    state: Literal["uncertain", "resolved", "rejected"]
+    task: dict[str, Any] | None = None
+    progress_cursor: str | None = None
+    code: str | None = None
+
+
+@dataclass(frozen=True)
 class AgentPeerSelectionOption:
     """Safe registry data; description_untrusted is never a host instruction."""
 
@@ -143,6 +155,16 @@ def _peer_token(value: Any) -> TypeGuard[str]:
         isinstance(value, str)
         and 0 < len(value) <= 120
         and all(char.isascii() and (char.isalnum() or char in "-_.") for char in value)
+    )
+
+
+def _challenge_id(value: Any) -> TypeGuard[str]:
+    return (
+        isinstance(value, str)
+        and 0 < len(value) <= 1024
+        and value.strip() == value
+        and value != "*"
+        and not any(unicodedata.category(char) == "Cc" for char in value)
     )
 
 
@@ -349,6 +371,62 @@ def _peer_continuation_receipt(
                 progress_cursor=cursor,
             )
     raise ActeonError("agent peer continuation receipt missing or malformed")
+
+
+def _peer_authorization_receipt(
+    response: httpx.Response,
+    source: AgentServiceReceipt,
+    peer: AgentPeerSendReceipt,
+    challenge_id: str,
+) -> AgentPeerAuthorizationReceipt:
+    value = _response_value(response)
+    if (
+        peer.state != "accepted"
+        or peer.task is None
+        or not isinstance(value, dict)
+        or set(value) != {"submission_id", "authorization_id", "status"}
+        or value.get("submission_id") != peer.submission_id
+    ):
+        raise ActeonError("agent peer authorization receipt missing or malformed")
+    accepted = _task_value(peer.task, source.namespace, source.tenant)
+    authorization_id = _submission(value.get("authorization_id"))
+    status = value.get("status")
+    if not isinstance(status, dict):
+        raise ActeonError("agent peer authorization receipt missing or malformed")
+    state = status.get("state")
+    if state == "uncertain" and set(status) == {"state"}:
+        return AgentPeerAuthorizationReceipt(peer.submission_id, authorization_id, state)
+    if state == "rejected" and set(status) == {"state", "code"}:
+        code = status.get("code")
+        if _challenge_id(code):
+            return AgentPeerAuthorizationReceipt(
+                peer.submission_id, authorization_id, state, code=code
+            )
+    if state == "resolved" and set(status) == {"state", "task", "progress_cursor"}:
+        cursor = status.get("progress_cursor")
+        if (
+            isinstance(cursor, str)
+            and len(cursor) <= 512
+            and cursor.startswith('"')
+            and cursor.endswith('"')
+            and cursor[1:-1]
+            and all(char.isascii() and (char.isalnum() or char in "-_.:") for char in cursor[1:-1])
+        ):
+            task = _task_value(status.get("task"), source.namespace, source.tenant, accepted["id"])
+            task_status = task.get("status")
+            task_state = task_status.get("state") if isinstance(task_status, dict) else None
+            if task_state not in {"working", "completed", "input_required", "auth_required"} or (
+                task_state == "auth_required" and task.get("pendingApprovalId") == challenge_id
+            ):
+                raise ActeonError("agent peer authorization receipt missing or malformed")
+            return AgentPeerAuthorizationReceipt(
+                peer.submission_id,
+                authorization_id,
+                state,
+                task=task,
+                progress_cursor=cursor,
+            )
+    raise ActeonError("agent peer authorization receipt missing or malformed")
 
 
 def _unbound_peer_response(message: dict[str, Any]) -> None:
@@ -619,6 +697,36 @@ class _AgentServicesMixin:
         )
         return _peer_continuation_receipt(response, source, peer)
 
+    def agent_service_authorize_peer(
+        self,
+        source: AgentServiceReceipt,
+        target: str,
+        skill: str,
+        peer: AgentPeerSendReceipt,
+        challenge_id: str,
+    ) -> AgentPeerAuthorizationReceipt:
+        """Resolve one remote challenge without accepting credentials."""
+        submission = _submission(peer.submission_id)
+        if peer.state != "accepted" or peer.task is None or not _challenge_id(challenge_id):
+            raise ActeonError("agent peer authorization requires an accepted peer and challenge")
+        _task_value(peer.task, source.namespace, source.tenant)
+        response = self._request(
+            "POST",
+            _base(source.namespace, source.tenant, source.agent)
+            + "/tasks/"
+            + _segment(source.task_id)
+            + "/peers/"
+            + _segment(target)
+            + "/"
+            + _segment(skill)
+            + "/submissions/"
+            + submission
+            + "/authorization:resolve",
+            json={"challengeId": challenge_id},
+            extra_headers=dict(_A2A_HEADERS),
+        )
+        return _peer_authorization_receipt(response, source, peer, challenge_id)
+
     def agent_service_stop_task(self, receipt: AgentServiceReceipt) -> AgentServiceStopReceipt:
         """Stop future starts; repeat the same receipt explicitly after response loss."""
         response = self._request(
@@ -871,6 +979,35 @@ class _AsyncAgentServicesMixin:
             extra_headers=dict(_A2A_HEADERS),
         )
         return _peer_continuation_receipt(response, source, peer)
+
+    async def agent_service_authorize_peer(
+        self,
+        source: AgentServiceReceipt,
+        target: str,
+        skill: str,
+        peer: AgentPeerSendReceipt,
+        challenge_id: str,
+    ) -> AgentPeerAuthorizationReceipt:
+        submission = _submission(peer.submission_id)
+        if peer.state != "accepted" or peer.task is None or not _challenge_id(challenge_id):
+            raise ActeonError("agent peer authorization requires an accepted peer and challenge")
+        _task_value(peer.task, source.namespace, source.tenant)
+        response = await self._request(
+            "POST",
+            _base(source.namespace, source.tenant, source.agent)
+            + "/tasks/"
+            + _segment(source.task_id)
+            + "/peers/"
+            + _segment(target)
+            + "/"
+            + _segment(skill)
+            + "/submissions/"
+            + submission
+            + "/authorization:resolve",
+            json={"challengeId": challenge_id},
+            extra_headers=dict(_A2A_HEADERS),
+        )
+        return _peer_authorization_receipt(response, source, peer, challenge_id)
 
     async def agent_service_stop_task(
         self, receipt: AgentServiceReceipt

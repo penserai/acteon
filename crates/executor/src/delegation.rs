@@ -23,11 +23,13 @@ use sha2::{Digest, Sha256};
 
 pub mod transport;
 pub use transport::{
-    DurablePeerTransport, PeerCancelDisposition, PeerCancelReceipt, PeerCancelStatus,
-    PeerContinuationDisposition, PeerContinuationInput, PeerContinuationReceipt,
-    PeerContinuationRequest, PeerContinuationStatus, PeerSendDisposition, PeerSendReceipt,
-    PeerSendRequest, PeerSendStatus, PeerSubmissionCapability, PeerTaskObservation,
-    PeerTaskRequest, PeerTransportAdapter, PeerTransportDependencies, PeerTransportError,
+    DurablePeerTransport, PeerAuthorizationDisposition, PeerAuthorizationInput,
+    PeerAuthorizationReceipt, PeerAuthorizationRequest, PeerAuthorizationStatus,
+    PeerCancelDisposition, PeerCancelReceipt, PeerCancelStatus, PeerContinuationDisposition,
+    PeerContinuationInput, PeerContinuationReceipt, PeerContinuationRequest,
+    PeerContinuationStatus, PeerSendDisposition, PeerSendReceipt, PeerSendRequest, PeerSendStatus,
+    PeerSubmissionCapability, PeerTaskObservation, PeerTaskRequest, PeerTransportAdapter,
+    PeerTransportDependencies, PeerTransportError,
 };
 
 const MAX_BINDINGS: usize = 128;

@@ -151,7 +151,11 @@ Focused contracts cover:
   exact challenge, append one response, restart the source, and recover the
   same durable receipt;
 - durable uncertain and rejected continuation outcomes without implicit
-  resend; and
+  resend;
+- a distinct authorization journal that carries only an exact challenge
+  selector, with durable denial and current-authority revocation;
+- observation-only recovery after a committed authorization response is lost,
+  without a second verifier call; and
 - conflict on a competing response for the same accepted challenge plus
   current-authority refusal after registry retirement.
 
@@ -169,7 +173,8 @@ intent before Task resolution and invokes the provider through a deterministic
 same-principal child execution carrying the exact response and complete bounded
 history. Its recovery driver also selects registered continuations while their
 Task is still paused, with independent Redis and PostgreSQL restart contracts.
-The authenticated HTTP adapter now connects both durable halves and the peer
-route is exposed with receipt-aware helpers in all five SDKs. Verifier-backed
-`AuthRequired` handoff and federation trust and revocation protocols remain
-later work.
+The authenticated HTTP adapter now connects both durable halves and exposes
+receipt-aware input and authorization helpers in all five SDKs. Redis and
+PostgreSQL contracts exercise two authenticated servers across restart,
+verifier denial/revocation, and lost target response. Federation trust and
+cross-domain revocation protocols remain later work.

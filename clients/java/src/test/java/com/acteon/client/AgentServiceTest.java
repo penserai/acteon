@@ -29,7 +29,11 @@ class AgentServiceTest {
                 if (exchange.getRequestMethod().equals("GET")) {
                     assertTrue(exchange.getRequestURI().getRawPath().endsWith("/tasks/job-1/peers"));
                     assertEquals("skill=diagnose", exchange.getRequestURI().getRawQuery());
-                } else assertTrue(exchange.getRequestURI().getRawPath().contains("/peers/team%2Fresolver/diagnose/"));
+                } else {
+                    assertTrue(exchange.getRequestURI().getRawPath().contains("/peers/team%2Fresolver/diagnose/"));
+                    if (exchange.getRequestURI().getPath().endsWith("/authorization:resolve"))
+                        assertEquals("challenge-42", mapper.readTree(exchange.getRequestBody()).path("challengeId").asText());
+                }
             } catch(Throwable error) { failure.set(error); }
             exchange.getResponseHeaders().set(A2A.VERSION_HEADER,"1.0");
             var body = (exchange.getRequestMethod().equals("GET")
@@ -38,6 +42,8 @@ class AgentServiceTest {
                 ? "{\"submission_id\":\"f47ac10b-58cc-5372-a567-0e02b2c3d479\",\"cancellation_id\":\"67e55044-10b1-526f-9247-bb680e5fe0c8\",\"status\":{\"state\":\"restricted\",\"task\":{\"id\":\"remote-1\",\"namespace\":\"prod\",\"tenant\":\"acme\",\"status\":{\"state\":\"submitted\"}}}}"
                 : exchange.getRequestURI().getPath().contains("/submissions/") && exchange.getRequestURI().getPath().endsWith("/message:send")
                 ? "{\"submission_id\":\"f47ac10b-58cc-5372-a567-0e02b2c3d479\",\"continuation_id\":\"67e55044-10b1-526f-9247-bb680e5fe0c8\",\"status\":{\"state\":\"accepted\",\"task\":{\"id\":\"remote-1\",\"namespace\":\"prod\",\"tenant\":\"acme\"},\"progress_cursor\":\"\\\"remote-1:2\\\"\"}}"
+                : exchange.getRequestURI().getPath().endsWith("/authorization:resolve")
+                ? "{\"submission_id\":\"f47ac10b-58cc-5372-a567-0e02b2c3d479\",\"authorization_id\":\"67e55044-10b1-526f-9247-bb680e5fe0c8\",\"status\":{\"state\":\"resolved\",\"task\":{\"id\":\"remote-1\",\"namespace\":\"prod\",\"tenant\":\"acme\",\"status\":{\"state\":\"working\"}},\"progress_cursor\":\"\\\"remote-1:2\\\"\"}}"
                 : "{\"submission_id\":\"f47ac10b-58cc-5372-a567-0e02b2c3d479\",\"status\":{\"state\":\"accepted\",\"task\":{\"id\":\"remote-1\",\"namespace\":\"prod\",\"tenant\":\"acme\"}}}").getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(200,body.length); exchange.getResponseBody().write(body); exchange.close();
         }); server.start();
@@ -54,6 +60,9 @@ class AgentServiceTest {
             assertEquals("accepted",continued.state());
             assertEquals("\"remote-1:2\"",continued.progressCursor());
             assertThrows(IllegalArgumentException.class,()->client.agentServiceContinuePeer(source,"team/resolver","diagnose",receipt,Map.of("messageId","answer-1","role","user","taskId","forged")));
+            var authorized = client.agentServiceAuthorizePeer(source,"team/resolver","diagnose",receipt,"challenge-42");
+            assertEquals("resolved",authorized.state());
+            assertEquals("\"remote-1:2\"",authorized.progressCursor());
             if(failure.get()!=null) throw new AssertionError(failure.get());
         } finally { server.stop(0); }
     }

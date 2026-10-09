@@ -60,10 +60,10 @@
 pub mod a2a;
 pub mod agent_services;
 pub use agent_services::{
-    AgentPeerCancelReceipt, AgentPeerCancelStatus, AgentPeerContinuationReceipt,
-    AgentPeerContinuationStatus, AgentPeerSelectionOption, AgentPeerSendReceipt,
-    AgentPeerSendStatus, AgentServiceParent, AgentServiceProviderAbort, AgentServiceReceipt,
-    AgentServiceStopReceipt,
+    AgentPeerAuthorizationReceipt, AgentPeerAuthorizationStatus, AgentPeerCancelReceipt,
+    AgentPeerCancelStatus, AgentPeerContinuationReceipt, AgentPeerContinuationStatus,
+    AgentPeerSelectionOption, AgentPeerSendReceipt, AgentPeerSendStatus, AgentServiceParent,
+    AgentServiceProviderAbort, AgentServiceReceipt, AgentServiceStopReceipt,
 };
 pub mod aws;
 pub mod azure;
