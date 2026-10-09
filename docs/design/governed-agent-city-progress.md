@@ -46,7 +46,7 @@ verify per-effect permits, revocation during a chain, closures or mesh execution
 | 2: Permits/checkpoints | Current permits/credentials/configuration snapshots, qualified static-webhook adapter and common gateway mediation merged; standalone runtime and authenticated governance management with SDK/UI merged | Broader effect coverage, workforce representation, deferred execution and recovery |
 | 3: Closures/intervention | Serialized resource restrictions, durable control events and authenticated public close/reopen/revocation | Overlapping named closures, intervention recovery, drain/pause/cancel semantics and acknowledgments |
 | 4: Autonomous mesh | Governed target discovery/submission, state-backed progress cursors, native cancellation, durable peer input continuation, hosted verifier-backed authorization, and authenticated remote auth handoff implemented | Federation trust/revocation and broader recovery proof |
-| 5: Production/federation | Not implemented | Verified backend and peer capability matrix, trust/revocation protocol and failure tests |
+| 5: Production/federation | Audience-bound federation trust kernel implemented on the current branch | Runtime/management integration, credential exchange, verified peer capability matrix and external failure tests |
 
 Next work should integrate trusted execution context into deferred paths and
 complete coordinator/accounting prerequisites before per-effect enforcement. Do
@@ -1984,3 +1984,31 @@ HTTPS servers through verifier revocation, committed response loss, source
 restart, and recovery with exactly one verifier call for the successful
 challenge. Federation trust and cross-domain revocation remain the next Phase 4
 boundary.
+
+### Federation trust kernel (in progress, unpublished)
+
+The governance coordinator now has an explicit asymmetric cross-domain trust
+boundary. Locally reviewed trust records bind one foreign domain and Ed25519 key
+to the exact local audience, actors, recipient, qualified service binding,
+effects, root budgets, depth, validity and revocation-freshness ceiling. Foreign
+envelopes are schema closed, audience bound and may only attenuate one reviewed
+shape. Their private signing key never enters Acteon authority state.
+
+Import verifies the signature and policy, retains the signed evidence, and
+creates the bounded local root in one coordinator CAS. Every imported effect
+rechecks current trust, expiry, target status, exact effect and root accounting
+inside the same CAS as effect registration. Trust revocation and a new effect
+therefore have a defined winner; replay of an already registered attempt remains
+observation. Retained evidence is reverified during reconstruction, and protocol
+12 requires an explicit reviewed cutover to protocol 13.
+
+Memory contracts cover signature, audience, attenuation, replay conflict,
+freshness, terminal revocation, effect-start denial, trust retargeting, retained
+record tampering and reviewed cutover. CI now explicitly runs the same
+cross-replica publish/import/start/revoke contract on Redis, PostgreSQL and
+DynamoDB. See [Federation trust kernel](federation-trust-kernel.md).
+
+This is the trust and accounting substrate, not a public federation release.
+Configured runtime bindings, authenticated management, credential exchange,
+capability negotiation, qualified wire transport, partition/reconciliation
+operations and named external implementation conformance remain Phase 5 gates.

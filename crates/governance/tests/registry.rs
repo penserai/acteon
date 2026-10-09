@@ -201,6 +201,8 @@ async fn explicit_protocol_10_upgrade_retains_state_and_rejects_implicit_adoptio
     let mut raw = serde_json::to_value(&before).unwrap();
     raw["schema_version"] = 10.into();
     raw.as_object_mut().unwrap().remove("agent_registry");
+    raw.as_object_mut().unwrap().remove("federation_trusts");
+    raw.as_object_mut().unwrap().remove("federation_imports");
     store
         .set(&key, &serde_json::to_string(&raw).unwrap(), None)
         .await
@@ -221,7 +223,7 @@ async fn explicit_protocol_10_upgrade_retains_state_and_rejects_implicit_adoptio
     .await
     .unwrap();
     assert_eq!(plan.report().from_protocol, 10);
-    assert_eq!(plan.report().to_protocol, 12);
+    assert_eq!(plan.report().to_protocol, 13);
     assert!(plan.apply(&plan.report().review_digest).await.unwrap());
     let after = AuthorityCoordinator::connect(store, "city", "tenant")
         .await

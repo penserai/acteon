@@ -1977,6 +1977,8 @@ async fn protocol_ten_and_eleven_upgrades_preserve_funded_contexts_and_execution
         if source_version == 10 {
             raw.as_object_mut().unwrap().remove("agent_registry");
         }
+        raw.as_object_mut().unwrap().remove("federation_trusts");
+        raw.as_object_mut().unwrap().remove("federation_imports");
         f.state
             .set(&key, &serde_json::to_string(&raw).unwrap(), None)
             .await
@@ -1992,7 +1994,7 @@ async fn protocol_ten_and_eleven_upgrades_preserve_funded_contexts_and_execution
         .await
         .unwrap();
         assert_eq!(plan.report().from_protocol, source_version);
-        assert_eq!(plan.report().to_protocol, 12);
+        assert_eq!(plan.report().to_protocol, 13);
         plan.apply(&plan.report().review_digest).await.unwrap();
         let after = f.coordinator.snapshot().await.unwrap();
         assert_eq!(before.incarnation, after.incarnation);

@@ -115,7 +115,9 @@ impl ControlChangeAuthorization<'_> {
             | AuthorityChange::PublishCredential { .. }
             | AuthorityChange::PublishCredentialConfiguration { .. }
             | AuthorityChange::PublishDelegationGrant { .. }
-            | AuthorityChange::RevokeDelegationGrant { .. } => false,
+            | AuthorityChange::RevokeDelegationGrant { .. }
+            | AuthorityChange::PublishFederationTrust { .. }
+            | AuthorityChange::RevokeFederationTrust { .. } => false,
         };
         if !allowed {
             return Err(CoordinationError::Restricted);

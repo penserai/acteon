@@ -18,6 +18,7 @@ pub mod control;
 pub mod credential;
 pub mod delegation;
 pub mod delegation_policy;
+pub mod federation;
 pub mod permit;
 pub mod reconciliation;
 pub mod registry;
@@ -31,7 +32,7 @@ pub use budget::{
 pub use scope::ScopePurpose;
 pub use upgrade::{ScopeUpgradePlan, ScopeUpgradeReport};
 
-const FORMAT: u32 = 12;
+const FORMAT: u32 = 13;
 const MAX_ATTEMPT_RESOURCES: usize = 16;
 const RETRIES: usize = 32;
 const CONTROL_RECORD_RESERVE: usize = 16;
@@ -91,23 +92,42 @@ pub enum AuthorityChange {
         recorded_at_ms: i64,
     },
     /// Only created by trusted virgin-scope reservation, never generic change.
-    ReserveScope { purpose: ScopePurpose },
+    ReserveScope {
+        purpose: ScopePurpose,
+    },
     /// Trusted work host permanently fences this execution and its descendants.
     /// Generic resource controllers cannot issue this operation.
-    CancelExecution { execution_id: String },
+    CancelExecution {
+        execution_id: String,
+    },
     /// Refuse new starts targeting this exact resource reference.
-    CloseResource { resource: ResourceRef },
+    CloseResource {
+        resource: ResourceRef,
+    },
     /// Remove this resource restriction; other restrictions remain effective.
-    ReopenResource { resource: ResourceRef },
+    ReopenResource {
+        resource: ResourceRef,
+    },
     /// Refuse this subject's subsequent starts.
-    RevokeSubject { subject: String },
+    RevokeSubject {
+        subject: String,
+    },
     /// Only publish through the bounded trusted issuance entrypoint.
-    PublishPermit { permit: permit::ExecutionPermit },
+    PublishPermit {
+        permit: permit::ExecutionPermit,
+    },
     PublishDelegationGrant {
         grant: delegation_policy::DelegationGrant,
     },
     RevokeDelegationGrant {
         grant_id: String,
+        expected_revision: u64,
+    },
+    PublishFederationTrust {
+        trust: federation::FederationTrust,
+    },
+    RevokeFederationTrust {
+        trust_id: String,
         expected_revision: u64,
     },
     PublishCredentialConfiguration {
@@ -239,6 +259,8 @@ pub struct CoordinatorSnapshot {
     pub credential_configurations: BTreeMap<String, configuration::CredentialConfigurationRecord>,
     pub workforce: workforce::WorkforceState,
     pub agent_registry: BTreeMap<String, registry::AgentRegistryRecord>,
+    pub federation_trusts: BTreeMap<String, federation::FederationTrustRecord>,
+    pub federation_imports: BTreeMap<String, federation::FederationImportRecord>,
 }
 
 impl CoordinatorSnapshot {
@@ -252,6 +274,8 @@ impl CoordinatorSnapshot {
             + self.credential_configurations.len()
             + self.workforce.record_count()
             + self.agent_registry.len()
+            + self.federation_trusts.len()
+            + self.federation_imports.len()
     }
     #[must_use]
     pub fn stamp(&self) -> AuthorityStamp {
@@ -461,6 +485,8 @@ impl AuthorityCoordinator {
             credential_configurations: BTreeMap::new(),
             workforce: workforce::WorkforceState::default(),
             agent_registry: BTreeMap::new(),
+            federation_trusts: BTreeMap::new(),
+            federation_imports: BTreeMap::new(),
             budget_parents: BTreeMap::new(),
         };
         let coordinator = Self { store, key };
@@ -537,6 +563,7 @@ impl AuthorityCoordinator {
         Ok((self.decode(&raw)?, version))
     }
 
+    #[allow(clippy::too_many_lines)]
     fn decode(&self, raw: &str) -> Result<CoordinatorSnapshot, CoordinationError> {
         let state: CoordinatorSnapshot =
             serde_json::from_str(raw).map_err(|e| CoordinationError::Invalid(e.to_string()))?;
@@ -561,6 +588,7 @@ impl AuthorityCoordinator {
             || !self.valid_registry_history(&state)
             || !self.valid_credential_history(&state)
             || !self.valid_delegation_history(&state)
+            || !self.valid_federation_history(&state)
             || !self.valid_workforce_history(&state)
             || state.changes.values().any(|record| match &record.change {
                 AuthorityChange::UpgradeProtocol {
@@ -568,7 +596,7 @@ impl AuthorityCoordinator {
                     to_protocol,
                 } => !matches!(
                     (*from_protocol, *to_protocol),
-                    (7 | 8, 9..=12) | (9, 10..=12) | (10, 11 | 12) | (11, 12)
+                    (7 | 8, 9..=13) | (9, 10..=13) | (10, 11..=13) | (11, 12 | 13) | (12, 13)
                 ),
                 AuthorityChange::PublishAgentRegistry { qualification } => {
                     self.validate_resource_scope(&qualification.agent).is_err()
@@ -617,6 +645,13 @@ impl AuthorityCoordinator {
                     grant_id,
                     expected_revision,
                 } => !valid_text(grant_id) || *expected_revision == 0,
+                AuthorityChange::PublishFederationTrust { trust } => {
+                    !federation::valid_trust(trust)
+                }
+                AuthorityChange::RevokeFederationTrust {
+                    trust_id,
+                    expected_revision,
+                } => !valid_text(trust_id) || *expected_revision == 0,
                 AuthorityChange::PublishPermit { permit } => !self.valid_permit(permit),
                 AuthorityChange::RevokePermit {
                     permit_id,
@@ -670,7 +705,8 @@ impl AuthorityCoordinator {
         &self,
         request: AttemptRequest<'_>,
     ) -> Result<StartRegistration, CoordinationError> {
-        self.register_attempt_checked(request, None, None).await
+        self.register_attempt_checked(request, None, None, None)
+            .await
     }
 
     fn validate_attempt_resources(
@@ -705,11 +741,12 @@ impl AuthorityCoordinator {
         Ok(resources)
     }
 
-    async fn register_attempt_checked(
+    pub(crate) async fn register_attempt_checked(
         &self,
         request: AttemptRequest<'_>,
         permit_check: Option<&permit::PermittedAttempt<'_>>,
         operation_evidence: Option<&AttemptEvidenceReference>,
+        federation_check: Option<&federation::FederationAttemptCheck<'_>>,
     ) -> Result<StartRegistration, CoordinationError> {
         let resources = self.validate_attempt_resources(&request)?;
         let AttemptRequest {
@@ -756,6 +793,13 @@ impl AuthorityCoordinator {
             if let Some(check) = permit_check {
                 permit::evaluate(&state, check, checked_now)?;
             }
+            Self::validate_federated_attempt_in_snapshot(
+                &state,
+                federation_check,
+                subject,
+                &resources,
+                reservation.as_ref(),
+            )?;
             if state.record_count() >= state.limits.max_records - CONTROL_RECORD_RESERVE
                 || state
                     .starts
@@ -839,9 +883,11 @@ impl AuthorityCoordinator {
             | AuthorityChange::PublishCredential { .. }
             | AuthorityChange::PublishCredentialConfiguration { .. }
             | AuthorityChange::PublishDelegationGrant { .. }
-            | AuthorityChange::RevokeDelegationGrant { .. } => {
+            | AuthorityChange::RevokeDelegationGrant { .. }
+            | AuthorityChange::PublishFederationTrust { .. }
+            | AuthorityChange::RevokeFederationTrust { .. } => {
                 return Err(CoordinationError::Invalid(
-                    "use bounded permit publication".into(),
+                    "use bounded authority entrypoint".into(),
                 ));
             }
             AuthorityChange::RevokePermit {
@@ -972,7 +1018,9 @@ impl AuthorityCoordinator {
                 | AuthorityChange::PublishCredential { .. }
                 | AuthorityChange::PublishCredentialConfiguration { .. }
                 | AuthorityChange::PublishDelegationGrant { .. }
-                | AuthorityChange::RevokeDelegationGrant { .. } => {
+                | AuthorityChange::RevokeDelegationGrant { .. }
+                | AuthorityChange::PublishFederationTrust { .. }
+                | AuthorityChange::RevokeFederationTrust { .. } => {
                     unreachable!("publication uses its bounded entrypoint")
                 }
             }

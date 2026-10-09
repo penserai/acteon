@@ -776,7 +776,8 @@ async fn legacy_control_fixture(state: &Arc<dyn StateStore>) -> (acteon_state::S
     legacy.as_object_mut().unwrap().remove("workforce");
     legacy.as_object_mut().unwrap().remove("agent_registry");
     legacy.as_object_mut().unwrap().remove("budget_parents");
-    legacy.as_object_mut().unwrap().remove("agent_registry");
+    legacy.as_object_mut().unwrap().remove("federation_trusts");
+    legacy.as_object_mut().unwrap().remove("federation_imports");
     legacy.as_object_mut().unwrap().remove("purpose");
     let key = StateKey::new(
         "legacy-control",
