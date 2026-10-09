@@ -306,14 +306,19 @@ cursor. Redis and PostgreSQL contracts cover delivery, source restart, receipt
 recovery, and one history append.
 
 `AuthRequired` has a separate trust boundary. Message content cannot grant
-authority and is never treated as a credential. A trusted authorization flow
-must verify an out-of-band credential or authorization reference before that
-Task can resume. Acteon's Task Engine now provides a verifier-backed host API:
-the pause pins the exact verifier revision, recipient, credential authority,
-audience, scopes, and opaque authorization-request ID; resolution rechecks that
-external authority and stores only a stable decision and request digest. An
-unbound legacy auth pause cannot be resumed. The authenticated REST/SDK and
-remote-peer handoff for this host API remain follow-ups.
+authority and is never treated as a credential. A configured hosted agent opens
+the challenge with an opaque verifier request handle; Acteon supplies the
+binding-qualified verifier, revision, recipient, credential authority, audience,
+and scopes. The original requester resolves the returned challenge through the
+host-installed verifier. The verifier credential never enters the task or
+either public request body. An unbound legacy auth pause cannot be resumed.
+
+```text
+POST .../tasks/{id}/authorization:request   # authenticated recipient agent
+POST .../tasks/{id}/authorization:resolve   # authenticated original requester
+```
+
+Remote-peer authorization handoff remains a separate durable transport step.
 
 ## Artifact streaming
 

@@ -1,6 +1,9 @@
 //! Explicit individual-agent ingress; tenant-level A2A remains independent.
 use super::{AppState, a2a::A2A_PROTOCOL_VERSION, schemas::ErrorResponse};
-use crate::execution_authority::{AgentServiceContinuation, AgentServiceParent};
+use crate::execution_authority::{
+    AgentServiceAuthorizationOpen, AgentServiceAuthorizationResolve, AgentServiceContinuation,
+    AgentServiceParent,
+};
 use crate::{
     auth::{
         identity::CallerIdentity, projection::AuthenticatedExecutionConfiguration, role::Permission,
@@ -27,6 +30,19 @@ const EXECUTION_CONTEXT_HEADER: &str = "x-acteon-execution-context";
 #[serde(deny_unknown_fields)]
 pub struct AgentMessageSend {
     pub message: TaskMessage,
+}
+
+#[derive(Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct AgentAuthorizationOpen {
+    /// Opaque verifier-owned handle. Credentials must never be sent here.
+    pub authorization_request_id: String,
+}
+
+#[derive(Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct AgentAuthorizationResolve {
+    pub challenge_id: String,
 }
 
 /// Model/tool input for a configured peer. Authority comes from the accepted
@@ -863,6 +879,126 @@ pub async fn task_continue(
             },
             challenge_id,
             response: &request.message,
+        })
+        .await
+    {
+        Ok(observed) => (
+            StatusCode::OK,
+            [
+                ("a2a-version", A2A_PROTOCOL_VERSION.to_string()),
+                ("cache-control", "no-store".to_string()),
+                ("etag", super::a2a::task_cursor(observed.task_version, None)),
+            ],
+            Json(observed.task),
+        )
+            .into_response(),
+        Err(cause) => service_error(cause),
+    }
+}
+
+#[utoipa::path(
+    post, path = "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/authorization:request", tag = "Governance",
+    params(("namespace" = String, Path), ("tenant" = String, Path), ("agent" = String, Path), ("id" = String, Path)),
+    request_body = AgentAuthorizationOpen,
+    responses((status = 200, body = acteon_core::Task, description = "Task paused on the host-bound authorization profile"),
+        (status = 400, description = "Invalid opaque authorization request"), (status = 403, description = "Configured recipient authentication required"),
+        (status = 404, description = "Task unavailable to this recipient"), (status = 409, description = "Task state changed"),
+        (status = 503, description = "Runtime unavailable"))
+)]
+pub async fn task_authorization_request(
+    State(state): State<AppState>,
+    proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
+    Path((namespace, tenant, agent, task_id)): Path<(String, String, String, uuid::Uuid)>,
+    headers: HeaderMap,
+    Json(request): Json<AgentAuthorizationOpen>,
+) -> Response {
+    let Some(Extension(proof)) = proof else {
+        return error(StatusCode::FORBIDDEN, "private_authentication_required");
+    };
+    if headers
+        .get("a2a-version")
+        .is_some_and(|value| value != A2A_PROTOCOL_VERSION)
+    {
+        return error(StatusCode::BAD_REQUEST, "unsupported_a2a_version");
+    }
+    let Some(runtime) = &state.execution_authority else {
+        return error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "agent_services_unavailable",
+        );
+    };
+    match runtime
+        .open_agent_service_authorization(AgentServiceAuthorizationOpen {
+            namespace: &namespace,
+            tenant: &tenant,
+            agent_id: &agent,
+            task_id,
+            authentication: &proof,
+            authorization_request_id: &request.authorization_request_id,
+        })
+        .await
+    {
+        Ok(observed) => (
+            StatusCode::OK,
+            [
+                ("a2a-version", A2A_PROTOCOL_VERSION.to_string()),
+                ("cache-control", "no-store".to_string()),
+                ("etag", super::a2a::task_cursor(observed.task_version, None)),
+            ],
+            Json(observed.task),
+        )
+            .into_response(),
+        Err(cause) => service_error(cause),
+    }
+}
+
+#[utoipa::path(
+    post, path = "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/authorization:resolve", tag = "Governance",
+    params(("namespace" = String, Path), ("tenant" = String, Path), ("agent" = String, Path),
+        ("id" = String, Path), ("x-acteon-agent-source-context" = Option<String>, Header, description = "Original admission source context; mandatory for agent requesters")),
+    request_body = AgentAuthorizationResolve,
+    responses((status = 200, body = acteon_core::Task, description = "Task after verifier-backed authorization resolution"),
+        (status = 400, description = "Invalid challenge binding"), (status = 403, description = "Original requester authentication required or verifier denied"),
+        (status = 404, description = "Task unavailable to this requester"), (status = 409, description = "Challenge conflicts with task state"),
+        (status = 503, description = "Verifier or runtime unavailable"))
+)]
+pub async fn task_authorization_resolve(
+    State(state): State<AppState>,
+    proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
+    Path((namespace, tenant, agent, task_id)): Path<(String, String, String, uuid::Uuid)>,
+    headers: HeaderMap,
+    Json(request): Json<AgentAuthorizationResolve>,
+) -> Response {
+    let Some(Extension(proof)) = proof else {
+        return error(StatusCode::FORBIDDEN, "private_authentication_required");
+    };
+    if headers
+        .get("a2a-version")
+        .is_some_and(|value| value != A2A_PROTOCOL_VERSION)
+    {
+        return error(StatusCode::BAD_REQUEST, "unsupported_a2a_version");
+    }
+    let source = match parse_source_context(&headers) {
+        Ok(source) => source,
+        Err(code) => return error(StatusCode::BAD_REQUEST, code),
+    };
+    let Some(runtime) = &state.execution_authority else {
+        return error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "agent_services_unavailable",
+        );
+    };
+    match runtime
+        .resolve_agent_service_authorization(AgentServiceAuthorizationResolve {
+            observation: AgentServiceObservation {
+                namespace: &namespace,
+                tenant: &tenant,
+                agent_id: &agent,
+                task_id,
+                authentication: &proof,
+                source_context: source.as_ref(),
+            },
+            challenge_id: &request.challenge_id,
         })
         .await
     {

@@ -335,6 +335,60 @@ impl AuthorityCoordinator {
 }
 
 impl AuthorityCoordinator {
+    /// Recheck the current permit, credential, delegation and closure state for
+    /// an already admitted effect. This consumes no additional budget and does
+    /// not require a free concurrency slot; it grants no new provider start.
+    pub async fn recheck_existing_effect_authority(
+        &self,
+        context: &VerifiedExecutionContext,
+        permits: &[PermitReference],
+        effect: &AcceptedEffect,
+        clock: &dyn Clock,
+    ) -> Result<(), CoordinationError> {
+        let state = self.snapshot().await?;
+        let now = clock.now().timestamp_millis();
+        if context.credential_authority().is_none() {
+            return Err(CoordinationError::Restricted);
+        }
+        context.validate_inheritance(&state, permits, now)?;
+        let reference = context
+            .reference()
+            .map_err(|_| CoordinationError::Restricted)?;
+        crate::permit::evaluate_with_availability(
+            &state,
+            &PermittedAttempt {
+                id: "existing-effect-authority",
+                context,
+                permits,
+                effect,
+                request_digest: reference.request_digest(),
+                units: 0,
+                clock,
+            },
+            now,
+            crate::budget::Availability::Admission,
+        )?;
+        let resources = context
+            .effect_registration_resources(effect)
+            .map_err(|_| CoordinationError::Restricted)?;
+        if resources
+            .iter()
+            .any(|resource| state.closed_resources.contains(resource))
+        {
+            return Err(CoordinationError::Restricted);
+        }
+        crate::budget::check_root_availability(
+            &state,
+            &RootReservation {
+                root_id: context.execution_id().to_string(),
+                units: 0,
+            },
+            now,
+            crate::budget::Availability::Admission,
+        )?;
+        Ok(())
+    }
+
     /// Validate admitted work for queueing without reserving concurrency or
     /// authorizing execution. Registration always rechecks start availability.
     pub async fn check_queued_effect_authority(

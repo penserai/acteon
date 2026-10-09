@@ -5,8 +5,9 @@ pub use agent_service_error::AgentServiceError;
 mod agent_services;
 pub use agent_driver::AgentServiceDriver;
 pub use agent_services::{
-    AgentServiceAcceptance, AgentServiceContinuation, AgentServiceObservation, AgentServiceParent,
-    AgentServiceRequest, AgentServiceTaskObservation,
+    AgentServiceAcceptance, AgentServiceAuthorizationOpen, AgentServiceAuthorizationResolve,
+    AgentServiceContinuation, AgentServiceObservation, AgentServiceParent, AgentServiceRequest,
+    AgentServiceTaskObservation,
 };
 mod management;
 pub use management::{ManagementError, TrustedReconciliationInstallation};
@@ -89,10 +90,14 @@ struct InstalledScope {
     agents: BTreeMap<String, Arc<acteon_gateway::agent_runtime::AgentProviderRuntime>>,
     agent_bindings:
         BTreeMap<(String, String), Arc<acteon_gateway::agent_runtime::AgentProviderRuntime>>,
+    authorization_verifiers: AuthorizationVerifierMap,
     peer_mesh: InstalledPeerMesh,
     reconciliation: Option<acteon_executor::governed::reconciliation::ProviderReconciliationStore>,
 }
 type PeerTransportKey = (String, String, String);
+type AuthorizationVerifierKey = (String, u64);
+type AuthorizationVerifierMap =
+    BTreeMap<AuthorizationVerifierKey, Arc<dyn acteon_gateway::TaskAuthorizationVerifier>>;
 struct InstalledPeerMesh {
     registry: Option<Arc<acteon_executor::delegation::ApprovedPeerRegistry>>,
     transports: BTreeMap<PeerTransportKey, Arc<acteon_executor::delegation::DurablePeerTransport>>,
@@ -239,6 +244,8 @@ impl ExecutionAuthorityRuntime {
                 }
             }
             let peer_mesh = Self::install_peer_transports(&prepared, &coordinator, &dependencies)?;
+            let authorization_verifiers =
+                Self::install_authorization_verifiers(&prepared, &dependencies)?;
             let handoffs = dependencies.handoffs(&declaration.namespace, &declaration.tenant)?;
             let history = dependencies.history(&coordinator, contexts.clone());
             scopes.insert(
@@ -251,6 +258,7 @@ impl ExecutionAuthorityRuntime {
                     history,
                     agents,
                     agent_bindings,
+                    authorization_verifiers,
                     peer_mesh,
                     reconciliation: None,
                 },
@@ -417,6 +425,39 @@ impl ExecutionAuthorityRuntime {
             registry: Some(registry),
             transports,
         })
+    }
+
+    fn install_authorization_verifiers(
+        prepared: &PreparedExecutionScope,
+        dependencies: &ExecutionRuntimeDependencies,
+    ) -> Result<AuthorizationVerifierMap, String> {
+        let mut installed = BTreeMap::new();
+        for config in &prepared.authorization_verifiers {
+            let credential = acteon_crypto::SecretString::new(
+                std::env::var(&config.credential_env)
+                    .map_err(|_| "task authorization verifier credential unavailable")?
+                    .into(),
+            );
+            let verifier = crate::execution_authority::authorization_http::TaskAuthorizationHttpVerifier::new_trusted_with_builder(
+                config.id.clone(),
+                config.revision,
+                config.endpoint.clone(),
+                credential,
+                peer_http_builder(dependencies)?,
+                acteon_http::OutboundPolicy { internal_hosts: config.internal_hosts.clone() },
+                std::time::Duration::from_millis(config.timeout_ms),
+            ).map_err(|_| "invalid task authorization verifier")?;
+            if installed
+                .insert(
+                    (config.id.clone(), config.revision),
+                    Arc::new(verifier) as Arc<dyn acteon_gateway::TaskAuthorizationVerifier>,
+                )
+                .is_some()
+            {
+                return Err("duplicate installed task authorization verifier".into());
+            }
+        }
+        Ok(installed)
     }
     /// Publish independent permits only after authentication configuration and
     /// every scope projection have succeeded, before exposing the listener.

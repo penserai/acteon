@@ -409,6 +409,8 @@ peer = await client.agentServiceRefreshPeer(receipt, "resolver", "diagnose", pee
 const cancellation = await client.agentServiceCancelPeer(receipt, "resolver", "diagnose", peer);
 const continued = await client.agentServiceContinuePeer(receipt, "resolver", "diagnose", peer, userResponse);
 const task = await client.agentServiceContinueTask(receipt, challengeBoundResponse);
+const paused = await recipient.agentServiceRequestAuthorization("prod", "acme", "medic", task.id as string, "opaque-flow-42");
+const resumed = await client.agentServiceResolveAuthorization(receipt, paused.pendingApprovalId as string);
 ```
 
 Cancellation is delivered at most once. A `restricted` receipt proves the target

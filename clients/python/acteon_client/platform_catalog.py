@@ -23,6 +23,8 @@ class PlatformOperation(StrEnum):
     AGENT_SERVICES_PEER_DISCOVER = "agent_services_peer_discover"
     AGENT_SERVICES_PEER_REFRESH = "agent_services_peer_refresh"
     AGENT_SERVICES_PEER_SEND = "agent_services_peer_send"
+    AGENT_SERVICES_TASK_AUTHORIZATION_REQUEST = "agent_services_task_authorization_request"
+    AGENT_SERVICES_TASK_AUTHORIZATION_RESOLVE = "agent_services_task_authorization_resolve"
     AGENT_SERVICES_TASK_CONTINUE = "agent_services_task_continue"
     AGENT_SERVICES_TASK_GET = "agent_services_task_get"
     AGENT_SERVICES_TASK_STOP = "agent_services_task_stop"
@@ -331,6 +333,18 @@ OPERATIONS = {
         "POST",
         "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/message:send",
         ("namespace", "tenant", "agent", "id", "target", "skill"),
+        "json",
+    ),
+    PlatformOperation.AGENT_SERVICES_TASK_AUTHORIZATION_REQUEST: (
+        "POST",
+        "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/authorization:request",
+        ("namespace", "tenant", "agent", "id"),
+        "json",
+    ),
+    PlatformOperation.AGENT_SERVICES_TASK_AUTHORIZATION_RESOLVE: (
+        "POST",
+        "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/authorization:resolve",
+        ("namespace", "tenant", "agent", "id"),
         "json",
     ),
     PlatformOperation.AGENT_SERVICES_TASK_CONTINUE: (

@@ -6,6 +6,7 @@ use acteon_executor::{
 };
 use acteon_governance::{RootBudgetLimits, context::AcceptedEffect, permit::PermitReference};
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
 
 use crate::config::{ExecutionRouteConfig, ExecutionScopeConfig};
 
@@ -25,6 +26,9 @@ pub struct AgentServiceDeclaration {
     pub route: ExecutionRouteConfig,
     pub recipient_key_env: String,
     pub recipient_permits: Vec<PermitReference>,
+    /// Fixed trust policy for authorization challenges opened by this service.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorization: Option<AgentServiceAuthorizationProfile>,
     /// Exact agent services this runtime may invoke from accepted work. The
     /// host resolves these IDs to reviewed bindings; models cannot supply URLs,
     /// credentials, permits, or delegation grants.
@@ -61,8 +65,44 @@ pub struct RetainedAgentServiceDeclaration {
     pub endpoint: String,
     pub endpoint_id: String,
     pub route: ExecutionRouteConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorization: Option<AgentServiceAuthorizationProfile>,
     /// Operator-reviewed digest of the complete historical service binding.
     pub binding_digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentServiceAuthorizationProfile {
+    pub verifier_id: String,
+    pub verifier_revision: u64,
+    pub credential_authority: String,
+    pub audience: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_scopes: Vec<String>,
+    #[serde(default = "default_authorization_ttl_ms")]
+    pub challenge_ttl_ms: u64,
+}
+
+fn default_authorization_ttl_ms() -> u64 {
+    300_000
+}
+
+impl AgentServiceAuthorizationProfile {
+    fn validate(&self) -> bool {
+        let scopes = self
+            .required_scopes
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        valid_identifier(&self.verifier_id)
+            && self.verifier_revision > 0
+            && valid_text(&self.credential_authority)
+            && valid_text(&self.audience)
+            && self.required_scopes.len() <= 32
+            && scopes.len() == self.required_scopes.len()
+            && self.required_scopes.iter().all(|scope| valid_text(scope))
+            && (1_000..=86_400_000).contains(&self.challenge_ttl_ms)
+    }
 }
 
 impl AgentServiceDeclaration {
@@ -87,6 +127,10 @@ impl AgentServiceDeclaration {
             || !env[0].is_ascii_alphabetic()
             || !env.iter().all(|c| c.is_ascii_alphanumeric() || *c == b'_')
             || !valid_permits(&self.recipient_permits)
+            || self
+                .authorization
+                .as_ref()
+                .is_some_and(|profile| !profile.validate())
             || self.grants.is_empty()
             || self.grants.len() > 16
         {
@@ -139,6 +183,7 @@ impl AgentServiceDeclaration {
                 endpoint: &self.endpoint,
                 endpoint_id: &self.endpoint_id,
                 route: &self.route,
+                authorization: self.authorization.as_ref(),
             },
             bound,
             intent,
@@ -155,6 +200,7 @@ impl AgentServiceDeclaration {
             self.registry_revision,
             &self.endpoint_id,
             resources,
+            self.authorization.as_ref(),
         )
     }
 }
@@ -178,6 +224,10 @@ impl RetainedAgentServiceDeclaration {
             || !scope.subjects.contains(&self.principal)
             || !scope.routes.contains(&self.route)
             || !valid_digest(&self.binding_digest)
+            || self
+                .authorization
+                .as_ref()
+                .is_some_and(|profile| !profile.validate())
         {
             return Err("invalid retained agent service".into());
         }
@@ -194,6 +244,7 @@ impl RetainedAgentServiceDeclaration {
                 endpoint: &self.endpoint,
                 endpoint_id: &self.endpoint_id,
                 route: &self.route,
+                authorization: self.authorization.as_ref(),
             },
             bound,
             vec![bound.effect().clone()],
@@ -215,6 +266,7 @@ struct ServiceBindingDeclaration<'a> {
     endpoint: &'a str,
     endpoint_id: &'a str,
     route: &'a ExecutionRouteConfig,
+    authorization: Option<&'a AgentServiceAuthorizationProfile>,
 }
 
 fn qualify_binding(
@@ -238,6 +290,7 @@ fn qualify_binding(
         declaration.registry_revision,
         declaration.endpoint_id,
         resources,
+        declaration.authorization,
     )?;
     ApprovedPeerBinding::new_service_trusted(
         declaration.card,
@@ -256,6 +309,7 @@ fn service_ingress(
     registry_revision: u64,
     endpoint_id: &str,
     mut resources: Vec<ResourceRef>,
+    authorization: Option<&AgentServiceAuthorizationProfile>,
 ) -> Result<AcceptedEffect, String> {
     // The card revision is an enclosing resource, separate from the digest
     // of the complete service binding (which also includes this footprint).
@@ -275,12 +329,44 @@ fn service_ingress(
                 .map_err(|_| "invalid service enclosing resource")?,
         );
     }
+    if let Some(profile) = authorization {
+        let digest = format!(
+            "{:x}",
+            sha2::Sha256::digest(
+                serde_json::to_vec(profile).map_err(|_| "invalid authorization profile")?
+            )
+        );
+        resources.push(
+            ResourceRef::new(
+                ResourceKind::Route,
+                &card.namespace,
+                &card.tenant,
+                format!("agent-authorization.{digest}"),
+            )
+            .map_err(|_| "invalid authorization profile resource")?,
+        );
+    }
     resources.sort();
     resources.dedup();
     Ok(AcceptedEffect {
         operation: "agent.invoke".into(),
         resources,
     })
+}
+
+fn valid_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 120
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+fn valid_text(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 512
+        && value.trim() == value
+        && !value.chars().any(char::is_control)
 }
 
 fn valid_digest(value: &str) -> bool {
@@ -318,6 +404,7 @@ pub(crate) struct PreparedAgentService {
 #[derive(Clone)]
 pub(crate) struct PreparedRetainedAgentService {
     pub agent_id: String,
+    pub authorization: Option<AgentServiceAuthorizationProfile>,
     pub binding: ApprovedPeerBinding,
     pub bound: BoundProvider,
 }

@@ -522,6 +522,10 @@ peer = client.agent_service_refresh_peer(receipt, "resolver", "diagnose", peer)
 cancellation = client.agent_service_cancel_peer(receipt, "resolver", "diagnose", peer)
 continued = client.agent_service_continue_peer(receipt, "resolver", "diagnose", peer, user_response)
 task = client.agent_service_continue_task(receipt, challenge_bound_response)
+paused = recipient.agent_service_request_authorization(
+    "prod", "acme", "medic", task["id"], "opaque-flow-42"
+)
+resumed = client.agent_service_resolve_authorization(receipt, paused["pendingApprovalId"])
 ```
 
 Cancellation is delivered at most once. A `restricted` receipt proves the target

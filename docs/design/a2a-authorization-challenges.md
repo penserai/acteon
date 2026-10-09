@@ -1,9 +1,8 @@
 # Verifier-backed A2A authorization challenges
 
-**Status:** the backend-neutral Task Engine primitive and independent
-memory/Redis/PostgreSQL contracts are implemented. Server configuration,
-authenticated HTTP exposure, SDK methods, hosted-agent wiring, and remote peer
-handoff remain follow-ups.
+**Status:** the backend-neutral Task Engine primitive, guarded HTTP verifier,
+operator configuration, authenticated hosted-agent routes, and typed helpers in
+all five SDKs are implemented. Remote peer handoff remains a follow-up.
 
 ## Decision
 
@@ -82,6 +81,24 @@ untrusted callback trustworthy. Production server wiring must therefore:
 6. recheck the original task requester, recipient, permits, closures, and
    service binding before invoking the Task Engine operation.
 
+The hosted-agent routes implement those rules. The recipient opens a challenge
+with only an opaque request ID at `authorization:request`; Acteon fills every
+trust field from the service's binding-qualified profile. The original
+authenticated requester resolves the exact challenge at
+`authorization:resolve`. The guarded adapter disables redirects and proxies,
+applies outbound address policy and TLS configuration, sends its bearer secret
+only from the named environment variable, bounds the response, and requires an
+exact task, challenge, request-digest, and recipient echo.
+
+The verifier receives camel-case JSON with `schema`, `namespace`, `tenant`,
+`taskId`, `challengeId`, and the complete `requirement`. A successful response
+uses schema 1 and returns the same task and challenge, SHA-256 digests of both
+the opaque request ID and canonical requirement JSON, a stable `decisionId`,
+the exact recipient `subject`, and the `verifiedAt` / `validUntil` window.
+Unknown response fields, an unsupported content type, a body over 16 KiB, or
+any binding mismatch are invalid evidence. HTTP 400/401/403/404/409 means
+denied; transport errors, 429, and server errors are temporary unavailability.
+
 Remote peer continuation needs a separate source journal. The source may retain
 the remote challenge and an opaque authorization-flow handle, but cannot forward
 credentials or claim that a network timeout means authorization succeeded.
@@ -101,6 +118,6 @@ exchange.
   and
 - independent Redis and PostgreSQL clients converge on the same result.
 
-CI executes both production-backend contracts explicitly. The public route and
-SDK completion gate stays open until two authenticated servers demonstrate the
+CI executes both production-backend contracts explicitly. The remaining peer
+gate stays open until two authenticated servers demonstrate the
 same behavior across restart, denial, revocation, and lost target response.

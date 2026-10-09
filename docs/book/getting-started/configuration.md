@@ -670,3 +670,34 @@ For REST peers, configure the target endpoint as its qualified agent-service
 `.../v1/message:send` URL. Task refresh derives `.../v1/tasks/{id}` on the same
 guarded origin and refuses any endpoint that does not have that shape. Message
 content, task metadata, and registry cards cannot provide authority.
+
+`[[execution_authority.authorization_verifiers]]` installs an exact guarded
+HTTP verifier revision. Each agent service may bind one `authorization` profile
+to that verifier. The profile participates in the service binding digest and
+must be copied into a retained declaration when old accepted tasks remain
+recoverable.
+
+```toml
+[[execution_authority.authorization_verifiers]]
+id = "city-workload-identity"
+revision = 3
+endpoint = "https://identity.internal/v1/task-authorizations:verify"
+credential_env = "ACTEON_TASK_AUTH_VERIFIER_TOKEN"
+timeout_ms = 5000
+internal_hosts = ["identity.internal"]
+
+[execution_authority.scopes.agent_services.authorization]
+verifier_id = "city-workload-identity"
+verifier_revision = 3
+credential_authority = "city-identity"
+audience = "incident-api"
+required_scopes = ["incident.resolve", "traces.read"]
+challenge_ttl_ms = 300000
+```
+
+The recipient agent sends an opaque `authorizationRequestId` to the task's
+`authorization:request` route. The original requester later sends only the
+returned `challengeId` to `authorization:resolve`. Acteon calls the configured
+verifier with its host-held bearer credential. OAuth codes, access tokens, and
+other credential material stay at the verifier and never enter either request
+body, task history, or state backend.

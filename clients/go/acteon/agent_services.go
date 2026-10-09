@@ -627,6 +627,53 @@ func (c *Client) AgentServiceContinueTask(ctx context.Context, receipt *AgentSer
 	return task, nil
 }
 
+// AgentServiceRequestAuthorization opens the recipient's fixed authorization profile.
+func (c *Client) AgentServiceRequestAuthorization(ctx context.Context, namespace, tenant, agent, taskID, authorizationRequestID string) (map[string]any, error) {
+	base, err := agentServiceBase(namespace, tenant, agent)
+	if err != nil {
+		return nil, err
+	}
+	id, err := agentSegment(taskID)
+	if err != nil {
+		return nil, err
+	}
+	body := map[string]any{"authorizationRequestId": authorizationRequestID}
+	task, _, err := c.agentServiceRequest(ctx, "POST", base+"/tasks/"+id+"/authorization:request", body, "", nil)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := agentTask(task, namespace, tenant, taskID); err != nil {
+		return nil, err
+	}
+	return task, nil
+}
+
+// AgentServiceResolveAuthorization invokes the verifier for one exact challenge.
+func (c *Client) AgentServiceResolveAuthorization(ctx context.Context, receipt *AgentServiceReceipt, challengeID string) (map[string]any, error) {
+	if receipt == nil {
+		return nil, fmt.Errorf("agent service receipt required")
+	}
+	if err := agentSource(receipt.SourceContext); err != nil {
+		return nil, err
+	}
+	base, err := agentServiceBase(receipt.Namespace, receipt.Tenant, receipt.Agent)
+	if err != nil {
+		return nil, err
+	}
+	id, err := agentSegment(receipt.TaskID)
+	if err != nil {
+		return nil, err
+	}
+	task, _, err := c.agentServiceRequest(ctx, "POST", base+"/tasks/"+id+"/authorization:resolve", map[string]any{"challengeId": challengeID}, receipt.SourceContext, nil)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := agentTask(task, receipt.Namespace, receipt.Tenant, receipt.TaskID); err != nil {
+		return nil, err
+	}
+	return task, nil
+}
+
 // AgentServiceProviderAbort reports provider finality separately from restriction.
 type AgentServiceProviderAbort struct {
 	State       string `json:"state"`

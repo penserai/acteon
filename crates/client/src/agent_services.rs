@@ -444,6 +444,82 @@ async fn peer_continuation_response(
     Ok(receipt)
 }
 impl ActeonClient {
+    /// Open a host-profiled authorization challenge as the configured recipient
+    /// agent. Only an opaque verifier request handle crosses this API.
+    pub async fn agent_service_request_authorization(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        agent: &str,
+        task_id: &str,
+        authorization_request_id: &str,
+    ) -> Result<Task, Error> {
+        let path = format!(
+            "/a2a/{}/{}/agents/{}/v1/tasks/{}/authorization:request",
+            segment(namespace)?,
+            segment(tenant)?,
+            segment(agent)?,
+            segment(task_id)?,
+        );
+        let response = self
+            .add_auth(self.client.post(format!("{}{path}", self.base_url)))
+            .header("a2a-version", A2A_PROTOCOL_VERSION)
+            .json(&serde_json::json!({
+                "authorizationRequestId": authorization_request_id,
+            }))
+            .send()
+            .await
+            .map_err(|error| Error::Connection(error.to_string()))?;
+        let task = response_task(response).await?;
+        if !task_matches(&task, namespace, tenant, Some(task_id)) {
+            return Err(Error::Deserialization(
+                "agent service task identity mismatch".into(),
+            ));
+        }
+        Ok(task)
+    }
+
+    /// Resolve one exact authorization challenge as the original requester.
+    /// Credential material remains at the verifier and is never a method input.
+    pub async fn agent_service_resolve_authorization(
+        &self,
+        receipt: &AgentServiceReceipt,
+        challenge_id: &str,
+    ) -> Result<Task, Error> {
+        if !valid_source(&receipt.source_context) {
+            return Err(Error::Configuration(
+                "invalid agent service source context".into(),
+            ));
+        }
+        let path = format!(
+            "/a2a/{}/{}/agents/{}/v1/tasks/{}/authorization:resolve",
+            segment(&receipt.namespace)?,
+            segment(&receipt.tenant)?,
+            segment(&receipt.agent)?,
+            segment(&receipt.task_id)?,
+        );
+        let response = self
+            .add_auth(self.client.post(format!("{}{path}", self.base_url)))
+            .header("a2a-version", A2A_PROTOCOL_VERSION)
+            .header(AGENT_SOURCE_CONTEXT_HEADER, &receipt.source_context)
+            .json(&serde_json::json!({"challengeId": challenge_id}))
+            .send()
+            .await
+            .map_err(|error| Error::Connection(error.to_string()))?;
+        let task = response_task(response).await?;
+        if !task_matches(
+            &task,
+            &receipt.namespace,
+            &receipt.tenant,
+            Some(&receipt.task_id),
+        ) {
+            return Err(Error::Deserialization(
+                "agent service task identity mismatch".into(),
+            ));
+        }
+        Ok(task)
+    }
+
     /// List current safe selection options for an accepted source task. The
     /// returned registry description is untrusted and a later send rechecks all
     /// authority.
@@ -1003,6 +1079,27 @@ mod tests {
                     let raw = to_bytes(request.into_body(), 2 * 1024 * 1024)
                         .await
                         .unwrap();
+                    if path.ends_with("/authorization:request")
+                        || path.ends_with("/authorization:resolve")
+                    {
+                        let body: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+                        if path.ends_with("/authorization:request") {
+                            assert!(source.is_none());
+                            assert_eq!(body["authorizationRequestId"], "opaque-flow-42");
+                            assert_eq!(body.as_object().unwrap().len(), 1);
+                        } else {
+                            assert_eq!(body["challengeId"], "challenge-42");
+                            assert_eq!(
+                                source.as_deref(),
+                                wire["jobs"][0]["source_context"].as_str()
+                            );
+                        }
+                        let mut response = Json(wire["jobs"][0]["task"].clone()).into_response();
+                        response
+                            .headers_mut()
+                            .insert("a2a-version", "1.0".parse().unwrap());
+                        return response;
+                    }
                     if path.contains("/peers/") {
                         assert!(source.is_none());
                         assert!(!has_execution_context);
@@ -1212,6 +1309,42 @@ mod tests {
         let call = fixture.calls.lock().unwrap().last().unwrap().clone();
         assert!(call.0.ends_with("/tasks/job-1/message:send"));
         assert_eq!(call.1.as_deref(), Some(receipt.source_context()));
+    }
+
+    #[tokio::test]
+    async fn authorization_helpers_send_only_opaque_handles_with_correct_identity() {
+        let fixture = Fixture::new().await;
+        let receipt = fixture
+            .client
+            .agent_service_send_message(
+                "prod",
+                "acme",
+                "notifier",
+                &TaskMessage::text("m1", acteon_core::TaskRole::User, "one"),
+            )
+            .await
+            .unwrap();
+        fixture
+            .client
+            .agent_service_request_authorization(
+                "prod",
+                "acme",
+                "notifier",
+                receipt.task_id(),
+                "opaque-flow-42",
+            )
+            .await
+            .unwrap();
+        fixture
+            .client
+            .agent_service_resolve_authorization(&receipt, "challenge-42")
+            .await
+            .unwrap();
+        let calls = fixture.calls.lock().unwrap();
+        assert!(calls[1].0.ends_with("/tasks/job-1/authorization:request"));
+        assert!(calls[1].1.is_none());
+        assert!(calls[2].0.ends_with("/tasks/job-1/authorization:resolve"));
+        assert_eq!(calls[2].1.as_deref(), Some(receipt.source_context()));
     }
     #[tokio::test]
     async fn original_receipt_identity_survives_task_mutation_and_host_serialization() {

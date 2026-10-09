@@ -274,6 +274,8 @@ let peer = client.agent_service_refresh_peer(&receipt, "resolver", "diagnose", &
 let cancellation = client.agent_service_cancel_peer(&receipt, "resolver", "diagnose", &peer).await?;
 let continued = client.agent_service_continue_peer(&receipt, "resolver", "diagnose", &peer, &user_response).await?;
 let task = client.agent_service_continue_task(&receipt, &challenge_bound_response).await?;
+let paused = client.agent_service_request_authorization("prod", "acme", "medic", &task.id, "opaque-flow-42").await?;
+let resumed = client.agent_service_resolve_authorization(&receipt, paused.pending_approval_id.as_deref().unwrap()).await?;
 ```
 
 Cancellation is delivered at most once. `Restricted` proves the target durably

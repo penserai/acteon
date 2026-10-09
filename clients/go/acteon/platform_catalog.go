@@ -24,6 +24,8 @@ const (
 	OpAgentServicesPeerDiscover PlatformOperation = "agent_services_peer_discover"
 	OpAgentServicesPeerRefresh PlatformOperation = "agent_services_peer_refresh"
 	OpAgentServicesPeerSend PlatformOperation = "agent_services_peer_send"
+	OpAgentServicesTaskAuthorizationRequest PlatformOperation = "agent_services_task_authorization_request"
+	OpAgentServicesTaskAuthorizationResolve PlatformOperation = "agent_services_task_authorization_resolve"
 	OpAgentServicesTaskContinue PlatformOperation = "agent_services_task_continue"
 	OpAgentServicesTaskGet PlatformOperation = "agent_services_task_get"
 	OpAgentServicesTaskStop PlatformOperation = "agent_services_task_stop"
@@ -234,6 +236,8 @@ var platformOperations = map[PlatformOperation]platformDescriptor{
 	OpAgentServicesPeerDiscover: {"GET", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers", []string{"namespace", "tenant", "agent", "id"}, false},
 	OpAgentServicesPeerRefresh: {"POST", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:refresh", []string{"namespace", "tenant", "agent", "id", "target", "skill", "submission"}, false},
 	OpAgentServicesPeerSend: {"POST", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/message:send", []string{"namespace", "tenant", "agent", "id", "target", "skill"}, false},
+	OpAgentServicesTaskAuthorizationRequest: {"POST", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/authorization:request", []string{"namespace", "tenant", "agent", "id"}, false},
+	OpAgentServicesTaskAuthorizationResolve: {"POST", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/authorization:resolve", []string{"namespace", "tenant", "agent", "id"}, false},
 	OpAgentServicesTaskContinue: {"POST", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/message:send", []string{"namespace", "tenant", "agent", "id"}, false},
 	OpAgentServicesTaskGet: {"GET", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}", []string{"namespace", "tenant", "agent", "id"}, false},
 	OpAgentServicesTaskStop: {"POST", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/stop", []string{"namespace", "tenant", "agent", "id"}, false},

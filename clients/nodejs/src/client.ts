@@ -511,6 +511,23 @@ export class ActeonClient {
     if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent service response version missing or unsupported");
     return agentTask(await response.json(), receipt.namespace, receipt.tenant, taskId);
   }
+  /** Open the configured authorization profile with an opaque verifier handle. */
+  async agentServiceRequestAuthorization(namespace: string, tenant: string, agent: string, taskId: string, authorizationRequestId: string): Promise<Record<string, unknown>> {
+    if (!taskId || taskId === "." || taskId === "..") throw new Error("invalid agent service task ID");
+    const response = await this.request("POST", agentServiceBase(namespace, tenant, agent) + "/tasks/" + encodeURIComponent(taskId) + "/authorization:request", { body: { authorizationRequestId }, extraHeaders: A2A_HEADERS, redirect: "error" });
+    if (!response.ok) throw new HttpError(response.status, await response.text());
+    if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent service response version missing or unsupported");
+    return agentTask(await response.json(), namespace, tenant, taskId);
+  }
+  /** Resolve one challenge without sending credential material through Acteon. */
+  async agentServiceResolveAuthorization(receipt: AgentServiceReceipt, challengeId: string): Promise<Record<string, unknown>> {
+    const taskId = receipt.taskId;
+    if (!taskId || taskId === "." || taskId === "..") throw new Error("invalid agent service task ID");
+    const response = await this.request("POST", agentServiceBase(receipt.namespace, receipt.tenant, receipt.agent) + "/tasks/" + encodeURIComponent(taskId) + "/authorization:resolve", { body: { challengeId }, extraHeaders: { ...A2A_HEADERS, [AGENT_SOURCE_CONTEXT_HEADER]: agentSource(receipt.sourceContext) }, redirect: "error" });
+    if (!response.ok) throw new HttpError(response.status, await response.text());
+    if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent service response version missing or unsupported");
+    return agentTask(await response.json(), receipt.namespace, receipt.tenant, taskId);
+  }
 
   /** Inspect only the routes and permits within current independent management policy. */
   async workforce(namespace: string, tenant: string): Promise<WorkforceScopeView> {

@@ -666,6 +666,46 @@ class _AgentServicesMixin:
         )
         return _task(response, receipt.namespace, receipt.tenant, receipt.task_id)
 
+    def agent_service_request_authorization(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        task_id: str,
+        authorization_request_id: str,
+    ) -> dict[str, Any]:
+        """Open the service's fixed authorization profile with an opaque handle."""
+        response = self._request(
+            "POST",
+            _base(namespace, tenant, agent)
+            + "/tasks/"
+            + _segment(task_id)
+            + "/authorization:request",
+            json={"authorizationRequestId": authorization_request_id},
+            extra_headers=_A2A_HEADERS,
+        )
+        return _task(response, namespace, tenant, task_id)
+
+    def agent_service_resolve_authorization(
+        self,
+        receipt: AgentServiceReceipt,
+        challenge_id: str,
+    ) -> dict[str, Any]:
+        """Resolve an exact challenge; verifier credentials never enter this call."""
+        response = self._request(
+            "POST",
+            _base(receipt.namespace, receipt.tenant, receipt.agent)
+            + "/tasks/"
+            + _segment(receipt.task_id)
+            + "/authorization:resolve",
+            json={"challengeId": challenge_id},
+            extra_headers={
+                **_A2A_HEADERS,
+                AGENT_SOURCE_CONTEXT_HEADER: _source(receipt.source_context),
+            },
+        )
+        return _task(response, receipt.namespace, receipt.tenant, receipt.task_id)
+
 
 class _AsyncAgentServicesMixin:
     if TYPE_CHECKING:
@@ -872,6 +912,44 @@ class _AsyncAgentServicesMixin:
             + _segment(receipt.task_id)
             + "/message:send",
             json={"message": message},
+            extra_headers={
+                **_A2A_HEADERS,
+                AGENT_SOURCE_CONTEXT_HEADER: _source(receipt.source_context),
+            },
+        )
+        return _task(response, receipt.namespace, receipt.tenant, receipt.task_id)
+
+    async def agent_service_request_authorization(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        task_id: str,
+        authorization_request_id: str,
+    ) -> dict[str, Any]:
+        response = await self._request(
+            "POST",
+            _base(namespace, tenant, agent)
+            + "/tasks/"
+            + _segment(task_id)
+            + "/authorization:request",
+            json={"authorizationRequestId": authorization_request_id},
+            extra_headers=_A2A_HEADERS,
+        )
+        return _task(response, namespace, tenant, task_id)
+
+    async def agent_service_resolve_authorization(
+        self,
+        receipt: AgentServiceReceipt,
+        challenge_id: str,
+    ) -> dict[str, Any]:
+        response = await self._request(
+            "POST",
+            _base(receipt.namespace, receipt.tenant, receipt.agent)
+            + "/tasks/"
+            + _segment(receipt.task_id)
+            + "/authorization:resolve",
+            json={"challengeId": challenge_id},
             extra_headers={
                 **_A2A_HEADERS,
                 AGENT_SOURCE_CONTEXT_HEADER: _source(receipt.source_context),
