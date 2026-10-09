@@ -32,6 +32,15 @@ export interface AgentPeerCancelReceipt {
   readonly cancellationId: string;
   readonly status: AgentPeerCancelStatus;
 }
+export type AgentPeerContinuationStatus =
+  | Readonly<{ state: "uncertain" }>
+  | Readonly<{ state: "accepted"; task: Record<string, unknown>; progressCursor: string }>
+  | Readonly<{ state: "rejected"; code: string }>;
+export interface AgentPeerContinuationReceipt {
+  readonly submissionId: string;
+  readonly continuationId: string;
+  readonly status: AgentPeerContinuationStatus;
+}
 export interface AgentPeerSelectionOption {
   readonly agentId: string;
   readonly skill: string;
@@ -92,6 +101,27 @@ export function agentPeerCancelReceipt(value: unknown, namespace: string, tenant
       : Object.freeze({ state: "reconciled", task });
   } else throw new Error("agent peer cancellation receipt missing or malformed");
   return Object.freeze({ submissionId: peer.submissionId, cancellationId: raw.cancellation_id, status: parsed });
+}
+export function agentPeerContinuationReceipt(value: unknown, namespace: string, tenant: string, peer: AgentPeerSendReceipt): AgentPeerContinuationReceipt {
+  if (!value || typeof value !== "object" || Array.isArray(value) || peer.status.state !== "accepted") throw new Error("agent peer continuation receipt missing or malformed");
+  const raw = value as Record<string, unknown>;
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  if (Object.keys(raw).sort().join(",") !== "continuation_id,status,submission_id" || raw.submission_id !== peer.submissionId || typeof raw.continuation_id !== "string" || !uuid.test(raw.continuation_id) || !raw.status || typeof raw.status !== "object" || Array.isArray(raw.status)) throw new Error("agent peer continuation receipt missing or malformed");
+  const accepted = agentTask(peer.status.task, namespace, tenant);
+  const status = raw.status as Record<string, unknown>;
+  const keys = Object.keys(status).sort().join(",");
+  let parsed: AgentPeerContinuationStatus;
+  if (status.state === "uncertain" && keys === "state") parsed = Object.freeze({ state: "uncertain" });
+  else if (status.state === "rejected" && keys === "code,state" && typeof status.code === "string" && status.code.length > 0 && status.code.length <= 1024 && status.code.trim() === status.code && !/\p{Cc}/u.test(status.code)) parsed = Object.freeze({ state: "rejected", code: status.code });
+  else if (status.state === "accepted" && keys === "progress_cursor,state,task" && typeof status.progress_cursor === "string" && status.progress_cursor.length <= 512 && /^"[A-Za-z0-9_.:-]+"$/.test(status.progress_cursor)) {
+    const task = agentTask(status.task, namespace, tenant, accepted.id as string);
+    parsed = Object.freeze({ state: "accepted", task, progressCursor: status.progress_cursor });
+  } else throw new Error("agent peer continuation receipt missing or malformed");
+  return Object.freeze({ submissionId: peer.submissionId, continuationId: raw.continuation_id, status: parsed });
+}
+export function assertUnboundPeerResponse(message: Record<string, unknown>): void {
+  const metadata = message.metadata;
+  if (message.role !== "user" || message.taskId != null || message.contextId != null || (metadata != null && typeof metadata === "object" && !Array.isArray(metadata) && "acteon.challengeId" in metadata)) throw new Error("agent peer continuation requires an unbound user response");
 }
 export function agentSource(value: string | null): string {
   if (!value || value.length > 8192 || !/^[A-Za-z0-9_-]+$/.test(value)) throw new Error("agent service source context missing or malformed");

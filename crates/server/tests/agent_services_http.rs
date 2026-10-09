@@ -1,6 +1,8 @@
 //! Real binary and middleware, independently authenticated caller and recipient.
 #![recursion_limit = "256"]
-use acteon_core::{AgentCard, AgentCardInterface, Skill};
+use acteon_core::{AgentCard, AgentCardInterface, PauseKind, Skill, TaskState};
+#[cfg(any(feature = "redis", feature = "postgres"))]
+use acteon_gateway::{TaskEngine, TaskScope};
 #[cfg(any(feature = "redis", feature = "postgres"))]
 use acteon_state::StateStore;
 use axum::{Json, Router, routing::post};
@@ -1295,6 +1297,207 @@ async fn postgres_two_server_peer_cancel_survives_source_restart_as_a_durable_re
     if let Err(payload) = contract {
         std::panic::resume_unwind(payload);
     }
+}
+
+#[tokio::test]
+#[cfg(feature = "redis")]
+#[ignore = "requires ACTEON_GOVERNANCE_REDIS_URL; two real HTTPS servers sharing Redis"]
+async fn redis_two_server_peer_continuation_survives_source_restart() {
+    let (state, redis_config) = redis_state();
+    let store = Arc::new(acteon_state_redis::RedisStateStore::new(&redis_config).unwrap());
+    two_server_peer_continuation_contract(state, store).await;
+}
+
+#[tokio::test]
+#[cfg(feature = "postgres")]
+#[ignore = "requires DATABASE_URL; two real HTTPS servers sharing PostgreSQL"]
+async fn postgres_two_server_peer_continuation_survives_source_restart() {
+    let config = acteon_state_postgres::PostgresConfig {
+        url: std::env::var("DATABASE_URL").expect("set DATABASE_URL"),
+        table_prefix: format!("peer_continue_{}_", uuid::Uuid::new_v4().simple()),
+        ..Default::default()
+    };
+    let state = json!({"backend":"postgres","url":config.url,"prefix":config.table_prefix});
+    let store = Arc::new(
+        acteon_state_postgres::PostgresStateStore::new(config.clone())
+            .await
+            .unwrap(),
+    );
+    let contract =
+        std::panic::AssertUnwindSafe(two_server_peer_continuation_contract(state, store))
+            .catch_unwind()
+            .await;
+    let pool = sqlx::PgPool::connect(&config.url).await.unwrap();
+    for suffix in ["state", "locks", "timeout_index", "chain_ready_index"] {
+        sqlx::query(&format!(
+            "DROP TABLE public.{}{suffix}",
+            config.table_prefix
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    pool.close().await;
+    if let Err(payload) = contract {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[cfg(any(feature = "redis", feature = "postgres"))]
+#[allow(clippy::too_many_lines)]
+async fn two_server_peer_continuation_contract(state: Value, store: Arc<dyn StateStore>) {
+    let (webhook_url, calls, webhook_task) = webhook().await;
+    let notifier_port = reserve_port();
+    let resolver_port = reserve_port();
+    let credential_hashes = [
+        acteon_server::auth::api_key::hash_api_key("alice-secret"),
+        acteon_server::auth::api_key::hash_api_key("notifier-secret"),
+        acteon_server::auth::api_key::hash_api_key("resolver-secret"),
+    ];
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .build()
+        .unwrap();
+    let mut resolver = PeerMeshServer::start(
+        resolver_port,
+        notifier_port,
+        resolver_port,
+        &webhook_url,
+        &state,
+        &credential_hashes,
+        true,
+    );
+    resolver.ready(&client).await;
+    let mut notifier = PeerMeshServer::start(
+        notifier_port,
+        notifier_port,
+        resolver_port,
+        &webhook_url,
+        &state,
+        &credential_hashes,
+        true,
+    );
+    let config: toml::Value =
+        toml::from_str(&fs::read_to_string(resolver.directory.join("acteon.toml")).unwrap())
+            .unwrap();
+    publish_peer_cards(store.as_ref(), &config).await;
+    notifier.ready(&client).await;
+
+    let response = client
+        .post(format!(
+            "{}/a2a/prod/acme/agents/notifier/v1/message:send",
+            notifier.url
+        ))
+        .bearer_auth("alice-secret")
+        .json(&message("continue-root"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let root: Value = response.json().await.unwrap();
+    let peer_base = format!(
+        "{}/a2a/prod/acme/agents/notifier/v1/tasks/{}/peers",
+        notifier.url,
+        root["id"].as_str().unwrap()
+    );
+    let response = client
+        .post(format!("{peer_base}/resolver/resolve/message:send"))
+        .bearer_auth("notifier-secret")
+        .json(&message("continue-child"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let peer: Value = response.json().await.unwrap();
+    assert_eq!(peer["status"]["state"], "accepted");
+    let remote_id = peer["status"]["task"]["id"].as_str().unwrap();
+
+    let engine = TaskEngine::new(store.clone());
+    let scope = TaskScope::new("prod", "acme");
+    engine
+        .transition_task(&scope, remote_id, TaskState::Working, None)
+        .await
+        .unwrap();
+    let (_, challenge) = engine
+        .pause_for_human(
+            &scope,
+            remote_id,
+            PauseKind::UserInput,
+            Some("Choose the remediation window".into()),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let response = client
+        .post(format!(
+            "{peer_base}/resolver/resolve/submissions/{}:refresh",
+            peer["submission_id"].as_str().unwrap()
+        ))
+        .bearer_auth("notifier-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let refreshed: Value = response.json().await.unwrap();
+    assert_eq!(
+        refreshed["status"]["task"]["status"]["state"],
+        "input_required"
+    );
+    assert_eq!(
+        refreshed["status"]["task"]["pendingApprovalId"],
+        challenge.approval_id
+    );
+
+    let continuation_url = format!(
+        "{peer_base}/resolver/resolve/submissions/{}/message:send",
+        peer["submission_id"].as_str().unwrap()
+    );
+    let response = client
+        .post(&continuation_url)
+        .bearer_auth("notifier-secret")
+        .json(&json!({"message": {
+            "role": "user", "messageId": "continue-answer",
+            "parts": [{"kind": "text", "text": "02:00 UTC"}]
+        }}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let continued: Value = response.json().await.unwrap();
+    assert_eq!(continued["status"]["state"], "accepted");
+    assert_eq!(continued["status"]["task"]["id"], remote_id);
+    assert_eq!(continued["status"]["task"]["status"]["state"], "working");
+    assert!(continued["status"]["progress_cursor"].as_str().is_some());
+    assert!(continued["continuation_id"].as_str().is_some());
+    let task_after = engine.get_task(&scope, remote_id).await.unwrap().unwrap();
+    assert_eq!(task_after.status.state, TaskState::Working);
+    assert_eq!(
+        task_after
+            .history
+            .iter()
+            .filter(|item| item.message_id == "continue-answer")
+            .count(),
+        1
+    );
+    assert_ne!(challenge.approval_id, "");
+
+    notifier.restart();
+    notifier.ready(&client).await;
+    let response = client
+        .post(&continuation_url)
+        .bearer_auth("notifier-secret")
+        .json(&json!({"message": {
+            "role": "user", "messageId": "continue-answer",
+            "parts": [{"kind": "text", "text": "02:00 UTC"}]
+        }}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    assert_eq!(response.json::<Value>().await.unwrap(), continued);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    webhook_task.abort();
 }
 
 #[cfg(any(feature = "redis", feature = "postgres"))]

@@ -5,16 +5,17 @@ pub use agent_service_error::AgentServiceError;
 mod agent_services;
 pub use agent_driver::AgentServiceDriver;
 pub use agent_services::{
-    AgentServiceAcceptance, AgentServiceObservation, AgentServiceParent, AgentServiceRequest,
-    AgentServiceTaskObservation,
+    AgentServiceAcceptance, AgentServiceContinuation, AgentServiceObservation, AgentServiceParent,
+    AgentServiceRequest, AgentServiceTaskObservation,
 };
 mod management;
 pub use management::{ManagementError, TrustedReconciliationInstallation};
 mod peer_transport;
 pub use peer_transport::{
-    AgentPeerCancelInvocation, AgentPeerCancelRequest, AgentPeerDiscoveryInvocation,
-    AgentPeerDiscoveryRequest, AgentPeerInvocation, AgentPeerRefreshInvocation,
-    AgentPeerRefreshRequest, AgentPeerToolRequest, AgentPeerTransportError,
+    AgentPeerCancelInvocation, AgentPeerCancelRequest, AgentPeerContinuationInvocation,
+    AgentPeerContinuationRequest, AgentPeerDiscoveryInvocation, AgentPeerDiscoveryRequest,
+    AgentPeerInvocation, AgentPeerRefreshInvocation, AgentPeerRefreshRequest, AgentPeerToolRequest,
+    AgentPeerTransportError,
 };
 use std::{collections::BTreeMap, sync::Arc};
 

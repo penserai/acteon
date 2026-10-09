@@ -1,9 +1,8 @@
 # Governed A2A structured-input challenges
 
 **Status:** local Task resolution, the source-side durable continuation journal,
-the hosted target runtime handoff, and independent Redis/PostgreSQL recovery
-contracts are implemented. HTTP exposure and authorization fulfillment remain
-follow-ups.
+the authenticated HTTP handoff, hosted target runtime, public routes, five SDK
+surfaces, and independent Redis/PostgreSQL recovery contracts are implemented.
 
 An agent may pause a Task because it needs typed user data. That pause must not
 turn a late message into authority to resume some newer challenge, duplicate the
@@ -106,7 +105,9 @@ task/context/challenge binding. Observation and replay follow the latest child
 execution; concurrent identical calls share one provider attempt, while a
 different response or requester conflicts.
 
-The remaining HTTP adapter must authenticate the original private source and
-bind its opaque cursor before calling this runtime. Until that transport is
-implemented and qualified against durable backends, the peer continuation route
-must remain unexposed.
+The HTTP adapter authenticates the original private source, carries the retained
+source context, conditionally binds the opaque cursor, and accepts only the
+same remote Task with an exact new cursor. The source route accepts an unbound
+user message so callers cannot choose the task, context, challenge, endpoint,
+credential, permits, or cursor. The target route performs the final current
+authority and challenge checks before calling this runtime.

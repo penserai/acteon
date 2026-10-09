@@ -196,6 +196,65 @@ def test_peer_cancel_is_one_request_and_validates_restricted_identity():
         client.close()
 
 
+def test_peer_and_direct_continuation_preserve_host_owned_bindings():
+    source = AgentServiceReceipt(
+        "prod",
+        "acme",
+        "notifier",
+        "job-1",
+        FIXTURE["jobs"][0]["source_context"],
+        FIXTURE["jobs"][0]["task"],
+    )
+    peer = AgentPeerSendReceipt(
+        "f47ac10b-58cc-5372-a567-0e02b2c3d479", "accepted", task=FIXTURE["jobs"][1]["task"]
+    )
+    message = {
+        "messageId": "answer-1",
+        "role": "user",
+        "parts": [{"kind": "text", "text": "proceed"}],
+    }
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        assert json.loads(request.content) == {"message": message}
+        if "/submissions/" in request.url.path:
+            assert request.url.path.endswith(peer.submission_id + "/message:send")
+            assert AGENT_SOURCE_CONTEXT_HEADER not in request.headers
+            return httpx.Response(
+                200,
+                json={
+                    "submission_id": peer.submission_id,
+                    "continuation_id": "67e55044-10b1-526f-9247-bb680e5fe0c8",
+                    "status": {
+                        "state": "accepted",
+                        "task": peer.task,
+                        "progress_cursor": '"job-2:2"',
+                    },
+                },
+                headers={"a2a-version": "1.0"},
+            )
+        assert request.url.path.endswith("/tasks/job-1/message:send")
+        assert request.headers[AGENT_SOURCE_CONTEXT_HEADER] == source.source_context
+        return httpx.Response(200, json=source.task, headers={"a2a-version": "1.0"})
+
+    client = ActeonClient("http://acteon")
+    client._client = httpx.Client(transport=httpx.MockTransport(respond))
+    try:
+        continued = client.agent_service_continue_peer(
+            source, "team/resolver", "diagnose", peer, message
+        )
+        assert continued.state == "accepted"
+        with pytest.raises(ValueError, match="unbound user response"):
+            client.agent_service_continue_peer(
+                source, "team/resolver", "diagnose", peer, {**message, "taskId": "forged"}
+            )
+        assert client.agent_service_continue_task(source, message)["id"] == "job-1"
+        assert len(calls) == 2
+    finally:
+        client.close()
+
+
 def handler(request):
     assert request.headers["authorization"] == "Bearer caller-key"
     assert request.headers["a2a-version"] == "1.0"

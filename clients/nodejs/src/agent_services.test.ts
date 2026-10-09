@@ -73,6 +73,30 @@ it("cancels an accepted peer at most once and validates restricted task identity
   await expect(new ActeonClient("http://acteon").agentServiceCancelPeer(source, "team/resolver", "diagnose", { ...peer, status: { state: "accepted", task: { ...peer.status.task, id: "" } } })).rejects.toThrow("identity mismatch");
   expect(fetch).toHaveBeenCalledTimes(1);
 });
+it("continues peer challenges without client-supplied bindings and retains direct source context", async () => {
+  const source = { namespace: "prod", tenant: "acme", agent: "notifier", taskId: "job-1", sourceContext: fixture.jobs[0].source_context, task: fixture.jobs[0].task };
+  const peer = { submissionId: "f47ac10b-58cc-5372-a567-0e02b2c3d479", status: { state: "accepted" as const, task: fixture.jobs[1].task } };
+  const message = { messageId: "answer-1", role: "user", parts: [{ kind: "text", text: "proceed" }] };
+  const fetch = vi.fn(async (input: string, init: RequestInit) => {
+    expect(JSON.parse(init.body as string)).toEqual({ message });
+    const headers = init.headers as Record<string, string>;
+    if (input.includes("/submissions/")) {
+      expect(input).toContain(peer.submissionId + "/message:send");
+      expect(headers[AGENT_SOURCE_CONTEXT_HEADER]).toBeUndefined();
+      return new Response(JSON.stringify({ submission_id: peer.submissionId, continuation_id: "67e55044-10b1-526f-9247-bb680e5fe0c8", status: { state: "accepted", task: peer.status.task, progress_cursor: "\"job-2:2\"" } }), { headers: { "a2a-version": "1.0" } });
+    }
+    expect(input).toContain("/tasks/job-1/message:send");
+    expect(headers[AGENT_SOURCE_CONTEXT_HEADER]).toBe(source.sourceContext);
+    return new Response(JSON.stringify(source.task), { headers: { "a2a-version": "1.0" } });
+  });
+  vi.stubGlobal("fetch", fetch);
+  const client = new ActeonClient("http://acteon");
+  const continued = await client.agentServiceContinuePeer(source, "team/resolver", "diagnose", peer, message);
+  expect(continued.status.state).toBe("accepted");
+  await expect(client.agentServiceContinuePeer(source, "team/resolver", "diagnose", peer, { ...message, taskId: "forged" })).rejects.toThrow("unbound user response");
+  expect((await client.agentServiceContinueTask(source, message)).id).toBe("job-1");
+  expect(fetch).toHaveBeenCalledTimes(2);
+});
 it("keeps concurrent job headers separate and ignores mutable task metadata", async () => {
   vi.stubGlobal("fetch", async (input: string, init: RequestInit) => {
     const headers = init.headers as Record<string, string>;

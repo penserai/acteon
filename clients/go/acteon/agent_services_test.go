@@ -198,6 +198,16 @@ func TestAgentServicePeerToolCarriesNoAuthorityFields(t *testing.T) {
 			t.Error("authority fields leaked into peer tool request")
 		}
 		w.Header().Set(A2AVersionHeader, A2AProtocolVersion)
+		if strings.Contains(r.URL.Path, "/submissions/") && strings.HasSuffix(r.URL.Path, "/message:send") {
+			json.NewEncoder(w).Encode(map[string]any{
+				"submission_id":   "f47ac10b-58cc-5372-a567-0e02b2c3d479",
+				"continuation_id": "67e55044-10b1-526f-9247-bb680e5fe0c8",
+				"status": map[string]any{"state": "accepted", "task": map[string]any{
+					"id": "remote-1", "namespace": "prod", "tenant": "acme",
+				}, "progress_cursor": "\"remote-1:2\""},
+			})
+			return
+		}
 		if strings.HasSuffix(r.URL.Path, ":cancel") {
 			json.NewEncoder(w).Encode(map[string]any{
 				"submission_id":   "f47ac10b-58cc-5372-a567-0e02b2c3d479",
@@ -229,6 +239,13 @@ func TestAgentServicePeerToolCarriesNoAuthorityFields(t *testing.T) {
 	canceled, err := NewClient(server.URL).AgentServiceCancelPeer(context.Background(), source, "team/resolver", "diagnose", receipt)
 	if err != nil || canceled.Status.State != "restricted" || calls.Load() != 4 {
 		t.Fatalf("peer cancellation mismatch: %#v %v", canceled, err)
+	}
+	continued, err := NewClient(server.URL).AgentServiceContinuePeer(context.Background(), source, "team/resolver", "diagnose", receipt, map[string]any{"messageId": "answer-1", "role": "user"})
+	if err != nil || continued.Status.State != "accepted" || continued.Status.ProgressCursor != "\"remote-1:2\"" || calls.Load() != 5 {
+		t.Fatalf("peer continuation mismatch: %#v %v", continued, err)
+	}
+	if _, err := NewClient(server.URL).AgentServiceContinuePeer(context.Background(), source, "team/resolver", "diagnose", receipt, map[string]any{"messageId": "answer-1", "role": "user", "taskId": "forged"}); err == nil || calls.Load() != 5 {
+		t.Fatal("bound peer response was sent")
 	}
 }
 

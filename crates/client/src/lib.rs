@@ -60,7 +60,8 @@
 pub mod a2a;
 pub mod agent_services;
 pub use agent_services::{
-    AgentPeerCancelReceipt, AgentPeerCancelStatus, AgentPeerSelectionOption, AgentPeerSendReceipt,
+    AgentPeerCancelReceipt, AgentPeerCancelStatus, AgentPeerContinuationReceipt,
+    AgentPeerContinuationStatus, AgentPeerSelectionOption, AgentPeerSendReceipt,
     AgentPeerSendStatus, AgentServiceParent, AgentServiceProviderAbort, AgentServiceReceipt,
     AgentServiceStopReceipt,
 };

@@ -64,6 +64,8 @@ GET    /a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers?skill={exact-skill}
 POST   /a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/message:send
 POST   /a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:refresh
 POST   /a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:cancel
+POST   /a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/message:send
+POST   /a2a/{ns}/{tenant}/agents/{agent}/v1/tasks/{id}/message:send
 GET    /a2a/{ns}/{tenant}/v1/tasks/{id}
 POST   /a2a/{ns}/{tenant}/v1/tasks/{id}:cancel
 GET    /a2a/{ns}/{tenant}/v1/tasks/{id}/events            # SSE
@@ -114,6 +116,17 @@ because observation alone cannot reconstruct the lost restriction
 acknowledgment. The complete two-server send, discovery, native stop, source
 restart, and exact receipt-recovery contract is qualified against both Redis and
 PostgreSQL through the same `StateStore` boundary.
+
+When an accepted remote task pauses in `InputRequired`, the peer continuation
+route accepts only an unbound user message. Acteon recovers the exact remote
+task, context, challenge, previous progress cursor, credential and permits from
+its durable journal, then binds them at the trusted HTTP boundary. The target
+authenticates the original private source and resolves that exact challenge.
+The receipt is `accepted`, `rejected`, or `uncertain`; accepted receipts include
+the same task and a new strong progress cursor. Replaying the same response
+after a source restart returns the durable receipt without appending the answer
+twice. Changed content conflicts, and ambiguous delivery is never retried
+automatically. This two-server contract runs against both Redis and PostgreSQL.
 
 ### Discovery (unauthenticated)
 
@@ -286,9 +299,11 @@ and sends the provider both the exact response and bounded conversation history.
 The background driver recovers a registered continuation even if a crash left
 the Task visibly paused. Identical concurrent calls converge on one provider
 attempt; changed content or a different authenticated requester is refused.
-Cross-server peer delivery remains private until the authenticated HTTP adapter
-and durable-backend contract suite connect this target runtime to the source
-continuation journal.
+Cross-server peer delivery uses the authenticated HTTP adapter and the same
+durable source and target journals. The source sends only the exact normalized
+response; host state supplies the task, context, challenge and conditional
+cursor. Redis and PostgreSQL contracts cover delivery, source restart, receipt
+recovery, and one history append.
 
 `AuthRequired` has a separate trust boundary. Message content cannot grant
 authority and is never treated as a credential. A trusted authorization flow

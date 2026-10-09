@@ -92,6 +92,22 @@ type AgentPeerCancelReceipt struct {
 	Status         AgentPeerCancelStatus `json:"status"`
 }
 
+// AgentPeerContinuationStatus preserves delivery ambiguity and the accepted
+// task cursor used to bind any later response.
+type AgentPeerContinuationStatus struct {
+	State          string         `json:"state"`
+	Task           map[string]any `json:"task,omitempty"`
+	ProgressCursor string         `json:"progress_cursor,omitempty"`
+	Code           string         `json:"code,omitempty"`
+}
+
+// AgentPeerContinuationReceipt identifies one durable response attempt.
+type AgentPeerContinuationReceipt struct {
+	SubmissionID   string                      `json:"submission_id"`
+	ContinuationID string                      `json:"continuation_id"`
+	Status         AgentPeerContinuationStatus `json:"status"`
+}
+
 // AgentPeerSelectionOption is safe registry data. DescriptionUntrusted is
 // untrusted text and the option itself grants no authority.
 type AgentPeerSelectionOption struct {
@@ -456,6 +472,108 @@ func (c *Client) AgentServiceCancelPeer(ctx context.Context, source *AgentServic
 	return &AgentPeerCancelReceipt{SubmissionID: peer.SubmissionID, CancellationID: cancellationID, Status: status}, nil
 }
 
+// AgentServiceContinuePeer delivers one unbound user response to the accepted
+// remote task's current input challenge.
+func (c *Client) AgentServiceContinuePeer(ctx context.Context, source *AgentServiceReceipt, target, skill string, peer *AgentPeerSendReceipt, message map[string]any) (*AgentPeerContinuationReceipt, error) {
+	if source == nil || peer == nil || peer.Status.State != "accepted" || peer.Status.Task == nil || !agentAttemptPattern.MatchString(peer.SubmissionID) {
+		return nil, fmt.Errorf("agent peer continuation requires an accepted peer receipt")
+	}
+	acceptedID, err := agentTask(peer.Status.Task, source.Namespace, source.Tenant, "")
+	if err != nil {
+		return nil, err
+	}
+	challengeBound := false
+	if metadata := message["metadata"]; metadata != nil {
+		encoded, encodeErr := json.Marshal(metadata)
+		var normalized map[string]any
+		if encodeErr == nil && json.Unmarshal(encoded, &normalized) == nil {
+			_, challengeBound = normalized["acteon.challengeId"]
+		}
+	}
+	if message["role"] != "user" || message["taskId"] != nil || message["contextId"] != nil || challengeBound {
+		return nil, fmt.Errorf("agent peer continuation requires an unbound user response")
+	}
+	base, err := agentServiceBase(source.Namespace, source.Tenant, source.Agent)
+	if err != nil {
+		return nil, err
+	}
+	taskID, err := agentSegment(source.TaskID)
+	if err != nil {
+		return nil, err
+	}
+	targetID, err := agentSegment(target)
+	if err != nil {
+		return nil, err
+	}
+	skillID, err := agentSegment(skill)
+	if err != nil {
+		return nil, err
+	}
+	path := base + "/tasks/" + taskID + "/peers/" + targetID + "/" + skillID + "/submissions/" + peer.SubmissionID + "/message:send"
+	value, _, err := c.agentServiceRequest(ctx, "POST", path, map[string]any{"message": message}, "", nil)
+	if err != nil {
+		return nil, err
+	}
+	if len(value) != 3 || value["submission_id"] != peer.SubmissionID {
+		return nil, fmt.Errorf("agent peer continuation receipt missing or malformed")
+	}
+	continuationID, ok := value["continuation_id"].(string)
+	if !ok || !agentAttemptPattern.MatchString(continuationID) {
+		return nil, fmt.Errorf("agent peer continuation receipt missing or malformed")
+	}
+	raw, ok := value["status"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("agent peer continuation receipt missing or malformed")
+	}
+	state, ok := raw["state"].(string)
+	if !ok {
+		return nil, fmt.Errorf("agent peer continuation receipt missing or malformed")
+	}
+	status := AgentPeerContinuationStatus{State: state}
+	switch state {
+	case "uncertain":
+		if len(raw) != 1 {
+			return nil, fmt.Errorf("agent peer continuation receipt missing or malformed")
+		}
+	case "rejected":
+		code, ok := raw["code"].(string)
+		if !ok || code == "" || len(code) > 1024 || strings.TrimSpace(code) != code || len(raw) != 2 {
+			return nil, fmt.Errorf("agent peer continuation receipt missing or malformed")
+		}
+		for _, character := range code {
+			if unicode.IsControl(character) {
+				return nil, fmt.Errorf("agent peer continuation receipt missing or malformed")
+			}
+		}
+		status.Code = code
+	case "accepted":
+		task, taskOK := raw["task"].(map[string]any)
+		cursor, cursorOK := raw["progress_cursor"].(string)
+		if !taskOK || !cursorOK || len(raw) != 3 || !validAgentProgressCursor(cursor) {
+			return nil, fmt.Errorf("agent peer continuation receipt missing or malformed")
+		}
+		if _, err := agentTask(task, source.Namespace, source.Tenant, acceptedID); err != nil {
+			return nil, err
+		}
+		status.Task, status.ProgressCursor = task, cursor
+	default:
+		return nil, fmt.Errorf("agent peer continuation receipt missing or malformed")
+	}
+	return &AgentPeerContinuationReceipt{SubmissionID: peer.SubmissionID, ContinuationID: continuationID, Status: status}, nil
+}
+
+func validAgentProgressCursor(value string) bool {
+	if len(value) < 3 || len(value) > 512 || value[0] != '"' || value[len(value)-1] != '"' {
+		return false
+	}
+	for _, character := range value[1 : len(value)-1] {
+		if !(character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || strings.ContainsRune("-_.:", character)) {
+			return false
+		}
+	}
+	return true
+}
+
 // AgentServiceGetTask observes one retained job without starting provider work.
 func (c *Client) AgentServiceGetTask(ctx context.Context, receipt *AgentServiceReceipt) (map[string]any, error) {
 	if receipt == nil {
@@ -473,6 +591,33 @@ func (c *Client) AgentServiceGetTask(ctx context.Context, receipt *AgentServiceR
 		return nil, err
 	}
 	task, _, err := c.agentServiceRequest(ctx, "GET", path+"/tasks/"+id, nil, receipt.SourceContext, nil)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := agentTask(task, receipt.Namespace, receipt.Tenant, receipt.TaskID); err != nil {
+		return nil, err
+	}
+	return task, nil
+}
+
+// AgentServiceContinueTask continues the original retained task using the
+// host-owned source context captured in its receipt.
+func (c *Client) AgentServiceContinueTask(ctx context.Context, receipt *AgentServiceReceipt, message map[string]any) (map[string]any, error) {
+	if receipt == nil {
+		return nil, fmt.Errorf("agent service receipt required")
+	}
+	if err := agentSource(receipt.SourceContext); err != nil {
+		return nil, err
+	}
+	path, err := agentServiceBase(receipt.Namespace, receipt.Tenant, receipt.Agent)
+	if err != nil {
+		return nil, err
+	}
+	id, err := agentSegment(receipt.TaskID)
+	if err != nil {
+		return nil, err
+	}
+	task, _, err := c.agentServiceRequest(ctx, "POST", path+"/tasks/"+id+"/message:send", map[string]any{"message": message}, receipt.SourceContext, nil)
 	if err != nil {
 		return nil, err
 	}

@@ -3,8 +3,9 @@
 use acteon_core::{ExecutionContextReference, Task};
 use acteon_crypto::{ExposeSecret, SecretString};
 use acteon_executor::delegation::{
-    PeerCancelDisposition, PeerSendDisposition, PeerSendRequest, PeerSubmissionCapability,
-    PeerTaskObservation, PeerTaskRequest, PeerTransportAdapter, PeerTransportError,
+    PeerCancelDisposition, PeerContinuationDisposition, PeerContinuationRequest,
+    PeerSendDisposition, PeerSendRequest, PeerSubmissionCapability, PeerTaskObservation,
+    PeerTaskRequest, PeerTransportAdapter, PeerTransportError,
 };
 use acteon_http::{GuardedClient, OutboundPolicy};
 use async_trait::async_trait;
@@ -276,6 +277,78 @@ impl PeerTransportAdapter for ActeonPeerHttpAdapter {
         }
         Ok(PeerCancelDisposition::Uncertain)
     }
+
+    async fn continue_task(
+        &self,
+        request: PeerContinuationRequest<'_>,
+    ) -> Result<PeerContinuationDisposition, PeerTransportError> {
+        if request.transport != "rest"
+            || request.message.task_id.as_deref() != Some(request.task_id)
+            || request
+                .message
+                .metadata
+                .get(acteon_core::TASK_CHALLENGE_ID_METADATA_KEY)
+                .and_then(serde_json::Value::as_str)
+                != Some(request.challenge_id)
+        {
+            return Err(PeerTransportError::Invalid);
+        }
+        let endpoint = continuation_endpoint(request.endpoint, request.task_id)?;
+        let context =
+            serde_json::to_vec(request.source_context).map_err(|_| PeerTransportError::Invalid)?;
+        let Ok(mut builder) = self.client.request(reqwest::Method::POST, &endpoint) else {
+            return Ok(PeerContinuationDisposition::Rejected {
+                code: "peer_destination_refused".into(),
+            });
+        };
+        builder = builder
+            .bearer_auth(self.credential.expose_secret())
+            .header("a2a-version", "1.0")
+            .header(
+                "x-acteon-agent-source-context",
+                URL_SAFE_NO_PAD.encode(context),
+            )
+            .json(&serde_json::json!({"message":request.message}));
+        if let Some(cursor) = request.progress_cursor {
+            if !valid_cursor(cursor) {
+                return Err(PeerTransportError::Invalid);
+            }
+            builder = builder.header(reqwest::header::IF_MATCH, cursor);
+        }
+        let Ok(response) = builder.send().await else {
+            return Ok(PeerContinuationDisposition::Uncertain);
+        };
+        let status = response.status();
+        if status.is_success() {
+            if response
+                .headers()
+                .get("a2a-version")
+                .and_then(|value| value.to_str().ok())
+                != Some("1.0")
+            {
+                return Ok(PeerContinuationDisposition::Uncertain);
+            }
+            let Ok(Some(progress_cursor)) = response_cursor(&response) else {
+                return Ok(PeerContinuationDisposition::Uncertain);
+            };
+            return Ok(match read_bounded(response, MAX_TASK_BYTES).await {
+                Ok(raw) => serde_json::from_slice::<Task>(&raw).map_or(
+                    PeerContinuationDisposition::Uncertain,
+                    |task| PeerContinuationDisposition::Accepted {
+                        task: Box::new(task),
+                        progress_cursor,
+                    },
+                ),
+                Err(_) => PeerContinuationDisposition::Uncertain,
+            });
+        }
+        if matches!(status.as_u16(), 400 | 401 | 403 | 404 | 409 | 429) {
+            return Ok(PeerContinuationDisposition::Rejected {
+                code: rejection_code(response, status.as_u16()).await,
+            });
+        }
+        Ok(PeerContinuationDisposition::Uncertain)
+    }
 }
 
 #[derive(Deserialize)]
@@ -313,6 +386,13 @@ fn task_endpoint(endpoint: &str, task_id: &str) -> Result<String, PeerTransportE
 
 fn stop_endpoint(endpoint: &str, task_id: &str) -> Result<String, PeerTransportError> {
     Ok(format!("{}/stop", task_endpoint(endpoint, task_id)?))
+}
+
+fn continuation_endpoint(endpoint: &str, task_id: &str) -> Result<String, PeerTransportError> {
+    Ok(format!(
+        "{}/message:send",
+        task_endpoint(endpoint, task_id)?
+    ))
 }
 
 async fn accepted(response: reqwest::Response) -> Result<PeerSendDisposition, PeerTransportError> {
@@ -511,6 +591,10 @@ mod tests {
         assert_eq!(
             stop_endpoint("https://peer.example/v1/message:send", "task/one").unwrap(),
             "https://peer.example/v1/tasks/task%2Fone/stop"
+        );
+        assert_eq!(
+            continuation_endpoint("https://peer.example/v1/message:send", "task/one").unwrap(),
+            "https://peer.example/v1/tasks/task%2Fone/message:send"
         );
     }
 
@@ -746,6 +830,67 @@ mod tests {
             disposition,
             PeerCancelDisposition::Restricted { task }
                 if task.id == "remote-task" && task.status.state == acteon_core::TaskState::Submitted
+        ));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn guarded_adapter_delivers_an_exact_continuation_and_requires_a_bound_reply() {
+        let parent = parent();
+        let encoded = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&parent).unwrap());
+        let source = encoded.clone();
+        let app = Router::new().route(
+            "/a2a/city/tenant/agents/responder/v1/tasks/remote-task/message:send",
+            post(
+                move |headers: HeaderMap, Json(body): Json<serde_json::Value>| {
+                    let source = source.clone();
+                    async move {
+                        assert_eq!(headers["authorization"], "Bearer caller-secret");
+                        assert_eq!(headers["a2a-version"], "1.0");
+                        assert_eq!(headers["x-acteon-agent-source-context"], source);
+                        assert_eq!(headers[reqwest::header::IF_MATCH], "\"cursor-1\"");
+                        assert_eq!(body["message"]["taskId"], "remote-task");
+                        assert_eq!(
+                            body["message"]["metadata"]
+                                [acteon_core::TASK_CHALLENGE_ID_METADATA_KEY],
+                            "challenge-1"
+                        );
+                        (
+                            StatusCode::OK,
+                            [("a2a-version", "1.0"), ("etag", "\"cursor-2\"")],
+                            Json(Task::new("remote-task", "city", "tenant")),
+                        )
+                    }
+                },
+            ),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let endpoint = format!("http://{address}/a2a/city/tenant/agents/responder/v1/message:send");
+        let mut message = TaskMessage::text("response-1", TaskRole::User, "use policy sev-1");
+        message.task_id = Some("remote-task".into());
+        message.context_id = Some("remote-context".into());
+        message.metadata.insert(
+            acteon_core::TASK_CHALLENGE_ID_METADATA_KEY.into(),
+            serde_json::json!("challenge-1"),
+        );
+        let disposition = adapter()
+            .continue_task(PeerContinuationRequest {
+                endpoint: &endpoint,
+                transport: "rest",
+                source_context: &parent,
+                task_id: "remote-task",
+                challenge_id: "challenge-1",
+                progress_cursor: Some("\"cursor-1\""),
+                message: &message,
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            disposition,
+            PeerContinuationDisposition::Accepted { task, progress_cursor }
+                if task.id == "remote-task" && progress_cursor == "\"cursor-2\""
         ));
         server.abort();
     }
