@@ -200,10 +200,12 @@ impl ExecutionAuthorityRuntime {
                 }) {
                     continue;
                 }
-                if !matches!(
+                if !(matches!(
                     observation.task.status.state,
                     acteon_core::TaskState::Submitted | acteon_core::TaskState::Working
-                ) {
+                ) || (observation.continuation_pending
+                    && observation.task.status.state == acteon_core::TaskState::InputRequired))
+                {
                     continue;
                 }
                 out.push(((*runtime).clone(), work_id));

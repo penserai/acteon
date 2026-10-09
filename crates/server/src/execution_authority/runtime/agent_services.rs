@@ -63,6 +63,15 @@ pub struct AgentServiceObservation<'a> {
     pub source_context: Option<&'a ExecutionContextReference>,
 }
 
+/// One exact response to the task's active `InputRequired` challenge. The
+/// authenticated original source is recovered through the same private
+/// observation boundary before the runtime consumes any message content.
+pub struct AgentServiceContinuation<'a> {
+    pub observation: AgentServiceObservation<'a>,
+    pub challenge_id: &'a str,
+    pub response: &'a TaskMessage,
+}
+
 /// Opaque references are verified against original private caller authentication.
 pub struct AgentServiceParent<'a> {
     pub context: &'a ExecutionContextReference,
@@ -736,6 +745,29 @@ impl ExecutionAuthorityRuntime {
             &observed.task.tenant,
             task_id,
             &observed.task,
+        )
+        .await
+    }
+
+    /// Resume an accepted agent service with a durable, separately governed
+    /// provider invocation that receives the response and complete task history.
+    pub async fn continue_agent_service(
+        &self,
+        request: AgentServiceContinuation<'_>,
+    ) -> Result<AgentServiceTaskObservation, AgentServiceError> {
+        let task_id = request.observation.task_id;
+        let (runtime, source) = self
+            .authorize_service_observation(request.observation)
+            .await?;
+        let continued = runtime
+            .continue_input(task_id, request.challenge_id, request.response, &source)
+            .await
+            .map_err(AgentServiceError::from)?;
+        self.load_versioned_service_task(
+            &continued.task.namespace,
+            &continued.task.tenant,
+            task_id,
+            &continued.task,
         )
         .await
     }

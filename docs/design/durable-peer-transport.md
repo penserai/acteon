@@ -161,8 +161,12 @@ resolution with durable digest intent and an explicit refusal to treat messages
 as authorization. The source transport now also journals one normalized
 continuation per accepted challenge, rechecks current authority, preserves
 ambiguous delivery without resending, and accepts only an exact same-Task
-forward snapshot with a new cursor. The HTTP adapter and hosted agent runtime
-must still consume the response through a separately governed provider
-operation before the peer route is exposed. Verifier-backed authentication
-handoff, continuation backend qualification, and federation trust and
-revocation protocols remain later work.
+forward snapshot with a new cursor. The hosted runtime now persists target-side
+intent before Task resolution and invokes the provider through a deterministic
+same-principal child execution carrying the exact response and complete bounded
+history. Its recovery driver also selects registered continuations while their
+Task is still paused, with independent Redis and PostgreSQL restart contracts.
+The authenticated HTTP adapter and an end-to-end two-server contract must still
+connect these two durable halves before the peer route is exposed.
+Verifier-backed authentication handoff and federation trust and revocation
+protocols remain later work.
