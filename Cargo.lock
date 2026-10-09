@@ -403,6 +403,7 @@ dependencies = [
  "acteon-time",
  "async-trait",
  "chrono",
+ "ed25519-dalek",
  "hmac",
  "serde",
  "serde_json",

@@ -507,6 +507,22 @@ cargo run -p acteon-simulation --example a2a_core_simulation
 The output reads as a linear log with each scenario bracketed by a
 banner. Engine actions and the `StreamEvent`s they emit line up by id.
 
+## Federation status
+
+The public A2A service currently provides a governed mesh within one Acteon
+administrative domain. Cross-domain federation is under active qualification.
+The governance substrate can verify audience-bound Ed25519 delegation envelopes,
+attenuate them through local import policy, enforce short revocation-freshness
+windows, fund a local root, and serialize trust revocation with imported effect
+starts across the configured state backend.
+
+That substrate is not yet a public federation endpoint. Runtime identity
+binding, authenticated trust management, credential exchange, capability
+negotiation, partition recovery and conformance against named external peers
+must pass before a cross-domain interoperability claim is published. A remote
+card, signature or cached envelope never overrides local permits, closures,
+principal revocation or root limits.
+
 ## Errors
 
 A2A error codes follow JSON-RPC 2.0 conventions plus the A2A-specific

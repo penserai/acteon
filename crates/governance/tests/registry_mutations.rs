@@ -476,6 +476,8 @@ async fn protocol_eleven_upgrade_preserves_registry_and_rejects_hybrid_mutation_
         );
         let mut raw = serde_json::to_value(&before).unwrap();
         raw["schema_version"] = 11.into();
+        raw.as_object_mut().unwrap().remove("federation_trusts");
+        raw.as_object_mut().unwrap().remove("federation_imports");
         let serialized = serde_json::to_string(&raw).unwrap();
         store.set(&authority, &serialized, None).await.unwrap();
         assert!(
@@ -498,7 +500,7 @@ async fn protocol_eleven_upgrade_preserves_registry_and_rejects_hybrid_mutation_
         } else {
             let plan = plan.unwrap();
             assert_eq!(plan.report().from_protocol, 11);
-            assert_eq!(plan.report().to_protocol, 12);
+            assert_eq!(plan.report().to_protocol, 13);
             plan.apply(&plan.report().review_digest).await.unwrap();
             let after = c.snapshot().await.unwrap();
             assert_eq!(before.incarnation, after.incarnation);
