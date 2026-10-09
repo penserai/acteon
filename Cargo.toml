@@ -289,7 +289,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
 # OpenTelemetry
 opentelemetry = "0.32"
 opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"] }
-opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic", "http-proto"] }
+opentelemetry-otlp = { version = "0.33", features = ["grpc-tonic", "http-proto"] }
 tracing-opentelemetry = "0.33"
 
 # Cron scheduling
