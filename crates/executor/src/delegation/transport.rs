@@ -22,6 +22,7 @@ use uuid::Uuid;
 pub const PEER_SEND_KIND: &str = "governed_peer_send";
 pub const PEER_CANCEL_KIND: &str = "governed_peer_cancel";
 const MAX_RECORD_BYTES: usize = 2 * 1024 * 1024;
+const PEER_SEND_SCHEMA: u32 = 2;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
@@ -36,6 +37,7 @@ pub enum PeerSendDisposition {
     Accepted {
         task: Box<Task>,
         source_context: ExecutionContextReference,
+        progress_cursor: Option<String>,
     },
     Rejected {
         code: String,
@@ -70,6 +72,22 @@ pub struct PeerTaskRequest<'a> {
     pub transport: &'a str,
     pub source_context: &'a ExecutionContextReference,
     pub task_id: &'a str,
+    /// Opaque validator last issued by the target for this exact task.
+    pub progress_cursor: Option<&'a str>,
+}
+
+/// Result of a conditional remote task observation.
+#[derive(Debug, Clone)]
+pub enum PeerTaskObservation {
+    /// The target confirms that the supplied cursor still names its current
+    /// authoritative snapshot.
+    Unchanged { progress_cursor: String },
+    /// The target returned a task snapshot and, when supported, the opaque
+    /// cursor that identifies it.
+    Updated {
+        task: Box<Task>,
+        progress_cursor: Option<String>,
+    },
 }
 
 #[async_trait]
@@ -84,7 +102,7 @@ pub trait PeerTransportAdapter: Send + Sync {
     async fn observe_task(
         &self,
         _request: PeerTaskRequest<'_>,
-    ) -> Result<Task, PeerTransportError> {
+    ) -> Result<PeerTaskObservation, PeerTransportError> {
         Err(PeerTransportError::Unavailable)
     }
     async fn cancel_task(
@@ -117,6 +135,8 @@ enum SendState {
     Accepted {
         task: Box<Task>,
         source_context: ExecutionContextReference,
+        #[serde(default)]
+        progress_cursor: Option<String>,
     },
     Rejected {
         code: String,
@@ -242,6 +262,13 @@ fn valid_digest(value: &str) -> bool {
         && value
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+fn valid_progress_cursor(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 512
+        && value.trim() == value
+        && !value.chars().any(char::is_control)
 }
 
 fn message_digest(message: &TaskMessage) -> Result<String, PeerTransportError> {
@@ -413,6 +440,7 @@ impl DurablePeerTransport {
         let SendState::Accepted {
             task: current,
             source_context,
+            progress_cursor,
         } = &record.state
         else {
             return Ok(Self::receipt(&record));
@@ -427,22 +455,13 @@ impl DurablePeerTransport {
                 transport: &record.transport,
                 source_context,
                 task_id: &current.id,
+                progress_cursor: progress_cursor.as_deref(),
             }),
         )
         .await
         .map_err(|_| PeerTransportError::Unavailable)??;
-        if !valid_task_progress(current, &observed) {
-            return Err(PeerTransportError::Unavailable);
-        }
-        if serde_json::to_value(current).map_err(|_| PeerTransportError::Unavailable)?
-            == serde_json::to_value(&observed).map_err(|_| PeerTransportError::Unavailable)?
-        {
+        let Some(refreshed) = Self::apply_task_observation(&record, observed)? else {
             return Ok(Self::receipt(&record));
-        }
-        let mut refreshed = record.clone();
-        refreshed.state = SendState::Accepted {
-            task: Box::new(observed),
-            source_context: source_context.clone(),
         };
         let encoded = self
             .encode(&refreshed)
@@ -466,6 +485,62 @@ impl DurablePeerTransport {
         }
     }
 
+    fn apply_task_observation(
+        record: &SendRecord,
+        observed: PeerTaskObservation,
+    ) -> Result<Option<SendRecord>, PeerTransportError> {
+        let SendState::Accepted {
+            task: current,
+            source_context,
+            progress_cursor,
+        } = &record.state
+        else {
+            return Err(PeerTransportError::Conflict);
+        };
+        let (observed, observed_cursor) = match observed {
+            PeerTaskObservation::Unchanged {
+                progress_cursor: observed_cursor,
+            } => {
+                if progress_cursor.as_deref() != Some(observed_cursor.as_str())
+                    || !valid_progress_cursor(&observed_cursor)
+                {
+                    return Err(PeerTransportError::Unavailable);
+                }
+                return Ok(None);
+            }
+            PeerTaskObservation::Updated {
+                task,
+                progress_cursor,
+            } => (task, progress_cursor),
+        };
+        if observed_cursor
+            .as_deref()
+            .is_some_and(|cursor| !valid_progress_cursor(cursor))
+            || (progress_cursor.is_some() && observed_cursor.is_none())
+            || !valid_task_progress(current, &observed)
+        {
+            return Err(PeerTransportError::Unavailable);
+        }
+        let task_unchanged = serde_json::to_value(current)
+            .map_err(|_| PeerTransportError::Unavailable)?
+            == serde_json::to_value(&observed).map_err(|_| PeerTransportError::Unavailable)?;
+        if progress_cursor == &observed_cursor {
+            return if task_unchanged {
+                Ok(None)
+            } else {
+                Err(PeerTransportError::Unavailable)
+            };
+        }
+        let mut refreshed = record.clone();
+        refreshed.schema = PEER_SEND_SCHEMA;
+        refreshed.state = SendState::Accepted {
+            task: observed,
+            source_context: source_context.clone(),
+            progress_cursor: observed_cursor,
+        };
+        Ok(Some(refreshed))
+    }
+
     /// Deliver at most one cancellation request for an accepted remote task.
     /// Intent and a delivery claim are durable before the adapter call. A lost
     /// response or crash after that claim remains uncertain and is never
@@ -485,6 +560,7 @@ impl DurablePeerTransport {
         let SendState::Accepted {
             task: accepted_task,
             source_context,
+            ..
         } = &send.state
         else {
             return Err(PeerTransportError::Conflict);
@@ -663,6 +739,7 @@ impl DurablePeerTransport {
                 transport: &claimed.transport,
                 source_context: &claimed.source_context,
                 task_id: &claimed.task_id,
+                progress_cursor: None,
             }),
         )
         .await;
@@ -845,7 +922,7 @@ impl DurablePeerTransport {
         Ok((
             binding,
             SendRecord {
-                schema: 1,
+                schema: PEER_SEND_SCHEMA,
                 submission_id: submission_id(&reference, binding.digest(), message),
                 binding_digest: binding.digest().into(),
                 adapter_revision: self.adapter.revision().into(),
@@ -912,6 +989,7 @@ impl DurablePeerTransport {
             return Err(PeerTransportError::Refused);
         }
         let mut claimed = current.clone();
+        claimed.schema = PEER_SEND_SCHEMA;
         claimed.state = SendState::Delivering {
             claim_id: Uuid::new_v4(),
         };
@@ -940,14 +1018,17 @@ impl DurablePeerTransport {
             Ok(Ok(PeerSendDisposition::Accepted {
                 task,
                 source_context,
+                progress_cursor,
             })) if task.validate().is_ok()
                 && task.namespace == claimed.parent.namespace()
                 && task.tenant == claimed.parent.tenant()
-                && source_context == claimed.parent =>
+                && source_context == claimed.parent
+                && progress_cursor.as_deref().is_none_or(valid_progress_cursor) =>
             {
                 SendState::Accepted {
                     task,
                     source_context,
+                    progress_cursor,
                 }
             }
             Ok(Ok(PeerSendDisposition::Rejected { code })) if valid_text(&code) => {
@@ -992,6 +1073,8 @@ impl DurablePeerTransport {
         }
         let mut actual = actual.clone();
         let mut expected = expected.clone();
+        actual.schema = PEER_SEND_SCHEMA;
+        expected.schema = PEER_SEND_SCHEMA;
         actual.state = SendState::Registered;
         expected.state = SendState::Registered;
         actual.created_at_ms = 0;
@@ -1116,6 +1199,7 @@ impl DurablePeerTransport {
             let SendState::Accepted {
                 task,
                 source_context,
+                progress_cursor: _,
             } = &current.state
             else {
                 return Err(PeerTransportError::Conflict);
@@ -1129,9 +1213,14 @@ impl DurablePeerTransport {
                 return Err(PeerTransportError::Unavailable);
             }
             let mut next = current.clone();
+            next.schema = PEER_SEND_SCHEMA;
             next.state = SendState::Accepted {
                 task: Box::new(final_task.clone()),
                 source_context: source_context.clone(),
+                // The cancellation response carries a newer task snapshot but
+                // no observation validator. The prior cursor names the
+                // pre-cancel representation and must not be retained.
+                progress_cursor: None,
             };
             let encoded = self
                 .encode(&next)
@@ -1156,15 +1245,25 @@ impl DurablePeerTransport {
             SendState::Accepted {
                 task,
                 source_context,
+                progress_cursor,
             } => {
                 task.validate().is_ok()
                     && task.namespace == record.parent.namespace()
                     && task.tenant == record.parent.tenant()
                     && source_context == &record.parent
+                    && progress_cursor.as_deref().is_none_or(valid_progress_cursor)
             }
             SendState::Rejected { code } => valid_text(code),
         };
-        record.schema == 1
+        matches!(record.schema, 1 | PEER_SEND_SCHEMA)
+            && (record.schema != 1
+                || !matches!(
+                    &record.state,
+                    SendState::Accepted {
+                        progress_cursor: Some(_),
+                        ..
+                    }
+                ))
             && record.binding_digest == self.adapter.binding_digest()
             && record.adapter_revision == self.adapter.revision()
             && record.capability == self.adapter.submission_capability()
@@ -1188,6 +1287,7 @@ impl DurablePeerTransport {
             SendState::Accepted {
                 task,
                 source_context,
+                ..
             } => PeerSendStatus::Accepted {
                 task: task.clone(),
                 source_context: source_context.clone(),

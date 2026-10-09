@@ -1,9 +1,9 @@
 # Durable qualified peer transport
 
 **Status:** Rust host journal, guarded Acteon HTTP adapter, deployment wiring,
-trusted host invocation API, safe agent-facing route, five SDK helpers and
-durable remote task refresh implemented. Active lifecycle commands remain
-follow-up work.
+trusted host invocation API, safe agent-facing route, five SDK helpers, durable
+remote task refresh with state-backed cursors, and native cancellation are
+implemented and exercised between real Acteon servers.
 
 Acteon needs a transport boundary between governed peer selection and a real A2A
 network call. Discovery is advisory. A live card, endpoint URL, or model-selected
@@ -30,9 +30,10 @@ building block over the configured `Arc<dyn StateStore>`. A submission:
 
 The journal pins the binding digest, adapter revision, submission capability,
 endpoint, transport, typed parent reference, permit revisions, complete message,
-semantic message digest, and creation time. An optional `PayloadEncryptor`
-protects this record with the same host-owned encryption mechanism used by
-governed provider execution.
+semantic message digest, creation time, last valid remote task snapshot, and its
+optional opaque progress cursor. An optional `PayloadEncryptor` protects this
+record with the same host-owned encryption mechanism used by governed provider
+execution.
 
 The transport and registry must share the same `StateStore` instance. This
 prevents a caller from checking registry state in one backend while journaling
@@ -64,6 +65,17 @@ every read; corrupt task or source data conflicts instead of becoming evidence.
 A repeated message ID with changed content conflicts against the original
 intent.
 
+Acteon task acceptance and observation responses expose a strong `ETag` derived
+from the authoritative task row's `StateStore` version. The guarded adapter
+stores that opaque value and supplies it as `If-None-Match` on refresh. A `304`
+is accepted only when it repeats the exact stored cursor. A `200` response may
+replace the cursor only with a valid same-task snapshot that does not regress
+identity, timestamps or lifecycle state; the same cursor with different content
+is refused. Schema-1 journal rows without a cursor remain readable and upgrade
+to schema 2 on their next successful mutation. A task learned through a
+cancellation response clears the older observation cursor because that cursor
+names the pre-cancel representation.
+
 ## Trust boundary
 
 `PeerTransportAdapter` is installed by the host for one binding digest. Its
@@ -88,6 +100,12 @@ message in their native wire format. Success bodies and error bodies are bounded
 Only a typed task plus one valid source-context response is accepted. Selected
 4xx responses are retained as known rejection; redirects, 5xx, transport errors,
 malformed success, and oversized response remain uncertain.
+
+For observation, the same adapter confines the derived task URL to the reviewed
+agent-service endpoint, validates the A2A version and any returned ETag as one
+bounded strong validator, and distinguishes a validated `304` from a full
+updated task. Cursors, URLs and source contexts remain host-owned values; agent
+or model input cannot supply them.
 
 `ExecutionAuthorityRuntime` now derives an outbound source/target matrix from
 each service's explicit `onward_agents`. Preparation computes the transitive
@@ -122,16 +140,16 @@ Focused contracts cover:
 - rejection of corrupt retained remote task mappings;
 - current authority revalidation before remote observation; and
 - monotonic task projection with compare-and-swap persistence of the latest
-  valid snapshot.
+  valid snapshot;
+- cursor recovery through a reconstructed source transport, including a
+  conditional unchanged result without a journal rewrite; and
+- real two-server Redis and PostgreSQL contracts that observe one conditional
+  task read and one `304` after source restart.
 
 ## Remaining integration
 
-This foundation does not yet complete the autonomous mesh. The next slices are:
-
-1. event-cursor streaming, required-input and authentication handoff, and
-   cancellation state;
-2. restart and lost-acceptance tests against two real Acteon servers; and
-3. qualification on each supported durable state backend.
-
-Until those slices land, submission and polling are governed and durable while
-active remote task control remains unfinished.
+The local governed mesh now has durable submission, cursor-aware observation,
+native cancellation, restart/lost-response tests, and Redis/PostgreSQL
+qualification. Remaining mesh work includes structured required-input and
+authentication handoff, broader backend qualification, and federation trust and
+revocation protocols.

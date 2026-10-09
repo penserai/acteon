@@ -9,8 +9,8 @@ pub use runtime::{
     AgentPeerDiscoveryRequest, AgentPeerInvocation, AgentPeerRefreshInvocation,
     AgentPeerRefreshRequest, AgentPeerToolRequest, AgentPeerTransportError, AgentServiceAcceptance,
     AgentServiceDriver, AgentServiceError, AgentServiceObservation, AgentServiceParent,
-    AgentServiceRequest, ExecutionAuthorityRuntime, ExecutionRuntimeDependencies, ManagementError,
-    TrustedReconciliationInstallation,
+    AgentServiceRequest, AgentServiceTaskObservation, ExecutionAuthorityRuntime,
+    ExecutionRuntimeDependencies, ManagementError, TrustedReconciliationInstallation,
 };
 use std::{collections::BTreeMap, sync::Arc};
 

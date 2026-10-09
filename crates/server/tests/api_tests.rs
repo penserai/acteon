@@ -4415,6 +4415,7 @@ async fn executor_a2a_submission_creates_a_real_durable_task() {
     let state = build_test_state_with_auth_role("executor", vec![a2a_grant(None)]);
     let app = build_app(state.clone());
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -4432,22 +4433,91 @@ async fn executor_a2a_submission_creates_a_real_durable_task() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
+    let first_cursor = response
+        .headers()
+        .get(axum::http::header::ETAG)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
     let task: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(task["status"]["state"], "submitted");
     let engine = acteon_gateway::TaskEngine::new(state.gateway.read().await.state_store().clone());
+    let task_id = task["id"].as_str().unwrap();
     assert!(
         engine
-            .get_task(
-                &acteon_gateway::TaskScope::new("agents", "acme"),
-                task["id"].as_str().unwrap()
-            )
+            .get_task(&acteon_gateway::TaskScope::new("agents", "acme"), task_id)
             .await
             .unwrap()
             .is_some()
     );
+    let mut progress = acteon_core::TaskMessage::text(
+        "executor-progress",
+        acteon_core::TaskRole::Agent,
+        "working",
+    );
+    progress.task_id = Some(task_id.to_string());
+    engine
+        .append_history(
+            &acteon_gateway::TaskScope::new("agents", "acme"),
+            task_id,
+            progress,
+        )
+        .await
+        .unwrap();
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/a2a/agents/acme/v1/tasks/{task_id}"))
+                .header("Authorization", "Bearer test-raw-key")
+                .header(axum::http::header::IF_NONE_MATCH, &first_cursor)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let second_cursor = response
+        .headers()
+        .get(axum::http::header::ETAG)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(first_cursor, second_cursor);
+    let trimmed = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/a2a/agents/acme/v1/tasks/{task_id}?historyLength=1"
+                ))
+                .header("Authorization", "Bearer test-raw-key")
+                .header(axum::http::header::IF_NONE_MATCH, &second_cursor)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(trimmed.status(), StatusCode::OK);
+    assert_ne!(trimmed.headers()[axum::http::header::ETAG], second_cursor);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/a2a/agents/acme/v1/tasks/{task_id}"))
+                .header("Authorization", "Bearer test-raw-key")
+                .header(axum::http::header::IF_NONE_MATCH, &second_cursor)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+    assert_eq!(response.headers()[axum::http::header::ETAG], second_cursor);
 }
 
 #[tokio::test]

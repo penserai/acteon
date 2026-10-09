@@ -448,8 +448,13 @@ selection, the complete call graph, agent-specific runtime identity and durable
 A2A submission to the approved plan and independently authenticated recipient
 acceptance. The advisory registry preview remains separate from child admission.
 Remote polling now journals bounded task snapshots, including progress,
-interrupt, artifact and terminal-result fields. Event cursors, input/auth
-responses and cancellation remain part of the mesh integration phase.
+interrupt, artifact and terminal-result fields. Each accepted Acteon peer task
+also retains the target's opaque state-backed progress cursor. Refresh sends it
+as a conditional read, persists a replacement only with valid forward progress,
+and recovers unchanged snapshots across source restart without rewriting the
+journal. Native cancellation and its distinct restricted, uncertain and final
+receipts are implemented. Structured input and authentication challenge
+responses remain part of the mesh integration phase.
 
 New contexts use signed format 5. Previously accepted formats 2–4 remain readable;
 new grants cannot be attached to an old acceptance by replay. Upgrade and drain

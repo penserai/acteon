@@ -88,7 +88,14 @@ accepted, rejected, or uncertain; uncertainty is never an instruction to retry.
 After acceptance, the refresh route rechecks the current source credential,
 permit, grant, registry card and installed binding before reading the exact
 remote task. It rejects identity changes and lifecycle regressions and retains
-the last valid snapshot when the remote read is unavailable.
+the last valid snapshot when the remote read is unavailable. Individual-agent
+acceptance and task reads return a strong `ETag` derived from that task row's
+version in the configured state backend. The source journals this opaque
+progress cursor with the accepted remote snapshot and sends it on the next read
+as `If-None-Match`. An unchanged target returns `304 Not Modified`; a changed
+target returns the complete task and a replacement cursor. The cursor survives
+source restart with the rest of the peer journal, and the source never accepts
+the same cursor with different task content or a lifecycle regression.
 
 The cancel route uses the same recovered authority and exact accepted send
 record. Acteon journals cancellation intent and a delivery claim before making
@@ -153,6 +160,13 @@ machine. The protocol defines eight states:
 Acteon's Task Engine (`crates/gateway/src/task_engine.rs`) is the
 single source of truth for these transitions. Illegal transitions
 return a JSON-RPC `INVALID_PARAMS` error and leave the row unchanged.
+
+The REST `message:send` and `tasks/{id}` responses include a strong `ETag`
+for the exact task representation. Send that value as `If-None-Match` on a
+later task read to receive `304 Not Modified` when the authoritative state row
+has not changed. Treat the value as opaque. A `historyLength` projection has
+its own representation-specific ETag, so a cursor from a full task read cannot
+incorrectly validate a trimmed response.
 
 ### Send your first message
 
@@ -285,7 +299,10 @@ for artifacts). The endpoint reuses the same `ConnectionRegistry` as
 `/v1/stream` so per-tenant connection caps are unified.
 
 **Live-only** — task events aren't persisted to audit, so
-`Last-Event-ID` replay is intentionally not supported on this endpoint.
+`Last-Event-ID` replay is intentionally not supported on this endpoint. After
+an SSE disconnect, use the task `ETag`/`If-None-Match` contract to recover the
+complete durable snapshot. That cursor validates task state; it does not claim
+to replay every transient SSE envelope.
 
 ## Push notifications
 

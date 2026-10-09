@@ -4,7 +4,7 @@ use acteon_core::{ExecutionContextReference, Task};
 use acteon_crypto::{ExposeSecret, SecretString};
 use acteon_executor::delegation::{
     PeerCancelDisposition, PeerSendDisposition, PeerSendRequest, PeerSubmissionCapability,
-    PeerTaskRequest, PeerTransportAdapter, PeerTransportError,
+    PeerTaskObservation, PeerTaskRequest, PeerTransportAdapter, PeerTransportError,
 };
 use acteon_http::{GuardedClient, OutboundPolicy};
 use async_trait::async_trait;
@@ -130,14 +130,17 @@ impl PeerTransportAdapter for ActeonPeerHttpAdapter {
         Ok(PeerSendDisposition::Uncertain)
     }
 
-    async fn observe_task(&self, request: PeerTaskRequest<'_>) -> Result<Task, PeerTransportError> {
+    async fn observe_task(
+        &self,
+        request: PeerTaskRequest<'_>,
+    ) -> Result<PeerTaskObservation, PeerTransportError> {
         if request.transport != "rest" {
             return Err(PeerTransportError::Refused);
         }
         let endpoint = task_endpoint(request.endpoint, request.task_id)?;
         let context =
             serde_json::to_vec(request.source_context).map_err(|_| PeerTransportError::Invalid)?;
-        let response = self
+        let mut builder = self
             .client
             .request(reqwest::Method::GET, &endpoint)
             .map_err(|_| PeerTransportError::Refused)?
@@ -146,10 +149,34 @@ impl PeerTransportAdapter for ActeonPeerHttpAdapter {
             .header(
                 "x-acteon-agent-source-context",
                 URL_SAFE_NO_PAD.encode(context),
-            )
+            );
+        if let Some(cursor) = request.progress_cursor {
+            if !valid_cursor(cursor) {
+                return Err(PeerTransportError::Invalid);
+            }
+            builder = builder.header(reqwest::header::IF_NONE_MATCH, cursor);
+        }
+        let response = builder
             .send()
             .await
             .map_err(|_| PeerTransportError::Unavailable)?;
+        if response.status() == reqwest::StatusCode::NOT_MODIFIED {
+            if response
+                .headers()
+                .get("a2a-version")
+                .and_then(|value| value.to_str().ok())
+                != Some("1.0")
+            {
+                return Err(PeerTransportError::Unavailable);
+            }
+            let cursor = response_cursor(&response)?.ok_or(PeerTransportError::Unavailable)?;
+            if request.progress_cursor != Some(cursor.as_str()) {
+                return Err(PeerTransportError::Unavailable);
+            }
+            return Ok(PeerTaskObservation::Unchanged {
+                progress_cursor: cursor,
+            });
+        }
         if !response.status().is_success() {
             return Err(
                 if matches!(
@@ -170,8 +197,16 @@ impl PeerTransportAdapter for ActeonPeerHttpAdapter {
         {
             return Err(PeerTransportError::Unavailable);
         }
+        let progress_cursor = response_cursor(&response)?;
+        if request.progress_cursor.is_some() && progress_cursor.is_none() {
+            return Err(PeerTransportError::Unavailable);
+        }
         let raw = read_bounded(response, MAX_TASK_BYTES).await?;
-        serde_json::from_slice(&raw).map_err(|_| PeerTransportError::Unavailable)
+        let task = serde_json::from_slice(&raw).map_err(|_| PeerTransportError::Unavailable)?;
+        Ok(PeerTaskObservation::Updated {
+            task: Box::new(task),
+            progress_cursor,
+        })
     }
 
     async fn cancel_task(
@@ -302,6 +337,9 @@ async fn accepted(response: reqwest::Response) -> Result<PeerSendDisposition, Pe
         .ok()
         .and_then(|value| URL_SAFE_NO_PAD.decode(value).ok())
         .and_then(|raw| serde_json::from_slice::<ExecutionContextReference>(&raw).ok());
+    let Ok(progress_cursor) = response_cursor(&response) else {
+        return Ok(PeerSendDisposition::Uncertain);
+    };
     let body = read_bounded(response, MAX_TASK_BYTES).await;
     let task = body
         .ok()
@@ -310,9 +348,45 @@ async fn accepted(response: reqwest::Response) -> Result<PeerSendDisposition, Pe
         (Some(task), Some(source_context)) => Ok(PeerSendDisposition::Accepted {
             task: Box::new(task),
             source_context,
+            progress_cursor,
         }),
         _ => Ok(PeerSendDisposition::Uncertain),
     }
+}
+
+fn response_cursor(response: &reqwest::Response) -> Result<Option<String>, PeerTransportError> {
+    let values: Vec<_> = response
+        .headers()
+        .get_all(reqwest::header::ETAG)
+        .iter()
+        .collect();
+    if values.is_empty() {
+        return Ok(None);
+    }
+    if values.len() != 1 {
+        return Err(PeerTransportError::Unavailable);
+    }
+    values[0]
+        .to_str()
+        .ok()
+        .filter(|value| valid_cursor(value))
+        .map(str::to_owned)
+        .map(Some)
+        .ok_or(PeerTransportError::Unavailable)
+}
+
+fn valid_cursor(value: &str) -> bool {
+    let Some(inner) = value
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+    else {
+        return false;
+    };
+    !inner.is_empty()
+        && value.len() <= 512
+        && inner
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
 }
 
 async fn rejection_code(response: reqwest::Response, status: u16) -> String {
@@ -378,7 +452,7 @@ mod tests {
         Json, Router,
         http::{HeaderMap, StatusCode},
         response::IntoResponse,
-        routing::post,
+        routing::{get, post},
     };
     use std::sync::{Arc, Mutex};
     use uuid::Uuid;
@@ -407,6 +481,14 @@ mod tests {
             Duration::from_secs(1),
         )
         .unwrap()
+    }
+
+    fn assert_accepted_cursor(disposition: PeerSendDisposition, expected: &str) {
+        assert!(matches!(
+            disposition,
+            PeerSendDisposition::Accepted { progress_cursor: Some(cursor), .. }
+                if cursor == expected
+        ));
     }
 
     #[test]
@@ -439,6 +521,7 @@ mod tests {
         let seen = Arc::new(Mutex::new(false));
         let captured = seen.clone();
         let source = encoded.clone();
+        let bad_cursor_source = encoded.clone();
         let app = Router::new()
             .route(
                 "/ok",
@@ -464,6 +547,7 @@ mod tests {
                                 [
                                     ("a2a-version", "1.0"),
                                     ("x-acteon-agent-source-context", source.as_str()),
+                                    ("etag", "\"cursor-1\""),
                                 ],
                                 Json(Task::new("remote-task", "city", "tenant")),
                             )
@@ -471,6 +555,23 @@ mod tests {
                         }
                     },
                 ),
+            )
+            .route(
+                "/bad-cursor",
+                post(move || {
+                    let source = bad_cursor_source.clone();
+                    async move {
+                        (
+                            StatusCode::OK,
+                            [
+                                ("a2a-version", "1.0".to_string()),
+                                ("x-acteon-agent-source-context", source),
+                                ("etag", "W/\"cursor-1\"".to_string()),
+                            ],
+                            Json(Task::new("remote-task", "city", "tenant")),
+                        )
+                    }
+                }),
             )
             .route(
                 "/deny",
@@ -521,18 +622,84 @@ mod tests {
                     .unwrap()
             }
         };
-        assert!(matches!(
-            send("ok").await,
-            PeerSendDisposition::Accepted { .. }
-        ));
+        assert_accepted_cursor(send("ok").await, "\"cursor-1\"");
         assert!(*seen.lock().unwrap());
         assert!(matches!(
             send("deny").await,
             PeerSendDisposition::Rejected { code } if code == "peer_denied"
         ));
-        for path in ["unavailable", "redirect", "malformed"] {
+        for path in ["unavailable", "redirect", "malformed", "bad-cursor"] {
             assert!(matches!(send(path).await, PeerSendDisposition::Uncertain));
         }
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn guarded_observation_uses_and_validates_the_opaque_task_cursor() {
+        let parent = parent();
+        let source = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&parent).unwrap());
+        let app = Router::new().route(
+            "/a2a/city/tenant/agents/responder/v1/tasks/remote-task",
+            get(move |headers: HeaderMap| {
+                let source = source.clone();
+                async move {
+                    assert_eq!(headers["authorization"], "Bearer caller-secret");
+                    assert_eq!(headers["a2a-version"], "1.0");
+                    assert_eq!(headers["x-acteon-agent-source-context"], source);
+                    if headers
+                        .get(reqwest::header::IF_NONE_MATCH)
+                        .is_some_and(|value| value == "\"cursor-1\"")
+                    {
+                        return (
+                            StatusCode::NOT_MODIFIED,
+                            [("a2a-version", "1.0"), ("etag", "\"cursor-1\"")],
+                        )
+                            .into_response();
+                    }
+                    (
+                        StatusCode::OK,
+                        [("a2a-version", "1.0"), ("etag", "\"cursor-1\"")],
+                        Json(Task::new("remote-task", "city", "tenant")),
+                    )
+                        .into_response()
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let endpoint = format!("http://{address}/a2a/city/tenant/agents/responder/v1/message:send");
+        let adapter = adapter();
+        let first = adapter
+            .observe_task(PeerTaskRequest {
+                endpoint: &endpoint,
+                transport: "rest",
+                source_context: &parent,
+                task_id: "remote-task",
+                progress_cursor: None,
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            first,
+            PeerTaskObservation::Updated { progress_cursor: Some(cursor), .. }
+                if cursor == "\"cursor-1\""
+        ));
+        let unchanged = adapter
+            .observe_task(PeerTaskRequest {
+                endpoint: &endpoint,
+                transport: "rest",
+                source_context: &parent,
+                task_id: "remote-task",
+                progress_cursor: Some("\"cursor-1\""),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            unchanged,
+            PeerTaskObservation::Unchanged { progress_cursor }
+                if progress_cursor == "\"cursor-1\""
+        ));
         server.abort();
     }
 
@@ -571,6 +738,7 @@ mod tests {
                 transport: "rest",
                 task_id: "remote-task",
                 source_context: &parent,
+                progress_cursor: None,
             })
             .await
             .unwrap();
