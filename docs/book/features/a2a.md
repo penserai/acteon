@@ -100,7 +100,11 @@ not claim that an already-started provider effect stopped. A later explicit
 cancel call may use safe task observation to return `reconciled` with the exact
 terminal task. That terminal task can be completed, failed, canceled, or
 rejected: reconciliation proves finality, while only the task state says whether
-the cancellation took effect.
+the cancellation took effect. If the target committed its restriction but that
+response was lost, a restart preserves `uncertain`; an explicit repeat performs
+one read and sends no second stop. A still-nonterminal task remains `uncertain`
+because observation alone cannot reconstruct the lost restriction
+acknowledgment.
 
 ### Discovery (unauthenticated)
 

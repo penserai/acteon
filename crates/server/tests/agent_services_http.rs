@@ -4,7 +4,17 @@ use acteon_core::{AgentCard, AgentCardInterface, Skill};
 #[cfg(feature = "redis")]
 use acteon_state::StateStore;
 use axum::{Json, Router, routing::post};
+#[cfg(feature = "redis")]
+use axum::{
+    body::{Body, Bytes, to_bytes},
+    extract::{Request, State},
+    http::{HeaderMap, Method, Response, StatusCode, header},
+    response::IntoResponse,
+    routing::any,
+};
 use serde_json::{Value, json};
+#[cfg(feature = "redis")]
+use std::sync::{Mutex, atomic::AtomicBool};
 use std::{
     fs,
     io::Write,
@@ -38,7 +48,7 @@ impl Server {
             worker_grant,
             false,
             "human",
-            json!({"backend":"memory"}),
+            &json!({"backend":"memory"}),
         )
     }
     #[allow(clippy::too_many_lines)] // One isolated binary deployment fixture.
@@ -48,7 +58,7 @@ impl Server {
         worker_grant: &str,
         driver: bool,
         source_kind: &str,
-        state: Value,
+        state: &Value,
     ) -> Self {
         let directory =
             std::env::temp_dir().join(format!("acteon-agent-services-{}", uuid::Uuid::new_v4()));
@@ -290,7 +300,7 @@ actions = ["rpc"]
                     .get(format!("{}/health", self.url))
                     .send()
                     .await
-                    .is_ok()
+                    .is_ok_and(|response| response.status().is_success())
                 {
                     break;
                 }
@@ -639,7 +649,7 @@ async fn requester_observation_never_drives_work_and_agent_identity_requires_exa
         "incident",
         false,
         "agent",
-        json!({"backend":"memory"}),
+        &json!({"backend":"memory"}),
     );
     let client = reqwest::Client::new();
     server.ready(&client).await;
@@ -684,7 +694,7 @@ async fn enabled_driver_executes_once_and_requester_observes_real_result() {
         "incident",
         true,
         "human",
-        json!({"backend":"memory"}),
+        &json!({"backend":"memory"}),
     );
     let client = reqwest::Client::new();
     server.ready(&client).await;
@@ -721,12 +731,14 @@ fn redis_state() -> (Value, acteon_state_redis::RedisConfig) {
     )
 }
 
+#[cfg(feature = "redis")]
 struct PeerMeshServer {
     process: Child,
     directory: PathBuf,
     url: String,
 }
 
+#[cfg(feature = "redis")]
 impl Drop for PeerMeshServer {
     fn drop(&mut self) {
         let _ = self.process.kill();
@@ -735,12 +747,13 @@ impl Drop for PeerMeshServer {
     }
 }
 
+#[cfg(feature = "redis")]
 impl PeerMeshServer {
     #[allow(clippy::too_many_lines)]
     fn start(
         own_port: u16,
         notifier_port: u16,
-        resolver_port: u16,
+        resolver_endpoint_port: u16,
         webhook: &str,
         state: &Value,
         credential_hashes: &[String; 3],
@@ -764,7 +777,7 @@ impl PeerMeshServer {
             "https://127.0.0.1:{notifier_port}/a2a/prod/acme/agents/notifier/v1/message:send"
         );
         let resolver_endpoint = format!(
-            "https://127.0.0.1:{resolver_port}/a2a/prod/acme/agents/resolver/v1/message:send"
+            "https://127.0.0.1:{resolver_endpoint_port}/a2a/prod/acme/agents/resolver/v1/message:send"
         );
         let mut notifier = AgentCard::new("notifier", "prod", "acme", "Notifier", "1");
         let card_time = chrono::DateTime::parse_from_rfc3339("2026-10-08T00:00:00Z")
@@ -952,6 +965,220 @@ actions = ["execute"]
     }
 }
 
+#[cfg(feature = "redis")]
+struct ResponseLossProxyState {
+    upstream: String,
+    client: reqwest::Client,
+    lose_next_stop_response: AtomicBool,
+    stop_deliveries: AtomicUsize,
+    task_observations: AtomicUsize,
+    committed_stop: Mutex<Option<Value>>,
+}
+
+#[cfg(feature = "redis")]
+struct ResponseLossProxy {
+    url: String,
+    state: Arc<ResponseLossProxyState>,
+    task: tokio::task::JoinHandle<()>,
+    directory: PathBuf,
+}
+
+#[cfg(feature = "redis")]
+impl Drop for ResponseLossProxy {
+    fn drop(&mut self) {
+        self.task.abort();
+        let _ = fs::remove_dir_all(&self.directory);
+    }
+}
+
+#[cfg(feature = "redis")]
+impl ResponseLossProxy {
+    async fn start(port: u16, upstream: String) -> Self {
+        let directory =
+            std::env::temp_dir().join(format!("acteon-response-loss-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&directory).unwrap();
+        let mut params = rcgen::CertificateParams::new(vec!["localhost".into()]).unwrap();
+        params
+            .subject_alt_names
+            .push(rcgen::SanType::IpAddress("127.0.0.1".parse().unwrap()));
+        let key = rcgen::KeyPair::generate().unwrap();
+        let cert = params.self_signed(&key).unwrap();
+        let cert_path = directory.join("server.crt");
+        let key_path = directory.join("server.key");
+        fs::write(&cert_path, cert.pem()).unwrap();
+        fs::write(&key_path, key.serialize_pem()).unwrap();
+        let tls = acteon_crypto::tls::build_server_config(
+            cert_path.to_str().unwrap(),
+            key_path.to_str().unwrap(),
+            None,
+            acteon_crypto::tls::MinTlsVersion::Tls12,
+        )
+        .unwrap();
+        let state = Arc::new(ResponseLossProxyState {
+            upstream,
+            client: reqwest::Client::builder()
+                .danger_accept_invalid_certs(true)
+                .build()
+                .unwrap(),
+            lose_next_stop_response: AtomicBool::new(true),
+            stop_deliveries: AtomicUsize::new(0),
+            task_observations: AtomicUsize::new(0),
+            committed_stop: Mutex::new(None),
+        });
+        let app = Router::new()
+            .fallback(any(proxy_peer_request))
+            .with_state(Arc::clone(&state));
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+            .await
+            .unwrap();
+        let task = tokio::spawn(serve_test_tls(listener, app, tls));
+        Self {
+            url: format!("https://127.0.0.1:{port}"),
+            state,
+            task,
+            directory,
+        }
+    }
+
+    async fn ready(&self, client: &reqwest::Client) {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if client
+                    .get(format!("{}/health", self.url))
+                    .send()
+                    .await
+                    .is_ok()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+}
+
+#[cfg(feature = "redis")]
+async fn proxy_peer_request(
+    State(state): State<Arc<ResponseLossProxyState>>,
+    request: Request,
+) -> Response<Body> {
+    let (parts, body) = request.into_parts();
+    let path = parts
+        .uri
+        .path_and_query()
+        .map_or_else(|| "/".into(), ToString::to_string);
+    let is_stop = parts.method == Method::POST && parts.uri.path().ends_with("/stop");
+    let is_task_observation = parts.method == Method::GET
+        && parts.uri.path().contains("/tasks/")
+        && !parts.uri.path().ends_with("/stop");
+    let Ok(body) = to_bytes(body, 2 * 1024 * 1024).await else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let mut headers = HeaderMap::new();
+    for (name, value) in &parts.headers {
+        if !matches!(
+            name,
+            &header::HOST | &header::CONTENT_LENGTH | &header::CONNECTION
+        ) {
+            headers.append(name, value.clone());
+        }
+    }
+    let Ok(upstream) = state
+        .client
+        .request(parts.method, format!("{}{path}", state.upstream))
+        .headers(headers)
+        .body(body)
+        .send()
+        .await
+    else {
+        return StatusCode::BAD_GATEWAY.into_response();
+    };
+    let status = upstream.status();
+    let upstream_headers = upstream.headers().clone();
+    let Ok(body) = upstream.bytes().await else {
+        return StatusCode::BAD_GATEWAY.into_response();
+    };
+    if is_task_observation {
+        state.task_observations.fetch_add(1, Ordering::SeqCst);
+    }
+    if is_stop {
+        state.stop_deliveries.fetch_add(1, Ordering::SeqCst);
+        if status.is_success()
+            && let Ok(committed) = serde_json::from_slice(&body)
+        {
+            *state.committed_stop.lock().unwrap() = Some(committed);
+        }
+        if state
+            .lose_next_stop_response
+            .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            let failed = futures::stream::once(async {
+                Err::<Bytes, std::io::Error>(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionReset,
+                    "injected response loss after target commit",
+                ))
+            });
+            return response_with_forwarded_headers(
+                status,
+                &upstream_headers,
+                Body::from_stream(failed),
+            );
+        }
+    }
+    response_with_forwarded_headers(status, &upstream_headers, Body::from(body))
+}
+
+#[cfg(feature = "redis")]
+fn response_with_forwarded_headers(
+    status: StatusCode,
+    upstream: &HeaderMap,
+    body: Body,
+) -> Response<Body> {
+    let mut response = Response::builder().status(status);
+    for name in [
+        header::CONTENT_TYPE,
+        header::HeaderName::from_static("a2a-version"),
+        header::HeaderName::from_static("x-acteon-agent-source-context"),
+    ] {
+        for value in upstream.get_all(&name) {
+            response = response.header(&name, value);
+        }
+    }
+    response.body(body).unwrap()
+}
+
+#[cfg(feature = "redis")]
+async fn serve_test_tls(
+    listener: tokio::net::TcpListener,
+    app: Router,
+    tls: Arc<rustls::ServerConfig>,
+) {
+    use tower::ServiceExt;
+
+    let acceptor = tokio_rustls::TlsAcceptor::from(tls);
+    loop {
+        let (stream, _) = listener.accept().await.unwrap();
+        let acceptor = acceptor.clone();
+        let app = app.clone();
+        tokio::spawn(async move {
+            let Ok(stream) = acceptor.accept(stream).await else {
+                return;
+            };
+            let service = hyper::service::service_fn(
+                move |request: hyper::Request<hyper::body::Incoming>| app.clone().oneshot(request),
+            );
+            let _ =
+                hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
+                    .serve_connection(hyper_util::rt::TokioIo::new(stream), service)
+                    .await;
+        });
+    }
+}
+
+#[cfg(feature = "redis")]
 fn reserve_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
@@ -960,9 +1187,56 @@ fn reserve_port() -> u16 {
         .port()
 }
 
+#[cfg(feature = "redis")]
+async fn publish_peer_cards(
+    redis_config: &acteon_state_redis::RedisConfig,
+    server_config: &toml::Value,
+) {
+    let store = acteon_state_redis::RedisStateStore::new(redis_config).unwrap();
+    for index in 0..2 {
+        let card: AgentCard = serde_json::from_value(
+            serde_json::to_value(
+                &server_config["execution_authority"]["scopes"][0]["agent_services"][index]["card"],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let mut agent = acteon_core::Agent::new(&card.agent_id, "prod", "acme");
+        agent.last_heartbeat_at = Some(chrono::Utc::now());
+        agent.has_agent_card = true;
+        store
+            .set(
+                &acteon_state::StateKey::new(
+                    "prod",
+                    "acme",
+                    acteon_state::KeyKind::BusAgent,
+                    &card.agent_id,
+                ),
+                &serde_json::to_string(&agent).unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+        store
+            .set(
+                &acteon_state::StateKey::new(
+                    "prod",
+                    "acme",
+                    acteon_state::KeyKind::BusAgentCard,
+                    &card.agent_id,
+                ),
+                &serde_json::to_string(&card).unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+}
+
 #[tokio::test]
 #[cfg(feature = "redis")]
 #[ignore = "requires ACTEON_GOVERNANCE_REDIS_URL; two real HTTPS servers sharing Redis"]
+#[allow(clippy::too_many_lines)]
 async fn redis_two_server_peer_cancel_survives_source_restart_as_a_durable_restriction() {
     let (webhook_url, calls, webhook_task) = webhook().await;
     let (state, redis_config) = redis_state();
@@ -1012,46 +1286,7 @@ async fn redis_two_server_peer_cancel_survives_source_restart_as_a_durable_restr
         notifier_config["execution_authority"]
     );
     assert_eq!(resolver_config["providers"], notifier_config["providers"]);
-    let store = acteon_state_redis::RedisStateStore::new(&redis_config).unwrap();
-    for index in 0..2 {
-        let card: AgentCard = serde_json::from_value(
-            serde_json::to_value(
-                &resolver_config["execution_authority"]["scopes"][0]["agent_services"][index]
-                    ["card"],
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        let mut agent = acteon_core::Agent::new(&card.agent_id, "prod", "acme");
-        agent.last_heartbeat_at = Some(chrono::Utc::now());
-        agent.has_agent_card = true;
-        store
-            .set(
-                &acteon_state::StateKey::new(
-                    "prod",
-                    "acme",
-                    acteon_state::KeyKind::BusAgent,
-                    &card.agent_id,
-                ),
-                &serde_json::to_string(&agent).unwrap(),
-                None,
-            )
-            .await
-            .unwrap();
-        store
-            .set(
-                &acteon_state::StateKey::new(
-                    "prod",
-                    "acme",
-                    acteon_state::KeyKind::BusAgentCard,
-                    &card.agent_id,
-                ),
-                &serde_json::to_string(&card).unwrap(),
-                None,
-            )
-            .await
-            .unwrap();
-    }
+    publish_peer_cards(&redis_config, &resolver_config).await;
     notifier.ready(&client).await;
 
     let response = client
@@ -1132,6 +1367,133 @@ async fn redis_two_server_peer_cancel_survives_source_restart_as_a_durable_restr
 
 #[tokio::test]
 #[cfg(feature = "redis")]
+#[ignore = "requires ACTEON_GOVERNANCE_REDIS_URL; two real HTTPS servers and post-commit response loss"]
+#[allow(clippy::too_many_lines)]
+async fn redis_peer_cancel_response_loss_survives_restart_without_redelivery() {
+    let (webhook_url, calls, webhook_task) = webhook().await;
+    let (state, redis_config) = redis_state();
+    let notifier_port = reserve_port();
+    let resolver_port = reserve_port();
+    let proxy_port = reserve_port();
+    assert_eq!(
+        [notifier_port, resolver_port, proxy_port]
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        3
+    );
+    let credential_hashes = [
+        acteon_server::auth::api_key::hash_api_key("alice-secret"),
+        acteon_server::auth::api_key::hash_api_key("notifier-secret"),
+        acteon_server::auth::api_key::hash_api_key("resolver-secret"),
+    ];
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .build()
+        .unwrap();
+    let mut resolver = PeerMeshServer::start(
+        resolver_port,
+        notifier_port,
+        proxy_port,
+        &webhook_url,
+        &state,
+        &credential_hashes,
+        true,
+    );
+    resolver.ready(&client).await;
+    let proxy = ResponseLossProxy::start(proxy_port, resolver.url.clone()).await;
+    proxy.ready(&client).await;
+    let mut notifier = PeerMeshServer::start(
+        notifier_port,
+        notifier_port,
+        proxy_port,
+        &webhook_url,
+        &state,
+        &credential_hashes,
+        true,
+    );
+    let resolver_config: toml::Value =
+        toml::from_str(&fs::read_to_string(resolver.directory.join("acteon.toml")).unwrap())
+            .unwrap();
+    let notifier_config: toml::Value =
+        toml::from_str(&fs::read_to_string(notifier.directory.join("acteon.toml")).unwrap())
+            .unwrap();
+    assert_eq!(
+        resolver_config["execution_authority"],
+        notifier_config["execution_authority"]
+    );
+    publish_peer_cards(&redis_config, &resolver_config).await;
+    notifier.ready(&client).await;
+
+    let response = client
+        .post(format!(
+            "{}/a2a/prod/acme/agents/notifier/v1/message:send",
+            notifier.url
+        ))
+        .bearer_auth("alice-secret")
+        .json(&message("response-loss-root"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let root: Value = response.json().await.unwrap();
+    let peer_base = format!(
+        "{}/a2a/prod/acme/agents/notifier/v1/tasks/{}/peers",
+        notifier.url,
+        root["id"].as_str().unwrap()
+    );
+    let response = client
+        .post(format!("{peer_base}/resolver/resolve/message:send"))
+        .bearer_auth("notifier-secret")
+        .json(&message("response-loss-child"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let peer: Value = response.json().await.unwrap();
+    assert_eq!(peer["status"]["state"], "accepted");
+    let task_id = peer["status"]["task"]["id"].as_str().unwrap();
+    let submission = peer["submission_id"].as_str().unwrap();
+    let cancel_url = format!("{peer_base}/resolver/resolve/submissions/{submission}:cancel");
+
+    let response = client
+        .post(&cancel_url)
+        .bearer_auth("notifier-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let uncertain: Value = response.json().await.unwrap();
+    assert_eq!(uncertain["status"]["state"], "uncertain");
+    assert_eq!(proxy.state.stop_deliveries.load(Ordering::SeqCst), 1);
+    assert_eq!(proxy.state.task_observations.load(Ordering::SeqCst), 0);
+    let committed = proxy.state.committed_stop.lock().unwrap().clone().unwrap();
+    assert_eq!(committed["future_starts_blocked"], true);
+    assert_eq!(committed["task"]["id"], task_id);
+    assert_eq!(committed["task"]["status"]["state"], "submitted");
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+    let cancellation_id = uncertain["cancellation_id"].clone();
+    notifier.restart();
+    notifier.ready(&client).await;
+    let response = client
+        .post(&cancel_url)
+        .bearer_auth("notifier-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let replayed: Value = response.json().await.unwrap();
+    assert_eq!(replayed["cancellation_id"], cancellation_id);
+    assert_eq!(replayed, uncertain);
+    assert_eq!(proxy.state.stop_deliveries.load(Ordering::SeqCst), 1);
+    assert_eq!(proxy.state.task_observations.load(Ordering::SeqCst), 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    webhook_task.abort();
+}
+
+#[tokio::test]
+#[cfg(feature = "redis")]
 #[ignore = "requires ACTEON_GOVERNANCE_REDIS_URL; real server restart with isolated StateStore prefix"]
 async fn redis_restart_recovers_queued_work_without_requester_resubmission_and_keeps_known_result()
 {
@@ -1143,7 +1505,7 @@ async fn redis_restart_recovers_queued_work_without_requester_resubmission_and_k
         "incident",
         false,
         "human",
-        backend,
+        &backend,
     );
     let client = reqwest::Client::new();
     server.ready(&client).await;
@@ -1196,6 +1558,7 @@ async fn redis_restart_recovers_queued_work_without_requester_resubmission_and_k
 #[tokio::test]
 #[cfg(feature = "redis")]
 #[ignore = "requires ACTEON_GOVERNANCE_REDIS_URL; retained service replacement contract"]
+#[allow(clippy::too_many_lines)]
 async fn redis_service_replacement_recovers_old_tasks_and_routes_new_work_to_the_new_binding() {
     use acteon_governance::AuthorityCoordinator;
     let (url, calls, webhook_task) = webhook().await;
@@ -1208,7 +1571,7 @@ async fn redis_service_replacement_recovers_old_tasks_and_routes_new_work_to_the
         "incident",
         true,
         "human",
-        backend,
+        &backend,
     );
     let client = reqwest::Client::new();
     server.ready(&client).await;
@@ -1435,7 +1798,7 @@ async fn redis_restart_preserves_uncertain_delivery_without_resend_or_released_c
         "incident",
         true,
         "human",
-        backend,
+        &backend,
     );
     let client = reqwest::Client::new();
     server.ready(&client).await;
@@ -1522,7 +1885,7 @@ async fn redis_corrupt_projection_reports_unavailable_without_hiding_or_starting
         "incident",
         false,
         "human",
-        backend,
+        &backend,
     );
     let client = reqwest::Client::new();
     server.ready(&client).await;
@@ -1571,7 +1934,7 @@ async fn native_sdk_observes_exact_agent_job_and_cors_exposes_host_receipt() {
         "incident",
         false,
         "agent",
-        json!({"backend":"memory"}),
+        &json!({"backend":"memory"}),
     );
     let http = reqwest::Client::new();
     server.ready(&http).await;
@@ -1664,7 +2027,7 @@ async fn requester_stop_requires_original_job_provenance_and_never_starts_effect
         "incident",
         false,
         "agent",
-        json!({"backend":"memory"}),
+        &json!({"backend":"memory"}),
     );
     let client = reqwest::Client::new();
     server.ready(&client).await;
@@ -1711,7 +2074,7 @@ async fn redis_restart_does_not_start_stopped_queued_service_work() {
         "incident",
         false,
         "agent",
-        backend,
+        &backend,
     );
     let client = reqwest::Client::new();
     server.ready(&client).await;
@@ -1776,7 +2139,7 @@ async fn redis_registry_retirement_blocks_admission_and_republication_without_hi
         "incident",
         false,
         "agent",
-        backend,
+        &backend,
     );
     let client = reqwest::Client::new();
     server.ready(&client).await;
