@@ -97,6 +97,27 @@ it("continues peer challenges without client-supplied bindings and retains direc
   expect((await client.agentServiceContinueTask(source, message)).id).toBe("job-1");
   expect(fetch).toHaveBeenCalledTimes(2);
 });
+it("keeps authorization credentials out of both typed calls", async () => {
+  const source = { namespace: "prod", tenant: "acme", agent: "notifier", taskId: "job-1", sourceContext: fixture.jobs[0].source_context, task: fixture.jobs[0].task };
+  const fetch = vi.fn(async (input: string, init: RequestInit) => {
+    const body = JSON.parse(init.body as string);
+    const headers = init.headers as Record<string, string>;
+    if (input.endsWith("authorization:request")) {
+      expect(body).toEqual({ authorizationRequestId: "opaque-flow-42" });
+      expect(headers[AGENT_SOURCE_CONTEXT_HEADER]).toBeUndefined();
+    } else {
+      expect(input).toMatch(/authorization:resolve$/);
+      expect(body).toEqual({ challengeId: "challenge-42" });
+      expect(headers[AGENT_SOURCE_CONTEXT_HEADER]).toBe(source.sourceContext);
+    }
+    return new Response(JSON.stringify(source.task), { headers: { "a2a-version": "1.0" } });
+  });
+  vi.stubGlobal("fetch", fetch);
+  const client = new ActeonClient("http://acteon");
+  await client.agentServiceRequestAuthorization("prod", "acme", "notifier", "job-1", "opaque-flow-42");
+  await client.agentServiceResolveAuthorization(source, "challenge-42");
+  expect(fetch).toHaveBeenCalledTimes(2);
+});
 it("keeps concurrent job headers separate and ignores mutable task metadata", async () => {
   vi.stubGlobal("fetch", async (input: string, init: RequestInit) => {
     const headers = init.headers as Record<string, string>;

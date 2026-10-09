@@ -769,6 +769,18 @@ A2A REST binding for submitting agent messages and tasks. An
 retries are safe. An expired challenge fails the still-paused Task. An
 `AuthRequired` Task cannot be authorized by message content.
 
+### `POST /a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/authorization:request`
+
+The authenticated recipient agent opens an `AuthRequired` challenge with an
+opaque `authorizationRequestId`. Acteon supplies the verifier, recipient,
+credential authority, audience, scopes, and TTL from the service binding.
+
+### `POST /a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/authorization:resolve`
+
+The authenticated original requester asks Acteon to verify the exact
+`challengeId`. The body contains no credential. A denial leaves the challenge
+pending; transient verifier failure returns `503` without changing task state.
+
 ### `GET /a2a/{namespace}/{tenant}/v1/tasks/{id}`
 
 Retrieve task lifecycle status, output artifacts, and sub-task graphs.

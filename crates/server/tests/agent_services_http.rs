@@ -55,7 +55,6 @@ impl Server {
             &json!({"backend":"memory"}),
         )
     }
-    #[allow(clippy::too_many_lines)] // One isolated binary deployment fixture.
     fn configured(
         webhook: &str,
         worker_secret: Option<&str>,
@@ -63,6 +62,37 @@ impl Server {
         driver: bool,
         source_kind: &str,
         state: &Value,
+    ) -> Self {
+        Self::configured_inner(
+            webhook,
+            worker_secret,
+            worker_grant,
+            driver,
+            source_kind,
+            state,
+            None,
+        )
+    }
+    fn configured_authorization(webhook: &str, verifier: &str, driver: bool) -> Self {
+        Self::configured_inner(
+            webhook,
+            Some("notifier-secret"),
+            "incident",
+            driver,
+            "human",
+            &json!({"backend":"memory"}),
+            Some(verifier),
+        )
+    }
+    #[allow(clippy::too_many_lines)] // One isolated binary deployment fixture.
+    fn configured_inner(
+        webhook: &str,
+        worker_secret: Option<&str>,
+        worker_grant: &str,
+        driver: bool,
+        source_kind: &str,
+        state: &Value,
+        verifier: Option<&str>,
     ) -> Self {
         let directory =
             std::env::temp_dir().join(format!("acteon-agent-services-{}", uuid::Uuid::new_v4()));
@@ -80,7 +110,7 @@ impl Server {
         let human = json!({"id":"alice","kind":source_kind});
         let worker = json!({"id":"agent/notifier","kind":"agent"});
         let route = json!({"provider":"incident","action_type":"execute"});
-        let configuration = json!({
+        let mut configuration = json!({
             "server":{"host":"127.0.0.1","port":port,"cors_allowed_origins":["https://console.example"]},
             "state":state, "ui":{"enabled":false},
             "auth":{"enabled":true,"config_path":"auth.toml","watch":false,
@@ -104,6 +134,21 @@ impl Server {
                 ]
             }]}
         });
+        if let Some(endpoint) = verifier {
+            configuration["execution_authority"]["authorization_verifiers"] = json!([{
+                "id":"city-workload","revision":3,"endpoint":endpoint,
+                "credential_env":"ACTEON_TEST_AUTH_VERIFIER","timeout_ms":2000,
+                "internal_hosts":["127.0.0.1"]
+            }]);
+            configuration["execution_authority"]["scopes"][0]["agent_services"][0]["authorization"] = json!({
+                "verifier_id":"city-workload","verifier_revision":3,
+                "credential_authority":"city-identity","audience":"incident-api",
+                "required_scopes":["incident.resolve"],"challenge_ttl_ms":300000
+            });
+            // The provider consumes the root's only unit before authorization
+            // resolves; rechecking an existing effect must not demand a new unit.
+            configuration["execution_authority"]["scopes"][0]["root_max_units"] = json!(1);
+        }
         fs::write(
             directory.join("acteon.toml"),
             toml::to_string(&configuration).unwrap(),
@@ -189,6 +234,7 @@ actions = ["rpc"]
                 "service-context-signing-at-least-32-bytes",
             )
             .env_remove("ACTEON_TEST_AGENT_RECIPIENT")
+            .env("ACTEON_TEST_AUTH_VERIFIER", "verifier-secret")
             .stdout(Stdio::from(log.try_clone().unwrap()))
             .stderr(Stdio::from(log));
         if let Some(secret) = worker_secret {
@@ -356,7 +402,34 @@ async fn webhook() -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
     (format!("http://{address}/incident"), calls, task)
 }
 
-#[cfg(any(feature = "redis", feature = "postgres"))]
+async fn authorization_verifier() -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
+    use sha2::Digest;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = calls.clone();
+    let app = Router::new().route("/verify", post(move |headers: axum::http::HeaderMap, Json(body): Json<Value>| {
+        let counter = counter.clone();
+        async move {
+            counter.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(headers["authorization"], "Bearer verifier-secret");
+            assert_eq!(body["requirement"]["verifierId"], "city-workload");
+            assert_eq!(body["requirement"]["recipient"]["id"], "agent/notifier");
+            let request_id = body["requirement"]["authorizationRequestId"].as_str().unwrap();
+            let now = chrono::Utc::now();
+            Json(json!({
+                "schema":1,"taskId":body["taskId"],"challengeId":body["challengeId"],
+                "authorizationRequestDigest":hex::encode(sha2::Sha256::digest(request_id.as_bytes())),
+                "requirementDigest":body["requirementDigest"],
+                "decisionId":"decision-42","subject":{"id":"agent/notifier","kind":"agent"},
+                "verifiedAt":now,"validUntil":now+chrono::Duration::minutes(5)
+            }))
+        }
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (format!("http://{address}/verify"), calls, task)
+}
+
 async fn pausing_webhook() -> (
     String,
     Arc<AtomicUsize>,
@@ -400,6 +473,82 @@ async fn pausing_webhook() -> (
 }
 fn message(id: &str) -> Value {
     json!({"message":{"role":"user","messageId":id,"parts":[{"kind":"text","text":"Notify the incident owner"}]}})
+}
+
+#[tokio::test]
+async fn hosted_authorization_uses_recipient_to_open_and_original_requester_to_resolve() {
+    let (webhook_url, provider_calls, entered, release, webhook_task) = pausing_webhook().await;
+    let (verifier_url, verifier_calls, verifier_task) = authorization_verifier().await;
+    let mut server = Server::configured_authorization(&webhook_url, &verifier_url, true);
+    let client = reqwest::Client::new();
+    server.ready(&client).await;
+    let (task, source) = send_task(&server, &client, "authorization-job").await;
+    tokio::time::timeout(Duration::from_secs(10), entered.acquire())
+        .await
+        .unwrap()
+        .unwrap()
+        .forget();
+    let task_id = task["id"].as_str().unwrap();
+    let base = server.task_url(task_id);
+    let wrong_recipient = client
+        .post(format!("{base}/authorization:request"))
+        .bearer_auth("alice-secret")
+        .header("a2a-version", "1.0")
+        .json(&json!({"authorizationRequestId":"opaque-flow-42"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(wrong_recipient.status(), 404);
+    let opened = client
+        .post(format!("{base}/authorization:request"))
+        .bearer_auth("notifier-secret")
+        .header("a2a-version", "1.0")
+        .json(&json!({"authorizationRequestId":"opaque-flow-42"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(opened.status(), 200, "{}", opened.text().await.unwrap());
+    let opened: Value = opened.json().await.unwrap();
+    assert_eq!(opened["status"]["state"], "auth_required");
+    let challenge = opened["pendingApprovalId"].as_str().unwrap();
+    let wrong_requester = client
+        .post(format!("{base}/authorization:resolve"))
+        .bearer_auth("notifier-secret")
+        .header("a2a-version", "1.0")
+        .header("x-acteon-agent-source-context", &source)
+        .json(&json!({"challengeId":challenge}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(wrong_requester.status(), 404);
+    assert_eq!(verifier_calls.load(Ordering::SeqCst), 0);
+    let resolved = client
+        .post(format!("{base}/authorization:resolve"))
+        .bearer_auth("alice-secret")
+        .header("a2a-version", "1.0")
+        .header("x-acteon-agent-source-context", source)
+        .json(&json!({"challengeId":challenge}))
+        .send()
+        .await
+        .unwrap();
+    let resolved_status = resolved.status();
+    let resolved_body = resolved.text().await.unwrap();
+    assert_eq!(
+        resolved_status,
+        200,
+        "{resolved_body}; verifier calls={}; log={}",
+        verifier_calls.load(Ordering::SeqCst),
+        fs::read_to_string(server.directory.join("server.log")).unwrap_or_default()
+    );
+    let resolved: Value = serde_json::from_str(&resolved_body).unwrap();
+    assert_eq!(resolved["status"]["state"], "working");
+    assert_eq!(verifier_calls.load(Ordering::SeqCst), 1);
+    release.add_permits(1);
+    let completed = await_completed(&server, &client, task_id).await;
+    assert_eq!(completed["status"]["state"], "completed");
+    assert_eq!(provider_calls.load(Ordering::SeqCst), 1);
+    webhook_task.abort();
+    verifier_task.abort();
 }
 
 #[tokio::test]

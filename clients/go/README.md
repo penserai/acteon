@@ -9,7 +9,7 @@ The generated operation catalog exposes all 213 finite HTTP operations, includin
 ```go
 status, err := client.PlatformRequest(ctx, acteon.OpBusStagesStatus,
     map[string]string{"namespace": "observability", "tenant": "demo", "id": "log-detector"},
-    nil, nil)
+    nil)
 if err != nil { return err }
 fmt.Println(string(status))
 ```
@@ -453,6 +453,8 @@ peer, err = client.AgentServiceRefreshPeer(ctx, receipt, "resolver", "diagnose",
 cancellation, err := client.AgentServiceCancelPeer(ctx, receipt, "resolver", "diagnose", peer)
 continued, err := client.AgentServiceContinuePeer(ctx, receipt, "resolver", "diagnose", peer, userResponse)
 task, err = client.AgentServiceContinueTask(ctx, receipt, challengeBoundResponse)
+paused, err := recipient.AgentServiceRequestAuthorization(ctx, "prod", "acme", "medic", taskID, "opaque-flow-42")
+resumed, err := client.AgentServiceResolveAuthorization(ctx, receipt, paused["pendingApprovalId"].(string))
 ```
 
 Cancellation is delivered at most once. A `restricted` receipt proves the target

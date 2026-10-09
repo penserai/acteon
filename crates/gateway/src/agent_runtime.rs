@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use acteon_core::{
     Action, ActionOutcome, Artifact, ExecutionContextReference, TASK_CHALLENGE_ID_METADATA_KEY,
-    Task, TaskMessage, TaskPart, TaskRole, TaskState,
+    Task, TaskAuthorizationRequirement, TaskMessage, TaskPart, TaskRole, TaskState,
 };
 use acteon_executor::{
     ExecutorConfig,
@@ -29,7 +29,7 @@ use acteon_time::Clock;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::{TaskEngine, TaskEngineError, TaskScope};
+use crate::{TaskAuthorizationVerifier, TaskEngine, TaskEngineError, TaskScope};
 
 pub const ACCEPTANCE_KIND: &str = "governed_agent_task_acceptance";
 pub const CONTINUATION_KIND: &str = "governed_agent_task_continuation";
@@ -1029,6 +1029,76 @@ impl AgentProviderRuntime {
         Box::pin(self.resume(task_id)).await
     }
 
+    /// Open an authorization challenge using a complete host-issued policy.
+    /// The caller must authenticate the bound recipient before invoking this
+    /// method; no verifier or authority fields are accepted from model output.
+    pub async fn pause_for_authorization(
+        &self,
+        task_id: uuid::Uuid,
+        requirement: TaskAuthorizationRequirement,
+        reason: Option<String>,
+        ttl: std::time::Duration,
+    ) -> Result<Task, AgentRuntimeError> {
+        let accepted = self.load_acceptance(task_id).await?;
+        let recipient = self.recipient_context(task_id).await?;
+        if requirement.recipient != *recipient.principal() {
+            return Err(AgentRuntimeError::Conflict);
+        }
+        self.dependencies
+            .coordinator
+            .recheck_existing_effect_authority(
+                &recipient,
+                &accepted.permits,
+                self.bound.effect(),
+                self.dependencies.clock.as_ref(),
+            )
+            .await?;
+        let scope = TaskScope::new(accepted.reference.namespace(), accepted.reference.tenant());
+        Ok(self
+            .tasks
+            .pause_for_authorization(&scope, &task_id.to_string(), requirement, reason, Some(ttl))
+            .await?
+            .0)
+    }
+
+    /// Resolve one exact challenge for the authenticated original requester.
+    pub async fn resolve_authorization(
+        &self,
+        task_id: uuid::Uuid,
+        challenge_id: &str,
+        requester: &VerifiedExecutionContext,
+        verifier: &dyn TaskAuthorizationVerifier,
+    ) -> Result<Task, AgentRuntimeError> {
+        let accepted = self.load_acceptance(task_id).await?;
+        let recipient = self
+            .dependencies
+            .contexts
+            .recover_reference_for_observation(&accepted.reference)
+            .await?;
+        let source = recipient
+            .immediate_service_source()
+            .ok_or(AgentRuntimeError::Conflict)?;
+        if source.reference()? != requester.reference()? {
+            return Err(AgentRuntimeError::Conflict);
+        }
+        let current_recipient = self.recipient_context(task_id).await?;
+        self.dependencies
+            .coordinator
+            .recheck_existing_effect_authority(
+                &current_recipient,
+                &accepted.permits,
+                self.bound.effect(),
+                self.dependencies.clock.as_ref(),
+            )
+            .await?;
+        let scope = TaskScope::new(accepted.reference.namespace(), accepted.reference.tenant());
+        Ok(self
+            .tasks
+            .resolve_authorization(&scope, &task_id.to_string(), challenge_id, verifier)
+            .await?
+            .0)
+    }
+
     /// Restrict this accepted recipient subtree using its original signed source.
     /// Trusted hosts must authenticate the current requester before calling this.
     /// This does not settle attempts, refund budgets, release capacity, or assert
@@ -1278,7 +1348,11 @@ impl AgentProviderRuntime {
             // predecessor is required evidence for a governed continuation,
             // but it must not erase the active challenge before the exact
             // source response is durably registered.
-            if task.status.state == TaskState::InputRequired && task.pending_approval_id.is_some() {
+            if matches!(
+                task.status.state,
+                TaskState::InputRequired | TaskState::AuthRequired
+            ) && task.pending_approval_id.is_some()
+            {
                 return Ok(AgentTaskReceipt {
                     task,
                     execution: Some(execution),

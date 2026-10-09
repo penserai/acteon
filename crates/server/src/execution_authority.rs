@@ -1,6 +1,7 @@
 //! Production preparation from validated declarations and actual registrations.
 //! Preparation is read-only; publication is a later, explicitly ordered stage.
 pub mod agent_services;
+pub mod authorization_http;
 mod peer_http;
 mod runtime;
 pub use peer_http::ActeonPeerHttpAdapter;
@@ -8,7 +9,8 @@ pub use runtime::{
     AgentPeerCancelInvocation, AgentPeerCancelRequest, AgentPeerContinuationInvocation,
     AgentPeerContinuationRequest, AgentPeerDiscoveryInvocation, AgentPeerDiscoveryRequest,
     AgentPeerInvocation, AgentPeerRefreshInvocation, AgentPeerRefreshRequest, AgentPeerToolRequest,
-    AgentPeerTransportError, AgentServiceAcceptance, AgentServiceContinuation, AgentServiceDriver,
+    AgentPeerTransportError, AgentServiceAcceptance, AgentServiceAuthorizationOpen,
+    AgentServiceAuthorizationResolve, AgentServiceContinuation, AgentServiceDriver,
     AgentServiceError, AgentServiceObservation, AgentServiceParent, AgentServiceRequest,
     AgentServiceTaskObservation, ExecutionAuthorityRuntime, ExecutionRuntimeDependencies,
     ManagementError, TrustedReconciliationInstallation,
@@ -285,6 +287,7 @@ impl ExecutionProviderRegistry {
                             key,
                             agent_services::PreparedRetainedAgentService {
                                 agent_id: service.card.agent_id.clone(),
+                                authorization: service.authorization.clone(),
                                 binding,
                                 bound,
                             },
@@ -365,11 +368,16 @@ impl ExecutionProviderRegistry {
                     policy["managers"] = serde_json::json!(declaration.managers);
                 }
                 policy["peer_transport"] = serde_json::json!(configuration.peer_transport);
+                if !configuration.authorization_verifiers.is_empty() {
+                    policy["authorization_verifiers"] =
+                        serde_json::json!(configuration.authorization_verifiers);
+                }
                 let bytes = serde_json::to_vec(&policy)
                     .map_err(|_| "invalid execution deployment policy")?;
                 Ok(PreparedExecutionScope {
                     declaration,
                     peer_transport: configuration.peer_transport.clone(),
+                    authorization_verifiers: configuration.authorization_verifiers.clone(),
                     catalog,
                     issuance,
                     agents,
@@ -552,6 +560,7 @@ impl<'a> AuthenticatedProviderAdmission<'a> {
 pub struct PreparedExecutionScope {
     declaration: ExecutionScopeConfig,
     peer_transport: crate::config::AgentPeerTransportConfig,
+    authorization_verifiers: Vec<crate::config::TaskAuthorizationHttpVerifierConfig>,
     catalog: QualifiedProviderCatalog,
     agents: BTreeMap<String, agent_services::PreparedAgentService>,
     retained_agents: BTreeMap<(String, String), agent_services::PreparedRetainedAgentService>,

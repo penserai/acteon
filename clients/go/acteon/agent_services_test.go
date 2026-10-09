@@ -12,6 +12,39 @@ import (
 	"testing"
 )
 
+func TestAgentServiceAuthorizationCarriesOnlyOpaqueHandles(t *testing.T) {
+	task := map[string]any{"id": "job-1", "namespace": "prod", "tenant": "acme", "status": map[string]any{"state": "auth_required"}}
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		if strings.HasSuffix(r.URL.Path, "authorization:request") {
+			if len(body) != 1 || body["authorizationRequestId"] != "opaque-flow-42" || r.Header.Get(AgentSourceContextHeader) != "" {
+				t.Errorf("unsafe request: %#v", body)
+			}
+		} else if len(body) != 1 || body["challengeId"] != "challenge-42" || r.Header.Get(AgentSourceContextHeader) != "host-only" {
+			t.Errorf("unsafe resolution: %#v", body)
+		}
+		w.Header().Set(A2AVersionHeader, A2AProtocolVersion)
+		json.NewEncoder(w).Encode(task)
+	}))
+	defer server.Close()
+	client := NewClient(server.URL)
+	if _, err := client.AgentServiceRequestAuthorization(context.Background(), "prod", "acme", "notifier", "job-1", "opaque-flow-42"); err != nil {
+		t.Fatal(err)
+	}
+	receipt := &AgentServiceReceipt{Namespace: "prod", Tenant: "acme", Agent: "notifier", TaskID: "job-1", SourceContext: "host-only", Task: task}
+	if _, err := client.AgentServiceResolveAuthorization(context.Background(), receipt, "challenge-42"); err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("calls = %d", calls.Load())
+	}
+}
+
 func TestAgentServiceReceiptsPreserveHeadersAndIdentity(t *testing.T) {
 	var fixture struct {
 		Jobs []struct {

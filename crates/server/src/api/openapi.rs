@@ -101,6 +101,8 @@ use acteon_core::{
         super::agent_services::peer_continue,
         super::agent_services::task_get,
         super::agent_services::task_continue,
+        super::agent_services::task_authorization_request,
+        super::agent_services::task_authorization_resolve,
         super::agent_services::task_stop,
         super::workforce::inspect,
         super::workforce::change,

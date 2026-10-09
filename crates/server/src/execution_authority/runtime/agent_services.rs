@@ -7,7 +7,9 @@ use crate::{
     },
     execution_authority::{
         PreparedExecutionScope,
-        agent_services::{AgentServiceGrantDeclaration, PreparedAgentService},
+        agent_services::{
+            AgentServiceAuthorizationProfile, AgentServiceGrantDeclaration, PreparedAgentService,
+        },
     },
 };
 use acteon_core::{ExecutionContextReference, PrincipalKind, Task, TaskMessage};
@@ -70,6 +72,23 @@ pub struct AgentServiceContinuation<'a> {
     pub observation: AgentServiceObservation<'a>,
     pub challenge_id: &'a str,
     pub response: &'a TaskMessage,
+}
+
+/// Recipient-authenticated request to open a challenge. Only the opaque
+/// verifier-owned request ID comes from the caller.
+pub struct AgentServiceAuthorizationOpen<'a> {
+    pub namespace: &'a str,
+    pub tenant: &'a str,
+    pub agent_id: &'a str,
+    pub task_id: uuid::Uuid,
+    pub authentication: &'a AuthenticatedExecutionConfiguration,
+    pub authorization_request_id: &'a str,
+}
+
+/// Original-requester-authenticated resolution of one exact challenge.
+pub struct AgentServiceAuthorizationResolve<'a> {
+    pub observation: AgentServiceObservation<'a>,
+    pub challenge_id: &'a str,
 }
 
 /// Opaque references are verified against original private caller authentication.
@@ -770,6 +789,168 @@ impl ExecutionAuthorityRuntime {
             &continued.task,
         )
         .await
+    }
+
+    pub async fn open_agent_service_authorization(
+        &self,
+        request: AgentServiceAuthorizationOpen<'_>,
+    ) -> Result<AgentServiceTaskObservation, AgentServiceError> {
+        if request.authorization_request_id.is_empty()
+            || request.authorization_request_id.len() > 512
+            || request.authorization_request_id.trim() != request.authorization_request_id
+            || request
+                .authorization_request_id
+                .chars()
+                .any(char::is_control)
+        {
+            return Err(AgentServiceError::Invalid);
+        }
+        let (runtime, profile) = self
+            .authorize_service_recipient(
+                request.namespace,
+                request.tenant,
+                request.agent_id,
+                request.task_id,
+                request.authentication,
+            )
+            .await?;
+        let task = runtime
+            .pause_for_authorization(
+                request.task_id,
+                acteon_core::TaskAuthorizationRequirement {
+                    verifier_id: profile.verifier_id.clone(),
+                    verifier_revision: profile.verifier_revision,
+                    authorization_request_id: request.authorization_request_id.into(),
+                    recipient: runtime
+                        .recipient_context(request.task_id)
+                        .await
+                        .map_err(AgentServiceError::from)?
+                        .principal()
+                        .clone(),
+                    credential_authority: profile.credential_authority.clone(),
+                    audience: profile.audience.clone(),
+                    required_scopes: profile.required_scopes.clone(),
+                },
+                Some("authorization required".into()),
+                std::time::Duration::from_millis(profile.challenge_ttl_ms),
+            )
+            .await
+            .map_err(AgentServiceError::from)?;
+        self.load_versioned_service_task(request.namespace, request.tenant, request.task_id, &task)
+            .await
+    }
+
+    pub async fn resolve_agent_service_authorization(
+        &self,
+        request: AgentServiceAuthorizationResolve<'_>,
+    ) -> Result<AgentServiceTaskObservation, AgentServiceError> {
+        let task_id = request.observation.task_id;
+        let namespace = request.observation.namespace;
+        let tenant = request.observation.tenant;
+        let (runtime, source) = self
+            .authorize_service_observation(request.observation)
+            .await?;
+        let profile = self
+            .authorization_profile_for_task(namespace, tenant, runtime.binding_digest(), task_id)
+            .await?;
+        let scope = self
+            .scopes
+            .get(&(namespace.into(), tenant.into()))
+            .ok_or(AgentServiceError::NotFound)?;
+        let verifier = scope
+            .authorization_verifiers
+            .get(&(profile.verifier_id.clone(), profile.verifier_revision))
+            .ok_or(AgentServiceError::Unavailable)?;
+        let task = runtime
+            .resolve_authorization(task_id, request.challenge_id, &source, verifier.as_ref())
+            .await
+            .map_err(AgentServiceError::from)?;
+        self.load_versioned_service_task(namespace, tenant, task_id, &task)
+            .await
+    }
+
+    async fn authorize_service_recipient<'a>(
+        &'a self,
+        namespace: &str,
+        tenant: &str,
+        agent_id: &str,
+        task_id: uuid::Uuid,
+        authentication: &AuthenticatedExecutionConfiguration,
+    ) -> Result<
+        (
+            &'a AgentProviderRuntime,
+            &'a AgentServiceAuthorizationProfile,
+        ),
+        AgentServiceError,
+    > {
+        authentication
+            .verify_authentication_current()
+            .await
+            .map_err(|e| AgentServiceError::authentication(&e))?;
+        let caller = authentication
+            .scope(namespace, tenant)
+            .map_err(|_| AgentServiceError::Forbidden)?;
+        let runtime = self
+            .service_runtime_for_task(namespace, tenant, agent_id, task_id)
+            .await?;
+        let recipient = runtime
+            .recipient_context(task_id)
+            .await
+            .map_err(AgentServiceError::observation)?;
+        if recipient.principal() != caller.authentication_source().principal()
+            || recipient.credential_authority().map(|c| c.id.as_str())
+                != Some(caller.credential_reference().id.as_str())
+            || recipient.auth_method() != caller.authentication_source().auth_method()
+        {
+            return Err(AgentServiceError::NotFound);
+        }
+        let profile = self
+            .authorization_profile_for_task(namespace, tenant, runtime.binding_digest(), task_id)
+            .await?;
+        Ok((runtime, profile))
+    }
+
+    async fn authorization_profile_for_task<'a>(
+        &'a self,
+        namespace: &str,
+        tenant: &str,
+        binding_digest: &str,
+        task_id: uuid::Uuid,
+    ) -> Result<&'a AgentServiceAuthorizationProfile, AgentServiceError> {
+        let scope = self
+            .scopes
+            .get(&(namespace.into(), tenant.into()))
+            .ok_or(AgentServiceError::NotFound)?;
+        let raw = self
+            .state
+            .get(&StateKey::new(
+                namespace,
+                tenant,
+                KeyKind::Custom(ACCEPTANCE_KIND.into()),
+                task_id.to_string(),
+            ))
+            .await
+            .map_err(|_| AgentServiceError::Unavailable)?
+            .ok_or(AgentServiceError::NotFound)?;
+        let digest = accepted_agent_binding_digest(&raw).map_err(AgentServiceError::observation)?;
+        if digest != binding_digest {
+            return Err(AgentServiceError::Conflict);
+        }
+        scope
+            .prepared
+            .agents
+            .values()
+            .find(|agent| agent.binding.digest() == digest)
+            .and_then(|agent| agent.declaration.authorization.as_ref())
+            .or_else(|| {
+                scope
+                    .prepared
+                    .retained_agents
+                    .values()
+                    .find(|agent| agent.binding.digest() == digest)
+                    .and_then(|agent| agent.authorization.as_ref())
+            })
+            .ok_or(AgentServiceError::Forbidden)
     }
 
     async fn load_versioned_service_task(

@@ -257,6 +257,30 @@
       "response": "json"
     },
     {
+      "name": "agent_services_task_authorization_request",
+      "method": "POST",
+      "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/authorization:request",
+      "parameters": [
+        "namespace",
+        "tenant",
+        "agent",
+        "id"
+      ],
+      "response": "json"
+    },
+    {
+      "name": "agent_services_task_authorization_resolve",
+      "method": "POST",
+      "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/authorization:resolve",
+      "parameters": [
+        "namespace",
+        "tenant",
+        "agent",
+        "id"
+      ],
+      "response": "json"
+    },
+    {
       "name": "agent_services_task_continue",
       "method": "POST",
       "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/message:send",

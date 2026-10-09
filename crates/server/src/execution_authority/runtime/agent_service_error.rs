@@ -90,7 +90,14 @@ impl From<AgentRuntimeError> for AgentServiceError {
                 TaskEngineError::State(_)
                 | TaskEngineError::Audit(_)
                 | TaskEngineError::Serde(_)
-                | TaskEngineError::CasExhausted(_) => Self::Unavailable,
+                | TaskEngineError::CasExhausted(_)
+                | TaskEngineError::AuthorizationVerification(
+                    acteon_gateway::TaskAuthorizationVerificationError::Unavailable
+                    | acteon_gateway::TaskAuthorizationVerificationError::Invalid(_),
+                ) => Self::Unavailable,
+                TaskEngineError::AuthorizationVerification(
+                    acteon_gateway::TaskAuthorizationVerificationError::Denied,
+                ) => Self::Forbidden,
                 TaskEngineError::NotFound(_) => Self::NotFound,
                 _ => Self::Conflict,
             },

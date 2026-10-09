@@ -2246,3 +2246,78 @@ fn retained_agent_service_requires_an_exact_prior_qualified_binding() {
             .is_err()
     );
 }
+
+#[test]
+fn authorization_profile_is_installed_and_part_of_service_binding() {
+    let (registry, _) = registry();
+    let mut configuration = agent_service_configuration();
+    configuration.authorization_verifiers = serde_json::from_value(json!([{
+        "id":"city-workload","revision":3,
+        "endpoint":"https://identity.example/v1/verify",
+        "credential_env":"ACTEON_TEST_AUTH_VERIFIER","timeout_ms":5000
+    }]))
+    .unwrap();
+    configuration.scopes[0].agent_services[0].authorization = Some(
+        serde_json::from_value(json!({
+            "verifier_id":"city-workload","verifier_revision":3,
+            "credential_authority":"city-identity","audience":"incident-api",
+            "required_scopes":["incident.resolve"],"challenge_ttl_ms":300000
+        }))
+        .unwrap(),
+    );
+    let prepared = registry
+        .prepare(&configuration, ("auth-control", "deployment"), &[8; 32])
+        .unwrap();
+    let first = prepared[0]
+        .agent_service_binding_digest("notifier")
+        .unwrap()
+        .to_owned();
+
+    let mut changed = configuration.clone();
+    changed.scopes[0].agent_services[0]
+        .authorization
+        .as_mut()
+        .unwrap()
+        .audience = "operations-api".into();
+    let prepared = registry
+        .prepare(&changed, ("auth-control", "deployment"), &[8; 32])
+        .unwrap();
+    assert_ne!(
+        first,
+        prepared[0]
+            .agent_service_binding_digest("notifier")
+            .unwrap()
+    );
+
+    let mut retained_missing = configuration.clone();
+    let historical = retained_missing.scopes[0].agent_services[0].clone();
+    retained_missing.scopes[0].agent_services[0].registry_revision = 2;
+    retained_missing.scopes[0].agent_services[0].card.version = "2".into();
+    retained_missing.scopes[0].agent_services[0].authorization = None;
+    retained_missing.scopes[0].retained_agent_services = serde_json::from_value(json!([{
+        "card": historical.card,
+        "registry_revision": historical.registry_revision,
+        "principal": historical.principal,
+        "skill": historical.skill,
+        "endpoint": historical.endpoint,
+        "endpoint_id": historical.endpoint_id,
+        "route": historical.route,
+        "authorization": historical.authorization,
+        "binding_digest": first,
+    }]))
+    .unwrap();
+    retained_missing.authorization_verifiers.clear();
+    assert!(
+        registry
+            .prepare(&retained_missing, ("auth-control", "deployment"), &[8; 32])
+            .is_err()
+    );
+
+    let mut missing = configuration;
+    missing.authorization_verifiers.clear();
+    assert!(
+        registry
+            .prepare(&missing, ("auth-control", "deployment"), &[8; 32])
+            .is_err()
+    );
+}

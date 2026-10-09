@@ -200,6 +200,19 @@ public class ActeonClient implements AutoCloseable {
         try { return AgentServiceReceipt.verifyTask(objectMapper.readTree(response.body()), receipt.namespace(), receipt.tenant(), receipt.taskId()); }
         catch (IOException e) { throw new ActeonException("invalid agent service response", e); }
     }
+    /** Open the recipient service's fixed authorization profile. */
+    public com.fasterxml.jackson.databind.JsonNode agentServiceRequestAuthorization(String namespace, String tenant, String agent, String taskId, String authorizationRequestId) throws ActeonException {
+        var body = Map.of("authorizationRequestId", authorizationRequestId);
+        var response = agentServiceRequest("POST", AgentServiceReceipt.base(namespace, tenant, agent)+"/tasks/"+AgentServiceReceipt.segment(taskId)+"/authorization:request", body, null, null);
+        try { return AgentServiceReceipt.verifyTask(objectMapper.readTree(response.body()), namespace, tenant, taskId); }
+        catch (IOException e) { throw new ActeonException("invalid agent service response", e); }
+    }
+    /** Resolve one exact authorization challenge through the host verifier. */
+    public com.fasterxml.jackson.databind.JsonNode agentServiceResolveAuthorization(AgentServiceReceipt receipt, String challengeId) throws ActeonException {
+        var response = agentServiceRequest("POST", AgentServiceReceipt.base(receipt.namespace(), receipt.tenant(), receipt.agent())+"/tasks/"+AgentServiceReceipt.segment(receipt.taskId())+"/authorization:resolve", Map.of("challengeId", challengeId), AgentServiceReceipt.source(receipt.sourceContext()), null);
+        try { return AgentServiceReceipt.verifyTask(objectMapper.readTree(response.body()), receipt.namespace(), receipt.tenant(), receipt.taskId()); }
+        catch (IOException e) { throw new ActeonException("invalid agent service response", e); }
+    }
     private HttpResponse<String> agentServiceRequest(String method, String path, Object body, String source, AgentServiceParent parent) throws ActeonException {
         if (httpClient.followRedirects() != HttpClient.Redirect.NEVER) throw new ActeonException("agent services require redirects disabled");
         try {

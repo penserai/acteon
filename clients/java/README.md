@@ -454,6 +454,8 @@ peer = client.agentServiceRefreshPeer(receipt, "resolver", "diagnose", peer);
 var cancellation = client.agentServiceCancelPeer(receipt, "resolver", "diagnose", peer);
 var continued = client.agentServiceContinuePeer(receipt, "resolver", "diagnose", peer, userResponse);
 var task = client.agentServiceContinueTask(receipt, challengeBoundResponse);
+var paused = recipient.agentServiceRequestAuthorization("prod", "acme", "medic", task.path("id").asText(), "opaque-flow-42");
+var resumed = client.agentServiceResolveAuthorization(receipt, paused.path("pendingApprovalId").asText());
 ```
 
 Cancellation is delivered at most once. A `restricted` receipt proves the target

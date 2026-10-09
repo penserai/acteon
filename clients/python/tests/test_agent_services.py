@@ -281,6 +281,41 @@ def handler(request):
     )
 
 
+def test_authorization_helpers_send_only_opaque_handles():
+    source = AgentServiceReceipt(
+        "prod",
+        "acme",
+        "notifier",
+        "job-1",
+        FIXTURE["jobs"][0]["source_context"],
+        FIXTURE["jobs"][0]["task"],
+    )
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        body = json.loads(request.content)
+        if request.url.path.endswith("authorization:request"):
+            assert body == {"authorizationRequestId": "opaque-flow-42"}
+            assert AGENT_SOURCE_CONTEXT_HEADER not in request.headers
+        else:
+            assert request.url.path.endswith("authorization:resolve")
+            assert body == {"challengeId": "challenge-42"}
+            assert request.headers[AGENT_SOURCE_CONTEXT_HEADER] == source.source_context
+        return httpx.Response(200, json=source.task, headers={"a2a-version": "1.0"})
+
+    client = ActeonClient("http://acteon")
+    client._client = httpx.Client(transport=httpx.MockTransport(respond))
+    try:
+        client.agent_service_request_authorization(
+            "prod", "acme", "notifier", "job-1", "opaque-flow-42"
+        )
+        client.agent_service_resolve_authorization(source, "challenge-42")
+        assert len(calls) == 2
+    finally:
+        client.close()
+
+
 def test_sync_receipts_keep_jobs_separate_and_original_identity():
     client = ActeonClient("http://acteon", api_key="caller-key")
     client._client = httpx.Client(transport=httpx.MockTransport(handler))

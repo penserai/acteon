@@ -15,7 +15,70 @@ pub struct ExecutionAuthorityConfig {
     pub agent_driver: AgentServiceDriverConfig,
     #[serde(default)]
     pub peer_transport: AgentPeerTransportConfig,
+    /// Host-installed authorization verifiers. Service declarations select an
+    /// exact ID and revision; requests and model output cannot select one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub authorization_verifiers: Vec<TaskAuthorizationHttpVerifierConfig>,
     pub scopes: Vec<ExecutionScopeConfig>,
+}
+
+/// Guarded HTTP trust adapter for resolving `AuthRequired` task challenges.
+/// The bearer credential is loaded from `credential_env` by the host and is
+/// never persisted in task state or exposed to an agent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskAuthorizationHttpVerifierConfig {
+    pub id: String,
+    pub revision: u64,
+    pub endpoint: String,
+    pub credential_env: String,
+    #[serde(default = "default_authorization_timeout_ms")]
+    pub timeout_ms: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub internal_hosts: Vec<String>,
+}
+
+fn default_authorization_timeout_ms() -> u64 {
+    5_000
+}
+
+impl TaskAuthorizationHttpVerifierConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        let env = self.credential_env.as_bytes();
+        let hosts = self.internal_hosts.iter().collect::<BTreeSet<_>>();
+        if self.id.is_empty()
+            || self.id.len() > 120
+            || !self
+                .id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+            || self.revision == 0
+            || self.endpoint.len() > 2_048
+            || env.is_empty()
+            || env.len() > 128
+            || !env[0].is_ascii_alphabetic()
+            || !env.iter().all(|c| c.is_ascii_alphanumeric() || *c == b'_')
+            || !(100..=120_000).contains(&self.timeout_ms)
+            || self.internal_hosts.len() > 64
+            || hosts.len() != self.internal_hosts.len()
+            || self.internal_hosts.iter().any(|host| {
+                host.is_empty()
+                    || host.len() > 253
+                    || host.trim() != host
+                    || host.contains('/')
+                    || host.contains('@')
+                    || host.chars().any(char::is_control)
+            })
+        {
+            return Err("invalid bounded task authorization verifier configuration".into());
+        }
+        acteon_http::OutboundPolicy {
+            internal_hosts: self.internal_hosts.clone(),
+        }
+        .validate_url(&self.endpoint)
+        .map_err(|_| "task authorization verifier endpoint refused by outbound policy")?;
+        Ok(())
+    }
 }
 
 /// Host-owned agent-to-agent delivery controls. Credentials and exact endpoints
@@ -230,6 +293,7 @@ impl ExecutionAuthorityConfig {
     pub fn validate(&self, control_scope: (&str, &str)) -> Result<(), String> {
         self.agent_driver.validate()?;
         self.peer_transport.validate()?;
+        let verifiers = self.validate_authorization_verifiers()?;
         if self.scopes.is_empty() || self.scopes.len() > 128 {
             return Err("execution authority requires 1..128 declared scopes".into());
         }
@@ -241,6 +305,23 @@ impl ExecutionAuthorityConfig {
             scope.validate_managers()?;
             scope.validate_history_only()?;
             scope.validate_reconciliation_only()?;
+            for profile in scope
+                .agent_services
+                .iter()
+                .filter_map(|service| service.authorization.as_ref())
+                .chain(
+                    scope
+                        .retained_agent_services
+                        .iter()
+                        .filter_map(|service| service.authorization.as_ref()),
+                )
+            {
+                if !verifiers.contains(&(profile.verifier_id.as_str(), profile.verifier_revision)) {
+                    return Err(
+                        "agent service references an uninstalled authorization verifier".into(),
+                    );
+                }
+            }
             if (scope.namespace.as_str(), scope.tenant.as_str()) == control_scope
                 || !scopes.insert((&scope.namespace, &scope.tenant))
             {
@@ -310,6 +391,20 @@ impl ExecutionAuthorityConfig {
             }
         }
         Ok(())
+    }
+
+    fn validate_authorization_verifiers(&self) -> Result<BTreeSet<(&str, u64)>, String> {
+        if self.authorization_verifiers.len() > 64 {
+            return Err("too many task authorization verifiers".into());
+        }
+        let mut verifiers = BTreeSet::new();
+        for verifier in &self.authorization_verifiers {
+            verifier.validate()?;
+            if !verifiers.insert((verifier.id.as_str(), verifier.revision)) {
+                return Err("duplicate task authorization verifier revision".into());
+            }
+        }
+        Ok(verifiers)
     }
 }
 
