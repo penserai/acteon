@@ -2,7 +2,7 @@
 
 Use Acteon's SDKs to connect agents, services, and workers to the same execution and governance platform. Start with the typed helpers for dispatch, rules, audit, approvals, and bus operations. Use the complete **platform operation API** for controls that do not yet have a dedicated helper in your language.
 
-The current source tree provides a generated catalog for **211 finite HTTP operations** in Rust, Python, TypeScript, Go, and Java. It includes receipt sessions, managed-stage recovery, workflow and execution controls, inference profiles, stream windows, and operator APIs. Six streaming or polymorphic RPC routes use the existing streaming and A2A clients instead. Server configuration, authorization, and optional build features still determine which operations are available on your deployment.
+The current source tree provides a generated catalog for **213 finite HTTP operations** in Rust, Python, TypeScript, Go, and Java. It includes receipt sessions, managed-stage recovery, workflow and execution controls, inference profiles, stream windows, and operator APIs. Six streaming or polymorphic RPC routes use the existing streaming and A2A clients instead. Server configuration, authorization, and optional build features still determine which operations are available on your deployment.
 
 ## Choose the right interface
 
@@ -11,7 +11,7 @@ The current source tree provides a generated catalog for **211 finite HTTP opera
 | Typed dispatch, batch, rules, audit and bus helpers | Yes | Yes | Yes | Yes | Yes |
 | Complete finite HTTP operation catalog | Yes | Yes, sync and async | Yes | Yes | Yes |
 | Native streaming and A2A helpers | Yes | Yes | Yes | Yes | Yes |
-| Authenticated agent-service receipts, observation and future-start stop | Yes | Yes, sync and async | Yes | Yes | Yes |
+| Authenticated agent-service receipts, observation, challenge continuation and future-start stop | Yes | Yes, sync and async | Yes | Yes | Yes |
 | Governed registry inspection, mutation and explicit recovery | Yes | Yes, sync and async | Yes | Yes | Yes |
 | Code-defined workflow runner | — | Yes | Yes | — | — |
 | Managed stream-processing adapter | `stream-processing` feature | — | — | — | — |
@@ -284,6 +284,16 @@ lifecycle snapshot is needed. A reconciled `completed` or `failed` task means
 the task became final before cancellation took effect. When the original target
 acknowledgment was lost, a nonterminal observation keeps the cancellation
 `uncertain`; the repeat does not send another stop request.
+
+Accepted peer tasks in `InputRequired` can be continued through
+`agent_service_continue_peer`, `agentServiceContinuePeer`, or
+`AgentServiceContinuePeer`. Supply an unbound role-`user` message: the SDK
+rejects client-provided task, context, or challenge fields, while Acteon derives
+those bindings and the previous cursor from its journal. The typed receipt
+preserves `accepted`, `rejected`, and `uncertain`; an accepted result validates
+the exact remote task and a new strong progress cursor. Directly retained tasks
+use `agent_service_continue_task`, `agentServiceContinueTask`, or
+`AgentServiceContinueTask`, which sends the original host-owned source context.
 
 The admin UI's **Governed tasks** tab on an agent detail page accepts work and
 refreshes accepted tasks using the current browser identity. The server enforces

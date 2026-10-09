@@ -156,6 +156,26 @@ public class ActeonClient implements AutoCloseable {
         try { return AgentPeerCancelReceipt.parse(objectMapper.readTree(response.body()), source, peer); }
         catch (IOException e) { throw new ActeonException("invalid agent peer cancellation response", e); }
     }
+    /** Deliver exactly one unbound user response to an accepted peer challenge. */
+    public AgentPeerContinuationReceipt agentServiceContinuePeer(AgentServiceReceipt source, String target, String skill, AgentPeerSendReceipt peer, Map<String, Object> message) throws ActeonException {
+        if (source == null || peer == null || !"accepted".equals(peer.state()) || peer.task() == null
+                || peer.submissionId() == null || !peer.submissionId().matches("[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"))
+            throw new IllegalArgumentException("agent peer continuation requires an accepted peer receipt");
+        AgentServiceReceipt.verifyTask(peer.task(), source.namespace(), source.tenant(), null);
+        Object metadata = message.get("metadata");
+        boolean challengeBound = metadata instanceof Map<?, ?> values && values.containsKey("acteon.challengeId");
+        if (!"user".equals(message.get("role")) || message.get("taskId") != null
+                || message.get("contextId") != null || challengeBound)
+            throw new IllegalArgumentException("agent peer continuation requires an unbound user response");
+        String path = AgentServiceReceipt.base(source.namespace(), source.tenant(), source.agent())
+            + "/tasks/" + AgentServiceReceipt.segment(source.taskId())
+            + "/peers/" + AgentServiceReceipt.segment(target)
+            + "/" + AgentServiceReceipt.segment(skill)
+            + "/submissions/" + peer.submissionId() + "/message:send";
+        var response = agentServiceRequest("POST", path, Map.of("message", message), null, null);
+        try { return AgentPeerContinuationReceipt.parse(objectMapper.readTree(response.body()), source, peer); }
+        catch (IOException e) { throw new ActeonException("invalid agent peer continuation response", e); }
+    }
     /** Stop future starts; explicitly retry the original receipt after response loss. */
     public AgentServiceStopReceipt agentServiceStopTask(AgentServiceReceipt receipt) throws ActeonException {
         var response = agentServiceRequest("POST", AgentServiceReceipt.base(receipt.namespace(), receipt.tenant(), receipt.agent())+"/tasks/"+AgentServiceReceipt.segment(receipt.taskId())+"/stop", null, AgentServiceReceipt.source(receipt.sourceContext()), null);
@@ -171,6 +191,12 @@ public class ActeonClient implements AutoCloseable {
     /** Observe the retained job without provider execution or global header mutation. */
     public com.fasterxml.jackson.databind.JsonNode agentServiceGetTask(AgentServiceReceipt receipt) throws ActeonException {
         var response = agentServiceRequest("GET", AgentServiceReceipt.base(receipt.namespace(), receipt.tenant(), receipt.agent())+"/tasks/"+AgentServiceReceipt.segment(receipt.taskId()), null, AgentServiceReceipt.source(receipt.sourceContext()), null);
+        try { return AgentServiceReceipt.verifyTask(objectMapper.readTree(response.body()), receipt.namespace(), receipt.tenant(), receipt.taskId()); }
+        catch (IOException e) { throw new ActeonException("invalid agent service response", e); }
+    }
+    /** Continue the retained task with an exact challenge-bound response. */
+    public com.fasterxml.jackson.databind.JsonNode agentServiceContinueTask(AgentServiceReceipt receipt, Map<String, Object> message) throws ActeonException {
+        var response = agentServiceRequest("POST", AgentServiceReceipt.base(receipt.namespace(), receipt.tenant(), receipt.agent())+"/tasks/"+AgentServiceReceipt.segment(receipt.taskId())+"/message:send", Map.of("message", message), AgentServiceReceipt.source(receipt.sourceContext()), null);
         try { return AgentServiceReceipt.verifyTask(objectMapper.readTree(response.body()), receipt.namespace(), receipt.tenant(), receipt.taskId()); }
         catch (IOException e) { throw new ActeonException("invalid agent service response", e); }
     }

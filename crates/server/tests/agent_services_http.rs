@@ -1,8 +1,10 @@
 //! Real binary and middleware, independently authenticated caller and recipient.
 #![recursion_limit = "256"]
-use acteon_core::{AgentCard, AgentCardInterface, Skill};
+use acteon_core::{AgentCard, AgentCardInterface, PauseKind, Skill, TaskState};
 #[cfg(any(feature = "redis", feature = "postgres"))]
-use acteon_state::StateStore;
+use acteon_gateway::{TaskEngine, TaskScope};
+#[cfg(any(feature = "redis", feature = "postgres"))]
+use acteon_state::{KeyKind, StateKey, StateStore};
 use axum::{Json, Router, routing::post};
 #[cfg(any(feature = "redis", feature = "postgres"))]
 use axum::{
@@ -352,6 +354,49 @@ async fn webhook() -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
         axum::serve(listener, app).await.unwrap();
     });
     (format!("http://{address}/incident"), calls, task)
+}
+
+#[cfg(any(feature = "redis", feature = "postgres"))]
+async fn pausing_webhook() -> (
+    String,
+    Arc<AtomicUsize>,
+    Arc<tokio::sync::Semaphore>,
+    Arc<tokio::sync::Semaphore>,
+    tokio::task::JoinHandle<()>,
+) {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let entered = Arc::new(tokio::sync::Semaphore::new(0));
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let counter = calls.clone();
+    let entered_handler = entered.clone();
+    let release_handler = release.clone();
+    let app = Router::new().route(
+        "/incident",
+        post(move || {
+            let counter = counter.clone();
+            let entered = entered_handler.clone();
+            let release = release_handler.clone();
+            async move {
+                if counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                    entered.add_permits(1);
+                    release.acquire().await.unwrap().forget();
+                }
+                Json(json!({"delivered":true}))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (
+        format!("http://{address}/incident"),
+        calls,
+        entered,
+        release,
+        task,
+    )
 }
 fn message(id: &str) -> Value {
     json!({"message":{"role":"user","messageId":id,"parts":[{"kind":"text","text":"Notify the incident owner"}]}})
@@ -751,7 +796,7 @@ impl Drop for PeerMeshServer {
 
 #[cfg(any(feature = "redis", feature = "postgres"))]
 impl PeerMeshServer {
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     fn start(
         own_port: u16,
         notifier_port: u16,
@@ -760,6 +805,7 @@ impl PeerMeshServer {
         state: &Value,
         credential_hashes: &[String; 3],
         bootstrap: bool,
+        driver: bool,
     ) -> Self {
         let directory =
             std::env::temp_dir().join(format!("acteon-peer-mesh-{}", uuid::Uuid::new_v4()));
@@ -820,7 +866,7 @@ impl PeerMeshServer {
                 {"name":"resolver","type":"webhook","url":webhook,"internal_hosts":["127.0.0.1"]}
             ],
             "execution_authority":{
-                "agent_driver":{"enabled":false,"poll_interval_ms":100,"max_parallel":2,"scan_batch_size":8},
+                "agent_driver":{"enabled":driver,"poll_interval_ms":100,"max_parallel":2,"scan_batch_size":8},
                 "peer_transport":{"enabled":true,"timeout_ms":3000,"adapter_revision":"peer-mesh-test-v1","internal_hosts":["127.0.0.1"]},
                 "scopes":[{
                     "namespace":"prod","tenant":"acme","bootstrap":bootstrap,
@@ -1297,6 +1343,252 @@ async fn postgres_two_server_peer_cancel_survives_source_restart_as_a_durable_re
     }
 }
 
+#[tokio::test]
+#[cfg(feature = "redis")]
+#[ignore = "requires ACTEON_GOVERNANCE_REDIS_URL; two real HTTPS servers sharing Redis"]
+async fn redis_two_server_peer_continuation_survives_source_restart() {
+    let (state, redis_config) = redis_state();
+    let store = Arc::new(acteon_state_redis::RedisStateStore::new(&redis_config).unwrap());
+    two_server_peer_continuation_contract(state, store).await;
+}
+
+#[tokio::test]
+#[cfg(feature = "postgres")]
+#[ignore = "requires DATABASE_URL; two real HTTPS servers sharing PostgreSQL"]
+async fn postgres_two_server_peer_continuation_survives_source_restart() {
+    let config = acteon_state_postgres::PostgresConfig {
+        url: std::env::var("DATABASE_URL").expect("set DATABASE_URL"),
+        table_prefix: format!("peer_continue_{}_", uuid::Uuid::new_v4().simple()),
+        ..Default::default()
+    };
+    let state = json!({"backend":"postgres","url":config.url,"prefix":config.table_prefix});
+    let store = Arc::new(
+        acteon_state_postgres::PostgresStateStore::new(config.clone())
+            .await
+            .unwrap(),
+    );
+    let contract =
+        std::panic::AssertUnwindSafe(two_server_peer_continuation_contract(state, store))
+            .catch_unwind()
+            .await;
+    let pool = sqlx::PgPool::connect(&config.url).await.unwrap();
+    for suffix in ["state", "locks", "timeout_index", "chain_ready_index"] {
+        sqlx::query(&format!(
+            "DROP TABLE public.{}{suffix}",
+            config.table_prefix
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    pool.close().await;
+    if let Err(payload) = contract {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[cfg(any(feature = "redis", feature = "postgres"))]
+#[allow(clippy::too_many_lines)]
+async fn two_server_peer_continuation_contract(state: Value, store: Arc<dyn StateStore>) {
+    let (webhook_url, calls, provider_entered, provider_release, webhook_task) =
+        pausing_webhook().await;
+    let notifier_port = reserve_port();
+    let resolver_port = reserve_port();
+    let credential_hashes = [
+        acteon_server::auth::api_key::hash_api_key("alice-secret"),
+        acteon_server::auth::api_key::hash_api_key("notifier-secret"),
+        acteon_server::auth::api_key::hash_api_key("resolver-secret"),
+    ];
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .build()
+        .unwrap();
+    let mut notifier = PeerMeshServer::start(
+        notifier_port,
+        notifier_port,
+        resolver_port,
+        &webhook_url,
+        &state,
+        &credential_hashes,
+        true,
+        false,
+    );
+    notifier.ready(&client).await;
+
+    let response = client
+        .post(format!(
+            "{}/a2a/prod/acme/agents/notifier/v1/message:send",
+            notifier.url
+        ))
+        .bearer_auth("alice-secret")
+        .json(&message("continue-root"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let root: Value = response.json().await.unwrap();
+    let engine = TaskEngine::new(store.clone());
+    let scope = TaskScope::new("prod", "acme");
+    let root_id = root["id"].as_str().unwrap();
+    engine
+        .transition_task(&scope, root_id, TaskState::Working, None)
+        .await
+        .unwrap();
+    engine
+        .transition_task(&scope, root_id, TaskState::Completed, None)
+        .await
+        .unwrap();
+    let mut resolver = PeerMeshServer::start(
+        resolver_port,
+        notifier_port,
+        resolver_port,
+        &webhook_url,
+        &state,
+        &credential_hashes,
+        false,
+        true,
+    );
+    resolver.ready(&client).await;
+    let config: toml::Value =
+        toml::from_str(&fs::read_to_string(resolver.directory.join("acteon.toml")).unwrap())
+            .unwrap();
+    publish_peer_cards(store.as_ref(), &config).await;
+    let peer_base = format!(
+        "{}/a2a/prod/acme/agents/notifier/v1/tasks/{}/peers",
+        notifier.url,
+        root["id"].as_str().unwrap()
+    );
+    let response = client
+        .post(format!("{peer_base}/resolver/resolve/message:send"))
+        .bearer_auth("notifier-secret")
+        .json(&message("continue-child"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let peer: Value = response.json().await.unwrap();
+    assert_eq!(peer["status"]["state"], "accepted");
+    let remote_id = peer["status"]["task"]["id"].as_str().unwrap();
+
+    tokio::time::timeout(Duration::from_secs(30), provider_entered.acquire())
+        .await
+        .unwrap()
+        .unwrap()
+        .forget();
+    engine
+        .get_task(&scope, remote_id)
+        .await
+        .unwrap()
+        .filter(|task| task.status.state == TaskState::Working)
+        .expect("provider delivery starts before the webhook is invoked");
+    let (_, challenge) = engine
+        .pause_for_human(
+            &scope,
+            remote_id,
+            PauseKind::UserInput,
+            Some("Choose the remediation window".into()),
+            None,
+        )
+        .await
+        .unwrap();
+    let response = client
+        .post(format!(
+            "{peer_base}/resolver/resolve/submissions/{}:refresh",
+            peer["submission_id"].as_str().unwrap()
+        ))
+        .bearer_auth("notifier-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let refreshed: Value = response.json().await.unwrap();
+    assert_eq!(
+        refreshed["status"]["task"]["status"]["state"],
+        "input_required"
+    );
+    assert_eq!(
+        refreshed["status"]["task"]["pendingApprovalId"],
+        challenge.approval_id
+    );
+    provider_release.add_permits(1);
+    let result_key = StateKey::new(
+        "prod",
+        "acme",
+        KeyKind::Custom(acteon_executor::governed::RESULT_KIND.into()),
+        uuid::Uuid::new_v5(
+            &uuid::Uuid::parse_str(remote_id).unwrap(),
+            &0_u32.to_be_bytes(),
+        )
+        .to_string(),
+    );
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if store.get(&result_key).await.unwrap().is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    let continuation_url = format!(
+        "{peer_base}/resolver/resolve/submissions/{}/message:send",
+        peer["submission_id"].as_str().unwrap()
+    );
+    let response = client
+        .post(&continuation_url)
+        .bearer_auth("notifier-secret")
+        .json(&json!({"message": {
+            "role": "user", "messageId": "continue-answer",
+            "parts": [{"kind": "text", "text": "02:00 UTC"}]
+        }}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let continued: Value = response.json().await.unwrap();
+    assert_eq!(
+        continued["status"]["state"],
+        "accepted",
+        "{continued}\nresolver:\n{}\nnotifier:\n{}",
+        resolver.log(),
+        notifier.log()
+    );
+    assert_eq!(continued["status"]["task"]["id"], remote_id);
+    assert_eq!(continued["status"]["task"]["status"]["state"], "completed");
+    assert!(continued["status"]["progress_cursor"].as_str().is_some());
+    assert!(continued["continuation_id"].as_str().is_some());
+    let task_after = engine.get_task(&scope, remote_id).await.unwrap().unwrap();
+    assert_eq!(task_after.status.state, TaskState::Completed);
+    assert_eq!(
+        task_after
+            .history
+            .iter()
+            .filter(|item| item.message_id == "continue-answer")
+            .count(),
+        1
+    );
+    assert_ne!(challenge.approval_id, "");
+
+    notifier.restart();
+    notifier.ready(&client).await;
+    let response = client
+        .post(&continuation_url)
+        .bearer_auth("notifier-secret")
+        .json(&json!({"message": {
+            "role": "user", "messageId": "continue-answer",
+            "parts": [{"kind": "text", "text": "02:00 UTC"}]
+        }}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    assert_eq!(response.json::<Value>().await.unwrap(), continued);
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    webhook_task.abort();
+}
+
 #[cfg(any(feature = "redis", feature = "postgres"))]
 #[allow(clippy::too_many_lines)]
 async fn two_server_peer_cancel_restart_contract(state: Value, store: Arc<dyn StateStore>) {
@@ -1328,6 +1620,7 @@ async fn two_server_peer_cancel_restart_contract(state: Value, store: Arc<dyn St
         &state,
         &credential_hashes,
         true,
+        false,
     );
     resolver.ready(&client).await;
     let proxy = ResponseLossProxy::start(proxy_port, resolver.url.clone(), false).await;
@@ -1340,6 +1633,7 @@ async fn two_server_peer_cancel_restart_contract(state: Value, store: Arc<dyn St
         &state,
         &credential_hashes,
         true,
+        false,
     );
     assert_eq!(
         fs::read_to_string(resolver.directory.join("auth.toml")).unwrap(),
@@ -1483,6 +1777,7 @@ async fn redis_peer_cancel_response_loss_survives_restart_without_redelivery() {
         &state,
         &credential_hashes,
         true,
+        false,
     );
     resolver.ready(&client).await;
     let proxy = ResponseLossProxy::start(proxy_port, resolver.url.clone(), true).await;
@@ -1495,6 +1790,7 @@ async fn redis_peer_cancel_response_loss_survives_restart_without_redelivery() {
         &state,
         &credential_hashes,
         true,
+        false,
     );
     let resolver_config: toml::Value =
         toml::from_str(&fs::read_to_string(resolver.directory.join("acteon.toml")).unwrap())

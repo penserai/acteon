@@ -1,6 +1,6 @@
 //! Explicit individual-agent ingress; tenant-level A2A remains independent.
 use super::{AppState, a2a::A2A_PROTOCOL_VERSION, schemas::ErrorResponse};
-use crate::execution_authority::AgentServiceParent;
+use crate::execution_authority::{AgentServiceContinuation, AgentServiceParent};
 use crate::{
     auth::{
         identity::CallerIdentity, projection::AuthenticatedExecutionConfiguration, role::Permission,
@@ -8,7 +8,7 @@ use crate::{
     execution_authority::{AgentServiceError, AgentServiceObservation, AgentServiceRequest},
 };
 use acteon_core::TaskMessage;
-use acteon_executor::delegation::{PeerCancelStatus, PeerSendStatus};
+use acteon_executor::delegation::{PeerCancelStatus, PeerContinuationStatus, PeerSendStatus};
 use axum::{
     Extension, Json,
     extract::{Path, Query, State},
@@ -41,6 +41,48 @@ pub struct AgentPeerSend {
 pub struct AgentPeerSendReceipt {
     pub submission_id: String,
     pub status: AgentPeerSendStatus,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct AgentPeerContinuationReceipt {
+    pub submission_id: String,
+    pub continuation_id: String,
+    pub status: AgentPeerContinuationStatus,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum AgentPeerContinuationStatus {
+    Uncertain,
+    Accepted {
+        task: Box<acteon_core::Task>,
+        progress_cursor: String,
+    },
+    Rejected {
+        code: String,
+    },
+}
+
+impl From<acteon_executor::delegation::PeerContinuationReceipt> for AgentPeerContinuationReceipt {
+    fn from(receipt: acteon_executor::delegation::PeerContinuationReceipt) -> Self {
+        Self {
+            submission_id: receipt.submission_id.to_string(),
+            continuation_id: receipt.continuation_id.to_string(),
+            status: match receipt.status {
+                PeerContinuationStatus::Uncertain => AgentPeerContinuationStatus::Uncertain,
+                PeerContinuationStatus::Accepted {
+                    task,
+                    progress_cursor,
+                } => AgentPeerContinuationStatus::Accepted {
+                    task,
+                    progress_cursor,
+                },
+                PeerContinuationStatus::Rejected { code } => {
+                    AgentPeerContinuationStatus::Rejected { code }
+                }
+            },
+        }
+    }
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -477,6 +519,77 @@ pub async fn peer_cancel(
 }
 
 #[utoipa::path(
+    post, path = "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/message:send", tag = "Governance",
+    params(("namespace" = String, Path), ("tenant" = String, Path), ("agent" = String, Path),
+        ("id" = String, Path), ("target" = String, Path), ("skill" = String, Path),
+        ("submission" = String, Path, description = "Stable peer submission UUID")),
+    request_body = AgentPeerSend,
+    responses((status = 200, body = AgentPeerContinuationReceipt, description = "Durable at-most-once response to the accepted peer task's active challenge"),
+        (status = 400, description = "Invalid unbound response"), (status = 403, description = "Current peer authority required"),
+        (status = 404, description = "Source task unavailable to this agent"), (status = 409, description = "Response conflicts with durable intent"),
+        (status = 503, description = "Peer transport or state unavailable"))
+)]
+pub async fn peer_continue(
+    State(state): State<AppState>,
+    Extension(identity): Extension<CallerIdentity>,
+    proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
+    Path((namespace, tenant, agent, task_id, target, skill, submission_id)): Path<(
+        String,
+        String,
+        String,
+        uuid::Uuid,
+        String,
+        String,
+        uuid::Uuid,
+    )>,
+    headers: HeaderMap,
+    Json(request): Json<AgentPeerSend>,
+) -> Response {
+    if headers
+        .get("a2a-version")
+        .is_some_and(|value| value != A2A_PROTOCOL_VERSION)
+    {
+        return error(StatusCode::BAD_REQUEST, "unsupported_a2a_version");
+    }
+    if !identity.role.has_permission(Permission::Dispatch)
+        || !identity.is_authorized(&tenant, &namespace, &format!("agent.{target}"), "invoke")
+    {
+        return error(StatusCode::FORBIDDEN, "agent_peer_authority_required");
+    }
+    let Some(Extension(proof)) = proof else {
+        return error(StatusCode::FORBIDDEN, "private_authentication_required");
+    };
+    let Some(runtime) = &state.execution_authority else {
+        return error(StatusCode::SERVICE_UNAVAILABLE, "agent_peer_unavailable");
+    };
+    match runtime
+        .continue_agent_peer_tool(crate::execution_authority::AgentPeerContinuationRequest {
+            namespace: &namespace,
+            tenant: &tenant,
+            source_agent_id: &agent,
+            source_task_id: task_id,
+            target_agent_id: &target,
+            skill: &skill,
+            submission_id,
+            response: &request.message,
+            authentication: &proof,
+        })
+        .await
+    {
+        Ok(receipt) => (
+            StatusCode::OK,
+            [
+                ("a2a-version", A2A_PROTOCOL_VERSION),
+                ("cache-control", "no-store"),
+            ],
+            Json(AgentPeerContinuationReceipt::from(receipt)),
+        )
+            .into_response(),
+        Err(cause) => peer_error(cause),
+    }
+}
+
+#[utoipa::path(
     post, path = "/a2a/{namespace}/{tenant}/agents/{agent}/v1/message:send", tag = "Governance",
     params(("namespace" = String, Path), ("tenant" = String, Path), ("agent" = String, Path),
         ("x-acteon-execution-context" = Option<String>, Header, description = "URL-safe base64 encoded parent execution-context reference; requires matching private caller authentication"),
@@ -668,6 +781,101 @@ pub async fn task_get(
             )
                 .into_response()
         }
+        Err(cause) => service_error(cause),
+    }
+}
+
+#[utoipa::path(
+    post, path = "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/message:send", tag = "Governance",
+    params(("namespace" = String, Path), ("tenant" = String, Path), ("agent" = String, Path),
+        ("id" = String, Path), ("x-acteon-agent-source-context" = Option<String>, Header, description = "Exact source context returned by admission; mandatory for agent requesters")),
+    request_body = AgentMessageSend,
+    responses((status = 200, body = acteon_core::Task, description = "Task after durable response registration and governed continuation admission"),
+        (status = 400, description = "Invalid response or challenge binding"), (status = 403, description = "Private authentication required"),
+        (status = 404, description = "Task unavailable to this requester"), (status = 409, description = "Response conflicts with durable task state"),
+        (status = 429, description = "Continuation budget or capacity exhausted"), (status = 503, description = "Runtime unavailable"))
+)]
+pub async fn task_continue(
+    State(state): State<AppState>,
+    proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
+    Path((namespace, tenant, agent, task_id)): Path<(String, String, String, uuid::Uuid)>,
+    headers: HeaderMap,
+    Json(request): Json<AgentMessageSend>,
+) -> Response {
+    let Some(Extension(proof)) = proof else {
+        return error(StatusCode::FORBIDDEN, "private_authentication_required");
+    };
+    if headers
+        .get("a2a-version")
+        .is_some_and(|value| value != A2A_PROTOCOL_VERSION)
+    {
+        return error(StatusCode::BAD_REQUEST, "unsupported_a2a_version");
+    }
+    let source = match parse_source_context(&headers) {
+        Ok(source) => source,
+        Err(code) => return error(StatusCode::BAD_REQUEST, code),
+    };
+    let Some(challenge_id) = request
+        .message
+        .metadata
+        .get(acteon_core::TASK_CHALLENGE_ID_METADATA_KEY)
+        .and_then(serde_json::Value::as_str)
+    else {
+        return error(StatusCode::BAD_REQUEST, "invalid_agent_service_request");
+    };
+    let Some(runtime) = &state.execution_authority else {
+        return error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "agent_services_unavailable",
+        );
+    };
+    if let Some(expected) = headers.get(axum::http::header::IF_MATCH) {
+        let Ok(expected) = expected.to_str() else {
+            return error(StatusCode::BAD_REQUEST, "invalid_task_cursor");
+        };
+        let observed = runtime
+            .observe_agent_service(AgentServiceObservation {
+                namespace: &namespace,
+                tenant: &tenant,
+                agent_id: &agent,
+                task_id,
+                authentication: &proof,
+                source_context: source.as_ref(),
+            })
+            .await;
+        let observed = match observed {
+            Ok(observed) => observed,
+            Err(cause) => return service_error(cause),
+        };
+        if expected != super::a2a::task_cursor(observed.task_version, None) {
+            return error(StatusCode::CONFLICT, "task_cursor_changed");
+        }
+    }
+    match runtime
+        .continue_agent_service(AgentServiceContinuation {
+            observation: AgentServiceObservation {
+                namespace: &namespace,
+                tenant: &tenant,
+                agent_id: &agent,
+                task_id,
+                authentication: &proof,
+                source_context: source.as_ref(),
+            },
+            challenge_id,
+            response: &request.message,
+        })
+        .await
+    {
+        Ok(observed) => (
+            StatusCode::OK,
+            [
+                ("a2a-version", A2A_PROTOCOL_VERSION.to_string()),
+                ("cache-control", "no-store".to_string()),
+                ("etag", super::a2a::task_cursor(observed.task_version, None)),
+            ],
+            Json(observed.task),
+        )
+            .into_response(),
         Err(cause) => service_error(cause),
     }
 }

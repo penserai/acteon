@@ -147,6 +147,9 @@ Focused contracts cover:
   task read and one `304` after source restart;
 - one continuation delivery across concurrent and repeated calls, with the
   exact normalized response present in the accepted forward snapshot;
+- real two-server Redis and PostgreSQL continuation contracts that resolve the
+  exact challenge, append one response, restart the source, and recover the
+  same durable receipt;
 - durable uncertain and rejected continuation outcomes without implicit
   resend; and
 - conflict on a competing response for the same accepted challenge plus
@@ -166,7 +169,7 @@ intent before Task resolution and invokes the provider through a deterministic
 same-principal child execution carrying the exact response and complete bounded
 history. Its recovery driver also selects registered continuations while their
 Task is still paused, with independent Redis and PostgreSQL restart contracts.
-The authenticated HTTP adapter and an end-to-end two-server contract must still
-connect these two durable halves before the peer route is exposed.
-Verifier-backed authentication handoff and federation trust and revocation
-protocols remain later work.
+The authenticated HTTP adapter now connects both durable halves and the peer
+route is exposed with receipt-aware helpers in all five SDKs. Verifier-backed
+`AuthRequired` handoff and federation trust and revocation protocols remain
+later work.

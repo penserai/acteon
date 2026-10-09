@@ -36,6 +36,8 @@ class AgentServiceTest {
                 ? "{\"peers\":[{\"agent_id\":\"resolver\",\"skill\":\"diagnose\",\"description_untrusted\":\"Investigates incidents\",\"card_version\":\"v1\",\"binding_digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"checked_at_ms\":42}]}"
                 : exchange.getRequestURI().getPath().endsWith(":cancel")
                 ? "{\"submission_id\":\"f47ac10b-58cc-5372-a567-0e02b2c3d479\",\"cancellation_id\":\"67e55044-10b1-526f-9247-bb680e5fe0c8\",\"status\":{\"state\":\"restricted\",\"task\":{\"id\":\"remote-1\",\"namespace\":\"prod\",\"tenant\":\"acme\",\"status\":{\"state\":\"submitted\"}}}}"
+                : exchange.getRequestURI().getPath().contains("/submissions/") && exchange.getRequestURI().getPath().endsWith("/message:send")
+                ? "{\"submission_id\":\"f47ac10b-58cc-5372-a567-0e02b2c3d479\",\"continuation_id\":\"67e55044-10b1-526f-9247-bb680e5fe0c8\",\"status\":{\"state\":\"accepted\",\"task\":{\"id\":\"remote-1\",\"namespace\":\"prod\",\"tenant\":\"acme\"},\"progress_cursor\":\"\\\"remote-1:2\\\"\"}}"
                 : "{\"submission_id\":\"f47ac10b-58cc-5372-a567-0e02b2c3d479\",\"status\":{\"state\":\"accepted\",\"task\":{\"id\":\"remote-1\",\"namespace\":\"prod\",\"tenant\":\"acme\"}}}").getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(200,body.length); exchange.getResponseBody().write(body); exchange.close();
         }); server.start();
@@ -48,6 +50,10 @@ class AgentServiceTest {
             assertEquals(receipt.submissionId(),refreshed.submissionId());
             var canceled = client.agentServiceCancelPeer(source,"team/resolver","diagnose",receipt);
             assertEquals("restricted",canceled.state());
+            var continued = client.agentServiceContinuePeer(source,"team/resolver","diagnose",receipt,Map.of("messageId","answer-1","role","user"));
+            assertEquals("accepted",continued.state());
+            assertEquals("\"remote-1:2\"",continued.progressCursor());
+            assertThrows(IllegalArgumentException.class,()->client.agentServiceContinuePeer(source,"team/resolver","diagnose",receipt,Map.of("messageId","answer-1","role","user","taskId","forged")));
             if(failure.get()!=null) throw new AssertionError(failure.get());
         } finally { server.stop(0); }
     }

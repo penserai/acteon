@@ -96,4 +96,18 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
+
+    #[test]
+    fn agent_continuation_routes_require_dispatch_permission() {
+        for path in [
+            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/message:send",
+            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/message:send",
+        ] {
+            let route = ROUTES
+                .iter()
+                .find(|route| route.method == "POST" && route.path == path)
+                .unwrap_or_else(|| panic!("missing permission inventory entry for {path}"));
+            assert_eq!(route.permission, Some(Permission::Dispatch));
+        }
+    }
 }

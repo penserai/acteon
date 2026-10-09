@@ -4,7 +4,7 @@ Go client for the Acteon action gateway.
 
 ## Complete platform API
 
-The generated operation catalog exposes all 211 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, and stream windows. Use an authenticated client and a configured, existing stage for this example:
+The generated operation catalog exposes all 213 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, and stream windows. Use an authenticated client and a configured, existing stage for this example:
 
 ```go
 status, err := client.PlatformRequest(ctx, acteon.OpBusStagesStatus,
@@ -451,6 +451,8 @@ selected := options[0]
 peer, err := client.AgentServiceSendPeer(ctx, receipt, "resolver", "diagnose", peerMessage)
 peer, err = client.AgentServiceRefreshPeer(ctx, receipt, "resolver", "diagnose", peer)
 cancellation, err := client.AgentServiceCancelPeer(ctx, receipt, "resolver", "diagnose", peer)
+continued, err := client.AgentServiceContinuePeer(ctx, receipt, "resolver", "diagnose", peer, userResponse)
+task, err = client.AgentServiceContinueTask(ctx, receipt, challengeBoundResponse)
 ```
 
 Cancellation is delivered at most once. A `restricted` receipt proves the target
@@ -458,6 +460,10 @@ durably blocked future starts and carries its current nonterminal task; it does
 not claim that an already-running provider effect stopped. Preserve an
 `uncertain` result and use an explicit later cancel or refresh to reconcile it;
 never retry automatically.
+
+Peer continuation accepts an unbound role-`user` response; Acteon supplies the
+retained task, context, challenge, credential, permits, and progress cursor.
+Keep `accepted`, `rejected`, and `uncertain` continuation receipts distinct.
 
 An agent already running under Acteon can invoke a peer as a governed child:
 

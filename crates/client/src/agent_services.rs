@@ -64,6 +64,28 @@ pub struct AgentPeerCancelReceipt {
     pub status: AgentPeerCancelStatus,
 }
 
+/// Durable at-most-once response to one exact peer input challenge.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentPeerContinuationReceipt {
+    pub submission_id: String,
+    pub continuation_id: String,
+    pub status: AgentPeerContinuationStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AgentPeerContinuationStatus {
+    Uncertain,
+    Accepted {
+        task: Box<Task>,
+        progress_cursor: String,
+    },
+    Rejected {
+        code: String,
+    },
+}
+
 /// Safe registry data for model selection. `description_untrusted` must never
 /// be interpreted as host instructions, and this option authorizes no send.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -151,6 +173,19 @@ fn valid_peer_option(option: &AgentPeerSelectionOption, skill: &str) -> bool {
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         && option.checked_at_ms >= 0
+}
+
+fn valid_progress_cursor(value: &str) -> bool {
+    value.len() <= 512
+        && value
+            .strip_prefix('"')
+            .and_then(|value| value.strip_suffix('"'))
+            .is_some_and(|inner| {
+                !inner.is_empty()
+                    && inner.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':')
+                    })
+            })
 }
 
 impl std::fmt::Debug for AgentServiceReceipt {
@@ -337,6 +372,73 @@ async fn peer_cancel_response(
     {
         return Err(Error::Deserialization(
             "agent peer cancellation receipt missing or malformed".into(),
+        ));
+    }
+    Ok(receipt)
+}
+
+async fn peer_continuation_response(
+    response: reqwest::Response,
+    source: &AgentServiceReceipt,
+    peer: &AgentPeerSendReceipt,
+) -> Result<AgentPeerContinuationReceipt, Error> {
+    if !response.status().is_success() {
+        return Err(Error::Http {
+            status: response.status().as_u16(),
+            message: response
+                .text()
+                .await
+                .map_err(|error| Error::Connection(error.to_string()))?,
+        });
+    }
+    if response
+        .headers()
+        .get("a2a-version")
+        .and_then(|value| value.to_str().ok())
+        != Some(A2A_PROTOCOL_VERSION)
+    {
+        return Err(Error::Deserialization(
+            "agent peer continuation response version missing or unsupported".into(),
+        ));
+    }
+    let receipt: AgentPeerContinuationReceipt = response
+        .json()
+        .await
+        .map_err(|error| Error::Deserialization(error.to_string()))?;
+    let accepted_task_id = match &peer.status {
+        AgentPeerSendStatus::Accepted { task } => task.id.as_str(),
+        _ => {
+            return Err(Error::Configuration(
+                "agent peer continuation requires an accepted peer receipt".into(),
+            ));
+        }
+    };
+    let valid_status = match &receipt.status {
+        AgentPeerContinuationStatus::Uncertain => true,
+        AgentPeerContinuationStatus::Accepted {
+            task,
+            progress_cursor,
+        } => {
+            task_matches(
+                task,
+                &source.namespace,
+                &source.tenant,
+                Some(accepted_task_id),
+            ) && valid_progress_cursor(progress_cursor)
+        }
+        AgentPeerContinuationStatus::Rejected { code } => {
+            !code.is_empty()
+                && code.len() <= 1024
+                && code.trim() == code
+                && !code.chars().any(char::is_control)
+        }
+    };
+    if receipt.submission_id != peer.submission_id
+        || !valid_attempt_id(&receipt.continuation_id)
+        || !valid_status
+    {
+        return Err(Error::Deserialization(
+            "agent peer continuation receipt missing or malformed".into(),
         ));
     }
     Ok(receipt)
@@ -530,6 +632,55 @@ impl ActeonClient {
             .await
             .map_err(|error| Error::Connection(error.to_string()))?;
         peer_cancel_response(response, source, peer).await
+    }
+
+    /// Respond once to the accepted peer task's active input challenge. The
+    /// response must remain unbound; the server injects the retained task,
+    /// context, and challenge identifiers before durable delivery.
+    pub async fn agent_service_continue_peer(
+        &self,
+        source: &AgentServiceReceipt,
+        target: &str,
+        skill: &str,
+        peer: &AgentPeerSendReceipt,
+        response: &TaskMessage,
+    ) -> Result<AgentPeerContinuationReceipt, Error> {
+        if !valid_attempt_id(&peer.submission_id)
+            || !matches!(
+                &peer.status,
+                AgentPeerSendStatus::Accepted { task }
+                    if task_matches(task, &source.namespace, &source.tenant, None)
+            )
+            || response.role != acteon_core::TaskRole::User
+            || response.task_id.is_some()
+            || response.context_id.is_some()
+            || response
+                .metadata
+                .contains_key(acteon_core::TASK_CHALLENGE_ID_METADATA_KEY)
+        {
+            return Err(Error::Configuration(
+                "agent peer continuation requires an accepted peer and unbound user response"
+                    .into(),
+            ));
+        }
+        let path = format!(
+            "/a2a/{}/{}/agents/{}/v1/tasks/{}/peers/{}/{}/submissions/{}/message:send",
+            segment(&source.namespace)?,
+            segment(&source.tenant)?,
+            segment(&source.agent)?,
+            segment(&source.task_id)?,
+            segment(target)?,
+            segment(skill)?,
+            segment(&peer.submission_id)?,
+        );
+        let wire = self
+            .add_auth(self.client.post(format!("{}{path}", self.base_url)))
+            .header("a2a-version", A2A_PROTOCOL_VERSION)
+            .json(&serde_json::json!({"message":response}))
+            .send()
+            .await
+            .map_err(|error| Error::Connection(error.to_string()))?;
+        peer_continuation_response(wire, source, peer).await
     }
 
     /// Submit once with a stable message ID; retain the receipt separately from
@@ -727,6 +878,48 @@ impl ActeonClient {
         }
         Ok(task)
     }
+
+    /// Continue an accepted local agent-service task using the exact retained
+    /// source provenance. The response must already bind its task, context,
+    /// and active challenge as returned by the paused Task.
+    pub async fn agent_service_continue_task(
+        &self,
+        receipt: &AgentServiceReceipt,
+        response: &TaskMessage,
+    ) -> Result<Task, Error> {
+        if !valid_source(&receipt.source_context) {
+            return Err(Error::Configuration(
+                "invalid agent service source context".into(),
+            ));
+        }
+        let path = format!(
+            "/a2a/{}/{}/agents/{}/v1/tasks/{}/message:send",
+            segment(&receipt.namespace)?,
+            segment(&receipt.tenant)?,
+            segment(&receipt.agent)?,
+            segment(&receipt.task_id)?
+        );
+        let wire = self
+            .add_auth(self.client.post(format!("{}{path}", self.base_url)))
+            .header("a2a-version", A2A_PROTOCOL_VERSION)
+            .header(AGENT_SOURCE_CONTEXT_HEADER, &receipt.source_context)
+            .json(&serde_json::json!({"message":response}))
+            .send()
+            .await
+            .map_err(|error| Error::Connection(error.to_string()))?;
+        let task = response_task(wire).await?;
+        if !task_matches(
+            &task,
+            &receipt.namespace,
+            &receipt.tenant,
+            Some(&receipt.task_id),
+        ) {
+            return Err(Error::Deserialization(
+                "agent service task identity mismatch".into(),
+            ));
+        }
+        Ok(task)
+    }
 }
 
 #[cfg(test)]
@@ -756,6 +949,7 @@ mod tests {
         }
     }
     impl Fixture {
+        #[allow(clippy::too_many_lines)]
         async fn new() -> Self {
             let wire: serde_json::Value = serde_json::from_str(include_str!(
                 "../../../clients/contract-fixtures/agent-services.json"
@@ -818,13 +1012,24 @@ mod tests {
                         } else {
                             let body: serde_json::Value = serde_json::from_slice(&raw).unwrap();
                             assert_eq!(body.as_object().unwrap().len(), 1);
-                            assert_eq!(body["message"]["messageId"], "peer-1");
+                            assert!(matches!(
+                                body["message"]["messageId"].as_str(),
+                                Some("peer-1" | "response-1")
+                            ));
                         }
                         let payload = if path.ends_with(":cancel") {
                             serde_json::json!({
                                 "submission_id":"f47ac10b-58cc-5372-a567-0e02b2c3d479",
                                 "cancellation_id":"67e55044-10b1-526f-9247-bb680e5fe0c8",
                                 "status":{"state":"restricted", "task":wire["jobs"][0]["task"]}
+                            })
+                        } else if path.contains("/submissions/") && path.ends_with("/message:send")
+                        {
+                            serde_json::json!({
+                                "submission_id":"f47ac10b-58cc-5372-a567-0e02b2c3d479",
+                                "continuation_id":"67e55044-10b1-526f-9247-bb680e5fe0c8",
+                                "status":{"state":"accepted", "task":wire["jobs"][0]["task"],
+                                    "progress_cursor":"\"task:2\""}
                             })
                         } else {
                             serde_json::json!({
@@ -842,7 +1047,9 @@ mod tests {
                         usize::from(path.ends_with("job-2") || path.ends_with("job-2/stop"))
                     } else {
                         let body: serde_json::Value = serde_json::from_slice(&raw).unwrap();
-                        assert!(source.is_none());
+                        if !path.contains("/tasks/") {
+                            assert!(source.is_none());
+                        }
                         usize::from(body["message"]["messageId"] == "m2")
                     };
                     let job = &wire["jobs"][index];
@@ -948,6 +1155,63 @@ mod tests {
         assert!(fixture.calls.lock().unwrap()[3].0.ends_with(
             "/peers/team/resolver/diagnose/submissions/f47ac10b-58cc-5372-a567-0e02b2c3d479:cancel"
         ));
+        let continued = fixture
+            .client
+            .agent_service_continue_peer(
+                &source,
+                "team/resolver",
+                "diagnose",
+                &receipt,
+                &TaskMessage::text(
+                    "response-1",
+                    acteon_core::TaskRole::User,
+                    "use policy sev-1",
+                ),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            continued.status,
+            AgentPeerContinuationStatus::Accepted { .. }
+        ));
+        assert!(fixture.calls.lock().unwrap()[4].0.ends_with(
+            "/peers/team/resolver/diagnose/submissions/f47ac10b-58cc-5372-a567-0e02b2c3d479/message:send"
+        ));
+    }
+
+    #[tokio::test]
+    async fn task_continuation_retains_source_provenance() {
+        let fixture = Fixture::new().await;
+        let receipt = fixture
+            .client
+            .agent_service_send_message(
+                "prod",
+                "acme",
+                "notifier",
+                &TaskMessage::text("m1", acteon_core::TaskRole::User, "one"),
+            )
+            .await
+            .unwrap();
+        let mut response = TaskMessage::text(
+            "response-1",
+            acteon_core::TaskRole::User,
+            "use policy sev-1",
+        );
+        response.task_id = Some(receipt.task_id().into());
+        response.context_id.clone_from(&receipt.task.context_id);
+        response.metadata.insert(
+            acteon_core::TASK_CHALLENGE_ID_METADATA_KEY.into(),
+            serde_json::json!("challenge-1"),
+        );
+        let task = fixture
+            .client
+            .agent_service_continue_task(&receipt, &response)
+            .await
+            .unwrap();
+        assert_eq!(task.id, receipt.task_id());
+        let call = fixture.calls.lock().unwrap().last().unwrap().clone();
+        assert!(call.0.ends_with("/tasks/job-1/message:send"));
+        assert_eq!(call.1.as_deref(), Some(receipt.source_context()));
     }
     #[tokio::test]
     async fn original_receipt_identity_survives_task_mutation_and_host_serialization() {

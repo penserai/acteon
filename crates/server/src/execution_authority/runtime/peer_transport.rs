@@ -4,7 +4,8 @@ use super::ExecutionAuthorityRuntime;
 use crate::auth::projection::AuthenticatedExecutionConfiguration;
 use acteon_core::{ExecutionContextReference, TaskMessage};
 use acteon_executor::delegation::{
-    PeerCancelReceipt, PeerDiscoveryError, PeerSelectionOption, PeerSendReceipt, PeerTransportError,
+    PeerCancelReceipt, PeerContinuationInput, PeerContinuationReceipt, PeerDiscoveryError,
+    PeerSelectionOption, PeerSendReceipt, PeerTransportError,
 };
 
 /// Trusted host input. This type intentionally has no wire deserializer: a
@@ -80,6 +81,34 @@ pub struct AgentPeerCancelInvocation<'a> {
     pub skill: &'a str,
     pub parent: &'a ExecutionContextReference,
     pub submission_id: uuid::Uuid,
+}
+
+/// Agent-facing response to one exact challenge on an accepted peer task. The
+/// submission id selects durable host state; routing and authority are never
+/// accepted from the request body.
+pub struct AgentPeerContinuationRequest<'a> {
+    pub namespace: &'a str,
+    pub tenant: &'a str,
+    pub source_agent_id: &'a str,
+    pub source_task_id: uuid::Uuid,
+    pub target_agent_id: &'a str,
+    pub skill: &'a str,
+    pub submission_id: uuid::Uuid,
+    pub response: &'a TaskMessage,
+    pub authentication: &'a AuthenticatedExecutionConfiguration,
+}
+
+/// Trusted host input after current source authentication has been matched to
+/// the accepted source task.
+pub struct AgentPeerContinuationInvocation<'a> {
+    pub namespace: &'a str,
+    pub tenant: &'a str,
+    pub source_agent_id: &'a str,
+    pub target_agent_id: &'a str,
+    pub skill: &'a str,
+    pub parent: &'a ExecutionContextReference,
+    pub submission_id: uuid::Uuid,
+    pub response: &'a TaskMessage,
 }
 
 /// Agent-facing registry query. Skill is selection data; source authority and
@@ -210,6 +239,37 @@ impl ExecutionAuthorityRuntime {
             skill: request.skill,
             parent: &reference,
             submission_id: request.submission_id,
+        })
+        .await
+    }
+
+    /// Continue one accepted remote task after re-establishing current private
+    /// source authority from the accepted local task.
+    pub async fn continue_agent_peer_tool(
+        &self,
+        request: AgentPeerContinuationRequest<'_>,
+    ) -> Result<PeerContinuationReceipt, AgentPeerTransportError> {
+        let parent = self
+            .agent_peer_tool_parent(
+                request.namespace,
+                request.tenant,
+                request.source_agent_id,
+                request.source_task_id,
+                request.authentication,
+            )
+            .await?;
+        let reference = parent
+            .reference()
+            .map_err(|_| AgentPeerTransportError::Unavailable)?;
+        self.continue_agent_peer(AgentPeerContinuationInvocation {
+            namespace: request.namespace,
+            tenant: request.tenant,
+            source_agent_id: request.source_agent_id,
+            target_agent_id: request.target_agent_id,
+            skill: request.skill,
+            parent: &reference,
+            submission_id: request.submission_id,
+            response: request.response,
         })
         .await
     }
@@ -478,6 +538,88 @@ impl ExecutionAuthorityRuntime {
                 &parent,
                 &source.declaration.recipient_permits,
                 invocation.submission_id,
+            )
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Persist and deliver at most one exact response to a remote input
+    /// challenge. Current source authority and the installed peer binding are
+    /// rechecked before the durable transport journal is entered.
+    pub async fn continue_agent_peer(
+        &self,
+        invocation: AgentPeerContinuationInvocation<'_>,
+    ) -> Result<PeerContinuationReceipt, AgentPeerTransportError> {
+        if invocation.namespace.is_empty()
+            || invocation.tenant.is_empty()
+            || invocation.source_agent_id.is_empty()
+            || invocation.target_agent_id.is_empty()
+            || invocation.skill.is_empty()
+            || invocation.parent.namespace() != invocation.namespace
+            || invocation.parent.tenant() != invocation.tenant
+        {
+            return Err(AgentPeerTransportError::Invalid);
+        }
+        let scope = self
+            .scopes
+            .get(&(invocation.namespace.into(), invocation.tenant.into()))
+            .ok_or(AgentPeerTransportError::Unavailable)?;
+        let source = scope
+            .prepared
+            .agents
+            .get(invocation.source_agent_id)
+            .ok_or(AgentPeerTransportError::Forbidden)?;
+        if !source
+            .declaration
+            .onward_agents
+            .iter()
+            .any(|target| target == invocation.target_agent_id)
+        {
+            return Err(AgentPeerTransportError::Forbidden);
+        }
+        let parent = scope
+            .contexts
+            .recover_reference(invocation.parent, self.clock.now().timestamp_millis())
+            .await
+            .map_err(|_| AgentPeerTransportError::Forbidden)?;
+        if parent.principal() != &source.declaration.principal {
+            return Err(AgentPeerTransportError::Forbidden);
+        }
+        let direct = source
+            .binding
+            .service_plan()
+            .ok_or(AgentPeerTransportError::Unavailable)?
+            .direct_effects();
+        scope
+            .coordinator
+            .verify_service_runtime_binding(&parent, source.binding.digest(), direct)
+            .await
+            .map_err(|_| AgentPeerTransportError::Forbidden)?;
+        let registry = scope
+            .peer_mesh
+            .registry
+            .as_ref()
+            .ok_or(AgentPeerTransportError::Unavailable)?;
+        let transport = scope
+            .peer_mesh
+            .transports
+            .get(&(
+                invocation.source_agent_id.into(),
+                invocation.target_agent_id.into(),
+                invocation.skill.into(),
+            ))
+            .ok_or(AgentPeerTransportError::Forbidden)?;
+        transport
+            .continue_task(
+                registry,
+                invocation.target_agent_id,
+                invocation.skill,
+                &parent,
+                &source.declaration.recipient_permits,
+                PeerContinuationInput {
+                    submission_id: invocation.submission_id,
+                    response: invocation.response,
+                },
             )
             .await
             .map_err(Into::into)

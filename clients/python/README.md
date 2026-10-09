@@ -4,7 +4,7 @@ Python client for the Acteon action gateway.
 
 ## Complete platform API
 
-The generated operation catalog exposes all 211 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, and stream windows. Use an authenticated client and a configured, existing stage for this example:
+The generated operation catalog exposes all 213 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, and stream windows. Use an authenticated client and a configured, existing stage for this example:
 
 ```python
 from acteon_client import ActeonClient, PlatformOperation
@@ -520,6 +520,8 @@ selected = options[0]
 peer = client.agent_service_send_peer(receipt, "resolver", "diagnose", peer_message)
 peer = client.agent_service_refresh_peer(receipt, "resolver", "diagnose", peer)
 cancellation = client.agent_service_cancel_peer(receipt, "resolver", "diagnose", peer)
+continued = client.agent_service_continue_peer(receipt, "resolver", "diagnose", peer, user_response)
+task = client.agent_service_continue_task(receipt, challenge_bound_response)
 ```
 
 Cancellation is delivered at most once. A `restricted` receipt proves the target
@@ -527,6 +529,10 @@ durably blocked future starts and carries its current nonterminal task; it does
 not claim that an already-running provider effect stopped. Preserve an
 `uncertain` result and use an explicit later cancel or refresh to reconcile it;
 never retry automatically.
+
+Peer continuation accepts an unbound role-`user` response; Acteon supplies the
+retained task, context, challenge, credential, permits, and progress cursor.
+Keep `accepted`, `rejected`, and `uncertain` continuation receipts distinct.
 
 An agent already running under Acteon can invoke a peer as a governed child:
 
