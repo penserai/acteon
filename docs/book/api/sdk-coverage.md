@@ -16,6 +16,13 @@ The current source tree provides a generated catalog for **211 finite HTTP opera
 | Code-defined workflow runner | — | Yes | Yes | — | — |
 | Managed stream-processing adapter | `stream-processing` feature | — | — | — | — |
 
+Every SDK's A2A factory surface includes an input-response helper that fixes
+role `user`, `taskId`, optional `contextId`, and
+`metadata["acteon.challengeId"]` together: Rust `a2a_input_response`, Python
+`make_input_response`, TypeScript `makeInputResponse`, Go `MakeInputResponse`,
+and Java `A2A.makeInputResponse`. Pass the current Task's
+`pendingApprovalId`; the server rejects stale challenge bindings.
+
 A complete HTTP client is not a workflow runtime. For example, Go and Java can start, inspect, signal, and cancel workflows through the operation API; Python and TypeScript also provide the replay-aware runner that executes a code-defined workflow. See [durable workflows](../features/workflows.md) for the runtime contract.
 
 ## Inspect a managed stage

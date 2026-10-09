@@ -1956,6 +1956,7 @@ pub enum PostBusToolCallOutcome {
 #[serde(rename_all = "snake_case")]
 pub enum BusApprovalStatus {
     Pending,
+    Approving,
     Approved,
     Rejected,
     Expired,

@@ -432,6 +432,10 @@ have the service installed, and the client must retain the original requester
 credential and invocation permits. This is a separate surface from tenant-level
 legacy A2A tasks.
 
+For a tenant-level Task in `InputRequired`, use `A2A.makeInputResponse(...)`
+with the Task's current `pendingApprovalId`, then call `a2aSendMessage`. The
+helper binds the Task, context, user role and exact challenge together.
+
 ```java
 var receipt = client.agentServiceSendMessage("prod", "acme", "notifier",
     A2A.makeMessage("incident-42", "user",

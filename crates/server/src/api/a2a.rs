@@ -197,10 +197,19 @@ impl From<TaskEngineError> for A2aError {
             | TaskEngineError::ReferenceDepthExceeded { .. }
             | TaskEngineError::ReferenceGraphTooLarge { .. }
             | TaskEngineError::InvalidPauseKind(_)
-            | TaskEngineError::Approval(_) => A2aError::invalid_params(e.to_string()),
+            | TaskEngineError::Approval(_)
+            | TaskEngineError::ChallengeNotFound(_)
+            | TaskEngineError::ChallengeMismatch { .. }
+            | TaskEngineError::ChallengeKind { .. }
+            | TaskEngineError::ChallengeClosed { .. }
+            | TaskEngineError::ChallengeExpired(_)
+            | TaskEngineError::ChallengeResponseConflict(_)
+            | TaskEngineError::ChallengeResponseTaskMismatch
+            | TaskEngineError::ChallengeResponseContextMismatch
+            | TaskEngineError::ChallengeResponseRole => A2aError::invalid_params(e.to_string()),
             // Contention is transient and server-side; the retry count
             // is not useful to the caller.
-            TaskEngineError::CasExhausted(_) => {
+            TaskEngineError::CasExhausted(_) | TaskEngineError::ChallengeCasExhausted(_) => {
                 A2aError::internal("the task is under contention; retry the request")
             }
             // State-store and serde failures can carry backend
@@ -273,18 +282,66 @@ async fn task_engine(state: &AppState) -> TaskEngine {
 /// A message carrying a `taskId` continues that task (the message is
 /// appended to its history); a message without one mints a fresh
 /// `Submitted` task. Either way the result is the resulting [`Task`].
+#[cfg(test)]
 async fn method_message_send(
     engine: &TaskEngine,
     scope: &TaskScope,
     params: MessageSendParams,
+) -> Result<Task, A2aError> {
+    method_message_send_as(engine, scope, params, "a2a").await
+}
+
+async fn method_message_send_as(
+    engine: &TaskEngine,
+    scope: &TaskScope,
+    params: MessageSendParams,
+    actor: &str,
 ) -> Result<Task, A2aError> {
     let mut message = params.message;
     if message.parts.is_empty() {
         return Err(A2aError::invalid_params("message.parts must not be empty"));
     }
     if let Some(task_id) = message.task_id.clone() {
-        // Continue an existing task.
-        Ok(engine.append_history(scope, &task_id, message).await?)
+        let task = engine
+            .get_task(scope, &task_id)
+            .await?
+            .ok_or_else(|| A2aError::task_not_found(&task_id))?;
+        if message.context_id != task.context_id {
+            return Err(A2aError::invalid_params(
+                "message.contextId must exactly match the existing task",
+            ));
+        }
+        match task.status.state {
+            TaskState::InputRequired => {
+                let challenge_id = message
+                    .metadata
+                    .get(acteon_core::TASK_CHALLENGE_ID_METADATA_KEY)
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .ok_or_else(|| {
+                        A2aError::invalid_params(
+                            "an InputRequired response must include metadata.acteon.challengeId",
+                        )
+                    })?;
+                if task.pending_approval_id.as_deref() != Some(challenge_id.as_str()) {
+                    return Err(A2aError::invalid_params(
+                        "metadata.acteon.challengeId is not the task's active challenge",
+                    ));
+                }
+                Ok(engine
+                    .resolve_input(scope, &task_id, &challenge_id, message, actor)
+                    .await?
+                    .0)
+            }
+            TaskState::AuthRequired => Err(A2aError::invalid_params(
+                "AuthRequired must be fulfilled through a trusted authorization flow; an A2A message cannot grant authority",
+            )),
+            state if state.is_terminal() => Err(A2aError::invalid_params(format!(
+                "task '{task_id}' is terminal ({}) and cannot accept messages",
+                state.as_str()
+            ))),
+            _ => Ok(engine.append_history(scope, &task_id, message).await?),
+        }
     } else {
         // Mint a new task with this message as its first history entry.
         let task_id = uuid::Uuid::now_v7().to_string();
@@ -765,12 +822,13 @@ async fn dispatch_method(
     scope: &TaskScope,
     method: &str,
     params: Value,
+    actor: &str,
 ) -> Result<Value, A2aError> {
     match method {
         "message/send" => {
             let p = serde_json::from_value::<MessageSendParams>(params)
                 .map_err(|e| A2aError::invalid_params(format!("invalid params: {e}")))?;
-            to_value(&method_message_send(engine, scope, p).await?)
+            to_value(&method_message_send_as(engine, scope, p, actor).await?)
         }
         "tasks/get" => {
             let p = serde_json::from_value::<TaskQueryParams>(params)
@@ -862,6 +920,7 @@ async fn dispatch_rpc_value(
     engine: &TaskEngine,
     scope: &TaskScope,
     value: &Value,
+    actor: &str,
 ) -> Option<JsonRpcResponse> {
     let Some(obj) = value.as_object() else {
         // Not an object — cannot be a notification (no `id` to be
@@ -893,7 +952,7 @@ async fn dispatch_rpc_value(
         });
     };
     let params = obj.get("params").cloned().unwrap_or(Value::Null);
-    let outcome = dispatch_method(state, engine, scope, method, params).await;
+    let outcome = dispatch_method(state, engine, scope, method, params, actor).await;
     if is_notification {
         // Processed; a notification is answered with nothing.
         return None;
@@ -906,11 +965,22 @@ async fn dispatch_rpc_value(
 
 /// Process a parsed JSON-RPC payload — a single request object or a
 /// batch array.
+#[cfg(test)]
 async fn handle_rpc_payload(
     state: Option<&AppState>,
     engine: &TaskEngine,
     scope: &TaskScope,
     parsed: Value,
+) -> RpcReply {
+    handle_rpc_payload_as(state, engine, scope, parsed, "a2a").await
+}
+
+async fn handle_rpc_payload_as(
+    state: Option<&AppState>,
+    engine: &TaskEngine,
+    scope: &TaskScope,
+    parsed: Value,
+    actor: &str,
 ) -> RpcReply {
     match parsed {
         Value::Array(items) => {
@@ -922,7 +992,7 @@ async fn handle_rpc_payload(
             }
             let mut responses = Vec::new();
             for item in &items {
-                if let Some(resp) = dispatch_rpc_value(state, engine, scope, item).await {
+                if let Some(resp) = dispatch_rpc_value(state, engine, scope, item, actor).await {
                     responses.push(resp);
                 }
             }
@@ -933,7 +1003,8 @@ async fn handle_rpc_payload(
                 RpcReply::Batch(responses)
             }
         }
-        obj @ Value::Object(_) => match dispatch_rpc_value(state, engine, scope, &obj).await {
+        obj @ Value::Object(_) => match dispatch_rpc_value(state, engine, scope, &obj, actor).await
+        {
             Some(resp) => RpcReply::Single(resp),
             None => RpcReply::Empty,
         },
@@ -997,7 +1068,12 @@ pub async fn a2a_rpc(
     }
     let scope = TaskScope::new(&namespace, &tenant);
     let engine = task_engine(&state).await;
-    match handle_rpc_payload(Some(&state), &engine, &scope, parsed).await {
+    let actor = if identity.id.is_empty() {
+        identity.auth_method.as_str()
+    } else {
+        identity.id.as_str()
+    };
+    match handle_rpc_payload_as(Some(&state), &engine, &scope, parsed, actor).await {
         RpcReply::Single(resp) => (StatusCode::OK, version_header(), Json(resp)).into_response(),
         RpcReply::Batch(resps) => (StatusCode::OK, version_header(), Json(resps)).into_response(),
         // Notification(s) only — JSON-RPC 2.0 says answer with no body.
@@ -1088,7 +1164,12 @@ pub async fn a2a_rest_message_send(
     }
     let scope = TaskScope::new(&namespace, &tenant);
     let engine = task_engine(&state).await;
-    let task = match method_message_send(&engine, &scope, params).await {
+    let actor = if identity.id.is_empty() {
+        identity.auth_method.as_str()
+    } else {
+        identity.id.as_str()
+    };
+    let task = match method_message_send_as(&engine, &scope, params, actor).await {
         Ok(task) => task,
         Err(error) => return rest_result(Err(error)),
     };
@@ -1363,6 +1444,99 @@ mod tests {
             .unwrap();
         assert_eq!(task.id, first.id);
         assert_eq!(task.history.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn message_send_resolves_exact_input_challenge() {
+        let e = engine();
+        let task_id = seed_task(&e).await;
+        e.transition_task(&scope(), &task_id, TaskState::Working, None)
+            .await
+            .unwrap();
+        let (_, challenge) = e
+            .pause_for_human(
+                &scope(),
+                &task_id,
+                acteon_core::PauseKind::UserInput,
+                Some("which region?".into()),
+                None,
+            )
+            .await
+            .unwrap();
+        let mut response = user_message("us-west-2");
+        response.task_id = Some(task_id.clone());
+        response
+            .metadata
+            .insert("acteon.challengeId".into(), json!(challenge.approval_id));
+
+        let task = method_message_send(&e, &scope(), MessageSendParams { message: response })
+            .await
+            .unwrap();
+        assert_eq!(task.status.state, TaskState::Working);
+        assert!(task.pending_approval_id.is_none());
+        assert_eq!(
+            task.history.last().unwrap().parts[0].text.as_deref(),
+            Some("us-west-2")
+        );
+    }
+
+    #[tokio::test]
+    async fn message_send_requires_exact_input_challenge_id() {
+        let e = engine();
+        let task_id = seed_task(&e).await;
+        e.transition_task(&scope(), &task_id, TaskState::Working, None)
+            .await
+            .unwrap();
+        e.pause_for_human(
+            &scope(),
+            &task_id,
+            acteon_core::PauseKind::UserInput,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let mut response = user_message("answer");
+        response.task_id = Some(task_id);
+        let error = method_message_send(&e, &scope(), MessageSendParams { message: response })
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, INVALID_PARAMS);
+        assert!(error.message.contains("acteon.challengeId"));
+    }
+
+    #[tokio::test]
+    async fn message_send_cannot_satisfy_auth_with_message_content() {
+        let e = engine();
+        let task_id = seed_task(&e).await;
+        e.transition_task(&scope(), &task_id, TaskState::Working, None)
+            .await
+            .unwrap();
+        e.pause_for_human(
+            &scope(),
+            &task_id,
+            acteon_core::PauseKind::UserAuth,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let mut response = user_message("bearer secret");
+        response.task_id = Some(task_id.clone());
+        let error = method_message_send(&e, &scope(), MessageSendParams { message: response })
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, INVALID_PARAMS);
+        assert!(error.message.contains("trusted authorization flow"));
+        assert_eq!(
+            e.get_task(&scope(), &task_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status
+                .state,
+            TaskState::AuthRequired
+        );
     }
 
     #[tokio::test]

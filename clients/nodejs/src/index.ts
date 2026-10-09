@@ -215,7 +215,9 @@ export {
 export {
   A2A_PROTOCOL_VERSION,
   A2A_VERSION_HEADER,
+  A2A_CHALLENGE_ID_METADATA_KEY,
   A2A_HEADERS,
+  makeInputResponse,
   makeMessage,
   makePartData,
   makePartText,

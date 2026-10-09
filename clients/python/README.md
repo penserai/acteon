@@ -495,6 +495,10 @@ have the service installed, and the client must retain the original requester
 credential and invocation permits. This is a separate surface from tenant-level
 legacy A2A tasks.
 
+For a tenant-level Task in `InputRequired`, use `make_input_response(...)` with
+the Task's current `pendingApprovalId`, then call `a2a_send_message`. The helper
+binds the Task, context, user role and exact challenge together.
+
 ```python
 from acteon_client import make_message, make_part_text
 

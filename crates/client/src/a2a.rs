@@ -25,11 +25,31 @@ pub const A2A_PROTOCOL_VERSION: &str = "1.0";
 
 const A2A_VERSION_HEADER: &str = "A2A-Version";
 
+/// Construct a user response bound to an exact `InputRequired` challenge.
+#[must_use]
+pub fn a2a_input_response(
+    message_id: impl Into<String>,
+    task_id: impl Into<String>,
+    context_id: Option<String>,
+    challenge_id: impl Into<String>,
+    parts: Vec<TaskPart>,
+) -> TaskMessage {
+    let mut message = TaskMessage::text(message_id, TaskRole::User, "");
+    message.parts = parts;
+    message.task_id = Some(task_id.into());
+    message.context_id = context_id;
+    message.metadata.insert(
+        TASK_CHALLENGE_ID_METADATA_KEY.into(),
+        serde_json::Value::String(challenge_id.into()),
+    );
+    message
+}
+
 /// Re-exported core types so callers can construct messages /
 /// configs without depending on `acteon_core` directly.
 pub use acteon_core::{
-    AgentCard, Artifact, PauseKind, PushAuthentication, TaskArtifactUpdateEvent, TaskPart,
-    TaskRole, TaskState, TaskStatus,
+    AgentCard, Artifact, PauseKind, PushAuthentication, TASK_CHALLENGE_ID_METADATA_KEY,
+    TaskArtifactUpdateEvent, TaskPart, TaskRole, TaskState, TaskStatus,
 };
 
 /// Map a non-success HTTP response to an `Error` by best-effort JSON
@@ -415,5 +435,23 @@ mod tests {
         assert!(json.get("id").is_none());
         assert!(json.get("token").is_none());
         assert!(json.get("authentication").is_none());
+    }
+
+    #[test]
+    fn input_response_binds_exact_challenge() {
+        let message = a2a_input_response(
+            "response-1",
+            "task-1",
+            Some("context-1".into()),
+            "challenge-1",
+            vec![TaskPart::data(serde_json::json!({"region":"us-west-2"}))],
+        );
+        assert_eq!(message.role, TaskRole::User);
+        assert_eq!(message.task_id.as_deref(), Some("task-1"));
+        assert_eq!(message.context_id.as_deref(), Some("context-1"));
+        assert_eq!(
+            message.metadata.get(TASK_CHALLENGE_ID_METADATA_KEY),
+            Some(&serde_json::json!("challenge-1"))
+        );
     }
 }

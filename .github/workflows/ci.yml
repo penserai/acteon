@@ -373,6 +373,10 @@ jobs:
         env:
           ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
         run: cargo test --locked -p acteon-gateway --test agent_runtime independent_redis_runtime_recovers_lost_acceptance_and_known_or_uncertain_results -- --ignored
+      - name: Structured input challenge multi-client Redis contract
+        env:
+          ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
+        run: cargo test --locked -p acteon-gateway --test task_input_challenges independent_redis_clients_pass_the_input_challenge_contract -- --ignored
       - name: Authenticated agent services restart, ambiguity and storage contracts
         env:
           ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
@@ -391,6 +395,8 @@ jobs:
         run: cargo test --locked -p acteon-executor --test qualified_plans independent_redis_qualified_handoff_contract -- --ignored
       - name: Durable provider multi-client PostgreSQL contract
         run: cargo test --locked -p acteon-executor --test governed_provider independent_postgres_workers_observe_one_provider_attempt -- --ignored
+      - name: Structured input challenge multi-client PostgreSQL contract
+        run: cargo test --locked -p acteon-gateway --test task_input_challenges independent_postgres_clients_pass_the_input_challenge_contract -- --ignored
       - name: Qualified plan multi-client PostgreSQL handoff contract
         run: cargo test --locked -p acteon-executor --test qualified_plans independent_postgres_qualified_handoff_contract -- --ignored
       - name: Server authentication authority and startup PostgreSQL contract

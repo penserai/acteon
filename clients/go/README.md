@@ -429,6 +429,10 @@ have the service installed, and the client must retain the original requester
 credential and invocation permits. This is a separate surface from tenant-level
 legacy A2A tasks.
 
+For a tenant-level Task in `InputRequired`, use `MakeInputResponse(...)` with
+the Task's current `pendingApprovalId`, then call `A2ASendMessage`. The helper
+binds the Task, context, user role and exact challenge together.
+
 ```go
 receipt, err := client.AgentServiceSendMessage(ctx, "prod", "acme", "notifier",
     acteon.MakeMessage("incident-42", "user",

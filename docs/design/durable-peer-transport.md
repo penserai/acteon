@@ -150,6 +150,11 @@ Focused contracts cover:
 
 The local governed mesh now has durable submission, cursor-aware observation,
 native cancellation, restart/lost-response tests, and Redis/PostgreSQL
-qualification. Remaining mesh work includes structured required-input and
-authentication handoff, broader backend qualification, and federation trust and
-revocation protocols.
+qualification. The local Task Engine also supplies exact, idempotent
+`InputRequired` resolution with durable digest intent and an explicit refusal to
+treat messages as authorization. The remaining transport step must journal a
+continuation against the original accepted submission, recheck current
+authority, and deliver it to the exact remote Task without accepting an
+endpoint, credential, context, Task, or challenge identity from model output.
+Verifier-backed authentication handoff, broader backend qualification, and
+federation trust and revocation protocols remain later work.

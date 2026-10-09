@@ -38,6 +38,7 @@ if TYPE_CHECKING:
 #: A2A protocol version this client speaks. Matches
 #: ``A2A_PROTOCOL_VERSION`` in the Rust client and the server.
 A2A_PROTOCOL_VERSION = "1.0"
+A2A_CHALLENGE_ID_METADATA_KEY = "acteon.challengeId"
 
 _A2A_VERSION_HEADER = "A2A-Version"
 _A2A_HEADERS = {_A2A_VERSION_HEADER: A2A_PROTOCOL_VERSION}
@@ -135,6 +136,26 @@ def make_message(
     if context_id is not None:
         msg["contextId"] = context_id
     return msg
+
+
+def make_input_response(
+    message_id: str,
+    task_id: str,
+    challenge_id: str,
+    parts: list[dict[str, Any]],
+    *,
+    context_id: str | None = None,
+) -> dict[str, Any]:
+    """Build a user response bound to one exact ``InputRequired`` challenge."""
+    message = make_message(
+        message_id,
+        "user",
+        parts,
+        task_id=task_id,
+        context_id=context_id,
+    )
+    message["metadata"] = {A2A_CHALLENGE_ID_METADATA_KEY: challenge_id}
+    return message
 
 
 def make_push_config(

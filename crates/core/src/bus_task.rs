@@ -86,6 +86,9 @@ pub const MAX_METADATA_VALUE_BYTES: usize = 4096;
 
 /// Max number of `referenceTaskIds` entries on a [`Message`].
 pub const MAX_REFERENCE_TASK_IDS: usize = 32;
+/// Message metadata key that binds an `InputRequired` response to the exact
+/// pending challenge observed by the caller.
+pub const TASK_CHALLENGE_ID_METADATA_KEY: &str = "acteon.challengeId";
 
 /// Max number of `extensions` entries on a [`Message`].
 pub const MAX_MESSAGE_EXTENSIONS: usize = 32;
@@ -777,8 +780,9 @@ impl Task {
         };
         self.updated_at = now;
         self.last_progress_at = Some(now);
-        // Leaving an interrupt clears the gating approval reference.
-        if matches!(next, TaskState::Working) {
+        // A pending approval only describes an interrupt state. Resuming or
+        // terminating the task makes that challenge ineligible immediately.
+        if !matches!(next, TaskState::AuthRequired | TaskState::InputRequired) {
             self.pending_approval_id = None;
         }
         Ok(())
@@ -1737,6 +1741,16 @@ mod tests {
         t.transition_to(TaskState::AuthRequired, None).unwrap();
         t.set_pending_approval("appr-1");
         t.transition_to(TaskState::Working, None).unwrap();
+        assert!(t.pending_approval_id.is_none());
+    }
+
+    #[test]
+    fn canceling_an_interrupt_clears_pending_approval() {
+        let mut t = Task::new("task-1", "agents", "demo");
+        t.transition_to(TaskState::Working, None).unwrap();
+        t.transition_to(TaskState::InputRequired, None).unwrap();
+        t.set_pending_approval("appr-1");
+        t.transition_to(TaskState::Canceled, None).unwrap();
         assert!(t.pending_approval_id.is_none());
     }
 

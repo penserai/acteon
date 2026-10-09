@@ -13,6 +13,7 @@ import { describe, it, expect } from "vitest";
 import {
   A2A_PROTOCOL_VERSION,
   A2A_VERSION_HEADER,
+  makeInputResponse,
   makeMessage,
   makePartData,
   makePartText,
@@ -64,6 +65,24 @@ describe("a2a factory helpers", () => {
       taskId: "task-alpha",
     });
     expect((m as Record<string, unknown>).taskId).toEqual("task-alpha");
+  });
+
+  it("makeInputResponse binds the exact challenge", () => {
+    expect(
+      makeInputResponse(
+        "response-1",
+        "task-alpha",
+        "challenge-1",
+        [makePartData({ region: "us-west-2" })],
+        "incident-42",
+      ),
+    ).toMatchObject({
+      messageId: "response-1",
+      taskId: "task-alpha",
+      contextId: "incident-42",
+      role: "user",
+      metadata: { "acteon.challengeId": "challenge-1" },
+    });
   });
 
   it("makePushConfig minimal includes only url", () => {

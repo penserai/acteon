@@ -1,7 +1,9 @@
 """Acteon Python Client - HTTP client for the Acteon action gateway."""
 
 from .a2a import (
+    A2A_CHALLENGE_ID_METADATA_KEY,
     A2A_PROTOCOL_VERSION,
+    make_input_response,
     make_message,
     make_part_data,
     make_part_text,
@@ -276,6 +278,8 @@ __all__ = [
     "ActeonClient",
     "AsyncActeonClient",
     "A2A_PROTOCOL_VERSION",
+    "A2A_CHALLENGE_ID_METADATA_KEY",
+    "make_input_response",
     "make_message",
     "make_part_data",
     "make_part_text",

@@ -762,7 +762,12 @@ A2A JSON-RPC 2.0 endpoint supporting `message/send`, `tasks/get`, `tasks/cancel`
 
 ### `POST /a2a/{namespace}/{tenant}/v1/message:send`
 
-A2A REST binding for submitting agent messages and tasks.
+A2A REST binding for submitting agent messages and tasks. An
+`InputRequired` continuation must carry the current Task `taskId`, matching
+`contextId`, and `metadata["acteon.challengeId"]` equal to the Task's
+`pendingApprovalId`. It appends the response and resumes the Task; identical
+retries are safe. An expired challenge fails the still-paused Task. An
+`AuthRequired` Task cannot be authorized by message content.
 
 ### `GET /a2a/{namespace}/{tenant}/v1/tasks/{id}`
 

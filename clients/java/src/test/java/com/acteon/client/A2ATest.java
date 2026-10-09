@@ -81,6 +81,21 @@ class A2ATest {
     }
 
     @Test
+    void makeInputResponseBindsChallenge() {
+        Map<String, Object> m = A2A.makeInputResponse(
+            "response-1",
+            "task-alpha",
+            "incident-42",
+            "challenge-1",
+            List.of(A2A.makePartData(Map.of("region", "us-west-2"), null))
+        );
+        assertEquals("user", m.get("role"));
+        assertEquals("task-alpha", m.get("taskId"));
+        assertEquals("incident-42", m.get("contextId"));
+        assertEquals(Map.of("acteon.challengeId", "challenge-1"), m.get("metadata"));
+    }
+
+    @Test
     void makePushConfigMinimal() {
         Map<String, Object> cfg = A2A.makePushConfig("https://hook/x");
         assertEquals("https://hook/x", cfg.get("url"));
