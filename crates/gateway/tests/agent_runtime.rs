@@ -650,6 +650,12 @@ async fn continuation_waits_for_definitive_predecessor_completion() {
     f.counter.blocking.store(false, Ordering::SeqCst);
     f.counter.release.add_permits(1);
     assert!(running.await.unwrap().is_err());
+    let observed = f.runtime().observe(id).await.unwrap();
+    assert_eq!(observed.task.status.state, TaskState::InputRequired);
+    assert_eq!(
+        observed.task.pending_approval_id.as_deref(),
+        Some(challenge.approval_id.as_str())
+    );
     let completed = f
         .runtime()
         .continue_input(id, &challenge.approval_id, &response, &f.parent)

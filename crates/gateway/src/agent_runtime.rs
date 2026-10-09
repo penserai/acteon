@@ -1274,6 +1274,26 @@ impl AgentProviderRuntime {
         execution: GovernedProviderReceipt,
     ) -> Result<AgentTaskReceipt, AgentRuntimeError> {
         if let GovernedProviderStatus::Completed { outcome } = &execution.status {
+            // A host pause can race with the provider response. The completed
+            // predecessor is required evidence for a governed continuation,
+            // but it must not erase the active challenge before the exact
+            // source response is durably registered.
+            if task.status.state == TaskState::InputRequired && task.pending_approval_id.is_some() {
+                return Ok(AgentTaskReceipt {
+                    task,
+                    execution: Some(execution),
+                    future_starts_blocked: self
+                        .dependencies
+                        .coordinator
+                        .snapshot()
+                        .await?
+                        .roots
+                        .get(&expected.id)
+                        .ok_or(AgentRuntimeError::Conflict)?
+                        .cancelled,
+                    continuation_pending: false,
+                });
+            }
             let value = serde_json::to_value(outcome)?;
             let inline =
                 serde_json::to_vec(&value)?.len() <= acteon_core::bus_task::MAX_PART_DATA_BYTES;

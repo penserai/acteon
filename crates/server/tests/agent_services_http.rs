@@ -4,7 +4,7 @@ use acteon_core::{AgentCard, AgentCardInterface, PauseKind, Skill, TaskState};
 #[cfg(any(feature = "redis", feature = "postgres"))]
 use acteon_gateway::{TaskEngine, TaskScope};
 #[cfg(any(feature = "redis", feature = "postgres"))]
-use acteon_state::StateStore;
+use acteon_state::{KeyKind, StateKey, StateStore};
 use axum::{Json, Router, routing::post};
 #[cfg(any(feature = "redis", feature = "postgres"))]
 use axum::{
@@ -354,6 +354,49 @@ async fn webhook() -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
         axum::serve(listener, app).await.unwrap();
     });
     (format!("http://{address}/incident"), calls, task)
+}
+
+#[cfg(any(feature = "redis", feature = "postgres"))]
+async fn pausing_webhook() -> (
+    String,
+    Arc<AtomicUsize>,
+    Arc<tokio::sync::Semaphore>,
+    Arc<tokio::sync::Semaphore>,
+    tokio::task::JoinHandle<()>,
+) {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let entered = Arc::new(tokio::sync::Semaphore::new(0));
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let counter = calls.clone();
+    let entered_handler = entered.clone();
+    let release_handler = release.clone();
+    let app = Router::new().route(
+        "/incident",
+        post(move || {
+            let counter = counter.clone();
+            let entered = entered_handler.clone();
+            let release = release_handler.clone();
+            async move {
+                if counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                    entered.add_permits(1);
+                    release.acquire().await.unwrap().forget();
+                }
+                Json(json!({"delivered":true}))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (
+        format!("http://{address}/incident"),
+        calls,
+        entered,
+        release,
+        task,
+    )
 }
 fn message(id: &str) -> Value {
     json!({"message":{"role":"user","messageId":id,"parts":[{"kind":"text","text":"Notify the incident owner"}]}})
@@ -753,7 +796,7 @@ impl Drop for PeerMeshServer {
 
 #[cfg(any(feature = "redis", feature = "postgres"))]
 impl PeerMeshServer {
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     fn start(
         own_port: u16,
         notifier_port: u16,
@@ -762,6 +805,7 @@ impl PeerMeshServer {
         state: &Value,
         credential_hashes: &[String; 3],
         bootstrap: bool,
+        driver: bool,
     ) -> Self {
         let directory =
             std::env::temp_dir().join(format!("acteon-peer-mesh-{}", uuid::Uuid::new_v4()));
@@ -822,7 +866,7 @@ impl PeerMeshServer {
                 {"name":"resolver","type":"webhook","url":webhook,"internal_hosts":["127.0.0.1"]}
             ],
             "execution_authority":{
-                "agent_driver":{"enabled":false,"poll_interval_ms":100,"max_parallel":2,"scan_batch_size":8},
+                "agent_driver":{"enabled":driver,"poll_interval_ms":100,"max_parallel":2,"scan_batch_size":8},
                 "peer_transport":{"enabled":true,"timeout_ms":3000,"adapter_revision":"peer-mesh-test-v1","internal_hosts":["127.0.0.1"]},
                 "scopes":[{
                     "namespace":"prod","tenant":"acme","bootstrap":bootstrap,
@@ -1346,7 +1390,8 @@ async fn postgres_two_server_peer_continuation_survives_source_restart() {
 #[cfg(any(feature = "redis", feature = "postgres"))]
 #[allow(clippy::too_many_lines)]
 async fn two_server_peer_continuation_contract(state: Value, store: Arc<dyn StateStore>) {
-    let (webhook_url, calls, webhook_task) = webhook().await;
+    let (webhook_url, calls, provider_entered, provider_release, webhook_task) =
+        pausing_webhook().await;
     let notifier_port = reserve_port();
     let resolver_port = reserve_port();
     let credential_hashes = [
@@ -1358,16 +1403,6 @@ async fn two_server_peer_continuation_contract(state: Value, store: Arc<dyn Stat
         .danger_accept_invalid_certs(true)
         .build()
         .unwrap();
-    let mut resolver = PeerMeshServer::start(
-        resolver_port,
-        notifier_port,
-        resolver_port,
-        &webhook_url,
-        &state,
-        &credential_hashes,
-        true,
-    );
-    resolver.ready(&client).await;
     let mut notifier = PeerMeshServer::start(
         notifier_port,
         notifier_port,
@@ -1376,11 +1411,8 @@ async fn two_server_peer_continuation_contract(state: Value, store: Arc<dyn Stat
         &state,
         &credential_hashes,
         true,
+        false,
     );
-    let config: toml::Value =
-        toml::from_str(&fs::read_to_string(resolver.directory.join("acteon.toml")).unwrap())
-            .unwrap();
-    publish_peer_cards(store.as_ref(), &config).await;
     notifier.ready(&client).await;
 
     let response = client
@@ -1395,6 +1427,32 @@ async fn two_server_peer_continuation_contract(state: Value, store: Arc<dyn Stat
         .unwrap();
     assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
     let root: Value = response.json().await.unwrap();
+    let engine = TaskEngine::new(store.clone());
+    let scope = TaskScope::new("prod", "acme");
+    let root_id = root["id"].as_str().unwrap();
+    engine
+        .transition_task(&scope, root_id, TaskState::Working, None)
+        .await
+        .unwrap();
+    engine
+        .transition_task(&scope, root_id, TaskState::Completed, None)
+        .await
+        .unwrap();
+    let mut resolver = PeerMeshServer::start(
+        resolver_port,
+        notifier_port,
+        resolver_port,
+        &webhook_url,
+        &state,
+        &credential_hashes,
+        false,
+        true,
+    );
+    resolver.ready(&client).await;
+    let config: toml::Value =
+        toml::from_str(&fs::read_to_string(resolver.directory.join("acteon.toml")).unwrap())
+            .unwrap();
+    publish_peer_cards(store.as_ref(), &config).await;
     let peer_base = format!(
         "{}/a2a/prod/acme/agents/notifier/v1/tasks/{}/peers",
         notifier.url,
@@ -1412,12 +1470,17 @@ async fn two_server_peer_continuation_contract(state: Value, store: Arc<dyn Stat
     assert_eq!(peer["status"]["state"], "accepted");
     let remote_id = peer["status"]["task"]["id"].as_str().unwrap();
 
-    let engine = TaskEngine::new(store.clone());
-    let scope = TaskScope::new("prod", "acme");
-    engine
-        .transition_task(&scope, remote_id, TaskState::Working, None)
+    tokio::time::timeout(Duration::from_secs(30), provider_entered.acquire())
         .await
-        .unwrap();
+        .unwrap()
+        .unwrap()
+        .forget();
+    engine
+        .get_task(&scope, remote_id)
+        .await
+        .unwrap()
+        .filter(|task| task.status.state == TaskState::Working)
+        .expect("provider delivery starts before the webhook is invoked");
     let (_, challenge) = engine
         .pause_for_human(
             &scope,
@@ -1428,7 +1491,6 @@ async fn two_server_peer_continuation_contract(state: Value, store: Arc<dyn Stat
         )
         .await
         .unwrap();
-
     let response = client
         .post(format!(
             "{peer_base}/resolver/resolve/submissions/{}:refresh",
@@ -1448,6 +1510,27 @@ async fn two_server_peer_continuation_contract(state: Value, store: Arc<dyn Stat
         refreshed["status"]["task"]["pendingApprovalId"],
         challenge.approval_id
     );
+    provider_release.add_permits(1);
+    let result_key = StateKey::new(
+        "prod",
+        "acme",
+        KeyKind::Custom(acteon_executor::governed::RESULT_KIND.into()),
+        uuid::Uuid::new_v5(
+            &uuid::Uuid::parse_str(remote_id).unwrap(),
+            &0_u32.to_be_bytes(),
+        )
+        .to_string(),
+    );
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if store.get(&result_key).await.unwrap().is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
 
     let continuation_url = format!(
         "{peer_base}/resolver/resolve/submissions/{}/message:send",
@@ -1465,13 +1548,19 @@ async fn two_server_peer_continuation_contract(state: Value, store: Arc<dyn Stat
         .unwrap();
     assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
     let continued: Value = response.json().await.unwrap();
-    assert_eq!(continued["status"]["state"], "accepted");
+    assert_eq!(
+        continued["status"]["state"],
+        "accepted",
+        "{continued}\nresolver:\n{}\nnotifier:\n{}",
+        resolver.log(),
+        notifier.log()
+    );
     assert_eq!(continued["status"]["task"]["id"], remote_id);
-    assert_eq!(continued["status"]["task"]["status"]["state"], "working");
+    assert_eq!(continued["status"]["task"]["status"]["state"], "completed");
     assert!(continued["status"]["progress_cursor"].as_str().is_some());
     assert!(continued["continuation_id"].as_str().is_some());
     let task_after = engine.get_task(&scope, remote_id).await.unwrap().unwrap();
-    assert_eq!(task_after.status.state, TaskState::Working);
+    assert_eq!(task_after.status.state, TaskState::Completed);
     assert_eq!(
         task_after
             .history
@@ -1496,7 +1585,7 @@ async fn two_server_peer_continuation_contract(state: Value, store: Arc<dyn Stat
         .unwrap();
     assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
     assert_eq!(response.json::<Value>().await.unwrap(), continued);
-    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
     webhook_task.abort();
 }
 
@@ -1531,6 +1620,7 @@ async fn two_server_peer_cancel_restart_contract(state: Value, store: Arc<dyn St
         &state,
         &credential_hashes,
         true,
+        false,
     );
     resolver.ready(&client).await;
     let proxy = ResponseLossProxy::start(proxy_port, resolver.url.clone(), false).await;
@@ -1543,6 +1633,7 @@ async fn two_server_peer_cancel_restart_contract(state: Value, store: Arc<dyn St
         &state,
         &credential_hashes,
         true,
+        false,
     );
     assert_eq!(
         fs::read_to_string(resolver.directory.join("auth.toml")).unwrap(),
@@ -1686,6 +1777,7 @@ async fn redis_peer_cancel_response_loss_survives_restart_without_redelivery() {
         &state,
         &credential_hashes,
         true,
+        false,
     );
     resolver.ready(&client).await;
     let proxy = ResponseLossProxy::start(proxy_port, resolver.url.clone(), true).await;
@@ -1698,6 +1790,7 @@ async fn redis_peer_cancel_response_loss_survives_restart_without_redelivery() {
         &state,
         &credential_hashes,
         true,
+        false,
     );
     let resolver_config: toml::Value =
         toml::from_str(&fs::read_to_string(resolver.directory.join("acteon.toml")).unwrap())
