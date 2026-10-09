@@ -46,9 +46,14 @@ Retained signed evidence is reverified during coordinator reconstruction, so an
 edited imported effect, recipient, limit or binding makes the authority record
 unreadable instead of becoming permission.
 
-Every imported effect uses `register_federated_attempt`. Current trust,
-revocation, target status, expiry, exact effect attenuation and root accounting
-are checked inside the same coordinator CAS that registers the effect. Therefore:
+Every imported effect uses `register_federated_attempt` with a
+`SignedFederationInvocation`. The foreign signer binds the exact imported
+envelope digest, a replay nonce, the prepared provider-input digest, and a short
+validity interval. The trusted local adapter independently computes that input
+digest; unsigned task content cannot select or alter the invocation. Current
+trust, invocation signature, revocation, target status, expiry, exact effect
+attenuation and root accounting are checked inside the same coordinator CAS
+that registers each local delivery attempt. Therefore:
 
 - if trust revocation commits first, the new effect is denied without spending;
 - if the effect commits first, it is an honest in-flight attempt and the later
@@ -121,7 +126,10 @@ envelope.
 The next slice must derive the recipient's local execution context from the
 imported record and recheck current peer identity, trust, target status,
 closures, expiry and effect bounds at the same durable transition that dispatches
-work. It must never accept those authority fields from a dispatch request.
+work. The provider adapter must compute the prepared input digest and pass the
+signed invocation to the coordinator rather than accept authority fields from a
+dispatch request. Recovery must require the same signed intent and current peer
+identity before starting an unregistered delivery attempt.
 
 Later federation gates include outbound delivery, credential exchange,
 capability negotiation, remote card and key rotation, response-loss recovery,

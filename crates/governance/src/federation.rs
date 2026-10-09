@@ -23,6 +23,7 @@ use crate::{
 };
 
 const ENVELOPE_SCHEMA: u32 = 1;
+const INVOCATION_SCHEMA: u32 = 1;
 const MAX_APPROVED_SHAPES: usize = 128;
 const MAX_CLOCK_BOUND_MS: i64 = 24 * 60 * 60 * 1000;
 
@@ -166,6 +167,70 @@ impl SignedFederationEnvelope {
     }
 }
 
+/// One signed foreign request to spend an admitted import on an exact prepared
+/// provider input. The import remains the authority ceiling; this intent binds
+/// the otherwise unsigned task payload and supplies a replay-stable nonce.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationInvocation {
+    pub schema_version: u32,
+    pub nonce: String,
+    pub import: FederationImportReference,
+    pub request_digest: String,
+    pub issued_at_ms: i64,
+    pub expires_at_ms: i64,
+}
+
+impl FederationInvocation {
+    #[must_use]
+    pub fn new(
+        nonce: impl Into<String>,
+        import: FederationImportReference,
+        request_digest: impl Into<String>,
+        issued_at_ms: i64,
+        expires_at_ms: i64,
+    ) -> Self {
+        Self {
+            schema_version: INVOCATION_SCHEMA,
+            nonce: nonce.into(),
+            import,
+            request_digest: request_digest.into(),
+            issued_at_ms,
+            expires_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SignedFederationInvocation {
+    pub payload: String,
+    pub signature: String,
+}
+
+impl SignedFederationInvocation {
+    pub fn invocation(&self) -> Result<FederationInvocation, CoordinationError> {
+        serde_json::from_str(&self.payload)
+            .map_err(|_| CoordinationError::Invalid("federation invocation payload".into()))
+    }
+
+    /// Stable attempt identity over both exact payload bytes and signature.
+    pub fn digest(&self) -> Result<String, CoordinationError> {
+        signed_digest(self, "federation invocation")
+    }
+
+    /// Deterministic durable start ID for one locally governed delivery
+    /// attempt. Retries spend separately but cannot change the signed input.
+    pub fn attempt_id(&self, ordinal: u32) -> Result<String, CoordinationError> {
+        let digest = self.digest()?;
+        let mut hash = Sha256::new();
+        hash.update(b"acteon.federation-attempt.v1\0");
+        hash.update(digest.as_bytes());
+        hash.update(ordinal.to_be_bytes());
+        Ok(format!("{:x}", hash.finalize()))
+    }
+}
+
 /// Export-only signer. It deliberately has no serializer and exposes no key.
 pub struct FederationEnvelopeSigner {
     key: SigningKey,
@@ -192,6 +257,19 @@ impl FederationEnvelopeSigner {
         let payload = serde_json::to_string(&envelope)
             .map_err(|_| CoordinationError::Invalid("federation payload".into()))?;
         Ok(SignedFederationEnvelope {
+            signature: encode_hex(&self.key.sign(payload.as_bytes()).to_bytes()),
+            payload,
+        })
+    }
+
+    pub fn sign_invocation(
+        &self,
+        invocation: &FederationInvocation,
+    ) -> Result<SignedFederationInvocation, CoordinationError> {
+        validate_invocation_shape(invocation)?;
+        let payload = serde_json::to_string(invocation)
+            .map_err(|_| CoordinationError::Invalid("federation invocation payload".into()))?;
+        Ok(SignedFederationInvocation {
             signature: encode_hex(&self.key.sign(payload.as_bytes()).to_bytes()),
             payload,
         })
@@ -227,7 +305,8 @@ pub struct FederationImportRecord {
     pub signed_envelope: SignedFederationEnvelope,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationImportReference {
     pub id: String,
     pub envelope_digest: String,
@@ -282,17 +361,19 @@ pub struct FederatedDelegationImport<'a> {
 /// One locally executed effect under a current federated import. The effect,
 /// reservation and trust are checked in the same coordinator CAS as the start.
 pub struct FederatedAttempt<'a> {
-    pub id: &'a str,
-    pub import: &'a FederationImportReference,
+    pub invocation: &'a SignedFederationInvocation,
     pub effect: &'a AcceptedEffect,
+    /// Digest independently computed by the trusted local adapter from the
+    /// fully prepared provider input. It must equal the signed foreign intent.
     pub request_digest: &'a str,
+    pub ordinal: u32,
     pub units: u64,
     pub expected_authority: &'a AuthorityStamp,
     pub clock: &'a dyn Clock,
 }
 
 pub(crate) struct FederationAttemptCheck<'a> {
-    pub import: &'a FederationImportReference,
+    pub invocation: &'a SignedFederationInvocation,
     pub effect: &'a AcceptedEffect,
     pub clock: &'a dyn Clock,
 }
@@ -392,9 +473,26 @@ fn validate_envelope_shape(envelope: &FederationEnvelope) -> Result<(), Coordina
     Ok(())
 }
 
+fn validate_invocation_shape(invocation: &FederationInvocation) -> Result<(), CoordinationError> {
+    if invocation.schema_version != INVOCATION_SCHEMA
+        || !valid_text(&invocation.nonce)
+        || !valid_text(&invocation.import.id)
+        || !digest_valid(&invocation.import.envelope_digest, 32)
+        || !digest_valid(&invocation.request_digest, 32)
+        || invocation.issued_at_ms < 0
+        || invocation.expires_at_ms <= invocation.issued_at_ms
+    {
+        return Err(CoordinationError::Invalid("federation invocation".into()));
+    }
+    Ok(())
+}
+
 fn envelope_digest(signed: &SignedFederationEnvelope) -> Result<String, CoordinationError> {
-    let raw = serde_json::to_vec(signed)
-        .map_err(|_| CoordinationError::Invalid("federation envelope".into()))?;
+    signed_digest(signed, "federation envelope")
+}
+
+fn signed_digest<T: Serialize>(signed: &T, label: &str) -> Result<String, CoordinationError> {
+    let raw = serde_json::to_vec(signed).map_err(|_| CoordinationError::Invalid(label.into()))?;
     Ok(format!("{:x}", Sha256::digest(raw)))
 }
 
@@ -426,10 +524,25 @@ fn verify_signature(
     trust: &FederationTrust,
     signed: &SignedFederationEnvelope,
 ) -> Result<(), CoordinationError> {
+    verify_signed_payload(trust, &signed.payload, &signed.signature)
+}
+
+fn verify_invocation_signature(
+    trust: &FederationTrust,
+    signed: &SignedFederationInvocation,
+) -> Result<(), CoordinationError> {
+    verify_signed_payload(trust, &signed.payload, &signed.signature)
+}
+
+fn verify_signed_payload(
+    trust: &FederationTrust,
+    payload: &str,
+    signature: &str,
+) -> Result<(), CoordinationError> {
     let key = VerifyingKey::from_bytes(&decode_hex::<32>(&trust.verifying_key)?)
         .map_err(|_| CoordinationError::Invalid("federation public key".into()))?;
-    let signature = Signature::from_bytes(&decode_hex::<64>(&signed.signature)?);
-    key.verify_strict(signed.payload.as_bytes(), &signature)
+    let signature = Signature::from_bytes(&decode_hex::<64>(signature)?);
+    key.verify_strict(payload.as_bytes(), &signature)
         .map_err(|_| CoordinationError::Restricted)
 }
 
@@ -1005,6 +1118,7 @@ impl AuthorityCoordinator {
         subject: &str,
         resources: &BTreeSet<ResourceRef>,
         reservation: Option<&RootReservation>,
+        request_digest: &str,
     ) -> Result<(), CoordinationError> {
         let uses_federated_root = reservation.is_some_and(|reservation| {
             state
@@ -1019,12 +1133,31 @@ impl AuthorityCoordinator {
                 Ok(())
             };
         };
+        let invocation = check.invocation.invocation()?;
+        validate_invocation_shape(&invocation)?;
         let imported = Self::check_federation_import_in_snapshot(
             state,
-            check.import,
+            &invocation.import,
             check.clock.now().timestamp_millis(),
         )?;
+        let trust = state
+            .federation_trusts
+            .get(&imported.trust_id)
+            .filter(|record| !record.revoked && record.trust.revision == imported.trust_revision)
+            .ok_or(CoordinationError::Restricted)?;
+        verify_invocation_signature(&trust.trust, check.invocation)?;
+        let envelope = imported.signed_envelope.envelope()?;
+        let now_ms = check.clock.now().timestamp_millis();
         if imported.target.id() != subject
+            || invocation.request_digest != request_digest
+            || invocation.issued_at_ms < envelope.issued_at_ms
+            || invocation.issued_at_ms > now_ms.saturating_add(trust.trust.max_clock_skew_ms)
+            || now_ms >= invocation.expires_at_ms
+            || invocation.expires_at_ms > imported.expires_at_ms
+            || invocation
+                .expires_at_ms
+                .saturating_sub(invocation.issued_at_ms)
+                > trust.trust.max_revocation_staleness_ms
             || !imported
                 .effects
                 .iter()
@@ -1062,20 +1195,18 @@ impl AuthorityCoordinator {
         if request.units == 0 {
             return Err(CoordinationError::Invalid("federated attempt units".into()));
         }
-        if !valid_text(&request.import.id) || !digest_valid(&request.import.envelope_digest, 32) {
-            return Err(CoordinationError::Invalid(
-                "federation import reference".into(),
-            ));
-        }
+        let invocation = request.invocation.invocation()?;
+        validate_invocation_shape(&invocation)?;
+        let attempt_id = request.invocation.attempt_id(request.ordinal)?;
         let snapshot = self.snapshot().await?;
         let imported = snapshot
             .federation_imports
-            .get(&request.import.id)
-            .filter(|record| record.envelope_digest == request.import.envelope_digest)
+            .get(&invocation.import.id)
+            .filter(|record| record.envelope_digest == invocation.import.envelope_digest)
             .ok_or(CoordinationError::Restricted)?;
         self.register_attempt_checked(
             AttemptRequest {
-                id: request.id,
+                id: &attempt_id,
                 subject: imported.target.id(),
                 resources: &request.effect.resources,
                 request_digest: request.request_digest,
@@ -1089,7 +1220,7 @@ impl AuthorityCoordinator {
             None,
             None,
             Some(&FederationAttemptCheck {
-                import: request.import,
+                invocation: request.invocation,
                 effect: request.effect,
                 clock: request.clock,
             }),

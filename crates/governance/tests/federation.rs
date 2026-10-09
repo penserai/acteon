@@ -2,13 +2,14 @@ use std::sync::Arc;
 
 use acteon_core::{PrincipalIdentity, PrincipalKind, ResourceKind, ResourceRef};
 use acteon_governance::{
-    AttemptRequest, AuthorityChange, AuthorityCoordinator, CoordinationError, CoordinatorLimits,
-    RootBudgetLimits, RootReservation, ScopePurpose, StartRegistration,
+    AttemptRequest, AttemptStatus, AuthorityChange, AuthorityCoordinator, CoordinationError,
+    CoordinatorLimits, RootBudgetLimits, RootReservation, ScopePurpose, StartRegistration,
     context::AcceptedEffect,
     federation::{
         EvaluatedFederationTrustPublication, FederatedAttempt, FederatedDelegationImport,
         FederationEnvelope, FederationEnvelopeSigner, FederationGrantCeiling,
-        FederationImportReference, FederationTrust, FederationTrustIssuanceCeiling,
+        FederationImportReference, FederationInvocation, FederationTrust,
+        FederationTrustIssuanceCeiling, SignedFederationInvocation,
     },
 };
 use acteon_state::{KeyKind, StateKey, StateStore};
@@ -97,6 +98,23 @@ fn envelope() -> FederationEnvelope {
         },
         1,
     )
+}
+
+fn invocation(
+    signer: &FederationEnvelopeSigner,
+    import: &FederationImportReference,
+    nonce: &str,
+    digest_byte: char,
+) -> SignedFederationInvocation {
+    signer
+        .sign_invocation(&FederationInvocation::new(
+            nonce,
+            import.clone(),
+            digest_byte.to_string().repeat(64),
+            100,
+            480,
+        ))
+        .unwrap()
 }
 
 async fn fixture() -> (
@@ -194,19 +212,121 @@ async fn audience_bound_import_is_attenuated_replay_safe_and_generic_path_closed
             .await,
         Err(CoordinationError::Restricted)
     ));
+    let signed_invocation = invocation(&signer, &reference, "foreign-effect-1", 'b');
     let started = coordinator
         .register_federated_attempt(FederatedAttempt {
-            id: "foreign-effect-1",
-            import: &reference,
+            invocation: &signed_invocation,
             effect: &effect("telemetry.read"),
             request_digest: &"b".repeat(64),
+            ordinal: 0,
             units: 1,
             expected_authority: &coordinator.snapshot().await.unwrap().stamp(),
             clock: &clock,
         })
         .await
         .unwrap();
-    assert!(matches!(started, StartRegistration::New(_)));
+    let StartRegistration::New(started) = started else {
+        panic!("first signed invocation must register a new attempt");
+    };
+    assert!(matches!(
+        coordinator
+            .register_federated_attempt(FederatedAttempt {
+                invocation: &signed_invocation,
+                effect: &effect("telemetry.read"),
+                request_digest: &"b".repeat(64),
+                ordinal: 0,
+                units: 1,
+                expected_authority: &coordinator.snapshot().await.unwrap().stamp(),
+                clock: &clock,
+            })
+            .await
+            .unwrap(),
+        StartRegistration::Existing(_)
+    ));
+
+    let mismatched_input = invocation(&signer, &reference, "different-input", 'b');
+    assert!(matches!(
+        coordinator
+            .register_federated_attempt(FederatedAttempt {
+                invocation: &mismatched_input,
+                effect: &effect("telemetry.read"),
+                request_digest: &"c".repeat(64),
+                ordinal: 0,
+                units: 1,
+                expected_authority: &coordinator.snapshot().await.unwrap().stamp(),
+                clock: &clock,
+            })
+            .await,
+        Err(CoordinationError::Restricted)
+    ));
+
+    let mut tampered = invocation(&signer, &reference, "tampered", 'b');
+    tampered.payload = tampered.payload.replace(&"b".repeat(64), &"c".repeat(64));
+    assert!(matches!(
+        coordinator
+            .register_federated_attempt(FederatedAttempt {
+                invocation: &tampered,
+                effect: &effect("telemetry.read"),
+                request_digest: &"c".repeat(64),
+                ordinal: 0,
+                units: 1,
+                expected_authority: &coordinator.snapshot().await.unwrap().stamp(),
+                clock: &clock,
+            })
+            .await,
+        Err(CoordinationError::Restricted)
+    ));
+
+    let expired = signer
+        .sign_invocation(&FederationInvocation::new(
+            "expired",
+            reference,
+            "c".repeat(64),
+            90,
+            100,
+        ))
+        .unwrap();
+    assert!(matches!(
+        coordinator
+            .register_federated_attempt(FederatedAttempt {
+                invocation: &expired,
+                effect: &effect("telemetry.read"),
+                request_digest: &"c".repeat(64),
+                ordinal: 0,
+                units: 1,
+                expected_authority: &coordinator.snapshot().await.unwrap().stamp(),
+                clock: &clock,
+            })
+            .await,
+        Err(CoordinationError::Restricted)
+    ));
+    assert_ne!(
+        signed_invocation.attempt_id(0).unwrap(),
+        signed_invocation.attempt_id(1).unwrap()
+    );
+    coordinator
+        .settle(
+            &signed_invocation.attempt_id(0).unwrap(),
+            &started.token,
+            AttemptStatus::Settled,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        coordinator
+            .register_federated_attempt(FederatedAttempt {
+                invocation: &signed_invocation,
+                effect: &effect("telemetry.read"),
+                request_digest: &"b".repeat(64),
+                ordinal: 1,
+                units: 1,
+                expected_authority: &coordinator.snapshot().await.unwrap().stamp(),
+                clock: &clock,
+            })
+            .await
+            .unwrap(),
+        StartRegistration::New(_)
+    ));
 }
 
 #[tokio::test]
@@ -225,12 +345,13 @@ async fn revocation_blocks_new_effects_but_preserves_exact_start_observation() {
         id: imported.id,
         envelope_digest: imported.envelope_digest,
     };
+    let first_invocation = invocation(&signer, &reference, "foreign-effect-1", 'b');
     coordinator
         .register_federated_attempt(FederatedAttempt {
-            id: "foreign-effect-1",
-            import: &reference,
+            invocation: &first_invocation,
             effect: &effect("telemetry.read"),
             request_digest: &"b".repeat(64),
+            ordinal: 0,
             units: 1,
             expected_authority: &coordinator.snapshot().await.unwrap().stamp(),
             clock: &clock,
@@ -266,10 +387,10 @@ async fn revocation_blocks_new_effects_but_preserves_exact_start_observation() {
     assert!(matches!(
         coordinator
             .register_federated_attempt(FederatedAttempt {
-                id: "foreign-effect-2",
-                import: &reference,
+                invocation: &invocation(&signer, &reference, "foreign-effect-2", 'c'),
                 effect: &effect("telemetry.read"),
                 request_digest: &"c".repeat(64),
+                ordinal: 0,
                 units: 1,
                 expected_authority: &coordinator.snapshot().await.unwrap().stamp(),
                 clock: &clock,
@@ -280,10 +401,10 @@ async fn revocation_blocks_new_effects_but_preserves_exact_start_observation() {
     assert!(matches!(
         coordinator
             .register_federated_attempt(FederatedAttempt {
-                id: "foreign-effect-1",
-                import: &reference,
+                invocation: &first_invocation,
                 effect: &effect("telemetry.read"),
                 request_digest: &"b".repeat(64),
+                ordinal: 0,
                 units: 1,
                 expected_authority: &coordinator.snapshot().await.unwrap().stamp(),
                 clock: &clock,
@@ -748,13 +869,14 @@ async fn federation_backend_contract(first: Arc<dyn StateStore>, second: Arc<dyn
         id: imported.id,
         envelope_digest: imported.envelope_digest,
     };
+    let cross_replica = invocation(&signer, &reference, "cross-replica-effect", 'd');
     assert!(matches!(
         coordinator
             .register_federated_attempt(FederatedAttempt {
-                id: "cross-replica-effect",
-                import: &reference,
+                invocation: &cross_replica,
                 effect: &effect("telemetry.read"),
                 request_digest: &"d".repeat(64),
+                ordinal: 0,
                 units: 1,
                 expected_authority: &coordinator.snapshot().await.unwrap().stamp(),
                 clock: &clock,
@@ -778,10 +900,10 @@ async fn federation_backend_contract(first: Arc<dyn StateStore>, second: Arc<dyn
     assert!(matches!(
         coordinator
             .register_federated_attempt(FederatedAttempt {
-                id: "blocked-after-revocation",
-                import: &reference,
+                invocation: &invocation(&signer, &reference, "blocked-after-revocation", 'e'),
                 effect: &effect("telemetry.read"),
                 request_digest: &"e".repeat(64),
+                ordinal: 0,
                 units: 1,
                 expected_authority: &coordinator.snapshot().await.unwrap().stamp(),
                 clock: &clock,
