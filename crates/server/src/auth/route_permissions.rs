@@ -110,4 +110,28 @@ mod tests {
             assert_eq!(route.permission, Some(Permission::Dispatch));
         }
     }
+
+    #[test]
+    fn federation_separates_peer_admission_from_trust_management() {
+        for (path, permission) in [
+            (
+                "/a2a/{namespace}/{tenant}/federation/envelopes:import",
+                Permission::Dispatch,
+            ),
+            (
+                "/v1/governance/federation/trusts",
+                Permission::OperationsManage,
+            ),
+            (
+                "/v1/governance/federation/trusts/revoke",
+                Permission::OperationsManage,
+            ),
+        ] {
+            let route = ROUTES
+                .iter()
+                .find(|route| route.method == "POST" && route.path == path)
+                .unwrap_or_else(|| panic!("missing permission inventory entry for {path}"));
+            assert_eq!(route.permission, Some(permission));
+        }
+    }
 }

@@ -125,14 +125,17 @@ class PlatformOperation(StrEnum):
     EXECUTIONS_RESET_EXECUTION = "executions_reset_execution"
     EXECUTIONS_SIGNAL_EXECUTION = "executions_signal_execution"
     EXECUTIONS_UPSERT_EXECUTION_ATTRIBUTES = "executions_upsert_execution_attributes"
+    FEDERATION_IMPORT_ENVELOPE = "federation_import_envelope"
     GOVERNANCE_ACCEPT_RECONCILIATION = "governance_accept_reconciliation"
     GOVERNANCE_INSPECT = "governance_inspect"
     GOVERNANCE_INTERVENE = "governance_intervene"
     GOVERNANCE_MUTATE_REGISTRY = "governance_mutate_registry"
     GOVERNANCE_PROVIDER_HISTORY = "governance_provider_history"
+    GOVERNANCE_PUBLISH_FEDERATION_TRUST = "governance_publish_federation_trust"
     GOVERNANCE_PUBLISH_PERMIT = "governance_publish_permit"
     GOVERNANCE_RECONCILIATION_CORRELATION = "governance_reconciliation_correlation"
     GOVERNANCE_REGISTRY_PROJECTION = "governance_registry_projection"
+    GOVERNANCE_REVOKE_FEDERATION_TRUST = "governance_revoke_federation_trust"
     GROUPS_FLUSH_GROUP = "groups_flush_group"
     GROUPS_GET_GROUP = "groups_get_group"
     GROUPS_LIST_GROUPS = "groups_list_groups"
@@ -803,6 +806,12 @@ OPERATIONS = {
         ("execution_id",),
         "json",
     ),
+    PlatformOperation.FEDERATION_IMPORT_ENVELOPE: (
+        "POST",
+        "/a2a/{namespace}/{tenant}/federation/envelopes:import",
+        ("namespace", "tenant"),
+        "json",
+    ),
     PlatformOperation.GOVERNANCE_ACCEPT_RECONCILIATION: (
         "POST",
         "/v1/governance/executions/{execution_id}/attempts/{ordinal}/reconciliation",
@@ -818,6 +827,12 @@ OPERATIONS = {
         ("execution_id",),
         "json",
     ),
+    PlatformOperation.GOVERNANCE_PUBLISH_FEDERATION_TRUST: (
+        "POST",
+        "/v1/governance/federation/trusts",
+        (),
+        "json",
+    ),
     PlatformOperation.GOVERNANCE_PUBLISH_PERMIT: ("POST", "/v1/governance/permits", (), "json"),
     PlatformOperation.GOVERNANCE_RECONCILIATION_CORRELATION: (
         "GET",
@@ -829,6 +844,12 @@ OPERATIONS = {
         "GET",
         "/v1/governance/registry/{agent_id}",
         ("agent_id",),
+        "json",
+    ),
+    PlatformOperation.GOVERNANCE_REVOKE_FEDERATION_TRUST: (
+        "POST",
+        "/v1/governance/federation/trusts/revoke",
+        (),
         "json",
     ),
     PlatformOperation.GROUPS_FLUSH_GROUP: (

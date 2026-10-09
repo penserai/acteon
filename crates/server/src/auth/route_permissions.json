@@ -750,6 +750,12 @@
     "permission": "OperationsManage"
   },
   {
+    "name": "federation_import_envelope",
+    "method": "POST",
+    "path": "/a2a/{namespace}/{tenant}/federation/envelopes:import",
+    "permission": "Dispatch"
+  },
+  {
     "name": "governance_accept_reconciliation",
     "method": "POST",
     "path": "/v1/governance/executions/{execution_id}/attempts/{ordinal}/reconciliation",
@@ -780,6 +786,12 @@
     "permission": "OperationsManage"
   },
   {
+    "name": "governance_publish_federation_trust",
+    "method": "POST",
+    "path": "/v1/governance/federation/trusts",
+    "permission": "OperationsManage"
+  },
+  {
     "name": "governance_publish_permit",
     "method": "POST",
     "path": "/v1/governance/permits",
@@ -795,6 +807,12 @@
     "name": "governance_registry_projection",
     "method": "GET",
     "path": "/v1/governance/registry/{agent_id}",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "governance_revoke_federation_trust",
+    "method": "POST",
+    "path": "/v1/governance/federation/trusts/revoke",
     "permission": "OperationsManage"
   },
   {

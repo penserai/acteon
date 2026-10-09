@@ -1021,6 +1021,31 @@ grants still apply. See [Execution permits](../features/execution-permits.md) fo
 configuration, typed SDK methods, refusal handling and supported execution paths.
 Dry runs can omit references.
 
+## Federation import admission
+
+An independently authorized manager publishes or terminally revokes one of the
+deployment's exact trust declarations through:
+
+```text
+POST /v1/governance/federation/trusts
+POST /v1/governance/federation/trusts/revoke
+```
+
+A foreign peer authenticated as its configured local principal submits exact
+signed bytes through:
+
+```text
+POST /a2a/{namespace}/{tenant}/federation/envelopes:import
+```
+
+The JSON body is `{"envelope":{"payload":"...","signature":"..."}}`.
+Payloads are limited to 64 KiB and the signature is exactly 128 lowercase hex
+characters encoding a 64-byte Ed25519 signature. Success returns a correlated
+`FederationImportReceipt` with
+`execution_started: false`; the endpoint does not create a task or effect. See
+[A2A federation status](../features/a2a.md#federation-status) for trust,
+identity, service-binding, and remaining execution-handoff guarantees.
+
 ## Historical provider executions
 
 Read `GET /v1/governance/executions/{execution_id}` with `namespace` and `tenant`

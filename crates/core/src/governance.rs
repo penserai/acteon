@@ -39,6 +39,107 @@ pub struct GovernancePermitDeclaration {
     pub limits: GovernanceLimits,
 }
 
+/// One exact locally reviewed cross-domain authority shape. This public DTO is
+/// configuration and management data; the governance coordinator remains the
+/// authority boundary that validates and retains it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct FederationGrantCeilingDeclaration {
+    pub source: PrincipalIdentity,
+    pub target: PrincipalIdentity,
+    pub agent_resource: ResourceRef,
+    pub binding_digest: String,
+    pub skill: String,
+    pub ingress_effect: GovernanceEffect,
+    pub effects: Vec<GovernanceEffect>,
+    pub limits: GovernanceLimits,
+    pub max_depth: usize,
+}
+
+/// A versioned local trust decision for one foreign signing key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct FederationTrustDeclaration {
+    pub id: String,
+    pub revision: u64,
+    pub foreign_domain: String,
+    pub local_audience: String,
+    pub key_id: String,
+    pub verifying_key: String,
+    pub minimum_issuer_epoch: u64,
+    pub max_revocation_staleness_ms: i64,
+    pub max_clock_skew_ms: i64,
+    pub valid_from_ms: i64,
+    pub deadline_ms: i64,
+    pub approved: Vec<FederationGrantCeilingDeclaration>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct PublishFederationTrustRequest {
+    pub namespace: String,
+    pub tenant: String,
+    pub change_id: String,
+    pub expected_revision: u64,
+    pub trust: FederationTrustDeclaration,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct RevokeFederationTrustRequest {
+    pub namespace: String,
+    pub tenant: String,
+    pub change_id: String,
+    pub trust_id: String,
+    pub expected_revision: u64,
+    pub reason: String,
+}
+
+/// Exact foreign bytes and signature. The server verifies the payload without
+/// reparsing and reserializing it before signature verification.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct SignedFederationEnvelopeDeclaration {
+    pub payload: String,
+    pub signature: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ImportFederationEnvelopeRequest {
+    pub envelope: SignedFederationEnvelopeDeclaration,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct FederationImportReceipt {
+    pub namespace: String,
+    pub tenant: String,
+    pub import_id: String,
+    pub envelope_digest: String,
+    pub trust_id: String,
+    pub trust_revision: u64,
+    pub issuer_domain: String,
+    pub source: PrincipalIdentity,
+    pub target: PrincipalIdentity,
+    pub agent_resource: ResourceRef,
+    pub binding_digest: String,
+    pub skill: String,
+    pub root_id: String,
+    pub expires_at_ms: i64,
+    pub accepted_at_ms: i64,
+    /// Import admission does not start an effect or dispatch an agent task.
+    pub execution_started: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
@@ -134,8 +235,19 @@ pub struct GovernanceManagementBounds {
     /// Independent permission to accept qualified finality for retained work.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub can_reconcile: bool,
+    /// Independent right to publish or terminally revoke configured federation trust roots.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub can_manage_federation: bool,
     pub valid_from_ms: i64,
     pub limits: GovernanceLimits,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct FederationTrustView {
+    pub trust: FederationTrustDeclaration,
+    pub revoked: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -151,6 +263,9 @@ pub struct GovernanceScopeView {
     pub permits: Vec<GovernancePermitView>,
     pub closed_resources: Vec<ResourceRef>,
     pub revoked_subjects: Vec<String>,
+    /// Present only for a manager with an independently configured federation footprint.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub federation_trusts: Vec<FederationTrustView>,
 }
 
 #[cfg(test)]

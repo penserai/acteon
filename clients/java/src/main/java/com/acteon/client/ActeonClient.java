@@ -487,6 +487,29 @@ public class ActeonClient implements AutoCloseable {
         try { return objectMapper.treeToValue(node, Governance.ChangeReceipt.class); }
         catch (IOException e) { throw new ConnectionException("Malformed governance response", e); }
     }
+    public Governance.ChangeReceipt publishFederationTrust(Governance.PublishFederationTrustRequest request) throws ActeonException {
+        var node = platformRequest(PlatformOperation.GOVERNANCE_PUBLISH_FEDERATION_TRUST, null, null, request);
+        try { return objectMapper.treeToValue(node, Governance.ChangeReceipt.class); }
+        catch (IOException e) { throw new ConnectionException("Malformed federation response", e); }
+    }
+    public Governance.ChangeReceipt revokeFederationTrust(Governance.RevokeFederationTrustRequest request) throws ActeonException {
+        var node = platformRequest(PlatformOperation.GOVERNANCE_REVOKE_FEDERATION_TRUST, null, null, request);
+        try { return objectMapper.treeToValue(node, Governance.ChangeReceipt.class); }
+        catch (IOException e) { throw new ConnectionException("Malformed federation response", e); }
+    }
+    /** Authenticate as a configured peer and retain imported authority without executing it. */
+    public Governance.FederationImportReceipt importFederationEnvelope(String namespace, String tenant,
+        Governance.SignedFederationEnvelopeDeclaration envelope) throws ActeonException {
+        var node = platformRequest(PlatformOperation.FEDERATION_IMPORT_ENVELOPE,
+            Map.of("namespace", namespace, "tenant", tenant), null, Map.of("envelope", envelope));
+        try {
+            var receipt = objectMapper.treeToValue(node, Governance.FederationImportReceipt.class);
+            if (!namespace.equals(receipt.namespace()) || !tenant.equals(receipt.tenant()) || receipt.executionStarted()) {
+                throw new ConnectionException("Federation import receipt identity or execution state mismatch", null);
+            }
+            return receipt;
+        } catch (IOException e) { throw new ConnectionException("Malformed federation response", e); }
+    }
     public Governance.ChangeReceipt interveneGovernance(Governance.InterventionRequest request) throws ActeonException {
         var node = platformRequest(PlatformOperation.GOVERNANCE_INTERVENE, null, null, request);
         try { return objectMapper.treeToValue(node, Governance.ChangeReceipt.class); }

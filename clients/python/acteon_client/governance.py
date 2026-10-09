@@ -59,6 +59,127 @@ class PublishGovernancePermitRequest:
 
 
 @dataclass
+class FederationGrantCeilingDeclaration:
+    source: PrincipalIdentity
+    target: PrincipalIdentity
+    agent_resource: GovernanceResource
+    binding_digest: str
+    skill: str
+    ingress_effect: GovernanceEffect
+    effects: list[GovernanceEffect]
+    limits: GovernanceLimits
+    max_depth: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "FederationGrantCeilingDeclaration":
+        return cls(
+            PrincipalIdentity(**data["source"]),
+            PrincipalIdentity(**data["target"]),
+            GovernanceResource(**data["agent_resource"]),
+            data["binding_digest"],
+            data["skill"],
+            GovernanceEffect.from_dict(data["ingress_effect"]),
+            [GovernanceEffect.from_dict(effect) for effect in data["effects"]],
+            GovernanceLimits(**data["limits"]),
+            data["max_depth"],
+        )
+
+
+@dataclass
+class FederationTrustDeclaration:
+    id: str
+    revision: int
+    foreign_domain: str
+    local_audience: str
+    key_id: str
+    verifying_key: str
+    minimum_issuer_epoch: int
+    max_revocation_staleness_ms: int
+    max_clock_skew_ms: int
+    valid_from_ms: int
+    deadline_ms: int
+    approved: list[FederationGrantCeilingDeclaration]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "FederationTrustDeclaration":
+        return cls(
+            **{
+                **data,
+                "approved": [
+                    FederationGrantCeilingDeclaration.from_dict(shape) for shape in data["approved"]
+                ],
+            }
+        )
+
+
+@dataclass
+class PublishFederationTrustRequest:
+    namespace: str
+    tenant: str
+    change_id: str
+    expected_revision: int
+    trust: FederationTrustDeclaration
+    reason: str
+
+
+@dataclass
+class RevokeFederationTrustRequest:
+    namespace: str
+    tenant: str
+    change_id: str
+    trust_id: str
+    expected_revision: int
+    reason: str
+
+
+@dataclass
+class SignedFederationEnvelopeDeclaration:
+    payload: str
+    signature: str
+
+
+@dataclass
+class FederationImportReceipt:
+    namespace: str
+    tenant: str
+    import_id: str
+    envelope_digest: str
+    trust_id: str
+    trust_revision: int
+    issuer_domain: str
+    source: PrincipalIdentity
+    target: PrincipalIdentity
+    agent_resource: GovernanceResource
+    binding_digest: str
+    skill: str
+    root_id: str
+    expires_at_ms: int
+    accepted_at_ms: int
+    execution_started: bool
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "FederationImportReceipt":
+        return cls(
+            **{
+                **data,
+                "source": PrincipalIdentity(**data["source"]),
+                "target": PrincipalIdentity(**data["target"]),
+                "agent_resource": GovernanceResource(**data["agent_resource"]),
+            }
+        )
+
+
+@dataclass
+class FederationTrustView:
+    trust: FederationTrustDeclaration
+    revoked: bool
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "FederationTrustView":
+        return cls(FederationTrustDeclaration.from_dict(data["trust"]), data["revoked"])
+
+
+@dataclass
 class GovernanceResourceChange:
     kind: Literal["close_resource", "reopen_resource"]
     resource: GovernanceResource
@@ -155,6 +276,7 @@ class GovernanceManagementBounds:
     limits: GovernanceLimits
     can_read_history: bool = False
     can_reconcile: bool = False
+    can_manage_federation: bool = False
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "GovernanceManagementBounds":
@@ -166,6 +288,7 @@ class GovernanceManagementBounds:
             GovernanceLimits(**data["limits"]),
             data.get("can_read_history", False),
             data.get("can_reconcile", False),
+            data.get("can_manage_federation", False),
         )
 
 
@@ -180,6 +303,7 @@ class GovernanceScopeView:
     permits: list[GovernancePermitView]
     closed_resources: list[GovernanceResource]
     revoked_subjects: list[str]
+    federation_trusts: list[FederationTrustView] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "GovernanceScopeView":
@@ -200,6 +324,7 @@ class GovernanceScopeView:
             [GovernancePermitView.from_dict(p) for p in data["permits"]],
             [GovernanceResource(**r) for r in data["closed_resources"]],
             data["revoked_subjects"],
+            [FederationTrustView.from_dict(view) for view in data.get("federation_trusts", [])],
         )
 
 
@@ -597,6 +722,41 @@ class _GovernanceMixin:
             self.platform_request(PlatformOperation.GOVERNANCE_PUBLISH_PERMIT, body=asdict(request))
         )
 
+    def publish_federation_trust(
+        self, request: PublishFederationTrustRequest
+    ) -> GovernanceChangeReceipt:
+        return GovernanceChangeReceipt.from_dict(
+            self.platform_request(
+                PlatformOperation.GOVERNANCE_PUBLISH_FEDERATION_TRUST, body=asdict(request)
+            )
+        )
+
+    def revoke_federation_trust(
+        self, request: RevokeFederationTrustRequest
+    ) -> GovernanceChangeReceipt:
+        return GovernanceChangeReceipt.from_dict(
+            self.platform_request(
+                PlatformOperation.GOVERNANCE_REVOKE_FEDERATION_TRUST, body=asdict(request)
+            )
+        )
+
+    def import_federation_envelope(
+        self,
+        namespace: str,
+        tenant: str,
+        envelope: SignedFederationEnvelopeDeclaration,
+    ) -> FederationImportReceipt:
+        receipt = FederationImportReceipt.from_dict(
+            self.platform_request(
+                PlatformOperation.FEDERATION_IMPORT_ENVELOPE,
+                path={"namespace": namespace, "tenant": tenant},
+                body={"envelope": asdict(envelope)},
+            )
+        )
+        if receipt.namespace != namespace or receipt.tenant != tenant or receipt.execution_started:
+            raise ValueError("federation import receipt identity or execution state mismatch")
+        return receipt
+
     def intervene_governance(
         self, request: GovernanceInterventionRequest
     ) -> GovernanceChangeReceipt:
@@ -694,6 +854,41 @@ class _AsyncGovernanceMixin:
                 PlatformOperation.GOVERNANCE_PUBLISH_PERMIT, body=asdict(request)
             )
         )
+
+    async def publish_federation_trust(
+        self, request: PublishFederationTrustRequest
+    ) -> GovernanceChangeReceipt:
+        return GovernanceChangeReceipt.from_dict(
+            await self.platform_request(
+                PlatformOperation.GOVERNANCE_PUBLISH_FEDERATION_TRUST, body=asdict(request)
+            )
+        )
+
+    async def revoke_federation_trust(
+        self, request: RevokeFederationTrustRequest
+    ) -> GovernanceChangeReceipt:
+        return GovernanceChangeReceipt.from_dict(
+            await self.platform_request(
+                PlatformOperation.GOVERNANCE_REVOKE_FEDERATION_TRUST, body=asdict(request)
+            )
+        )
+
+    async def import_federation_envelope(
+        self,
+        namespace: str,
+        tenant: str,
+        envelope: SignedFederationEnvelopeDeclaration,
+    ) -> FederationImportReceipt:
+        receipt = FederationImportReceipt.from_dict(
+            await self.platform_request(
+                PlatformOperation.FEDERATION_IMPORT_ENVELOPE,
+                path={"namespace": namespace, "tenant": tenant},
+                body={"envelope": asdict(envelope)},
+            )
+        )
+        if receipt.namespace != namespace or receipt.tenant != tenant or receipt.execution_started:
+            raise ValueError("federation import receipt identity or execution state mismatch")
+        return receipt
 
     async def intervene_governance(
         self, request: GovernanceInterventionRequest

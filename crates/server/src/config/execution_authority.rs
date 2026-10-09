@@ -3,7 +3,11 @@
 use std::collections::BTreeSet;
 
 use acteon_core::{PrincipalIdentity, ResourceKind, ResourceRef, TeamRef};
-use acteon_governance::{RootBudgetLimits, context::AcceptedEffect};
+use acteon_governance::{
+    RootBudgetLimits,
+    context::AcceptedEffect,
+    federation::{FederationTrust, FederationTrustIssuanceCeiling},
+};
 use serde::{Deserialize, Serialize};
 
 /// Complete deployment scope manifest. Runtime installation must publish every
@@ -200,6 +204,28 @@ pub struct ExecutionScopeConfig {
     /// Independent authenticated management rights; omitted means no public management.
     #[serde(default)]
     pub managers: Vec<ExecutionManagerConfig>,
+    /// Cross-domain trust roots and authenticated peer bindings are installed
+    /// by the host. An absent block disables federation for this scope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub federation: Option<ExecutionFederationConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionFederationConfig {
+    pub local_audience: String,
+    /// Complete exact trust revisions a manager may publish or revoke.
+    pub trusts: Vec<FederationTrust>,
+    /// Foreign domains mapped to local private-authentication principals.
+    pub peers: Vec<FederationPeerConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationPeerConfig {
+    pub foreign_domain: String,
+    pub authentication_principal: PrincipalIdentity,
+    pub trust_ids: Vec<String>,
 }
 
 /// Chain names and actors explicitly reviewed by the operator. All provider
@@ -260,6 +286,11 @@ pub struct ExecutionManagerConfig {
     /// Independent permission to accept qualified finality for retained work.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub can_reconcile: bool,
+    /// Exact trust IDs this manager may publish or terminally revoke.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub federation_trust_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub can_manage_federation: bool,
     /// Exact independent finality-management footprint, including enclosing
     /// resources for descendants. Routes alone do not authorize reconciliation.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -299,12 +330,7 @@ impl ExecutionAuthorityConfig {
         }
         let mut scopes = BTreeSet::new();
         for scope in &self.scopes {
-            scope.validate_chains()?;
-            scope.validate_agents()?;
-            scope.validate_permits()?;
-            scope.validate_managers()?;
-            scope.validate_history_only()?;
-            scope.validate_reconciliation_only()?;
+            scope.validate_components()?;
             for profile in scope
                 .agent_services
                 .iter()
@@ -409,6 +435,16 @@ impl ExecutionAuthorityConfig {
 }
 
 impl ExecutionScopeConfig {
+    fn validate_components(&self) -> Result<(), String> {
+        self.validate_chains()?;
+        self.validate_agents()?;
+        self.validate_permits()?;
+        self.validate_managers()?;
+        self.validate_federation()?;
+        self.validate_history_only()?;
+        self.validate_reconciliation_only()
+    }
+
     pub(crate) fn retained_only(&self) -> bool {
         self.history_only || self.reconciliation_only
     }
@@ -586,7 +622,21 @@ impl ExecutionScopeConfig {
                     && !manager.can_intervene
                     && !manager.can_read_history
                     && !manager.can_reconcile
+                    && !manager.can_manage_federation
                     && manager.workforce.is_none())
+                || manager.federation_trust_ids.len() > 128
+                || manager
+                    .federation_trust_ids
+                    .iter()
+                    .collect::<BTreeSet<_>>()
+                    .len()
+                    != manager.federation_trust_ids.len()
+                || manager.can_manage_federation == manager.federation_trust_ids.is_empty()
+                || manager.federation_trust_ids.iter().any(|id| {
+                    self.federation.as_ref().is_none_or(|federation| {
+                        !federation.trusts.iter().any(|trust| trust.id == *id)
+                    })
+                })
                 || manager.reconciliation_resources.len() > 128
                 || manager
                     .reconciliation_resources
@@ -609,6 +659,105 @@ impl ExecutionScopeConfig {
                 || manager.limits.max_concurrent > self.credential_limits.max_concurrent
             {
                 return Err("execution management exceeds independently declared bounds".into());
+            }
+            if manager.can_manage_federation {
+                let federation = self
+                    .federation
+                    .as_ref()
+                    .ok_or("federation management requires configured trusts")?;
+                FederationTrustIssuanceCeiling {
+                    issuer: manager.principal.clone(),
+                    approved: federation
+                        .trusts
+                        .iter()
+                        .filter(|trust| manager.federation_trust_ids.contains(&trust.id))
+                        .cloned()
+                        .collect(),
+                    valid_from_ms: manager.valid_from_ms,
+                    deadline_ms: manager.limits.deadline_ms,
+                }
+                .validate()
+                .map_err(|_| "federation manager exceeds its trust publication ceiling")?;
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_federation(&self) -> Result<(), String> {
+        let Some(federation) = &self.federation else {
+            if self
+                .managers
+                .iter()
+                .any(|manager| manager.can_manage_federation)
+            {
+                return Err("federation management requires a deployment federation block".into());
+            }
+            return Ok(());
+        };
+        if federation.local_audience.is_empty()
+            || federation.local_audience.len() > 255
+            || federation.local_audience.trim() != federation.local_audience
+            || federation.local_audience.chars().any(char::is_control)
+            || federation.trusts.is_empty()
+            || federation.trusts.len() > 128
+            || federation.peers.is_empty()
+            || federation.peers.len() > 128
+        {
+            return Err("invalid bounded execution federation configuration".into());
+        }
+        let mut trust_revisions = BTreeSet::new();
+        let mut trust_ids = BTreeSet::new();
+        for trust in &federation.trusts {
+            if trust.local_audience != federation.local_audience
+                || !trust_revisions.insert((&trust.id, trust.revision))
+                || trust.approved.iter().any(|shape| {
+                    shape.agent_resource.namespace() != self.namespace
+                        || shape.agent_resource.tenant() != self.tenant
+                        || std::iter::once(&shape.ingress_effect)
+                            .chain(&shape.effects)
+                            .flat_map(|effect| &effect.resources)
+                            .any(|resource| {
+                                resource.namespace() != self.namespace
+                                    || resource.tenant() != self.tenant
+                            })
+                })
+            {
+                return Err("federation trust exceeds its execution scope".into());
+            }
+            trust_ids.insert(&trust.id);
+        }
+        FederationTrustIssuanceCeiling {
+            issuer: self.publisher.clone(),
+            approved: federation.trusts.clone(),
+            valid_from_ms: self.valid_from_ms,
+            deadline_ms: self.credential_limits.deadline_ms,
+        }
+        .validate()
+        .map_err(|_| "invalid federation trust publication ceiling")?;
+        let mut peer_domains = BTreeSet::new();
+        let mut peer_principals = BTreeSet::new();
+        for peer in &federation.peers {
+            let ids = peer.trust_ids.iter().collect::<BTreeSet<_>>();
+            if peer.foreign_domain.is_empty()
+                || peer.foreign_domain.len() > 255
+                || peer.foreign_domain.trim() != peer.foreign_domain
+                || peer.foreign_domain.chars().any(char::is_control)
+                || !peer_domains.insert(&peer.foreign_domain)
+                || !peer_principals.insert(peer.authentication_principal.id())
+                || !self.subjects.contains(&peer.authentication_principal)
+                || peer.trust_ids.is_empty()
+                || peer.trust_ids.len() > 128
+                || ids.len() != peer.trust_ids.len()
+                || peer.trust_ids.iter().any(|id| !trust_ids.contains(id))
+                || peer.trust_ids.iter().any(|id| {
+                    federation
+                        .trusts
+                        .iter()
+                        .filter(|trust| trust.id == *id)
+                        .any(|trust| trust.foreign_domain != peer.foreign_domain)
+                })
+            {
+                return Err("invalid authenticated federation peer binding".into());
             }
         }
         Ok(())
@@ -708,6 +857,85 @@ mod tests {
         }]})).unwrap()
     }
 
+    fn federation_declaration() -> ExecutionAuthorityConfig {
+        use acteon_governance::federation::{
+            FederationEnvelopeSigner, FederationGrantCeiling, FederationTrust,
+        };
+        let mut configuration = declaration();
+        let scope = &mut configuration.scopes[0];
+        let source =
+            PrincipalIdentity::new("agent/remote", acteon_core::PrincipalKind::Agent).unwrap();
+        let target = scope.subjects[0].clone();
+        let manager =
+            PrincipalIdentity::new("operator/federation", acteon_core::PrincipalKind::Human)
+                .unwrap();
+        scope.subjects.extend([source.clone(), manager.clone()]);
+        let agent_resource = ResourceRef::new(ResourceKind::Agent, "prod", "acme", "maya").unwrap();
+        let endpoint =
+            ResourceRef::new(ResourceKind::Endpoint, "prod", "acme", "incident").unwrap();
+        let ingress = AcceptedEffect {
+            operation: "agent.invoke".into(),
+            resources: vec![agent_resource.clone(), endpoint.clone()],
+        };
+        let trust = FederationTrust {
+            id: "remote-prod".into(),
+            revision: 1,
+            foreign_domain: "remote.example".into(),
+            local_audience: "local.example".into(),
+            key_id: "remote-v1".into(),
+            verifying_key: FederationEnvelopeSigner::from_secret([7; 32]).verifying_key_hex(),
+            minimum_issuer_epoch: 1,
+            max_revocation_staleness_ms: 30_000,
+            max_clock_skew_ms: 1_000,
+            valid_from_ms: 0,
+            deadline_ms: scope.credential_limits.deadline_ms,
+            approved: vec![FederationGrantCeiling {
+                source: source.clone(),
+                target,
+                agent_resource,
+                binding_digest: "a".repeat(64),
+                skill: "notify".into(),
+                ingress_effect: ingress,
+                effects: vec![AcceptedEffect {
+                    operation: "provider.execute".into(),
+                    resources: vec![endpoint],
+                }],
+                limits: RootBudgetLimits {
+                    max_units: 5,
+                    max_concurrent: 1,
+                    deadline_ms: scope.credential_limits.deadline_ms,
+                },
+                max_depth: 2,
+            }],
+        };
+        scope.federation = Some(ExecutionFederationConfig {
+            local_audience: "local.example".into(),
+            trusts: vec![trust],
+            peers: vec![FederationPeerConfig {
+                foreign_domain: "remote.example".into(),
+                authentication_principal: source.clone(),
+                trust_ids: vec!["remote-prod".into()],
+            }],
+        });
+        scope.managers.push(ExecutionManagerConfig {
+            agents: vec![],
+            principal: manager,
+            subjects: vec![source],
+            routes: vec![],
+            can_issue_permits: false,
+            can_intervene: false,
+            can_read_history: false,
+            can_reconcile: false,
+            federation_trust_ids: vec!["remote-prod".into()],
+            can_manage_federation: true,
+            reconciliation_resources: vec![],
+            workforce: None,
+            valid_from_ms: 0,
+            limits: scope.credential_limits.clone(),
+        });
+        configuration
+    }
+
     #[test]
     fn deployment_bounds_and_control_isolation_are_explicit() {
         let config = declaration();
@@ -794,5 +1022,47 @@ mod tests {
         configuration
             .validate(("auth-control", "deployment"))
             .unwrap();
+    }
+
+    #[test]
+    fn federation_requires_exact_audience_peer_scope_and_independent_manager_rights() {
+        let configuration = federation_declaration();
+        configuration
+            .validate(("auth-control", "deployment"))
+            .unwrap();
+        for variation in 0..7 {
+            let mut invalid = configuration.clone();
+            match variation {
+                0 => {
+                    invalid.scopes[0].federation.as_mut().unwrap().trusts[0].local_audience =
+                        "another.example".into()
+                }
+                1 => {
+                    invalid.scopes[0].federation.as_mut().unwrap().peers[0].foreign_domain =
+                        "impostor.example".into()
+                }
+                2 => {
+                    invalid.scopes[0].federation.as_mut().unwrap().peers[0].trust_ids =
+                        vec!["unknown".into()]
+                }
+                3 => {
+                    invalid.scopes[0].federation.as_mut().unwrap().trusts[0].approved[0]
+                        .agent_resource =
+                        ResourceRef::new(ResourceKind::Agent, "prod", "other", "maya").unwrap()
+                }
+                4 => invalid.scopes[0].managers[0].can_manage_federation = false,
+                5 => invalid.scopes[0].managers[0].federation_trust_ids.clear(),
+                _ => {
+                    let duplicate = invalid.scopes[0].federation.as_ref().unwrap().peers[0].clone();
+                    invalid.scopes[0]
+                        .federation
+                        .as_mut()
+                        .unwrap()
+                        .peers
+                        .push(duplicate);
+                }
+            }
+            assert!(invalid.validate(("auth-control", "deployment")).is_err());
+        }
     }
 }

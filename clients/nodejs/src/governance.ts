@@ -12,6 +12,33 @@ export interface PublishGovernancePermitRequest {
   namespace: string; tenant: string; change_id: string; expected_revision: number;
   permit: GovernancePermitDeclaration; reason: string;
 }
+export interface FederationGrantCeilingDeclaration {
+  source: PrincipalIdentity; target: PrincipalIdentity; agent_resource: GovernanceResource;
+  binding_digest: string; skill: string; ingress_effect: GovernanceEffect;
+  effects: GovernanceEffect[]; limits: GovernanceLimits; max_depth: number;
+}
+export interface FederationTrustDeclaration {
+  id: string; revision: number; foreign_domain: string; local_audience: string;
+  key_id: string; verifying_key: string; minimum_issuer_epoch: number;
+  max_revocation_staleness_ms: number; max_clock_skew_ms: number;
+  valid_from_ms: number; deadline_ms: number; approved: FederationGrantCeilingDeclaration[];
+}
+export interface PublishFederationTrustRequest {
+  namespace: string; tenant: string; change_id: string; expected_revision: number;
+  trust: FederationTrustDeclaration; reason: string;
+}
+export interface RevokeFederationTrustRequest {
+  namespace: string; tenant: string; change_id: string; trust_id: string;
+  expected_revision: number; reason: string;
+}
+export interface SignedFederationEnvelopeDeclaration { payload: string; signature: string; }
+export interface FederationImportReceipt {
+  namespace: string; tenant: string; import_id: string; envelope_digest: string;
+  trust_id: string; trust_revision: number; issuer_domain: string;
+  source: PrincipalIdentity; target: PrincipalIdentity; agent_resource: GovernanceResource;
+  binding_digest: string; skill: string; root_id: string; expires_at_ms: number;
+  accepted_at_ms: number; execution_started: false;
+}
 export type GovernanceIntervention =
   | { kind: "close_resource" | "reopen_resource"; resource: GovernanceResource }
   | { kind: "revoke_subject"; subject: PrincipalIdentity }
@@ -34,6 +61,8 @@ export interface GovernanceManagementBounds {
   can_read_history?: boolean;
   /** Independent qualified finality acceptance; absent means denied. */
   can_reconcile?: boolean;
+  /** Independent configured federation trust-management right; absent means denied. */
+  can_manage_federation?: boolean;
   valid_from_ms: number; limits: GovernanceLimits;
 }
 export interface GovernanceScopeView {
@@ -41,6 +70,7 @@ export interface GovernanceScopeView {
   namespace: string; tenant: string; incarnation: string; generation: number;
   routes: GovernanceRouteView[]; permits: GovernancePermitView[];
   closed_resources: GovernanceResource[]; revoked_subjects: string[];
+  federation_trusts?: Array<{ trust: FederationTrustDeclaration; revoked: boolean }>;
 }
 
 /** Verified retained evidence. Reading it never admits or resumes execution. */

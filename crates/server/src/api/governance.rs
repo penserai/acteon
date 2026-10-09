@@ -5,7 +5,8 @@ use crate::{
 };
 use acteon_core::{
     GovernanceChangeReceipt, GovernanceInterventionRequest, GovernanceScopeView,
-    ProviderExecutionHistory, PublishGovernancePermitRequest,
+    ProviderExecutionHistory, PublishFederationTrustRequest, PublishGovernancePermitRequest,
+    RevokeFederationTrustRequest,
 };
 use axum::{
     Extension, Json,
@@ -108,6 +109,36 @@ pub async fn publish_permit(
         ))?;
     Ok(Json(
         runtime.publish_governance_permit(request, &proof).await?,
+    ))
+}
+
+#[utoipa::path(post, path = "/v1/governance/federation/trusts", tag = "Governance", request_body = PublishFederationTrustRequest,
+    responses((status = 200, body = GovernanceChangeReceipt), (status = 400, description = "Invalid trust"), (status = 403, description = "Trust exceeds configured management ceiling"), (status = 409, description = "Revision or authority conflict"), (status = 503, description = "Governance unavailable")))]
+pub async fn publish_federation_trust(
+    State(state): State<AppState>,
+    proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
+    Json(request): Json<PublishFederationTrustRequest>,
+) -> Result<Json<GovernanceChangeReceipt>, GovernanceApiError> {
+    let proof = authentication(proof)?;
+    Ok(Json(
+        runtime(&state)?
+            .publish_federation_trust(request, &proof)
+            .await?,
+    ))
+}
+
+#[utoipa::path(post, path = "/v1/governance/federation/trusts/revoke", tag = "Governance", request_body = RevokeFederationTrustRequest,
+    responses((status = 200, body = GovernanceChangeReceipt), (status = 400, description = "Invalid revocation"), (status = 403, description = "Trust exceeds configured management ceiling"), (status = 409, description = "Revision or authority conflict"), (status = 503, description = "Governance unavailable")))]
+pub async fn revoke_federation_trust(
+    State(state): State<AppState>,
+    proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
+    Json(request): Json<RevokeFederationTrustRequest>,
+) -> Result<Json<GovernanceChangeReceipt>, GovernanceApiError> {
+    let proof = authentication(proof)?;
+    Ok(Json(
+        runtime(&state)?
+            .revoke_federation_trust(request, &proof)
+            .await?,
     ))
 }
 

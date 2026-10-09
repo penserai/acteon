@@ -2,7 +2,7 @@
 
 Use Acteon's SDKs to connect agents, services, and workers to the same execution and governance platform. Start with the typed helpers for dispatch, rules, audit, approvals, and bus operations. Use the complete **platform operation API** for controls that do not yet have a dedicated helper in your language.
 
-The current source tree provides a generated catalog for **216 finite HTTP operations** in Rust, Python, TypeScript, Go, and Java. It includes receipt sessions, managed-stage recovery, workflow and execution controls, inference profiles, stream windows, and operator APIs. Six streaming or polymorphic RPC routes use the existing streaming and A2A clients instead. Server configuration, authorization, and optional build features still determine which operations are available on your deployment.
+The current source tree provides a generated catalog for **219 finite HTTP operations** in Rust, Python, TypeScript, Go, and Java. It includes receipt sessions, managed-stage recovery, workflow and execution controls, inference profiles, stream windows, federation admission, and operator APIs. Six streaming or polymorphic RPC routes use the existing streaming and A2A clients instead. Server configuration, authorization, and optional build features still determine which operations are available on your deployment.
 
 ## Choose the right interface
 
@@ -140,6 +140,27 @@ send. Python exposes `outcome.pending`, Node `outcome.pending`, Go
 ## Governance management
 
 All five SDKs expose native typed scope inspection, permit publication, and intervention methods. See [governance management](../features/governance.md) for method names and authority requirements. The shared governance fixture checks request bodies, authentication, typed responses, and HTTP refusal preservation; actual authority enforcement is tested separately against the server and configured state backend.
+
+### Federation trust and import admission
+
+All five SDKs expose typed trust publication, terminal trust revocation and
+signed-envelope import. Imports return `FederationImportReceipt` and require
+`execution_started` to be false. The SDKs also correlate the receipt namespace
+and tenant with the requested path before returning it.
+
+| SDK | Publish trust | Revoke trust | Import envelope |
+|---|---|---|---|
+| Rust | `publish_federation_trust` | `revoke_federation_trust` | `import_federation_envelope` |
+| Python, sync/async | `publish_federation_trust` | `revoke_federation_trust` | `import_federation_envelope` |
+| TypeScript | `publishFederationTrust` | `revokeFederationTrust` | `importFederationEnvelope` |
+| Go | `PublishFederationTrust` | `RevokeFederationTrust` | `ImportFederationEnvelope` |
+| Java | `publishFederationTrust` | `revokeFederationTrust` | `importFederationEnvelope` |
+
+The shared federation fixture verifies exact snake-case wire fields and all
+three routes. The public request types describe proposed data; authentication
+and deployment-owned ceilings establish authority. Import admission retains a
+bounded signed assertion and does not dispatch local work. See [federation
+status](../features/a2a.md#federation-status).
 
 ## Governed registry metadata
 

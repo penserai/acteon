@@ -3,7 +3,7 @@ import { AGENT_EXECUTION_CONTEXT_HEADER, AGENT_SOURCE_CONTEXT_HEADER, agentExecu
 import { parseProviderHistoryReceipt, type ProviderHistoryReceipt, type ProviderReconciliationCorrelation, type ProviderReconciliationRequest } from "./governance.js";
 import { parseProviderExecutionHistory, type ProviderExecutionHistory, type ProviderExecutionHistoryWire } from "./governance.js";
 import type { WorkforceScopeView, WorkforceChangeRequest } from "./workforce.js";
-import type { GovernanceScopeView, GovernanceChangeReceipt, PublishGovernancePermitRequest, GovernanceInterventionRequest } from "./governance.js";
+import type { FederationImportReceipt, GovernanceScopeView, GovernanceChangeReceipt, PublishFederationTrustRequest, PublishGovernancePermitRequest, RevokeFederationTrustRequest, SignedFederationEnvelopeDeclaration, GovernanceInterventionRequest } from "./governance.js";
 import { platformRequestParts, type PlatformOperation, type PlatformRequestOptions } from "./platform.js";
 /**
  * HTTP client for the Acteon action gateway.
@@ -585,6 +585,22 @@ export class ActeonClient {
   }
   async publishGovernancePermit(request: PublishGovernancePermitRequest): Promise<GovernanceChangeReceipt> {
     return await this.platformRequest("governance_publish_permit", { body: request }) as GovernanceChangeReceipt;
+  }
+  async publishFederationTrust(request: PublishFederationTrustRequest): Promise<GovernanceChangeReceipt> {
+    return await this.platformRequest("governance_publish_federation_trust", { body: request }) as GovernanceChangeReceipt;
+  }
+  async revokeFederationTrust(request: RevokeFederationTrustRequest): Promise<GovernanceChangeReceipt> {
+    return await this.platformRequest("governance_revoke_federation_trust", { body: request }) as GovernanceChangeReceipt;
+  }
+  /** Authenticate as the configured peer and retain authority without starting execution. */
+  async importFederationEnvelope(namespace: string, tenant: string, envelope: SignedFederationEnvelopeDeclaration): Promise<FederationImportReceipt> {
+    const receipt = await this.platformRequest("federation_import_envelope", {
+      path: { namespace, tenant }, body: { envelope },
+    }) as FederationImportReceipt;
+    if (receipt.namespace !== namespace || receipt.tenant !== tenant || receipt.execution_started !== false) {
+      throw new Error("federation import receipt identity or execution state mismatch");
+    }
+    return receipt;
   }
   async interveneGovernance(request: GovernanceInterventionRequest): Promise<GovernanceChangeReceipt> {
     return await this.platformRequest("governance_intervene", { body: request }) as GovernanceChangeReceipt;

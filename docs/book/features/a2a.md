@@ -510,18 +510,47 @@ banner. Engine actions and the `StreamEvent`s they emit line up by id.
 ## Federation status
 
 The public A2A service currently provides a governed mesh within one Acteon
-administrative domain. Cross-domain federation is under active qualification.
-The governance substrate can verify audience-bound Ed25519 delegation envelopes,
-attenuate them through local import policy, enforce short revocation-freshness
-windows, fund a local root, and serialize trust revocation with imported effect
-starts across the configured state backend.
+administrative domain. It also exposes a deliberately narrower cross-domain
+**import admission** boundary. A configured peer can submit a signed delegation
+envelope to:
 
-That substrate is not yet a public federation endpoint. Runtime identity
-binding, authenticated trust management, credential exchange, capability
-negotiation, partition recovery and conformance against named external peers
-must pass before a cross-domain interoperability claim is published. A remote
-card, signature or cached envelope never overrides local permits, closures,
-principal revocation or root limits.
+```text
+POST /a2a/{namespace}/{tenant}/federation/envelopes:import
+```
+
+The peer must authenticate as the exact local principal assigned to its foreign
+domain. Acteon verifies the audience-bound Ed25519 signature, current trust
+revision, issuer epoch, freshness and expiry. It then requires the envelope's
+recipient, skill, agent resource, binding digest, ingress effect and direct
+effects to fit the service plan prepared from deployment configuration. A
+successful response is a `FederationImportReceipt` with
+`execution_started: false`: admission retains signed evidence and funds a
+bounded local root, but it does not create an A2A task, register an effect or
+call the recipient.
+
+Trust publication and terminal revocation are separate authenticated governance
+operations:
+
+```text
+POST /v1/governance/federation/trusts
+POST /v1/governance/federation/trusts/revoke
+```
+
+The caller needs an independently configured `can_manage_federation` grant and
+an exact `federation_trust_ids` footprint. The server accepts only trust values
+already present in the deployment-owned ceiling. Request data cannot introduce
+a new key, domain, audience, recipient, effect or limit. Inspection returns only
+the trust records inside that manager's footprint.
+
+The current release stops at authenticated admission. It does not turn an
+import into local execution or provide outbound cross-domain delivery,
+credential exchange, capability negotiation, remote key discovery, or automatic
+partition recovery. The next runtime gate must recheck the peer credential,
+trust, closures, recipient and imported authority at the same state transition
+that starts local work. Until that gate and external conformance tests ship,
+Acteon does not claim complete cross-domain A2A interoperability. A remote card,
+signature or cached envelope never overrides local permits, closures, principal
+revocation or root limits.
 
 ## Errors
 

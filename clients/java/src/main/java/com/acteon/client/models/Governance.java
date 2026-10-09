@@ -17,6 +17,45 @@ public final class Governance {
     public record PublishPermitRequest(String namespace, String tenant,
         @JsonProperty("change_id") String changeId, @JsonProperty("expected_revision") long expectedRevision,
         PermitDeclaration permit, String reason) {}
+    public record FederationGrantCeilingDeclaration(PrincipalIdentity source,
+        PrincipalIdentity target, @JsonProperty("agent_resource") Resource agentResource,
+        @JsonProperty("binding_digest") String bindingDigest, String skill,
+        @JsonProperty("ingress_effect") Effect ingressEffect, List<Effect> effects,
+        Limits limits, @JsonProperty("max_depth") long maxDepth) {}
+    public record FederationTrustDeclaration(String id, long revision,
+        @JsonProperty("foreign_domain") String foreignDomain,
+        @JsonProperty("local_audience") String localAudience,
+        @JsonProperty("key_id") String keyId,
+        @JsonProperty("verifying_key") String verifyingKey,
+        @JsonProperty("minimum_issuer_epoch") long minimumIssuerEpoch,
+        @JsonProperty("max_revocation_staleness_ms") long maxRevocationStalenessMs,
+        @JsonProperty("max_clock_skew_ms") long maxClockSkewMs,
+        @JsonProperty("valid_from_ms") long validFromMs,
+        @JsonProperty("deadline_ms") long deadlineMs,
+        List<FederationGrantCeilingDeclaration> approved) {}
+    public record PublishFederationTrustRequest(String namespace, String tenant,
+        @JsonProperty("change_id") String changeId,
+        @JsonProperty("expected_revision") long expectedRevision,
+        FederationTrustDeclaration trust, String reason) {}
+    public record RevokeFederationTrustRequest(String namespace, String tenant,
+        @JsonProperty("change_id") String changeId,
+        @JsonProperty("trust_id") String trustId,
+        @JsonProperty("expected_revision") long expectedRevision, String reason) {}
+    public record SignedFederationEnvelopeDeclaration(String payload, String signature) {}
+    public record FederationImportReceipt(String namespace, String tenant,
+        @JsonProperty("import_id") String importId,
+        @JsonProperty("envelope_digest") String envelopeDigest,
+        @JsonProperty("trust_id") String trustId,
+        @JsonProperty("trust_revision") long trustRevision,
+        @JsonProperty("issuer_domain") String issuerDomain,
+        PrincipalIdentity source, PrincipalIdentity target,
+        @JsonProperty("agent_resource") Resource agentResource,
+        @JsonProperty("binding_digest") String bindingDigest, String skill,
+        @JsonProperty("root_id") String rootId,
+        @JsonProperty("expires_at_ms") long expiresAtMs,
+        @JsonProperty("accepted_at_ms") long acceptedAtMs,
+        @JsonProperty("execution_started") boolean executionStarted) {}
+    public record FederationTrustView(FederationTrustDeclaration trust, boolean revoked) {}
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record Intervention(String kind, Resource resource, PrincipalIdentity subject,
         @JsonProperty("permit_id") String permitId, @JsonProperty("credential_id") String credentialId,
@@ -39,11 +78,13 @@ public final class Governance {
         @JsonProperty("can_intervene") boolean canIntervene,
         @JsonInclude(JsonInclude.Include.NON_DEFAULT) @JsonProperty("can_read_history") boolean canReadHistory,
         @JsonInclude(JsonInclude.Include.NON_DEFAULT) @JsonProperty("can_reconcile") boolean canReconcile,
+        @JsonInclude(JsonInclude.Include.NON_DEFAULT) @JsonProperty("can_manage_federation") boolean canManageFederation,
         @JsonProperty("valid_from_ms") long validFromMs, Limits limits) {}
     public record ScopeView(ManagementBounds management, String namespace, String tenant, String incarnation, long generation,
         List<RouteView> routes, List<PermitView> permits,
         @JsonProperty("closed_resources") List<Resource> closedResources,
-        @JsonProperty("revoked_subjects") List<String> revokedSubjects) {}
+        @JsonProperty("revoked_subjects") List<String> revokedSubjects,
+        @JsonInclude(JsonInclude.Include.NON_EMPTY) @JsonProperty("federation_trusts") List<FederationTrustView> federationTrusts) {}
     public record RegistryMutationRequest(String namespace, String tenant,
         @JsonProperty("agent_id") String agentId, @JsonProperty("change_id") String changeId,
         @JsonProperty("expected_registry_revision") long expectedRegistryRevision, String projection,

@@ -4,7 +4,7 @@ The `acteon-client` crate provides a native Rust HTTP client for the Acteon API.
 
 ## Complete platform API
 
-The generated operation catalog exposes all 193 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, and stream windows. Use an authenticated client and a configured, existing stage for this example:
+The generated operation catalog exposes all 219 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, federation admission, and stream windows. Use an authenticated client and a configured, existing stage for this example:
 
 ```rust
 let status = client.platform_request(
@@ -21,6 +21,12 @@ See [SDK coverage and wire contracts](https://penserai.github.io/acteon/api/sdk-
 ## Typed governance management
 
 Use `governance`, `publish_governance_permit`, and `intervene_governance` to inspect permitted routes, issue bounded permits, and close/reopen resources or revoke permits, subjects, and credentials. Requests and responses have native typed models. These methods require an authenticated operator and an independently configured execution manager for the requested namespace and tenant; an executor credential alone does not grant management authority.
+
+Use `publish_federation_trust`, `revoke_federation_trust`, and
+`import_federation_envelope` for the cross-domain admission boundary. The
+import helper requires a configured peer credential, correlates the returned
+scope, and accepts only a receipt with `execution_started == false`. Admission
+retains signed authority and does not dispatch local work.
 
 Calls preserve HTTP refusals and do not retry automatically. Keep `change_id` stable when reconciling a lost response. A receipt records persisted authority; closure affects subsequent starts and does not promise cancellation of work already in flight.
 

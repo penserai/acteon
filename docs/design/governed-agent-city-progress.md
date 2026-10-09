@@ -45,8 +45,8 @@ verify per-effect permits, revocation during a chain, closures or mesh execution
 | 1: Actors/context | Executor role, stable principals, credential enrollment, signed root contexts, shared authentication and private scope projection merged | Remaining deferred propagation, teams, memberships, mandates and delegated lineage |
 | 2: Permits/checkpoints | Current permits/credentials/configuration snapshots, qualified static-webhook adapter and common gateway mediation merged; standalone runtime and authenticated governance management with SDK/UI merged | Broader effect coverage, workforce representation, deferred execution and recovery |
 | 3: Closures/intervention | Serialized resource restrictions, durable control events and authenticated public close/reopen/revocation | Overlapping named closures, intervention recovery, drain/pause/cancel semantics and acknowledgments |
-| 4: Autonomous mesh | Governed target discovery/submission, state-backed progress cursors, native cancellation, durable peer input continuation, hosted verifier-backed authorization, and authenticated remote auth handoff implemented | Federation trust/revocation and broader recovery proof |
-| 5: Production/federation | Audience-bound federation trust kernel implemented on the current branch | Runtime/management integration, credential exchange, verified peer capability matrix and external failure tests |
+| 4: Autonomous mesh | Governed target discovery/submission, state-backed progress cursors, native cancellation, durable peer input continuation, hosted verifier-backed authorization, and authenticated remote auth handoff implemented | Federated execution handoff and broader recovery proof |
+| 5: Production/federation | Audience-bound trust kernel, configured peer identity binding, authenticated trust management, and inert inbound import admission implemented on the current branch | Current-identity dispatch handoff, outbound transport, credential exchange, verified peer capability matrix and external failure tests |
 
 Next work should integrate trusted execution context into deferred paths and
 complete coordinator/accounting prerequisites before per-effect enforcement. Do
@@ -1985,7 +1985,7 @@ restart, and recovery with exactly one verifier call for the successful
 challenge. Federation trust and cross-domain revocation remain the next Phase 4
 boundary.
 
-### Federation trust kernel (in progress, unpublished)
+### Federation trust and authenticated import admission (in progress, unpublished)
 
 The governance coordinator now has an explicit asymmetric cross-domain trust
 boundary. Locally reviewed trust records bind one foreign domain and Ed25519 key
@@ -2008,7 +2008,23 @@ record tampering and reviewed cutover. CI now explicitly runs the same
 cross-replica publish/import/start/revoke contract on Redis, PostgreSQL and
 DynamoDB. See [Federation trust kernel](federation-trust-kernel.md).
 
-This is the trust and accounting substrate, not a public federation release.
-Configured runtime bindings, authenticated management, credential exchange,
-capability negotiation, qualified wire transport, partition/reconciliation
-operations and named external implementation conformance remain Phase 5 gates.
+The server integration now adds deployment-owned local audience, exact trust
+revisions, and a one-to-one binding from each foreign domain to a current local
+authentication principal. Managers need an independent federation permission
+and exact trust-ID footprint. Trust publication can only select a declaration
+inside that prepared ceiling; terminal revocation uses the same bound.
+
+The protected import route authenticates the configured peer, verifies its
+signed envelope, and requires an exact match to the prepared recipient service,
+skill, agent resource, binding digest, ingress effect and direct effects. It
+returns a typed receipt with `execution_started: false`. The runtime creates no
+task, accepted execution context, effect attempt or outbound call. Operator
+credentials cannot impersonate the peer, and a revoked trust rejects subsequent
+imports. All five SDKs share one typed fixture for trust publication,
+revocation, and envelope admission.
+
+This is an authenticated admission release rather than a complete federation
+release. Current-identity execution handoff, outbound delivery, credential
+exchange, capability negotiation, remote key rotation,
+partition/reconciliation operations and named external implementation
+conformance remain Phase 5 gates.

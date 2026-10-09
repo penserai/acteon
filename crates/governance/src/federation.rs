@@ -242,6 +242,27 @@ pub struct FederationTrustIssuanceCeiling {
     pub deadline_ms: i64,
 }
 
+impl FederationTrustIssuanceCeiling {
+    /// Validate a deployment-owned trust publication ceiling before runtime
+    /// installation. This establishes no authority and retains no state.
+    pub fn validate(&self) -> Result<(), CoordinationError> {
+        if !valid_text(self.issuer.id())
+            || self.approved.is_empty()
+            || self.approved.len() > MAX_APPROVED_SHAPES
+            || self.approved.iter().any(|trust| !valid_trust(trust))
+            || self.valid_from_ms < 0
+            || self.deadline_ms <= self.valid_from_ms
+            || self
+                .approved
+                .iter()
+                .any(|trust| trust.deadline_ms > self.deadline_ms)
+        {
+            return Err(CoordinationError::Restricted);
+        }
+        Ok(())
+    }
+}
+
 pub struct EvaluatedFederationTrustPublication<'a> {
     pub change_id: &'a str,
     pub trust: FederationTrust,
@@ -758,14 +779,7 @@ impl AuthorityCoordinator {
         reason: &str,
         clock: &dyn Clock,
     ) -> Result<ChangeRecord, CoordinationError> {
-        if !valid_text(change_id)
-            || !valid_text(reason)
-            || ceiling.approved.is_empty()
-            || ceiling.approved.len() > MAX_APPROVED_SHAPES
-            || ceiling.approved.iter().any(|trust| !valid_trust(trust))
-            || ceiling.valid_from_ms < 0
-            || ceiling.deadline_ms <= ceiling.valid_from_ms
-        {
+        if !valid_text(change_id) || !valid_text(reason) || ceiling.validate().is_err() {
             return Err(CoordinationError::Restricted);
         }
         for _ in 0..RETRIES {

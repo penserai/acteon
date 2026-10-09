@@ -1,13 +1,16 @@
 //! Typed operator governance; management requests never retry automatically.
 use crate::{ActeonClient, Error, PlatformOperation};
 pub use acteon_core::{
-    GovernanceChangeReceipt, GovernanceEffect, GovernanceIntervention,
+    FederationGrantCeilingDeclaration, FederationImportReceipt, FederationTrustDeclaration,
+    FederationTrustView, GovernanceChangeReceipt, GovernanceEffect, GovernanceIntervention,
     GovernanceInterventionRequest, GovernanceLimits, GovernanceManagementBounds,
     GovernancePermitDeclaration, GovernancePermitView, GovernanceRegistryMutationReceipt,
     GovernanceRegistryMutationRequest, GovernanceRegistryProjection,
     GovernanceRegistryProjectionView, GovernanceRoute, GovernanceRouteView, GovernanceScopeView,
-    ProviderExecutionHistory, ProviderHistoryReceipt, ProviderReconciliationCorrelation,
-    ProviderReconciliationRequest, PublishGovernancePermitRequest,
+    ImportFederationEnvelopeRequest, ProviderExecutionHistory, ProviderHistoryReceipt,
+    ProviderReconciliationCorrelation, ProviderReconciliationRequest,
+    PublishFederationTrustRequest, PublishGovernancePermitRequest, RevokeFederationTrustRequest,
+    SignedFederationEnvelopeDeclaration,
 };
 
 impl ActeonClient {
@@ -192,6 +195,64 @@ impl ActeonClient {
             .await?;
         serde_json::from_value(value).map_err(|e| Error::Deserialization(e.to_string()))
     }
+    pub async fn publish_federation_trust(
+        &self,
+        request: &PublishFederationTrustRequest,
+    ) -> Result<GovernanceChangeReceipt, Error> {
+        let body = serde_json::to_value(request)
+            .map_err(|e| Error::Configuration(format!("federation request serialization: {e}")))?;
+        let value = self
+            .platform_request(
+                PlatformOperation::GovernancePublishFederationTrust,
+                &[],
+                &[],
+                Some(&body),
+            )
+            .await?;
+        serde_json::from_value(value).map_err(|e| Error::Deserialization(e.to_string()))
+    }
+    pub async fn revoke_federation_trust(
+        &self,
+        request: &RevokeFederationTrustRequest,
+    ) -> Result<GovernanceChangeReceipt, Error> {
+        let body = serde_json::to_value(request)
+            .map_err(|e| Error::Configuration(format!("federation request serialization: {e}")))?;
+        let value = self
+            .platform_request(
+                PlatformOperation::GovernanceRevokeFederationTrust,
+                &[],
+                &[],
+                Some(&body),
+            )
+            .await?;
+        serde_json::from_value(value).map_err(|e| Error::Deserialization(e.to_string()))
+    }
+    /// Authenticate as a configured peer and retain imported authority without executing it.
+    pub async fn import_federation_envelope(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        envelope: SignedFederationEnvelopeDeclaration,
+    ) -> Result<FederationImportReceipt, Error> {
+        let body = serde_json::to_value(ImportFederationEnvelopeRequest { envelope })
+            .map_err(|e| Error::Configuration(format!("federation request serialization: {e}")))?;
+        let value = self
+            .platform_request(
+                PlatformOperation::FederationImportEnvelope,
+                &[("namespace", namespace), ("tenant", tenant)],
+                &[],
+                Some(&body),
+            )
+            .await?;
+        let receipt: FederationImportReceipt =
+            serde_json::from_value(value).map_err(|e| Error::Deserialization(e.to_string()))?;
+        if receipt.namespace != namespace || receipt.tenant != tenant || receipt.execution_started {
+            return Err(Error::Deserialization(
+                "federation import receipt identity or execution state mismatch".into(),
+            ));
+        }
+        Ok(receipt)
+    }
     pub async fn intervene_governance(
         &self,
         request: &GovernanceInterventionRequest,
@@ -313,6 +374,57 @@ mod tests {
             assert_eq!(fixture.calls.lock().unwrap().len(), count + 1);
         }
         server.abort();
+    }
+}
+
+#[cfg(test)]
+mod federation_wire_tests {
+    use super::*;
+
+    #[test]
+    fn federation_management_and_inert_import_preserve_wire_contract() {
+        let wire: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../clients/contract-fixtures/federation-management.json"
+        ))
+        .unwrap();
+        let publication: PublishFederationTrustRequest =
+            serde_json::from_value(wire["publication"].clone()).unwrap();
+        let revocation: RevokeFederationTrustRequest =
+            serde_json::from_value(wire["revocation"].clone()).unwrap();
+        let envelope: SignedFederationEnvelopeDeclaration =
+            serde_json::from_value(wire["envelope"].clone()).unwrap();
+        let receipt: FederationImportReceipt =
+            serde_json::from_value(wire["import_receipt"].clone()).unwrap();
+        assert!(!receipt.execution_started);
+        assert_eq!(
+            serde_json::to_value(publication).unwrap(),
+            wire["publication"]
+        );
+        assert_eq!(
+            serde_json::to_value(revocation).unwrap(),
+            wire["revocation"]
+        );
+        assert_eq!(serde_json::to_value(envelope).unwrap(), wire["envelope"]);
+        assert_eq!(
+            serde_json::to_value(receipt).unwrap(),
+            wire["import_receipt"]
+        );
+        assert_eq!(
+            PlatformOperation::GovernancePublishFederationTrust
+                .descriptor()
+                .0,
+            "POST"
+        );
+        assert_eq!(
+            PlatformOperation::GovernanceRevokeFederationTrust
+                .descriptor()
+                .0,
+            "POST"
+        );
+        assert_eq!(
+            PlatformOperation::FederationImportEnvelope.descriptor().1,
+            "/a2a/{namespace}/{tenant}/federation/envelopes:import"
+        );
     }
 }
 

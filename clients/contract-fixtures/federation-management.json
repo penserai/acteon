@@ -1,0 +1,100 @@
+{
+  "publication": {
+    "namespace": "prod",
+    "tenant": "acme",
+    "change_id": "trust-remote-ops",
+    "expected_revision": 0,
+    "trust": {
+      "id": "remote-ops",
+      "revision": 1,
+      "foreign_domain": "remote.example",
+      "local_audience": "acteon://prod/acme",
+      "key_id": "remote-2026-10",
+      "verifying_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "minimum_issuer_epoch": 7,
+      "max_revocation_staleness_ms": 30000,
+      "max_clock_skew_ms": 5000,
+      "valid_from_ms": 0,
+      "deadline_ms": 4102444800000,
+      "approved": [
+        {
+          "source": { "id": "agent/remote-peer", "kind": "agent" },
+          "target": { "id": "agent/maya", "kind": "agent" },
+          "agent_resource": {
+            "kind": "agent",
+            "namespace": "prod",
+            "tenant": "acme",
+            "id": "maya"
+          },
+          "binding_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "skill": "incident.notify",
+          "ingress_effect": {
+            "operation": "agent.invoke",
+            "resources": [
+              { "kind": "agent", "namespace": "prod", "tenant": "acme", "id": "maya" }
+            ]
+          },
+          "effects": [
+            {
+              "operation": "provider.execute",
+              "resources": [
+                { "kind": "endpoint", "namespace": "prod", "tenant": "acme", "id": "incident" }
+              ]
+            }
+          ],
+          "limits": {
+            "max_units": 5,
+            "max_concurrent": 1,
+            "deadline_ms": 4102444800000
+          },
+          "max_depth": 2
+        }
+      ]
+    },
+    "reason": "approve remote incident diagnosis"
+  },
+  "revocation": {
+    "namespace": "prod",
+    "tenant": "acme",
+    "change_id": "revoke-remote-ops",
+    "trust_id": "remote-ops",
+    "expected_revision": 1,
+    "reason": "foreign authority retired"
+  },
+  "envelope": {
+    "payload": "{\"schema_version\":1,\"id\":\"remote-import-1\",\"trust_id\":\"remote-ops\",\"trust_revision\":1}",
+    "signature": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "change_receipt": {
+    "namespace": "prod",
+    "tenant": "acme",
+    "change_id": "trust-remote-ops",
+    "actor": "operator",
+    "reason": "approve remote incident diagnosis",
+    "generation": 6,
+    "pending": false
+  },
+  "import_receipt": {
+    "namespace": "prod",
+    "tenant": "acme",
+    "import_id": "remote-import-1",
+    "envelope_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "trust_id": "remote-ops",
+    "trust_revision": 1,
+    "issuer_domain": "remote.example",
+    "source": { "id": "agent/remote-peer", "kind": "agent" },
+    "target": { "id": "agent/maya", "kind": "agent" },
+    "agent_resource": {
+      "kind": "agent",
+      "namespace": "prod",
+      "tenant": "acme",
+      "id": "maya"
+    },
+    "binding_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "skill": "incident.notify",
+    "root_id": "federated:remote-import-1",
+    "expires_at_ms": 4102444800000,
+    "accepted_at_ms": 1791570000000,
+    "execution_started": false
+  }
+}

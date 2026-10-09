@@ -22,6 +22,7 @@ pub mod dlq;
 pub mod embeddings;
 pub mod events;
 pub mod executions;
+pub mod federation;
 pub mod governance;
 pub mod groups;
 pub mod health;
@@ -208,6 +209,18 @@ pub fn router(state: AppState) -> Router {
             post(governance::accept_reconciliation),
         )
         .route("/v1/governance/permits", post(governance::publish_permit))
+        .route(
+            "/v1/governance/federation/trusts",
+            post(governance::publish_federation_trust),
+        )
+        .route(
+            "/v1/governance/federation/trusts/revoke",
+            post(governance::revoke_federation_trust),
+        )
+        .route(
+            "/a2a/{namespace}/{tenant}/federation/envelopes:import",
+            post(federation::import_envelope),
+        )
         .route("/v1/governance/changes", post(governance::intervene))
         .route("/v1/governance/registry", post(governance::mutate_registry))
         .route(

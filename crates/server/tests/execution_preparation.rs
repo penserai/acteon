@@ -1236,6 +1236,8 @@ fn manager_intervention_footprints_must_fit_before_authority_publication() {
             can_issue_permits: true,
             can_read_history: false,
             can_reconcile: false,
+            federation_trust_ids: vec![],
+            can_manage_federation: false,
             reconciliation_resources: vec![],
             can_intervene: false,
             workforce: None,

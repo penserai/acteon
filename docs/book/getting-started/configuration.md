@@ -649,6 +649,50 @@ for a complete scope declaration, SDK options, replay behavior and current
 execution-path coverage. The sanitized admin configuration exposes only
 `execution_authority_enabled` for this profile.
 
+### Cross-domain import admission
+
+An execution scope may install a `federation` block with one exact local
+audience, reviewed trust revisions, and authenticated peer bindings. Each trust
+contains approved grant shapes that pin the foreign source, local recipient,
+prepared agent resource and binding digest, skill, ingress effect, direct
+effects, budget and delegation depth. Every resource must remain inside the
+enclosing namespace and tenant.
+
+Each peer maps one `foreign_domain` to one local private-authentication
+principal and an explicit list of trust IDs. That principal must also appear in
+the scope's `subjects`. Domains and authentication principals are unique within
+the scope. A manager receives federation control only when both
+`can_manage_federation = true` and a non-empty `federation_trust_ids` list are
+present; this right is independent of permit issuance, intervention, history and
+reconciliation rights.
+
+```toml
+[execution_authority.scopes.federation]
+local_audience = "acteon://prod/acme"
+
+[[execution_authority.scopes.federation.peers]]
+foreign_domain = "remote.example"
+authentication_principal = { id = "agent/remote-peer", kind = "agent" }
+trust_ids = ["remote-prod"]
+
+[[execution_authority.scopes.managers]]
+principal = { id = "operator/federation", kind = "human" }
+subjects = [{ id = "agent/remote-peer", kind = "agent" }]
+routes = []
+valid_from_ms = 0
+limits = { max_units = 5, max_concurrent = 1, deadline_ms = 4102444800000 }
+can_manage_federation = true
+federation_trust_ids = ["remote-prod"]
+```
+
+The omitted `trusts` declaration includes the foreign Ed25519 public key plus
+complete approved grant shapes and should be generated and reviewed from the
+same prepared service plan used for deployment. Startup rejects an unknown
+trust ID, mismatched audience or domain, duplicate peer, cross-scope resource,
+invalid key, excessive validity interval, or manager whose footprint does not
+fit the declaration. See [A2A federation status](../features/a2a.md#federation-status)
+for the management and import APIs.
+
 Configured agent-service replacements use `retained_agent_services` inside the
 same scope. Copy the former binding's card, registry revision, principal, skill,
 endpoint, endpoint ID and route, and pin its published binding digest. The

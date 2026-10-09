@@ -8,7 +8,7 @@ use acteon_server::{
     config::{AuthAuthorityConfig, ExecutionAuthorityConfig, ProviderConfig},
     execution_authority::{
         ExecutionAuthorityRuntime, ExecutionProviderRegistry, ExecutionRuntimeDependencies,
-        ManagementError,
+        FederationImportAdmission, ManagementError,
     },
     provider_factory::StaticWebhook,
 };
@@ -133,6 +133,12 @@ async fn authority(state: Arc<dyn StateStore>) -> Arc<AuthAuthority> {
     )
 }
 async fn proof(auth: Arc<AuthProvider>) -> AuthenticatedExecutionConfiguration {
+    proof_with_secret(auth, "operator-secret").await
+}
+async fn proof_with_secret(
+    auth: Arc<AuthProvider>,
+    secret: &str,
+) -> AuthenticatedExecutionConfiguration {
     let saved = Arc::new(Mutex::new(None));
     let captured = saved.clone();
     let router = Router::new()
@@ -152,7 +158,7 @@ async fn proof(auth: Arc<AuthProvider>) -> AuthenticatedExecutionConfiguration {
         .oneshot(
             Request::builder()
                 .uri("/proof")
-                .header("authorization", "Bearer operator-secret")
+                .header("authorization", format!("Bearer {secret}"))
                 .header("x-acteon-principal", "forged-admin")
                 .body(Body::empty())
                 .unwrap(),
@@ -162,12 +168,442 @@ async fn proof(auth: Arc<AuthProvider>) -> AuthenticatedExecutionConfiguration {
     assert_eq!(response.status(), 200);
     saved.lock().unwrap().take().unwrap()
 }
+
+fn federation_auth() -> AuthFileConfig {
+    toml::from_str(&format!(
+        r#"
+authority_revision = 1
+[settings]
+jwt_secret = {:?}
+[[api_keys]]
+name = "operator"
+authority_id = "credential/operator"
+principal = {{id="operator",kind="human"}}
+key_hash = {:?}
+role = "operator"
+[[api_keys.grants]]
+namespaces = ["prod"]
+tenants = ["acme"]
+providers = ["audit"]
+actions = ["read"]
+[[api_keys]]
+name = "remote-peer"
+authority_id = "credential/remote-peer"
+principal = {{id="agent/remote-peer",kind="agent"}}
+key_hash = {:?}
+role = "executor"
+[[api_keys.grants]]
+namespaces = ["prod"]
+tenants = ["acme"]
+providers = ["incident"]
+actions = ["execute"]
+"#,
+        "t".repeat(32),
+        acteon_server::auth::api_key::hash_api_key("operator-secret"),
+        acteon_server::auth::api_key::hash_api_key("remote-secret"),
+    ))
+    .unwrap()
+}
+
+fn federation_config(
+    registry: &ExecutionProviderRegistry,
+) -> (
+    ExecutionAuthorityConfig,
+    acteon_governance::federation::FederationEnvelopeSigner,
+) {
+    use acteon_core::{PrincipalIdentity, PrincipalKind};
+    use acteon_governance::federation::{
+        FederationEnvelopeSigner, FederationGrantCeiling, FederationTrust,
+    };
+    let mut configuration = config();
+    let scope = &mut configuration.scopes[0];
+    let source = PrincipalIdentity::new("agent/remote-peer", PrincipalKind::Agent).unwrap();
+    let target = PrincipalIdentity::new("agent/notifier", PrincipalKind::Agent).unwrap();
+    scope.subjects.extend([source.clone(), target.clone()]);
+    let mut card = acteon_core::AgentCard::new("notifier", "prod", "acme", "Notifier", "1");
+    card.skills.push(acteon_core::Skill::new("notify"));
+    card.interfaces.push(acteon_core::AgentCardInterface {
+        kind: "rest".into(),
+        url: "https://agents.example/notifier".into(),
+    });
+    scope.agent_services = serde_json::from_value(json!([{
+        "card":card,"principal":target,"skill":"notify","endpoint":"https://agents.example/notifier",
+        "endpoint_id":"notifier-api","route":scope.routes[0],"recipient_key_env":"ACTEON_TEST_AGENT_RECIPIENT",
+        "recipient_permits":[{"id":"worker-provider","accepted_revision":1}],
+        "grants":[{"id":"remote-notifier","revision":1,"source":source,
+            "source_permits":[{"id":"remote-service","accepted_revision":1}],
+            "valid_from_ms":0,"limits":scope.credential_limits,"max_depth":4}]
+    }]))
+    .unwrap();
+    scope.permits = serde_json::from_value(json!([
+        {"id":"remote-service","revision":1,"subject":source,"routes":[],"agents":["notifier"],"valid_from_ms":0,"limits":scope.credential_limits},
+        {"id":"worker-provider","revision":1,"subject":target,"routes":scope.routes,"valid_from_ms":0,"limits":scope.credential_limits}
+    ]))
+    .unwrap();
+    let limits = scope.credential_limits.clone();
+    let _ = scope;
+    let prepared = registry
+        .prepare(&configuration, ("auth-control", "deployment"), &[8; 32])
+        .unwrap();
+    let binding_digest = prepared[0]
+        .agent_service_binding_digest("notifier")
+        .unwrap()
+        .to_owned();
+    let agent_resource = prepared[0]
+        .agent_service_ingress_effect("notifier")
+        .unwrap()
+        .resources
+        .iter()
+        .find(|resource| resource.kind() == acteon_core::ResourceKind::Agent)
+        .unwrap()
+        .clone();
+    let ingress_effect = prepared[0]
+        .agent_service_ingress_effect("notifier")
+        .unwrap()
+        .clone();
+    let effects = prepared[0]
+        .agent_service_direct_effects("notifier")
+        .unwrap()
+        .to_vec();
+    let signer = FederationEnvelopeSigner::from_secret([7; 32]);
+    let trust = FederationTrust {
+        id: "remote-prod".into(),
+        revision: 1,
+        foreign_domain: "remote.example".into(),
+        local_audience: "local.example".into(),
+        key_id: "remote-key-v1".into(),
+        verifying_key: signer.verifying_key_hex(),
+        minimum_issuer_epoch: 1,
+        max_revocation_staleness_ms: 60_000,
+        max_clock_skew_ms: 1_000,
+        valid_from_ms: 0,
+        deadline_ms: limits.deadline_ms,
+        approved: vec![FederationGrantCeiling {
+            source: source.clone(),
+            target: target.clone(),
+            agent_resource,
+            binding_digest,
+            skill: "notify".into(),
+            ingress_effect,
+            effects,
+            limits,
+            max_depth: 2,
+        }],
+    };
+    let scope = &mut configuration.scopes[0];
+    scope.federation = Some(acteon_server::config::ExecutionFederationConfig {
+        local_audience: "local.example".into(),
+        trusts: vec![trust],
+        peers: vec![acteon_server::config::FederationPeerConfig {
+            foreign_domain: "remote.example".into(),
+            authentication_principal: source,
+            trust_ids: vec!["remote-prod".into()],
+        }],
+    });
+    scope.managers[0].can_manage_federation = true;
+    scope.managers[0].federation_trust_ids = vec!["remote-prod".into()];
+    (configuration, signer)
+}
 fn revoke() -> acteon_core::GovernanceInterventionRequest {
     serde_json::from_value(
         json!({"namespace":"prod","tenant":"acme","change_id":"stale-request","reason":"reviewed",
         "change":{"kind":"revoke_subject","subject":{"id":"agent/maya","kind":"agent"}}}),
     )
     .unwrap()
+}
+
+#[test]
+fn federation_configuration_is_canonical_and_policy_bound() {
+    let registry = registry();
+    let (configuration, _) = federation_config(&registry);
+    let prepared = registry
+        .prepare(&configuration, ("auth-control", "deployment"), &[8; 32])
+        .unwrap();
+    let fingerprint = prepared[0].policy_fingerprint().to_owned();
+
+    let mut reordered = configuration.clone();
+    let shape = &mut reordered.scopes[0].federation.as_mut().unwrap().trusts[0].approved[0];
+    shape.ingress_effect.resources.reverse();
+    shape.effects.reverse();
+    assert_eq!(
+        registry
+            .prepare(&reordered, ("auth-control", "deployment"), &[8; 32])
+            .unwrap()[0]
+            .policy_fingerprint(),
+        fingerprint
+    );
+
+    let mut changed = configuration;
+    changed.scopes[0].federation.as_mut().unwrap().trusts[0].minimum_issuer_epoch += 1;
+    assert_ne!(
+        registry
+            .prepare(&changed, ("auth-control", "deployment"), &[8; 32])
+            .unwrap()[0]
+            .policy_fingerprint(),
+        fingerprint
+    );
+}
+
+#[tokio::test]
+async fn configured_peer_and_manager_bind_federation_import_without_starting_execution() {
+    use acteon_core::{
+        FederationTrustDeclaration, PublishFederationTrustRequest, RevokeFederationTrustRequest,
+    };
+    use acteon_governance::federation::FederationEnvelope;
+
+    let state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let registry = registry();
+    let (configuration, signer) = federation_config(&registry);
+    let trust = configuration.scopes[0].federation.as_ref().unwrap().trusts[0].clone();
+    let shape = trust.approved[0].clone();
+    let runtime = Arc::new(runtime(&registry, &configuration, state.clone()).await);
+    let authority = authority(state.clone()).await;
+    let provider = Arc::new(
+        AuthProvider::new_with_scope_projection(
+            &federation_auth(),
+            state.clone(),
+            authority,
+            runtime.projectors(),
+        )
+        .await
+        .unwrap(),
+    );
+    let manager = proof(provider.clone()).await;
+    let peer = proof_with_secret(provider.clone(), "remote-secret").await;
+    let public_trust: FederationTrustDeclaration =
+        serde_json::from_value(serde_json::to_value(&trust).unwrap()).unwrap();
+    let router = history_router(state.clone(), runtime.clone(), provider);
+    let publication = PublishFederationTrustRequest {
+        namespace: "prod".into(),
+        tenant: "acme".into(),
+        change_id: "publish-remote-prod-v1".into(),
+        expected_revision: 0,
+        trust: public_trust,
+        reason: "reviewed foreign production domain".into(),
+    };
+    let publication_body = serde_json::to_vec(&publication).unwrap();
+    let denied_publication = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/governance/federation/trusts")
+                .header("authorization", "Bearer remote-secret")
+                .header("content-type", "application/json")
+                .body(Body::from(publication_body.clone()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(denied_publication.status(), 403);
+    let accepted_publication = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/governance/federation/trusts")
+                .header("authorization", "Bearer operator-secret")
+                .header("content-type", "application/json")
+                .body(Body::from(publication_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(accepted_publication.status(), 200);
+    let now = chrono::Utc::now().timestamp_millis();
+    let mut envelope_limits = shape.limits.clone();
+    envelope_limits.deadline_ms = now + 30_000;
+    let envelope = FederationEnvelope::new(
+        "remote-envelope-1",
+        &trust.id,
+        trust.revision,
+        &trust.foreign_domain,
+        &trust.local_audience,
+        &trust.key_id,
+        1,
+        now,
+        now,
+        now + 30_000,
+        shape.source.clone(),
+        shape.target.clone(),
+        shape.agent_resource.clone(),
+        &shape.binding_digest,
+        &shape.skill,
+        shape.ingress_effect.clone(),
+        shape.effects.clone(),
+        envelope_limits.clone(),
+        shape.max_depth,
+    );
+    let signed = signer.sign(&envelope).unwrap();
+    assert!(matches!(
+        runtime
+            .import_federation_envelope(FederationImportAdmission {
+                namespace: "prod",
+                tenant: "acme",
+                signed: &signed,
+                authentication: &manager,
+            })
+            .await,
+        Err(ManagementError::Forbidden)
+    ));
+    let receipt = runtime
+        .import_federation_envelope(FederationImportAdmission {
+            namespace: "prod",
+            tenant: "acme",
+            signed: &signed,
+            authentication: &peer,
+        })
+        .await
+        .unwrap();
+    assert_eq!(receipt.import_id, envelope.id);
+    assert_eq!(receipt.target, shape.target);
+    assert!(!receipt.execution_started);
+    let http_envelope = FederationEnvelope::new(
+        "remote-envelope-http",
+        &trust.id,
+        trust.revision,
+        &trust.foreign_domain,
+        &trust.local_audience,
+        &trust.key_id,
+        1,
+        now,
+        now,
+        now + 30_000,
+        shape.source.clone(),
+        shape.target.clone(),
+        shape.agent_resource.clone(),
+        &shape.binding_digest,
+        &shape.skill,
+        shape.ingress_effect.clone(),
+        shape.effects.clone(),
+        envelope_limits.clone(),
+        shape.max_depth,
+    );
+    let signed_http = signer.sign(&http_envelope).unwrap();
+    let request_body = serde_json::to_vec(&json!({"envelope": signed_http.clone()})).unwrap();
+    let malformed_body = serde_json::to_vec(&json!({
+        "envelope": {
+            "payload": signed_http.payload,
+            "signature": "A".repeat(128),
+        }
+    }))
+    .unwrap();
+    let denied = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/a2a/prod/acme/federation/envelopes:import")
+                .header("authorization", "Bearer operator-secret")
+                .header("content-type", "application/json")
+                .body(Body::from(request_body.clone()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), 403);
+    let malformed = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/a2a/prod/acme/federation/envelopes:import")
+                .header("authorization", "Bearer remote-secret")
+                .header("content-type", "application/json")
+                .body(Body::from(malformed_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(malformed.status(), 400);
+    let accepted = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/a2a/prod/acme/federation/envelopes:import")
+                .header("authorization", "Bearer remote-secret")
+                .header("content-type", "application/json")
+                .body(Body::from(request_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(accepted.status(), 200);
+    let accepted_body = axum::body::to_bytes(accepted.into_body(), 64 * 1024)
+        .await
+        .unwrap();
+    let accepted_receipt: acteon_core::FederationImportReceipt =
+        serde_json::from_slice(&accepted_body).unwrap();
+    assert_eq!(accepted_receipt.import_id, http_envelope.id);
+    assert!(!accepted_receipt.execution_started);
+    let snapshot = AuthorityCoordinator::connect(state.clone(), "prod", "acme")
+        .await
+        .unwrap()
+        .snapshot()
+        .await
+        .unwrap();
+    assert_eq!(snapshot.federation_imports.len(), 2);
+    assert!(snapshot.starts.is_empty());
+    assert!(
+        snapshot
+            .roots
+            .get(&receipt.root_id)
+            .is_some_and(|root| root.accepted_context.is_none())
+    );
+    let revocation = RevokeFederationTrustRequest {
+        namespace: "prod".into(),
+        tenant: "acme".into(),
+        change_id: "revoke-remote-prod".into(),
+        trust_id: trust.id.clone(),
+        expected_revision: trust.revision,
+        reason: "peer offboarded".into(),
+    };
+    let accepted_revocation = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/governance/federation/trusts/revoke")
+                .header("authorization", "Bearer operator-secret")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&revocation).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(accepted_revocation.status(), 200);
+    let later = FederationEnvelope::new(
+        "remote-envelope-2",
+        trust.id,
+        trust.revision,
+        trust.foreign_domain,
+        trust.local_audience,
+        trust.key_id,
+        1,
+        now,
+        now,
+        now + 30_000,
+        shape.source,
+        shape.target,
+        shape.agent_resource,
+        shape.binding_digest,
+        shape.skill,
+        shape.ingress_effect,
+        shape.effects,
+        envelope_limits,
+        shape.max_depth,
+    );
+    assert!(matches!(
+        runtime
+            .import_federation_envelope(FederationImportAdmission {
+                namespace: "prod",
+                tenant: "acme",
+                signed: &signer.sign(&later).unwrap(),
+                authentication: &peer,
+            })
+            .await,
+        Err(ManagementError::Forbidden)
+    ));
 }
 
 #[tokio::test]

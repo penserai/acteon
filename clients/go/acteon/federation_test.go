@@ -1,0 +1,105 @@
+package acteon
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"os"
+	"testing"
+)
+
+func TestFederationManagementAndInertImportWire(t *testing.T) {
+	wireBytes, err := os.ReadFile("../../contract-fixtures/federation-management.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire map[string]json.RawMessage
+	if err = json.Unmarshal(wireBytes, &wire); err != nil {
+		t.Fatal(err)
+	}
+	var publication PublishFederationTrustRequest
+	var revocation RevokeFederationTrustRequest
+	var envelope SignedFederationEnvelopeDeclaration
+	if err = json.Unmarshal(wire["publication"], &publication); err != nil {
+		t.Fatal(err)
+	}
+	if err = json.Unmarshal(wire["revocation"], &revocation); err != nil {
+		t.Fatal(err)
+	}
+	if err = json.Unmarshal(wire["envelope"], &envelope); err != nil {
+		t.Fatal(err)
+	}
+	var calls []json.RawMessage
+	var paths []string
+	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Header.Get("Authorization") != "Bearer federation-key" {
+			t.Fatal("missing authentication")
+		}
+		var body json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		calls = append(calls, body)
+		paths = append(paths, r.URL.Path)
+		response := wire["change_receipt"]
+		if r.URL.Path == "/a2a/prod/acme/federation/envelopes:import" {
+			response = wire["import_receipt"]
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewReader(response)),
+		}, nil
+	})
+	client := NewClient("https://acteon.example", WithAPIKey("federation-key"), WithHTTPClient(&http.Client{Transport: transport}))
+	ctx := context.Background()
+	if _, err = client.PublishFederationTrust(ctx, publication); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = client.RevokeFederationTrust(ctx, revocation); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := client.ImportFederationEnvelope(ctx, "prod", "acme", envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.ExecutionStarted {
+		t.Fatal("import started execution")
+	}
+	if len(paths) != 3 || paths[2] != "/a2a/prod/acme/federation/envelopes:import" {
+		t.Fatalf("unexpected paths: %v", paths)
+	}
+	if len(calls) != 3 {
+		t.Fatalf("got %d calls", len(calls))
+	}
+	if !bytes.Equal(compactJSON(t, calls[0]), compactJSON(t, wire["publication"])) {
+		t.Fatal("publication wire changed")
+	}
+	if !bytes.Equal(compactJSON(t, calls[1]), compactJSON(t, wire["revocation"])) {
+		t.Fatal("revocation wire changed")
+	}
+	var importBody map[string]json.RawMessage
+	if err = json.Unmarshal(calls[2], &importBody); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(compactJSON(t, importBody["envelope"]), compactJSON(t, wire["envelope"])) {
+		t.Fatal("envelope wire changed")
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return fn(request)
+}
+
+func compactJSON(t *testing.T, value []byte) []byte {
+	t.Helper()
+	var buffer bytes.Buffer
+	if err := json.Compact(&buffer, value); err != nil {
+		t.Fatal(err)
+	}
+	return buffer.Bytes()
+}

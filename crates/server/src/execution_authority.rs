@@ -14,7 +14,7 @@ pub use runtime::{
     AgentServiceAuthorizationResolve, AgentServiceContinuation, AgentServiceDriver,
     AgentServiceError, AgentServiceObservation, AgentServiceParent, AgentServiceRequest,
     AgentServiceTaskObservation, ExecutionAuthorityRuntime, ExecutionRuntimeDependencies,
-    ManagementError, TrustedReconciliationInstallation,
+    FederationImportAdmission, ManagementError, TrustedReconciliationInstallation,
 };
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -368,6 +368,9 @@ impl ExecutionProviderRegistry {
                 if !declaration.managers.is_empty() {
                     policy["managers"] = serde_json::json!(declaration.managers);
                 }
+                if let Some(federation) = &declaration.federation {
+                    policy["federation"] = serde_json::json!(federation);
+                }
                 policy["peer_transport"] = serde_json::json!(configuration.peer_transport);
                 if !configuration.authorization_verifiers.is_empty() {
                     policy["authorization_verifiers"] =
@@ -577,6 +580,30 @@ impl PreparedExecutionScope {
         self.agents
             .get(agent_id)
             .map(|agent| agent.binding.digest())
+    }
+
+    /// Exact deployment-derived ingress effect for federation review and
+    /// offline envelope construction. The runtime still rechecks it on import.
+    #[must_use]
+    pub fn agent_service_ingress_effect(
+        &self,
+        agent_id: &str,
+    ) -> Option<&acteon_governance::context::AcceptedEffect> {
+        self.agents
+            .get(agent_id)
+            .map(|agent| agent.binding.ingress_effect())
+    }
+
+    /// Exact qualified direct-effect footprint for one installed service.
+    #[must_use]
+    pub fn agent_service_direct_effects(
+        &self,
+        agent_id: &str,
+    ) -> Option<&[acteon_governance::context::AcceptedEffect]> {
+        self.agents
+            .get(agent_id)
+            .and_then(|agent| agent.binding.service_plan())
+            .map(acteon_executor::delegation::ApprovedServicePlan::direct_effects)
     }
 
     /// Qualify complete pinned plans against this scope's actual registrations.
@@ -984,6 +1011,7 @@ impl PreparedExecutionScope {
 
 fn canonicalize_manager(manager: &mut crate::config::ExecutionManagerConfig) {
     manager.agents.sort();
+    manager.federation_trust_ids.sort();
     manager.subjects.sort_by(|a, b| a.id().cmp(b.id()));
     manager.routes.sort();
     if let Some(workforce) = &mut manager.workforce {
@@ -1037,4 +1065,37 @@ fn canonicalize_declaration(declaration: &mut ExecutionScopeConfig) {
             .cmp(&b.operation)
             .then(a.resources.cmp(&b.resources))
     });
+    if let Some(federation) = &mut declaration.federation {
+        federation
+            .trusts
+            .sort_by(|a, b| a.id.cmp(&b.id).then(a.revision.cmp(&b.revision)));
+        federation.peers.sort_by(|a, b| {
+            a.foreign_domain.cmp(&b.foreign_domain).then(
+                a.authentication_principal
+                    .id()
+                    .cmp(b.authentication_principal.id()),
+            )
+        });
+        for peer in &mut federation.peers {
+            peer.trust_ids.sort();
+        }
+        for trust in &mut federation.trusts {
+            for shape in &mut trust.approved {
+                shape.ingress_effect.resources.sort();
+                for effect in &mut shape.effects {
+                    effect.resources.sort();
+                }
+                shape.effects.sort_by(|left, right| {
+                    left.operation
+                        .cmp(&right.operation)
+                        .then(left.resources.cmp(&right.resources))
+                });
+            }
+            trust.approved.sort_by(|left, right| {
+                serde_json::to_vec(left)
+                    .unwrap_or_default()
+                    .cmp(&serde_json::to_vec(right).unwrap_or_default())
+            });
+        }
+    }
 }

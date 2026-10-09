@@ -131,6 +131,43 @@ class GovernanceTest {
         } finally { server.stop(0); }
     }
 
+    @Test void federationManagementAndInertImportPreserveWire() throws Exception {
+        var mapper = JsonMapper.build();
+        var fixture = mapper.readTree(Files.readString(Path.of("../contract-fixtures/federation-management.json")));
+        var paths = new java.util.concurrent.CopyOnWriteArrayList<String>();
+        var bodies = new java.util.concurrent.CopyOnWriteArrayList<com.fasterxml.jackson.databind.JsonNode>();
+        var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/", exchange -> {
+            paths.add(exchange.getRequestURI().getPath());
+            bodies.add(mapper.readTree(exchange.getRequestBody()));
+            assertEquals("Bearer federation-key", exchange.getRequestHeaders().getFirst("Authorization"));
+            var response = exchange.getRequestURI().getPath().endsWith("envelopes:import")
+                ? fixture.get("import_receipt") : fixture.get("change_receipt");
+            byte[] wire = response.toString().getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, wire.length);
+            exchange.getResponseBody().write(wire);
+            exchange.close();
+        });
+        server.start();
+        try (var client = new ActeonClient("http://127.0.0.1:" + server.getAddress().getPort(), "federation-key")) {
+            var publication = mapper.treeToValue(fixture.get("publication"), Governance.PublishFederationTrustRequest.class);
+            var revocation = mapper.treeToValue(fixture.get("revocation"), Governance.RevokeFederationTrustRequest.class);
+            var envelope = mapper.treeToValue(fixture.get("envelope"), Governance.SignedFederationEnvelopeDeclaration.class);
+            client.publishFederationTrust(publication);
+            client.revokeFederationTrust(revocation);
+            var receipt = client.importFederationEnvelope("prod", "acme", envelope);
+            assertFalse(receipt.executionStarted());
+            assertEquals(java.util.List.of(
+                "/v1/governance/federation/trusts",
+                "/v1/governance/federation/trusts/revoke",
+                "/a2a/prod/acme/federation/envelopes:import"), paths);
+            assertEquals(fixture.get("publication"), bodies.get(0));
+            assertEquals(fixture.get("revocation"), bodies.get(1));
+            assertEquals(fixture.get("envelope"), bodies.get(2).get("envelope"));
+        } finally { server.stop(0); }
+    }
+
     @Test void providerReconciliationWireContracts() throws Exception {
         var mapper = JsonMapper.build();
         var fixture = mapper.readTree(Files.readString(Path.of("../contract-fixtures/provider-reconciliation.json")));

@@ -4,7 +4,7 @@ Native Rust HTTP client for the Acteon action gateway.
 
 ## Complete platform API
 
-The generated operation catalog exposes all 216 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, and stream windows. Use an authenticated client and a configured, existing stage for this example:
+The generated operation catalog exposes all 219 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, federation admission, and stream windows. Use an authenticated client and a configured, existing stage for this example:
 
 ```rust
 let status = client.platform_request(
@@ -17,6 +17,12 @@ let status = client.platform_request(
 Path parameters are escaped individually. Query and body fields use the server's wire names; JSON response envelopes are preserved. Calls do not retry automatically. Keep request IDs stable across retries and return opaque receipt IDs unchanged. HTTP access does not imply a code-defined workflow runner in every language.
 
 See [SDK coverage and wire contracts](https://penserai.github.io/acteon/api/sdk-coverage/) for return types, native streaming APIs, runtime availability, and server feature requirements. The catalog is generated from the registered server routes and checked in CI.
+
+Typed federation management uses `publish_federation_trust` and
+`revoke_federation_trust`. A configured peer submits a signed envelope with
+`import_federation_envelope`; the client correlates the returned scope and
+requires `execution_started == false`. Import admission retains bounded signed
+authority and does not dispatch local work.
 
 ## Installation
 

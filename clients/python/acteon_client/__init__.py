@@ -67,6 +67,28 @@ from .errors import (
     RetryableError,
 )
 from .governance import (
+    FederationGrantCeilingDeclaration,
+    FederationImportReceipt,
+    FederationTrustDeclaration,
+    FederationTrustView,
+    ProviderEvidenceReference,
+    ProviderExecutionHistory,
+    ProviderHistoryAttempt,
+    ProviderHistoryAuthority,
+    ProviderHistoryBinding,
+    ProviderHistoryReceipt,
+    ProviderHistoryReconciliation,
+    ProviderHistoryStatus,
+    ProviderOperationMetadata,
+    ProviderReconciliationAcceptance,
+    ProviderReconciliationContext,
+    ProviderReconciliationCorrelation,
+    ProviderReconciliationRequest,
+    PublishFederationTrustRequest,
+    RevokeFederationTrustRequest,
+    SignedFederationEnvelopeDeclaration,
+)
+from .governance import (
     GovernanceChangeReceipt as GovernanceChangeReceipt,
 )
 from .governance import (
@@ -122,21 +144,6 @@ from .governance import (
 )
 from .governance import (
     GovernanceSubjectRevocation as GovernanceSubjectRevocation,
-)
-from .governance import (
-    ProviderEvidenceReference,
-    ProviderExecutionHistory,
-    ProviderHistoryAttempt,
-    ProviderHistoryAuthority,
-    ProviderHistoryBinding,
-    ProviderHistoryReceipt,
-    ProviderHistoryReconciliation,
-    ProviderHistoryStatus,
-    ProviderOperationMetadata,
-    ProviderReconciliationAcceptance,
-    ProviderReconciliationContext,
-    ProviderReconciliationCorrelation,
-    ProviderReconciliationRequest,
 )
 from .governance import (
     PublishGovernancePermitRequest as PublishGovernancePermitRequest,
@@ -428,6 +435,13 @@ __all__ = [
 from .platform_catalog import PlatformOperation as PlatformOperation
 
 __all__ += [
+    "FederationGrantCeilingDeclaration",
+    "FederationImportReceipt",
+    "FederationTrustDeclaration",
+    "FederationTrustView",
+    "PublishFederationTrustRequest",
+    "RevokeFederationTrustRequest",
+    "SignedFederationEnvelopeDeclaration",
     "GovernanceResource",
     "GovernanceLimits",
     "GovernanceRoute",

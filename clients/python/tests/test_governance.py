@@ -8,6 +8,7 @@ import pytest
 from acteon_client import (
     ActeonClient,
     AsyncActeonClient,
+    FederationTrustDeclaration,
     GovernanceInterventionRequest,
     GovernanceLimits,
     GovernancePermitDeclaration,
@@ -15,12 +16,18 @@ from acteon_client import (
     GovernanceResourceChange,
     GovernanceRoute,
     PrincipalIdentity,
+    PublishFederationTrustRequest,
     PublishGovernancePermitRequest,
+    RevokeFederationTrustRequest,
+    SignedFederationEnvelopeDeclaration,
 )
 from acteon_client.errors import HttpError
 
 FIXTURE = json.loads(
     (Path(__file__).parents[2] / "contract-fixtures/governance-management.json").read_text()
+)
+FEDERATION = json.loads(
+    (Path(__file__).parents[2] / "contract-fixtures/federation-management.json").read_text()
 )
 
 
@@ -84,7 +91,9 @@ def test_sync_governance():
             **FIXTURE["scope"]["management"],
             "can_read_history": False,
             "can_reconcile": False,
+            "can_manage_federation": False,
         },
+        "federation_trusts": [],
     }
     assert asdict(client.publish_governance_permit(publication)) == FIXTURE["receipt"]
     assert asdict(client.intervene_governance(intervention)) == FIXTURE["receipt"]
@@ -105,11 +114,77 @@ async def test_async_governance():
                 **FIXTURE["scope"]["management"],
                 "can_read_history": False,
                 "can_reconcile": False,
+                "can_manage_federation": False,
             },
+            "federation_trusts": [],
         }
         assert asdict(await client.publish_governance_permit(publication)) == FIXTURE["receipt"]
         assert asdict(await client.intervene_governance(intervention)) == FIXTURE["receipt"]
     assert_wire(seen)
+
+
+@pytest.mark.parametrize("async_client", [False, True])
+@pytest.mark.asyncio
+async def test_federation_management_and_inert_import_wire(async_client):
+    seen = []
+
+    def respond(request):
+        seen.append(request)
+        response = (
+            FEDERATION["import_receipt"]
+            if request.url.path.endswith("envelopes:import")
+            else FEDERATION["change_receipt"]
+        )
+        return httpx.Response(200, json=response)
+
+    wire = FEDERATION["publication"]
+    publication = PublishFederationTrustRequest(
+        wire["namespace"],
+        wire["tenant"],
+        wire["change_id"],
+        wire["expected_revision"],
+        FederationTrustDeclaration.from_dict(wire["trust"]),
+        wire["reason"],
+    )
+    revocation = RevokeFederationTrustRequest(**FEDERATION["revocation"])
+    envelope = SignedFederationEnvelopeDeclaration(**FEDERATION["envelope"])
+    transport = httpx.MockTransport(respond)
+    cls = AsyncActeonClient if async_client else ActeonClient
+    client = cls("https://acteon.example", api_key="federation-key")
+    if async_client:
+        await client._client.aclose()
+        client._client = httpx.AsyncClient(transport=transport)
+    else:
+        client._client.close()
+        client._client = httpx.Client(transport=transport)
+    try:
+        if async_client:
+            results = [
+                await client.publish_federation_trust(publication),
+                await client.revoke_federation_trust(revocation),
+                await client.import_federation_envelope("prod", "acme", envelope),
+            ]
+        else:
+            results = [
+                client.publish_federation_trust(publication),
+                client.revoke_federation_trust(revocation),
+                client.import_federation_envelope("prod", "acme", envelope),
+            ]
+        assert asdict(results[0]) == FEDERATION["change_receipt"]
+        assert asdict(results[1]) == FEDERATION["change_receipt"]
+        assert asdict(results[2]) == FEDERATION["import_receipt"]
+        assert not results[2].execution_started
+        assert [request.method for request in seen] == ["POST", "POST", "POST"]
+        assert json.loads(seen[0].content) == FEDERATION["publication"]
+        assert json.loads(seen[1].content) == FEDERATION["revocation"]
+        assert json.loads(seen[2].content) == {"envelope": FEDERATION["envelope"]}
+        assert seen[2].url.path == "/a2a/prod/acme/federation/envelopes:import"
+        assert all(request.headers["authorization"] == "Bearer federation-key" for request in seen)
+    finally:
+        if async_client:
+            await client.close()
+        else:
+            client.close()
 
 
 @pytest.mark.parametrize("status", [401, 403, 409, 503])

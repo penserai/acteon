@@ -3,12 +3,14 @@ mod agent_driver;
 mod agent_service_error;
 pub use agent_service_error::AgentServiceError;
 mod agent_services;
+mod federation;
 pub use agent_driver::AgentServiceDriver;
 pub use agent_services::{
     AgentServiceAcceptance, AgentServiceAuthorizationOpen, AgentServiceAuthorizationResolve,
     AgentServiceContinuation, AgentServiceObservation, AgentServiceParent, AgentServiceRequest,
     AgentServiceTaskObservation,
 };
+pub use federation::FederationImportAdmission;
 mod management;
 pub use management::{ManagementError, TrustedReconciliationInstallation};
 mod peer_transport;
