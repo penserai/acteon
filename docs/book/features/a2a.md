@@ -104,7 +104,9 @@ the cancellation took effect. If the target committed its restriction but that
 response was lost, a restart preserves `uncertain`; an explicit repeat performs
 one read and sends no second stop. A still-nonterminal task remains `uncertain`
 because observation alone cannot reconstruct the lost restriction
-acknowledgment.
+acknowledgment. The complete two-server send, discovery, native stop, source
+restart, and exact receipt-recovery contract is qualified against both Redis and
+PostgreSQL through the same `StateStore` boundary.
 
 ### Discovery (unauthenticated)
 

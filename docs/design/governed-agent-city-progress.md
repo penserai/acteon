@@ -1885,3 +1885,23 @@ The response-lost/restart requirement of the Phase 4 gate is now covered. The
 remaining prerequisite is production-state-backend qualification beyond Redis.
 Event cursor projection and structured input/auth challenge responses remain
 later mesh capabilities.
+
+### PostgreSQL governed-peer lifecycle qualification
+
+The complete two-server HTTPS peer lifecycle now runs through the generic
+`StateStore` contract on PostgreSQL as well as Redis. Two independently launched
+servers share an isolated table prefix, publish the reviewed cards, discover the
+approved peer, create the governed child, deliver the target's native stop,
+restart the source process, and recover the exact durable restricted receipt
+without another stop or provider start. The PostgreSQL fixture uses an
+independent client for registry projection and removes its four isolated state
+tables after the contract.
+
+CI builds this contract with `--no-default-features --features postgres`, which
+proves the lifecycle does not compile or pass by falling back to Redis. Redis
+continues to run the normal lifecycle and the post-commit response-loss variant.
+
+This closes the production-backend prerequisite and the Phase 4 local governed
+A2A mesh completion gate. Event cursor projection and structured input/auth
+challenge responses remain planned mesh extensions; federation and the later
+city phases remain open.

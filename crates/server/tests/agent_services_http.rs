@@ -1,10 +1,10 @@
 //! Real binary and middleware, independently authenticated caller and recipient.
 #![recursion_limit = "256"]
 use acteon_core::{AgentCard, AgentCardInterface, Skill};
-#[cfg(feature = "redis")]
+#[cfg(any(feature = "redis", feature = "postgres"))]
 use acteon_state::StateStore;
 use axum::{Json, Router, routing::post};
-#[cfg(feature = "redis")]
+#[cfg(any(feature = "redis", feature = "postgres"))]
 use axum::{
     body::{Body, Bytes, to_bytes},
     extract::{Request, State},
@@ -12,8 +12,10 @@ use axum::{
     response::IntoResponse,
     routing::any,
 };
+#[cfg(feature = "postgres")]
+use futures::FutureExt;
 use serde_json::{Value, json};
-#[cfg(feature = "redis")]
+#[cfg(any(feature = "redis", feature = "postgres"))]
 use std::sync::{Mutex, atomic::AtomicBool};
 use std::{
     fs,
@@ -731,14 +733,14 @@ fn redis_state() -> (Value, acteon_state_redis::RedisConfig) {
     )
 }
 
-#[cfg(feature = "redis")]
+#[cfg(any(feature = "redis", feature = "postgres"))]
 struct PeerMeshServer {
     process: Child,
     directory: PathBuf,
     url: String,
 }
 
-#[cfg(feature = "redis")]
+#[cfg(any(feature = "redis", feature = "postgres"))]
 impl Drop for PeerMeshServer {
     fn drop(&mut self) {
         let _ = self.process.kill();
@@ -747,7 +749,7 @@ impl Drop for PeerMeshServer {
     }
 }
 
-#[cfg(feature = "redis")]
+#[cfg(any(feature = "redis", feature = "postgres"))]
 impl PeerMeshServer {
     #[allow(clippy::too_many_lines)]
     fn start(
@@ -943,7 +945,7 @@ actions = ["execute"]
                     .get(format!("{}/health", self.url))
                     .send()
                     .await
-                    .is_ok()
+                    .is_ok_and(|response| response.status().is_success())
                 {
                     break;
                 }
@@ -965,7 +967,7 @@ actions = ["execute"]
     }
 }
 
-#[cfg(feature = "redis")]
+#[cfg(any(feature = "redis", feature = "postgres"))]
 struct ResponseLossProxyState {
     upstream: String,
     client: reqwest::Client,
@@ -975,7 +977,7 @@ struct ResponseLossProxyState {
     committed_stop: Mutex<Option<Value>>,
 }
 
-#[cfg(feature = "redis")]
+#[cfg(any(feature = "redis", feature = "postgres"))]
 struct ResponseLossProxy {
     url: String,
     state: Arc<ResponseLossProxyState>,
@@ -983,7 +985,7 @@ struct ResponseLossProxy {
     directory: PathBuf,
 }
 
-#[cfg(feature = "redis")]
+#[cfg(any(feature = "redis", feature = "postgres"))]
 impl Drop for ResponseLossProxy {
     fn drop(&mut self) {
         self.task.abort();
@@ -991,9 +993,9 @@ impl Drop for ResponseLossProxy {
     }
 }
 
-#[cfg(feature = "redis")]
+#[cfg(any(feature = "redis", feature = "postgres"))]
 impl ResponseLossProxy {
-    async fn start(port: u16, upstream: String) -> Self {
+    async fn start(port: u16, upstream: String, lose_next_stop_response: bool) -> Self {
         let directory =
             std::env::temp_dir().join(format!("acteon-response-loss-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&directory).unwrap();
@@ -1020,7 +1022,7 @@ impl ResponseLossProxy {
                 .danger_accept_invalid_certs(true)
                 .build()
                 .unwrap(),
-            lose_next_stop_response: AtomicBool::new(true),
+            lose_next_stop_response: AtomicBool::new(lose_next_stop_response),
             stop_deliveries: AtomicUsize::new(0),
             task_observations: AtomicUsize::new(0),
             committed_stop: Mutex::new(None),
@@ -1047,7 +1049,7 @@ impl ResponseLossProxy {
                     .get(format!("{}/health", self.url))
                     .send()
                     .await
-                    .is_ok()
+                    .is_ok_and(|response| response.status().is_success())
                 {
                     break;
                 }
@@ -1059,7 +1061,7 @@ impl ResponseLossProxy {
     }
 }
 
-#[cfg(feature = "redis")]
+#[cfg(any(feature = "redis", feature = "postgres"))]
 async fn proxy_peer_request(
     State(state): State<Arc<ResponseLossProxyState>>,
     request: Request,
@@ -1131,7 +1133,7 @@ async fn proxy_peer_request(
     response_with_forwarded_headers(status, &upstream_headers, Body::from(body))
 }
 
-#[cfg(feature = "redis")]
+#[cfg(any(feature = "redis", feature = "postgres"))]
 fn response_with_forwarded_headers(
     status: StatusCode,
     upstream: &HeaderMap,
@@ -1150,7 +1152,7 @@ fn response_with_forwarded_headers(
     response.body(body).unwrap()
 }
 
-#[cfg(feature = "redis")]
+#[cfg(any(feature = "redis", feature = "postgres"))]
 async fn serve_test_tls(
     listener: tokio::net::TcpListener,
     app: Router,
@@ -1178,7 +1180,7 @@ async fn serve_test_tls(
     }
 }
 
-#[cfg(feature = "redis")]
+#[cfg(any(feature = "redis", feature = "postgres"))]
 fn reserve_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
@@ -1187,12 +1189,8 @@ fn reserve_port() -> u16 {
         .port()
 }
 
-#[cfg(feature = "redis")]
-async fn publish_peer_cards(
-    redis_config: &acteon_state_redis::RedisConfig,
-    server_config: &toml::Value,
-) {
-    let store = acteon_state_redis::RedisStateStore::new(redis_config).unwrap();
+#[cfg(any(feature = "redis", feature = "postgres"))]
+async fn publish_peer_cards(store: &dyn StateStore, server_config: &toml::Value) {
     for index in 0..2 {
         let card: AgentCard = serde_json::from_value(
             serde_json::to_value(
@@ -1238,11 +1236,64 @@ async fn publish_peer_cards(
 #[ignore = "requires ACTEON_GOVERNANCE_REDIS_URL; two real HTTPS servers sharing Redis"]
 #[allow(clippy::too_many_lines)]
 async fn redis_two_server_peer_cancel_survives_source_restart_as_a_durable_restriction() {
-    let (webhook_url, calls, webhook_task) = webhook().await;
     let (state, redis_config) = redis_state();
+    let store = Arc::new(acteon_state_redis::RedisStateStore::new(&redis_config).unwrap());
+    two_server_peer_cancel_restart_contract(state, store).await;
+}
+
+#[tokio::test]
+#[cfg(feature = "postgres")]
+#[ignore = "requires DATABASE_URL; two real HTTPS servers sharing PostgreSQL"]
+async fn postgres_two_server_peer_cancel_survives_source_restart_as_a_durable_restriction() {
+    let config = acteon_state_postgres::PostgresConfig {
+        url: std::env::var("DATABASE_URL").expect("set DATABASE_URL"),
+        table_prefix: format!("peer_lifecycle_{}_", uuid::Uuid::new_v4().simple()),
+        ..Default::default()
+    };
+    let state = json!({
+        "backend":"postgres",
+        "url":config.url,
+        "prefix":config.table_prefix,
+    });
+    let store = Arc::new(
+        acteon_state_postgres::PostgresStateStore::new(config.clone())
+            .await
+            .unwrap(),
+    );
+    let contract =
+        std::panic::AssertUnwindSafe(two_server_peer_cancel_restart_contract(state, store))
+            .catch_unwind()
+            .await;
+    let pool = sqlx::PgPool::connect(&config.url).await.unwrap();
+    for suffix in ["state", "locks", "timeout_index", "chain_ready_index"] {
+        sqlx::query(&format!(
+            "DROP TABLE public.{}{suffix}",
+            config.table_prefix
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    pool.close().await;
+    if let Err(payload) = contract {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[cfg(any(feature = "redis", feature = "postgres"))]
+#[allow(clippy::too_many_lines)]
+async fn two_server_peer_cancel_restart_contract(state: Value, store: Arc<dyn StateStore>) {
+    let (webhook_url, calls, webhook_task) = webhook().await;
     let notifier_port = reserve_port();
     let resolver_port = reserve_port();
-    assert_ne!(notifier_port, resolver_port);
+    let proxy_port = reserve_port();
+    assert_eq!(
+        [notifier_port, resolver_port, proxy_port]
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        3
+    );
     let credential_hashes = [
         acteon_server::auth::api_key::hash_api_key("alice-secret"),
         acteon_server::auth::api_key::hash_api_key("notifier-secret"),
@@ -1255,17 +1306,19 @@ async fn redis_two_server_peer_cancel_survives_source_restart_as_a_durable_restr
     let mut resolver = PeerMeshServer::start(
         resolver_port,
         notifier_port,
-        resolver_port,
+        proxy_port,
         &webhook_url,
         &state,
         &credential_hashes,
         true,
     );
     resolver.ready(&client).await;
+    let proxy = ResponseLossProxy::start(proxy_port, resolver.url.clone(), false).await;
+    proxy.ready(&client).await;
     let mut notifier = PeerMeshServer::start(
         notifier_port,
         notifier_port,
-        resolver_port,
+        proxy_port,
         &webhook_url,
         &state,
         &credential_hashes,
@@ -1286,7 +1339,7 @@ async fn redis_two_server_peer_cancel_survives_source_restart_as_a_durable_restr
         notifier_config["execution_authority"]
     );
     assert_eq!(resolver_config["providers"], notifier_config["providers"]);
-    publish_peer_cards(&redis_config, &resolver_config).await;
+    publish_peer_cards(store.as_ref(), &resolver_config).await;
     notifier.ready(&client).await;
 
     let response = client
@@ -1347,8 +1400,9 @@ async fn redis_two_server_peer_cancel_survives_source_restart_as_a_durable_restr
         peer["status"]["task"]["id"]
     );
     assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(proxy.state.stop_deliveries.load(Ordering::SeqCst), 1);
+    assert_eq!(proxy.state.task_observations.load(Ordering::SeqCst), 0);
 
-    let cancellation_id = canceled["cancellation_id"].clone();
     notifier.restart();
     notifier.ready(&client).await;
     let response = client
@@ -1359,9 +1413,10 @@ async fn redis_two_server_peer_cancel_survives_source_restart_as_a_durable_restr
         .unwrap();
     assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
     let replayed: Value = response.json().await.unwrap();
-    assert_eq!(replayed["cancellation_id"], cancellation_id);
-    assert_eq!(replayed["status"], canceled["status"]);
+    assert_eq!(replayed, canceled);
     assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(proxy.state.stop_deliveries.load(Ordering::SeqCst), 1);
+    assert_eq!(proxy.state.task_observations.load(Ordering::SeqCst), 1);
     webhook_task.abort();
 }
 
@@ -1372,6 +1427,7 @@ async fn redis_two_server_peer_cancel_survives_source_restart_as_a_durable_restr
 async fn redis_peer_cancel_response_loss_survives_restart_without_redelivery() {
     let (webhook_url, calls, webhook_task) = webhook().await;
     let (state, redis_config) = redis_state();
+    let store = acteon_state_redis::RedisStateStore::new(&redis_config).unwrap();
     let notifier_port = reserve_port();
     let resolver_port = reserve_port();
     let proxy_port = reserve_port();
@@ -1401,7 +1457,7 @@ async fn redis_peer_cancel_response_loss_survives_restart_without_redelivery() {
         true,
     );
     resolver.ready(&client).await;
-    let proxy = ResponseLossProxy::start(proxy_port, resolver.url.clone()).await;
+    let proxy = ResponseLossProxy::start(proxy_port, resolver.url.clone(), true).await;
     proxy.ready(&client).await;
     let mut notifier = PeerMeshServer::start(
         notifier_port,
@@ -1422,7 +1478,7 @@ async fn redis_peer_cancel_response_loss_survives_restart_without_redelivery() {
         resolver_config["execution_authority"],
         notifier_config["execution_authority"]
     );
-    publish_peer_cards(&redis_config, &resolver_config).await;
+    publish_peer_cards(&store, &resolver_config).await;
     notifier.ready(&client).await;
 
     let response = client
