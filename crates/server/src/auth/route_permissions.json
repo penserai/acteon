@@ -102,6 +102,12 @@
     "permission": "Dispatch"
   },
   {
+    "name": "agent_services_task_continue",
+    "method": "POST",
+    "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/message:send",
+    "permission": "Dispatch"
+  },
+  {
     "name": "agent_services_peer_discover",
     "method": "GET",
     "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers",
@@ -117,6 +123,12 @@
     "name": "agent_services_peer_submission_action",
     "method": "POST",
     "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission_action}",
+    "permission": "Dispatch"
+  },
+  {
+    "name": "agent_services_peer_continue",
+    "method": "POST",
+    "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}/message:send",
     "permission": "Dispatch"
   },
   {
