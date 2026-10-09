@@ -1862,3 +1862,26 @@ injection contract and production-backend qualification beyond Redis still
 remain. Event cursor projection and structured input/auth challenge responses
 remain later mesh capabilities rather than prerequisites for truthful
 cancellation.
+
+### Post-commit peer cancellation response loss
+
+The real two-server HTTPS contract now routes the qualified peer through a TLS
+fault boundary. The target receives its authenticated native stop, durably
+fences future starts, and returns `future_starts_blocked: true`. Only after the
+proxy has read that committed response does it terminate the response body, so
+the source must persist `uncertain` rather than invent a restriction
+acknowledgment.
+
+The contract then restarts the source server over the same Redis `StateStore`
+and repeats the explicit cancel operation. Recovery retains the same stable
+cancellation ID, sends no second stop, and performs exactly one read-only task
+observation. Because the target task is still nonterminal and ordinary task
+observation cannot prove the lost restriction acknowledgment, the durable
+result truthfully remains `uncertain`. The target commit, one stop delivery,
+one observation, zero provider starts, and source restart are all asserted in
+the same executable boundary test.
+
+The response-lost/restart requirement of the Phase 4 gate is now covered. The
+remaining prerequisite is production-state-backend qualification beyond Redis.
+Event cursor projection and structured input/auth challenge responses remain
+later mesh capabilities.

@@ -274,7 +274,9 @@ task; it does not claim an in-flight provider effect stopped. Never retry an
 uncertain cancellation automatically. Call cancellation explicitly again to let
 Acteon reconcile by a safe task read, or call peer refresh when only the latest
 lifecycle snapshot is needed. A reconciled `completed` or `failed` task means
-the task became final before cancellation took effect.
+the task became final before cancellation took effect. When the original target
+acknowledgment was lost, a nonterminal observation keeps the cancellation
+`uncertain`; the repeat does not send another stop request.
 
 The admin UI's **Governed tasks** tab on an agent detail page accepts work and
 refreshes accepted tasks using the current browser identity. The server enforces
