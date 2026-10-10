@@ -144,7 +144,9 @@ class GovernanceTest {
             if (body != null) bodies.add(body);
             assertEquals("Bearer federation-key", exchange.getRequestHeaders().getFirst("Authorization"));
             var path = exchange.getRequestURI().getPath();
-            var response = path.equals("/v1/governance/federation/deliveries")
+            var response = path.endsWith(":abandon")
+                ? fixture.get("abandoned_evidence")
+                : path.equals("/v1/governance/federation/deliveries")
                 ? fixture.get("delivery_evidence_page")
                 : path.contains("/federation/exports/")
                 ? fixture.get("export_receipt")
@@ -179,10 +181,15 @@ class GovernanceTest {
             client.replayFederatedExport("prod", "acme", "maya", sourceTask,
                 "remote-triage", exportMessage);
             var evidence = client.federationDeliveryEvidence("prod", "acme", null, 25);
+            var abandonRequest = mapper.treeToValue(fixture.get("abandon_request"),
+                Governance.AbandonFederationDeliveryRequest.class);
+            var abandoned = client.abandonFederationDelivery(
+                evidence.deliveries().get(0).deliveryId(), abandonRequest);
             assertFalse(receipt.executionStarted());
             assertEquals("federated-task", task.get("id").asText());
             assertEquals("in_flight", exported.attemptStatus());
             assertEquals("export-message-1", evidence.deliveries().get(0).messageId());
+            assertEquals("abandoned", abandoned.status().get("status").asText());
             assertEquals(java.util.List.of(
                 "/v1/governance/federation/trusts",
                 "/v1/governance/federation/trusts/revoke",
@@ -191,12 +198,14 @@ class GovernanceTest {
                 "/a2a/prod/acme/agents/maya/v1/tasks/" + sourceTask + "/federation/exports/remote-triage/message:send",
                 "/a2a/prod/acme/agents/maya/v1/tasks/" + sourceTask + "/federation/exports/remote-triage/message:observe",
                 "/a2a/prod/acme/agents/maya/v1/tasks/" + sourceTask + "/federation/exports/remote-triage/message:replay",
-                "/v1/governance/federation/deliveries"), paths);
+                "/v1/governance/federation/deliveries",
+                "/v1/governance/federation/deliveries/" + evidence.deliveries().get(0).deliveryId() + ":abandon"), paths);
             assertEquals(fixture.get("publication"), bodies.get(0));
             assertEquals(fixture.get("revocation"), bodies.get(1));
             assertEquals(fixture.get("envelope"), bodies.get(2).get("envelope"));
             assertEquals("signed-payload", bodies.get(3).get("invocation").get("payload").asText());
             assertEquals("message-1", bodies.get(3).get("message").get("messageId").asText());
+            assertEquals(fixture.get("abandon_request"), bodies.get(7));
         } finally { server.stop(0); }
     }
 

@@ -56,6 +56,10 @@ pub enum FederationExportApiStatus {
         stage: String,
         code: String,
     },
+    Abandoned {
+        stage: String,
+        abandonment: super::governance::FederationDeliveryAbandonment,
+    },
 }
 
 impl From<acteon_executor::federation_export::FederationExportReceipt>
@@ -85,6 +89,23 @@ impl From<acteon_executor::federation_export::FederationExportReceipt>
                     }
                     .into(),
                     code,
+                }
+            }
+            FederationDeliveryStatus::Abandoned { stage, abandonment } => {
+                FederationExportApiStatus::Abandoned {
+                    stage: match stage {
+                        FederationDeliveryStage::Import => "import",
+                        FederationDeliveryStage::Invoke => "invoke",
+                    }
+                    .into(),
+                    abandonment: super::governance::FederationDeliveryAbandonment {
+                        disposition_id: abandonment.disposition_id.to_string(),
+                        operator: abandonment.operator,
+                        authority_incarnation: abandonment.authority.incarnation,
+                        authority_generation: abandonment.authority.generation,
+                        reason: abandonment.reason,
+                        recorded_at_ms: abandonment.recorded_at_ms,
+                    },
                 }
             }
         };

@@ -113,11 +113,12 @@ type FederationImportReceipt struct {
 	ExecutionStarted bool               `json:"execution_started"`
 }
 type FederationExportDelivery struct {
-	Status  string                   `json:"status"`
-	Receipt *FederationImportReceipt `json:"receipt,omitempty"`
-	Task    map[string]any           `json:"task,omitempty"`
-	Stage   string                   `json:"stage,omitempty"`
-	Code    string                   `json:"code,omitempty"`
+	Status      string                         `json:"status"`
+	Receipt     *FederationImportReceipt       `json:"receipt,omitempty"`
+	Task        map[string]any                 `json:"task,omitempty"`
+	Stage       string                         `json:"stage,omitempty"`
+	Code        string                         `json:"code,omitempty"`
+	Abandonment *FederationDeliveryAbandonment `json:"abandonment,omitempty"`
 }
 type FederationExportReceipt struct {
 	AttemptID     string                   `json:"attempt_id"`
@@ -126,10 +127,25 @@ type FederationExportReceipt struct {
 	Delivery      FederationExportDelivery `json:"delivery"`
 }
 type FederationDeliveryEvidenceStatus struct {
-	Status           string `json:"status"`
-	ClaimExpiresAtMs *int64 `json:"claim_expires_at_ms,omitempty"`
-	Stage            string `json:"stage,omitempty"`
-	Code             string `json:"code,omitempty"`
+	Status           string                         `json:"status"`
+	ClaimExpiresAtMs *int64                         `json:"claim_expires_at_ms,omitempty"`
+	Stage            string                         `json:"stage,omitempty"`
+	Code             string                         `json:"code,omitempty"`
+	Abandonment      *FederationDeliveryAbandonment `json:"abandonment,omitempty"`
+}
+type FederationDeliveryAbandonment struct {
+	DispositionID        string            `json:"disposition_id"`
+	Operator             PrincipalIdentity `json:"operator"`
+	AuthorityIncarnation string            `json:"authority_incarnation"`
+	AuthorityGeneration  uint64            `json:"authority_generation"`
+	Reason               string            `json:"reason"`
+	RecordedAtMs         int64             `json:"recorded_at_ms"`
+}
+type AbandonFederationDeliveryRequest struct {
+	Namespace     string `json:"namespace"`
+	Tenant        string `json:"tenant"`
+	DispositionID string `json:"disposition_id"`
+	Reason        string `json:"reason"`
 }
 type FederationDeliveryEvidence struct {
 	DeliveryID            string                           `json:"delivery_id"`
@@ -278,6 +294,18 @@ func (c *Client) FederationDeliveryEvidence(ctx context.Context, namespace, tena
 		}
 	}
 	return &page, nil
+}
+
+// AbandonFederationDelivery stops local recovery without asserting a peer outcome.
+func (c *Client) AbandonFederationDelivery(ctx context.Context, deliveryID string, request AbandonFederationDeliveryRequest) (*FederationDeliveryEvidence, error) {
+	data, err := c.PlatformRequest(ctx, OpGovernanceAbandonFederationDelivery,
+		map[string]string{"delivery_id": deliveryID}, nil, request)
+	if err != nil {
+		return nil, err
+	}
+	var evidence FederationDeliveryEvidence
+	err = json.Unmarshal(data, &evidence)
+	return &evidence, err
 }
 
 func (c *Client) ImportFederationEnvelope(ctx context.Context, namespace, tenant string, envelope SignedFederationEnvelopeDeclaration) (*FederationImportReceipt, error) {

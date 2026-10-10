@@ -2,12 +2,14 @@
 
 Use Acteon's SDKs to connect agents, services, and workers to the same execution and governance platform. Start with the typed helpers for dispatch, rules, audit, approvals, and bus operations. Use the complete **platform operation API** for controls that do not yet have a dedicated helper in your language.
 
-The current source tree provides a generated catalog for **224 finite HTTP operations** in Rust, Python, TypeScript, Go, and Java. It includes receipt sessions, managed-stage recovery, workflow and execution controls, inference profiles, stream windows, federation admission and agent dispatch, and operator APIs. Six streaming or polymorphic RPC routes use the existing streaming and A2A clients instead. Server configuration, authorization, and optional build features still determine which operations are available on your deployment.
+The current source tree provides a generated catalog for **225 finite HTTP operations** in Rust, Python, TypeScript, Go, and Java. It includes receipt sessions, managed-stage recovery, workflow and execution controls, inference profiles, stream windows, federation admission and agent dispatch, and operator APIs. Six streaming or polymorphic RPC routes use the existing streaming and A2A clients instead. Server configuration, authorization, and optional build features still determine which operations are available on your deployment.
 
 All five SDKs also expose typed federation delivery evidence pages. The helper
 accepts namespace, tenant, optional delivery cursor and page size, and preserves
 the server's sanitized lifecycle status without exposing retained messages or
-signed authority payloads.
+signed authority payloads. Each SDK also exposes a typed abandonment request for
+an ambiguous delivery. It records the operator, authority generation, reason and
+idempotency ID while making no claim about the peer outcome.
 
 ## Choose the right interface
 
@@ -19,6 +21,7 @@ signed authority payloads.
 | Authenticated agent-service receipts, input continuation, local and remote verifier-backed authorization, and future-start stop | Yes | Yes, sync and async | Yes | Yes | Yes |
 | Governed registry inspection, mutation and explicit recovery | Yes | Yes, sync and async | Yes | Yes | Yes |
 | Typed federation trust, inert import and signed agent invocation | Yes | Yes, sync and async | Yes | Yes | Yes |
+| Delivery evidence and operator abandonment | Yes | Yes, sync and async | Yes | Yes | Yes |
 | Code-defined workflow runner | — | Yes | Yes | — | — |
 | Managed stream-processing adapter | `stream-processing` feature | — | — | — | — |
 

@@ -190,9 +190,30 @@ body, signed payloads, endpoint, transport credential and signing material. The
 server filters results to the manager's declared source principals and
 revalidates management authority after reading the state backend.
 
-Production qualification still requires operator disposition workflows for
-ambiguous deliveries, capability exchange, and two-server failure testing on
-each supported production state backend.
+An authorized manager can terminally stop local recovery of an ambiguous or
+expired claimed stage:
+
+```text
+POST /v1/governance/federation/deliveries/{delivery_id}:abandon
+{
+  "namespace": "prod",
+  "tenant": "acme",
+  "disposition_id": "77777777-7777-4777-8777-777777777777",
+  "reason": "peer status cannot be proven; stop local recovery"
+}
+```
+
+The disposition is idempotent and records the authenticated operator, current
+authority generation, reason and time. It releases the local export reservation
+after the abandonment is durable. The resulting status remains `abandoned`, not
+`rejected`: Acteon is recording a local recovery decision and does not claim to
+know whether the peer performed the effect. This management operation contains
+no endpoint, credential or replay path. Replay still requires the original
+source authority and a transport qualified for exact idempotency.
+
+Production qualification still requires capability exchange, qualified peer
+finality evidence, and two-server failure testing on each supported production
+state backend.
 
 ### Discovery (unauthenticated)
 

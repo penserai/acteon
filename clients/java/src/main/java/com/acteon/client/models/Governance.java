@@ -79,6 +79,11 @@ public final class Governance {
     public record FederationDeliveryEvidencePage(
         List<FederationDeliveryEvidence> deliveries,
         @JsonProperty("next_cursor") String nextCursor) {}
+    public record AbandonFederationDeliveryRequest(
+        String namespace,
+        String tenant,
+        @JsonProperty("disposition_id") String dispositionId,
+        String reason) {}
     public record FederationTrustView(FederationTrustDeclaration trust, boolean revoked) {}
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record Intervention(String kind, Resource resource, PrincipalIdentity subject,

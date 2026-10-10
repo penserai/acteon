@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from acteon_client import (
+    AbandonFederationDeliveryRequest,
     ActeonClient,
     AsyncActeonClient,
     FederationTrustDeclaration,
@@ -131,7 +132,9 @@ async def test_federation_management_and_inert_import_wire(async_client):
 
     def respond(request):
         seen.append(request)
-        if request.url.path == "/v1/governance/federation/deliveries":
+        if request.url.path.endswith(":abandon"):
+            response = FEDERATION["abandoned_evidence"]
+        elif request.url.path == "/v1/governance/federation/deliveries":
             response = FEDERATION["delivery_evidence_page"]
         elif "/federation/exports/" in request.url.path:
             response = FEDERATION["export_receipt"]
@@ -184,6 +187,10 @@ async def test_federation_management_and_inert_import_wire(async_client):
                 await client.observe_federated_export(*export_args),
                 await client.replay_federated_export(*export_args),
                 await client.federation_delivery_evidence("prod", "acme", limit=25),
+                await client.abandon_federation_delivery(
+                    FEDERATION["abandoned_evidence"]["delivery_id"],
+                    AbandonFederationDeliveryRequest(**FEDERATION["abandon_request"]),
+                ),
             ]
         else:
             results = [
@@ -195,6 +202,10 @@ async def test_federation_management_and_inert_import_wire(async_client):
                 client.observe_federated_export(*export_args),
                 client.replay_federated_export(*export_args),
                 client.federation_delivery_evidence("prod", "acme", limit=25),
+                client.abandon_federation_delivery(
+                    FEDERATION["abandoned_evidence"]["delivery_id"],
+                    AbandonFederationDeliveryRequest(**FEDERATION["abandon_request"]),
+                ),
             ]
         assert asdict(results[0]) == FEDERATION["change_receipt"]
         assert asdict(results[1]) == FEDERATION["change_receipt"]
@@ -203,7 +214,8 @@ async def test_federation_management_and_inert_import_wire(async_client):
         assert results[3]["id"] == "federated-task"
         assert all(asdict(result) == FEDERATION["export_receipt"] for result in results[4:7])
         assert asdict(results[7]) == FEDERATION["delivery_evidence_page"]
-        assert [request.method for request in seen] == ["POST"] * 7 + ["GET"]
+        assert asdict(results[8]) == FEDERATION["abandoned_evidence"]
+        assert [request.method for request in seen] == ["POST"] * 7 + ["GET", "POST"]
         assert json.loads(seen[0].content) == FEDERATION["publication"]
         assert json.loads(seen[1].content) == FEDERATION["revocation"]
         assert json.loads(seen[2].content) == {"envelope": FEDERATION["envelope"]}
@@ -227,6 +239,10 @@ async def test_federation_management_and_inert_import_wire(async_client):
             "tenant": "acme",
             "limit": "25",
         }
+        assert seen[8].url.path.endswith(
+            f"/{FEDERATION['abandoned_evidence']['delivery_id']}:abandon"
+        )
+        assert json.loads(seen[8].content) == FEDERATION["abandon_request"]
         assert all(request.headers["authorization"] == "Bearer federation-key" for request in seen)
     finally:
         if async_client:

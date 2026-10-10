@@ -14,7 +14,7 @@ use acteon_core::{
     PublishGovernancePermitRequest, RevokeFederationTrustRequest,
 };
 use acteon_governance::{
-    AuthorityChange, AuthorityStamp, CoordinationError,
+    AttemptStatus, AuthorityChange, AuthorityStamp, CoordinationError,
     control::{ControlChangeAuthorization, ControlChangeCeiling},
     federation::{
         EvaluatedFederationTrustPublication, FederationGrantCeiling, FederationTrust,
@@ -297,6 +297,127 @@ impl ExecutionAuthorityRuntime {
             deliveries,
             next_cursor,
         })
+    }
+
+    /// Terminally stop local recovery of an ambiguous outbound delivery. The
+    /// current manager must independently cover the retained source. This
+    /// never claims peer success or rejection and never calls the peer.
+    pub async fn abandon_federation_delivery(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        delivery_id: uuid::Uuid,
+        disposition_id: uuid::Uuid,
+        reason: &str,
+        authentication: &AuthenticatedExecutionConfiguration,
+    ) -> Result<acteon_executor::federation_transport::FederationDeliveryEvidence, ManagementError>
+    {
+        use acteon_executor::{
+            federation_export::federation_export_attempt_id,
+            federation_transport::{
+                FederationDeliveryAbandonment, FederationDeliveryEvidenceReader,
+                FederationDeliveryEvidenceStatus, FederationDeliveryReconciler,
+            },
+        };
+        if delivery_id.is_nil()
+            || disposition_id.is_nil()
+            || reason.is_empty()
+            || reason.len() > 1_024
+            || reason.trim() != reason
+            || reason.chars().any(char::is_control)
+        {
+            return Err(ManagementError::Invalid);
+        }
+        let observation = self
+            .management_observation(namespace, tenant, authentication)
+            .await?;
+        if !observation.policy.can_reconcile {
+            return Err(ManagementError::Forbidden);
+        }
+        let reader = FederationDeliveryEvidenceReader::new(
+            self.state.clone(),
+            self.clock.clone(),
+            self.encryptor.clone(),
+        );
+        let evidence = reader
+            .get_evidence(namespace, tenant, delivery_id)
+            .await
+            .map_err(|error| federation_management_error(&error))?
+            .ok_or(ManagementError::NotFound)?;
+        if !observation.policy.subjects.contains(&evidence.source) {
+            return Err(ManagementError::NotFound);
+        }
+
+        let attempt_id = federation_export_attempt_id(delivery_id);
+        let attempt = observation
+            .scope
+            .coordinator
+            .snapshot()
+            .await
+            .map_err(|_| ManagementError::Unavailable)?
+            .starts
+            .get(&attempt_id)
+            .cloned()
+            .ok_or(ManagementError::Conflict)?;
+        if attempt.subject != evidence.source.id() {
+            return Err(ManagementError::Conflict);
+        }
+
+        if let FederationDeliveryEvidenceStatus::Abandoned { abandonment, .. } = &evidence.status {
+            if abandonment.disposition_id != disposition_id
+                || abandonment.operator != observation.policy.principal
+                || abandonment.reason != reason
+            {
+                return Err(ManagementError::Conflict);
+            }
+            self.revalidate_management(&observation, authentication)
+                .await?;
+            observation
+                .scope
+                .coordinator
+                .settle(&attempt_id, &attempt.token, AttemptStatus::Settled)
+                .await?;
+            return Ok(evidence);
+        }
+        if attempt.status == AttemptStatus::Settled {
+            return Err(ManagementError::Conflict);
+        }
+
+        // This second authoritative read is the authorization linearization
+        // point. A concurrent revocation that precedes it blocks the write; a
+        // later revocation does not erase an already authorized disposition.
+        self.revalidate_management(&observation, authentication)
+            .await?;
+        let recorded_at_ms = self.clock.now().timestamp_millis();
+        let reconciler = FederationDeliveryReconciler::new(
+            self.state.clone(),
+            self.clock.clone(),
+            self.encryptor.clone(),
+        );
+        let abandoned = reconciler
+            .abandon(
+                namespace,
+                tenant,
+                delivery_id,
+                &evidence.source,
+                FederationDeliveryAbandonment {
+                    disposition_id,
+                    operator: observation.policy.principal.clone(),
+                    authority: observation.stamp.clone(),
+                    reason: reason.into(),
+                    recorded_at_ms,
+                },
+            )
+            .await
+            .map_err(|error| federation_management_error(&error))?;
+        // Journal finality is durable first. A lost settlement acknowledgment
+        // is repaired by replaying this same idempotent disposition request.
+        observation
+            .scope
+            .coordinator
+            .settle(&attempt_id, &attempt.token, AttemptStatus::Settled)
+            .await?;
+        Ok(abandoned)
     }
 
     pub async fn inspect_governance(
@@ -644,6 +765,18 @@ fn public_effect(effect: &acteon_governance::context::AcceptedEffect) -> Governa
     GovernanceEffect {
         operation: effect.operation.clone(),
         resources: effect.resources.clone(),
+    }
+}
+
+fn federation_management_error(
+    error: &acteon_executor::federation_transport::FederationTransportError,
+) -> ManagementError {
+    use acteon_executor::federation_transport::FederationTransportError;
+    match error {
+        FederationTransportError::Invalid => ManagementError::Invalid,
+        FederationTransportError::Conflict => ManagementError::Conflict,
+        FederationTransportError::Refused => ManagementError::Forbidden,
+        FederationTransportError::Unavailable => ManagementError::Unavailable,
     }
 }
 

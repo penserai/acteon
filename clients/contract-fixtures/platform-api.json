@@ -1323,6 +1323,15 @@
       "response": "json"
     },
     {
+      "name": "governance_abandon_federation_delivery",
+      "method": "POST",
+      "path": "/v1/governance/federation/deliveries/{delivery_id}:abandon",
+      "parameters": [
+        "delivery_id"
+      ],
+      "response": "json"
+    },
+    {
       "name": "governance_accept_reconciliation",
       "method": "POST",
       "path": "/v1/governance/executions/{execution_id}/attempts/{ordinal}/reconciliation",

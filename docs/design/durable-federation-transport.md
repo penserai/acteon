@@ -172,6 +172,14 @@ filters by the manager's declared source principals, and revalidates both
 management and authentication authority after backend I/O. The five SDKs expose
 the same typed page.
 
+The same independent reconciliation grant can abandon an ambiguous or expired
+claimed delivery. Abandonment is a terminal local state with immutable operator,
+authority-generation, reason, time and idempotency evidence. Invoke-stage
+abandonment retains the validated import receipt internally so corrupted stage
+lineage fails closed. The journal commits before governed export accounting is
+settled; replaying the same disposition repairs a lost settlement acknowledgment.
+No management field can supply a peer result or trigger a network request.
+
 ## Verification
 
 Focused contracts cover separated registration and authorized delivery, exact
@@ -192,8 +200,8 @@ backend.
 
 The remaining production gates are:
 
-1. explicit operator disposition workflows for ambiguous deliveries and
-   backend-native bounded pagination for large journals;
+1. qualified peer-finality evidence and backend-native bounded pagination for
+   large journals;
 2. capability/key-card negotiation and credential exchange;
 3. two-server restart and response-loss qualification across Redis,
    PostgreSQL, and DynamoDB, followed by external implementation conformance.

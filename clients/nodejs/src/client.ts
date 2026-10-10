@@ -3,7 +3,7 @@ import { AGENT_EXECUTION_CONTEXT_HEADER, AGENT_SOURCE_CONTEXT_HEADER, agentExecu
 import { parseProviderHistoryReceipt, type ProviderHistoryReceipt, type ProviderReconciliationCorrelation, type ProviderReconciliationRequest } from "./governance.js";
 import { parseProviderExecutionHistory, type ProviderExecutionHistory, type ProviderExecutionHistoryWire } from "./governance.js";
 import type { WorkforceScopeView, WorkforceChangeRequest } from "./workforce.js";
-import type { FederationDeliveryEvidencePage, FederationExportReceipt, FederationImportReceipt, GovernanceScopeView, GovernanceChangeReceipt, PublishFederationTrustRequest, PublishGovernancePermitRequest, RevokeFederationTrustRequest, SignedFederationEnvelopeDeclaration, SignedFederationInvocationDeclaration, GovernanceInterventionRequest } from "./governance.js";
+import type { AbandonFederationDeliveryRequest, FederationDeliveryEvidence, FederationDeliveryEvidencePage, FederationExportReceipt, FederationImportReceipt, GovernanceScopeView, GovernanceChangeReceipt, PublishFederationTrustRequest, PublishGovernancePermitRequest, RevokeFederationTrustRequest, SignedFederationEnvelopeDeclaration, SignedFederationInvocationDeclaration, GovernanceInterventionRequest } from "./governance.js";
 import { platformRequestParts, type PlatformOperation, type PlatformRequestOptions } from "./platform.js";
 /**
  * HTTP client for the Acteon action gateway.
@@ -601,6 +601,12 @@ export class ActeonClient {
       throw new Error("federation delivery evidence identity mismatch");
     }
     return page;
+  }
+  /** Stop local recovery without claiming peer success or rejection. */
+  async abandonFederationDelivery(deliveryId: string, request: AbandonFederationDeliveryRequest): Promise<FederationDeliveryEvidence> {
+    return await this.platformRequest("governance_abandon_federation_delivery", {
+      path: { delivery_id: deliveryId }, body: request,
+    }) as FederationDeliveryEvidence;
   }
   /** Authenticate as the configured peer and retain authority without starting execution. */
   async importFederationEnvelope(namespace: string, tenant: string, envelope: SignedFederationEnvelopeDeclaration): Promise<FederationImportReceipt> {

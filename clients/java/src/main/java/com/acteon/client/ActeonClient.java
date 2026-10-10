@@ -519,6 +519,17 @@ public class ActeonClient implements AutoCloseable {
             throw new ConnectionException("Malformed federation delivery evidence", e);
         }
     }
+    /** Stop local recovery without asserting peer success or rejection. */
+    public Governance.FederationDeliveryEvidence abandonFederationDelivery(String deliveryId,
+        Governance.AbandonFederationDeliveryRequest request) throws ActeonException {
+        var node = platformRequest(PlatformOperation.GOVERNANCE_ABANDON_FEDERATION_DELIVERY,
+            Map.of("delivery_id", deliveryId), null, request);
+        try {
+            return objectMapper.treeToValue(node, Governance.FederationDeliveryEvidence.class);
+        } catch (IOException e) {
+            throw new ConnectionException("Malformed federation abandonment evidence", e);
+        }
+    }
     /** Authenticate as a configured peer and retain imported authority without executing it. */
     public Governance.FederationImportReceipt importFederationEnvelope(String namespace, String tenant,
         Governance.SignedFederationEnvelopeDeclaration envelope) throws ActeonException {

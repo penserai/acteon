@@ -2142,6 +2142,12 @@ uncertain, terminal and expired work, omits payloads and secrets, and rechecks
 authority after reading storage. Rust, Python, TypeScript, Go and Java expose
 the typed operation.
 
-Operator disposition workflows, backend-native journal pagination, capability
+Reconciliation managers can also abandon an ambiguous or expired claimed
+delivery. The durable disposition names the authenticated operator, authority
+generation, reason, timestamp and stable idempotency ID, preserves the unknown
+peer outcome, blocks replay, and settles the retained local export reservation.
+It cannot assert remote success or rejection and contains no network operation.
+
+Qualified peer-finality evidence, backend-native journal pagination, capability
 exchange, and two-server qualification across Redis, PostgreSQL and DynamoDB
 remain required for the federation release gate.

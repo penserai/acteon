@@ -22,6 +22,7 @@ func TestFederationManagementAndInertImportWire(t *testing.T) {
 	var publication PublishFederationTrustRequest
 	var revocation RevokeFederationTrustRequest
 	var envelope SignedFederationEnvelopeDeclaration
+	var abandonment AbandonFederationDeliveryRequest
 	if err = json.Unmarshal(wire["publication"], &publication); err != nil {
 		t.Fatal(err)
 	}
@@ -29,6 +30,9 @@ func TestFederationManagementAndInertImportWire(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err = json.Unmarshal(wire["envelope"], &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if err = json.Unmarshal(wire["abandon_request"], &abandonment); err != nil {
 		t.Fatal(err)
 	}
 	var calls []json.RawMessage
@@ -46,7 +50,9 @@ func TestFederationManagementAndInertImportWire(t *testing.T) {
 		}
 		paths = append(paths, r.URL.Path)
 		response := wire["change_receipt"]
-		if r.URL.Path == "/v1/governance/federation/deliveries" {
+		if len(r.URL.Path) >= len(":abandon") && r.URL.Path[len(r.URL.Path)-len(":abandon"):] == ":abandon" {
+			response = wire["abandoned_evidence"]
+		} else if r.URL.Path == "/v1/governance/federation/deliveries" {
 			response = wire["delivery_evidence_page"]
 		} else if bytes.Contains([]byte(r.URL.Path), []byte("/federation/exports/")) {
 			response = wire["export_receipt"]
@@ -102,7 +108,11 @@ func TestFederationManagementAndInertImportWire(t *testing.T) {
 	if err != nil || len(evidence.Deliveries) != 1 || evidence.Deliveries[0].MessageID != "export-message-1" {
 		t.Fatalf("unexpected delivery evidence: %v (%v)", evidence, err)
 	}
-	if len(paths) != 8 || paths[2] != "/a2a/prod/acme/federation/envelopes:import" || paths[3] != "/a2a/prod/acme/federation/agents/maya/v1/message:send" || paths[7] != "/v1/governance/federation/deliveries" {
+	abandoned, err := client.AbandonFederationDelivery(ctx, evidence.Deliveries[0].DeliveryID, abandonment)
+	if err != nil || abandoned.Status.Status != "abandoned" || abandoned.Status.Abandonment == nil {
+		t.Fatalf("unexpected abandonment evidence: %v (%v)", abandoned, err)
+	}
+	if len(paths) != 9 || paths[2] != "/a2a/prod/acme/federation/envelopes:import" || paths[3] != "/a2a/prod/acme/federation/agents/maya/v1/message:send" || paths[7] != "/v1/governance/federation/deliveries" || paths[8] != "/v1/governance/federation/deliveries/"+evidence.Deliveries[0].DeliveryID+":abandon" {
 		t.Fatalf("unexpected paths: %v", paths)
 	}
 	for i, action := range []string{"send", "observe", "replay"} {
@@ -111,7 +121,7 @@ func TestFederationManagementAndInertImportWire(t *testing.T) {
 			t.Fatalf("unexpected export path: %s", paths[i+4])
 		}
 	}
-	if len(calls) != 7 {
+	if len(calls) != 8 {
 		t.Fatalf("got %d calls", len(calls))
 	}
 	if !bytes.Equal(compactJSON(t, calls[0]), compactJSON(t, wire["publication"])) {
@@ -119,6 +129,9 @@ func TestFederationManagementAndInertImportWire(t *testing.T) {
 	}
 	if !bytes.Equal(compactJSON(t, calls[1]), compactJSON(t, wire["revocation"])) {
 		t.Fatal("revocation wire changed")
+	}
+	if !bytes.Equal(compactJSON(t, calls[7]), compactJSON(t, wire["abandon_request"])) {
+		t.Fatal("abandonment wire changed")
 	}
 	var importBody map[string]json.RawMessage
 	if err = json.Unmarshal(calls[2], &importBody); err != nil {

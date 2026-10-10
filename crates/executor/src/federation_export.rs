@@ -440,7 +440,7 @@ impl GovernedFederationExporter {
         request: &FederationExportRequest<'_>,
         delivery: &FederationDeliveryReceipt,
     ) -> Result<(String, String, AttemptStatus), FederationExportError> {
-        let attempt_id = attempt_id(delivery.delivery_id);
+        let attempt_id = federation_export_attempt_id(delivery.delivery_id);
         let context_reference = request
             .context
             .reference()
@@ -466,6 +466,7 @@ impl GovernedFederationExporter {
                 delivery.status,
                 FederationDeliveryStatus::Accepted { .. }
                     | FederationDeliveryStatus::Rejected { .. }
+                    | FederationDeliveryStatus::Abandoned { .. }
             )
         {
             return Err(FederationExportError::Conflict);
@@ -478,7 +479,7 @@ impl GovernedFederationExporter {
         delivery: &FederationDeliveryReceipt,
         request: &FederationExportRequest<'_>,
     ) -> Result<(String, String), FederationExportError> {
-        let attempt_id = attempt_id(delivery.delivery_id);
+        let attempt_id = federation_export_attempt_id(delivery.delivery_id);
         let state = self.dependencies.coordinator.snapshot().await?;
         let record = state
             .starts
@@ -521,7 +522,8 @@ impl GovernedFederationExporter {
     ) -> Result<FederationExportReceipt, FederationExportError> {
         let attempt_status = match delivery.status {
             FederationDeliveryStatus::Accepted { .. }
-            | FederationDeliveryStatus::Rejected { .. } => AttemptStatus::Settled,
+            | FederationDeliveryStatus::Rejected { .. }
+            | FederationDeliveryStatus::Abandoned { .. } => AttemptStatus::Settled,
             FederationDeliveryStatus::ImportUncertain
             | FederationDeliveryStatus::InvokeUncertain { .. } => AttemptStatus::Uncertain,
             FederationDeliveryStatus::Registered | FederationDeliveryStatus::Imported { .. } => {
@@ -542,7 +544,8 @@ impl GovernedFederationExporter {
     }
 }
 
-fn attempt_id(delivery_id: uuid::Uuid) -> String {
+#[must_use]
+pub fn federation_export_attempt_id(delivery_id: uuid::Uuid) -> String {
     format!("federation-export/{delivery_id}")
 }
 

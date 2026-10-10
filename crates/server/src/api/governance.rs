@@ -32,6 +32,15 @@ pub struct FederationDeliveryEvidenceQuery {
     pub limit: Option<usize>,
 }
 
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AbandonFederationDeliveryRequest {
+    pub namespace: String,
+    pub tenant: String,
+    pub disposition_id: String,
+    pub reason: String,
+}
+
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct FederationDeliveryEvidencePage {
     pub deliveries: Vec<FederationDeliveryEvidence>,
@@ -60,13 +69,34 @@ pub struct FederationDeliveryEvidence {
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum FederationDeliveryEvidenceStatus {
     Registered,
-    Importing { claim_expires_at_ms: i64 },
+    Importing {
+        claim_expires_at_ms: i64,
+    },
     ImportUncertain,
     Imported,
-    Invoking { claim_expires_at_ms: i64 },
+    Invoking {
+        claim_expires_at_ms: i64,
+    },
     InvokeUncertain,
     Accepted,
-    Rejected { stage: String, code: String },
+    Rejected {
+        stage: String,
+        code: String,
+    },
+    Abandoned {
+        stage: String,
+        abandonment: FederationDeliveryAbandonment,
+    },
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct FederationDeliveryAbandonment {
+    pub disposition_id: String,
+    pub operator: acteon_core::PrincipalIdentity,
+    pub authority_incarnation: String,
+    pub authority_generation: u64,
+    pub reason: String,
+    pub recorded_at_ms: i64,
 }
 
 impl From<acteon_executor::federation_transport::FederationDeliveryEvidence>
@@ -100,6 +130,23 @@ impl From<acteon_executor::federation_transport::FederationDeliveryEvidence>
                 .into(),
                 code,
             },
+            Status::Abandoned { stage, abandonment } => {
+                FederationDeliveryEvidenceStatus::Abandoned {
+                    stage: match stage {
+                        FederationDeliveryStage::Import => "import",
+                        FederationDeliveryStage::Invoke => "invoke",
+                    }
+                    .into(),
+                    abandonment: FederationDeliveryAbandonment {
+                        disposition_id: abandonment.disposition_id.to_string(),
+                        operator: abandonment.operator,
+                        authority_incarnation: abandonment.authority.incarnation,
+                        authority_generation: abandonment.authority.generation,
+                        reason: abandonment.reason,
+                        recorded_at_ms: abandonment.recorded_at_ms,
+                    },
+                }
+            }
         };
         Self {
             delivery_id: evidence.delivery_id.to_string(),
@@ -317,6 +364,43 @@ pub async fn federation_delivery_evidence(
             deliveries: page.deliveries.into_iter().map(Into::into).collect(),
             next_cursor: page.next_cursor.map(|cursor| cursor.to_string()),
         }),
+    ))
+}
+
+/// Stop local recovery of an ambiguous outbound delivery without claiming a
+/// remote outcome or invoking the peer.
+#[utoipa::path(post, path = "/v1/governance/federation/deliveries/{delivery_id}:abandon", tag = "Governance",
+    params(("delivery_id" = String, Path)),
+    request_body = AbandonFederationDeliveryRequest,
+    responses((status = 200, body = FederationDeliveryEvidence),
+        (status = 400, description = "Invalid disposition request"),
+        (status = 401, description = "Private authentication required"),
+        (status = 403, description = "Independent reconciliation permission required"),
+        (status = 404, description = "No accessible retained delivery"),
+        (status = 409, description = "Delivery is not ambiguous or disposition conflicts"),
+        (status = 503, description = "Federation reconciliation unavailable")))]
+pub async fn abandon_federation_delivery(
+    State(state): State<AppState>,
+    proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
+    Path(delivery_id): Path<uuid::Uuid>,
+    Json(request): Json<AbandonFederationDeliveryRequest>,
+) -> Result<impl IntoResponse, GovernanceApiError> {
+    let proof = authentication(proof)?;
+    let disposition_id =
+        uuid::Uuid::parse_str(&request.disposition_id).map_err(|_| ManagementError::Invalid)?;
+    let evidence = runtime(&state)?
+        .abandon_federation_delivery(
+            &request.namespace,
+            &request.tenant,
+            delivery_id,
+            disposition_id,
+            &request.reason,
+            &proof,
+        )
+        .await?;
+    Ok((
+        [(axum::http::header::CACHE_CONTROL, "no-store")],
+        Json(FederationDeliveryEvidence::from(evidence)),
     ))
 }
 

@@ -10,7 +10,10 @@ use std::{sync::Arc, time::Duration};
 
 use acteon_core::{ExecutionContextReference, FederationImportReceipt, Task, TaskMessage};
 use acteon_crypto::PayloadEncryptor;
-use acteon_governance::federation::{SignedFederationEnvelope, SignedFederationInvocation};
+use acteon_governance::{
+    AuthorityStamp,
+    federation::{SignedFederationEnvelope, SignedFederationInvocation},
+};
 use acteon_state::{CasResult, KeyKind, StateKey, StateStore};
 use acteon_time::Clock;
 use async_trait::async_trait;
@@ -99,6 +102,11 @@ pub enum FederationDeliveryStatus {
         stage: FederationDeliveryStage,
         code: String,
     },
+    /// Local recovery was stopped without asserting a remote outcome.
+    Abandoned {
+        stage: FederationDeliveryStage,
+        abandonment: FederationDeliveryAbandonment,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -128,6 +136,18 @@ pub struct FederationDeliveryEvidence {
     pub status: FederationDeliveryEvidenceStatus,
 }
 
+/// Immutable operator audit attached to a locally abandoned ambiguous
+/// delivery. It records no claim about whether the peer performed the effect.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationDeliveryAbandonment {
+    pub disposition_id: Uuid,
+    pub operator: acteon_core::PrincipalIdentity,
+    pub authority: AuthorityStamp,
+    pub reason: String,
+    pub recorded_at_ms: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FederationDeliveryEvidenceStatus {
     Registered,
@@ -144,6 +164,10 @@ pub enum FederationDeliveryEvidenceStatus {
     Rejected {
         stage: FederationDeliveryStage,
         code: String,
+    },
+    Abandoned {
+        stage: FederationDeliveryStage,
+        abandonment: FederationDeliveryAbandonment,
     },
 }
 
@@ -245,6 +269,157 @@ impl FederationDeliveryEvidenceReader {
         }
         Ok(evidence)
     }
+
+    pub async fn get_evidence(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        delivery_id: Uuid,
+    ) -> Result<Option<FederationDeliveryEvidence>, FederationTransportError> {
+        if namespace.is_empty() || tenant.is_empty() || delivery_id.is_nil() {
+            return Err(FederationTransportError::Invalid);
+        }
+        let key = StateKey::new(
+            namespace,
+            tenant,
+            KeyKind::Custom(FEDERATION_DELIVERY_KIND.into()),
+            delivery_id.to_string(),
+        );
+        let Some(raw) = self
+            .state
+            .get(&key)
+            .await
+            .map_err(|_| FederationTransportError::Unavailable)?
+        else {
+            return Ok(None);
+        };
+        let record = decode_evidence_record(self.encryptor.as_ref(), &raw)?;
+        if record.delivery_id != delivery_id
+            || record.parent.namespace() != namespace
+            || record.parent.tenant() != tenant
+        {
+            return Err(FederationTransportError::Conflict);
+        }
+        let now_ms = self.clock.now().timestamp_millis();
+        if now_ms < 0 {
+            return Err(FederationTransportError::Invalid);
+        }
+        project_evidence(&record, now_ms).map(Some)
+    }
+}
+
+/// Adapter-independent mutation boundary for operator reconciliation. It can
+/// only stop local recovery of an already ambiguous delivery; it has no
+/// endpoint, credential, signed request, or replay operation.
+pub struct FederationDeliveryReconciler {
+    state: Arc<dyn StateStore>,
+    clock: Arc<dyn Clock>,
+    encryptor: Option<Arc<PayloadEncryptor>>,
+}
+
+impl FederationDeliveryReconciler {
+    #[must_use]
+    pub fn new(
+        state: Arc<dyn StateStore>,
+        clock: Arc<dyn Clock>,
+        encryptor: Option<Arc<PayloadEncryptor>>,
+    ) -> Self {
+        Self {
+            state,
+            clock,
+            encryptor,
+        }
+    }
+
+    /// Terminally stop local recovery while retaining the unknown peer
+    /// outcome. The trusted host must derive `abandonment` from independently
+    /// authenticated reconciliation authority immediately before this call.
+    pub async fn abandon(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        delivery_id: Uuid,
+        expected_source: &acteon_core::PrincipalIdentity,
+        abandonment: FederationDeliveryAbandonment,
+    ) -> Result<FederationDeliveryEvidence, FederationTransportError> {
+        if namespace.is_empty()
+            || tenant.is_empty()
+            || delivery_id.is_nil()
+            || !valid_abandonment(&abandonment)
+        {
+            return Err(FederationTransportError::Invalid);
+        }
+        let key = StateKey::new(
+            namespace,
+            tenant,
+            KeyKind::Custom(FEDERATION_DELIVERY_KIND.into()),
+            delivery_id.to_string(),
+        );
+        let (raw, version) = self
+            .state
+            .get_versioned(&key)
+            .await
+            .map_err(|_| FederationTransportError::Unavailable)?
+            .ok_or(FederationTransportError::Conflict)?;
+        let mut record = decode_evidence_record(self.encryptor.as_ref(), &raw)?;
+        let envelope = record
+            .envelope
+            .envelope()
+            .map_err(|_| FederationTransportError::Conflict)?;
+        if record.delivery_id != delivery_id
+            || record.parent.namespace() != namespace
+            || record.parent.tenant() != tenant
+            || &envelope.source != expected_source
+            || abandonment.recorded_at_ms < record.created_at_ms
+        {
+            return Err(FederationTransportError::Conflict);
+        }
+        let now_ms = self.clock.now().timestamp_millis();
+        if now_ms < 0 || abandonment.recorded_at_ms > now_ms {
+            return Err(FederationTransportError::Invalid);
+        }
+        let (stage, receipt) = match &record.state {
+            DeliveryState::ImportUncertain => (FederationDeliveryStage::Import, None),
+            DeliveryState::InvokeUncertain { receipt } => {
+                (FederationDeliveryStage::Invoke, Some(receipt.clone()))
+            }
+            DeliveryState::Importing {
+                claim_expires_at_ms,
+                ..
+            } if now_ms >= *claim_expires_at_ms => (FederationDeliveryStage::Import, None),
+            DeliveryState::Invoking {
+                receipt,
+                claim_expires_at_ms,
+                ..
+            } if now_ms >= *claim_expires_at_ms => {
+                (FederationDeliveryStage::Invoke, Some(receipt.clone()))
+            }
+            DeliveryState::Abandoned {
+                abandonment: existing,
+                ..
+            } if existing == &abandonment => return project_evidence(&record, now_ms),
+            _ => return Err(FederationTransportError::Conflict),
+        };
+        record.state = DeliveryState::Abandoned {
+            stage,
+            receipt,
+            abandonment,
+        };
+        match self
+            .state
+            .compare_and_swap(
+                &key,
+                version,
+                &encode_evidence_record(self.encryptor.as_ref(), &record)?,
+                None,
+            )
+            .await
+            .map_err(|_| FederationTransportError::Unavailable)?
+        {
+            CasResult::Ok => project_evidence(&record, now_ms),
+            CasResult::Conflict { .. } => Err(FederationTransportError::Conflict),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -274,6 +449,13 @@ enum DeliveryState {
     Rejected {
         stage: FederationDeliveryStage,
         code: String,
+    },
+    Abandoned {
+        stage: FederationDeliveryStage,
+        /// Retained only to prove invoke-stage lineage. The evidence projection
+        /// never exposes the import receipt.
+        receipt: Option<Box<FederationImportReceipt>>,
+        abandonment: FederationDeliveryAbandonment,
     },
 }
 
@@ -431,7 +613,9 @@ impl DurableFederationTransport {
         let stage = match &current.state {
             DeliveryState::Registered => FederationDeliveryStage::Import,
             DeliveryState::Imported { .. } => FederationDeliveryStage::Invoke,
-            DeliveryState::Accepted { .. } | DeliveryState::Rejected { .. } => {
+            DeliveryState::Accepted { .. }
+            | DeliveryState::Rejected { .. }
+            | DeliveryState::Abandoned { .. } => {
                 return Ok(Self::receipt(&current));
             }
             DeliveryState::Importing { .. }
@@ -845,6 +1029,12 @@ impl DurableFederationTransport {
                 stage: *stage,
                 code: code.clone(),
             },
+            DeliveryState::Abandoned {
+                stage, abandonment, ..
+            } => FederationDeliveryStatus::Abandoned {
+                stage: *stage,
+                abandonment: abandonment.clone(),
+            },
         };
         FederationDeliveryReceipt {
             delivery_id: record.delivery_id,
@@ -996,6 +1186,21 @@ fn decode_evidence_record(
     Ok(record)
 }
 
+fn encode_evidence_record(
+    encryptor: Option<&Arc<PayloadEncryptor>>,
+    record: &DeliveryRecord,
+) -> Result<String, FederationTransportError> {
+    let raw = serde_json::to_string(record).map_err(|_| FederationTransportError::Invalid)?;
+    if raw.len() > MAX_RECORD_BYTES {
+        return Err(FederationTransportError::Invalid);
+    }
+    encryptor.map_or(Ok(raw.clone()), |encryptor| {
+        encryptor
+            .encrypt_str(&raw)
+            .map_err(|_| FederationTransportError::Unavailable)
+    })
+}
+
 fn valid_evidence_record(record: &DeliveryRecord) -> bool {
     if record.schema != DELIVERY_SCHEMA
         || !valid_text(&record.adapter_revision, 120)
@@ -1046,6 +1251,21 @@ fn valid_evidence_record(record: &DeliveryRecord) -> bool {
             receipt_matches(record, receipt) && task_matches(record, task)
         }
         DeliveryState::Rejected { code, .. } => valid_code(code),
+        DeliveryState::Abandoned {
+            stage,
+            receipt,
+            abandonment,
+        } => {
+            valid_abandonment(abandonment)
+                && abandonment.recorded_at_ms >= record.created_at_ms
+                && match (stage, receipt) {
+                    (FederationDeliveryStage::Import, None) => true,
+                    (FederationDeliveryStage::Invoke, Some(receipt)) => {
+                        receipt_matches(record, receipt)
+                    }
+                    _ => false,
+                }
+        }
     }
 }
 
@@ -1082,6 +1302,12 @@ fn project_evidence(
         DeliveryState::Rejected { stage, code } => FederationDeliveryEvidenceStatus::Rejected {
             stage: *stage,
             code: code.clone(),
+        },
+        DeliveryState::Abandoned {
+            stage, abandonment, ..
+        } => FederationDeliveryEvidenceStatus::Abandoned {
+            stage: *stage,
+            abandonment: abandonment.clone(),
         },
     };
     Ok(FederationDeliveryEvidence {
@@ -1171,6 +1397,14 @@ fn valid_text(value: &str, max: usize) -> bool {
 
 fn valid_code(value: &str) -> bool {
     valid_text(value, MAX_CODE_BYTES)
+}
+
+fn valid_abandonment(value: &FederationDeliveryAbandonment) -> bool {
+    !value.disposition_id.is_nil()
+        && valid_text(value.operator.id(), 255)
+        && valid_text(&value.authority.incarnation, 120)
+        && valid_text(&value.reason, MAX_CODE_BYTES)
+        && value.recorded_at_ms >= 0
 }
 
 fn valid_digest(value: &str) -> bool {

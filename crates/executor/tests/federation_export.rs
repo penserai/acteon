@@ -14,14 +14,15 @@ use acteon_executor::{
         QualifiedFederationExport,
     },
     federation_transport::{
-        DurableFederationTransport, FederationDeliveryStatus, FederationImportDisposition,
-        FederationImportRequest, FederationInvokeDisposition, FederationInvokeRequest,
-        FederationTransportAdapter, FederationTransportDependencies, FederationTransportError,
+        DurableFederationTransport, FederationDeliveryAbandonment, FederationDeliveryReconciler,
+        FederationDeliveryStatus, FederationImportDisposition, FederationImportRequest,
+        FederationInvokeDisposition, FederationInvokeRequest, FederationTransportAdapter,
+        FederationTransportDependencies, FederationTransportError,
     },
 };
 use acteon_governance::{
-    AttemptStatus, AuthorityChange, AuthorityCoordinator, CoordinatorLimits, RootBudgetLimits,
-    ScopePurpose,
+    AttemptStatus, AuthorityChange, AuthorityCoordinator, AuthorityStamp, CoordinatorLimits,
+    RootBudgetLimits, ScopePurpose,
     context::{
         AcceptedEffect, ContextBinding, ContextSigningKey, ExecutionContextHandle,
         RootContextAdmission, TrustedContextStore, VerifiedExecutionContext,
@@ -163,6 +164,8 @@ impl FederationTransportAdapter for Adapter {
 }
 
 struct Fixture {
+    state: Arc<dyn StateStore>,
+    clock: Arc<ManualClock>,
     coordinator: AuthorityCoordinator,
     adapter: Arc<Adapter>,
     exporter: GovernedFederationExporter,
@@ -281,7 +284,7 @@ impl Fixture {
         let transport = Arc::new(
             DurableFederationTransport::new_trusted(
                 FederationTransportDependencies {
-                    state,
+                    state: state.clone(),
                     clock: clock.clone(),
                     encryptor: None,
                 },
@@ -340,6 +343,8 @@ impl Fixture {
         )
         .unwrap();
         Self {
+            state,
+            clock,
             coordinator,
             adapter,
             exporter,
@@ -446,6 +451,65 @@ async fn ambiguous_export_retains_capacity_and_revocation_blocks_explicit_replay
     assert_eq!(fixture.adapter.imports.load(Ordering::SeqCst), 1);
     let observed = fixture.exporter.observe(fixture.request()).await.unwrap();
     assert_eq!(observed.attempt_status, AttemptStatus::Uncertain);
+    assert_eq!(fixture.adapter.imports.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn durable_operator_abandonment_releases_retained_export_capacity() {
+    let fixture = Fixture::new().await;
+    fixture
+        .adapter
+        .import_mode
+        .store(UNCERTAIN, Ordering::SeqCst);
+    let first = fixture.exporter.submit(fixture.request()).await.unwrap();
+    assert_eq!(first.attempt_status, AttemptStatus::Uncertain);
+    let snapshot = fixture.coordinator.snapshot().await.unwrap();
+    let attempt = snapshot.starts[&first.attempt_id].clone();
+    let reconciler =
+        FederationDeliveryReconciler::new(fixture.state.clone(), fixture.clock.clone(), None);
+    let abandoned = reconciler
+        .abandon(
+            "local",
+            "tenant",
+            first.delivery.delivery_id,
+            fixture.context.principal(),
+            FederationDeliveryAbandonment {
+                disposition_id: uuid::Uuid::new_v4(),
+                operator: principal("incident-operator", PrincipalKind::Human),
+                authority: AuthorityStamp {
+                    incarnation: snapshot.incarnation,
+                    generation: snapshot.generation,
+                },
+                reason: "peer finality unavailable; stop local recovery".into(),
+                recorded_at_ms: 100,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        abandoned.status,
+        acteon_executor::federation_transport::FederationDeliveryEvidenceStatus::Abandoned { .. }
+    ));
+    fixture
+        .coordinator
+        .settle(&first.attempt_id, &attempt.token, AttemptStatus::Settled)
+        .await
+        .unwrap();
+    let settled = fixture.coordinator.snapshot().await.unwrap();
+    assert_eq!(
+        settled.starts[&first.attempt_id].status,
+        AttemptStatus::Settled
+    );
+    assert_eq!(
+        settled.roots[&fixture.context.execution_id().to_string()].active_attempts,
+        0
+    );
+    let replay = fixture.exporter.observe(fixture.request()).await.unwrap();
+    assert_eq!(replay.attempt_status, AttemptStatus::Settled);
+    assert!(matches!(
+        replay.delivery.status,
+        FederationDeliveryStatus::Abandoned { .. }
+    ));
     assert_eq!(fixture.adapter.imports.load(Ordering::SeqCst), 1);
 }
 

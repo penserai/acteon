@@ -9,13 +9,14 @@ use acteon_core::{
     ResourceKind, ResourceRef, Task, TaskMessage, TaskRole,
 };
 use acteon_executor::federation_transport::{
-    DurableFederationTransport, FEDERATION_DELIVERY_KIND, FederationDeliveryEvidenceStatus,
-    FederationDeliveryIntent, FederationDeliveryStatus, FederationImportDisposition,
+    DurableFederationTransport, FEDERATION_DELIVERY_KIND, FederationDeliveryAbandonment,
+    FederationDeliveryEvidenceReader, FederationDeliveryEvidenceStatus, FederationDeliveryIntent,
+    FederationDeliveryReconciler, FederationDeliveryStatus, FederationImportDisposition,
     FederationImportRequest, FederationInvokeDisposition, FederationInvokeRequest,
     FederationTransportAdapter, FederationTransportDependencies, FederationTransportError,
 };
 use acteon_governance::{
-    RootBudgetLimits,
+    AuthorityStamp, RootBudgetLimits,
     context::AcceptedEffect,
     federation::{
         FederationEnvelope, FederationEnvelopeSigner, FederationImportReference,
@@ -463,6 +464,148 @@ async fn ambiguous_import_never_invokes_and_requires_explicit_safe_replay() {
             .replay_idempotent(unsafe_fixture.intent())
             .await,
         Err(FederationTransportError::Refused)
+    ));
+}
+
+#[tokio::test]
+async fn operator_can_abandon_ambiguity_without_asserting_remote_finality_or_replay() {
+    let fixture = Fixture::new(true);
+    fixture
+        .adapter
+        .import_mode
+        .store(UNCERTAIN, Ordering::SeqCst);
+    let uncertain = fixture.transport.submit(fixture.intent()).await.unwrap();
+    let source = fixture.parent.principal().clone();
+    let abandonment = FederationDeliveryAbandonment {
+        disposition_id: uuid::Uuid::new_v4(),
+        operator: PrincipalIdentity::new("incident-operator", PrincipalKind::Human).unwrap(),
+        authority: AuthorityStamp {
+            incarnation: "scope-incarnation".into(),
+            generation: 7,
+        },
+        reason: "peer owner confirmed local recovery must stop".into(),
+        recorded_at_ms: fixture.clock.now().timestamp_millis(),
+    };
+    let state: Arc<dyn StateStore> = fixture.state.clone();
+    let reconciler = FederationDeliveryReconciler::new(state, fixture.clock.clone(), None);
+    let wrong_source = PrincipalIdentity::new("other-agent", PrincipalKind::Agent).unwrap();
+    assert!(matches!(
+        reconciler
+            .abandon(
+                "local",
+                "tenant",
+                uncertain.delivery_id,
+                &wrong_source,
+                abandonment.clone(),
+            )
+            .await,
+        Err(FederationTransportError::Conflict)
+    ));
+    let evidence = reconciler
+        .abandon(
+            "local",
+            "tenant",
+            uncertain.delivery_id,
+            &source,
+            abandonment.clone(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        evidence.status,
+        FederationDeliveryEvidenceStatus::Abandoned {
+            stage: acteon_executor::federation_transport::FederationDeliveryStage::Import,
+            ref abandonment,
+        } if abandonment.operator.id() == "incident-operator"
+    ));
+
+    let replayed = fixture
+        .transport
+        .replay_idempotent(fixture.intent())
+        .await
+        .unwrap();
+    assert!(matches!(
+        replayed.status,
+        FederationDeliveryStatus::Abandoned { .. }
+    ));
+    assert_eq!(fixture.adapter.imports.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.adapter.invokes.load(Ordering::SeqCst), 0);
+
+    let repeated = reconciler
+        .abandon(
+            "local",
+            "tenant",
+            uncertain.delivery_id,
+            &source,
+            abandonment,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        repeated.status,
+        FederationDeliveryEvidenceStatus::Abandoned { .. }
+    ));
+}
+
+#[tokio::test]
+async fn invoke_abandonment_retains_and_validates_import_lineage() {
+    let fixture = Fixture::new(true);
+    fixture
+        .adapter
+        .invoke_mode
+        .store(UNCERTAIN, Ordering::SeqCst);
+    let uncertain = fixture.transport.submit(fixture.intent()).await.unwrap();
+    let source = fixture.parent.principal().clone();
+    let state: Arc<dyn StateStore> = fixture.state.clone();
+    let reconciler = FederationDeliveryReconciler::new(state.clone(), fixture.clock.clone(), None);
+    let evidence = reconciler
+        .abandon(
+            "local",
+            "tenant",
+            uncertain.delivery_id,
+            &source,
+            FederationDeliveryAbandonment {
+                disposition_id: uuid::Uuid::new_v4(),
+                operator: PrincipalIdentity::new("incident-operator", PrincipalKind::Human)
+                    .unwrap(),
+                authority: AuthorityStamp {
+                    incarnation: "scope-incarnation".into(),
+                    generation: 8,
+                },
+                reason: "stop recovery after external investigation".into(),
+                recorded_at_ms: fixture.clock.now().timestamp_millis(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        evidence.status,
+        FederationDeliveryEvidenceStatus::Abandoned {
+            stage: acteon_executor::federation_transport::FederationDeliveryStage::Invoke,
+            ..
+        }
+    ));
+
+    let key = StateKey::new(
+        "local",
+        "tenant",
+        KeyKind::Custom(FEDERATION_DELIVERY_KIND.into()),
+        uncertain.delivery_id.to_string(),
+    );
+    let raw = fixture.state.get(&key).await.unwrap().unwrap();
+    let mut corrupted: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    corrupted["state"]["receipt"] = serde_json::Value::Null;
+    fixture
+        .state
+        .set(&key, &corrupted.to_string(), None)
+        .await
+        .unwrap();
+    let reader = FederationDeliveryEvidenceReader::new(state, fixture.clock.clone(), None);
+    assert!(matches!(
+        reader
+            .get_evidence("local", "tenant", uncertain.delivery_id)
+            .await,
+        Err(FederationTransportError::Conflict)
     ));
 }
 

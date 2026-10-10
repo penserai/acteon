@@ -41,6 +41,10 @@ pub enum FederationExportDelivery {
         stage: String,
         code: String,
     },
+    Abandoned {
+        stage: String,
+        abandonment: FederationDeliveryAbandonment,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,13 +59,42 @@ pub struct FederationExportReceipt {
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum FederationDeliveryEvidenceStatus {
     Registered,
-    Importing { claim_expires_at_ms: i64 },
+    Importing {
+        claim_expires_at_ms: i64,
+    },
     ImportUncertain,
     Imported,
-    Invoking { claim_expires_at_ms: i64 },
+    Invoking {
+        claim_expires_at_ms: i64,
+    },
     InvokeUncertain,
     Accepted,
-    Rejected { stage: String, code: String },
+    Rejected {
+        stage: String,
+        code: String,
+    },
+    Abandoned {
+        stage: String,
+        abandonment: FederationDeliveryAbandonment,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FederationDeliveryAbandonment {
+    pub disposition_id: String,
+    pub operator: acteon_core::PrincipalIdentity,
+    pub authority_incarnation: String,
+    pub authority_generation: u64,
+    pub reason: String,
+    pub recorded_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AbandonFederationDeliveryRequest<'a> {
+    pub namespace: &'a str,
+    pub tenant: &'a str,
+    pub disposition_id: &'a str,
+    pub reason: &'a str,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -128,6 +161,26 @@ impl ActeonClient {
             ));
         }
         Ok(page)
+    }
+
+    /// Stop local recovery of an ambiguous delivery without asserting a peer
+    /// outcome. Reuse `disposition_id` to recover a lost acknowledgment.
+    pub async fn abandon_federation_delivery(
+        &self,
+        delivery_id: &str,
+        request: AbandonFederationDeliveryRequest<'_>,
+    ) -> Result<FederationDeliveryEvidence, Error> {
+        let body = serde_json::to_value(request)
+            .map_err(|error| Error::Configuration(error.to_string()))?;
+        let value = self
+            .platform_request(
+                PlatformOperation::GovernanceAbandonFederationDelivery,
+                &[("delivery_id", delivery_id)],
+                &[],
+                Some(&body),
+            )
+            .await?;
+        serde_json::from_value(value).map_err(|error| Error::Deserialization(error.to_string()))
     }
 
     /// Inspect the current projection/version under independently granted agent bounds.
@@ -710,11 +763,26 @@ mod federation_wire_tests {
         let evidence: FederationDeliveryEvidencePage =
             serde_json::from_value(wire["delivery_evidence_page"].clone()).unwrap();
         assert_eq!(evidence.deliveries[0].message_id, "export-message-1");
+        let abandoned: FederationDeliveryEvidence =
+            serde_json::from_value(wire["abandoned_evidence"].clone()).unwrap();
+        assert!(matches!(
+            abandoned.status,
+            FederationDeliveryEvidenceStatus::Abandoned {
+                ref abandonment,
+                ..
+            } if abandonment.authority_generation == 12
+        ));
         assert_eq!(
             PlatformOperation::GovernanceFederationDeliveryEvidence
                 .descriptor()
                 .1,
             "/v1/governance/federation/deliveries"
+        );
+        assert_eq!(
+            PlatformOperation::GovernanceAbandonFederationDelivery
+                .descriptor()
+                .1,
+            "/v1/governance/federation/deliveries/{delivery_id}:abandon"
         );
         for (operation, suffix) in [
             (PlatformOperation::FederationExportMessage, "send"),

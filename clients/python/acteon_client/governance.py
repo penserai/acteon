@@ -201,6 +201,7 @@ class FederationExportReceipt:
                 "invoke_uncertain",
                 "accepted",
                 "rejected",
+                "abandoned",
             }
         ):
             raise ValueError("invalid federation export receipt")
@@ -251,6 +252,14 @@ class FederationDeliveryEvidencePage:
             [FederationDeliveryEvidence.from_dict(item) for item in deliveries],
             data.get("next_cursor"),
         )
+
+
+@dataclass
+class AbandonFederationDeliveryRequest:
+    namespace: str
+    tenant: str
+    disposition_id: str
+    reason: str
 
 
 @dataclass
@@ -843,6 +852,19 @@ class _GovernanceMixin:
             )
         )
 
+    def abandon_federation_delivery(
+        self,
+        delivery_id: str,
+        request: AbandonFederationDeliveryRequest,
+    ) -> FederationDeliveryEvidence:
+        return FederationDeliveryEvidence.from_dict(
+            self.platform_request(
+                PlatformOperation.GOVERNANCE_ABANDON_FEDERATION_DELIVERY,
+                path={"delivery_id": delivery_id},
+                body=asdict(request),
+            )
+        )
+
     def import_federation_envelope(
         self,
         namespace: str,
@@ -1098,6 +1120,19 @@ class _AsyncGovernanceMixin:
             await self.platform_request(
                 PlatformOperation.GOVERNANCE_FEDERATION_DELIVERY_EVIDENCE,
                 query=query,
+            )
+        )
+
+    async def abandon_federation_delivery(
+        self,
+        delivery_id: str,
+        request: AbandonFederationDeliveryRequest,
+    ) -> FederationDeliveryEvidence:
+        return FederationDeliveryEvidence.from_dict(
+            await self.platform_request(
+                PlatformOperation.GOVERNANCE_ABANDON_FEDERATION_DELIVERY,
+                path={"delivery_id": delivery_id},
+                body=asdict(request),
             )
         )
 

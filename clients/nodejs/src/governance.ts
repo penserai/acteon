@@ -45,7 +45,8 @@ export type FederationExportDelivery =
   | { status: "registered" | "import_uncertain" }
   | { status: "imported" | "invoke_uncertain"; receipt: FederationImportReceipt }
   | { status: "accepted"; receipt: FederationImportReceipt; task: Record<string, unknown> }
-  | { status: "rejected"; stage: "import" | "invoke"; code: string };
+  | { status: "rejected"; stage: "import" | "invoke"; code: string }
+  | { status: "abandoned"; stage: "import" | "invoke"; abandonment: FederationDeliveryAbandonment };
 export interface FederationExportReceipt {
   attempt_id: string;
   attempt_status: FederationExportAttemptStatus;
@@ -55,7 +56,15 @@ export interface FederationExportReceipt {
 export type FederationDeliveryEvidenceStatus =
   | { status: "registered" | "import_uncertain" | "imported" | "invoke_uncertain" | "accepted" }
   | { status: "importing" | "invoking"; claim_expires_at_ms: number }
-  | { status: "rejected"; stage: "import" | "invoke"; code: string };
+  | { status: "rejected"; stage: "import" | "invoke"; code: string }
+  | { status: "abandoned"; stage: "import" | "invoke"; abandonment: FederationDeliveryAbandonment };
+export interface FederationDeliveryAbandonment {
+  disposition_id: string; operator: PrincipalIdentity; authority_incarnation: string;
+  authority_generation: number; reason: string; recorded_at_ms: number;
+}
+export interface AbandonFederationDeliveryRequest {
+  namespace: string; tenant: string; disposition_id: string; reason: string;
+}
 export interface FederationDeliveryEvidence {
   delivery_id: string; parent_execution_id: string; source: PrincipalIdentity;
   agent_id: string; message_id: string; trust_id: string; trust_revision: number;

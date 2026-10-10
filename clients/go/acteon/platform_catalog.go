@@ -131,6 +131,7 @@ const (
 	OpFederationInvokeAgent PlatformOperation = "federation_invoke_agent"
 	OpFederationObserveExportMessage PlatformOperation = "federation_observe_export_message"
 	OpFederationReplayExportMessage PlatformOperation = "federation_replay_export_message"
+	OpGovernanceAbandonFederationDelivery PlatformOperation = "governance_abandon_federation_delivery"
 	OpGovernanceAcceptReconciliation PlatformOperation = "governance_accept_reconciliation"
 	OpGovernanceFederationDeliveryEvidence PlatformOperation = "governance_federation_delivery_evidence"
 	OpGovernanceInspect PlatformOperation = "governance_inspect"
@@ -352,6 +353,7 @@ var platformOperations = map[PlatformOperation]platformDescriptor{
 	OpFederationInvokeAgent: {"POST", "/a2a/{namespace}/{tenant}/federation/agents/{agent}/v1/message:send", []string{"namespace", "tenant", "agent"}, false},
 	OpFederationObserveExportMessage: {"POST", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:observe", []string{"namespace", "tenant", "agent", "task_id", "profile"}, false},
 	OpFederationReplayExportMessage: {"POST", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:replay", []string{"namespace", "tenant", "agent", "task_id", "profile"}, false},
+	OpGovernanceAbandonFederationDelivery: {"POST", "/v1/governance/federation/deliveries/{delivery_id}:abandon", []string{"delivery_id"}, false},
 	OpGovernanceAcceptReconciliation: {"POST", "/v1/governance/executions/{execution_id}/attempts/{ordinal}/reconciliation", []string{"execution_id", "ordinal"}, false},
 	OpGovernanceFederationDeliveryEvidence: {"GET", "/v1/governance/federation/deliveries", []string{}, false},
 	OpGovernanceInspect: {"GET", "/v1/governance", []string{}, false},

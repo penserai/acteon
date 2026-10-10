@@ -36,7 +36,9 @@ describe("federation management and import", () => {
     vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => {
       requests.push({ url, init });
       const path = new URL(url).pathname;
-      return new Response(JSON.stringify(path === "/v1/governance/federation/deliveries"
+      return new Response(JSON.stringify(path.endsWith(":abandon")
+        ? federation.abandoned_evidence
+        : path === "/v1/governance/federation/deliveries"
         ? federation.delivery_evidence_page
         : path.includes("/federation/exports/")
         ? federation.export_receipt
@@ -56,6 +58,9 @@ describe("federation management and import", () => {
     const observed = await client.observeFederatedExport("prod", "acme", "maya", sourceTask, "remote-triage", federation.export_message);
     const replayed = await client.replayFederatedExport("prod", "acme", "maya", sourceTask, "remote-triage", federation.export_message);
     const evidence = await client.federationDeliveryEvidence("prod", "acme", undefined, 25);
+    const abandoned = await client.abandonFederationDelivery(
+      federation.abandoned_evidence.delivery_id, federation.abandon_request,
+    );
     expect(receipt).toEqual(federation.import_receipt);
     expect(receipt.execution_started).toBe(false);
     expect(task.id).toBe("federated-task");
@@ -63,6 +68,7 @@ describe("federation management and import", () => {
       federation.export_receipt, federation.export_receipt, federation.export_receipt,
     ]);
     expect(evidence).toEqual(federation.delivery_evidence_page);
+    expect(abandoned).toEqual(federation.abandoned_evidence);
     expect(requests.map(request => new URL(request.url).pathname)).toEqual([
       "/v1/governance/federation/trusts",
       "/v1/governance/federation/trusts/revoke",
@@ -72,6 +78,7 @@ describe("federation management and import", () => {
       `/a2a/prod/acme/agents/maya/v1/tasks/${sourceTask}/federation/exports/remote-triage/message:observe`,
       `/a2a/prod/acme/agents/maya/v1/tasks/${sourceTask}/federation/exports/remote-triage/message:replay`,
       "/v1/governance/federation/deliveries",
+      `/v1/governance/federation/deliveries/${federation.abandoned_evidence.delivery_id}:abandon`,
     ]);
     expect(requests.map(request => request.init.body ? JSON.parse(request.init.body as string) : undefined)).toEqual([
       federation.publication,
@@ -82,6 +89,7 @@ describe("federation management and import", () => {
       { message: federation.export_message },
       { message: federation.export_message },
       undefined,
+      federation.abandon_request,
     ]);
     expect(new URL(requests[7]!.url).searchParams.toString()).toBe("namespace=prod&tenant=acme&limit=25");
     for (const request of requests) {
