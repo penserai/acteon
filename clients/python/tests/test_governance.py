@@ -19,6 +19,7 @@ from acteon_client import (
     PrincipalIdentity,
     PublishFederationTrustRequest,
     PublishGovernancePermitRequest,
+    ReconcileFederationDeliveryRequest,
     RevokeFederationTrustRequest,
     SignedFederationEnvelopeDeclaration,
     SignedFederationInvocationDeclaration,
@@ -132,7 +133,11 @@ async def test_federation_management_and_inert_import_wire(async_client):
 
     def respond(request):
         seen.append(request)
-        if request.url.path.endswith(":abandon"):
+        if request.url.path.endswith("/correlation"):
+            response = FEDERATION["finality_correlation"]
+        elif request.url.path.endswith(":reconcile"):
+            response = FEDERATION["reconciled_evidence"]
+        elif request.url.path.endswith(":abandon"):
             response = FEDERATION["abandoned_evidence"]
         elif request.url.path == "/v1/governance/federation/deliveries":
             response = FEDERATION["delivery_evidence_page"]
@@ -191,6 +196,13 @@ async def test_federation_management_and_inert_import_wire(async_client):
                     FEDERATION["abandoned_evidence"]["delivery_id"],
                     AbandonFederationDeliveryRequest(**FEDERATION["abandon_request"]),
                 ),
+                await client.federation_finality_correlation(
+                    "prod", "acme", FEDERATION["finality_correlation"]["delivery_id"]
+                ),
+                await client.reconcile_federation_delivery(
+                    FEDERATION["reconciled_evidence"]["delivery_id"],
+                    ReconcileFederationDeliveryRequest(**FEDERATION["reconcile_request"]),
+                ),
             ]
         else:
             results = [
@@ -206,6 +218,13 @@ async def test_federation_management_and_inert_import_wire(async_client):
                     FEDERATION["abandoned_evidence"]["delivery_id"],
                     AbandonFederationDeliveryRequest(**FEDERATION["abandon_request"]),
                 ),
+                client.federation_finality_correlation(
+                    "prod", "acme", FEDERATION["finality_correlation"]["delivery_id"]
+                ),
+                client.reconcile_federation_delivery(
+                    FEDERATION["reconciled_evidence"]["delivery_id"],
+                    ReconcileFederationDeliveryRequest(**FEDERATION["reconcile_request"]),
+                ),
             ]
         assert asdict(results[0]) == FEDERATION["change_receipt"]
         assert asdict(results[1]) == FEDERATION["change_receipt"]
@@ -215,7 +234,9 @@ async def test_federation_management_and_inert_import_wire(async_client):
         assert all(asdict(result) == FEDERATION["export_receipt"] for result in results[4:7])
         assert asdict(results[7]) == FEDERATION["delivery_evidence_page"]
         assert asdict(results[8]) == FEDERATION["abandoned_evidence"]
-        assert [request.method for request in seen] == ["POST"] * 7 + ["GET", "POST"]
+        assert asdict(results[9]) == FEDERATION["finality_correlation"]
+        assert asdict(results[10]) == FEDERATION["reconciled_evidence"]
+        assert [request.method for request in seen] == ["POST"] * 7 + ["GET", "POST", "GET", "POST"]
         assert json.loads(seen[0].content) == FEDERATION["publication"]
         assert json.loads(seen[1].content) == FEDERATION["revocation"]
         assert json.loads(seen[2].content) == {"envelope": FEDERATION["envelope"]}
@@ -243,6 +264,9 @@ async def test_federation_management_and_inert_import_wire(async_client):
             f"/{FEDERATION['abandoned_evidence']['delivery_id']}:abandon"
         )
         assert json.loads(seen[8].content) == FEDERATION["abandon_request"]
+        assert seen[9].url.path.endswith("/correlation")
+        assert dict(seen[9].url.params) == {"namespace": "prod", "tenant": "acme"}
+        assert json.loads(seen[10].content) == FEDERATION["reconcile_request"]
         assert all(request.headers["authorization"] == "Bearer federation-key" for request in seen)
     finally:
         if async_client:

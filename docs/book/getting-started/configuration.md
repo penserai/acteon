@@ -747,6 +747,33 @@ IDs can be observed or explicitly replayed with their original signed bytes and
 transport credential. Remove an older epoch only after reconciliation shows no
 retained nonterminal delivery depends on it.
 
+Install an independently reviewed finality source for any epoch whose peer can
+produce irrevocable import and invocation receipts. Acteon resolves the profile
+and epoch to the exact runtime-built HTTP binding; configuration cannot supply a
+binding digest. The verification key must be distinct from federation signing
+keys, peer credentials, execution/authentication authority keys, and provider
+attempt finality keys.
+
+```toml
+[[federation_finality_sources]]
+namespace = "prod"
+tenant = "acme"
+export_profile_id = "remote-triage"
+issuer_epoch = 7
+source_id = "remote-finality-journal"
+qualification_ref = "contracts/remote-finality-v1"
+verifier_revision = "remote-finality-v1"
+keys = [{ id = "remote-finality-2026-10", secret_env = "ACTEON_FEDERATION_FINALITY_REMOTE_2026_10" }]
+```
+
+The source contract must correlate the complete delivery descriptor and prove
+irrevocable finality for the ambiguous stage. A missing peer record, elapsed
+timeout, or operator statement is insufficient while delivery may still occur.
+Import acceptance advances the durable journal to `imported`; Acteon rechecks
+the source permit before invocation. Import rejection and either invocation
+result are terminal. Proof acceptance never calls the peer or replays a signed
+request.
+
 The source agent's deployment permit must list
 `federation_exports = ["remote-triage"]`; ordinary routes, chains and local
 agents do not imply this effect. The source agent's private credential must

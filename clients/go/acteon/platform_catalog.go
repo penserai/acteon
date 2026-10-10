@@ -134,12 +134,14 @@ const (
 	OpGovernanceAbandonFederationDelivery PlatformOperation = "governance_abandon_federation_delivery"
 	OpGovernanceAcceptReconciliation PlatformOperation = "governance_accept_reconciliation"
 	OpGovernanceFederationDeliveryEvidence PlatformOperation = "governance_federation_delivery_evidence"
+	OpGovernanceFederationFinalityCorrelation PlatformOperation = "governance_federation_finality_correlation"
 	OpGovernanceInspect PlatformOperation = "governance_inspect"
 	OpGovernanceIntervene PlatformOperation = "governance_intervene"
 	OpGovernanceMutateRegistry PlatformOperation = "governance_mutate_registry"
 	OpGovernanceProviderHistory PlatformOperation = "governance_provider_history"
 	OpGovernancePublishFederationTrust PlatformOperation = "governance_publish_federation_trust"
 	OpGovernancePublishPermit PlatformOperation = "governance_publish_permit"
+	OpGovernanceReconcileFederationDelivery PlatformOperation = "governance_reconcile_federation_delivery"
 	OpGovernanceReconciliationCorrelation PlatformOperation = "governance_reconciliation_correlation"
 	OpGovernanceRegistryProjection PlatformOperation = "governance_registry_projection"
 	OpGovernanceRevokeFederationTrust PlatformOperation = "governance_revoke_federation_trust"
@@ -356,12 +358,14 @@ var platformOperations = map[PlatformOperation]platformDescriptor{
 	OpGovernanceAbandonFederationDelivery: {"POST", "/v1/governance/federation/deliveries/{delivery_id}:abandon", []string{"delivery_id"}, false},
 	OpGovernanceAcceptReconciliation: {"POST", "/v1/governance/executions/{execution_id}/attempts/{ordinal}/reconciliation", []string{"execution_id", "ordinal"}, false},
 	OpGovernanceFederationDeliveryEvidence: {"GET", "/v1/governance/federation/deliveries", []string{}, false},
+	OpGovernanceFederationFinalityCorrelation: {"GET", "/v1/governance/federation/deliveries/{delivery_id}/correlation", []string{"delivery_id"}, false},
 	OpGovernanceInspect: {"GET", "/v1/governance", []string{}, false},
 	OpGovernanceIntervene: {"POST", "/v1/governance/changes", []string{}, false},
 	OpGovernanceMutateRegistry: {"POST", "/v1/governance/registry", []string{}, false},
 	OpGovernanceProviderHistory: {"GET", "/v1/governance/executions/{execution_id}", []string{"execution_id"}, false},
 	OpGovernancePublishFederationTrust: {"POST", "/v1/governance/federation/trusts", []string{}, false},
 	OpGovernancePublishPermit: {"POST", "/v1/governance/permits", []string{}, false},
+	OpGovernanceReconcileFederationDelivery: {"POST", "/v1/governance/federation/deliveries/{delivery_id}:reconcile", []string{"delivery_id"}, false},
 	OpGovernanceReconciliationCorrelation: {"GET", "/v1/governance/executions/{execution_id}/attempts/{ordinal}/correlation", []string{"execution_id", "ordinal"}, false},
 	OpGovernanceRegistryProjection: {"GET", "/v1/governance/registry/{agent_id}", []string{"agent_id"}, false},
 	OpGovernanceRevokeFederationTrust: {"POST", "/v1/governance/federation/trusts/revoke", []string{}, false},

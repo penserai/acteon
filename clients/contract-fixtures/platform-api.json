@@ -1349,6 +1349,15 @@
       "response": "json"
     },
     {
+      "name": "governance_federation_finality_correlation",
+      "method": "GET",
+      "path": "/v1/governance/federation/deliveries/{delivery_id}/correlation",
+      "parameters": [
+        "delivery_id"
+      ],
+      "response": "json"
+    },
+    {
       "name": "governance_inspect",
       "method": "GET",
       "path": "/v1/governance",
@@ -1390,6 +1399,15 @@
       "method": "POST",
       "path": "/v1/governance/permits",
       "parameters": [],
+      "response": "json"
+    },
+    {
+      "name": "governance_reconcile_federation_delivery",
+      "method": "POST",
+      "path": "/v1/governance/federation/deliveries/{delivery_id}:reconcile",
+      "parameters": [
+        "delivery_id"
+      ],
       "response": "json"
     },
     {

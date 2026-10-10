@@ -147,21 +147,53 @@ type AbandonFederationDeliveryRequest struct {
 	DispositionID string `json:"disposition_id"`
 	Reason        string `json:"reason"`
 }
+type ReconcileFederationDeliveryRequest struct {
+	Namespace   string `json:"namespace"`
+	Tenant      string `json:"tenant"`
+	ProofBase64 string `json:"proof_base64"`
+}
+type FederationDeliveryFinalityEvidence struct {
+	Stage                string            `json:"stage"`
+	Accepted             bool              `json:"accepted"`
+	SourceID             string            `json:"source_id"`
+	QualificationRef     string            `json:"qualification_ref"`
+	VerifierRevision     string            `json:"verifier_revision"`
+	ProofDigest          string            `json:"proof_digest"`
+	Operator             PrincipalIdentity `json:"operator"`
+	AuthorityIncarnation string            `json:"authority_incarnation"`
+	AuthorityGeneration  uint64            `json:"authority_generation"`
+	AcceptedAtMs         int64             `json:"accepted_at_ms"`
+}
+type FederationFinalityCorrelation struct {
+	DeliveryID        string            `json:"delivery_id"`
+	Stage             string            `json:"stage"`
+	ParentExecutionID string            `json:"parent_execution_id"`
+	Source            PrincipalIdentity `json:"source"`
+	AdapterRevision   string            `json:"adapter_revision"`
+	BindingDigest     string            `json:"binding_digest"`
+	EnvelopeDigest    string            `json:"envelope_digest"`
+	InvocationDigest  string            `json:"invocation_digest"`
+	ImportID          string            `json:"import_id"`
+	InvocationNonce   string            `json:"invocation_nonce"`
+	AgentID           string            `json:"agent_id"`
+	MessageID         string            `json:"message_id"`
+}
 type FederationDeliveryEvidence struct {
-	DeliveryID            string                           `json:"delivery_id"`
-	ParentExecutionID     string                           `json:"parent_execution_id"`
-	Source                PrincipalIdentity                `json:"source"`
-	AgentID               string                           `json:"agent_id"`
-	MessageID             string                           `json:"message_id"`
-	TrustID               string                           `json:"trust_id"`
-	TrustRevision         uint64                           `json:"trust_revision"`
-	KeyID                 string                           `json:"key_id"`
-	IssuerEpoch           uint64                           `json:"issuer_epoch"`
-	CreatedAtMs           int64                            `json:"created_at_ms"`
-	ExpiresAtMs           int64                            `json:"expires_at_ms"`
-	Expired               bool                             `json:"expired"`
-	ExactReplayIdempotent bool                             `json:"exact_replay_idempotent"`
-	Status                FederationDeliveryEvidenceStatus `json:"status"`
+	DeliveryID            string                               `json:"delivery_id"`
+	ParentExecutionID     string                               `json:"parent_execution_id"`
+	Source                PrincipalIdentity                    `json:"source"`
+	AgentID               string                               `json:"agent_id"`
+	MessageID             string                               `json:"message_id"`
+	TrustID               string                               `json:"trust_id"`
+	TrustRevision         uint64                               `json:"trust_revision"`
+	KeyID                 string                               `json:"key_id"`
+	IssuerEpoch           uint64                               `json:"issuer_epoch"`
+	CreatedAtMs           int64                                `json:"created_at_ms"`
+	ExpiresAtMs           int64                                `json:"expires_at_ms"`
+	Expired               bool                                 `json:"expired"`
+	ExactReplayIdempotent bool                                 `json:"exact_replay_idempotent"`
+	Status                FederationDeliveryEvidenceStatus     `json:"status"`
+	Reconciliations       []FederationDeliveryFinalityEvidence `json:"reconciliations"`
 }
 type FederationDeliveryEvidencePage struct {
 	Deliveries []FederationDeliveryEvidence `json:"deliveries"`
@@ -306,6 +338,41 @@ func (c *Client) AbandonFederationDelivery(ctx context.Context, deliveryID strin
 	var evidence FederationDeliveryEvidence
 	err = json.Unmarshal(data, &evidence)
 	return &evidence, err
+}
+
+// FederationFinalityCorrelation returns correlation for the currently ambiguous stage.
+func (c *Client) FederationFinalityCorrelation(ctx context.Context, namespace, tenant, deliveryID string) (*FederationFinalityCorrelation, error) {
+	query := url.Values{"namespace": {namespace}, "tenant": {tenant}}
+	data, err := c.PlatformRequest(ctx, OpGovernanceFederationFinalityCorrelation,
+		map[string]string{"delivery_id": deliveryID}, query, nil)
+	if err != nil {
+		return nil, err
+	}
+	var correlation FederationFinalityCorrelation
+	if err = json.Unmarshal(data, &correlation); err != nil {
+		return nil, err
+	}
+	if correlation.DeliveryID != deliveryID || (correlation.Stage != "import" && correlation.Stage != "invoke") {
+		return nil, fmt.Errorf("federation finality correlation identity mismatch")
+	}
+	return &correlation, nil
+}
+
+// ReconcileFederationDelivery accepts qualified evidence without sending or replaying the delivery.
+func (c *Client) ReconcileFederationDelivery(ctx context.Context, deliveryID string, request ReconcileFederationDeliveryRequest) (*FederationDeliveryEvidence, error) {
+	data, err := c.PlatformRequest(ctx, OpGovernanceReconcileFederationDelivery,
+		map[string]string{"delivery_id": deliveryID}, nil, request)
+	if err != nil {
+		return nil, err
+	}
+	var evidence FederationDeliveryEvidence
+	if err = json.Unmarshal(data, &evidence); err != nil {
+		return nil, err
+	}
+	if evidence.DeliveryID != deliveryID {
+		return nil, fmt.Errorf("federation reconciliation evidence identity mismatch")
+	}
+	return &evidence, nil
 }
 
 func (c *Client) ImportFederationEnvelope(ctx context.Context, namespace, tenant string, envelope SignedFederationEnvelopeDeclaration) (*FederationImportReceipt, error) {

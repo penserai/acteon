@@ -36,7 +36,11 @@ describe("federation management and import", () => {
     vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => {
       requests.push({ url, init });
       const path = new URL(url).pathname;
-      return new Response(JSON.stringify(path.endsWith(":abandon")
+      return new Response(JSON.stringify(path.endsWith("/correlation")
+        ? federation.finality_correlation
+        : path.endsWith(":reconcile")
+        ? federation.reconciled_evidence
+        : path.endsWith(":abandon")
         ? federation.abandoned_evidence
         : path === "/v1/governance/federation/deliveries"
         ? federation.delivery_evidence_page
@@ -61,6 +65,12 @@ describe("federation management and import", () => {
     const abandoned = await client.abandonFederationDelivery(
       federation.abandoned_evidence.delivery_id, federation.abandon_request,
     );
+    const correlation = await client.federationFinalityCorrelation(
+      "prod", "acme", federation.finality_correlation.delivery_id,
+    );
+    const reconciled = await client.reconcileFederationDelivery(
+      federation.reconciled_evidence.delivery_id, federation.reconcile_request,
+    );
     expect(receipt).toEqual(federation.import_receipt);
     expect(receipt.execution_started).toBe(false);
     expect(task.id).toBe("federated-task");
@@ -69,6 +79,8 @@ describe("federation management and import", () => {
     ]);
     expect(evidence).toEqual(federation.delivery_evidence_page);
     expect(abandoned).toEqual(federation.abandoned_evidence);
+    expect(correlation).toEqual(federation.finality_correlation);
+    expect(reconciled).toEqual(federation.reconciled_evidence);
     expect(requests.map(request => new URL(request.url).pathname)).toEqual([
       "/v1/governance/federation/trusts",
       "/v1/governance/federation/trusts/revoke",
@@ -79,6 +91,8 @@ describe("federation management and import", () => {
       `/a2a/prod/acme/agents/maya/v1/tasks/${sourceTask}/federation/exports/remote-triage/message:replay`,
       "/v1/governance/federation/deliveries",
       `/v1/governance/federation/deliveries/${federation.abandoned_evidence.delivery_id}:abandon`,
+      `/v1/governance/federation/deliveries/${federation.finality_correlation.delivery_id}/correlation`,
+      `/v1/governance/federation/deliveries/${federation.reconciled_evidence.delivery_id}:reconcile`,
     ]);
     expect(requests.map(request => request.init.body ? JSON.parse(request.init.body as string) : undefined)).toEqual([
       federation.publication,
@@ -90,8 +104,11 @@ describe("federation management and import", () => {
       { message: federation.export_message },
       undefined,
       federation.abandon_request,
+      undefined,
+      federation.reconcile_request,
     ]);
     expect(new URL(requests[7]!.url).searchParams.toString()).toBe("namespace=prod&tenant=acme&limit=25");
+    expect(new URL(requests[9]!.url).searchParams.toString()).toBe("namespace=prod&tenant=acme");
     for (const request of requests) {
       expect(new Headers(request.init.headers).get("Authorization")).toBe("Bearer federation-key");
     }

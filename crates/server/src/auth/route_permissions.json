@@ -750,6 +750,12 @@
     "permission": "OperationsManage"
   },
   {
+    "name": "federation_export_message",
+    "method": "POST",
+    "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:send",
+    "permission": "Dispatch"
+  },
+  {
     "name": "federation_import_envelope",
     "method": "POST",
     "path": "/a2a/{namespace}/{tenant}/federation/envelopes:import",
@@ -762,9 +768,39 @@
     "permission": "Dispatch"
   },
   {
+    "name": "federation_observe_export_message",
+    "method": "POST",
+    "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:observe",
+    "permission": "Dispatch"
+  },
+  {
+    "name": "federation_replay_export_message",
+    "method": "POST",
+    "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:replay",
+    "permission": "Dispatch"
+  },
+  {
     "name": "governance_accept_reconciliation",
     "method": "POST",
     "path": "/v1/governance/executions/{execution_id}/attempts/{ordinal}/reconciliation",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "governance_federation_delivery_action",
+    "method": "POST",
+    "path": "/v1/governance/federation/deliveries/{delivery_action}",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "governance_federation_delivery_evidence",
+    "method": "GET",
+    "path": "/v1/governance/federation/deliveries",
+    "permission": "OperationsManage"
+  },
+  {
+    "name": "governance_federation_finality_correlation",
+    "method": "GET",
+    "path": "/v1/governance/federation/deliveries/{delivery_id}/correlation",
     "permission": "OperationsManage"
   },
   {

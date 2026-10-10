@@ -133,12 +133,14 @@ class PlatformOperation(StrEnum):
     GOVERNANCE_ABANDON_FEDERATION_DELIVERY = "governance_abandon_federation_delivery"
     GOVERNANCE_ACCEPT_RECONCILIATION = "governance_accept_reconciliation"
     GOVERNANCE_FEDERATION_DELIVERY_EVIDENCE = "governance_federation_delivery_evidence"
+    GOVERNANCE_FEDERATION_FINALITY_CORRELATION = "governance_federation_finality_correlation"
     GOVERNANCE_INSPECT = "governance_inspect"
     GOVERNANCE_INTERVENE = "governance_intervene"
     GOVERNANCE_MUTATE_REGISTRY = "governance_mutate_registry"
     GOVERNANCE_PROVIDER_HISTORY = "governance_provider_history"
     GOVERNANCE_PUBLISH_FEDERATION_TRUST = "governance_publish_federation_trust"
     GOVERNANCE_PUBLISH_PERMIT = "governance_publish_permit"
+    GOVERNANCE_RECONCILE_FEDERATION_DELIVERY = "governance_reconcile_federation_delivery"
     GOVERNANCE_RECONCILIATION_CORRELATION = "governance_reconciliation_correlation"
     GOVERNANCE_REGISTRY_PROJECTION = "governance_registry_projection"
     GOVERNANCE_REVOKE_FEDERATION_TRUST = "governance_revoke_federation_trust"
@@ -355,12 +357,14 @@ OPERATIONS = {
     PlatformOperation.GOVERNANCE_ABANDON_FEDERATION_DELIVERY: ('POST', '/v1/governance/federation/deliveries/{delivery_id}:abandon', ('delivery_id',), 'json'),
     PlatformOperation.GOVERNANCE_ACCEPT_RECONCILIATION: ('POST', '/v1/governance/executions/{execution_id}/attempts/{ordinal}/reconciliation', ('execution_id', 'ordinal'), 'json'),
     PlatformOperation.GOVERNANCE_FEDERATION_DELIVERY_EVIDENCE: ('GET', '/v1/governance/federation/deliveries', (), 'json'),
+    PlatformOperation.GOVERNANCE_FEDERATION_FINALITY_CORRELATION: ('GET', '/v1/governance/federation/deliveries/{delivery_id}/correlation', ('delivery_id',), 'json'),
     PlatformOperation.GOVERNANCE_INSPECT: ('GET', '/v1/governance', (), 'json'),
     PlatformOperation.GOVERNANCE_INTERVENE: ('POST', '/v1/governance/changes', (), 'json'),
     PlatformOperation.GOVERNANCE_MUTATE_REGISTRY: ('POST', '/v1/governance/registry', (), 'json'),
     PlatformOperation.GOVERNANCE_PROVIDER_HISTORY: ('GET', '/v1/governance/executions/{execution_id}', ('execution_id',), 'json'),
     PlatformOperation.GOVERNANCE_PUBLISH_FEDERATION_TRUST: ('POST', '/v1/governance/federation/trusts', (), 'json'),
     PlatformOperation.GOVERNANCE_PUBLISH_PERMIT: ('POST', '/v1/governance/permits', (), 'json'),
+    PlatformOperation.GOVERNANCE_RECONCILE_FEDERATION_DELIVERY: ('POST', '/v1/governance/federation/deliveries/{delivery_id}:reconcile', ('delivery_id',), 'json'),
     PlatformOperation.GOVERNANCE_RECONCILIATION_CORRELATION: ('GET', '/v1/governance/executions/{execution_id}/attempts/{ordinal}/correlation', ('execution_id', 'ordinal'), 'json'),
     PlatformOperation.GOVERNANCE_REGISTRY_PROJECTION: ('GET', '/v1/governance/registry/{agent_id}', ('agent_id',), 'json'),
     PlatformOperation.GOVERNANCE_REVOKE_FEDERATION_TRUST: ('POST', '/v1/governance/federation/trusts/revoke', (), 'json'),

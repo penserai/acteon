@@ -97,6 +97,43 @@ pub struct AbandonFederationDeliveryRequest<'a> {
     pub reason: &'a str,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct ReconcileFederationDeliveryRequest<'a> {
+    pub namespace: &'a str,
+    pub tenant: &'a str,
+    pub proof_base64: &'a str,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FederationDeliveryFinalityEvidence {
+    pub stage: String,
+    pub accepted: bool,
+    pub source_id: String,
+    pub qualification_ref: String,
+    pub verifier_revision: String,
+    pub proof_digest: String,
+    pub operator: acteon_core::PrincipalIdentity,
+    pub authority_incarnation: String,
+    pub authority_generation: u64,
+    pub accepted_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FederationFinalityCorrelation {
+    pub delivery_id: String,
+    pub stage: String,
+    pub parent_execution_id: String,
+    pub source: acteon_core::PrincipalIdentity,
+    pub adapter_revision: String,
+    pub binding_digest: String,
+    pub envelope_digest: String,
+    pub invocation_digest: String,
+    pub import_id: String,
+    pub invocation_nonce: String,
+    pub agent_id: String,
+    pub message_id: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FederationDeliveryEvidence {
     pub delivery_id: String,
@@ -113,6 +150,7 @@ pub struct FederationDeliveryEvidence {
     pub expired: bool,
     pub exact_replay_idempotent: bool,
     pub status: FederationDeliveryEvidenceStatus,
+    pub reconciliations: Vec<FederationDeliveryFinalityEvidence>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -181,6 +219,59 @@ impl ActeonClient {
             )
             .await?;
         serde_json::from_value(value).map_err(|error| Error::Deserialization(error.to_string()))
+    }
+
+    /// Return immutable correlation for the currently ambiguous peer stage.
+    pub async fn federation_finality_correlation(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        delivery_id: &str,
+    ) -> Result<FederationFinalityCorrelation, Error> {
+        let value = self
+            .platform_request(
+                PlatformOperation::GovernanceFederationFinalityCorrelation,
+                &[("delivery_id", delivery_id)],
+                &[("namespace", namespace), ("tenant", tenant)],
+                None,
+            )
+            .await?;
+        let correlation: FederationFinalityCorrelation = serde_json::from_value(value)
+            .map_err(|error| Error::Deserialization(error.to_string()))?;
+        if correlation.delivery_id != delivery_id
+            || !matches!(correlation.stage.as_str(), "import" | "invoke")
+        {
+            return Err(Error::Deserialization(
+                "federation finality correlation identity mismatch".into(),
+            ));
+        }
+        Ok(correlation)
+    }
+
+    /// Accept qualified peer finality without sending or replaying a delivery.
+    pub async fn reconcile_federation_delivery(
+        &self,
+        delivery_id: &str,
+        request: ReconcileFederationDeliveryRequest<'_>,
+    ) -> Result<FederationDeliveryEvidence, Error> {
+        let body = serde_json::to_value(request)
+            .map_err(|error| Error::Configuration(error.to_string()))?;
+        let value = self
+            .platform_request(
+                PlatformOperation::GovernanceReconcileFederationDelivery,
+                &[("delivery_id", delivery_id)],
+                &[],
+                Some(&body),
+            )
+            .await?;
+        let evidence: FederationDeliveryEvidence = serde_json::from_value(value)
+            .map_err(|error| Error::Deserialization(error.to_string()))?;
+        if evidence.delivery_id != delivery_id {
+            return Err(Error::Deserialization(
+                "federation reconciliation evidence identity mismatch".into(),
+            ));
+        }
+        Ok(evidence)
     }
 
     /// Inspect the current projection/version under independently granted agent bounds.
@@ -686,6 +777,7 @@ mod federation_wire_tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn federation_management_and_inert_import_preserve_wire_contract() {
         let wire: serde_json::Value = serde_json::from_str(include_str!(
             "../../../clients/contract-fixtures/federation-management.json"
@@ -772,6 +864,12 @@ mod federation_wire_tests {
                 ..
             } if abandonment.authority_generation == 12
         ));
+        let correlation: FederationFinalityCorrelation =
+            serde_json::from_value(wire["finality_correlation"].clone()).unwrap();
+        assert_eq!(correlation.stage, "import");
+        let reconciled: FederationDeliveryEvidence =
+            serde_json::from_value(wire["reconciled_evidence"].clone()).unwrap();
+        assert_eq!(reconciled.reconciliations.len(), 1);
         assert_eq!(
             PlatformOperation::GovernanceFederationDeliveryEvidence
                 .descriptor()
@@ -783,6 +881,18 @@ mod federation_wire_tests {
                 .descriptor()
                 .1,
             "/v1/governance/federation/deliveries/{delivery_id}:abandon"
+        );
+        assert_eq!(
+            PlatformOperation::GovernanceFederationFinalityCorrelation
+                .descriptor()
+                .1,
+            "/v1/governance/federation/deliveries/{delivery_id}/correlation"
+        );
+        assert_eq!(
+            PlatformOperation::GovernanceReconcileFederationDelivery
+                .descriptor()
+                .1,
+            "/v1/governance/federation/deliveries/{delivery_id}:reconcile"
         );
         for (operation, suffix) in [
             (PlatformOperation::FederationExportMessage, "send"),

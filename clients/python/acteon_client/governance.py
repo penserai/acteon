@@ -224,6 +224,7 @@ class FederationDeliveryEvidence:
     expired: bool
     exact_replay_idempotent: bool
     status: dict[str, Any]
+    reconciliations: list["FederationDeliveryFinalityEvidence"]
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "FederationDeliveryEvidence":
@@ -235,6 +236,65 @@ class FederationDeliveryEvidence:
             or not isinstance(data.get("status"), dict)
         ):
             raise ValueError("invalid federation delivery evidence")
+        reconciliations = data.get("reconciliations")
+        if not isinstance(reconciliations, list):
+            raise ValueError("invalid federation delivery reconciliation evidence")
+        return cls(
+            **{
+                **data,
+                "source": PrincipalIdentity(**data["source"]),
+                "reconciliations": [
+                    FederationDeliveryFinalityEvidence.from_dict(item)
+                    for item in reconciliations
+                ],
+            }
+        )
+
+
+@dataclass
+class FederationDeliveryFinalityEvidence:
+    stage: Literal["import", "invoke"]
+    accepted: bool
+    source_id: str
+    qualification_ref: str
+    verifier_revision: str
+    proof_digest: str
+    operator: PrincipalIdentity
+    authority_incarnation: str
+    authority_generation: int
+    accepted_at_ms: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "FederationDeliveryFinalityEvidence":
+        if (
+            data.get("stage") not in {"import", "invoke"}
+            or not isinstance(data.get("accepted"), bool)
+            or not isinstance(data.get("proof_digest"), str)
+            or len(data["proof_digest"]) != 64
+        ):
+            raise ValueError("invalid federation delivery finality evidence")
+        return cls(**{**data, "operator": PrincipalIdentity(**data["operator"])})
+
+
+@dataclass
+class FederationFinalityCorrelation:
+    delivery_id: str
+    stage: Literal["import", "invoke"]
+    parent_execution_id: str
+    source: PrincipalIdentity
+    adapter_revision: str
+    binding_digest: str
+    envelope_digest: str
+    invocation_digest: str
+    import_id: str
+    invocation_nonce: str
+    agent_id: str
+    message_id: str
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "FederationFinalityCorrelation":
+        if data.get("stage") not in {"import", "invoke"}:
+            raise ValueError("invalid federation finality correlation")
         return cls(**{**data, "source": PrincipalIdentity(**data["source"])})
 
 
@@ -260,6 +320,13 @@ class AbandonFederationDeliveryRequest:
     tenant: str
     disposition_id: str
     reason: str
+
+
+@dataclass
+class ReconcileFederationDeliveryRequest:
+    namespace: str
+    tenant: str
+    proof_base64: str
 
 
 @dataclass
@@ -865,6 +932,30 @@ class _GovernanceMixin:
             )
         )
 
+    def federation_finality_correlation(
+        self, namespace: str, tenant: str, delivery_id: str
+    ) -> FederationFinalityCorrelation:
+        return FederationFinalityCorrelation.from_dict(
+            self.platform_request(
+                PlatformOperation.GOVERNANCE_FEDERATION_FINALITY_CORRELATION,
+                path={"delivery_id": delivery_id},
+                query={"namespace": namespace, "tenant": tenant},
+            )
+        )
+
+    def reconcile_federation_delivery(
+        self,
+        delivery_id: str,
+        request: ReconcileFederationDeliveryRequest,
+    ) -> FederationDeliveryEvidence:
+        return FederationDeliveryEvidence.from_dict(
+            self.platform_request(
+                PlatformOperation.GOVERNANCE_RECONCILE_FEDERATION_DELIVERY,
+                path={"delivery_id": delivery_id},
+                body=asdict(request),
+            )
+        )
+
     def import_federation_envelope(
         self,
         namespace: str,
@@ -1131,6 +1222,30 @@ class _AsyncGovernanceMixin:
         return FederationDeliveryEvidence.from_dict(
             await self.platform_request(
                 PlatformOperation.GOVERNANCE_ABANDON_FEDERATION_DELIVERY,
+                path={"delivery_id": delivery_id},
+                body=asdict(request),
+            )
+        )
+
+    async def federation_finality_correlation(
+        self, namespace: str, tenant: str, delivery_id: str
+    ) -> FederationFinalityCorrelation:
+        return FederationFinalityCorrelation.from_dict(
+            await self.platform_request(
+                PlatformOperation.GOVERNANCE_FEDERATION_FINALITY_CORRELATION,
+                path={"delivery_id": delivery_id},
+                query={"namespace": namespace, "tenant": tenant},
+            )
+        )
+
+    async def reconcile_federation_delivery(
+        self,
+        delivery_id: str,
+        request: ReconcileFederationDeliveryRequest,
+    ) -> FederationDeliveryEvidence:
+        return FederationDeliveryEvidence.from_dict(
+            await self.platform_request(
+                PlatformOperation.GOVERNANCE_RECONCILE_FEDERATION_DELIVERY,
                 path={"delivery_id": delivery_id},
                 body=asdict(request),
             )

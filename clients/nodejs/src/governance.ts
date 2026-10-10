@@ -65,11 +65,27 @@ export interface FederationDeliveryAbandonment {
 export interface AbandonFederationDeliveryRequest {
   namespace: string; tenant: string; disposition_id: string; reason: string;
 }
+export interface ReconcileFederationDeliveryRequest {
+  namespace: string; tenant: string; proof_base64: string;
+}
+export interface FederationDeliveryFinalityEvidence {
+  stage: "import" | "invoke"; accepted: boolean; verifier_revision: string;
+  source_id: string; qualification_ref: string;
+  proof_digest: string; operator: PrincipalIdentity; authority_incarnation: string;
+  authority_generation: number; accepted_at_ms: number;
+}
+export interface FederationFinalityCorrelation {
+  delivery_id: string; stage: "import" | "invoke"; parent_execution_id: string;
+  source: PrincipalIdentity; adapter_revision: string; binding_digest: string;
+  envelope_digest: string; invocation_digest: string; import_id: string;
+  invocation_nonce: string; agent_id: string; message_id: string;
+}
 export interface FederationDeliveryEvidence {
   delivery_id: string; parent_execution_id: string; source: PrincipalIdentity;
   agent_id: string; message_id: string; trust_id: string; trust_revision: number;
   key_id: string; issuer_epoch: number; created_at_ms: number; expires_at_ms: number;
   expired: boolean; exact_replay_idempotent: boolean; status: FederationDeliveryEvidenceStatus;
+  reconciliations: FederationDeliveryFinalityEvidence[];
 }
 export interface FederationDeliveryEvidencePage {
   deliveries: FederationDeliveryEvidence[];

@@ -75,7 +75,31 @@ public final class Governance {
         @JsonProperty("expires_at_ms") long expiresAtMs,
         boolean expired,
         @JsonProperty("exact_replay_idempotent") boolean exactReplayIdempotent,
-        com.fasterxml.jackson.databind.JsonNode status) {}
+        com.fasterxml.jackson.databind.JsonNode status,
+        List<FederationDeliveryFinalityEvidence> reconciliations) {}
+    public record FederationDeliveryFinalityEvidence(
+        String stage, boolean accepted,
+        @JsonProperty("source_id") String sourceId,
+        @JsonProperty("qualification_ref") String qualificationRef,
+        @JsonProperty("verifier_revision") String verifierRevision,
+        @JsonProperty("proof_digest") String proofDigest,
+        PrincipalIdentity operator,
+        @JsonProperty("authority_incarnation") String authorityIncarnation,
+        @JsonProperty("authority_generation") long authorityGeneration,
+        @JsonProperty("accepted_at_ms") long acceptedAtMs) {}
+    public record FederationFinalityCorrelation(
+        @JsonProperty("delivery_id") String deliveryId,
+        String stage,
+        @JsonProperty("parent_execution_id") String parentExecutionId,
+        PrincipalIdentity source,
+        @JsonProperty("adapter_revision") String adapterRevision,
+        @JsonProperty("binding_digest") String bindingDigest,
+        @JsonProperty("envelope_digest") String envelopeDigest,
+        @JsonProperty("invocation_digest") String invocationDigest,
+        @JsonProperty("import_id") String importId,
+        @JsonProperty("invocation_nonce") String invocationNonce,
+        @JsonProperty("agent_id") String agentId,
+        @JsonProperty("message_id") String messageId) {}
     public record FederationDeliveryEvidencePage(
         List<FederationDeliveryEvidence> deliveries,
         @JsonProperty("next_cursor") String nextCursor) {}
@@ -84,6 +108,10 @@ public final class Governance {
         String tenant,
         @JsonProperty("disposition_id") String dispositionId,
         String reason) {}
+    public record ReconcileFederationDeliveryRequest(
+        String namespace,
+        String tenant,
+        @JsonProperty("proof_base64") String proofBase64) {}
     public record FederationTrustView(FederationTrustDeclaration trust, boolean revoked) {}
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record Intervention(String kind, Resource resource, PrincipalIdentity subject,

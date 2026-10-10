@@ -1,4 +1,5 @@
 //! Management from original private authentication and independent deployment policy.
+mod federation_finality;
 mod reconciliation;
 mod registry;
 mod workforce;
@@ -22,6 +23,7 @@ use acteon_governance::{
     },
     permit::{EvaluatedPermitPublication, ExecutionPermit, PermitIssuanceCeiling},
 };
+pub use federation_finality::TrustedFederationFinalityInstallation;
 pub use reconciliation::TrustedReconciliationInstallation;
 
 #[derive(Debug, Clone)]
@@ -283,7 +285,7 @@ impl ExecutionAuthorityRuntime {
             deliveries.extend(
                 evidence
                     .into_iter()
-                    .filter(|delivery| observation.policy.subjects.contains(&delivery.source)),
+                    .filter(|delivery| federation_delivery_covered(observation.policy, delivery)),
             );
             if exhausted || cursor.is_none() {
                 break;
@@ -344,7 +346,7 @@ impl ExecutionAuthorityRuntime {
             .await
             .map_err(|error| federation_management_error(&error))?
             .ok_or(ManagementError::NotFound)?;
-        if !observation.policy.subjects.contains(&evidence.source) {
+        if !federation_delivery_covered(observation.policy, &evidence) {
             return Err(ManagementError::NotFound);
         }
 
@@ -778,6 +780,18 @@ fn federation_management_error(
         FederationTransportError::Refused => ManagementError::Forbidden,
         FederationTransportError::Unavailable => ManagementError::Unavailable,
     }
+}
+
+pub(super) fn federation_delivery_covered(
+    policy: &ExecutionManagerConfig,
+    evidence: &acteon_executor::federation_transport::FederationDeliveryEvidence,
+) -> bool {
+    policy.subjects.contains(&evidence.source)
+        && !evidence.reconciliation_resources.is_empty()
+        && evidence
+            .reconciliation_resources
+            .iter()
+            .all(|resource| policy.reconciliation_resources.contains(resource))
 }
 
 fn private_effect(effect: GovernanceEffect) -> acteon_governance::context::AcceptedEffect {

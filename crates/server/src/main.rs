@@ -196,11 +196,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Resolve every external finality trust root before publishing any authority.
+    acteon_server::config::validate_finality_source_key_separation(
+        &config.reconciliation_sources,
+        &config.federation_finality_sources,
+        |name| std::env::var(name).ok().map(zeroize::Zeroizing::new),
+    )?;
     let reconciliation_installations = acteon_server::config::prepare_reconciliation_sources(
         &config.reconciliation_sources,
         config.execution_authority.as_ref(),
         |name| std::env::var(name).ok().map(zeroize::Zeroizing::new),
     )?;
+    let federation_finality_installations =
+        acteon_server::config::prepare_federation_finality_sources(
+            &config.federation_finality_sources,
+            config.execution_authority.as_ref(),
+            |name| std::env::var(name).ok().map(zeroize::Zeroizing::new),
+        )?;
 
     // Initialize tracing subscriber (with optional OpenTelemetry layer).
     // Must happen after config is loaded so we know whether OTel is enabled,
@@ -1691,10 +1702,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
         )
         .await?;
-        let runtime = Arc::new(if reconciliation_installations.is_empty() {
+        let runtime = if reconciliation_installations.is_empty() {
             runtime
         } else {
             runtime.with_trusted_reconciliation_verifiers(reconciliation_installations)?
+        };
+        let runtime = Arc::new(if federation_finality_installations.is_empty() {
+            runtime
+        } else {
+            runtime.with_trusted_federation_finality_verifiers(federation_finality_installations)?
         });
         gateway.install_provider_execution_mediator(runtime.mediator());
         gateway.install_chain_execution_mediator(runtime.clone());

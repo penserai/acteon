@@ -3,7 +3,7 @@ import { AGENT_EXECUTION_CONTEXT_HEADER, AGENT_SOURCE_CONTEXT_HEADER, agentExecu
 import { parseProviderHistoryReceipt, type ProviderHistoryReceipt, type ProviderReconciliationCorrelation, type ProviderReconciliationRequest } from "./governance.js";
 import { parseProviderExecutionHistory, type ProviderExecutionHistory, type ProviderExecutionHistoryWire } from "./governance.js";
 import type { WorkforceScopeView, WorkforceChangeRequest } from "./workforce.js";
-import type { AbandonFederationDeliveryRequest, FederationDeliveryEvidence, FederationDeliveryEvidencePage, FederationExportReceipt, FederationImportReceipt, GovernanceScopeView, GovernanceChangeReceipt, PublishFederationTrustRequest, PublishGovernancePermitRequest, RevokeFederationTrustRequest, SignedFederationEnvelopeDeclaration, SignedFederationInvocationDeclaration, GovernanceInterventionRequest } from "./governance.js";
+import type { AbandonFederationDeliveryRequest, FederationDeliveryEvidence, FederationDeliveryEvidencePage, FederationExportReceipt, FederationFinalityCorrelation, FederationImportReceipt, GovernanceScopeView, GovernanceChangeReceipt, PublishFederationTrustRequest, PublishGovernancePermitRequest, ReconcileFederationDeliveryRequest, RevokeFederationTrustRequest, SignedFederationEnvelopeDeclaration, SignedFederationInvocationDeclaration, GovernanceInterventionRequest } from "./governance.js";
 import { platformRequestParts, type PlatformOperation, type PlatformRequestOptions } from "./platform.js";
 /**
  * HTTP client for the Acteon action gateway.
@@ -605,6 +605,18 @@ export class ActeonClient {
   /** Stop local recovery without claiming peer success or rejection. */
   async abandonFederationDelivery(deliveryId: string, request: AbandonFederationDeliveryRequest): Promise<FederationDeliveryEvidence> {
     return await this.platformRequest("governance_abandon_federation_delivery", {
+      path: { delivery_id: deliveryId }, body: request,
+    }) as FederationDeliveryEvidence;
+  }
+  /** Obtain immutable correlation for the currently ambiguous peer stage. */
+  async federationFinalityCorrelation(namespace: string, tenant: string, deliveryId: string): Promise<FederationFinalityCorrelation> {
+    return await this.platformRequest("governance_federation_finality_correlation", {
+      path: { delivery_id: deliveryId }, query: { namespace, tenant },
+    }) as FederationFinalityCorrelation;
+  }
+  /** Accept qualified peer finality without sending or replaying the delivery. */
+  async reconcileFederationDelivery(deliveryId: string, request: ReconcileFederationDeliveryRequest): Promise<FederationDeliveryEvidence> {
+    return await this.platformRequest("governance_reconcile_federation_delivery", {
       path: { delivery_id: deliveryId }, body: request,
     }) as FederationDeliveryEvidence;
   }

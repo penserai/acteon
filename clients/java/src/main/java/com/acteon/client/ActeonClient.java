@@ -530,6 +530,38 @@ public class ActeonClient implements AutoCloseable {
             throw new ConnectionException("Malformed federation abandonment evidence", e);
         }
     }
+    /** Return immutable correlation for the currently ambiguous peer stage. */
+    public Governance.FederationFinalityCorrelation federationFinalityCorrelation(String namespace,
+        String tenant, String deliveryId) throws ActeonException {
+        var node = platformRequest(PlatformOperation.GOVERNANCE_FEDERATION_FINALITY_CORRELATION,
+            Map.of("delivery_id", deliveryId),
+            Map.of("namespace", List.of(namespace), "tenant", List.of(tenant)), null);
+        try {
+            var correlation = objectMapper.treeToValue(node, Governance.FederationFinalityCorrelation.class);
+            if (!deliveryId.equals(correlation.deliveryId())
+                || !("import".equals(correlation.stage()) || "invoke".equals(correlation.stage()))) {
+                throw new ConnectionException("Federation finality correlation identity mismatch", null);
+            }
+            return correlation;
+        } catch (IOException e) {
+            throw new ConnectionException("Malformed federation finality correlation", e);
+        }
+    }
+    /** Accept qualified peer finality without sending or replaying the delivery. */
+    public Governance.FederationDeliveryEvidence reconcileFederationDelivery(String deliveryId,
+        Governance.ReconcileFederationDeliveryRequest request) throws ActeonException {
+        var node = platformRequest(PlatformOperation.GOVERNANCE_RECONCILE_FEDERATION_DELIVERY,
+            Map.of("delivery_id", deliveryId), null, request);
+        try {
+            var evidence = objectMapper.treeToValue(node, Governance.FederationDeliveryEvidence.class);
+            if (!deliveryId.equals(evidence.deliveryId())) {
+                throw new ConnectionException("Federation reconciliation evidence identity mismatch", null);
+            }
+            return evidence;
+        } catch (IOException e) {
+            throw new ConnectionException("Malformed federation reconciliation evidence", e);
+        }
+    }
     /** Authenticate as a configured peer and retain imported authority without executing it. */
     public Governance.FederationImportReceipt importFederationEnvelope(String namespace, String tenant,
         Governance.SignedFederationEnvelopeDeclaration envelope) throws ActeonException {

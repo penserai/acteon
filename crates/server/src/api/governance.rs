@@ -41,6 +41,30 @@ pub struct AbandonFederationDeliveryRequest {
     pub reason: String,
 }
 
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReconcileFederationDeliveryRequest {
+    pub namespace: String,
+    pub tenant: String,
+    pub proof_base64: String,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct FederationFinalityCorrelation {
+    pub delivery_id: String,
+    pub stage: String,
+    pub parent_execution_id: String,
+    pub source: acteon_core::PrincipalIdentity,
+    pub adapter_revision: String,
+    pub binding_digest: String,
+    pub envelope_digest: String,
+    pub invocation_digest: String,
+    pub import_id: String,
+    pub invocation_nonce: String,
+    pub agent_id: String,
+    pub message_id: String,
+}
+
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct FederationDeliveryEvidencePage {
     pub deliveries: Vec<FederationDeliveryEvidence>,
@@ -63,6 +87,21 @@ pub struct FederationDeliveryEvidence {
     pub expired: bool,
     pub exact_replay_idempotent: bool,
     pub status: FederationDeliveryEvidenceStatus,
+    pub reconciliations: Vec<FederationDeliveryFinalityEvidence>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct FederationDeliveryFinalityEvidence {
+    pub stage: String,
+    pub accepted: bool,
+    pub source_id: String,
+    pub qualification_ref: String,
+    pub verifier_revision: String,
+    pub proof_digest: String,
+    pub operator: acteon_core::PrincipalIdentity,
+    pub authority_incarnation: String,
+    pub authority_generation: u64,
+    pub accepted_at_ms: i64,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -163,6 +202,54 @@ impl From<acteon_executor::federation_transport::FederationDeliveryEvidence>
             expired: evidence.expired,
             exact_replay_idempotent: evidence.exact_replay_idempotent,
             status,
+            reconciliations: evidence
+                .reconciliations
+                .into_iter()
+                .map(|entry| FederationDeliveryFinalityEvidence {
+                    stage: delivery_stage(entry.stage).into(),
+                    accepted: entry.accepted,
+                    source_id: entry.source_id,
+                    qualification_ref: entry.qualification_ref,
+                    verifier_revision: entry.verifier_revision,
+                    proof_digest: entry.proof_digest,
+                    operator: entry.acceptance.operator,
+                    authority_incarnation: entry.acceptance.authority.incarnation,
+                    authority_generation: entry.acceptance.authority.generation,
+                    accepted_at_ms: entry.acceptance.accepted_at_ms,
+                })
+                .collect(),
+        }
+    }
+}
+
+fn delivery_stage(
+    stage: acteon_executor::federation_transport::FederationDeliveryStage,
+) -> &'static str {
+    match stage {
+        acteon_executor::federation_transport::FederationDeliveryStage::Import => "import",
+        acteon_executor::federation_transport::FederationDeliveryStage::Invoke => "invoke",
+    }
+}
+
+impl From<acteon_executor::federation_finality::FederationFinalityCorrelation>
+    for FederationFinalityCorrelation
+{
+    fn from(
+        correlation: acteon_executor::federation_finality::FederationFinalityCorrelation,
+    ) -> Self {
+        Self {
+            delivery_id: correlation.delivery_id.to_string(),
+            stage: delivery_stage(correlation.stage).into(),
+            parent_execution_id: correlation.parent_execution_id.to_string(),
+            source: correlation.source,
+            adapter_revision: correlation.adapter_revision,
+            binding_digest: correlation.binding_digest,
+            envelope_digest: correlation.envelope_digest,
+            invocation_digest: correlation.invocation_digest,
+            import_id: correlation.import_id,
+            invocation_nonce: correlation.invocation_nonce,
+            agent_id: correlation.agent_id,
+            message_id: correlation.message_id,
         }
     }
 }
@@ -398,6 +485,136 @@ pub async fn abandon_federation_delivery(
             &proof,
         )
         .await?;
+    Ok((
+        [(axum::http::header::CACHE_CONTROL, "no-store")],
+        Json(FederationDeliveryEvidence::from(evidence)),
+    ))
+}
+
+/// Return immutable correlation for an independently qualified finality source.
+#[utoipa::path(get, path = "/v1/governance/federation/deliveries/{delivery_id}/correlation", tag = "Governance",
+    params(("delivery_id" = String, Path), GovernanceQuery),
+    responses((status = 200, body = FederationFinalityCorrelation),
+        (status = 401, description = "Private authentication required"),
+        (status = 403, description = "Independent reconciliation permission required"),
+        (status = 404, description = "No accessible retained delivery"),
+        (status = 409, description = "Delivery has no ambiguous stage"),
+        (status = 503, description = "Qualified federation finality unavailable")))]
+pub async fn federation_finality_correlation(
+    State(state): State<AppState>,
+    proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
+    Path(delivery_id): Path<uuid::Uuid>,
+    Query(query): Query<GovernanceQuery>,
+) -> Result<impl IntoResponse, GovernanceApiError> {
+    let proof = authentication(proof)?;
+    let correlation = runtime(&state)?
+        .federation_finality_correlation(&query.namespace, &query.tenant, delivery_id, &proof)
+        .await?;
+    Ok((
+        [(axum::http::header::CACHE_CONTROL, "no-store")],
+        Json(FederationFinalityCorrelation::from(correlation)),
+    ))
+}
+
+/// Accept independently verified peer finality without calling or replaying the peer.
+#[utoipa::path(post, path = "/v1/governance/federation/deliveries/{delivery_id}:reconcile", tag = "Governance",
+    params(("delivery_id" = String, Path)),
+    request_body = ReconcileFederationDeliveryRequest,
+    responses((status = 200, body = FederationDeliveryEvidence),
+        (status = 400, description = "Invalid finality evidence"),
+        (status = 401, description = "Private authentication required"),
+        (status = 403, description = "Independent reconciliation permission required or proof untrusted"),
+        (status = 404, description = "No accessible retained delivery"),
+        (status = 409, description = "Correlation, stage, authority, or evidence conflict"),
+        (status = 503, description = "Qualified federation finality unavailable")))]
+pub async fn reconcile_federation_delivery(
+    State(state): State<AppState>,
+    proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
+    Path(delivery_id): Path<uuid::Uuid>,
+    Json(request): Json<ReconcileFederationDeliveryRequest>,
+) -> Result<impl IntoResponse, GovernanceApiError> {
+    use base64::Engine;
+    let authentication = authentication(proof)?;
+    if request.proof_base64.is_empty() || request.proof_base64.len() > 87_384 {
+        return Err(ManagementError::Invalid.into());
+    }
+    let proof = base64::engine::general_purpose::STANDARD
+        .decode(request.proof_base64)
+        .map_err(|_| ManagementError::Invalid)?;
+    if proof.is_empty() || proof.len() > 65_536 {
+        return Err(ManagementError::Invalid.into());
+    }
+    let evidence = runtime(&state)?
+        .reconcile_federation_delivery(
+            &request.namespace,
+            &request.tenant,
+            delivery_id,
+            &proof,
+            &authentication,
+        )
+        .await?;
+    Ok((
+        [(axum::http::header::CACHE_CONTROL, "no-store")],
+        Json(FederationDeliveryEvidence::from(evidence)),
+    ))
+}
+
+/// Axum-compatible dispatcher for the public `{delivery_id}:abandon` and
+/// `{delivery_id}:reconcile` protocol operations. The action suffix is parsed
+/// before the UUID, so an unknown verb cannot alias a delivery identity.
+pub async fn federation_delivery_action(
+    State(state): State<AppState>,
+    proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
+    Path(delivery_action): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<impl IntoResponse, GovernanceApiError> {
+    let proof = authentication(proof)?;
+    let (delivery_id, action) = delivery_action
+        .rsplit_once(':')
+        .ok_or(ManagementError::Invalid)?;
+    let delivery_id = uuid::Uuid::parse_str(delivery_id).map_err(|_| ManagementError::Invalid)?;
+    let evidence = match action {
+        "abandon" => {
+            let request: AbandonFederationDeliveryRequest =
+                serde_json::from_value(body).map_err(|_| ManagementError::Invalid)?;
+            let disposition_id = uuid::Uuid::parse_str(&request.disposition_id)
+                .map_err(|_| ManagementError::Invalid)?;
+            runtime(&state)?
+                .abandon_federation_delivery(
+                    &request.namespace,
+                    &request.tenant,
+                    delivery_id,
+                    disposition_id,
+                    &request.reason,
+                    &proof,
+                )
+                .await?
+        }
+        "reconcile" => {
+            use base64::Engine;
+            let request: ReconcileFederationDeliveryRequest =
+                serde_json::from_value(body).map_err(|_| ManagementError::Invalid)?;
+            if request.proof_base64.is_empty() || request.proof_base64.len() > 87_384 {
+                return Err(ManagementError::Invalid.into());
+            }
+            let evidence = base64::engine::general_purpose::STANDARD
+                .decode(request.proof_base64)
+                .map_err(|_| ManagementError::Invalid)?;
+            if evidence.is_empty() || evidence.len() > 65_536 {
+                return Err(ManagementError::Invalid.into());
+            }
+            runtime(&state)?
+                .reconcile_federation_delivery(
+                    &request.namespace,
+                    &request.tenant,
+                    delivery_id,
+                    &evidence,
+                    &proof,
+                )
+                .await?
+        }
+        _ => return Err(ManagementError::Invalid.into()),
+    };
     Ok((
         [(axum::http::header::CACHE_CONTROL, "no-store")],
         Json(FederationDeliveryEvidence::from(evidence)),

@@ -427,6 +427,7 @@ impl GovernedFederationExporter {
     ) -> FederationDeliveryIntent<'a> {
         FederationDeliveryIntent {
             parent: &prepared.parent,
+            reconciliation_resources: &self.profile.local_export_effect.resources,
             endpoint: &self.profile.endpoint,
             agent_id: self.profile.agent_resource.id(),
             envelope: &prepared.envelope,

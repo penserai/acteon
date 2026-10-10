@@ -8,6 +8,7 @@ mod compliance;
 mod enrichment;
 mod execution_authority;
 mod executor;
+mod federation_finality;
 mod llm;
 mod providers;
 mod reconciliation;
@@ -31,6 +32,7 @@ pub use compliance::*;
 pub use enrichment::*;
 pub use execution_authority::*;
 pub use executor::*;
+pub use federation_finality::*;
 pub use llm::*;
 pub use providers::*;
 pub use reconciliation::*;
@@ -73,6 +75,9 @@ pub struct ActeonConfig {
     /// Independently qualified external finality sources; empty disables reconciliation.
     #[serde(default)]
     pub reconciliation_sources: Vec<ReconciliationSourceConfig>,
+    /// Qualified finality sources for ambiguous outbound federation stages.
+    #[serde(default)]
+    pub federation_finality_sources: Vec<FederationFinalitySourceConfig>,
     /// Rate limiting configuration.
     #[serde(default)]
     pub rate_limit: RateLimitRefConfig,

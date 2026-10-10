@@ -34,7 +34,17 @@ LOGICAL_ROUTE_VARIANTS = {
             "name": "agent_services_peer_refresh",
             "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{id}/peers/{target}/{skill}/submissions/{submission}:refresh",
         },
-    ]
+    ],
+    "governance_federation_delivery_action": [
+        {
+            "name": "governance_abandon_federation_delivery",
+            "path": "/v1/governance/federation/deliveries/{delivery_id}:abandon",
+        },
+        {
+            "name": "governance_reconcile_federation_delivery",
+            "path": "/v1/governance/federation/deliveries/{delivery_id}:reconcile",
+        },
+    ],
 }
 
 

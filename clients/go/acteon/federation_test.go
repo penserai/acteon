@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -23,6 +24,7 @@ func TestFederationManagementAndInertImportWire(t *testing.T) {
 	var revocation RevokeFederationTrustRequest
 	var envelope SignedFederationEnvelopeDeclaration
 	var abandonment AbandonFederationDeliveryRequest
+	var reconciliation ReconcileFederationDeliveryRequest
 	if err = json.Unmarshal(wire["publication"], &publication); err != nil {
 		t.Fatal(err)
 	}
@@ -33,6 +35,9 @@ func TestFederationManagementAndInertImportWire(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err = json.Unmarshal(wire["abandon_request"], &abandonment); err != nil {
+		t.Fatal(err)
+	}
+	if err = json.Unmarshal(wire["reconcile_request"], &reconciliation); err != nil {
 		t.Fatal(err)
 	}
 	var calls []json.RawMessage
@@ -50,7 +55,11 @@ func TestFederationManagementAndInertImportWire(t *testing.T) {
 		}
 		paths = append(paths, r.URL.Path)
 		response := wire["change_receipt"]
-		if len(r.URL.Path) >= len(":abandon") && r.URL.Path[len(r.URL.Path)-len(":abandon"):] == ":abandon" {
+		if strings.HasSuffix(r.URL.Path, "/correlation") {
+			response = wire["finality_correlation"]
+		} else if strings.HasSuffix(r.URL.Path, ":reconcile") {
+			response = wire["reconciled_evidence"]
+		} else if strings.HasSuffix(r.URL.Path, ":abandon") {
 			response = wire["abandoned_evidence"]
 		} else if r.URL.Path == "/v1/governance/federation/deliveries" {
 			response = wire["delivery_evidence_page"]
@@ -112,7 +121,15 @@ func TestFederationManagementAndInertImportWire(t *testing.T) {
 	if err != nil || abandoned.Status.Status != "abandoned" || abandoned.Status.Abandonment == nil {
 		t.Fatalf("unexpected abandonment evidence: %v (%v)", abandoned, err)
 	}
-	if len(paths) != 9 || paths[2] != "/a2a/prod/acme/federation/envelopes:import" || paths[3] != "/a2a/prod/acme/federation/agents/maya/v1/message:send" || paths[7] != "/v1/governance/federation/deliveries" || paths[8] != "/v1/governance/federation/deliveries/"+evidence.Deliveries[0].DeliveryID+":abandon" {
+	correlation, err := client.FederationFinalityCorrelation(ctx, "prod", "acme", evidence.Deliveries[0].DeliveryID)
+	if err != nil || correlation.Stage != "import" {
+		t.Fatalf("unexpected finality correlation: %v (%v)", correlation, err)
+	}
+	reconciled, err := client.ReconcileFederationDelivery(ctx, evidence.Deliveries[0].DeliveryID, reconciliation)
+	if err != nil || reconciled.Status.Status != "rejected" || len(reconciled.Reconciliations) != 1 {
+		t.Fatalf("unexpected reconciled evidence: %v (%v)", reconciled, err)
+	}
+	if len(paths) != 11 || paths[2] != "/a2a/prod/acme/federation/envelopes:import" || paths[3] != "/a2a/prod/acme/federation/agents/maya/v1/message:send" || paths[7] != "/v1/governance/federation/deliveries" || paths[8] != "/v1/governance/federation/deliveries/"+evidence.Deliveries[0].DeliveryID+":abandon" || !strings.HasSuffix(paths[9], "/correlation") || !strings.HasSuffix(paths[10], ":reconcile") {
 		t.Fatalf("unexpected paths: %v", paths)
 	}
 	for i, action := range []string{"send", "observe", "replay"} {
@@ -121,7 +138,7 @@ func TestFederationManagementAndInertImportWire(t *testing.T) {
 			t.Fatalf("unexpected export path: %s", paths[i+4])
 		}
 	}
-	if len(calls) != 8 {
+	if len(calls) != 9 {
 		t.Fatalf("got %d calls", len(calls))
 	}
 	if !bytes.Equal(compactJSON(t, calls[0]), compactJSON(t, wire["publication"])) {
@@ -132,6 +149,9 @@ func TestFederationManagementAndInertImportWire(t *testing.T) {
 	}
 	if !bytes.Equal(compactJSON(t, calls[7]), compactJSON(t, wire["abandon_request"])) {
 		t.Fatal("abandonment wire changed")
+	}
+	if !bytes.Equal(compactJSON(t, calls[8]), compactJSON(t, wire["reconcile_request"])) {
+		t.Fatal("reconciliation wire changed")
 	}
 	var importBody map[string]json.RawMessage
 	if err = json.Unmarshal(calls[2], &importBody); err != nil {

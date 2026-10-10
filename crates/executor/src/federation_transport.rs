@@ -6,7 +6,7 @@
 //! stay explicit and are replayed only through an adapter that qualifies exact
 //! requests as idempotent.
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use acteon_core::{ExecutionContextReference, FederationImportReceipt, Task, TaskMessage};
 use acteon_crypto::PayloadEncryptor;
@@ -18,7 +18,13 @@ use acteon_state::{CasResult, KeyKind, StateKey, StateStore};
 use acteon_time::Clock;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
+
+use crate::federation_finality::{
+    FederationFinalityCorrelation, FederationFinalityVerifier, FederationPeerFinality,
+    MAX_FEDERATION_FINALITY_PROOF_BYTES,
+};
 
 pub const FEDERATION_DELIVERY_KIND: &str = "federation_outbound_delivery";
 const DELIVERY_SCHEMA: u32 = 1;
@@ -123,6 +129,9 @@ pub struct FederationDeliveryEvidence {
     pub delivery_id: Uuid,
     pub parent_execution_id: Uuid,
     pub source: acteon_core::PrincipalIdentity,
+    /// Local authority footprint retained at registration. API projections do
+    /// not expose it, but management must cover it for every read or mutation.
+    pub reconciliation_resources: Vec<acteon_core::ResourceRef>,
     pub agent_id: String,
     pub message_id: String,
     pub trust_id: String,
@@ -134,6 +143,9 @@ pub struct FederationDeliveryEvidence {
     pub expired: bool,
     pub exact_replay_idempotent: bool,
     pub status: FederationDeliveryEvidenceStatus,
+    /// Independently verified stage results, in protocol order. Payloads and
+    /// peer task artifacts remain in the encrypted delivery journal.
+    pub reconciliations: Vec<FederationDeliveryFinalityEvidence>,
 }
 
 /// Immutable operator audit attached to a locally abandoned ambiguous
@@ -146,6 +158,28 @@ pub struct FederationDeliveryAbandonment {
     pub authority: AuthorityStamp,
     pub reason: String,
     pub recorded_at_ms: i64,
+}
+
+/// Authenticated local acceptance of one independently verified peer result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationFinalityAcceptance {
+    pub operator: acteon_core::PrincipalIdentity,
+    pub authority: AuthorityStamp,
+    pub accepted_at_ms: i64,
+}
+
+/// Sanitized proof metadata. The proof, receipt and task are retained inside
+/// the encrypted journal and never returned by evidence-list operations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FederationDeliveryFinalityEvidence {
+    pub stage: FederationDeliveryStage,
+    pub accepted: bool,
+    pub source_id: String,
+    pub qualification_ref: String,
+    pub verifier_revision: String,
+    pub proof_digest: String,
+    pub acceptance: FederationFinalityAcceptance,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,6 +211,7 @@ pub enum FederationDeliveryEvidenceStatus {
 #[derive(Clone, Copy)]
 pub struct FederationDeliveryIntent<'a> {
     pub parent: &'a ExecutionContextReference,
+    pub reconciliation_resources: &'a [acteon_core::ResourceRef],
     pub endpoint: &'a str,
     pub agent_id: &'a str,
     pub envelope: &'a SignedFederationEnvelope,
@@ -321,6 +356,15 @@ pub struct FederationDeliveryReconciler {
     encryptor: Option<Arc<PayloadEncryptor>>,
 }
 
+/// Trusted mutation boundary for peer finality. It owns no peer endpoint,
+/// credential or replay adapter; public fields cannot select its verifiers.
+pub struct FederationDeliveryFinalityReconciler {
+    state: Arc<dyn StateStore>,
+    clock: Arc<dyn Clock>,
+    encryptor: Option<Arc<PayloadEncryptor>>,
+    verifiers: BTreeMap<String, Arc<dyn FederationFinalityVerifier>>,
+}
+
 impl FederationDeliveryReconciler {
     #[must_use]
     pub fn new(
@@ -426,6 +470,202 @@ impl FederationDeliveryReconciler {
     }
 }
 
+impl FederationDeliveryFinalityReconciler {
+    /// Install a bounded verifier set keyed by the immutable outbound binding
+    /// digest. Empty installations are rejected so this boundary cannot appear
+    /// enabled while accepting no qualified source.
+    pub fn new_trusted(
+        state: Arc<dyn StateStore>,
+        clock: Arc<dyn Clock>,
+        encryptor: Option<Arc<PayloadEncryptor>>,
+        verifiers: BTreeMap<String, Arc<dyn FederationFinalityVerifier>>,
+    ) -> Result<Self, FederationTransportError> {
+        if verifiers.is_empty()
+            || verifiers.len() > 128
+            || verifiers.iter().any(|(binding, verifier)| {
+                !valid_digest(binding)
+                    || !valid_text(verifier.source_id(), 255)
+                    || !valid_text(verifier.qualification_ref(), 255)
+                    || !valid_text(verifier.revision(), 120)
+            })
+        {
+            return Err(FederationTransportError::Invalid);
+        }
+        Ok(Self {
+            state,
+            clock,
+            encryptor,
+            verifiers,
+        })
+    }
+
+    /// Return correlation only for an ambiguous stage (or an expired active
+    /// claim). Known results and stages that never crossed the boundary are not
+    /// eligible for external finality.
+    pub async fn correlation(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        delivery_id: Uuid,
+        expected_source: &acteon_core::PrincipalIdentity,
+    ) -> Result<FederationFinalityCorrelation, FederationTransportError> {
+        let (record, _) = self
+            .load(namespace, tenant, delivery_id, expected_source)
+            .await?;
+        self.correlation_for_record(&record)
+    }
+
+    /// Verify and durably attach one stage result. This method never calls the
+    /// peer. Exact proof replay is idempotent; a different result for the same
+    /// stage conflicts.
+    pub async fn reconcile(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        delivery_id: Uuid,
+        expected_source: &acteon_core::PrincipalIdentity,
+        proof: &[u8],
+        acceptance: FederationFinalityAcceptance,
+    ) -> Result<FederationDeliveryEvidence, FederationTransportError> {
+        if proof.is_empty()
+            || proof.len() > MAX_FEDERATION_FINALITY_PROOF_BYTES
+            || !valid_finality_acceptance(&acceptance)
+        {
+            return Err(FederationTransportError::Invalid);
+        }
+        let proof_digest = format!("{:x}", Sha256::digest(proof));
+        for _ in 0..3 {
+            let (mut record, version) = self
+                .load(namespace, tenant, delivery_id, expected_source)
+                .await?;
+            let now_ms = self.now_ms()?;
+            if acceptance.accepted_at_ms < record.created_at_ms
+                || acceptance.accepted_at_ms > now_ms
+            {
+                return Err(FederationTransportError::Invalid);
+            }
+            let verifier = self
+                .verifiers
+                .get(&record.binding_digest)
+                .ok_or(FederationTransportError::Refused)?;
+            if let Some(existing) = record
+                .reconciliations
+                .iter()
+                .find(|entry| entry.proof_digest == proof_digest)
+            {
+                let verified = verifier.verify(&existing.correlation, proof)?;
+                if existing.source_id != verifier.source_id()
+                    || existing.qualification_ref != verifier.qualification_ref()
+                    || existing.verifier_revision != verifier.revision()
+                    || !same_peer_finality(&existing.finality, &verified)?
+                {
+                    return Err(FederationTransportError::Conflict);
+                }
+                return project_evidence(&record, self.now_ms()?);
+            }
+            let correlation = self.correlation_for_record(&record)?;
+            if record
+                .reconciliations
+                .iter()
+                .any(|entry| entry.correlation.stage == correlation.stage)
+            {
+                return Err(FederationTransportError::Conflict);
+            }
+            let finality = verifier.verify(&correlation, proof)?;
+            validate_peer_finality(&record, &correlation, &finality)?;
+            apply_peer_finality(&mut record, &finality);
+            record
+                .reconciliations
+                .push(FederationDeliveryReconciliation {
+                    correlation,
+                    finality,
+                    source_id: verifier.source_id().into(),
+                    qualification_ref: verifier.qualification_ref().into(),
+                    verifier_revision: verifier.revision().into(),
+                    proof: proof.to_vec(),
+                    proof_digest: proof_digest.clone(),
+                    acceptance: acceptance.clone(),
+                });
+            let key = delivery_key(namespace, tenant, delivery_id);
+            match self
+                .state
+                .compare_and_swap(
+                    &key,
+                    version,
+                    &encode_evidence_record(self.encryptor.as_ref(), &record)?,
+                    None,
+                )
+                .await
+                .map_err(|_| FederationTransportError::Unavailable)?
+            {
+                CasResult::Ok => return project_evidence(&record, now_ms),
+                CasResult::Conflict { .. } => {}
+            }
+        }
+        Err(FederationTransportError::Unavailable)
+    }
+
+    async fn load(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        delivery_id: Uuid,
+        expected_source: &acteon_core::PrincipalIdentity,
+    ) -> Result<(DeliveryRecord, u64), FederationTransportError> {
+        if namespace.is_empty() || tenant.is_empty() || delivery_id.is_nil() {
+            return Err(FederationTransportError::Invalid);
+        }
+        let key = delivery_key(namespace, tenant, delivery_id);
+        let (raw, version) = self
+            .state
+            .get_versioned(&key)
+            .await
+            .map_err(|_| FederationTransportError::Unavailable)?
+            .ok_or(FederationTransportError::Conflict)?;
+        let record = decode_evidence_record(self.encryptor.as_ref(), &raw)?;
+        let envelope = record
+            .envelope
+            .envelope()
+            .map_err(|_| FederationTransportError::Conflict)?;
+        if record.delivery_id != delivery_id
+            || record.parent.namespace() != namespace
+            || record.parent.tenant() != tenant
+            || &envelope.source != expected_source
+        {
+            return Err(FederationTransportError::Conflict);
+        }
+        Ok((record, version))
+    }
+
+    fn correlation_for_record(
+        &self,
+        record: &DeliveryRecord,
+    ) -> Result<FederationFinalityCorrelation, FederationTransportError> {
+        let now_ms = self.now_ms()?;
+        let stage = match &record.state {
+            DeliveryState::ImportUncertain => FederationDeliveryStage::Import,
+            DeliveryState::Importing {
+                claim_expires_at_ms,
+                ..
+            } if now_ms >= *claim_expires_at_ms => FederationDeliveryStage::Import,
+            DeliveryState::InvokeUncertain { .. } => FederationDeliveryStage::Invoke,
+            DeliveryState::Invoking {
+                claim_expires_at_ms,
+                ..
+            } if now_ms >= *claim_expires_at_ms => FederationDeliveryStage::Invoke,
+            _ => return Err(FederationTransportError::Conflict),
+        };
+        finality_correlation(record, stage)
+    }
+
+    fn now_ms(&self) -> Result<i64, FederationTransportError> {
+        let now_ms = self.clock.now().timestamp_millis();
+        (now_ms >= 0)
+            .then_some(now_ms)
+            .ok_or(FederationTransportError::Invalid)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 enum DeliveryState {
@@ -472,6 +712,7 @@ struct DeliveryRecord {
     binding_digest: String,
     exact_replay_idempotent: bool,
     parent: ExecutionContextReference,
+    reconciliation_resources: Vec<acteon_core::ResourceRef>,
     endpoint: String,
     agent_id: String,
     envelope: SignedFederationEnvelope,
@@ -479,6 +720,21 @@ struct DeliveryRecord {
     message: TaskMessage,
     created_at_ms: i64,
     state: DeliveryState,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    reconciliations: Vec<FederationDeliveryReconciliation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FederationDeliveryReconciliation {
+    correlation: FederationFinalityCorrelation,
+    finality: FederationPeerFinality,
+    source_id: String,
+    qualification_ref: String,
+    verifier_revision: String,
+    proof: Vec<u8>,
+    proof_digest: String,
+    acceptance: FederationFinalityAcceptance,
 }
 
 impl DurableFederationTransport {
@@ -920,6 +1176,18 @@ impl DurableFederationTransport {
             || intent.invocation.payload.len() > MAX_SIGNED_PAYLOAD_BYTES
             || !valid_signature(&intent.envelope.signature)
             || !valid_signature(&intent.invocation.signature)
+            || intent.reconciliation_resources.is_empty()
+            || intent.reconciliation_resources.len() > 16
+            || intent
+                .reconciliation_resources
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != intent.reconciliation_resources.len()
+            || intent.reconciliation_resources.iter().any(|resource| {
+                resource.namespace() != intent.parent.namespace()
+                    || resource.tenant() != intent.parent.tenant()
+            })
         {
             return Err(FederationTransportError::Invalid);
         }
@@ -952,6 +1220,7 @@ impl DurableFederationTransport {
             binding_digest: self.adapter.binding_digest().into(),
             exact_replay_idempotent: self.adapter.exact_replay_idempotent(),
             parent: intent.parent.clone(),
+            reconciliation_resources: intent.reconciliation_resources.to_vec(),
             endpoint: intent.endpoint.into(),
             agent_id: intent.agent_id.into(),
             envelope: intent.envelope.clone(),
@@ -959,6 +1228,7 @@ impl DurableFederationTransport {
             message: intent.message.clone(),
             created_at_ms,
             state: DeliveryState::Registered,
+            reconciliations: Vec::new(),
         })
     }
 
@@ -988,6 +1258,7 @@ impl DurableFederationTransport {
             || actual.binding_digest != expected.binding_digest
             || actual.exact_replay_idempotent != expected.exact_replay_idempotent
             || actual.parent != expected.parent
+            || actual.reconciliation_resources != expected.reconciliation_resources
             || actual.endpoint != expected.endpoint
             || actual.agent_id != expected.agent_id
             || actual.envelope != expected.envelope
@@ -1047,11 +1318,10 @@ impl DurableFederationTransport {
     }
 
     fn key(record: &DeliveryRecord) -> StateKey {
-        StateKey::new(
+        delivery_key(
             record.parent.namespace(),
             record.parent.tenant(),
-            KeyKind::Custom(FEDERATION_DELIVERY_KIND.into()),
-            record.delivery_id.to_string(),
+            record.delivery_id,
         )
     }
 
@@ -1205,6 +1475,205 @@ fn encode_evidence_record(
     })
 }
 
+fn delivery_key(namespace: &str, tenant: &str, delivery_id: Uuid) -> StateKey {
+    StateKey::new(
+        namespace,
+        tenant,
+        KeyKind::Custom(FEDERATION_DELIVERY_KIND.into()),
+        delivery_id.to_string(),
+    )
+}
+
+fn finality_correlation(
+    record: &DeliveryRecord,
+    stage: FederationDeliveryStage,
+) -> Result<FederationFinalityCorrelation, FederationTransportError> {
+    let envelope = record
+        .envelope
+        .envelope()
+        .map_err(|_| FederationTransportError::Conflict)?;
+    let invocation = record
+        .invocation
+        .invocation()
+        .map_err(|_| FederationTransportError::Conflict)?;
+    Ok(FederationFinalityCorrelation {
+        delivery_id: record.delivery_id,
+        stage,
+        parent_execution_id: record.parent.execution_id(),
+        source: envelope.source,
+        adapter_revision: record.adapter_revision.clone(),
+        binding_digest: record.binding_digest.clone(),
+        envelope_digest: record
+            .envelope
+            .digest()
+            .map_err(|_| FederationTransportError::Conflict)?,
+        invocation_digest: record
+            .invocation
+            .digest()
+            .map_err(|_| FederationTransportError::Conflict)?,
+        import_id: envelope.id,
+        invocation_nonce: invocation.nonce,
+        agent_id: record.agent_id.clone(),
+        message_id: invocation.message.message_id,
+    })
+}
+
+fn validate_peer_finality(
+    record: &DeliveryRecord,
+    correlation: &FederationFinalityCorrelation,
+    finality: &FederationPeerFinality,
+) -> Result<(), FederationTransportError> {
+    if finality.stage() != correlation.stage {
+        return Err(FederationTransportError::Conflict);
+    }
+    match finality {
+        FederationPeerFinality::ImportAccepted { receipt } => receipt_matches(record, receipt)
+            .then_some(())
+            .ok_or(FederationTransportError::Conflict),
+        FederationPeerFinality::ImportRejected { code } => valid_code(code)
+            .then_some(())
+            .ok_or(FederationTransportError::Invalid),
+        FederationPeerFinality::InvocationAccepted { receipt, task } => {
+            (receipt_matches(record, receipt) && task_matches(record, task))
+                .then_some(())
+                .ok_or(FederationTransportError::Conflict)
+        }
+        FederationPeerFinality::InvocationRejected { receipt, code } => {
+            (receipt_matches(record, receipt) && valid_code(code))
+                .then_some(())
+                .ok_or(FederationTransportError::Conflict)
+        }
+    }
+}
+
+fn apply_peer_finality(record: &mut DeliveryRecord, finality: &FederationPeerFinality) {
+    record.state = match finality {
+        FederationPeerFinality::ImportAccepted { receipt } => DeliveryState::Imported {
+            receipt: receipt.clone(),
+        },
+        FederationPeerFinality::ImportRejected { code } => DeliveryState::Rejected {
+            stage: FederationDeliveryStage::Import,
+            code: code.clone(),
+        },
+        FederationPeerFinality::InvocationAccepted { receipt, task } => DeliveryState::Accepted {
+            receipt: receipt.clone(),
+            task: task.clone(),
+        },
+        FederationPeerFinality::InvocationRejected { code, .. } => DeliveryState::Rejected {
+            stage: FederationDeliveryStage::Invoke,
+            code: code.clone(),
+        },
+    };
+}
+
+fn same_peer_finality(
+    left: &FederationPeerFinality,
+    right: &FederationPeerFinality,
+) -> Result<bool, FederationTransportError> {
+    Ok(
+        serde_json::to_value(left).map_err(|_| FederationTransportError::Invalid)?
+            == serde_json::to_value(right).map_err(|_| FederationTransportError::Invalid)?,
+    )
+}
+
+fn valid_finality_acceptance(acceptance: &FederationFinalityAcceptance) -> bool {
+    acceptance.accepted_at_ms >= 0
+        && valid_text(acceptance.operator.id(), 255)
+        && valid_text(&acceptance.authority.incarnation, 120)
+}
+
+fn valid_reconciliations(record: &DeliveryRecord) -> bool {
+    if record.reconciliations.len() > 2 {
+        return false;
+    }
+    if record.reconciliations.len() == 2
+        && (!matches!(
+            &record.reconciliations[0].finality,
+            FederationPeerFinality::ImportAccepted { .. }
+        ) || record.reconciliations[1].correlation.stage != FederationDeliveryStage::Invoke)
+    {
+        return false;
+    }
+    let mut previous = None;
+    for reconciliation in &record.reconciliations {
+        let stage = reconciliation.correlation.stage;
+        if previous.is_some_and(|previous| {
+            previous == stage
+                || (previous == FederationDeliveryStage::Invoke
+                    && stage == FederationDeliveryStage::Import)
+        }) || !valid_text(&reconciliation.source_id, 255)
+            || !valid_text(&reconciliation.qualification_ref, 255)
+            || !valid_text(&reconciliation.verifier_revision, 120)
+            || reconciliation.proof.is_empty()
+            || reconciliation.proof.len() > MAX_FEDERATION_FINALITY_PROOF_BYTES
+            || !valid_digest(&reconciliation.proof_digest)
+            || format!("{:x}", Sha256::digest(&reconciliation.proof)) != reconciliation.proof_digest
+            || !valid_finality_acceptance(&reconciliation.acceptance)
+            || reconciliation.acceptance.accepted_at_ms < record.created_at_ms
+            || finality_correlation(record, stage).ok().as_ref()
+                != Some(&reconciliation.correlation)
+            || validate_peer_finality(
+                record,
+                &reconciliation.correlation,
+                &reconciliation.finality,
+            )
+            .is_err()
+        {
+            return false;
+        }
+        previous = Some(stage);
+    }
+    reconciliation_state_consistent(record)
+}
+
+fn reconciliation_state_consistent(record: &DeliveryRecord) -> bool {
+    let Some(latest) = record.reconciliations.last() else {
+        return true;
+    };
+    match (&latest.finality, &record.state) {
+        (
+            FederationPeerFinality::ImportAccepted { .. },
+            DeliveryState::Imported { .. }
+            | DeliveryState::Invoking { .. }
+            | DeliveryState::InvokeUncertain { .. }
+            | DeliveryState::Accepted { .. }
+            | DeliveryState::Rejected {
+                stage: FederationDeliveryStage::Invoke,
+                ..
+            }
+            | DeliveryState::Abandoned {
+                stage: FederationDeliveryStage::Invoke,
+                ..
+            },
+        ) => true,
+        (
+            FederationPeerFinality::ImportRejected { code: expected },
+            DeliveryState::Rejected {
+                stage: FederationDeliveryStage::Import,
+                code,
+            },
+        )
+        | (
+            FederationPeerFinality::InvocationRejected { code: expected, .. },
+            DeliveryState::Rejected {
+                stage: FederationDeliveryStage::Invoke,
+                code,
+            },
+        ) => code == expected,
+        (
+            FederationPeerFinality::InvocationAccepted {
+                receipt: expected_receipt,
+                task: expected_task,
+            },
+            DeliveryState::Accepted { receipt, task },
+        ) => {
+            receipt == expected_receipt
+                && serde_json::to_value(task).ok() == serde_json::to_value(expected_task).ok()
+        }
+        _ => false,
+    }
+}
+
 fn valid_evidence_record(record: &DeliveryRecord) -> bool {
     if record.schema != DELIVERY_SCHEMA
         || !valid_text(&record.adapter_revision, 120)
@@ -1212,6 +1681,18 @@ fn valid_evidence_record(record: &DeliveryRecord) -> bool {
         || !valid_endpoint(&record.endpoint)
         || !valid_text(&record.agent_id, 120)
         || record.created_at_ms < 0
+        || record.reconciliation_resources.is_empty()
+        || record.reconciliation_resources.len() > 16
+        || record
+            .reconciliation_resources
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            != record.reconciliation_resources.len()
+        || record.reconciliation_resources.iter().any(|resource| {
+            resource.namespace() != record.parent.namespace()
+                || resource.tenant() != record.parent.tenant()
+        })
         || record.message.task_id.is_some()
         || record.message.validate().is_err()
         || record.envelope.payload.len() > MAX_SIGNED_PAYLOAD_BYTES
@@ -1219,6 +1700,7 @@ fn valid_evidence_record(record: &DeliveryRecord) -> bool {
         || !valid_signature(&record.envelope.signature)
         || !valid_signature(&record.invocation.signature)
         || delivery_id(&record.parent, &record.invocation).ok() != Some(record.delivery_id)
+        || !valid_reconciliations(record)
     {
         return false;
     }
@@ -1318,6 +1800,7 @@ fn project_evidence(
         delivery_id: record.delivery_id,
         parent_execution_id: record.parent.execution_id(),
         source: envelope.source,
+        reconciliation_resources: record.reconciliation_resources.clone(),
         agent_id: record.agent_id.clone(),
         message_id: invocation.message.message_id,
         trust_id: envelope.trust_id,
@@ -1329,6 +1812,19 @@ fn project_evidence(
         expired: now_ms >= invocation.expires_at_ms,
         exact_replay_idempotent: record.exact_replay_idempotent,
         status,
+        reconciliations: record
+            .reconciliations
+            .iter()
+            .map(|entry| FederationDeliveryFinalityEvidence {
+                stage: entry.correlation.stage,
+                accepted: entry.finality.accepted(),
+                source_id: entry.source_id.clone(),
+                qualification_ref: entry.qualification_ref.clone(),
+                verifier_revision: entry.verifier_revision.clone(),
+                proof_digest: entry.proof_digest.clone(),
+                acceptance: entry.acceptance.clone(),
+            })
+            .collect(),
     })
 }
 

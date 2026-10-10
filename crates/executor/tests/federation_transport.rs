@@ -1,17 +1,25 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
-};
 use std::time::Duration;
+use std::{
+    collections::BTreeMap,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
+    },
+};
 
 use acteon_core::{
     ExecutionContextReference, FederationImportReceipt, PrincipalIdentity, PrincipalKind,
     ResourceKind, ResourceRef, Task, TaskMessage, TaskRole,
 };
+use acteon_executor::federation_finality::{
+    FederationFinalityVerifier, FederationPeerFinality, HmacFederationFinalityVerifier,
+    sign_federation_finality_receipt,
+};
 use acteon_executor::federation_transport::{
     DurableFederationTransport, FEDERATION_DELIVERY_KIND, FederationDeliveryAbandonment,
-    FederationDeliveryEvidenceReader, FederationDeliveryEvidenceStatus, FederationDeliveryIntent,
-    FederationDeliveryReconciler, FederationDeliveryStatus, FederationImportDisposition,
+    FederationDeliveryEvidenceReader, FederationDeliveryEvidenceStatus,
+    FederationDeliveryFinalityReconciler, FederationDeliveryIntent, FederationDeliveryReconciler,
+    FederationDeliveryStatus, FederationFinalityAcceptance, FederationImportDisposition,
     FederationImportRequest, FederationInvokeDisposition, FederationInvokeRequest,
     FederationTransportAdapter, FederationTransportDependencies, FederationTransportError,
 };
@@ -182,6 +190,7 @@ struct Fixture {
     adapter: Arc<Adapter>,
     transport: DurableFederationTransport,
     parent: ExecutionContextReference,
+    reconciliation_resource: ResourceRef,
     envelope: SignedFederationEnvelope,
     invocation: SignedFederationInvocation,
     message: TaskMessage,
@@ -272,6 +281,13 @@ impl Fixture {
             adapter,
             transport,
             parent,
+            reconciliation_resource: ResourceRef::new(
+                ResourceKind::ExternalService,
+                "local",
+                "tenant",
+                "remote-triage",
+            )
+            .unwrap(),
             envelope,
             invocation,
             message,
@@ -281,12 +297,75 @@ impl Fixture {
     fn intent(&self) -> FederationDeliveryIntent<'_> {
         FederationDeliveryIntent {
             parent: &self.parent,
+            reconciliation_resources: std::slice::from_ref(&self.reconciliation_resource),
             endpoint: "https://remote.example/a2a",
             agent_id: "responder",
             envelope: &self.envelope,
             invocation: &self.invocation,
             message: &self.message,
         }
+    }
+
+    fn remote_receipt(&self) -> FederationImportReceipt {
+        let envelope = self.envelope.envelope().unwrap();
+        FederationImportReceipt {
+            namespace: envelope.agent_resource.namespace().into(),
+            tenant: envelope.agent_resource.tenant().into(),
+            import_id: envelope.id,
+            envelope_digest: self.envelope.digest().unwrap(),
+            trust_id: envelope.trust_id,
+            trust_revision: envelope.trust_revision,
+            issuer_domain: envelope.issuer_domain,
+            source: envelope.source,
+            target: envelope.target,
+            agent_resource: envelope.agent_resource,
+            binding_digest: envelope.binding_digest,
+            skill: envelope.skill,
+            root_id: "remote-root-1".into(),
+            expires_at_ms: envelope.expires_at_ms,
+            accepted_at_ms: 110,
+            execution_started: false,
+        }
+    }
+
+    fn remote_task(&self) -> Task {
+        let mut task = Task::new_at(
+            self.invocation.digest().unwrap()[..32].to_owned(),
+            "remote",
+            "tenant",
+            chrono::DateTime::from_timestamp_millis(110).unwrap(),
+        );
+        let mut message = self.message.clone();
+        message.task_id = Some(task.id.clone());
+        task.append_history_at(
+            message,
+            chrono::DateTime::from_timestamp_millis(110).unwrap(),
+        )
+        .unwrap();
+        task
+    }
+
+    fn finality_reconciler(&self, key: &[u8]) -> FederationDeliveryFinalityReconciler {
+        let verifier: Arc<dyn FederationFinalityVerifier> = Arc::new(
+            HmacFederationFinalityVerifier::new_trusted(
+                "remote-finality-journal",
+                "contracts/remote-finality-v1",
+                "remote-finality-v1",
+                BTreeMap::from([("finality-key-1".into(), key.to_vec())]),
+            )
+            .unwrap(),
+        );
+        let state: Arc<dyn StateStore> = self.state.clone();
+        FederationDeliveryFinalityReconciler::new_trusted(
+            state,
+            self.clock.clone(),
+            None,
+            BTreeMap::from([(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+                verifier,
+            )]),
+        )
+        .unwrap()
     }
 }
 
@@ -360,14 +439,12 @@ async fn reconciliation_evidence_is_sanitized_bounded_and_expiry_aware() {
         evidence[0].status,
         FederationDeliveryEvidenceStatus::Registered
     ));
-    assert!(
-        fixture
-            .transport
-            .list_evidence("local", "tenant", Some(registered.delivery_id), 1)
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    let exhausted = fixture
+        .transport
+        .list_evidence("local", "tenant", Some(registered.delivery_id), 1)
+        .await
+        .unwrap();
+    assert_eq!(exhausted.len(), 0);
 
     fixture
         .clock
@@ -606,6 +683,238 @@ async fn invoke_abandonment_retains_and_validates_import_lineage() {
             .get_evidence("local", "tenant", uncertain.delivery_id)
             .await,
         Err(FederationTransportError::Conflict)
+    ));
+}
+
+#[tokio::test]
+async fn qualified_import_finality_advances_without_reimport_and_keeps_audit_evidence() {
+    let fixture = Fixture::new(true);
+    fixture
+        .adapter
+        .import_mode
+        .store(UNCERTAIN, Ordering::SeqCst);
+    let uncertain = fixture.transport.submit(fixture.intent()).await.unwrap();
+    assert!(matches!(
+        uncertain.status,
+        FederationDeliveryStatus::ImportUncertain
+    ));
+    let key = [71_u8; 32];
+    let reconciler = fixture.finality_reconciler(&key);
+    let correlation = reconciler
+        .correlation(
+            "local",
+            "tenant",
+            uncertain.delivery_id,
+            fixture.parent.principal(),
+        )
+        .await
+        .unwrap();
+    let proof = sign_federation_finality_receipt(
+        correlation,
+        FederationPeerFinality::ImportAccepted {
+            receipt: Box::new(fixture.remote_receipt()),
+        },
+        "remote-finality-v1",
+        "finality-key-1",
+        &key,
+    )
+    .unwrap();
+    let acceptance = FederationFinalityAcceptance {
+        operator: PrincipalIdentity::new("incident-operator", PrincipalKind::Human).unwrap(),
+        authority: AuthorityStamp {
+            incarnation: "scope-incarnation".into(),
+            generation: 11,
+        },
+        accepted_at_ms: fixture.clock.now().timestamp_millis(),
+    };
+    let evidence = reconciler
+        .reconcile(
+            "local",
+            "tenant",
+            uncertain.delivery_id,
+            fixture.parent.principal(),
+            &proof,
+            acceptance.clone(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        evidence.status,
+        FederationDeliveryEvidenceStatus::Imported
+    ));
+    assert_eq!(evidence.reconciliations.len(), 1);
+    assert!(evidence.reconciliations[0].accepted);
+    assert_eq!(evidence.reconciliations[0].acceptance, acceptance);
+
+    // Exact proof replay repairs a lost local acknowledgment without changing
+    // peer state or issuing network traffic.
+    reconciler
+        .reconcile(
+            "local",
+            "tenant",
+            uncertain.delivery_id,
+            fixture.parent.principal(),
+            &proof,
+            FederationFinalityAcceptance {
+                operator: PrincipalIdentity::new("recovery-operator", PrincipalKind::Human)
+                    .unwrap(),
+                authority: AuthorityStamp {
+                    incarnation: "scope-incarnation".into(),
+                    generation: 12,
+                },
+                accepted_at_ms: fixture.clock.now().timestamp_millis(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(fixture.adapter.imports.load(Ordering::SeqCst), 1);
+
+    fixture.adapter.import_mode.store(ACCEPT, Ordering::SeqCst);
+    let delivered = fixture
+        .transport
+        .deliver_registered(fixture.intent())
+        .await
+        .unwrap();
+    assert!(matches!(
+        delivered.status,
+        FederationDeliveryStatus::Accepted { .. }
+    ));
+    assert_eq!(fixture.adapter.imports.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.adapter.invokes.load(Ordering::SeqCst), 1);
+    let retained =
+        FederationDeliveryEvidenceReader::new(fixture.state.clone(), fixture.clock.clone(), None)
+            .get_evidence("local", "tenant", uncertain.delivery_id)
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(retained.reconciliations.len(), 1);
+    assert_eq!(
+        retained.reconciliations[0].acceptance.operator.id(),
+        "incident-operator"
+    );
+}
+
+#[tokio::test]
+async fn qualified_invocation_finality_closes_ambiguity_without_a_second_send() {
+    let fixture = Fixture::new(true);
+    fixture
+        .adapter
+        .invoke_mode
+        .store(UNCERTAIN, Ordering::SeqCst);
+    let uncertain = fixture.transport.submit(fixture.intent()).await.unwrap();
+    assert!(matches!(
+        uncertain.status,
+        FederationDeliveryStatus::InvokeUncertain { .. }
+    ));
+    let key = [72_u8; 32];
+    let reconciler = fixture.finality_reconciler(&key);
+    let correlation = reconciler
+        .correlation(
+            "local",
+            "tenant",
+            uncertain.delivery_id,
+            fixture.parent.principal(),
+        )
+        .await
+        .unwrap();
+    let proof = sign_federation_finality_receipt(
+        correlation,
+        FederationPeerFinality::InvocationAccepted {
+            receipt: Box::new(fixture.remote_receipt()),
+            task: Box::new(fixture.remote_task()),
+        },
+        "remote-finality-v1",
+        "finality-key-1",
+        &key,
+    )
+    .unwrap();
+    let evidence = reconciler
+        .reconcile(
+            "local",
+            "tenant",
+            uncertain.delivery_id,
+            fixture.parent.principal(),
+            &proof,
+            FederationFinalityAcceptance {
+                operator: PrincipalIdentity::new("incident-operator", PrincipalKind::Human)
+                    .unwrap(),
+                authority: AuthorityStamp {
+                    incarnation: "scope-incarnation".into(),
+                    generation: 12,
+                },
+                accepted_at_ms: fixture.clock.now().timestamp_millis(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        evidence.status,
+        FederationDeliveryEvidenceStatus::Accepted
+    ));
+    assert_eq!(evidence.reconciliations.len(), 1);
+    assert_eq!(fixture.adapter.invokes.load(Ordering::SeqCst), 1);
+    let observed = fixture.transport.observe(fixture.intent()).await.unwrap();
+    assert!(matches!(
+        observed.status,
+        FederationDeliveryStatus::Accepted { .. }
+    ));
+    assert_eq!(fixture.adapter.invokes.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn unqualified_or_mismatched_finality_cannot_change_delivery_state() {
+    let fixture = Fixture::new(true);
+    fixture
+        .adapter
+        .import_mode
+        .store(UNCERTAIN, Ordering::SeqCst);
+    let uncertain = fixture.transport.submit(fixture.intent()).await.unwrap();
+    let trusted_key = [73_u8; 32];
+    let reconciler = fixture.finality_reconciler(&trusted_key);
+    let correlation = reconciler
+        .correlation(
+            "local",
+            "tenant",
+            uncertain.delivery_id,
+            fixture.parent.principal(),
+        )
+        .await
+        .unwrap();
+    let proof = sign_federation_finality_receipt(
+        correlation,
+        FederationPeerFinality::ImportRejected {
+            code: "peer_did_not_import".into(),
+        },
+        "remote-finality-v1",
+        "finality-key-1",
+        &[74_u8; 32],
+    )
+    .unwrap();
+    assert!(matches!(
+        reconciler
+            .reconcile(
+                "local",
+                "tenant",
+                uncertain.delivery_id,
+                fixture.parent.principal(),
+                &proof,
+                FederationFinalityAcceptance {
+                    operator: PrincipalIdentity::new("incident-operator", PrincipalKind::Human)
+                        .unwrap(),
+                    authority: AuthorityStamp {
+                        incarnation: "scope-incarnation".into(),
+                        generation: 13,
+                    },
+                    accepted_at_ms: fixture.clock.now().timestamp_millis(),
+                },
+            )
+            .await,
+        Err(FederationTransportError::Refused)
+    ));
+    let observed = fixture.transport.observe(fixture.intent()).await.unwrap();
+    assert!(matches!(
+        observed.status,
+        FederationDeliveryStatus::ImportUncertain
     ));
 }
 

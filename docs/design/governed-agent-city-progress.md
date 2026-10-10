@@ -2159,6 +2159,17 @@ The shared state-store conformance suite covers ordering, continuation and
 prefix isolation; backend integration jobs are responsible for executing it
 against their actual services.
 
-Qualified peer-finality evidence, production-backend page qualification, capability
-exchange, and two-server qualification across Redis, PostgreSQL and DynamoDB
-remain required for the federation release gate.
+Qualified peer-finality acceptance is now implemented as a host-installed,
+profile-epoch-bound verifier. It exposes payload-free correlation, accepts only
+opaque proof bytes under current independent reconciliation authority, preserves
+an append-only stage audit with its reviewed source and qualification contract,
+and settles source accounting only after the delivery journal commits. The
+delivery retains its local export resource, and every evidence read or mutation
+must fit the manager's principal and resource ceilings. Import acceptance can
+safely resume at invocation; terminal proof replay reverifies the original
+evidence and repairs a lost settlement acknowledgement without peer traffic.
+Rust, Python, TypeScript, Go and Java expose the typed operations.
+
+Production-backend page and peer-finality qualification, capability exchange,
+and two-server qualification across Redis, PostgreSQL and DynamoDB remain
+required for the federation release gate.

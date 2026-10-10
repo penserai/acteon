@@ -4,7 +4,7 @@ Java client for the Acteon action gateway.
 
 ## Complete platform API
 
-The generated operation catalog exposes all 225 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, federation admission, dispatch, and governed export lifecycle, and stream windows. Use an authenticated client and a configured, existing stage for this example:
+The generated operation catalog exposes all 227 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, federation admission, dispatch, and governed export lifecycle, and stream windows. Use an authenticated client and a configured, existing stage for this example:
 
 ```java
 var status = client.platformRequest(PlatformOperation.BUS_STAGES_STATUS,
@@ -34,7 +34,7 @@ authority without dispatching work. Invocation sends the exact signed intent
 and message, validates the returned task scope and ID, and does not retry
 automatically. Accepted source tasks use `exportFederatedMessage`,
 `observeFederatedExport`, and `replayFederatedExport`; the client returns a
-typed durable receipt while deployment configuration supplies all authority. Reconciliation managers use `federationDeliveryEvidence` for typed sanitized pages and `abandonFederationDelivery` to stop local recovery without claiming a peer outcome.
+typed durable receipt while deployment configuration supplies all authority. Reconciliation managers use `federationDeliveryEvidence` for typed sanitized pages and `abandonFederationDelivery` to stop local recovery without claiming a peer outcome. The peer-finality correlation and reconciliation helpers accept only scope, delivery identity, and opaque proof; deployment configuration owns the verifier and trust keys.
 
 Calls preserve HTTP refusals and do not retry automatically. Keep `change_id` stable when reconciling a lost response. A receipt records persisted authority; closure affects subsequent starts and does not promise cancellation of work already in flight.
 

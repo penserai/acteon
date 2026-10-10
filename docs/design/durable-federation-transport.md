@@ -208,11 +208,28 @@ destination servers through
 committed-response loss and source restart on every supported production state
 backend.
 
+## Qualified peer finality
+
+Qualified peer-finality evidence has a separate trusted boundary. A deployment
+source is pinned to one export profile epoch, which the runtime maps to its
+actual adapter binding digest. Operators can read an immutable, payload-free
+stage correlation and submit only opaque proof bytes. The local verifier
+authenticates and correlates the proof before the journal records its digest,
+reviewed source ID, qualification reference, verifier revision, operator and
+authority stamp. Registration also retains the local `federation.export`
+resource, so evidence reads, abandonment and finality acceptance must fit both
+the manager's principal and reconciliation-resource ceilings even after an
+epoch rotates out. Import acceptance may advance to invocation after a fresh
+source-authority check; terminal results settle the retained export reservation.
+Exact proof replay reauthorizes the current manager, reverifies the retained
+proof, preserves the original acceptance audit, repairs a lost local settlement
+acknowledgement and never sends to the peer.
+
 ## Remaining gates
 
 The remaining production gates are:
 
-1. qualified peer-finality evidence and production-backend page qualification;
+1. production-backend page and peer-finality qualification;
 2. capability/key-card negotiation and credential exchange;
 3. two-server restart and response-loss qualification across Redis,
    PostgreSQL, and DynamoDB, followed by external implementation conformance.

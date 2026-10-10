@@ -991,6 +991,10 @@ Cancel an active swarm execution run.
 | `GET` | `/v1/time-intervals` | List time intervals |
 | `GET` | `/v1/retention` | List retention policies |
 | `GET` | `/v1/providers/health` | Provider health metrics & circuit breakers |
+| `GET` | `/v1/governance/federation/deliveries` | Page through sanitized outbound federation evidence under independent reconciliation authority |
+| `POST` | `/v1/governance/federation/deliveries/{delivery_id}:abandon` | Stop local recovery while preserving an unknown peer outcome |
+| `GET` | `/v1/governance/federation/deliveries/{delivery_id}/correlation` | Read immutable correlation for the currently ambiguous peer stage |
+| `POST` | `/v1/governance/federation/deliveries/{delivery_id}:reconcile` | Accept proof through the deployment-installed peer-finality verifier without peer traffic |
 | `GET` | `/admin/circuit-breakers` | List circuit breakers |
 | `POST` | `/admin/circuit-breakers/{provider}/trip` | Force-open circuit breaker |
 | `POST` | `/admin/circuit-breakers/{provider}/reset` | Force-close circuit breaker |

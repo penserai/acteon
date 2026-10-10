@@ -15,7 +15,8 @@ pub use federation::{FederationAgentInvocation, FederationImportAdmission};
 pub use federation_export::{AgentFederationExportRequest, FederationExportRuntimeError};
 mod management;
 pub use management::{
-    FederationDeliveryEvidencePage, ManagementError, TrustedReconciliationInstallation,
+    FederationDeliveryEvidencePage, ManagementError, TrustedFederationFinalityInstallation,
+    TrustedReconciliationInstallation,
 };
 mod peer_transport;
 pub use peer_transport::{
@@ -101,6 +102,8 @@ struct InstalledScope {
     peer_mesh: InstalledPeerMesh,
     federation_exports: FederationExportMap,
     reconciliation: Option<acteon_executor::governed::reconciliation::ProviderReconciliationStore>,
+    federation_finality:
+        Option<acteon_executor::federation_transport::FederationDeliveryFinalityReconciler>,
 }
 type PeerTransportKey = (String, String, String);
 type AuthorizationVerifierKey = (String, u64);
@@ -112,6 +115,7 @@ struct InstalledFederationExport {
     declaration: crate::config::FederationExportConfig,
     profile_digest: String,
     exporters: BTreeMap<u64, Arc<acteon_executor::federation_export::GovernedFederationExporter>>,
+    binding_digests: BTreeMap<u64, String>,
 }
 struct InstalledPeerMesh {
     registry: Option<Arc<acteon_executor::delegation::ApprovedPeerRegistry>>,
@@ -279,6 +283,7 @@ impl ExecutionAuthorityRuntime {
                     peer_mesh,
                     federation_exports,
                     reconciliation: None,
+                    federation_finality: None,
                 },
             );
         }
@@ -464,6 +469,7 @@ impl ExecutionAuthorityRuntime {
                     .map_err(|_| "invalid federation export profile binding")?;
             let timeout = std::time::Duration::from_millis(declaration.timeout_ms);
             let mut exporters = BTreeMap::new();
+            let mut binding_digests = BTreeMap::new();
             for epoch in &declaration.epochs {
                 let signer_secret = federation_signer_secret(&epoch.signer_key_env)?;
                 let credential = acteon_crypto::SecretString::new(
@@ -473,6 +479,12 @@ impl ExecutionAuthorityRuntime {
                 );
                 let binding_digest =
                     federation_export_binding_digest(declaration, epoch, dependencies)?;
+                if binding_digests
+                    .insert(epoch.issuer_epoch, binding_digest.clone())
+                    .is_some()
+                {
+                    return Err("duplicate federation export binding epoch".into());
+                }
                 let adapter = Arc::new(
                     super::ActeonFederationHttpAdapter::new_trusted_with_builder(
                         &binding_digest,
@@ -531,6 +543,7 @@ impl ExecutionAuthorityRuntime {
                         declaration: declaration.clone(),
                         profile_digest,
                         exporters,
+                        binding_digests,
                     },
                 )
                 .is_some()
