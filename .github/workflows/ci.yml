@@ -37,7 +37,7 @@ jobs:
       - name: Install librdkafka build deps
         if: github.head_ref != 'codex/consolidated-build-deps'
         run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: ${{ matrix.rust }}
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
@@ -57,7 +57,7 @@ jobs:
       - name: Install librdkafka build deps
         if: github.head_ref != 'codex/consolidated-build-deps'
         run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: ${{ matrix.rust }}
           components: clippy
@@ -91,13 +91,13 @@ jobs:
       - name: Install librdkafka build deps
         if: github.head_ref != 'codex/consolidated-build-deps'
         run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: ${{ matrix.rust }}
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         if: github.head_ref != 'codex/consolidated-build-deps'
-      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # nextest
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # nextest
         with:
           tool: cargo-nextest
       - run: cargo nextest run --locked --workspace --lib --bins --tests
@@ -129,7 +129,7 @@ jobs:
     runs-on: ${{ github.head_ref == 'codex/consolidated-build-deps' && fromJSON('["self-hosted","macOS","X64"]') || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # stable
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # stable
         with:
           toolchain: stable
           components: rustfmt
@@ -152,7 +152,7 @@ jobs:
     runs-on: ${{ github.head_ref == 'codex/consolidated-build-deps' && fromJSON('["self-hosted","macOS","X64"]') || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
           cache: 'npm'
@@ -168,7 +168,7 @@ jobs:
       - run: cd ui && npm run test:smoke
       - name: Governed agent task browser contract
         run: cd ui && ACTEON_UI_TEST_PORT=5184 npx playwright test agent-services.spec.ts --project=chromium --project=mobile-chrome --reporter=line
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: browser-evidence
@@ -184,7 +184,7 @@ jobs:
       - name: Install librdkafka build deps
         if: github.head_ref != 'codex/consolidated-build-deps'
         run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # stable
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # stable
         with:
           toolchain: stable
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
@@ -243,7 +243,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install librdkafka build dependencies
         run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # stable
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # stable
         with:
           toolchain: stable
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
@@ -293,7 +293,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install native build dependencies
         run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # stable
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # stable
         with:
           toolchain: stable
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
@@ -347,7 +347,7 @@ jobs:
           /tmp/acteon-city-ci/bin/python examples/governed-city/run.py --server target/debug/acteon-server --output /tmp/governed-city-results.json
           /tmp/acteon-city-ci/bin/python examples/agent-workforce/run.py --server target/debug/acteon-server --output /tmp/agent-workforce-results.json
       - name: Save governed city runtime evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: governed-city-evidence
           path: |
@@ -497,7 +497,7 @@ jobs:
       - name: Scenario CLI contracts
         run: cargo test --locked -p acteon-simulation --features swarm,redis,postgres --test scenario_cli
       - run: scripts/ci/scenarios.sh memory redis postgres
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: scenario-evidence
