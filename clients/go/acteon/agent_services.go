@@ -1,11 +1,14 @@
 package acteon
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"math"
+	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
@@ -31,6 +34,14 @@ type AgentServiceReceipt struct {
 	Task          map[string]any `json:"task"`
 }
 
+// AgentServiceA2AFrame is one official StreamResponse. SourceContext is
+// host-owned admission provenance and never comes from Result.
+type AgentServiceA2AFrame struct {
+	Result        map[string]any
+	SourceContext string
+	Err           error
+}
+
 func agentSource(value string) error {
 	if len(value) == 0 || len(value) > 8192 || !agentSourcePattern.MatchString(value) {
 		return fmt.Errorf("agent service source context missing or malformed")
@@ -44,6 +55,13 @@ func agentSegment(value string) (string, error) {
 	return url.PathEscape(value), nil
 }
 func agentServiceBase(namespace, tenant, agent string) (string, error) {
+	base, err := agentServiceRPCBase(namespace, tenant, agent)
+	if err != nil {
+		return "", err
+	}
+	return base + "/v1", nil
+}
+func agentServiceRPCBase(namespace, tenant, agent string) (string, error) {
 	n, err := agentSegment(namespace)
 	if err != nil {
 		return "", err
@@ -56,7 +74,7 @@ func agentServiceBase(namespace, tenant, agent string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return "/a2a/" + n + "/" + t + "/agents/" + a + "/v1", nil
+	return "/a2a/" + n + "/" + t + "/agents/" + a, nil
 }
 
 type AgentServiceParent struct {
@@ -262,6 +280,174 @@ func (c *Client) AgentServiceSendMessageWithParent(ctx context.Context, namespac
 		return nil, err
 	}
 	return &AgentServiceReceipt{Namespace: namespace, Tenant: tenant, Agent: agent, TaskID: id, SourceContext: source, Task: task}, nil
+}
+
+// AgentServiceSendStreamingMessage invokes one exact governed agent through
+// official A2A SSE. Stream errors are delivered as a final frame with Err set.
+func (c *Client) AgentServiceSendStreamingMessage(ctx context.Context, namespace, tenant, agent string, message map[string]any) (<-chan *AgentServiceA2AFrame, error) {
+	return c.AgentServiceSendStreamingMessageWithParent(ctx, namespace, tenant, agent, message, nil)
+}
+
+// AgentServiceSendStreamingMessageWithParent carries existing verified
+// authority into an official A2A streaming invocation.
+func (c *Client) AgentServiceSendStreamingMessageWithParent(ctx context.Context, namespace, tenant, agent string, message map[string]any, parent *AgentServiceParent) (<-chan *AgentServiceA2AFrame, error) {
+	messageID, ok := message["messageId"].(string)
+	if !ok || messageID == "" {
+		return nil, fmt.Errorf("streaming message requires messageId")
+	}
+	path, err := agentServiceRPCBase(namespace, tenant, agent)
+	if err != nil {
+		return nil, err
+	}
+	requestID := "stream:" + messageID
+	headers := map[string]string{}
+	if parent != nil {
+		if err := agentSource(parent.ExecutionContext); err != nil || len(parent.Permits) == 0 {
+			return nil, fmt.Errorf("delegated agent service parent is malformed")
+		}
+		permits, err := json.Marshal(parent.Permits)
+		if err != nil {
+			return nil, err
+		}
+		headers[AgentExecutionContextHeader] = parent.ExecutionContext
+		headers["x-acteon-execution-permits"] = string(permits)
+	}
+	return c.openAgentServiceA2A(ctx, path, requestID, map[string]any{
+		"jsonrpc": "2.0", "id": requestID, "method": "SendStreamingMessage",
+		"params": map[string]any{"message": message},
+	}, headers, true)
+}
+
+// AgentServiceSubscribeTask subscribes to one retained governed Task through
+// official A2A SSE using its host-owned source receipt.
+func (c *Client) AgentServiceSubscribeTask(ctx context.Context, receipt *AgentServiceReceipt) (<-chan *AgentServiceA2AFrame, error) {
+	if receipt == nil {
+		return nil, fmt.Errorf("agent service receipt required")
+	}
+	if err := agentSource(receipt.SourceContext); err != nil {
+		return nil, err
+	}
+	path, err := agentServiceRPCBase(receipt.Namespace, receipt.Tenant, receipt.Agent)
+	if err != nil {
+		return nil, err
+	}
+	requestID := "subscribe:" + receipt.TaskID
+	return c.openAgentServiceA2A(ctx, path, requestID, map[string]any{
+		"jsonrpc": "2.0", "id": requestID, "method": "SubscribeToTask",
+		"params": map[string]any{"id": receipt.TaskID},
+	}, map[string]string{AgentSourceContextHeader: receipt.SourceContext}, false)
+}
+
+func (c *Client) openAgentServiceA2A(ctx context.Context, path, requestID string, envelope map[string]any, extraHeaders map[string]string, requireSource bool) (<-chan *AgentServiceA2AFrame, error) {
+	body, err := json.Marshal(envelope)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set(A2AVersionHeader, A2AProtocolVersion)
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+	for key, value := range extraHeaders {
+		req.Header.Set(key, value)
+	}
+	streamClient := *c.httpClient
+	streamClient.Timeout = 0
+	streamClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := streamClient.Do(req)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return nil, &HTTPError{Status: resp.StatusCode, Message: string(data)}
+	}
+	if resp.Header.Get(A2AVersionHeader) != A2AProtocolVersion {
+		resp.Body.Close()
+		return nil, fmt.Errorf("agent service A2A stream version missing or unsupported")
+	}
+	if !strings.HasPrefix(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
+		resp.Body.Close()
+		return nil, fmt.Errorf("agent service did not return an A2A SSE stream")
+	}
+	source := ""
+	if requireSource {
+		source = resp.Header.Get(AgentSourceContextHeader)
+		if err := agentSource(source); err != nil {
+			resp.Body.Close()
+			return nil, err
+		}
+	}
+	frames := make(chan *AgentServiceA2AFrame, 64)
+	go func() {
+		defer close(frames)
+		defer resp.Body.Close()
+		scanner := bufio.NewScanner(resp.Body)
+		const maxFrame = 2 << 20
+		scanner.Buffer(make([]byte, 0, 64*1024), maxFrame)
+		var data []string
+		size := 0
+		send := func(frame *AgentServiceA2AFrame) bool {
+			select {
+			case frames <- frame:
+				return true
+			case <-ctx.Done():
+				return false
+			}
+		}
+		flush := func() bool {
+			if len(data) == 0 {
+				return true
+			}
+			var rpc struct {
+				JSONRPC string         `json:"jsonrpc"`
+				ID      string         `json:"id"`
+				Result  map[string]any `json:"result"`
+				Error   map[string]any `json:"error"`
+			}
+			err := json.Unmarshal([]byte(strings.Join(data, "\n")), &rpc)
+			data, size = nil, 0
+			if err != nil || rpc.JSONRPC != "2.0" || rpc.ID != requestID {
+				return send(&AgentServiceA2AFrame{Err: fmt.Errorf("A2A SSE frame request identity mismatch")}) && false
+			}
+			if rpc.Error != nil {
+				return send(&AgentServiceA2AFrame{Err: fmt.Errorf("A2A stream error: %v", rpc.Error)}) && false
+			}
+			if rpc.Result == nil {
+				return send(&AgentServiceA2AFrame{Err: fmt.Errorf("A2A SSE frame has no object result")}) && false
+			}
+			return send(&AgentServiceA2AFrame{Result: rpc.Result, SourceContext: source})
+		}
+		for scanner.Scan() {
+			line := scanner.Text()
+			if line == "" {
+				if !flush() {
+					return
+				}
+			} else if strings.HasPrefix(line, "data:") {
+				value := strings.TrimPrefix(line, "data:")
+				value = strings.TrimPrefix(value, " ")
+				size += len(value)
+				if size > maxFrame {
+					send(&AgentServiceA2AFrame{Err: fmt.Errorf("A2A SSE frame exceeds 2 MiB")})
+					return
+				}
+				data = append(data, value)
+			}
+		}
+		if err := scanner.Err(); err != nil {
+			send(&AgentServiceA2AFrame{Err: &ConnectionError{Message: err.Error()}})
+			return
+		}
+		flush()
+	}()
+	return frames, nil
 }
 
 // AgentServiceSendPeer submits from an accepted source task to one configured

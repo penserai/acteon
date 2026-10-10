@@ -3,7 +3,13 @@
 use crate::{ActeonClient, Error, PermitReference, a2a::A2A_PROTOCOL_VERSION};
 use acteon_core::{ExecutionContextReference, Task, TaskMessage, TaskState};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use futures::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::{
+    pin::Pin,
+    task::{Context, Poll},
+};
 
 pub const AGENT_SOURCE_CONTEXT_HEADER: &str = "x-acteon-agent-source-context";
 pub const AGENT_EXECUTION_CONTEXT_HEADER: &str = "x-acteon-execution-context";
@@ -26,6 +32,36 @@ pub struct AgentServiceReceipt {
     agent: String,
     task_id: String,
     source_context: String,
+}
+
+/// Official A2A JSON-RPC responses received from one governed agent over SSE.
+/// The admission source context is host-owned and never appears in a frame.
+pub struct AgentServiceA2aStream {
+    inner: Pin<Box<dyn Stream<Item = Result<Value, Error>> + Send>>,
+    source_context: Option<String>,
+    request_id: Value,
+}
+
+impl AgentServiceA2aStream {
+    /// Opaque admission receipt returned by `SendStreamingMessage`.
+    #[must_use]
+    pub fn source_context(&self) -> Option<&str> {
+        self.source_context.as_deref()
+    }
+
+    /// JSON-RPC request id expected on every frame.
+    #[must_use]
+    pub fn request_id(&self) -> &Value {
+        &self.request_id
+    }
+}
+
+impl Stream for AgentServiceA2aStream {
+    type Item = Result<Value, Error>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.inner.as_mut().poll_next(cx)
+    }
 }
 /// Restriction acknowledgement; task status continues to reflect provider evidence.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -287,6 +323,120 @@ async fn response_task(response: reqwest::Response) -> Result<Task, Error> {
         .json()
         .await
         .map_err(|e| Error::Deserialization(e.to_string()))
+}
+
+fn parse_agent_a2a_result(data: &str, request_id: &Value) -> Result<Value, Error> {
+    let response: Value = serde_json::from_str(data)
+        .map_err(|error| Error::Deserialization(format!("invalid A2A SSE frame: {error}")))?;
+    if response.get("jsonrpc").and_then(Value::as_str) != Some("2.0")
+        || response.get("id") != Some(request_id)
+    {
+        return Err(Error::Deserialization(
+            "A2A SSE frame request identity mismatch".into(),
+        ));
+    }
+    if let Some(error) = response.get("error") {
+        return Err(Error::Api {
+            code: error
+                .get("code")
+                .map_or_else(|| "A2A".into(), Value::to_string),
+            message: error
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("A2A stream error")
+                .into(),
+            retryable: false,
+        });
+    }
+    response
+        .get("result")
+        .filter(|result| result.is_object())
+        .cloned()
+        .ok_or_else(|| Error::Deserialization("A2A SSE frame has no object result".into()))
+}
+
+async fn agent_a2a_stream_response(
+    response: reqwest::Response,
+    request_id: Value,
+    require_source: bool,
+) -> Result<AgentServiceA2aStream, Error> {
+    if !response.status().is_success() {
+        return Err(Error::Http {
+            status: response.status().as_u16(),
+            message: response
+                .text()
+                .await
+                .map_err(|error| Error::Connection(error.to_string()))?,
+        });
+    }
+    if response
+        .headers()
+        .get("a2a-version")
+        .and_then(|value| value.to_str().ok())
+        != Some(A2A_PROTOCOL_VERSION)
+    {
+        return Err(Error::Deserialization(
+            "agent service A2A stream version missing or unsupported".into(),
+        ));
+    }
+    let source_context = if require_source {
+        response
+            .headers()
+            .get(AGENT_SOURCE_CONTEXT_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+    } else {
+        None
+    };
+    if require_source && !source_context.as_deref().is_some_and(valid_source) {
+        return Err(Error::Deserialization(
+            "agent service admission source context missing or malformed".into(),
+        ));
+    }
+    if !response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.to_ascii_lowercase().starts_with("text/event-stream"))
+    {
+        return Err(Error::Deserialization(
+            response
+                .text()
+                .await
+                .unwrap_or_else(|_| "agent service did not return an A2A SSE stream".into()),
+        ));
+    }
+    let expected = request_id.clone();
+    let parsed = crate::stream::sse_envelope_stream(response).filter_map(move |envelope| {
+        let expected = expected.clone();
+        async move {
+            match envelope {
+                Ok(crate::stream::SseEnvelope::Frame(frame)) => {
+                    if frame.data.len() > 2 * 1024 * 1024 {
+                        Some(Err(Error::Deserialization(
+                            "A2A SSE frame exceeds 2 MiB".into(),
+                        )))
+                    } else {
+                        Some(parse_agent_a2a_result(&frame.data, &expected))
+                    }
+                }
+                Ok(crate::stream::SseEnvelope::KeepAlive) => None,
+                Err(error) => Some(Err(error)),
+            }
+        }
+    });
+    let inner = parsed.scan(false, |terminated, item| {
+        let output = if *terminated { None } else { Some(item) };
+        if output.as_ref().is_some_and(Result::is_err) {
+            *terminated = true;
+        }
+        futures::future::ready(output)
+    });
+    Ok(AgentServiceA2aStream {
+        inner: Box::pin(inner),
+        source_context,
+        request_id,
+    })
 }
 async fn peer_response(
     response: reqwest::Response,
@@ -936,6 +1086,120 @@ impl ActeonClient {
             .await
     }
 
+    /// Invoke one exact governed agent through official A2A streaming.
+    /// The returned source context is host provenance and must be retained
+    /// outside prompts if the caller will later observe or continue the Task.
+    pub async fn agent_service_send_streaming_message(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        agent: &str,
+        message: &TaskMessage,
+    ) -> Result<AgentServiceA2aStream, Error> {
+        self.agent_service_send_streaming_message_inner(namespace, tenant, agent, message, None)
+            .await
+    }
+
+    /// Stream a bounded descendant invocation under a verified parent context.
+    pub async fn agent_service_send_streaming_message_with_parent(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        agent: &str,
+        message: &TaskMessage,
+        parent: AgentServiceParent<'_>,
+    ) -> Result<AgentServiceA2aStream, Error> {
+        self.agent_service_send_streaming_message_inner(
+            namespace,
+            tenant,
+            agent,
+            message,
+            Some(parent),
+        )
+        .await
+    }
+
+    async fn agent_service_send_streaming_message_inner(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        agent: &str,
+        message: &TaskMessage,
+        parent: Option<AgentServiceParent<'_>>,
+    ) -> Result<AgentServiceA2aStream, Error> {
+        let path = format!(
+            "/a2a/{}/{}/agents/{}",
+            segment(namespace)?,
+            segment(tenant)?,
+            segment(agent)?
+        );
+        let request_id = serde_json::json!(format!("stream:{}", message.message_id));
+        let mut request = self
+            .add_auth(self.stream_client.post(format!("{}{path}", self.base_url)))
+            .header("a2a-version", A2A_PROTOCOL_VERSION)
+            .header(reqwest::header::ACCEPT, "text/event-stream");
+        if let Some(parent) = parent {
+            if parent.permits.is_empty() {
+                return Err(Error::Configuration(
+                    "delegated agent service invocation requires permits".into(),
+                ));
+            }
+            let context = serde_json::to_vec(parent.execution_context)
+                .map_err(|error| Error::Configuration(error.to_string()))?;
+            request = request
+                .header(
+                    AGENT_EXECUTION_CONTEXT_HEADER,
+                    URL_SAFE_NO_PAD.encode(context),
+                )
+                .header(
+                    EXECUTION_PERMITS_HEADER,
+                    serde_json::to_string(parent.permits)
+                        .map_err(|error| Error::Configuration(error.to_string()))?,
+                );
+        }
+        let response = request
+            .json(&serde_json::json!({
+                "jsonrpc":"2.0", "id":request_id,
+                "method":"SendStreamingMessage", "params":{"message":message}
+            }))
+            .send()
+            .await
+            .map_err(|error| Error::Connection(error.to_string()))?;
+        agent_a2a_stream_response(response, request_id, true).await
+    }
+
+    /// Subscribe to one retained governed Task through official A2A SSE.
+    pub async fn agent_service_subscribe_task(
+        &self,
+        receipt: &AgentServiceReceipt,
+    ) -> Result<AgentServiceA2aStream, Error> {
+        if !valid_source(&receipt.source_context) {
+            return Err(Error::Configuration(
+                "invalid agent service source context".into(),
+            ));
+        }
+        let path = format!(
+            "/a2a/{}/{}/agents/{}",
+            segment(&receipt.namespace)?,
+            segment(&receipt.tenant)?,
+            segment(&receipt.agent)?
+        );
+        let request_id = serde_json::json!(format!("subscribe:{}", receipt.task_id));
+        let response = self
+            .add_auth(self.stream_client.post(format!("{}{path}", self.base_url)))
+            .header("a2a-version", A2A_PROTOCOL_VERSION)
+            .header(reqwest::header::ACCEPT, "text/event-stream")
+            .header(AGENT_SOURCE_CONTEXT_HEADER, &receipt.source_context)
+            .json(&serde_json::json!({
+                "jsonrpc":"2.0", "id":request_id,
+                "method":"SubscribeToTask", "params":{"id":receipt.task_id}
+            }))
+            .send()
+            .await
+            .map_err(|error| Error::Connection(error.to_string()))?;
+        agent_a2a_stream_response(response, request_id, false).await
+    }
+
     async fn agent_service_send_message_inner(
         &self,
         namespace: &str,
@@ -1226,9 +1490,47 @@ mod tests {
                         .contains_key(AGENT_EXECUTION_CONTEXT_HEADER);
                     let has_execution_permits =
                         request.headers().contains_key(EXECUTION_PERMITS_HEADER);
+                    let accept = request
+                        .headers()
+                        .get("accept")
+                        .and_then(|value| value.to_str().ok())
+                        .map(str::to_owned);
                     let raw = to_bytes(request.into_body(), 2 * 1024 * 1024)
                         .await
                         .unwrap();
+                    if path == "/a2a/prod/acme/agents/notifier" {
+                        let body: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+                        let method = body["method"].as_str().unwrap();
+                        assert_eq!(accept.as_deref(), Some("text/event-stream"));
+                        assert!(matches!(method, "SendStreamingMessage" | "SubscribeToTask"));
+                        if method == "SubscribeToTask" {
+                            assert_eq!(
+                                source.as_deref(),
+                                wire["jobs"][0]["source_context"].as_str()
+                            );
+                            assert_eq!(body["params"]["id"], "job-1");
+                        }
+                        let data = serde_json::json!({
+                            "jsonrpc":"2.0", "id":body["id"],
+                            "result":{"task":{"id":"job-1","status":{"state":"TASK_STATE_SUBMITTED"}}}
+                        });
+                        let mut response = (
+                            [("content-type", "text/event-stream"), ("a2a-version", "1.0")],
+                            format!(": ping\n\ndata: {data}\n\n"),
+                        )
+                            .into_response();
+                        if method == "SendStreamingMessage" {
+                            response.headers_mut().insert(
+                                AGENT_SOURCE_CONTEXT_HEADER,
+                                wire["jobs"][0]["source_context"]
+                                    .as_str()
+                                    .unwrap()
+                                    .parse()
+                                    .unwrap(),
+                            );
+                        }
+                        return response;
+                    }
                     if !path.contains("/peers/")
                         && (path.ends_with("/authorization:request")
                             || path.ends_with("/authorization:resolve"))
@@ -1358,6 +1660,56 @@ mod tests {
                 server,
             }
         }
+    }
+    #[tokio::test]
+    async fn official_agent_streams_preserve_request_identity_and_source_out_of_band() {
+        let fixture = Fixture::new().await;
+        let message = TaskMessage::text("m1", acteon_core::TaskRole::User, "one");
+        let mut sent = fixture
+            .client
+            .agent_service_send_streaming_message("prod", "acme", "notifier", &message)
+            .await
+            .unwrap();
+        assert!(sent.source_context().is_some_and(valid_source));
+        assert_eq!(sent.next().await.unwrap().unwrap()["task"]["id"], "job-1");
+
+        let receipt = fixture
+            .client
+            .agent_service_send_message("prod", "acme", "notifier", &message)
+            .await
+            .unwrap();
+        let mut subscribed = fixture
+            .client
+            .agent_service_subscribe_task(&receipt)
+            .await
+            .unwrap();
+        assert!(subscribed.source_context().is_none());
+        assert_eq!(
+            subscribed.next().await.unwrap().unwrap()["task"]["id"],
+            "job-1"
+        );
+    }
+
+    #[test]
+    fn official_agent_stream_frames_require_exact_identity_and_object_results() {
+        let request_id = serde_json::json!("stream:m1");
+        let result = parse_agent_a2a_result(
+            r#"{"jsonrpc":"2.0","id":"stream:m1","result":{"task":{"id":"job-1"}}}"#,
+            &request_id,
+        )
+        .unwrap();
+        assert_eq!(result["task"]["id"], "job-1");
+        assert!(
+            parse_agent_a2a_result(r#"{"jsonrpc":"2.0","id":"other","result":{}}"#, &request_id,)
+                .is_err()
+        );
+        assert!(
+            parse_agent_a2a_result(
+                r#"{"jsonrpc":"2.0","id":"stream:m1","result":"unsafe"}"#,
+                &request_id,
+            )
+            .is_err()
+        );
     }
     #[tokio::test]
     async fn peer_tool_sends_only_message_and_validates_durable_receipt() {

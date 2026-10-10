@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import unicodedata
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, TypeGuard, cast
 from uuid import UUID
@@ -45,6 +46,14 @@ class AgentServiceReceipt:
     task_id: str
     source_context: str = field(repr=False)
     task: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class AgentServiceA2aFrame:
+    """One official StreamResponse plus out-of-band admission provenance."""
+
+    result: dict[str, Any]
+    source_context: str | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -527,8 +536,76 @@ def _base(namespace: str, tenant: str, agent: str) -> str:
     return f"/a2a/{_segment(namespace)}/{_segment(tenant)}/agents/{_segment(agent)}/v1"
 
 
+def _rpc_base(namespace: str, tenant: str, agent: str) -> str:
+    return f"/a2a/{_segment(namespace)}/{_segment(tenant)}/agents/{_segment(agent)}"
+
+
+def _a2a_result(data: str, request_id: str, source: str | None) -> AgentServiceA2aFrame:
+    try:
+        value = json.loads(data)
+    except (json.JSONDecodeError, ValueError) as decode_error:
+        raise ActeonError(f"invalid A2A SSE frame: {decode_error}") from decode_error
+    if (
+        not isinstance(value, dict)
+        or value.get("jsonrpc") != "2.0"
+        or value.get("id") != request_id
+    ):
+        raise ActeonError("A2A SSE frame request identity mismatch")
+    if isinstance(value.get("error"), dict):
+        error = value["error"]
+        raise ActeonError(
+            f"A2A error {error.get('code', 'A2A')}: {error.get('message', 'stream failed')}"
+        )
+    result = value.get("result")
+    if not isinstance(result, dict):
+        raise ActeonError("A2A SSE frame has no object result")
+    return AgentServiceA2aFrame(result, source)
+
+
+def _sse_data(lines: Iterator[str]) -> Iterator[str]:
+    data: list[str] = []
+    size = 0
+    for line in lines:
+        if line == "":
+            if data:
+                yield "\n".join(data)
+            data = []
+            size = 0
+        elif line.startswith("data:"):
+            value = line[len("data:") :].lstrip()
+            size += len(value.encode("utf-8"))
+            if size > 2 * 1024 * 1024:
+                raise ActeonError("A2A SSE frame exceeds 2 MiB")
+            data.append(value)
+    if data:
+        yield "\n".join(data)
+
+
+async def _async_sse_data(lines: AsyncIterator[str]) -> AsyncIterator[str]:
+    data: list[str] = []
+    size = 0
+    async for line in lines:
+        if line == "":
+            if data:
+                yield "\n".join(data)
+            data = []
+            size = 0
+        elif line.startswith("data:"):
+            value = line[len("data:") :].lstrip()
+            size += len(value.encode("utf-8"))
+            if size > 2 * 1024 * 1024:
+                raise ActeonError("A2A SSE frame exceeds 2 MiB")
+            data.append(value)
+    if data:
+        yield "\n".join(data)
+
+
 class _AgentServicesMixin:
     if TYPE_CHECKING:
+        base_url: str
+        _client: httpx.Client
+
+        def _headers(self) -> dict[str, str]: ...
 
         def _request(
             self,
@@ -557,6 +634,85 @@ class _AgentServicesMixin:
             extra_headers=_parent_headers(parent),
         )
         return _receipt(response, namespace, tenant, agent)
+
+    def agent_service_send_streaming_message(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        message: dict[str, Any],
+        *,
+        parent: AgentServiceParent | None = None,
+    ) -> Iterator[AgentServiceA2aFrame]:
+        """Invoke one exact governed agent using official A2A SSE."""
+        message_id = message.get("messageId")
+        if not isinstance(message_id, str) or not message_id:
+            raise ValueError("streaming message requires messageId")
+        request_id = f"stream:{message_id}"
+        headers = {**self._headers(), **_parent_headers(parent), "Accept": "text/event-stream"}
+        headers.pop("Content-Type", None)
+        envelope = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "SendStreamingMessage",
+            "params": {"message": message},
+        }
+        with self._client.stream(
+            "POST",
+            f"{self.base_url}{_rpc_base(namespace, tenant, agent)}",
+            json=envelope,
+            headers=headers,
+            follow_redirects=False,
+            timeout=None,
+        ) as response:
+            if response.status_code != 200:
+                response.read()
+                raise HttpError(response.status_code, response.text or "agent A2A stream failed")
+            if response.headers.get("a2a-version") != A2A_PROTOCOL_VERSION:
+                raise ActeonError("agent service A2A stream version missing or unsupported")
+            if not response.headers.get("content-type", "").lower().startswith("text/event-stream"):
+                response.read()
+                raise ActeonError(response.text or "agent service did not return an A2A SSE stream")
+            source = _source(response.headers.get(AGENT_SOURCE_CONTEXT_HEADER))
+            for data in _sse_data(response.iter_lines()):
+                yield _a2a_result(data, request_id, source)
+
+    def agent_service_subscribe_task(
+        self, receipt: AgentServiceReceipt
+    ) -> Iterator[AgentServiceA2aFrame]:
+        """Subscribe to one retained governed Task using official A2A SSE."""
+        request_id = f"subscribe:{receipt.task_id}"
+        headers = {
+            **self._headers(),
+            **_A2A_HEADERS,
+            "Accept": "text/event-stream",
+            AGENT_SOURCE_CONTEXT_HEADER: _source(receipt.source_context),
+        }
+        headers.pop("Content-Type", None)
+        envelope = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "SubscribeToTask",
+            "params": {"id": receipt.task_id},
+        }
+        with self._client.stream(
+            "POST",
+            f"{self.base_url}{_rpc_base(receipt.namespace, receipt.tenant, receipt.agent)}",
+            json=envelope,
+            headers=headers,
+            follow_redirects=False,
+            timeout=None,
+        ) as response:
+            if response.status_code != 200:
+                response.read()
+                raise HttpError(response.status_code, response.text or "agent A2A subscribe failed")
+            if response.headers.get("a2a-version") != A2A_PROTOCOL_VERSION:
+                raise ActeonError("agent service A2A stream version missing or unsupported")
+            if not response.headers.get("content-type", "").lower().startswith("text/event-stream"):
+                response.read()
+                raise ActeonError(response.text or "agent service did not return an A2A SSE stream")
+            for data in _sse_data(response.iter_lines()):
+                yield _a2a_result(data, request_id, None)
 
     def agent_service_send_peer(
         self,
@@ -817,6 +973,10 @@ class _AgentServicesMixin:
 
 class _AsyncAgentServicesMixin:
     if TYPE_CHECKING:
+        base_url: str
+        _client: httpx.AsyncClient
+
+        def _headers(self) -> dict[str, str]: ...
 
         async def _request(
             self,
@@ -845,6 +1005,85 @@ class _AsyncAgentServicesMixin:
             extra_headers=_parent_headers(parent),
         )
         return _receipt(response, namespace, tenant, agent)
+
+    async def agent_service_send_streaming_message(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        message: dict[str, Any],
+        *,
+        parent: AgentServiceParent | None = None,
+    ) -> AsyncIterator[AgentServiceA2aFrame]:
+        """Invoke one exact governed agent using official A2A SSE."""
+        message_id = message.get("messageId")
+        if not isinstance(message_id, str) or not message_id:
+            raise ValueError("streaming message requires messageId")
+        request_id = f"stream:{message_id}"
+        headers = {**self._headers(), **_parent_headers(parent), "Accept": "text/event-stream"}
+        headers.pop("Content-Type", None)
+        envelope = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "SendStreamingMessage",
+            "params": {"message": message},
+        }
+        async with self._client.stream(
+            "POST",
+            f"{self.base_url}{_rpc_base(namespace, tenant, agent)}",
+            json=envelope,
+            headers=headers,
+            follow_redirects=False,
+            timeout=None,
+        ) as response:
+            if response.status_code != 200:
+                await response.aread()
+                raise HttpError(response.status_code, response.text or "agent A2A stream failed")
+            if response.headers.get("a2a-version") != A2A_PROTOCOL_VERSION:
+                raise ActeonError("agent service A2A stream version missing or unsupported")
+            if not response.headers.get("content-type", "").lower().startswith("text/event-stream"):
+                await response.aread()
+                raise ActeonError(response.text or "agent service did not return an A2A SSE stream")
+            source = _source(response.headers.get(AGENT_SOURCE_CONTEXT_HEADER))
+            async for data in _async_sse_data(response.aiter_lines()):
+                yield _a2a_result(data, request_id, source)
+
+    async def agent_service_subscribe_task(
+        self, receipt: AgentServiceReceipt
+    ) -> AsyncIterator[AgentServiceA2aFrame]:
+        """Subscribe to one retained governed Task using official A2A SSE."""
+        request_id = f"subscribe:{receipt.task_id}"
+        headers = {
+            **self._headers(),
+            **_A2A_HEADERS,
+            "Accept": "text/event-stream",
+            AGENT_SOURCE_CONTEXT_HEADER: _source(receipt.source_context),
+        }
+        headers.pop("Content-Type", None)
+        envelope = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "SubscribeToTask",
+            "params": {"id": receipt.task_id},
+        }
+        async with self._client.stream(
+            "POST",
+            f"{self.base_url}{_rpc_base(receipt.namespace, receipt.tenant, receipt.agent)}",
+            json=envelope,
+            headers=headers,
+            follow_redirects=False,
+            timeout=None,
+        ) as response:
+            if response.status_code != 200:
+                await response.aread()
+                raise HttpError(response.status_code, response.text or "agent A2A subscribe failed")
+            if response.headers.get("a2a-version") != A2A_PROTOCOL_VERSION:
+                raise ActeonError("agent service A2A stream version missing or unsupported")
+            if not response.headers.get("content-type", "").lower().startswith("text/event-stream"):
+                await response.aread()
+                raise ActeonError(response.text or "agent service did not return an A2A SSE stream")
+            async for data in _async_sse_data(response.aiter_lines()):
+                yield _a2a_result(data, request_id, None)
 
     async def agent_service_send_peer(
         self,

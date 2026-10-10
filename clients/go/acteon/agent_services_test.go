@@ -3,6 +3,8 @@ package acteon
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +13,67 @@ import (
 	"sync/atomic"
 	"testing"
 )
+
+type agentRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (roundTrip agentRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return roundTrip(request)
+}
+
+func TestOfficialAgentServiceStreamsPreserveIdentityAndSource(t *testing.T) {
+	receipt := &AgentServiceReceipt{Namespace: "prod", Tenant: "acme", Agent: "notifier", TaskID: "job-1", SourceContext: "host-only"}
+	var calls atomic.Int32
+	transport := agentRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		if r.URL.Path != "/a2a/prod/acme/agents/notifier" || r.Header.Get("Accept") != "text/event-stream" || r.Header.Get(A2AVersionHeader) != A2AProtocolVersion {
+			t.Errorf("unexpected stream request: %s %#v", r.URL.Path, r.Header)
+		}
+		var request struct {
+			JSONRPC string         `json:"jsonrpc"`
+			ID      string         `json:"id"`
+			Method  string         `json:"method"`
+			Params  map[string]any `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+		}
+		if request.Method == "SubscribeToTask" {
+			if request.Params["id"] != "job-1" || r.Header.Get(AgentSourceContextHeader) != "host-only" {
+				t.Error("retained source identity missing")
+			}
+		} else if request.Method != "SendStreamingMessage" || r.Header.Get(AgentSourceContextHeader) != "" {
+			t.Error("invalid streaming admission")
+		}
+		headers := make(http.Header)
+		headers.Set(A2AVersionHeader, A2AProtocolVersion)
+		headers.Set("Content-Type", "text/event-stream")
+		if request.Method == "SendStreamingMessage" {
+			headers.Set(AgentSourceContextHeader, "host-only")
+		}
+		body := fmt.Sprintf(": keepalive\n\ndata: {\"jsonrpc\":\"2.0\",\"id\":%q,\"result\":{\"task\":{\"id\":\"job-1\"}}}\n\n", request.ID)
+		return &http.Response{StatusCode: http.StatusOK, Header: headers, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+	})
+	client := NewClient("http://acteon", WithAPIKey("caller-key"), WithHTTPClient(&http.Client{Transport: transport}))
+	sent, err := client.AgentServiceSendStreamingMessage(context.Background(), "prod", "acme", "notifier", map[string]any{"messageId": "m1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame := <-sent
+	if frame.Err != nil || frame.SourceContext != "host-only" || frame.Result["task"].(map[string]any)["id"] != "job-1" {
+		t.Fatalf("unexpected send frame: %#v", frame)
+	}
+	subscribed, err := client.AgentServiceSubscribeTask(context.Background(), receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame = <-subscribed
+	if frame.Err != nil || frame.SourceContext != "" || frame.Result["task"].(map[string]any)["id"] != "job-1" {
+		t.Fatalf("unexpected subscribe frame: %#v", frame)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("calls = %d", calls.Load())
+	}
+}
 
 func TestAgentServiceAuthorizationCarriesOnlyOpaqueHandles(t *testing.T) {
 	task := map[string]any{"id": "job-1", "namespace": "prod", "tenant": "acme", "status": map[string]any{"state": "auth_required"}}

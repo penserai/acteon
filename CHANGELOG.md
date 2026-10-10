@@ -15,6 +15,11 @@
   emitted update, returns the admission receipt out of band, and strips private
   execution bindings from recovery snapshots.
 
+- Add native official A2A streaming invocations to the Rust, Python,
+  TypeScript, Go, and Java SDKs. Each client validates protocol version, media
+  type, JSON-RPC identity, source provenance, and bounded SSE frames while
+  keeping long-lived streams outside finite-call timeouts.
+
 - Derive recurring-action claim leases from the polling interval with two full
   intervals plus a recovery margin. Document pre-dispatch re-arming so delayed
   consumers cannot cause the same due occurrence to be dispatched again.

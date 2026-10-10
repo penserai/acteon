@@ -1,5 +1,5 @@
 import { parseRegistryProjection, parseRegistryMutationReceipt, type RegistryProjection, type GovernanceRegistryMutationRequest, type GovernanceRegistryProjectionView, type GovernanceRegistryMutationReceipt } from "./governance.js";
-import { AGENT_EXECUTION_CONTEXT_HEADER, AGENT_SOURCE_CONTEXT_HEADER, agentExecutionContext, agentPeerAuthorizationReceipt, agentPeerCancelReceipt, agentPeerContinuationReceipt, agentPeerOptions, agentPeerReceipt, agentProviderAbort, agentSource, agentTask, agentServiceBase, assertUnboundPeerResponse, type AgentPeerAuthorizationReceipt, type AgentPeerCancelReceipt, type AgentPeerContinuationReceipt, type AgentPeerSelectionOption, type AgentPeerSendReceipt, type AgentServiceReceipt, type AgentServiceStopReceipt } from "./agent_services.js";
+import { AGENT_EXECUTION_CONTEXT_HEADER, AGENT_SOURCE_CONTEXT_HEADER, agentExecutionContext, agentPeerAuthorizationReceipt, agentPeerCancelReceipt, agentPeerContinuationReceipt, agentPeerOptions, agentPeerReceipt, agentProviderAbort, agentSource, agentTask, agentServiceBase, agentServiceRpcBase, assertUnboundPeerResponse, type AgentPeerAuthorizationReceipt, type AgentPeerCancelReceipt, type AgentPeerContinuationReceipt, type AgentPeerSelectionOption, type AgentPeerSendReceipt, type AgentServiceA2aFrame, type AgentServiceReceipt, type AgentServiceStopReceipt } from "./agent_services.js";
 import { parseProviderHistoryReceipt, type ProviderHistoryReceipt, type ProviderReconciliationCorrelation, type ProviderReconciliationRequest } from "./governance.js";
 import { parseProviderExecutionHistory, type ProviderExecutionHistory, type ProviderExecutionHistoryWire } from "./governance.js";
 import type { WorkforceScopeView, WorkforceChangeRequest } from "./workforce.js";
@@ -406,6 +406,31 @@ export class ActeonClient {
     if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent service response version missing or unsupported");
     const task = agentTask(await response.json(), namespace, tenant);
     return Object.freeze({ namespace, tenant, agent, taskId: task.id as string, sourceContext: agentSource(response.headers.get(AGENT_SOURCE_CONTEXT_HEADER)), task });
+  }
+  /** Invoke one exact governed agent through official A2A streaming. */
+  async *agentServiceSendStreamingMessage(namespace: string, tenant: string, agent: string, message: Record<string, unknown>, parent?: AgentServiceParentOptions): AsyncGenerator<AgentServiceA2aFrame, void, undefined> {
+    if (typeof message.messageId !== "string" || message.messageId.length === 0) throw new Error("streaming message requires messageId");
+    const parentHeaders = parent === undefined ? undefined : permitHeaders(parent.permits);
+    if (parent !== undefined && (!parentHeaders || parent.permits.length === 0)) throw new Error("delegated agent service invocation requires permits");
+    const requestId = `stream:${message.messageId}`;
+    yield* this.connectAgentA2aSse(
+      agentServiceRpcBase(namespace, tenant, agent),
+      { jsonrpc: "2.0", id: requestId, method: "SendStreamingMessage", params: { message } },
+      requestId,
+      { ...(parentHeaders ?? {}), ...(parent ? { [AGENT_EXECUTION_CONTEXT_HEADER]: agentExecutionContext(parent.executionContext) } : {}) },
+      true,
+    );
+  }
+  /** Subscribe to one retained governed Task through official A2A streaming. */
+  async *agentServiceSubscribeTask(receipt: AgentServiceReceipt): AsyncGenerator<AgentServiceA2aFrame, void, undefined> {
+    const requestId = `subscribe:${receipt.taskId}`;
+    yield* this.connectAgentA2aSse(
+      agentServiceRpcBase(receipt.namespace, receipt.tenant, receipt.agent),
+      { jsonrpc: "2.0", id: requestId, method: "SubscribeToTask", params: { id: receipt.taskId } },
+      requestId,
+      { [AGENT_SOURCE_CONTEXT_HEADER]: agentSource(receipt.sourceContext) },
+      false,
+    );
   }
   /** List current safe registry options. Descriptions are untrusted data. */
   async agentServiceDiscoverPeers(source: AgentServiceReceipt, skill: string): Promise<readonly AgentPeerSelectionOption[]> {
@@ -2656,6 +2681,89 @@ export class ActeonClient {
         }
       }
     } finally {
+      reader.releaseLock();
+    }
+  }
+
+  /** POST one official JSON-RPC request and validate every SSE response frame. */
+  private async *connectAgentA2aSse(
+    path: string,
+    envelope: Record<string, unknown>,
+    requestId: string,
+    extraHeaders: Record<string, string>,
+    requireSource: boolean,
+  ): AsyncGenerator<AgentServiceA2aFrame, void, undefined> {
+    const headers = { ...this.headers(), ...A2A_HEADERS, ...extraHeaders, Accept: "text/event-stream" };
+    const fetchOptions: RequestInit & { dispatcher?: unknown } = {
+      method: "POST",
+      headers,
+      redirect: "error",
+      body: JSON.stringify(envelope),
+    };
+    if (this.dispatcher) fetchOptions.dispatcher = this.dispatcher;
+    let response: Response;
+    try {
+      response = await fetch(`${this.baseUrl}${path}`, fetchOptions);
+    } catch (error) {
+      throw new ConnectionError(error instanceof Error ? error.message : "A2A stream connection failed");
+    }
+    if (!response.ok) throw new HttpError(response.status, await response.text());
+    if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent service A2A stream version missing or unsupported");
+    if (!response.headers.get("content-type")?.toLowerCase().startsWith("text/event-stream")) throw new Error("agent service did not return an A2A SSE stream");
+    if (!response.body) throw new ConnectionError("A2A SSE response body is null");
+    const sourceContext = requireSource ? agentSource(response.headers.get(AGENT_SOURCE_CONTEXT_HEADER)) : undefined;
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let data: string[] = [];
+    let dataBytes = 0;
+    const parse = (): AgentServiceA2aFrame => {
+      let value: unknown;
+      try { value = JSON.parse(data.join("\n")); } catch { throw new Error("invalid A2A SSE frame"); }
+      if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid A2A SSE frame");
+      const rpc = value as Record<string, unknown>;
+      if (rpc.jsonrpc !== "2.0" || rpc.id !== requestId) throw new Error("A2A SSE frame request identity mismatch");
+      if (rpc.error && typeof rpc.error === "object") {
+        const error = rpc.error as Record<string, unknown>;
+        throw new Error(`A2A error ${String(error.code ?? "A2A")}: ${String(error.message ?? "stream failed")}`);
+      }
+      if (!rpc.result || typeof rpc.result !== "object" || Array.isArray(rpc.result)) throw new Error("A2A SSE frame has no object result");
+      return Object.freeze({ result: rpc.result as Record<string, unknown>, ...(sourceContext ? { sourceContext } : {}) });
+    };
+    const consume = (raw: string): AgentServiceA2aFrame | undefined => {
+      const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+      if (line === "") {
+        if (data.length === 0) return undefined;
+        const frame = parse();
+        data = [];
+        dataBytes = 0;
+        return frame;
+      }
+      if (line.startsWith("data:")) {
+        const value = line.slice(5).replace(/^ /, "");
+        dataBytes += new TextEncoder().encode(value).byteLength;
+        if (dataBytes > 2 * 1024 * 1024) throw new Error("A2A SSE frame exceeds 2 MiB");
+        data.push(value);
+      }
+      return undefined;
+    };
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        buffer += decoder.decode(value, { stream: !done });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          const frame = consume(line);
+          if (frame) yield frame;
+        }
+        if (buffer.length > 2 * 1024 * 1024) throw new Error("A2A SSE line exceeds 2 MiB");
+        if (done) break;
+      }
+      if (buffer) consume(buffer);
+      if (data.length > 0) yield parse();
+    } finally {
+      await reader.cancel().catch(() => undefined);
       reader.releaseLock();
     }
   }

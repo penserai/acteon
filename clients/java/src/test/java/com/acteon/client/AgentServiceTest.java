@@ -15,6 +15,49 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 class AgentServiceTest {
+    @Test void officialStreamsPreserveRequestIdentityAndSourceOutOfBand() throws Exception {
+        var mapper = JsonMapper.build();
+        var task = mapper.readTree("{\"id\":\"job-1\",\"namespace\":\"prod\",\"tenant\":\"acme\"}");
+        var receipt = new AgentServiceReceipt("prod","acme","notifier","job-1","host-only",task);
+        var calls = new AtomicInteger(); var failure = new AtomicReference<Throwable>();
+        var server = HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
+        server.createContext("/",exchange -> {
+            try {
+                calls.incrementAndGet();
+                assertEquals("/a2a/prod/acme/agents/notifier", exchange.getRequestURI().getPath());
+                assertEquals("text/event-stream", exchange.getRequestHeaders().getFirst("Accept"));
+                var request = mapper.readTree(exchange.getRequestBody());
+                if (request.path("method").asText().equals("SubscribeToTask")) {
+                    assertEquals("job-1",request.path("params").path("id").asText());
+                    assertEquals("host-only",exchange.getRequestHeaders().getFirst(AgentServiceReceipt.SOURCE_CONTEXT_HEADER));
+                } else {
+                    assertEquals("SendStreamingMessage",request.path("method").asText());
+                    assertNull(exchange.getRequestHeaders().getFirst(AgentServiceReceipt.SOURCE_CONTEXT_HEADER));
+                }
+                exchange.getResponseHeaders().set(A2A.VERSION_HEADER,"1.0");
+                exchange.getResponseHeaders().set("Content-Type","text/event-stream");
+                if (request.path("method").asText().equals("SendStreamingMessage"))
+                    exchange.getResponseHeaders().set(AgentServiceReceipt.SOURCE_CONTEXT_HEADER,"host-only");
+                var frame = mapper.createObjectNode();
+                frame.put("jsonrpc","2.0"); frame.set("id",request.path("id"));
+                frame.set("result",mapper.readTree("{\"task\":{\"id\":\"job-1\"}}"));
+                var body = (": keepalive\n\ndata: "+mapper.writeValueAsString(frame)+"\n\n").getBytes(StandardCharsets.UTF_8);
+                exchange.sendResponseHeaders(200,body.length); exchange.getResponseBody().write(body); exchange.close();
+            } catch(Throwable error) { failure.set(error); exchange.close(); }
+        }); server.start();
+        try(var client = new ActeonClient("http://127.0.0.1:"+server.getAddress().getPort())) {
+            try(var stream = client.agentServiceSendStreamingMessage("prod","acme","notifier",Map.of("messageId","m1"))) {
+                assertEquals("host-only",stream.sourceContext());
+                assertEquals("job-1",stream.next().path("task").path("id").asText());
+            }
+            try(var stream = client.agentServiceSubscribeTask(receipt)) {
+                assertNull(stream.sourceContext());
+                assertEquals("job-1",stream.next().path("task").path("id").asText());
+            }
+            assertEquals(2,calls.get()); if(failure.get()!=null) throw new AssertionError(failure.get());
+        } finally { server.stop(0); }
+    }
+
     @Test void peerToolSendsNoAuthorityFieldsAndValidatesReceipt() throws Exception {
         var mapper = JsonMapper.build();
         var task = mapper.readTree("{\"id\":\"job-1\",\"namespace\":\"prod\",\"tenant\":\"acme\"}");

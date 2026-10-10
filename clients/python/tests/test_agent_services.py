@@ -10,6 +10,7 @@ import pytest
 from acteon_client import (
     ActeonClient,
     AgentPeerSendReceipt,
+    AgentServiceA2aFrame,
     AgentServiceParent,
     AgentServiceReceipt,
     AsyncActeonClient,
@@ -25,6 +26,77 @@ from acteon_client.errors import ActeonError, HttpError
 FIXTURE = json.loads(
     (Path(__file__).parents[2] / "contract-fixtures/agent-services.json").read_text()
 )
+
+
+def _stream_response(request: httpx.Request) -> httpx.Response:
+    body = json.loads(request.content)
+    assert request.url.path == "/a2a/prod/acme/agents/notifier"
+    assert request.headers["accept"] == "text/event-stream"
+    assert request.headers["a2a-version"] == "1.0"
+    if body["method"] == "SubscribeToTask":
+        assert body["params"] == {"id": "job-1"}
+        assert request.headers[AGENT_SOURCE_CONTEXT_HEADER] == FIXTURE["jobs"][0]["source_context"]
+        source_headers = {}
+    else:
+        assert body["method"] == "SendStreamingMessage"
+        assert body["params"]["message"]["messageId"] == "m1"
+        assert AGENT_SOURCE_CONTEXT_HEADER not in request.headers
+        source_headers = {AGENT_SOURCE_CONTEXT_HEADER: FIXTURE["jobs"][0]["source_context"]}
+    frame = {
+        "jsonrpc": "2.0",
+        "id": body["id"],
+        "result": {"task": {"id": "job-1", "status": {"state": "TASK_STATE_SUBMITTED"}}},
+    }
+    return httpx.Response(
+        200,
+        text=f": keepalive\n\ndata: {json.dumps(frame)}\n\n",
+        headers={"a2a-version": "1.0", "content-type": "text/event-stream", **source_headers},
+    )
+
+
+def test_official_agent_streams_preserve_identity_and_source_out_of_band():
+    job = FIXTURE["jobs"][0]
+    receipt = AgentServiceReceipt(
+        "prod", "acme", "notifier", "job-1", job["source_context"], job["task"]
+    )
+    client = ActeonClient("http://acteon", api_key="caller-key")
+    client._client = httpx.Client(transport=httpx.MockTransport(_stream_response))
+    try:
+        sent = list(
+            client.agent_service_send_streaming_message(
+                "prod", "acme", "notifier", {"messageId": "m1"}
+            )
+        )
+        subscribed = list(client.agent_service_subscribe_task(receipt))
+        assert sent == [AgentServiceA2aFrame(sent[0].result, job["source_context"])]
+        assert sent[0].result["task"]["id"] == "job-1"
+        assert job["source_context"] not in repr(sent[0])
+        assert subscribed[0].result["task"]["id"] == "job-1"
+        assert subscribed[0].source_context is None
+    finally:
+        client.close()
+
+
+@pytest.mark.asyncio
+async def test_async_official_agent_streams_use_the_same_contract():
+    job = FIXTURE["jobs"][0]
+    receipt = AgentServiceReceipt(
+        "prod", "acme", "notifier", "job-1", job["source_context"], job["task"]
+    )
+    client = AsyncActeonClient("http://acteon", api_key="caller-key")
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(_stream_response))
+    try:
+        sent = [
+            frame
+            async for frame in client.agent_service_send_streaming_message(
+                "prod", "acme", "notifier", {"messageId": "m1"}
+            )
+        ]
+        subscribed = [frame async for frame in client.agent_service_subscribe_task(receipt)]
+        assert sent[0].source_context == job["source_context"]
+        assert subscribed[0].result["task"]["id"] == "job-1"
+    finally:
+        await client.close()
 
 
 def test_parent_context_and_permits_are_request_local():

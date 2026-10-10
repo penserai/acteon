@@ -13,6 +13,11 @@ export interface AgentServiceReceipt {
   readonly sourceContext: string;
   readonly task: Record<string, unknown>;
 }
+/** One official A2A StreamResponse plus host-owned admission provenance. */
+export interface AgentServiceA2aFrame {
+  readonly result: Record<string, unknown>;
+  readonly sourceContext?: string;
+}
 export type AgentPeerSendStatus =
   | Readonly<{ state: "uncertain" }>
   | Readonly<{ state: "accepted"; task: Record<string, unknown> }>
@@ -163,11 +168,14 @@ export function agentTask(value: unknown, namespace: string, tenant: string, id?
   return task;
 }
 export function agentServiceBase(namespace: string, tenant: string, agent: string): string {
+  return agentServiceRpcBase(namespace, tenant, agent) + "/v1";
+}
+export function agentServiceRpcBase(namespace: string, tenant: string, agent: string): string {
   const segment = (value: string) => {
     if (!value || value === "." || value === "..") throw new Error("invalid agent service path segment");
     return encodeURIComponent(value);
   };
-  return `/a2a/${segment(namespace)}/${segment(tenant)}/agents/${segment(agent)}/v1`;
+  return `/a2a/${segment(namespace)}/${segment(tenant)}/agents/${segment(agent)}`;
 }
 
 export type AgentServiceProviderAbort =

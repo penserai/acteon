@@ -272,6 +272,25 @@ let receipt = client.agent_service_send_message("prod", "acme", "notifier", &mes
 let task = client.agent_service_get_task(&receipt).await?;
 ```
 
+Invoke the official exact-agent streaming RPC and retain its admission source
+outside protocol data. Use the retained receipt to subscribe after a restart:
+
+```rust
+use futures_util::StreamExt;
+
+let mut stream = client.agent_service_send_streaming_message(
+    "prod", "acme", "notifier", &message).await?;
+let source_context = stream.source_context().map(str::to_owned);
+while let Some(result) = stream.next().await { println!("{}", result?); }
+
+let mut updates = client.agent_service_subscribe_task(&receipt).await?;
+while let Some(result) = updates.next().await { println!("{}", result?); }
+```
+
+The default client uses a separate no-total-timeout transport for streams. If
+you supply a custom finite client, also set `ActeonClientBuilder::stream_client`
+to a client with redirects and retries disabled and no total request timeout.
+
 From an accepted source task, invoke, observe, and cancel a configured peer
 without putting authority fields in model data:
 

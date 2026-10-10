@@ -92,6 +92,30 @@ public class ActeonClient implements AutoCloseable {
             return new AgentServiceReceipt(namespace, tenant, agent, task.path("id").asText(), source, task);
         } catch (IOException e) { throw new ActeonException("invalid agent service response", e); }
     }
+    /** Invoke one exact governed agent through official A2A streaming. */
+    public AgentServiceA2aStream agentServiceSendStreamingMessage(String namespace, String tenant, String agent, Map<String, Object> message) throws ActeonException {
+        return agentServiceSendStreamingMessage(namespace, tenant, agent, message, null);
+    }
+    /** Invoke one exact governed child through official A2A streaming. */
+    public AgentServiceA2aStream agentServiceSendStreamingMessage(String namespace, String tenant, String agent, Map<String, Object> message, AgentServiceParent parent) throws ActeonException {
+        Object messageId = message.get("messageId");
+        if (!(messageId instanceof String id) || id.isEmpty())
+            throw new IllegalArgumentException("streaming message requires messageId");
+        String requestId = "stream:" + id;
+        return agentServiceA2aStreamRequest(
+            AgentServiceReceipt.rpcBase(namespace, tenant, agent), requestId,
+            Map.of("jsonrpc", "2.0", "id", requestId, "method", "SendStreamingMessage",
+                "params", Map.of("message", message)), null, parent, true);
+    }
+    /** Subscribe to one retained governed Task through official A2A streaming. */
+    public AgentServiceA2aStream agentServiceSubscribeTask(AgentServiceReceipt receipt) throws ActeonException {
+        String requestId = "subscribe:" + receipt.taskId();
+        return agentServiceA2aStreamRequest(
+            AgentServiceReceipt.rpcBase(receipt.namespace(), receipt.tenant(), receipt.agent()),
+            requestId, Map.of("jsonrpc", "2.0", "id", requestId, "method", "SubscribeToTask",
+                "params", Map.of("id", receipt.taskId())),
+            AgentServiceReceipt.source(receipt.sourceContext()), null, false);
+    }
     /** List current source-authorized registry options. Descriptions are untrusted data. */
     public List<AgentPeerSelectionOption> agentServiceDiscoverPeers(AgentServiceReceipt source, String skill) throws ActeonException {
         if (source == null) throw new IllegalArgumentException("agent service source receipt required");
@@ -250,6 +274,57 @@ public class ActeonClient implements AutoCloseable {
             return response;
         } catch (IOException e) { throw new ConnectionException(e.getMessage(), e); }
         catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new ConnectionException("Request interrupted", e); }
+    }
+
+    private AgentServiceA2aStream agentServiceA2aStreamRequest(
+            String path, String requestId, Object body, String source,
+            AgentServiceParent parent, boolean requireSource) throws ActeonException {
+        if (httpClient.followRedirects() != HttpClient.Redirect.NEVER)
+            throw new ActeonException("agent services require redirects disabled");
+        try {
+            var builder = requestBuilder(path)
+                .header(A2A.VERSION_HEADER, A2A.PROTOCOL_VERSION)
+                .header("Accept", "text/event-stream");
+            if (source != null) builder.header(AgentServiceReceipt.SOURCE_CONTEXT_HEADER, source);
+            if (parent != null) {
+                String context = parent.executionContext();
+                if (context == null || context.isEmpty() || context.length() > 8192
+                        || !context.matches("[A-Za-z0-9_-]+"))
+                    throw new IllegalArgumentException("parent execution context is malformed");
+                if (parent.permits().isEmpty()) throw new IllegalArgumentException("parent permits are required");
+                builder.header("x-acteon-execution-context", context);
+                builder.header("x-acteon-execution-permits", objectMapper.writeValueAsString(parent.permits()));
+            }
+            var request = builder.POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body))).build();
+            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
+            if (response.statusCode() != 200) {
+                try (var stream = response.body()) {
+                    throw new HttpException(response.statusCode(), new String(stream.readAllBytes(), StandardCharsets.UTF_8));
+                }
+            }
+            if (!response.headers().firstValue(A2A.VERSION_HEADER).orElse("").equals(A2A.PROTOCOL_VERSION)) {
+                response.body().close();
+                throw new ActeonException("agent service A2A stream version missing or unsupported");
+            }
+            if (!response.headers().firstValue("Content-Type").orElse("").toLowerCase().startsWith("text/event-stream")) {
+                response.body().close();
+                throw new ActeonException("agent service did not return an A2A SSE stream");
+            }
+            String returnedSource;
+            try {
+                returnedSource = requireSource
+                    ? AgentServiceReceipt.source(response.headers().firstValue(AgentServiceReceipt.SOURCE_CONTEXT_HEADER).orElse(null))
+                    : null;
+            } catch (RuntimeException error) {
+                response.body().close();
+                throw error;
+            }
+            return new AgentServiceA2aStream(response.body(), requestId, returnedSource);
+        } catch (IOException e) { throw new ConnectionException(e.getMessage(), e); }
+        catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
     }
 
     private final String baseUrl;

@@ -453,6 +453,22 @@ if err != nil { return err }
 task, err := client.AgentServiceGetTask(ctx, receipt)
 ```
 
+Invoke and subscribe through the official exact-agent A2A stream. Cancel the
+context when the consumer stops early:
+
+```go
+frames, err := client.AgentServiceSendStreamingMessage(
+    ctx, "prod", "acme", "notifier", message)
+if err != nil { return err }
+for frame := range frames {
+    if frame.Err != nil { return frame.Err }
+    saveHostProvenance(frame.SourceContext)
+    render(frame.Result)
+}
+
+updates, err := client.AgentServiceSubscribeTask(ctx, receipt)
+```
+
 Use the same retained source receipt for governed peer lifecycle operations:
 
 ```go

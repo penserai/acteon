@@ -409,6 +409,20 @@ const receipt = await client.agentServiceSendMessage(
 const task = await client.agentServiceGetTask(receipt);
 ```
 
+Invoke and subscribe through the official exact-agent A2A stream:
+
+```typescript
+for await (const frame of client.agentServiceSendStreamingMessage(
+  "prod", "acme", "notifier", message,
+)) {
+  saveHostProvenance(frame.sourceContext);
+  render(frame.result);
+}
+for await (const frame of client.agentServiceSubscribeTask(receipt)) {
+  render(frame.result);
+}
+```
+
 Use the same retained source receipt for governed peer lifecycle operations:
 
 ```typescript

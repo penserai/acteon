@@ -5,6 +5,54 @@ import { AGENT_EXECUTION_CONTEXT_HEADER, AGENT_SOURCE_CONTEXT_HEADER, agentPeerC
 import { HttpError } from "./errors.js";
 const fixture = JSON.parse(readFileSync(new URL("../../contract-fixtures/agent-services.json", import.meta.url), "utf8"));
 afterEach(() => vi.unstubAllGlobals());
+it("streams official exact-agent A2A frames with host-owned provenance", async () => {
+  const source = { namespace: "prod", tenant: "acme", agent: "notifier", taskId: "job-1", sourceContext: fixture.jobs[0].source_context, task: fixture.jobs[0].task };
+  const fetch = vi.fn(async (input: string, init: RequestInit) => {
+    expect(input).toBe("http://acteon/a2a/prod/acme/agents/notifier");
+    expect(init.redirect).toBe("error");
+    const headers = init.headers as Record<string, string>;
+    expect(headers.Accept).toBe("text/event-stream");
+    expect(headers["A2A-Version"]).toBe("1.0");
+    const body = JSON.parse(init.body as string);
+    if (body.method === "SubscribeToTask") {
+      expect(body.params).toEqual({ id: "job-1" });
+      expect(headers[AGENT_SOURCE_CONTEXT_HEADER]).toBe(source.sourceContext);
+    } else {
+      expect(body.method).toBe("SendStreamingMessage");
+      expect(body.params.message.messageId).toBe("m1");
+      expect(headers[AGENT_SOURCE_CONTEXT_HEADER]).toBeUndefined();
+    }
+    const frame = { jsonrpc: "2.0", id: body.id, result: { task: { id: "job-1" } } };
+    return new Response(`: keepalive\n\ndata: ${JSON.stringify(frame)}\n\n`, {
+      headers: {
+        "a2a-version": "1.0",
+        "content-type": "text/event-stream",
+        ...(body.method === "SendStreamingMessage" ? { [AGENT_SOURCE_CONTEXT_HEADER]: source.sourceContext } : {}),
+      },
+    });
+  });
+  vi.stubGlobal("fetch", fetch);
+  const client = new ActeonClient("http://acteon", { apiKey: "caller-key" });
+  const sent = [];
+  for await (const frame of client.agentServiceSendStreamingMessage("prod", "acme", "notifier", { messageId: "m1" })) sent.push(frame);
+  const subscribed = [];
+  for await (const frame of client.agentServiceSubscribeTask(source)) subscribed.push(frame);
+  expect(sent).toEqual([{ result: { task: { id: "job-1" } }, sourceContext: source.sourceContext }]);
+  expect(subscribed).toEqual([{ result: { task: { id: "job-1" } } }]);
+  expect(fetch).toHaveBeenCalledTimes(2);
+});
+
+it("rejects a mismatched A2A stream request identity", async () => {
+  vi.stubGlobal("fetch", async () => new Response(
+    'data: {"jsonrpc":"2.0","id":"foreign","result":{}}\n\n',
+    { headers: { "a2a-version": "1.0", "content-type": "text/event-stream", [AGENT_SOURCE_CONTEXT_HEADER]: fixture.jobs[0].source_context } },
+  ));
+  const consume = async () => {
+    for await (const _frame of new ActeonClient("http://acteon").agentServiceSendStreamingMessage("prod", "acme", "notifier", { messageId: "m1" })) { /* consume */ }
+  };
+  await expect(consume()).rejects.toThrow("request identity mismatch");
+});
+
 it("carries an opaque governed parent with explicit permits", async () => {
   const fetch = vi.fn(async (_input: string, init: RequestInit) => {
     const headers = init.headers as Record<string, string>;

@@ -238,15 +238,27 @@ Individual governed services expose `POST
 service and the requester's original private authentication; a registry card
 alone does not install a runtime or authorize an invocation.
 
-All five SDKs expose native acceptance and observation helpers:
+All five SDKs expose native finite and streaming helpers:
 
-| SDK | Accept message | Accept governed child | Observe retained receipt |
-| --- | --- | --- | --- |
-| Rust | `agent_service_send_message` | `agent_service_send_message_with_parent` | `agent_service_get_task` |
-| Python, sync/async | `agent_service_send_message` | `parent=AgentServiceParent(...)` | `agent_service_get_task` |
-| TypeScript | `agentServiceSendMessage` | `parent: AgentServiceParentOptions` | `agentServiceGetTask` |
-| Go | `AgentServiceSendMessage` | `AgentServiceSendMessageWithParent` | `AgentServiceGetTask` |
-| Java | `agentServiceSendMessage` | overload with `AgentServiceParent` | `agentServiceGetTask` |
+| SDK | Accept message | Stream exact agent | Subscribe retained Task | Observe receipt |
+| --- | --- | --- | --- | --- |
+| Rust | `agent_service_send_message` | `agent_service_send_streaming_message` | `agent_service_subscribe_task` | `agent_service_get_task` |
+| Python, sync/async | `agent_service_send_message` | `agent_service_send_streaming_message` | `agent_service_subscribe_task` | `agent_service_get_task` |
+| TypeScript | `agentServiceSendMessage` | `agentServiceSendStreamingMessage` | `agentServiceSubscribeTask` | `agentServiceGetTask` |
+| Go | `AgentServiceSendMessage` | `AgentServiceSendStreamingMessage` | `AgentServiceSubscribeTask` | `AgentServiceGetTask` |
+| Java | `agentServiceSendMessage` | `agentServiceSendStreamingMessage` | `agentServiceSubscribeTask` | `agentServiceGetTask` |
+
+The streaming helpers call the official exact-agent JSON-RPC endpoint and yield
+the `result` object from each validated `StreamResponse`. They require protocol
+version 1.0, `text/event-stream`, and the original JSON-RPC request identity on
+every frame. The streaming-send return value also keeps the admission source
+context outside the protocol result. Subscribe helpers send the retained source
+receipt from host state. Default streaming transports have no total request
+deadline; cancellation or closing the iterator releases the connection.
+
+Governed-child streaming uses `agent_service_send_streaming_message_with_parent`
+in Rust and Go, and the existing optional `parent` argument or overload in
+Python, TypeScript, and Java.
 
 The returned receipt retains the `x-acteon-agent-source-context` response header
 separately from task data and binds it to the original namespace, tenant, agent,

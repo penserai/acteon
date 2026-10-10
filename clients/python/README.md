@@ -523,6 +523,19 @@ receipt = client.agent_service_send_message(
 task = client.agent_service_get_task(receipt)
 ```
 
+The same client makes real official A2A streaming calls:
+
+```python
+for frame in client.agent_service_send_streaming_message(
+    "prod", "acme", "notifier", message
+):
+    save_host_provenance(frame.source_context)
+    render(frame.result)
+
+for frame in client.agent_service_subscribe_task(receipt):
+    render(frame.result)
+```
+
 Use the same retained source receipt for governed peer lifecycle operations:
 
 ```python
@@ -563,8 +576,9 @@ The server recovers the sealed parent, verifies the authenticated caller, and
 rechecks current permit, registry, grant, and budget state. Keep the context in
 host state and never source either header from model output.
 
-The async client exposes the same methods with `await`. Persist the frozen
-`AgentServiceReceipt` in host state when work must survive a client restart.
+The async client exposes finite methods with `await`; its streaming methods are
+async iterators used with `async for`. Persist the frozen `AgentServiceReceipt`
+in host state when work must survive a client restart.
 
 Acceptance does not prove that provider execution has completed. Read the task's
 status and artifacts through the receipt. Its source context comes only from the

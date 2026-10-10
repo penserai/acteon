@@ -152,6 +152,31 @@ also returns `UnsupportedOperation`. Streaming calls must be single JSON-RPC
 requests with an `id`, because one SSE response cannot multiplex a JSON-RPC
 batch or notification.
 
+Every native SDK invokes these methods directly. For example, TypeScript keeps
+the source receipt beside each validated result instead of inserting it into
+the Task or message:
+
+```typescript
+for await (const frame of client.agentServiceSendStreamingMessage(
+  "prod", "acme", "notifier", message,
+)) {
+  saveHostProvenance(frame.sourceContext);
+  render(frame.result);
+}
+
+for await (const frame of client.agentServiceSubscribeTask(receipt)) {
+  render(frame.result);
+}
+```
+
+Rust, Python, Go, and Java expose the corresponding
+`agent_service_send_streaming_message`, `AgentServiceSendStreamingMessage`, or
+`agentServiceSendStreamingMessage` methods and retained-Task subscription
+methods. Each implementation validates the response media type, A2A version,
+request ID, and a 2 MiB frame bound before exposing a result. Default stream
+transports do not impose the finite-call timeout on a healthy long-lived
+subscription.
+
 ### Acteon task and governed-peer REST routes
 
 These resource-shaped routes support Acteon SDKs and governed peer operations.

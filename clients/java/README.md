@@ -454,6 +454,20 @@ var receipt = client.agentServiceSendMessage("prod", "acme", "notifier",
 var task = client.agentServiceGetTask(receipt);
 ```
 
+Invoke and subscribe through the official exact-agent A2A stream. Closing the
+iterator closes the response body:
+
+```java
+try (var stream = client.agentServiceSendStreamingMessage(
+        "prod", "acme", "notifier", message)) {
+    saveHostProvenance(stream.sourceContext());
+    while (stream.hasNext()) render(stream.next());
+}
+try (var updates = client.agentServiceSubscribeTask(receipt)) {
+    while (updates.hasNext()) render(updates.next());
+}
+```
+
 Use the same retained source receipt for governed peer lifecycle operations:
 
 ```java
