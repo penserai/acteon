@@ -85,7 +85,8 @@ public final class Governance {
         @JsonProperty("issuer_epoch") long issuerEpoch,
         @JsonProperty("expires_at_ms") long expiresAtMs,
         @JsonProperty("protocol_revision") String protocolRevision,
-        @JsonProperty("authentication_scheme") String authenticationScheme) {}
+        @JsonProperty("authentication_scheme") String authenticationScheme,
+        @JsonProperty("credential_revision") String credentialRevision) {}
     public record FederationDeliveryFinalityEvidence(
         String stage, boolean accepted,
         @JsonProperty("source_id") String sourceId,

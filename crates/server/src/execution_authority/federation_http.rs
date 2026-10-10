@@ -1,6 +1,9 @@
 //! Guarded HTTP delivery for exact signed Acteon federation requests.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use acteon_core::{FederationImportReceipt, Task};
 use acteon_crypto::{ExposeSecret, SecretString};
@@ -16,9 +19,15 @@ use acteon_governance::federation::{
 use acteon_http::{GuardedClient, OutboundPolicy};
 use acteon_time::Clock;
 use async_trait::async_trait;
+use serde::Deserialize;
+use tokio::sync::Mutex;
 
 const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_ERROR_BYTES: usize = 2_048;
+const MAX_TOKEN_RESPONSE_BYTES: usize = 64 * 1024;
+const MAX_ACCESS_TOKEN_BYTES: usize = 16 * 1024;
+const MAX_CLIENT_SECRET_BYTES: usize = 4 * 1024;
+const MAX_ACCESS_TOKEN_LIFETIME_SECONDS: u64 = 86_400;
 
 /// Host-installed adapter for another Acteon domain. The bearer credential and
 /// outbound policy are process configuration and never enter the durable
@@ -53,7 +62,7 @@ pub struct StaticFederationCredentialProvider {
 
 impl StaticFederationCredentialProvider {
     pub fn new(credential: SecretString) -> Result<Self, FederationCredentialError> {
-        if credential.expose_secret().is_empty() {
+        if !valid_bearer_token(credential.expose_secret()) {
             return Err(FederationCredentialError::Refused);
         }
         Ok(Self { credential })
@@ -73,6 +82,222 @@ impl FederationCredentialProvider for StaticFederationCredentialProvider {
     async fn credential(&self) -> Result<SecretString, FederationCredentialError> {
         Ok(self.credential.clone())
     }
+}
+
+struct CachedFederationCredential {
+    token: SecretString,
+    refresh_at: Instant,
+}
+
+/// Host-owned OAuth 2 client-credentials exchange. Tokens exist only in
+/// process memory, concurrent refreshes are coalesced, and the guarded client
+/// refuses redirects, proxies, and destinations outside the operator policy.
+pub struct OAuth2ClientCredentialsProvider {
+    revision: String,
+    token_endpoint: String,
+    client_id: String,
+    client_secret: SecretString,
+    audience: Option<String>,
+    scope: Option<String>,
+    refresh_skew: Duration,
+    client: GuardedClient,
+    cached: Mutex<Option<CachedFederationCredential>>,
+}
+
+pub struct OAuth2ClientCredentialsInstallation {
+    pub revision: String,
+    pub token_endpoint: String,
+    pub client_id: String,
+    pub client_secret: SecretString,
+    pub audience: Option<String>,
+    pub scopes: Vec<String>,
+    pub refresh_skew: Duration,
+    pub timeout: Duration,
+    pub policy: OutboundPolicy,
+}
+
+#[derive(Deserialize)]
+struct OAuth2TokenResponse {
+    access_token: String,
+    token_type: String,
+    expires_in: u64,
+}
+
+impl OAuth2ClientCredentialsProvider {
+    pub fn new_trusted_with_builder(
+        installation: OAuth2ClientCredentialsInstallation,
+        builder: reqwest::ClientBuilder,
+    ) -> Result<Self, FederationTransportError> {
+        let OAuth2ClientCredentialsInstallation {
+            revision,
+            token_endpoint,
+            client_id,
+            client_secret,
+            audience,
+            scopes,
+            refresh_skew,
+            timeout,
+            policy,
+        } = installation;
+        let endpoint = policy
+            .validate_url(&token_endpoint)
+            .map_err(|_| FederationTransportError::Invalid)?;
+        if !valid_text(&revision, 120)
+            || client_id.is_empty()
+            || client_id.len() > 512
+            || client_id.trim() != client_id
+            || client_id.chars().any(char::is_control)
+            || client_secret.expose_secret().is_empty()
+            || client_secret.expose_secret().len() > MAX_CLIENT_SECRET_BYTES
+            || audience.as_ref().is_some_and(|value| {
+                value.is_empty()
+                    || value.len() > 2_048
+                    || value.trim() != value
+                    || value.chars().any(char::is_control)
+            })
+            || scopes.len() > 64
+            || scopes.windows(2).any(|pair| pair[0] >= pair[1])
+            || scopes.iter().any(|scope| {
+                scope.is_empty()
+                    || scope.len() > 255
+                    || scope.trim() != scope
+                    || scope.chars().any(char::is_control)
+                    || scope.chars().any(char::is_whitespace)
+            })
+            || timeout.is_zero()
+            || refresh_skew.is_zero()
+            || endpoint.query().is_some()
+            || endpoint.fragment().is_some()
+        {
+            return Err(FederationTransportError::Invalid);
+        }
+        let client = GuardedClient::from_builder(builder.timeout(timeout), policy, false)
+            .map_err(|_| FederationTransportError::Invalid)?;
+        let client_id = oauth_form_component(&client_id);
+        let client_secret =
+            SecretString::new(oauth_form_component(client_secret.expose_secret()).into());
+        Ok(Self {
+            revision,
+            token_endpoint,
+            client_id,
+            client_secret,
+            audience,
+            scope: (!scopes.is_empty()).then(|| scopes.join(" ")),
+            refresh_skew,
+            client,
+            cached: Mutex::new(None),
+        })
+    }
+
+    async fn refresh(&self) -> Result<CachedFederationCredential, FederationCredentialError> {
+        let mut form = vec![("grant_type", "client_credentials".to_owned())];
+        if let Some(audience) = &self.audience {
+            form.push(("audience", audience.clone()));
+        }
+        if let Some(scope) = &self.scope {
+            form.push(("scope", scope.clone()));
+        }
+        let builder = self
+            .client
+            .post(&self.token_endpoint)
+            .map_err(|_| FederationCredentialError::Refused)?;
+        let response = builder
+            .basic_auth(&self.client_id, Some(self.client_secret.expose_secret()))
+            .form(&form)
+            .send()
+            .await
+            .map_err(|_| FederationCredentialError::Unavailable)?;
+        if !response.status().is_success() {
+            return Err(
+                if matches!(response.status().as_u16(), 400 | 401 | 403 | 404 | 405) {
+                    FederationCredentialError::Refused
+                } else {
+                    FederationCredentialError::Unavailable
+                },
+            );
+        }
+        let raw = zeroize::Zeroizing::new(
+            read_bounded(response, MAX_TOKEN_RESPONSE_BYTES)
+                .await
+                .map_err(|()| FederationCredentialError::Refused)?,
+        );
+        let token: OAuth2TokenResponse =
+            serde_json::from_slice(&raw).map_err(|_| FederationCredentialError::Refused)?;
+        validate_oauth_token(&token)?;
+        let lifetime = Duration::from_secs(token.expires_in);
+        let skew = self.refresh_skew.min(lifetime / 2);
+        let refresh_at = Instant::now()
+            .checked_add(lifetime.saturating_sub(skew))
+            .ok_or(FederationCredentialError::Refused)?;
+        Ok(CachedFederationCredential {
+            token: SecretString::new(token.access_token.into()),
+            refresh_at,
+        })
+    }
+}
+
+#[async_trait]
+impl FederationCredentialProvider for OAuth2ClientCredentialsProvider {
+    fn scheme(&self) -> &'static str {
+        "bearer"
+    }
+
+    fn revision(&self) -> &str {
+        &self.revision
+    }
+
+    async fn credential(&self) -> Result<SecretString, FederationCredentialError> {
+        let mut cached = self.cached.lock().await;
+        if let Some(current) = cached.as_ref()
+            && Instant::now() < current.refresh_at
+        {
+            return Ok(current.token.clone());
+        }
+        let refreshed = self.refresh().await?;
+        let token = refreshed.token.clone();
+        *cached = Some(refreshed);
+        Ok(token)
+    }
+}
+
+fn validate_oauth_token(token: &OAuth2TokenResponse) -> Result<(), FederationCredentialError> {
+    if token.access_token.is_empty()
+        || token.access_token.len() > MAX_ACCESS_TOKEN_BYTES
+        || !valid_bearer_token(&token.access_token)
+        || !token.token_type.eq_ignore_ascii_case("bearer")
+        || !(1..=MAX_ACCESS_TOKEN_LIFETIME_SECONDS).contains(&token.expires_in)
+    {
+        return Err(FederationCredentialError::Refused);
+    }
+    Ok(())
+}
+
+fn valid_bearer_token(token: &str) -> bool {
+    !token.is_empty()
+        && token.len() <= MAX_ACCESS_TOKEN_BYTES
+        && token.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'+' | b'/' | b'=')
+        })
+}
+
+/// RFC 6749 section 2.3.1 applies HTML form encoding to each client
+/// credential before HTTP Basic encoding.
+fn oauth_form_component(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(char::from(byte));
+        } else if byte == b' ' {
+            encoded.push('+');
+        } else {
+            encoded.push('%');
+            encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+            encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        }
+    }
+    encoded
 }
 
 #[derive(Clone)]
@@ -230,6 +455,7 @@ impl FederationTransportAdapter for ActeonFederationHttpAdapter {
                         .requirement
                         .authentication_scheme
                         .clone(),
+                    credential_revision: self.credential.revision().into(),
                 },
             ));
         }
@@ -723,5 +949,80 @@ mod tests {
         assert!(known_capability_rejection(403));
         assert!(!known_capability_rejection(429));
         assert!(!known_capability_rejection(503));
+    }
+
+    #[test]
+    fn oauth_token_contract_accepts_only_bounded_bearer_credentials() {
+        assert_eq!(
+            oauth_form_component("client id:/é"),
+            "client+id%3A%2F%C3%A9"
+        );
+        let extended: OAuth2TokenResponse = serde_json::from_value(serde_json::json!({
+            "access_token": "short-lived-token",
+            "token_type": "Bearer",
+            "expires_in": 300,
+            "scope": "federation.invoke",
+            "provider_extension": true
+        }))
+        .unwrap();
+        assert!(validate_oauth_token(&extended).is_ok());
+        let valid = OAuth2TokenResponse {
+            access_token: "short-lived-token".into(),
+            token_type: "Bearer".into(),
+            expires_in: 300,
+        };
+        assert!(validate_oauth_token(&valid).is_ok());
+
+        let mut invalid = OAuth2TokenResponse {
+            access_token: valid.access_token.clone(),
+            token_type: "mac".into(),
+            expires_in: valid.expires_in,
+        };
+        assert_eq!(
+            validate_oauth_token(&invalid),
+            Err(FederationCredentialError::Refused)
+        );
+        invalid.token_type = "bearer".into();
+        invalid.expires_in = MAX_ACCESS_TOKEN_LIFETIME_SECONDS + 1;
+        assert!(validate_oauth_token(&invalid).is_err());
+        invalid.expires_in = 60;
+        invalid.access_token = "x\ncredential".into();
+        assert!(validate_oauth_token(&invalid).is_err());
+        invalid.access_token = "x credential".into();
+        assert!(validate_oauth_token(&invalid).is_err());
+        assert!(
+            StaticFederationCredentialProvider::new(SecretString::new("x credential".into()))
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn oauth_provider_uses_only_a_fresh_in_memory_token() {
+        let provider = OAuth2ClientCredentialsProvider::new_trusted_with_builder(
+            OAuth2ClientCredentialsInstallation {
+                revision: "oauth2-client-credentials-v1".into(),
+                token_endpoint: "https://identity.example/oauth2/token".into(),
+                client_id: "acteon prod".into(),
+                client_secret: SecretString::new("client/secret".into()),
+                audience: Some("acteon://remote/prod".into()),
+                scopes: vec!["federation.invoke".into()],
+                refresh_skew: Duration::from_secs(30),
+                timeout: Duration::from_secs(3),
+                policy: OutboundPolicy::default(),
+            },
+            reqwest::Client::builder(),
+        )
+        .unwrap();
+        *provider.cached.lock().await = Some(CachedFederationCredential {
+            token: SecretString::new("cached-token".into()),
+            refresh_at: Instant::now() + Duration::from_secs(60),
+        });
+
+        assert_eq!(
+            provider.credential().await.unwrap().expose_secret(),
+            "cached-token"
+        );
+        assert_eq!(provider.client_id, "acteon+prod");
+        assert_eq!(provider.client_secret.expose_secret(), "client%2Fsecret");
     }
 }

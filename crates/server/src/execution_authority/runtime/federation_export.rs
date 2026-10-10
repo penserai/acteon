@@ -492,6 +492,7 @@ mod tests {
                 signer_key_env: "ACTEON_FEDERATION_SIGNER_V1".into(),
                 issuer_epoch: 1,
                 credential_env: "ACTEON_REMOTE_CREDENTIAL_V1".into(),
+                credential_broker: None,
                 peer_capability: crate::config::FederationPeerCapabilityConfig {
                     key_id: "remote-capability-v1".into(),
                     verifying_key:

@@ -28,9 +28,10 @@ use crate::federation_finality::{
 
 pub const FEDERATION_DELIVERY_KIND: &str = "federation_outbound_delivery";
 // V2 added the mandatory local reconciliation-resource footprint. V3 adds the
-// durable peer-capability negotiation checkpoint. Older records fail closed
-// rather than acquiring weaker implied authority.
-const DELIVERY_SCHEMA: u32 = 3;
+// durable peer-capability negotiation checkpoint. V4 records the qualified
+// host credential-provider revision. Older records fail closed rather than
+// acquiring weaker implied authority.
+const DELIVERY_SCHEMA: u32 = 4;
 const MAX_RECORD_BYTES: usize = 2 * 1024 * 1024;
 const MAX_ENDPOINT_BYTES: usize = 2_048;
 const MAX_CODE_BYTES: usize = 1_024;
@@ -91,6 +92,7 @@ pub struct FederationCapabilityEvidence {
     pub expires_at_ms: i64,
     pub protocol_revision: String,
     pub authentication_scheme: String,
+    pub credential_revision: String,
 }
 
 #[derive(Debug, Clone)]
@@ -1801,6 +1803,7 @@ fn valid_capability_evidence(evidence: &FederationCapabilityEvidence) -> bool {
         && evidence.expires_at_ms > 0
         && valid_text(&evidence.protocol_revision, 120)
         && valid_text(&evidence.authentication_scheme, 120)
+        && valid_text(&evidence.credential_revision, 120)
 }
 
 fn valid_capability_state(record: &DeliveryRecord) -> bool {

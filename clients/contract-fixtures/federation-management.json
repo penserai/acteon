@@ -166,7 +166,8 @@
           "issuer_epoch": 9,
           "expires_at_ms": 4102444800000,
           "protocol_revision": "acteon-federation-v1",
-          "authentication_scheme": "bearer"
+          "authentication_scheme": "bearer",
+          "credential_revision": "oauth2-client-credentials-v1"
         }
       }
     ],
@@ -217,7 +218,8 @@
       "issuer_epoch": 9,
       "expires_at_ms": 4102444800000,
       "protocol_revision": "acteon-federation-v1",
-      "authentication_scheme": "bearer"
+      "authentication_scheme": "bearer",
+      "credential_revision": "oauth2-client-credentials-v1"
     }
   },
   "finality_correlation": {
@@ -287,7 +289,8 @@
       "issuer_epoch": 9,
       "expires_at_ms": 4102444800000,
       "protocol_revision": "acteon-federation-v1",
-      "authentication_scheme": "bearer"
+      "authentication_scheme": "bearer",
+      "credential_revision": "oauth2-client-credentials-v1"
     }
   },
   "signed_capability_card": {

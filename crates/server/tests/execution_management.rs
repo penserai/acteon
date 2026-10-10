@@ -375,6 +375,7 @@ fn outbound_federation_profiles_are_source_bound_permitted_and_policy_bound() {
                 signer_key_env: "ACTEON_TEST_FEDERATION_SIGNER".into(),
                 issuer_epoch: 1,
                 credential_env: "ACTEON_TEST_FEDERATION_CREDENTIAL".into(),
+                credential_broker: None,
                 peer_capability: acteon_server::config::FederationPeerCapabilityConfig {
                     key_id: "remote-capability-v1".into(),
                     verifying_key:

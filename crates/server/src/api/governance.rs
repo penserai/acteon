@@ -99,6 +99,7 @@ pub struct FederationCapabilityEvidence {
     pub expires_at_ms: i64,
     pub protocol_revision: String,
     pub authentication_scheme: String,
+    pub credential_revision: String,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -229,6 +230,7 @@ impl From<acteon_executor::federation_transport::FederationDeliveryEvidence>
                     expires_at_ms: capability.expires_at_ms,
                     protocol_revision: capability.protocol_revision,
                     authentication_scheme: capability.authentication_scheme,
+                    credential_revision: capability.credential_revision,
                 }),
             status,
             reconciliations: evidence

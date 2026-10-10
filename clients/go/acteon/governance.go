@@ -207,6 +207,7 @@ type FederationCapabilityEvidence struct {
 	ExpiresAtMs          int64  `json:"expires_at_ms"`
 	ProtocolRevision     string `json:"protocol_revision"`
 	AuthenticationScheme string `json:"authentication_scheme"`
+	CredentialRevision   string `json:"credential_revision"`
 }
 type FederationDeliveryEvidencePage struct {
 	Deliveries []FederationDeliveryEvidence `json:"deliveries"`

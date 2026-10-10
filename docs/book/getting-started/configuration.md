@@ -706,11 +706,14 @@ for the management and import APIs.
 The same block can install outbound export profiles. Each profile binds one
 declared source agent service to an exact remote origin and audience. Each
 bounded epoch pins its trust/key revision, public signing key, transport
-credential, foreign agent binding, effect ceiling, budget and depth. Epoch
-environment variables resolve the private signing key and peer credential only
-during runtime installation. The signing secret is
+credential policy, foreign agent binding, effect ceiling, budget and depth.
+By default, `credential_env` contains a static bearer token. When the optional
+`credential_broker` table is present, it contains the OAuth client secret and
+Acteon exchanges it for short-lived bearer tokens. Epoch environment variables
+resolve secrets only during runtime installation. The signing secret is
 exactly 32 bytes encoded as 64 lowercase or uppercase hexadecimal characters.
-No secret appears in retained state or the sanitized configuration.
+No client secret or access token appears in retained state, management
+evidence, logs, or the sanitized configuration.
 
 ```toml
 [[execution_authority.scopes.federation.exports]]
@@ -731,6 +734,17 @@ verifying_key = "<64 hex characters>"
 signer_key_env = "ACTEON_FEDERATION_SIGNER"
 issuer_epoch = 1
 credential_env = "ACTEON_REMOTE_CREDENTIAL"
+
+# Optional. Omit this table to use credential_env as a static bearer token.
+[execution_authority.scopes.federation.exports.epochs.credential_broker]
+revision = "oauth2-client-credentials-v1"
+token_endpoint = "https://identity.example/oauth2/token"
+client_id = "acteon-prod"
+audience = "acteon://remote/prod"
+scopes = ["federation.invoke", "federation.read"] # sorted, unique
+timeout_ms = 3000
+refresh_skew_ms = 30000
+internal_hosts = []
 
 [execution_authority.scopes.federation.exports.epochs.peer_capability]
 key_id = "remote-capability-v1"
@@ -757,6 +771,18 @@ effects = [{ operation = "provider.execute", resources = [
 limits = { max_units = 3, max_concurrent = 1, deadline_ms = 4102444800000 }
 max_depth = 2
 ```
+
+The broker uses OAuth 2 client credentials with HTTP Basic client
+authentication. It accepts only bounded `Bearer` token responses containing
+`access_token`, `token_type`, and `expires_in`, coalesces concurrent refreshes,
+and caches tokens only in process memory. The token endpoint uses the same
+guarded outbound transport rules as other Acteon integrations: proxies and
+redirects are disabled, public endpoints require HTTPS, and private addresses
+must be named explicitly in `internal_hosts`. `timeout_ms` must finish at least
+250 ms before the export delivery timeout so a broker outage is durably
+classified as “not sent” instead of an ambiguous remote effect. Changing any
+broker qualification changes the epoch binding digest; rotate the export epoch
+for production changes.
 
 For zero-downtime rotation, append a higher epoch with its new signer,
 credential, trust/key revision, capability-card key/epoch and complete reviewed remote agent card, then set

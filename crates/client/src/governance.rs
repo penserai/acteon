@@ -171,6 +171,7 @@ pub struct FederationCapabilityEvidence {
     pub expires_at_ms: i64,
     pub protocol_revision: String,
     pub authentication_scheme: String,
+    pub credential_revision: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -233,6 +233,7 @@ class FederationCapabilityEvidence:
     expires_at_ms: int
     protocol_revision: str
     authentication_scheme: str
+    credential_revision: str
 
 
 @dataclass

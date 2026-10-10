@@ -338,11 +338,39 @@ pub struct FederationExportEpochConfig {
     pub verifying_key: String,
     pub signer_key_env: String,
     pub issuer_epoch: u64,
+    /// Static bearer token, or the OAuth client secret when
+    /// `credential_broker` is configured. The secret is resolved only by the
+    /// host and never enters federation state or evidence.
     pub credential_env: String,
+    /// Optional short-lived credential exchange. Its complete immutable
+    /// qualification is part of the export binding digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_broker: Option<FederationOAuth2ClientCredentialsConfig>,
     /// Independently pinned destination capability-card contract. This key is
     /// owned by the destination and must not be the source envelope key.
     pub peer_capability: FederationPeerCapabilityConfig,
     pub grant: acteon_governance::federation::FederationGrantCeiling,
+}
+
+/// Qualified OAuth 2 client-credentials exchange for one export epoch.
+/// Acteon supports the interoperable `client_secret_basic` profile and only
+/// accepts bearer access tokens with bounded lifetimes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationOAuth2ClientCredentialsConfig {
+    pub revision: String,
+    pub token_endpoint: String,
+    pub client_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audience: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<String>,
+    #[serde(default = "default_federation_credential_timeout_ms")]
+    pub timeout_ms: u64,
+    #[serde(default = "default_federation_credential_refresh_skew_ms")]
+    pub refresh_skew_ms: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub internal_hosts: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -373,6 +401,14 @@ fn default_federation_capability_clock_skew_ms() -> i64 {
 
 fn default_federation_capability_lifetime_ms() -> i64 {
     300_000
+}
+
+fn default_federation_credential_timeout_ms() -> u64 {
+    3_000
+}
+
+fn default_federation_credential_refresh_skew_ms() -> u64 {
+    30_000
 }
 
 impl FederationExportConfig {
@@ -491,7 +527,73 @@ impl FederationExportConfig {
             {
                 return Err("invalid outbound federation epoch".into());
             }
+            if let Some(broker) = &epoch.credential_broker {
+                broker.validate(self.timeout_ms)?;
+                if epoch.peer_capability.authentication_scheme != "bearer" {
+                    return Err("federation OAuth credential requires bearer authentication".into());
+                }
+            }
             self.qualify_epoch(epoch, &scope.namespace, &scope.tenant, local_audience)?;
+        }
+        Ok(())
+    }
+}
+
+impl FederationOAuth2ClientCredentialsConfig {
+    fn validate(&self, delivery_timeout_ms: u64) -> Result<(), String> {
+        let scopes = self.scopes.iter().collect::<BTreeSet<_>>();
+        let hosts = self.internal_hosts.iter().collect::<BTreeSet<_>>();
+        if self.revision.is_empty()
+            || self.revision.len() > 120
+            || self.revision.trim() != self.revision
+            || self.revision.chars().any(char::is_control)
+            || self.token_endpoint.len() > 2_048
+            || self.client_id.is_empty()
+            || self.client_id.len() > 512
+            || self.client_id.trim() != self.client_id
+            || self.client_id.chars().any(char::is_control)
+            || self.audience.as_ref().is_some_and(|value| {
+                value.is_empty()
+                    || value.len() > 2_048
+                    || value.trim() != value
+                    || value.chars().any(char::is_control)
+            })
+            || self.scopes.len() > 64
+            || scopes.len() != self.scopes.len()
+            || self.scopes.windows(2).any(|pair| pair[0] >= pair[1])
+            || self.scopes.iter().any(|scope| {
+                scope.is_empty()
+                    || scope.len() > 255
+                    || scope.trim() != scope
+                    || scope.chars().any(char::is_control)
+                    || scope.chars().any(char::is_whitespace)
+            })
+            || !(100..=30_000).contains(&self.timeout_ms)
+            // Leave a deterministic margin for the adapter to report
+            // `NotSent` before the durable delivery claim times out.
+            || self.timeout_ms.saturating_add(250) > delivery_timeout_ms
+            || !(1_000..=3_600_000).contains(&self.refresh_skew_ms)
+            || self.internal_hosts.len() > 64
+            || hosts.len() != self.internal_hosts.len()
+            || self.internal_hosts.iter().any(|host| {
+                host.is_empty()
+                    || host.len() > 253
+                    || host.trim() != host
+                    || host.contains('/')
+                    || host.contains('@')
+                    || host.chars().any(char::is_control)
+            })
+        {
+            return Err("invalid bounded federation credential broker".into());
+        }
+        let policy = acteon_http::OutboundPolicy {
+            internal_hosts: self.internal_hosts.clone(),
+        };
+        let url = policy
+            .validate_url(&self.token_endpoint)
+            .map_err(|_| "federation credential endpoint refused by outbound policy")?;
+        if url.query().is_some() || url.fragment().is_some() {
+            return Err("invalid federation credential endpoint".into());
         }
         Ok(())
     }
@@ -1339,6 +1441,33 @@ mod tests {
             .unwrap()
             .issuer_epoch = 0;
         assert!(invalid.validate(("auth-control", "deployment")).is_err());
+    }
+
+    #[test]
+    fn federation_credential_broker_is_bounded_canonical_and_finishes_before_delivery() {
+        let broker = FederationOAuth2ClientCredentialsConfig {
+            revision: "oauth2-client-credentials-v1".into(),
+            token_endpoint: "https://identity.example/oauth2/token".into(),
+            client_id: "acteon-prod".into(),
+            audience: Some("acteon://remote/prod".into()),
+            scopes: vec!["federation.invoke".into(), "federation.read".into()],
+            timeout_ms: 3_000,
+            refresh_skew_ms: 30_000,
+            internal_hosts: vec![],
+        };
+        broker.validate(10_000).unwrap();
+
+        let mut invalid = broker.clone();
+        invalid.scopes.reverse();
+        assert!(invalid.validate(10_000).is_err());
+
+        let mut invalid = broker.clone();
+        invalid.timeout_ms = 9_751;
+        assert!(invalid.validate(10_000).is_err());
+
+        let mut invalid = broker;
+        invalid.token_endpoint = "http://169.254.169.254/latest/token".into();
+        assert!(invalid.validate(10_000).is_err());
     }
 
     #[test]

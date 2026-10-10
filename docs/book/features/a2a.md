@@ -185,8 +185,9 @@ GET /v1/governance/federation/deliveries?namespace=prod&tenant=acme&limit=50
 
 The cursor is the last returned delivery UUID. Each item identifies the source,
 parent execution, message ID, remote agent, trust/key epoch, timestamps, expiry,
-replay qualification, negotiated capability-card digest/key/epoch/protocol/authentication
-scheme and exact delivery stage. The view excludes the message
+replay qualification, negotiated capability-card digest/key/epoch/protocol,
+authentication scheme, qualified credential-provider revision, and exact
+delivery stage. The view excludes the message
 body, signed payloads, endpoint, transport credential and signing material. The
 server filters results to the manager's declared source principals and
 revalidates management authority after reading the state backend.
@@ -222,8 +223,8 @@ evidence before the import call. A card outage is safely retryable because no
 effect endpoint was called; a signed downgrade or mismatch is a terminal local
 import-stage refusal.
 
-Production qualification still requires brokered credential exchange and
-two-server failure testing on each supported production state backend.
+Production qualification still requires two-server failure testing on each
+supported production state backend.
 
 ### Discovery (unauthenticated)
 
@@ -661,14 +662,16 @@ already present in the deployment-owned ceiling. Request data cannot introduce
 a new key, domain, audience, recipient, effect or limit. Inspection returns only
 the trust records inside that manager's footprint.
 
-Acteon provides governed outbound delivery with a deployment-owned static peer
-credential and signed capability-card discovery. Brokered credential exchange,
-automatic credential rotation and conformance evidence against a named external
-implementation remain open. Peer credential state and effect authority also
-reside in separate state scopes: the route rechecks the peer just before
-dispatch, and the coordinator separately performs the atomic execution check.
-A remote card, signature or cached envelope never overrides local permits,
-closures, principal revocation or root limits.
+Acteon provides governed outbound delivery with signed capability-card
+discovery and either a deployment-owned static bearer credential or a qualified
+OAuth 2 client-credentials broker. Brokered access tokens rotate automatically,
+stay only in process memory, and record only the provider revision in durable
+evidence. Conformance evidence against a named external implementation remains
+open. Peer credential state and effect authority also reside in separate state
+scopes: the route rechecks the peer just before dispatch, and the coordinator
+separately performs the atomic execution check. A remote card, signature,
+access token or cached envelope never overrides local permits, closures,
+principal revocation or root limits.
 
 ## Errors
 

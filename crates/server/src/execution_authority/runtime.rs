@@ -1019,15 +1019,38 @@ fn federation_transport_for_epoch(
     use acteon_executor::federation_transport::{
         DurableFederationTransport, FederationTransportDependencies,
     };
+    let credential_provider: Arc<dyn super::federation_http::FederationCredentialProvider> =
+        match &epoch.credential_broker {
+            Some(broker) => Arc::new(
+                super::federation_http::OAuth2ClientCredentialsProvider::new_trusted_with_builder(
+                    super::federation_http::OAuth2ClientCredentialsInstallation {
+                        revision: broker.revision.clone(),
+                        token_endpoint: broker.token_endpoint.clone(),
+                        client_id: broker.client_id.clone(),
+                        client_secret: credential,
+                        audience: broker.audience.clone(),
+                        scopes: broker.scopes.clone(),
+                        refresh_skew: std::time::Duration::from_millis(broker.refresh_skew_ms),
+                        timeout: std::time::Duration::from_millis(broker.timeout_ms),
+                        policy: acteon_http::OutboundPolicy {
+                            internal_hosts: broker.internal_hosts.clone(),
+                        },
+                    },
+                    peer_http_builder(dependencies)?,
+                )
+                .map_err(|_| "invalid federation credential broker")?,
+            ),
+            None => Arc::new(
+                super::federation_http::StaticFederationCredentialProvider::new(credential)
+                    .map_err(|_| "invalid federation export credential")?,
+            ),
+        };
     let adapter = Arc::new(
         super::ActeonFederationHttpAdapter::new_trusted_with_builder(
             binding_digest,
             "acteon-federation-http-v1",
             super::federation_http::FederationHttpAdapterInstallation {
-                credential: Arc::new(
-                    super::federation_http::StaticFederationCredentialProvider::new(credential)
-                        .map_err(|_| "invalid federation export credential")?,
-                ),
+                credential: credential_provider,
                 capability: federation_http_capability(declaration, epoch, local_audience),
                 clock: dependencies.clock.clone(),
                 policy: acteon_http::OutboundPolicy {

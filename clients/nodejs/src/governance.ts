@@ -83,7 +83,7 @@ export interface FederationFinalityCorrelation {
 }
 export interface FederationCapabilityEvidence {
   card_digest: string; key_id: string; issuer_epoch: number; expires_at_ms: number;
-  protocol_revision: string; authentication_scheme: string;
+  protocol_revision: string; authentication_scheme: string; credential_revision: string;
 }
 export interface FederationDeliveryEvidence {
   delivery_id: string; parent_execution_id: string; source: PrincipalIdentity;

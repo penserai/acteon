@@ -131,6 +131,7 @@ impl FederationTransportAdapter for Adapter {
                     expires_at_ms: 10_000,
                     protocol_revision: "acteon-federation-v1".into(),
                     authentication_scheme: "bearer".into(),
+                    credential_revision: "test-credential-v1".into(),
                 },
             )),
         }
