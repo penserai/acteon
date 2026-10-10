@@ -437,11 +437,11 @@ pub(crate) fn project_v1_card(card: &AgentCard) -> serde_json::Value {
         "supportedInterfaces": supported_interfaces,
         "version": card.version,
         "capabilities": {
-            // Advertise only operations implemented by the official v1 adapter.
-            // The stored card may enable Acteon's legacy SSE and push routes,
-            // but those do not yet satisfy the v1 method contracts.
+            // Streaming stays false until the official v1 streaming adapters
+            // pass external conformance. Push CRUD has a v1 adapter and follows
+            // the durable card's capability declaration.
             "streaming": false,
-            "pushNotifications": false,
+            "pushNotifications": card.capabilities.push_notifications,
             "extendedAgentCard": card.capabilities.extended_agent_card,
             "extensions": extensions,
         },
@@ -690,6 +690,7 @@ mod tests {
     #[test]
     fn v1_projection_is_schema_closed_protojson() {
         let mut card = sample_card("route-planner");
+        card.capabilities.push_notifications = true;
         card.description = Some("Plans governed routes".into());
         card.interfaces.push(acteon_core::AgentCardInterface {
             kind: "json-rpc".into(),
@@ -715,7 +716,7 @@ mod tests {
         assert_eq!(value["supportedInterfaces"][0]["protocolVersion"], "1.0");
         assert_eq!(value["skills"][0]["id"], "plan-route");
         assert_eq!(value["capabilities"]["streaming"], false);
-        assert_eq!(value["capabilities"]["pushNotifications"], false);
+        assert_eq!(value["capabilities"]["pushNotifications"], true);
         assert_eq!(
             value["securitySchemes"]["bearer"]["httpAuthSecurityScheme"]["scheme"],
             "Bearer"

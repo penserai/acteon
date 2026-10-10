@@ -10,11 +10,17 @@ import httpx
 from a2a.client import ClientConfig, create_client
 from a2a.helpers import new_text_message
 from a2a.types import (
+    AuthenticationInfo,
     CancelTaskRequest,
+    DeleteTaskPushNotificationConfigRequest,
+    GetTaskPushNotificationConfigRequest,
     GetTaskRequest,
+    ListTaskPushNotificationConfigsRequest,
     ListTasksRequest,
     Role,
+    SendMessageConfiguration,
     SendMessageRequest,
+    TaskPushNotificationConfig,
     TaskState,
 )
 
@@ -32,7 +38,14 @@ async def run(base_url: str, token: str) -> None:
                 message=new_text_message(
                     "inspect the governed city",
                     role=Role.ROLE_USER,
-                )
+                ),
+                configuration=SendMessageConfiguration(
+                    return_immediately=True,
+                    task_push_notification_config=TaskPushNotificationConfig(
+                        id="inline-push-config",
+                        url="https://example.com/acteon-a2a-inline",
+                    ),
+                ),
             )
             responses = [item async for item in client.send_message(request)]
             assert len(responses) == 1
@@ -50,6 +63,60 @@ async def run(base_url: str, token: str) -> None:
             assert listed.total_size >= 1
             assert submitted.id in {task.id for task in listed.tasks}
 
+            inline_push = await client.get_task_push_notification_config(
+                GetTaskPushNotificationConfigRequest(
+                    task_id=submitted.id,
+                    id="inline-push-config",
+                )
+            )
+            assert inline_push.task_id == submitted.id
+            await client.delete_task_push_notification_config(
+                DeleteTaskPushNotificationConfigRequest(
+                    task_id=submitted.id,
+                    id=inline_push.id,
+                )
+            )
+
+            created_push = await client.create_task_push_notification_config(
+                TaskPushNotificationConfig(
+                    task_id=submitted.id,
+                    url="https://example.com/acteon-a2a-conformance",
+                    token="push-token",
+                    authentication=AuthenticationInfo(
+                        scheme="Bearer",
+                        credentials="push-secret",
+                    ),
+                )
+            )
+            assert created_push.id
+            assert created_push.task_id == submitted.id
+            observed_push = await client.get_task_push_notification_config(
+                GetTaskPushNotificationConfigRequest(
+                    task_id=submitted.id,
+                    id=created_push.id,
+                )
+            )
+            assert observed_push.url == created_push.url
+            push_page = await client.list_task_push_notification_configs(
+                ListTaskPushNotificationConfigsRequest(
+                    task_id=submitted.id,
+                    page_size=10,
+                )
+            )
+            assert created_push.id in {config.id for config in push_page.configs}
+            await client.delete_task_push_notification_config(
+                DeleteTaskPushNotificationConfigRequest(
+                    task_id=submitted.id,
+                    id=created_push.id,
+                )
+            )
+            await client.delete_task_push_notification_config(
+                DeleteTaskPushNotificationConfigRequest(
+                    task_id=submitted.id,
+                    id=created_push.id,
+                )
+            )
+
             canceled = await client.cancel_task(CancelTaskRequest(id=submitted.id))
             assert canceled.id == submitted.id
             assert canceled.status.state == TaskState.TASK_STATE_CANCELED
@@ -58,7 +125,7 @@ async def run(base_url: str, token: str) -> None:
             assert replayed.status.state == TaskState.TASK_STATE_CANCELED
             print(
                 "official a2a-sdk conformance: "
-                f"task={submitted.id} send/get/list/cancel/get passed"
+                f"task={submitted.id} send/inline-push/get/list/push-crud/cancel/get passed"
             )
         finally:
             await client.close()

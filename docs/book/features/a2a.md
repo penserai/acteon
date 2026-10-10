@@ -47,6 +47,14 @@ Content-Type: application/json
 | `ListTasks` | List visible Tasks with filters and cursor pagination. |
 | `CancelTask` | Cancel a non-terminal Task. |
 | `GetExtendedAgentCard` | Discovery card variant for authenticated callers. |
+| `CreateTaskPushNotificationConfig` | Register a governed Task webhook. |
+| `GetTaskPushNotificationConfig` | Read one Task webhook configuration. |
+| `ListTaskPushNotificationConfigs` | Page through a Task's webhook configurations. |
+| `DeleteTaskPushNotificationConfig` | Remove a Task webhook configuration. |
+
+Push configuration operations require an operator or administrator because
+their responses can contain webhook tokens or authentication credentials. The
+same control applies when `SendMessage` embeds a push configuration.
 
 The lowercase slash-separated methods remain compatibility aliases for existing
 Acteon clients. New integrations should use the PascalCase v1 methods. A v1
@@ -55,6 +63,9 @@ states use ProtoJSON names such as `ROLE_USER` and `TASK_STATE_SUBMITTED`.
 By default `SendMessage` waits until the Task is terminal or pauses for input or
 authorization. Set `configuration.returnImmediately` to `true` when the caller
 wants durable asynchronous acceptance and will poll with `GetTask`.
+When `configuration.taskPushNotificationConfig` is present, Acteon validates it
+before binding it to the Task ID created or recovered by `SendMessage`; callers
+cannot bind that inline configuration to a different Task.
 `ListTasks` supports `contextId`, ProtoJSON `status`, `statusTimestampAfter`,
 `historyLength`, `includeArtifacts`, and page sizes from 1 through 100. Its
 opaque page token is bound to those filters, and every page reports the
@@ -247,9 +258,10 @@ The `agent-card.json` route returns the schema-closed A2A 1.0 projection used by
 official clients. It requires the published card to name a JSON-RPC interface
 qualified for v1. The older `agent.json` route returns Acteon's stored-card view
 for compatibility. Both aggregate several published cards at tenant scope.
-The v1 card advertises streaming and push notifications only after their v1
-method adapters pass the external conformance gate; Acteon's existing SSE and
-push routes remain available through the native API in the meantime.
+The v1 card advertises push notifications when the published durable card
+enables them. Streaming remains false until its v1 adapters pass the external
+conformance gate; Acteon's existing SSE route remains available through the
+native API in the meantime.
 
 ### Version negotiation
 
@@ -707,10 +719,15 @@ codes from spec §8:
 | `-32603` | `INTERNAL_ERROR` | Server-internal failure (CAS exhaustion, state-store error). The message is intentionally opaque (CWE-209). |
 | `-32001` | `TaskNotFound` | The named Task or sub-resource does not exist for this caller. |
 | `-32002` | `TaskNotCancelable` | The Task is in a terminal state and cannot be canceled. |
+| `-32003` | `PushNotificationNotSupported` | The published card does not enable push notifications. |
+| `-32004` | `UnsupportedOperation` | The published interface does not support the requested operation. |
+| `-32007` | `ExtendedAgentCardNotConfigured` | No extended card is configured for this tenant. |
 | `-32009` | `VersionNotSupported` | The `A2A-Version` header names a version this server does not implement. |
 
 REST responses translate these codes to HTTP statuses (`404`, `409`,
 `400`, `500`, etc.) and put the message in the body.
+A2A-specific JSON-RPC errors also carry the canonical `google.rpc.ErrorInfo`
+reason and `a2a-protocol.org` domain in their `data` details array.
 
 ## Architecture references
 

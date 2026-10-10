@@ -761,8 +761,9 @@ Deliver an asynchronous external signal to a waiting execution.
 A2A JSON-RPC 2.0 endpoint supporting the v1 `SendMessage`, `GetTask`,
 `ListTasks`, `CancelTask`, and `GetExtendedAgentCard` methods. `ListTasks`
 provides filter-bound cursor pagination and the context, state, transition-time,
-history, and artifact selectors defined by A2A 1.0. Pre-1.0 slash-separated
-methods remain compatibility aliases.
+history, and artifact selectors defined by A2A 1.0. The four v1 Task push
+notification configuration methods use schema-closed ProtoJSON and cursor
+pagination. Pre-1.0 slash-separated methods remain compatibility aliases.
 
 ### `POST /a2a/{namespace}/{tenant}/v1/message:send`
 
@@ -808,8 +809,9 @@ Server-Sent Events (SSE) stream of real-time task lifecycle transitions.
 
 Public A2A 1.0 ProtoJSON Agent Card discovery endpoint. Only a published
 JSON-RPC interface is advertised until the HTTP+JSON binding has its own v1
-wire adapter and conformance gate. Streaming and push notifications remain
-false in this card until their v1 method adapters pass external conformance.
+wire adapter and conformance gate. Push notifications follow the published
+capability after their v1 adapter passed external client conformance; streaming
+remains false until its v1 adapter passes the same gate.
 
 ### `GET /a2a/{namespace}/{tenant}/.well-known/agent.json`
 

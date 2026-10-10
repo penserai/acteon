@@ -110,6 +110,9 @@ const INTERNAL_ERROR: i64 = -32603;
 // A2A-specific error codes (A2A spec §8).
 const TASK_NOT_FOUND: i64 = -32001;
 const TASK_NOT_CANCELABLE: i64 = -32002;
+const PUSH_NOTIFICATION_NOT_SUPPORTED: i64 = -32003;
+const UNSUPPORTED_OPERATION: i64 = -32004;
+const EXTENDED_AGENT_CARD_NOT_CONFIGURED: i64 = -32007;
 // A2A 1.0 canonical version-negotiation error.
 const VERSION_NOT_SUPPORTED: i64 = -32009;
 
@@ -167,18 +170,37 @@ impl A2aError {
         match self.code {
             TASK_NOT_FOUND | METHOD_NOT_FOUND => StatusCode::NOT_FOUND,
             TASK_NOT_CANCELABLE => StatusCode::CONFLICT,
-            INVALID_PARAMS | INVALID_REQUEST | PARSE_ERROR | VERSION_NOT_SUPPORTED => {
-                StatusCode::BAD_REQUEST
-            }
+            INVALID_PARAMS
+            | INVALID_REQUEST
+            | PARSE_ERROR
+            | PUSH_NOTIFICATION_NOT_SUPPORTED
+            | UNSUPPORTED_OPERATION
+            | EXTENDED_AGENT_CARD_NOT_CONFIGURED
+            | VERSION_NOT_SUPPORTED => StatusCode::BAD_REQUEST,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 
     fn to_jsonrpc(&self) -> JsonRpcErrorBody {
+        let reason = match self.code {
+            TASK_NOT_FOUND => Some("TASK_NOT_FOUND"),
+            TASK_NOT_CANCELABLE => Some("TASK_NOT_CANCELABLE"),
+            PUSH_NOTIFICATION_NOT_SUPPORTED => Some("PUSH_NOTIFICATION_NOT_SUPPORTED"),
+            UNSUPPORTED_OPERATION => Some("UNSUPPORTED_OPERATION"),
+            EXTENDED_AGENT_CARD_NOT_CONFIGURED => Some("EXTENDED_AGENT_CARD_NOT_CONFIGURED"),
+            VERSION_NOT_SUPPORTED => Some("VERSION_NOT_SUPPORTED"),
+            _ => None,
+        };
         JsonRpcErrorBody {
             code: self.code,
             message: self.message.clone(),
-            data: None,
+            data: reason.map(|reason| {
+                serde_json::json!([{
+                    "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                    "reason": reason,
+                    "domain": "a2a-protocol.org",
+                }])
+            }),
         }
     }
 }
@@ -662,40 +684,33 @@ async fn method_tasks_cancel(
 /// Loads every `AgentCard` published under the caller's namespace and
 /// tenant via the shared discovery helper, returning a single tenant
 /// card (verbatim if exactly one is registered, aggregated if several).
-/// The returned card's `capabilities.extended_agent_card` is set to
-/// `true` so a client can confirm the method was reached.
+/// The method is available only when that resolved card declares the
+/// `extended_agent_card` capability.
 ///
 /// The endpoint requires the standard A2A `Dispatch` permission grant
 /// (enforced at the JSON-RPC entrypoint), so an unauthenticated caller
 /// never reaches this method.
 ///
-/// Returns `TaskNotFound` (-32001) when no card is registered for the
-/// tenant — the closest spec-defined error for "no resource matches".
-/// `InternalError` only on a state-store read failure.
+/// Returns the canonical A2A unsupported/not-configured errors when the
+/// capability or card is absent. `InternalError` is reserved for a state-store
+/// read failure.
 async fn method_agent_get_authenticated_extended_card(
     state: &AppState,
     scope: &TaskScope,
 ) -> Result<AgentCard, A2aError> {
     use super::a2a_discovery::resolve_tenant_card;
     match resolve_tenant_card(state, &scope.namespace, &scope.tenant).await {
-        Ok(Some(card)) => Ok(mark_extended(card)),
+        Ok(Some(card)) if card.capabilities.extended_agent_card => Ok(card),
+        Ok(Some(_)) => Err(A2aError::new(
+            UNSUPPORTED_OPERATION,
+            "the agent does not support an extended card",
+        )),
         Ok(None) => Err(A2aError::new(
-            TASK_NOT_FOUND,
-            format!(
-                "no agent card published under {}/{}",
-                scope.namespace, scope.tenant,
-            ),
+            EXTENDED_AGENT_CARD_NOT_CONFIGURED,
+            "an extended agent card is not configured",
         )),
         Err(_) => Err(A2aError::internal("internal error")),
     }
-}
-
-/// Flag a resolved card as the extended variant before returning it
-/// over `agent/getAuthenticatedExtendedCard`. Split out so the
-/// capability-flag flip is unit-testable without an `AppState`.
-fn mark_extended(mut card: AgentCard) -> AgentCard {
-    card.capabilities.extended_agent_card = true;
-    card
 }
 
 // ---------------------------------------------------------------------
@@ -726,6 +741,198 @@ struct PushConfigIdParams {
 #[serde(rename_all = "camelCase")]
 struct PushConfigListParams {
     task_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct V1PushAuthentication {
+    scheme: String,
+    #[serde(default)]
+    credentials: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct V1PushConfigInput {
+    #[serde(default)]
+    tenant: Option<String>,
+    #[serde(default)]
+    id: Option<String>,
+    task_id: String,
+    url: String,
+    #[serde(default)]
+    token: Option<String>,
+    #[serde(default)]
+    authentication: Option<V1PushAuthentication>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct V1InlinePushConfig {
+    #[serde(default)]
+    tenant: Option<String>,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    task_id: Option<String>,
+    url: String,
+    #[serde(default)]
+    token: Option<String>,
+    #[serde(default)]
+    authentication: Option<V1PushAuthentication>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct V1PushConfigIdParams {
+    #[serde(default)]
+    tenant: Option<String>,
+    task_id: String,
+    id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct V1PushConfigListParams {
+    #[serde(default)]
+    tenant: Option<String>,
+    task_id: String,
+    #[serde(default)]
+    page_size: Option<usize>,
+    #[serde(default)]
+    page_token: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct V1PushConfigCursor {
+    task_id: String,
+    last_id: String,
+}
+
+fn validate_v1_tenant(tenant: Option<&str>, scope: &TaskScope) -> Result<(), A2aError> {
+    if tenant.is_some_and(|tenant| !tenant.is_empty() && tenant != scope.tenant) {
+        return Err(A2aError::invalid_params(
+            "tenant does not match the selected agent interface",
+        ));
+    }
+    Ok(())
+}
+
+fn project_v1_push_config(
+    config: &acteon_core::TaskPushNotificationConfig,
+) -> Result<Value, A2aError> {
+    let authentication = match &config.authentication {
+        None => None,
+        Some(authentication) if authentication.schemes.len() == 1 => {
+            let mut value = serde_json::json!({
+                "scheme": authentication.schemes[0],
+            });
+            if let Some(credentials) = &authentication.credentials {
+                value["credentials"] = Value::String(credentials.clone());
+            }
+            Some(value)
+        }
+        Some(_) => return Err(A2aError::internal("internal error")),
+    };
+    let mut value = serde_json::json!({
+        "id": config.id,
+        "taskId": config.task_id,
+        "url": config.url,
+    });
+    if let Some(token) = &config.token {
+        value["token"] = Value::String(token.clone());
+    }
+    if let Some(authentication) = authentication {
+        value["authentication"] = authentication;
+    }
+    Ok(value)
+}
+
+fn v1_push_input(input: V1PushConfigInput) -> super::a2a_push::SetPushConfigInput {
+    super::a2a_push::SetPushConfigInput {
+        id: input.id.filter(|id| !id.is_empty()),
+        url: input.url,
+        token: input.token,
+        authentication: input.authentication.map(|authentication| {
+            acteon_core::PushAuthentication {
+                schemes: vec![authentication.scheme],
+                credentials: authentication.credentials,
+            }
+        }),
+    }
+}
+
+fn v1_inline_push_input(
+    params: &Value,
+    scope: &TaskScope,
+) -> Result<Option<super::a2a_push::SetPushConfigInput>, A2aError> {
+    let Some(value) = params.pointer("/configuration/taskPushNotificationConfig") else {
+        return Ok(None);
+    };
+    let input = serde_json::from_value::<V1InlinePushConfig>(value.clone())
+        .map_err(|e| A2aError::invalid_params(format!("invalid push configuration: {e}")))?;
+    validate_v1_tenant(input.tenant.as_deref(), scope)?;
+    if input
+        .task_id
+        .as_deref()
+        .is_some_and(|task_id| !task_id.is_empty())
+    {
+        return Err(A2aError::invalid_params(
+            "an inline push configuration taskId must be empty",
+        ));
+    }
+    if input
+        .authentication
+        .as_ref()
+        .is_some_and(|authentication| authentication.scheme.is_empty())
+    {
+        return Err(A2aError::invalid_params(
+            "authentication.scheme must not be empty",
+        ));
+    }
+    Ok(Some(super::a2a_push::SetPushConfigInput {
+        id: input.id.filter(|id| !id.is_empty()),
+        url: input.url,
+        token: input.token,
+        authentication: input.authentication.map(|authentication| {
+            acteon_core::PushAuthentication {
+                schemes: vec![authentication.scheme],
+                credentials: authentication.credentials,
+            }
+        }),
+    }))
+}
+
+async fn ensure_v1_push_supported(state: &AppState, scope: &TaskScope) -> Result<(), A2aError> {
+    match super::a2a_discovery::resolve_tenant_card(state, &scope.namespace, &scope.tenant).await {
+        Ok(Some(card)) if card.capabilities.push_notifications => Ok(()),
+        Ok(_) => Err(A2aError::new(
+            PUSH_NOTIFICATION_NOT_SUPPORTED,
+            "push notifications are not supported",
+        )),
+        Err(_) => Err(A2aError::internal("internal error")),
+    }
+}
+
+fn validate_inline_push_before_task(
+    scope: &TaskScope,
+    input: &super::a2a_push::SetPushConfigInput,
+) -> Result<(), A2aError> {
+    let mut config = acteon_core::TaskPushNotificationConfig::new(
+        input.id.as_deref().unwrap_or("pending-config"),
+        "pending-task",
+        &scope.namespace,
+        &scope.tenant,
+        &input.url,
+    );
+    config.token.clone_from(&input.token);
+    config.authentication.clone_from(&input.authentication);
+    config
+        .validate()
+        .map_err(|error| A2aError::invalid_params(error.to_string()))?;
+    super::a2a_ssrf::check_url_literal(&config.url)
+        .map_err(|error| A2aError::invalid_params(format!("push url rejected: {error}")))
 }
 
 async fn method_push_config_set(
@@ -781,6 +988,135 @@ async fn method_push_config_delete(
     )
     .await
     .map_err(push_err_to_a2a)
+}
+
+async fn method_push_config_create_v1(
+    state: &AppState,
+    scope: &TaskScope,
+    params: V1PushConfigInput,
+) -> Result<Value, A2aError> {
+    ensure_v1_push_supported(state, scope).await?;
+    validate_v1_tenant(params.tenant.as_deref(), scope)?;
+    if params.task_id.is_empty() {
+        return Err(A2aError::invalid_params("taskId must not be empty"));
+    }
+    if params
+        .authentication
+        .as_ref()
+        .is_some_and(|authentication| authentication.scheme.is_empty())
+    {
+        return Err(A2aError::invalid_params(
+            "authentication.scheme must not be empty",
+        ));
+    }
+    let task_id = params.task_id.clone();
+    let config = super::a2a_push::save_config(state, scope, &task_id, v1_push_input(params))
+        .await
+        .map_err(push_err_to_a2a)?;
+    project_v1_push_config(&config)
+}
+
+async fn method_push_config_get_v1(
+    state: &AppState,
+    scope: &TaskScope,
+    params: V1PushConfigIdParams,
+) -> Result<Value, A2aError> {
+    ensure_v1_push_supported(state, scope).await?;
+    validate_v1_tenant(params.tenant.as_deref(), scope)?;
+    if params.task_id.is_empty() || params.id.is_empty() {
+        return Err(A2aError::invalid_params("taskId and id must not be empty"));
+    }
+    let config = super::a2a_push::load_config(state, scope, &params.task_id, &params.id)
+        .await
+        .map_err(push_err_to_a2a)?;
+    project_v1_push_config(&config)
+}
+
+async fn method_push_config_list_v1(
+    state: &AppState,
+    scope: &TaskScope,
+    params: V1PushConfigListParams,
+) -> Result<Value, A2aError> {
+    ensure_v1_push_supported(state, scope).await?;
+    validate_v1_tenant(params.tenant.as_deref(), scope)?;
+    if params.task_id.is_empty() {
+        return Err(A2aError::invalid_params("taskId must not be empty"));
+    }
+    let page_size = params.page_size.unwrap_or(50);
+    if !(1..=100).contains(&page_size) {
+        return Err(A2aError::invalid_params(
+            "pageSize must be between 1 and 100",
+        ));
+    }
+    let cursor = params
+        .page_token
+        .as_deref()
+        .map(|token| {
+            URL_SAFE_NO_PAD
+                .decode(token)
+                .map_err(|_| A2aError::invalid_params("invalid pageToken"))
+                .and_then(|bytes| {
+                    serde_json::from_slice::<V1PushConfigCursor>(&bytes)
+                        .map_err(|_| A2aError::invalid_params("invalid pageToken"))
+                })
+        })
+        .transpose()?;
+    if cursor
+        .as_ref()
+        .is_some_and(|cursor| cursor.task_id != params.task_id)
+    {
+        return Err(A2aError::invalid_params(
+            "pageToken does not match the requested task",
+        ));
+    }
+    let mut configs = super::a2a_push::list_configs(state, scope, &params.task_id)
+        .await
+        .map_err(push_err_to_a2a)?;
+    configs.sort_by(|left, right| left.id.cmp(&right.id));
+    if let Some(cursor) = &cursor {
+        configs.retain(|config| config.id > cursor.last_id);
+    }
+    let has_more = configs.len() > page_size;
+    configs.truncate(page_size);
+    let projected = configs
+        .iter()
+        .map(project_v1_push_config)
+        .collect::<Result<Vec<_>, _>>()?;
+    let next_page_token = if has_more {
+        let cursor = V1PushConfigCursor {
+            task_id: params.task_id,
+            last_id: configs
+                .last()
+                .expect("a page with more results contains at least one config")
+                .id
+                .clone(),
+        };
+        URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&cursor).map_err(|_| A2aError::internal("internal error"))?)
+    } else {
+        String::new()
+    };
+    Ok(serde_json::json!({
+        "configs": projected,
+        "nextPageToken": next_page_token,
+    }))
+}
+
+async fn method_push_config_delete_v1(
+    state: &AppState,
+    scope: &TaskScope,
+    params: V1PushConfigIdParams,
+) -> Result<Value, A2aError> {
+    ensure_v1_push_supported(state, scope).await?;
+    validate_v1_tenant(params.tenant.as_deref(), scope)?;
+    if params.task_id.is_empty() || params.id.is_empty() {
+        return Err(A2aError::invalid_params("taskId and id must not be empty"));
+    }
+    match super::a2a_push::delete_config(state, scope, &params.task_id, &params.id).await {
+        Ok(()) | Err(super::a2a_push::PushConfigError::ConfigNotFound { .. }) => {}
+        Err(error) => return Err(push_err_to_a2a(error)),
+    }
+    Ok(serde_json::json!({}))
 }
 
 /// Translate the helper's typed error into the JSON-RPC error model.
@@ -855,7 +1191,12 @@ fn authorize(
 fn is_write_method(method: &str) -> bool {
     matches!(
         method,
-        "message/send" | "tasks/cancel" | "SendMessage" | "CancelTask"
+        "message/send"
+            | "tasks/cancel"
+            | "SendMessage"
+            | "CancelTask"
+            | "CreateTaskPushNotificationConfig"
+            | "DeleteTaskPushNotificationConfig"
     )
 }
 
@@ -1097,6 +1438,107 @@ enum RpcReply {
     Empty,
 }
 
+fn is_v1_method(method: &str) -> bool {
+    matches!(
+        method,
+        "SendMessage"
+            | "GetTask"
+            | "ListTasks"
+            | "CancelTask"
+            | "GetExtendedAgentCard"
+            | "SendStreamingMessage"
+            | "SubscribeToTask"
+            | "CreateTaskPushNotificationConfig"
+            | "GetTaskPushNotificationConfig"
+            | "ListTaskPushNotificationConfigs"
+            | "DeleteTaskPushNotificationConfig"
+    )
+}
+
+async fn method_send_v1(
+    state: Option<&AppState>,
+    engine: &TaskEngine,
+    scope: &TaskScope,
+    params: Value,
+    actor: &str,
+) -> Result<Value, A2aError> {
+    let return_immediately = v1_return_immediately(&params)?;
+    let inline_push = v1_inline_push_input(&params, scope)?;
+    if let Some(inline_push) = &inline_push {
+        ensure_v1_push_supported(require_state(state)?, scope).await?;
+        validate_inline_push_before_task(scope, inline_push)?;
+    }
+    let parsed = serde_json::from_value::<MessageSendParams>(normalize_v1_send_params(params))
+        .map_err(|e| A2aError::invalid_params(format!("invalid params: {e}")))?;
+    let mut task = method_message_send_as(engine, scope, parsed, actor).await?;
+    if let Some(inline_push) = inline_push {
+        super::a2a_push::save_config(require_state(state)?, scope, &task.id, inline_push)
+            .await
+            .map_err(push_err_to_a2a)?;
+    }
+    if !return_immediately {
+        task = await_v1_send_completion(engine, scope, task).await?;
+    }
+    Ok(serde_json::json!({"task": project_v1_task(&task)?}))
+}
+
+async fn dispatch_v1_method(
+    state: Option<&AppState>,
+    engine: &TaskEngine,
+    scope: &TaskScope,
+    method: &str,
+    params: Value,
+    actor: &str,
+) -> Result<Value, A2aError> {
+    match method {
+        "SendMessage" => method_send_v1(state, engine, scope, params, actor).await,
+        "GetTask" => {
+            let parsed = serde_json::from_value::<TaskQueryParams>(params)
+                .map_err(|e| A2aError::invalid_params(format!("invalid params: {e}")))?;
+            project_v1_task(&method_tasks_get(engine, scope, parsed).await?)
+        }
+        "ListTasks" => {
+            let parsed = serde_json::from_value::<ListTasksParams>(params)
+                .map_err(|e| A2aError::invalid_params(format!("invalid params: {e}")))?;
+            method_list_tasks_v1(engine, scope, parsed).await
+        }
+        "CancelTask" => {
+            let parsed = serde_json::from_value::<TaskIdParams>(params)
+                .map_err(|e| A2aError::invalid_params(format!("invalid params: {e}")))?;
+            project_v1_task(&method_tasks_cancel(state, engine, scope, parsed).await?)
+        }
+        "GetExtendedAgentCard" => {
+            let card =
+                method_agent_get_authenticated_extended_card(require_state(state)?, scope).await?;
+            Ok(super::a2a_discovery::project_v1_card(&card))
+        }
+        "SendStreamingMessage" | "SubscribeToTask" => Err(A2aError::new(
+            UNSUPPORTED_OPERATION,
+            "streaming is not supported by this A2A interface",
+        )),
+        "CreateTaskPushNotificationConfig" => {
+            let parsed = serde_json::from_value::<V1PushConfigInput>(params)
+                .map_err(|e| A2aError::invalid_params(format!("invalid params: {e}")))?;
+            method_push_config_create_v1(require_state(state)?, scope, parsed).await
+        }
+        "GetTaskPushNotificationConfig" | "DeleteTaskPushNotificationConfig" => {
+            let parsed = serde_json::from_value::<V1PushConfigIdParams>(params)
+                .map_err(|e| A2aError::invalid_params(format!("invalid params: {e}")))?;
+            if method == "GetTaskPushNotificationConfig" {
+                method_push_config_get_v1(require_state(state)?, scope, parsed).await
+            } else {
+                method_push_config_delete_v1(require_state(state)?, scope, parsed).await
+            }
+        }
+        "ListTaskPushNotificationConfigs" => {
+            let parsed = serde_json::from_value::<V1PushConfigListParams>(params)
+                .map_err(|e| A2aError::invalid_params(format!("invalid params: {e}")))?;
+            method_push_config_list_v1(require_state(state)?, scope, parsed).await
+        }
+        _ => unreachable!("dispatch_v1_method called with a legacy method"),
+    }
+}
+
 /// Route an A2A method to its implementation. `state` is the
 /// production hook for `tasks/cancel`'s chain-cancel propagation and
 /// for the discovery-store reads behind `agent/getAuthenticatedExtendedCard`;
@@ -1113,42 +1555,10 @@ async fn dispatch_method(
     params: Value,
     actor: &str,
 ) -> Result<Value, A2aError> {
+    if is_v1_method(method) {
+        return dispatch_v1_method(state, engine, scope, method, params, actor).await;
+    }
     match method {
-        "SendMessage" => {
-            let return_immediately = v1_return_immediately(&params)?;
-            let p = serde_json::from_value::<MessageSendParams>(normalize_v1_send_params(params))
-                .map_err(|e| A2aError::invalid_params(format!("invalid params: {e}")))?;
-            let mut task = method_message_send_as(engine, scope, p, actor).await?;
-            if !return_immediately {
-                task = await_v1_send_completion(engine, scope, task).await?;
-            }
-            Ok(serde_json::json!({"task": project_v1_task(&task)?}))
-        }
-        "GetTask" => {
-            let p = serde_json::from_value::<TaskQueryParams>(params)
-                .map_err(|e| A2aError::invalid_params(format!("invalid params: {e}")))?;
-            project_v1_task(&method_tasks_get(engine, scope, p).await?)
-        }
-        "ListTasks" => {
-            let p = serde_json::from_value::<ListTasksParams>(params)
-                .map_err(|e| A2aError::invalid_params(format!("invalid params: {e}")))?;
-            method_list_tasks_v1(engine, scope, p).await
-        }
-        "CancelTask" => {
-            let p = serde_json::from_value::<TaskIdParams>(params)
-                .map_err(|e| A2aError::invalid_params(format!("invalid params: {e}")))?;
-            project_v1_task(&method_tasks_cancel(state, engine, scope, p).await?)
-        }
-        "GetExtendedAgentCard" => {
-            let Some(s) = state else {
-                return Err(A2aError::new(
-                    INTERNAL_ERROR,
-                    "extended-card discovery is unavailable in this dispatcher",
-                ));
-            };
-            let card = method_agent_get_authenticated_extended_card(s, scope).await?;
-            Ok(super::a2a_discovery::project_v1_card(&card))
-        }
         "message/send" => {
             let p = serde_json::from_value::<MessageSendParams>(params)
                 .map_err(|e| A2aError::invalid_params(format!("invalid params: {e}")))?;
@@ -1410,25 +1820,29 @@ fn payload_requires_management(value: &Value) -> bool {
         Value::Array(items) => items.iter().any(payload_requires_management),
         // Explicit allowlist: a newly implemented RPC method cannot inherit
         // execution permission just because it shares this HTTP endpoint.
-        Value::Object(obj) => obj
-            .get("method")
-            .and_then(Value::as_str)
-            .is_some_and(|method| {
-                !matches!(
-                    method,
-                    "message/send"
-                        | "SendMessage"
-                        | "tasks/get"
-                        | "GetTask"
-                        | "ListTasks"
-                        | "tasks/cancel"
-                        | "CancelTask"
-                        | "agent/getAuthenticatedExtendedCard"
-                        | "GetExtendedAgentCard"
-                        | "tasks/pushNotificationConfig/get"
-                        | "tasks/pushNotificationConfig/list"
-                )
-            }),
+        Value::Object(obj) => {
+            let method = obj.get("method").and_then(Value::as_str);
+            let inline_push = method == Some("SendMessage")
+                && obj
+                    .get("params")
+                    .and_then(|params| params.pointer("/configuration/taskPushNotificationConfig"))
+                    .is_some();
+            inline_push
+                || method.is_some_and(|method| {
+                    !matches!(
+                        method,
+                        "message/send"
+                            | "SendMessage"
+                            | "tasks/get"
+                            | "GetTask"
+                            | "ListTasks"
+                            | "tasks/cancel"
+                            | "CancelTask"
+                            | "agent/getAuthenticatedExtendedCard"
+                            | "GetExtendedAgentCard"
+                    )
+                })
+        }
         _ => false,
     }
 }
@@ -2325,6 +2739,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn v1_unsupported_streaming_has_typed_error_details() {
+        let e = engine();
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "method": "SubscribeToTask",
+            "params": {"id": "task-1"},
+            "id": 10,
+        });
+        let RpcReply::Single(response) = handle_rpc_payload(None, &e, &scope(), payload).await
+        else {
+            panic!("expected a single response");
+        };
+        let error = response.error.unwrap();
+        assert_eq!(error.code, UNSUPPORTED_OPERATION);
+        assert_eq!(error.data.unwrap()[0]["reason"], "UNSUPPORTED_OPERATION");
+    }
+
+    #[tokio::test]
     async fn rpc_extended_card_without_app_state_is_internal_error() {
         // The method needs an `AppState` for the discovery store. With
         // `state = None` the dispatcher must surface an honest
@@ -2351,21 +2783,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn mark_extended_sets_capability_flag() {
-        use acteon_core::AgentCard;
-        let card = AgentCard::new("a1", "agents", "demo", "Card", "1.0");
-        assert!(
-            !card.capabilities.extended_agent_card,
-            "default card must not advertise the extended capability"
-        );
-        let marked = mark_extended(card);
-        assert!(
-            marked.capabilities.extended_agent_card,
-            "mark_extended must flip the capability flag on the returned card"
-        );
-    }
-
     #[tokio::test]
     async fn rpc_push_config_methods_without_app_state_are_internal_error() {
         // Each of the four push-config methods needs the `AppState`'s
@@ -2386,6 +2803,19 @@ mod tests {
                 "tasks/pushNotificationConfig/delete",
                 json!({"taskId": "t1", "pushNotificationConfigId": "c1"}),
             ),
+            (
+                "CreateTaskPushNotificationConfig",
+                json!({"taskId": "t1", "url": "https://example.com/push"}),
+            ),
+            (
+                "GetTaskPushNotificationConfig",
+                json!({"taskId": "t1", "id": "c1"}),
+            ),
+            ("ListTaskPushNotificationConfigs", json!({"taskId": "t1"})),
+            (
+                "DeleteTaskPushNotificationConfig",
+                json!({"taskId": "t1", "id": "c1"}),
+            ),
         ] {
             let payload = json!({
                 "jsonrpc": "2.0",
@@ -2405,6 +2835,79 @@ mod tests {
                 "{method}: expected INTERNAL_ERROR for no-AppState path"
             );
         }
+    }
+
+    #[test]
+    fn v1_push_config_projection_is_schema_closed() {
+        let mut config = acteon_core::TaskPushNotificationConfig::new(
+            "config-1",
+            "task-1",
+            "agents",
+            "demo",
+            "https://example.com/push",
+        );
+        config.token = Some("push-token".into());
+        config.authentication = Some(acteon_core::PushAuthentication {
+            schemes: vec!["Bearer".into()],
+            credentials: Some("push-secret".into()),
+        });
+        let value = project_v1_push_config(&config).unwrap();
+        assert_eq!(value["id"], "config-1");
+        assert_eq!(value["taskId"], "task-1");
+        assert_eq!(value["authentication"]["scheme"], "Bearer");
+        for private in ["namespace", "tenant", "createdAt", "updatedAt"] {
+            assert!(
+                value.get(private).is_none(),
+                "leaked private field {private}"
+            );
+        }
+
+        let inline = v1_inline_push_input(
+            &json!({
+                "configuration": {
+                    "taskPushNotificationConfig": {
+                        "id": "inline-1",
+                        "url": "https://example.com/inline",
+                        "authentication": {"scheme": "Bearer"}
+                    }
+                }
+            }),
+            &scope(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(inline.id.as_deref(), Some("inline-1"));
+        assert_eq!(
+            inline.authentication.unwrap().schemes,
+            vec!["Bearer".to_string()]
+        );
+
+        let blocked = crate::api::a2a_push::SetPushConfigInput {
+            id: None,
+            url: "http://127.0.0.1/push".into(),
+            token: None,
+            authentication: None,
+        };
+        assert_eq!(
+            validate_inline_push_before_task(&scope(), &blocked)
+                .unwrap_err()
+                .code,
+            INVALID_PARAMS
+        );
+
+        let error = v1_inline_push_input(
+            &json!({
+                "configuration": {
+                    "taskPushNotificationConfig": {
+                        "taskId": "caller-bound-task",
+                        "url": "https://example.com/inline"
+                    }
+                }
+            }),
+            &scope(),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, INVALID_PARAMS);
     }
 
     #[tokio::test]
@@ -2594,10 +3097,45 @@ mod tests {
         assert!(is_write_method("tasks/cancel"));
         assert!(is_write_method("SendMessage"));
         assert!(is_write_method("CancelTask"));
+        assert!(is_write_method("CreateTaskPushNotificationConfig"));
+        assert!(is_write_method("DeleteTaskPushNotificationConfig"));
         assert!(!is_write_method("tasks/get"));
         assert!(!is_write_method("GetTask"));
         assert!(!is_write_method("agent/getAuthenticatedExtendedCard"));
         assert!(!is_write_method("unknown"));
+    }
+
+    #[test]
+    fn inline_push_configuration_requires_management() {
+        assert!(!payload_requires_management(&json!({
+            "method": "SendMessage",
+            "params": {
+                "message": {"messageId": "m1", "role": "ROLE_USER", "parts": [{"text": "x"}]},
+                "configuration": {"returnImmediately": true}
+            }
+        })));
+        assert!(payload_requires_management(&json!({
+            "method": "SendMessage",
+            "params": {
+                "message": {"messageId": "m1", "role": "ROLE_USER", "parts": [{"text": "x"}]},
+                "configuration": {
+                    "taskPushNotificationConfig": {"url": "https://example.com/push"}
+                }
+            }
+        })));
+        assert!(payload_requires_management(&json!({
+            "method": "CreateTaskPushNotificationConfig",
+            "params": {"taskId": "t1", "url": "https://example.com/push"}
+        })));
+        for method in [
+            "GetTaskPushNotificationConfig",
+            "ListTaskPushNotificationConfigs",
+            "DeleteTaskPushNotificationConfig",
+            "tasks/pushNotificationConfig/get",
+            "tasks/pushNotificationConfig/list",
+        ] {
+            assert!(payload_requires_management(&json!({"method": method})));
+        }
     }
 
     #[test]

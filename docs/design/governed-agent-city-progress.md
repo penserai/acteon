@@ -2196,9 +2196,21 @@ federation loss/restart proof. `SendMessage` now honors the v1 blocking default
 and returns early only when `configuration.returnImmediately` is true.
 `ListTasks` binds opaque cursors to its filters,
 supports the v1 time, status, context, history and artifact selectors, and keeps
-task ownership fields off the wire. Full official TCK coverage still requires
-streaming and the remaining v1 push-notification method aliases; the public card
-advertises neither capability until those adapters pass the external gate.
+task ownership fields off the wire. The next known protocol blocker is
+streaming, and a full official TCK run remains a release gate. The four v1
+push-notification methods now adapt the protocol's
+single authentication scheme to Acteon's durable push configuration, provide
+filter-safe pagination, bind inline `SendMessage` configurations to the trusted
+resulting task, and are exercised through the official client. The
+public card advertises push only when the durable card enables it and keeps
+streaming false until that adapter passes the external gate.
+Capability-gated calls now return the canonical A2A error codes with typed
+`google.rpc.ErrorInfo` details; undeclared push and extended-card features fail
+closed, and streaming calls return `UnsupportedOperation` while streaming is
+unadvertised.
+Every push configuration operation, including secret-bearing reads and inline
+`SendMessage` registration, requires management permission so an execution-only
+agent cannot install an exfiltration webhook or recover its credentials.
 HTTP+JSON is deliberately not advertised until its v1 wire adapter passes the
 same external gate.
 
