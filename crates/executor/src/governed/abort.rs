@@ -7,7 +7,8 @@
 //! through the binding's existing reconciliation verifier.
 
 use super::{
-    GovernedProviderError, GovernedProviderExecutor, GovernedProviderReceipt, attempt_id,
+    GovernedProviderError, GovernedProviderExecutor, GovernedProviderReceipt, federation_import,
+    operation_attempt_id,
     reconciliation::{MAX_PROOF_BYTES, ReconciliationAttempt},
 };
 use acteon_core::{ExecutionContextReference, PrincipalIdentity};
@@ -147,9 +148,18 @@ impl GovernedProviderExecutor {
             .snapshot()
             .await
             .map_err(|_| GovernedProviderError::Unavailable)?;
+        let op = self
+            .runtime
+            .load_operation(context, actor)
+            .await?
+            .ok_or(GovernedProviderError::Ownership)?;
+        let root_id = federation_import(&op, &snapshot)?.map_or_else(
+            || context.execution_id().to_string(),
+            |record| record.root_id.clone(),
+        );
         if !snapshot
             .roots
-            .get(&context.execution_id().to_string())
+            .get(&root_id)
             .is_some_and(|root| root.cancelled)
         {
             return Err(GovernedProviderError::Admission(
@@ -163,7 +173,7 @@ impl GovernedProviderExecutor {
             let Some(ordinal) = observed.attempts.checked_sub(1) else {
                 return Ok(None);
             };
-            let id = attempt_id(context.execution_id(), ordinal);
+            let id = operation_attempt_id(&op, ordinal)?;
             let key = abort_key_for_id(context, &id);
             let Some(record) = self.load_abort_record(&key).await? else {
                 return Ok(None);
@@ -268,7 +278,7 @@ impl GovernedProviderExecutor {
             .map_err(|_| GovernedProviderError::Unavailable)?;
         let start = snapshot
             .starts
-            .get(&attempt_id(context.execution_id(), ordinal))
+            .get(&operation_attempt_id(&op, ordinal)?)
             .ok_or(GovernedProviderError::Conflict)?;
         super::reconciliation::descriptor(&op, ordinal, &start.token)
     }

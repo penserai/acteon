@@ -3,7 +3,7 @@
 //! A remote probe needs its own qualified effect and current maintenance permit.
 use super::{
     GovernedProviderError, GovernedProviderExecutor, GovernedProviderReceipt,
-    GovernedProviderStatus, Operation, Runtime, attempt_id, valid_text,
+    GovernedProviderStatus, Operation, Runtime, valid_text,
 };
 use acteon_core::{
     ActionError, ActionOutcome, ExecutionContextReference, PrincipalIdentity, ProviderResponse,
@@ -212,13 +212,16 @@ pub(super) struct Resolution {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(super) requires_management_authorization: bool,
 }
-pub(super) fn resolution_key(context: &ExecutionContextReference, ordinal: u32) -> StateKey {
-    StateKey::new(
-        context.namespace(),
-        context.tenant(),
+pub(super) fn resolution_key(
+    op: &Operation,
+    ordinal: u32,
+) -> Result<StateKey, GovernedProviderError> {
+    Ok(StateKey::new(
+        op.context.namespace(),
+        op.context.tenant(),
         KeyKind::Custom(RECONCILIATION_KIND.into()),
-        attempt_id(context.execution_id(), ordinal),
-    )
+        super::operation_attempt_id(op, ordinal)?,
+    ))
 }
 fn binding_digest(binding: &super::Binding) -> Result<String, GovernedProviderError> {
     Ok(format!(
@@ -243,7 +246,7 @@ pub(super) fn descriptor(
     Ok(ReconciliationAttempt {
         context: op.context.clone(),
         action_id: op.action.id.to_string(),
-        attempt_id: attempt_id(op.context.execution_id(), ordinal),
+        attempt_id: super::operation_attempt_id(op, ordinal)?,
         ordinal,
         token: token.into(),
         binding_digest: binding_digest(&op.binding)?,
@@ -286,7 +289,7 @@ impl Runtime {
         ordinal: u32,
         start: &StartRecord,
     ) -> Result<Option<(Resolution, AttemptEvidenceReference)>, GovernedProviderError> {
-        let key = resolution_key(&op.context, ordinal);
+        let key = resolution_key(op, ordinal)?;
         let Some(raw) = self
             .state
             .get(&key)
@@ -432,7 +435,7 @@ impl GovernedProviderExecutor {
             .snapshot()
             .await
             .map_err(|_| GovernedProviderError::Unavailable)?;
-        let id = attempt_id(context.execution_id(), ordinal);
+        let id = super::operation_attempt_id(&op, ordinal)?;
         let start = snapshot
             .starts
             .get(&id)
@@ -495,7 +498,7 @@ impl GovernedProviderExecutor {
             .map_err(|_| GovernedProviderError::Unavailable)?;
         let start = snapshot
             .starts
-            .get(&attempt_id(context.execution_id(), ordinal))
+            .get(&super::operation_attempt_id(&op, ordinal)?)
             .ok_or(GovernedProviderError::Conflict)?;
         Ok(Some(descriptor(&op, ordinal, &start.token)?))
     }
@@ -577,7 +580,7 @@ impl GovernedProviderExecutor {
             .map_err(|_| GovernedProviderError::Unavailable)?;
         let start = snapshot
             .starts
-            .get(&attempt_id(context.execution_id(), ordinal))
+            .get(&super::operation_attempt_id(&op, ordinal)?)
             .ok_or(GovernedProviderError::Conflict)?;
         if let Some((stored, _)) = self.runtime.load_resolution(&op, ordinal, start).await? {
             if stored.proof != proof {
@@ -627,7 +630,7 @@ impl GovernedProviderExecutor {
         self.runtime
             .state
             .check_and_set(
-                &resolution_key(context, ordinal),
+                &resolution_key(&op, ordinal)?,
                 &self.runtime.encode(&resolution)?,
                 None,
             )
@@ -644,7 +647,7 @@ impl GovernedProviderExecutor {
             .map_err(|_| GovernedProviderError::Unavailable)?;
         let start = snapshot
             .starts
-            .get(&attempt_id(context.execution_id(), ordinal))
+            .get(&super::operation_attempt_id(&op, ordinal)?)
             .ok_or(GovernedProviderError::Conflict)?;
         let (stored, _) = self
             .runtime

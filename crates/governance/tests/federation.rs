@@ -160,6 +160,91 @@ async fn fixture() -> (
     (store, coordinator, signer, clock)
 }
 
+async fn assert_generic_bypass_closed(
+    coordinator: &AuthorityCoordinator,
+    imported: &acteon_governance::federation::FederationImportRecord,
+) {
+    assert!(matches!(
+        coordinator
+            .register_attempt(AttemptRequest {
+                id: "generic-bypass",
+                subject: imported.target.id(),
+                resources: &effect("telemetry.read").resources,
+                request_digest: &"f".repeat(64),
+                expected_authority: &coordinator.snapshot().await.unwrap().stamp(),
+                reservation: Some(RootReservation {
+                    root_id: imported.root_id.clone(),
+                    units: 1,
+                }),
+                now_ms: 100,
+            })
+            .await,
+        Err(CoordinationError::Restricted)
+    ));
+}
+
+async fn assert_invalid_invocations_denied(
+    coordinator: &AuthorityCoordinator,
+    signer: &FederationEnvelopeSigner,
+    reference: &FederationImportReference,
+    clock: &ManualClock,
+) {
+    let mismatched_input = invocation(signer, reference, "different-input", 'b');
+    assert!(matches!(
+        coordinator
+            .register_federated_attempt(FederatedAttempt {
+                invocation: &mismatched_input,
+                effect: &effect("telemetry.read"),
+                request_digest: &"c".repeat(64),
+                ordinal: 0,
+                units: 1,
+                expected_authority: &coordinator.snapshot().await.unwrap().stamp(),
+                clock,
+            })
+            .await,
+        Err(CoordinationError::Restricted)
+    ));
+    let mut tampered = invocation(signer, reference, "tampered", 'b');
+    tampered.payload = tampered.payload.replace(&"b".repeat(64), &"c".repeat(64));
+    assert!(matches!(
+        coordinator
+            .register_federated_attempt(FederatedAttempt {
+                invocation: &tampered,
+                effect: &effect("telemetry.read"),
+                request_digest: &"c".repeat(64),
+                ordinal: 0,
+                units: 1,
+                expected_authority: &coordinator.snapshot().await.unwrap().stamp(),
+                clock,
+            })
+            .await,
+        Err(CoordinationError::Restricted)
+    ));
+    let expired = signer
+        .sign_invocation(&FederationInvocation::new(
+            "expired",
+            reference.clone(),
+            "c".repeat(64),
+            90,
+            100,
+        ))
+        .unwrap();
+    assert!(matches!(
+        coordinator
+            .register_federated_attempt(FederatedAttempt {
+                invocation: &expired,
+                effect: &effect("telemetry.read"),
+                request_digest: &"c".repeat(64),
+                ordinal: 0,
+                units: 1,
+                expected_authority: &coordinator.snapshot().await.unwrap().stamp(),
+                clock,
+            })
+            .await,
+        Err(CoordinationError::Restricted)
+    ));
+}
+
 #[tokio::test]
 async fn audience_bound_import_is_attenuated_replay_safe_and_generic_path_closed() {
     let (_, coordinator, signer, clock) = fixture().await;
@@ -195,23 +280,7 @@ async fn audience_bound_import_is_attenuated_replay_safe_and_generic_path_closed
         .check_federation_import(&reference, &clock)
         .await
         .unwrap();
-    assert!(matches!(
-        coordinator
-            .register_attempt(AttemptRequest {
-                id: "generic-bypass",
-                subject: imported.target.id(),
-                resources: &effect("telemetry.read").resources,
-                request_digest: &"f".repeat(64),
-                expected_authority: &coordinator.snapshot().await.unwrap().stamp(),
-                reservation: Some(RootReservation {
-                    root_id: imported.root_id.clone(),
-                    units: 1,
-                }),
-                now_ms: 100,
-            })
-            .await,
-        Err(CoordinationError::Restricted)
-    ));
+    assert_generic_bypass_closed(&coordinator, &imported).await;
     let signed_invocation = invocation(&signer, &reference, "foreign-effect-1", 'b');
     let started = coordinator
         .register_federated_attempt(FederatedAttempt {
@@ -244,62 +313,7 @@ async fn audience_bound_import_is_attenuated_replay_safe_and_generic_path_closed
         StartRegistration::Existing(_)
     ));
 
-    let mismatched_input = invocation(&signer, &reference, "different-input", 'b');
-    assert!(matches!(
-        coordinator
-            .register_federated_attempt(FederatedAttempt {
-                invocation: &mismatched_input,
-                effect: &effect("telemetry.read"),
-                request_digest: &"c".repeat(64),
-                ordinal: 0,
-                units: 1,
-                expected_authority: &coordinator.snapshot().await.unwrap().stamp(),
-                clock: &clock,
-            })
-            .await,
-        Err(CoordinationError::Restricted)
-    ));
-
-    let mut tampered = invocation(&signer, &reference, "tampered", 'b');
-    tampered.payload = tampered.payload.replace(&"b".repeat(64), &"c".repeat(64));
-    assert!(matches!(
-        coordinator
-            .register_federated_attempt(FederatedAttempt {
-                invocation: &tampered,
-                effect: &effect("telemetry.read"),
-                request_digest: &"c".repeat(64),
-                ordinal: 0,
-                units: 1,
-                expected_authority: &coordinator.snapshot().await.unwrap().stamp(),
-                clock: &clock,
-            })
-            .await,
-        Err(CoordinationError::Restricted)
-    ));
-
-    let expired = signer
-        .sign_invocation(&FederationInvocation::new(
-            "expired",
-            reference,
-            "c".repeat(64),
-            90,
-            100,
-        ))
-        .unwrap();
-    assert!(matches!(
-        coordinator
-            .register_federated_attempt(FederatedAttempt {
-                invocation: &expired,
-                effect: &effect("telemetry.read"),
-                request_digest: &"c".repeat(64),
-                ordinal: 0,
-                units: 1,
-                expected_authority: &coordinator.snapshot().await.unwrap().stamp(),
-                clock: &clock,
-            })
-            .await,
-        Err(CoordinationError::Restricted)
-    ));
+    assert_invalid_invocations_denied(&coordinator, &signer, &reference, &clock).await;
     assert_ne!(
         signed_invocation.attempt_id(0).unwrap(),
         signed_invocation.attempt_id(1).unwrap()

@@ -305,6 +305,18 @@ pub struct FederationImportRecord {
     pub signed_envelope: SignedFederationEnvelope,
 }
 
+impl FederationImportRecord {
+    /// Whether a concrete local effect stays within this imported ceiling.
+    /// This is an inspection helper only; attempt registration repeats the
+    /// check atomically with current trust, closures and budget accounting.
+    #[must_use]
+    pub fn allows_effect(&self, effect: &AcceptedEffect) -> bool {
+        self.effects
+            .iter()
+            .any(|allowed| matches_effect(allowed, effect))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FederationImportReference {
@@ -1192,6 +1204,25 @@ impl AuthorityCoordinator {
         &self,
         request: FederatedAttempt<'_>,
     ) -> Result<StartRegistration, CoordinationError> {
+        self.register_federated_attempt_inner(request, None).await
+    }
+
+    /// Register the same exact federated attempt while sealing the trusted
+    /// host's immutable operation journal into the coordinator start record.
+    pub async fn register_federated_attempt_with_operation(
+        &self,
+        request: FederatedAttempt<'_>,
+        operation: &crate::AttemptEvidenceReference,
+    ) -> Result<StartRegistration, CoordinationError> {
+        self.register_federated_attempt_inner(request, Some(operation))
+            .await
+    }
+
+    async fn register_federated_attempt_inner(
+        &self,
+        request: FederatedAttempt<'_>,
+        operation: Option<&crate::AttemptEvidenceReference>,
+    ) -> Result<StartRegistration, CoordinationError> {
         if request.units == 0 {
             return Err(CoordinationError::Invalid("federated attempt units".into()));
         }
@@ -1218,7 +1249,7 @@ impl AuthorityCoordinator {
                 now_ms: request.clock.now().timestamp_millis(),
             },
             None,
-            None,
+            operation,
             Some(&FederationAttemptCheck {
                 invocation: request.invocation,
                 effect: request.effect,

@@ -1,8 +1,8 @@
 # Federation trust kernel
 
 **Status:** governance substrate, deployment bindings, authenticated trust
-management and inert inbound admission implemented; execution handoff remains
-gated.
+management, inert inbound admission and durable provider execution adapter
+implemented; authenticated server dispatch remains gated.
 
 Acteon's local agent mesh uses server-held authority in one administrative
 domain. Federation cannot extend that design by serializing a local context or
@@ -68,6 +68,29 @@ revocation. Revisions cannot retarget the foreign domain or local audience.
 Existing imports stop authorizing new effects when their accepted trust revision
 is no longer current.
 
+## Provider execution
+
+`GovernedProviderExecutor::execute_federated` is the host-side execution
+boundary for an exact signed invocation. It derives deterministic local context
+and execution IDs from the signed bytes, persists the complete immutable
+operation before delivery, and seals that operation digest into every start
+record. The adapter independently hashes the prepared `Action`; a signed digest
+cannot authorize a different provider payload.
+
+The existing provider lifecycle then applies without a federation-specific
+side channel: qualified provider bindings, timeouts, known-rejection retries,
+one unit per attempt, uncertainty, settlement evidence, reconciliation, abort
+and historical inspection all use the configured `StateStore`. Retry ordinals
+produce distinct deterministic federation attempt IDs while retaining the same
+signed input. An exact completed replay reads retained evidence without checking
+current trust or calling the provider again. Prepared work and retries re-enter
+the coordinator, where current trust and budget are checked before delivery.
+
+This adapter receives an already authenticated local target from its host. It
+does not authenticate a network peer. A server route must authenticate the
+configured peer on every dispatch or recovery request before calling it; a
+background worker cannot resume unregistered federated work from stored labels.
+
 ## Freshness and partitions
 
 The issuer signs its authority observation time and monotonic revocation epoch.
@@ -123,13 +146,12 @@ envelope.
 
 ## Remaining integration gates
 
-The next slice must derive the recipient's local execution context from the
-imported record and recheck current peer identity, trust, target status,
-closures, expiry and effect bounds at the same durable transition that dispatches
-work. The provider adapter must compute the prepared input digest and pass the
-signed invocation to the coordinator rather than accept authority fields from a
-dispatch request. Recovery must require the same signed intent and current peer
-identity before starting an unregistered delivery attempt.
+The next slice is an authenticated server dispatch/replay endpoint. It must bind
+the configured peer to the retained import, resolve the prepared local provider
+binding, and pass only the authenticated target, signed invocation and prepared
+`Action` to the executor. Every request that could start an unregistered attempt
+must reauthenticate the peer. Completed observation may survive trust revocation,
+but it must still enforce read ownership at the server boundary.
 
 Later federation gates include outbound delivery, credential exchange,
 capability negotiation, remote card and key rotation, response-loss recovery,
