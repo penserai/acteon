@@ -311,6 +311,30 @@ async fn exact_signed_intent_is_durable_before_one_import_and_one_invocation() {
 }
 
 #[tokio::test]
+async fn registration_can_be_separated_from_authorized_delivery() {
+    let fixture = Fixture::new(true);
+    let registered = fixture.transport.register(fixture.intent()).await.unwrap();
+    assert!(matches!(
+        registered.status,
+        FederationDeliveryStatus::Registered
+    ));
+    assert_eq!(fixture.adapter.imports.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.adapter.invokes.load(Ordering::SeqCst), 0);
+
+    let delivered = fixture
+        .transport
+        .deliver_registered(fixture.intent())
+        .await
+        .unwrap();
+    assert!(matches!(
+        delivered.status,
+        FederationDeliveryStatus::Accepted { .. }
+    ));
+    assert_eq!(fixture.adapter.imports.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.adapter.invokes.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn concurrent_submission_has_one_network_owner() {
     let fixture = Arc::new(Fixture::new(true));
     fixture.adapter.block_import.store(true, Ordering::SeqCst);

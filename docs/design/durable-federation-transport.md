@@ -32,6 +32,13 @@ payload encryption uses the same host encryptor as other retained execution
 state. Credentials remain in the adapter and are never serialized into the
 journal.
 
+Registration and delivery are separate trusted operations. A host can retain
+the exact intent with `register`, atomically reserve current local permit and
+budget authority in its coordinator, and only then call `deliver_registered`.
+The convenience `submit` method composes registration and delivery for callers
+that already established an equivalent authority boundary. Calling delivery
+without the durable intent conflicts before any adapter call.
+
 The adapter owns endpoint policy and protocol binding. The concrete
 `ActeonFederationHttpAdapter` uses `GuardedClient`, disables redirects and
 proxies, bounds response bodies, supplies one host credential, and constructs
@@ -100,14 +107,15 @@ runtime.
 
 ## Verification
 
-Focused contracts cover exact persistence before network delivery, one network
-owner under concurrency, import and invocation response loss, no ordinary
-resend, explicit qualified recovery, expired-claim recovery, signed expiry,
-terminal observation after expiry, message substitution, and retained-state
-tampering. The concrete HTTP adapter has a route and credential contract for the
-two protected endpoints. A later release gate must run the complete source and
-destination servers through committed-response loss and source restart on every
-supported production state backend.
+Focused contracts cover separated registration and authorized delivery, exact
+persistence before network delivery, one network owner under concurrency,
+import and invocation response loss, no ordinary resend, explicit qualified
+recovery, expired-claim recovery, signed expiry, terminal observation after
+expiry, message substitution, and retained-state tampering. The concrete HTTP
+adapter has a route and credential contract for the two protected endpoints. A
+later release gate must run the complete source and destination servers through
+committed-response loss and source restart on every supported production state
+backend.
 
 ## Remaining gates
 

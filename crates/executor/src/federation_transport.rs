@@ -219,6 +219,17 @@ impl DurableFederationTransport {
         &self,
         intent: FederationDeliveryIntent<'_>,
     ) -> Result<FederationDeliveryReceipt, FederationTransportError> {
+        self.register(intent).await?;
+        self.deliver_registered(intent).await
+    }
+
+    /// Retain the exact intent without crossing the network boundary. A host
+    /// can then atomically reserve current local authority before calling
+    /// `deliver_registered` with the same intent.
+    pub async fn register(
+        &self,
+        intent: FederationDeliveryIntent<'_>,
+    ) -> Result<FederationDeliveryReceipt, FederationTransportError> {
         let expected = self.prepare(intent)?;
         let key = Self::key(&expected);
         self.dependencies
@@ -226,6 +237,28 @@ impl DurableFederationTransport {
             .check_and_set(&key, &self.encode(&expected)?, None)
             .await
             .map_err(|_| FederationTransportError::Unavailable)?;
+        self.observe_record(&key, &expected).await
+    }
+
+    /// Cross the network only after a trusted host has established any local
+    /// permit, budget and closure reservation required for this exact intent.
+    /// Missing durable intent is a conflict and no adapter call is made.
+    pub async fn deliver_registered(
+        &self,
+        intent: FederationDeliveryIntent<'_>,
+    ) -> Result<FederationDeliveryReceipt, FederationTransportError> {
+        let expected = self.prepare(intent)?;
+        let key = Self::key(&expected);
+        if self
+            .dependencies
+            .state
+            .get(&key)
+            .await
+            .map_err(|_| FederationTransportError::Unavailable)?
+            .is_none()
+        {
+            return Err(FederationTransportError::Conflict);
+        }
         for _ in 0..3 {
             let receipt = self.advance(&key, &expected, false).await?;
             if !matches!(receipt.status, FederationDeliveryStatus::Imported { .. }) {

@@ -2050,6 +2050,11 @@ explicit replay can reclaim it only through an adapter qualified for exact
 idempotent replay. Signed validity and claim timeouts use the shared Acteon
 clock; terminal evidence remains observable after expiry.
 
+Registration is separately callable from network delivery so the trusted host
+can persist the exact signed intent, reserve current local permit and budget
+authority, and only then cross the network boundary. Delivery without the
+matching retained intent conflicts before invoking the adapter.
+
 The first concrete adapter uses the guarded outbound client, one host-owned
 credential, disabled redirects and proxies, bounded response reads, and exact
 Acteon federation routes derived from the signed remote scope. Credentials do
