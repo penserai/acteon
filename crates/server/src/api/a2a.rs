@@ -1858,6 +1858,14 @@ fn v1_status_update(
     Ok(serde_json::json!({"statusUpdate": update}))
 }
 
+pub(crate) fn project_v1_status_update(
+    task: &Task,
+    state: TaskState,
+    timestamp: DateTime<Utc>,
+) -> Option<Value> {
+    v1_status_update(task, state, timestamp).ok()
+}
+
 fn v1_artifact_update(task: &Task, artifact_id: &str, last_chunk: bool) -> Option<Value> {
     let artifact = task
         .artifacts
@@ -1875,6 +1883,14 @@ fn v1_artifact_update(task: &Task, artifact_id: &str, last_chunk: bool) -> Optio
         update["contextId"] = Value::String(context_id.clone());
     }
     Some(serde_json::json!({"artifactUpdate": update}))
+}
+
+pub(crate) fn project_v1_artifact_update(
+    task: &Task,
+    artifact_id: &str,
+    last_chunk: bool,
+) -> Option<Value> {
+    v1_artifact_update(task, artifact_id, last_chunk)
 }
 
 fn make_v1_task_stream(

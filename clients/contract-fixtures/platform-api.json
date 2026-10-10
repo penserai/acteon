@@ -290,7 +290,7 @@
         "tenant",
         "agent"
       ],
-      "response": "json"
+      "response": "stream"
     },
     {
       "name": "agent_services_task_authorization_request",

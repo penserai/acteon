@@ -5,8 +5,9 @@
 use std::sync::Arc;
 
 use acteon_core::{
-    Action, ActionOutcome, Artifact, ExecutionContextReference, TASK_CHALLENGE_ID_METADATA_KEY,
-    Task, TaskAuthorizationRequirement, TaskMessage, TaskPart, TaskRole, TaskState,
+    Action, ActionOutcome, Artifact, ExecutionContextReference, StreamEvent,
+    TASK_CHALLENGE_ID_METADATA_KEY, Task, TaskAuthorizationRequirement, TaskMessage, TaskPart,
+    TaskRole, TaskState,
 };
 use acteon_executor::{
     ExecutorConfig,
@@ -43,6 +44,7 @@ pub struct AgentRuntimeDependencies {
     pub coordinator: AuthorityCoordinator,
     pub contexts: Arc<TrustedContextStore>,
     pub clock: Arc<dyn Clock>,
+    pub stream_tx: Option<tokio::sync::broadcast::Sender<StreamEvent>>,
 }
 
 /// Identify accepted governed work from its durable journal, including when a
@@ -234,8 +236,11 @@ impl AgentProviderRuntime {
             None,
         )?
         .require_credential_authority();
-        let tasks =
+        let mut tasks =
             TaskEngine::new(dependencies.state.clone()).with_clock(dependencies.clock.clone());
+        if let Some(stream_tx) = dependencies.stream_tx.clone() {
+            tasks = tasks.with_stream_tx(stream_tx);
+        }
         Ok(Self {
             dependencies,
             binding,

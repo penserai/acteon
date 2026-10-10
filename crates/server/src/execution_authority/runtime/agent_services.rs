@@ -12,7 +12,7 @@ use crate::{
         },
     },
 };
-use acteon_core::{ExecutionContextReference, PrincipalKind, Task, TaskMessage};
+use acteon_core::{AgentCard, ExecutionContextReference, PrincipalKind, Task, TaskMessage};
 use acteon_executor::governed::governed_provider_input_digest;
 use acteon_gateway::agent_runtime::{
     ACCEPTANCE_KIND, AgentProviderRuntime, AgentTaskStopReceipt, accepted_agent_binding_digest,
@@ -98,6 +98,18 @@ pub struct AgentServiceParent<'a> {
 }
 
 impl ExecutionAuthorityRuntime {
+    /// Return the exact operator-qualified card installed with this service.
+    /// Generic bus publication cannot replace or widen this capability source.
+    pub fn agent_service_card(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        agent_id: &str,
+    ) -> Result<AgentCard, AgentServiceError> {
+        let (_, agent, _) = self.service(namespace, tenant, agent_id)?;
+        Ok(agent.declaration.card.clone())
+    }
+
     // Preflight all services before any deployment permit or grant is published.
     // Private authentication enrollment may exist already; it is never a permit.
     pub(super) async fn validate_agent_credentials(

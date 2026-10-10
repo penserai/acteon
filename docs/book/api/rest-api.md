@@ -771,8 +771,11 @@ Official A2A 1.0 JSON-RPC bound to one configured agent service. `SendMessage`
 enters the governed execution runtime and `GetTask` revalidates the original
 authenticated source. Admission returns the opaque
 `X-Acteon-Agent-Source-Context` receipt; agent principals must return it for
-observation or continuation. The route also supports
-`GetExtendedAgentCard`. Methods whose governed lifecycle is not yet complete
+observation or continuation. The route also supports `GetExtendedAgentCard`,
+`SendStreamingMessage`, and `SubscribeToTask`. Both streaming methods use the
+exact card's capability, the shared tenant connection quota, and current
+source-provenance validation before every emitted status, artifact, or recovery
+snapshot. Methods whose governed lifecycle is not yet complete
 return `UnsupportedOperation` instead of falling back to the tenant Task
 engine.
 

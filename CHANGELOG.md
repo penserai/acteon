@@ -9,6 +9,12 @@
   catalogs for all five client SDKs and register every public and protected A2A
   route in the fail-closed permission inventory.
 
+- Add official exact-agent `SendStreamingMessage` and `SubscribeToTask` SSE
+  responses. Streaming is gated by the exact durable card, shares tenant
+  connection quotas, revalidates authenticated source provenance for every
+  emitted update, returns the admission receipt out of band, and strips private
+  execution bindings from recovery snapshots.
+
 - Derive recurring-action claim leases from the polling interval with two full
   intervals plus a recovery margin. Document pre-dispatch re-arming so delayed
   consumers cannot cause the same due occurrence to be dispatched again.

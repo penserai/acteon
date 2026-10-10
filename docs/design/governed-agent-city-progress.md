@@ -2235,10 +2235,15 @@ and agent principals must return the opaque source-context receipt issued at
 admission so a shared identity cannot join another job. Input continuation
 uses the same boundary. Trusted hosts may pair a private parent-context header
 with its exact permit references to preserve descendant accounting; neither
-can be supplied through model-controlled message content. The adapter projects schema-closed A2A 1.0 Tasks and
-resolves the exact durable card for `GetExtendedAgentCard`; it never chooses a
-destination from an aggregate tenant card. Governed list, streaming, push and
-confirmed cancellation remain explicit follow-ups and return
+can be supplied through model-controlled message content. The adapter projects
+schema-closed A2A 1.0 Tasks and resolves the exact durable card for
+`GetExtendedAgentCard`; it never chooses a destination from an aggregate tenant
+card. The same endpoint now implements official `SendStreamingMessage` and
+`SubscribeToTask`. It subscribes before admission or observation, shares the
+tenant connection quota, and revalidates current authentication plus original
+source provenance before every emitted update. Recovery snapshots also remove
+the private governed execution binding. Governed list, push and confirmed
+cancellation remain explicit follow-ups and return
 `UnsupportedOperation` on this interface.
 
 ### Signed federation capability negotiation

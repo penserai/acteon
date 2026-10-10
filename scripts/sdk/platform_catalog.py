@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 STREAMING = {
     "a2a_a2a_rpc",
     "a2a_a2a_task_events",
+    "agent_services_rpc",
     "bus_subscribe",
     "bus_consume_stream",
     "stream_stream",

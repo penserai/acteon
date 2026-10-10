@@ -99,11 +99,11 @@ model-generated message. An Acteon host can attach its privately held
 the call a bounded descendant of existing work; both headers are required as a
 pair and message content cannot manufacture either one.
 
-The governed endpoint currently implements `SendMessage`, `GetTask`, and
-`GetExtendedAgentCard`. A new message may set
+The governed endpoint implements `SendMessage`, `GetTask`,
+`GetExtendedAgentCard`, `SendStreamingMessage`, and `SubscribeToTask`. A new message may set
 `configuration.returnImmediately=true` to receive durable acceptance. A
 continuation must target the same Task and active input challenge. `ListTasks`,
-official streaming, push configuration, and protocol `CancelTask` return
+push configuration, and protocol `CancelTask` return
 `UnsupportedOperation` on this interface while their governed implementations
 are completed. Acteon's native `stop` operation is already available, but it
 fences future provider starts and reports uncertain aborts honestly; it is not
@@ -140,7 +140,11 @@ durable resolved artifact as a replacement (`append=false`), which lets a
 client recover safely even if it fell behind the broadcast buffer. A lagged
 consumer receives a fresh Task snapshot rather than a nonstandard warning
 frame. The stream shares Acteon's tenant connection quota and releases its slot
-on disconnect.
+on disconnect. On the exact-agent endpoint, every relevant event and lag
+refresh revalidates the original authenticated source through the governed
+runtime before emitting a frame. `SendStreamingMessage` returns the opaque
+`X-Acteon-Agent-Source-Context` receipt as an HTTP response header, and all
+Task snapshots omit Acteon's private execution binding.
 
 `SubscribeToTask` rejects terminal Tasks with `UnsupportedOperation`; use
 `GetTask` for their final snapshot. A card that does not advertise streaming

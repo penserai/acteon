@@ -10,7 +10,9 @@ use crate::{
     },
     execution_authority::{AgentServiceError, AgentServiceObservation, AgentServiceRequest},
 };
-use acteon_core::{Task, TaskMessage, TaskState};
+use acteon_core::{
+    ExecutionContextReference, StreamEvent, StreamEventType, Task, TaskMessage, TaskState,
+};
 use acteon_executor::delegation::{
     PeerAuthorizationStatus, PeerCancelStatus, PeerContinuationStatus, PeerSendStatus,
 };
@@ -18,12 +20,19 @@ use axum::{
     Extension, Json,
     extract::{Path, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode},
-    response::{IntoResponse, Response},
+    response::{
+        IntoResponse, Response,
+        sse::{Event, KeepAlive, Sse},
+    },
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use futures::stream::{self, Stream};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::time::Duration;
+use std::{convert::Infallible, sync::Arc, time::Duration};
+use tokio::sync::broadcast;
+
+use super::stream::ConnectionGuard;
 
 const SOURCE_CONTEXT_HEADER: &str = "x-acteon-agent-source-context";
 const EXECUTION_CONTEXT_HEADER: &str = "x-acteon-execution-context";
@@ -251,6 +260,16 @@ fn project_governed_v1_task(task: &Task) -> Result<Value, AgentRpcFailure> {
     Ok(projected)
 }
 
+fn encode_source_context(
+    source: Option<&ExecutionContextReference>,
+) -> Result<Option<String>, AgentRpcFailure> {
+    source
+        .map(serde_json::to_vec)
+        .transpose()
+        .map_err(|_| AgentRpcFailure::internal())
+        .map(|raw| raw.map(|raw| URL_SAFE_NO_PAD.encode(raw)))
+}
+
 async fn await_governed_agent_task(
     runtime: &crate::execution_authority::ExecutionAuthorityRuntime,
     namespace: &str,
@@ -313,15 +332,14 @@ impl AgentRpcContext<'_> {
     }
 }
 
-async fn send_agent_rpc(
+async fn submit_agent_rpc(
     context: &AgentRpcContext<'_>,
     params: &Value,
-) -> Result<(Value, Option<String>), AgentRpcFailure> {
+) -> Result<(Task, Option<ExecutionContextReference>), AgentRpcFailure> {
     let runtime = context.runtime()?;
     let source = parse_source_context(context.headers).map_err(AgentRpcFailure::invalid)?;
-    let return_immediately = agent_rpc_return_immediately(params)?;
     let mut message = decode_agent_rpc_message(params)?;
-    let (task, source_context) = if let Some(task_id) = message.task_id.clone() {
+    if let Some(task_id) = message.task_id.clone() {
         let task_id = uuid::Uuid::parse_str(&task_id)
             .map_err(|_| AgentRpcFailure::invalid("message.taskId is invalid"))?;
         let observed = runtime
@@ -355,7 +373,7 @@ async fn send_agent_rpc(
                 response: &message,
             })
             .await?;
-        (observed.task, source)
+        Ok((observed.task, source))
     } else {
         let authentication = context
             .state
@@ -376,8 +394,17 @@ async fn send_agent_rpc(
             parent,
         }))
         .await?;
-        (accepted.task, Some(accepted.source_context))
-    };
+        Ok((accepted.task, Some(accepted.source_context)))
+    }
+}
+
+async fn send_agent_rpc(
+    context: &AgentRpcContext<'_>,
+    params: &Value,
+) -> Result<(Value, Option<String>), AgentRpcFailure> {
+    let runtime = context.runtime()?;
+    let return_immediately = agent_rpc_return_immediately(params)?;
+    let (task, source_context) = submit_agent_rpc(context, params).await?;
     let task_id = uuid::Uuid::parse_str(&task.id).map_err(|_| AgentRpcFailure::internal())?;
     let task = if return_immediately {
         task
@@ -393,16 +420,315 @@ async fn send_agent_rpc(
         )
         .await?
     };
-    let encoded_source = source_context
-        .as_ref()
-        .map(serde_json::to_vec)
-        .transpose()
-        .map_err(|_| AgentRpcFailure::internal())?
-        .map(|raw| URL_SAFE_NO_PAD.encode(raw));
+    let encoded_source = encode_source_context(source_context.as_ref())?;
     Ok((
         serde_json::json!({"task": project_governed_v1_task(&task)?}),
         encoded_source,
     ))
+}
+
+fn ensure_agent_streaming_supported(context: &AgentRpcContext<'_>) -> Result<(), AgentRpcFailure> {
+    let card =
+        context
+            .runtime()?
+            .agent_service_card(context.namespace, context.tenant, context.agent)?;
+    if !card.capabilities.streaming {
+        return Err(AgentRpcFailure::unsupported(
+            "the selected agent does not publish streaming support",
+        ));
+    }
+    Ok(())
+}
+
+fn agent_stream_event(id: &Value, result: Value) -> Option<Event> {
+    serde_json::to_string(&agent_rpc_success(id.clone(), result))
+        .ok()
+        .map(|data| Event::default().data(data))
+}
+
+fn agent_stream_error_event(id: &Value, failure: AgentRpcFailure) -> Option<Event> {
+    serde_json::to_string(&agent_rpc_error(id.clone(), failure))
+        .ok()
+        .map(|data| Event::default().data(data))
+}
+
+struct GovernedAgentStreamState {
+    rx: broadcast::Receiver<StreamEvent>,
+    access: GovernedAgentStreamAccess,
+    task_id: uuid::Uuid,
+    task_id_text: String,
+    source: Option<ExecutionContextReference>,
+    request_id: Value,
+    initial: Option<Value>,
+    done: bool,
+    done_after_initial: bool,
+    close_on_interrupt: bool,
+    _guard: ConnectionGuard,
+}
+
+struct GovernedAgentStreamAccess {
+    runtime: Arc<crate::execution_authority::ExecutionAuthorityRuntime>,
+    proof: AuthenticatedExecutionConfiguration,
+    namespace: String,
+    tenant: String,
+    agent: String,
+}
+
+struct GovernedAgentStreamSeed {
+    task: Task,
+    source: Option<ExecutionContextReference>,
+    request_id: Value,
+    close_on_interrupt: bool,
+}
+
+fn observe_governed_stream(state: &GovernedAgentStreamState) -> AgentServiceObservation<'_> {
+    AgentServiceObservation {
+        namespace: &state.access.namespace,
+        tenant: &state.access.tenant,
+        agent_id: &state.access.agent,
+        task_id: state.task_id,
+        authentication: &state.access.proof,
+        source_context: state.source.as_ref(),
+    }
+}
+
+fn agent_stream_closes(task: &Task, close_on_interrupt: bool) -> bool {
+    task.status.state.is_terminal() || (close_on_interrupt && task.status.state.is_interrupt())
+}
+
+fn make_governed_agent_stream(
+    rx: broadcast::Receiver<StreamEvent>,
+    access: GovernedAgentStreamAccess,
+    seed: GovernedAgentStreamSeed,
+    guard: ConnectionGuard,
+) -> impl Stream<Item = Result<Event, Infallible>> {
+    let task_id = uuid::Uuid::parse_str(&seed.task.id).expect("governed task ids are UUIDs");
+    let done_after_initial = agent_stream_closes(&seed.task, seed.close_on_interrupt);
+    let initial = project_governed_v1_task(&seed.task)
+        .ok()
+        .map(|task| serde_json::json!({"task": task}));
+    let state = GovernedAgentStreamState {
+        rx,
+        access,
+        task_id,
+        task_id_text: seed.task.id,
+        source: seed.source,
+        request_id: seed.request_id,
+        initial,
+        done: false,
+        done_after_initial,
+        close_on_interrupt: seed.close_on_interrupt,
+        _guard: guard,
+    };
+
+    stream::unfold(state, |mut state| async move {
+        if state.done {
+            return None;
+        }
+        if let Some(initial) = state.initial.take() {
+            state.done = state.done_after_initial;
+            let frame = agent_stream_event(&state.request_id, initial)?;
+            return Some((Ok(frame), state));
+        }
+
+        loop {
+            let event = match state.rx.recv().await {
+                Ok(event) => event,
+                Err(broadcast::error::RecvError::Closed) => return None,
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    let observed = match state
+                        .access
+                        .runtime
+                        .observe_agent_service(observe_governed_stream(&state))
+                        .await
+                    {
+                        Ok(observed) => observed,
+                        Err(error) => {
+                            state.done = true;
+                            let frame = agent_stream_error_event(&state.request_id, error.into())?;
+                            return Some((Ok(frame), state));
+                        }
+                    };
+                    state.done = agent_stream_closes(&observed.task, state.close_on_interrupt);
+                    let task = project_governed_v1_task(&observed.task).ok()?;
+                    let frame =
+                        agent_stream_event(&state.request_id, serde_json::json!({"task": task}))?;
+                    return Some((Ok(frame), state));
+                }
+            };
+            if event.namespace != state.access.namespace
+                || event.tenant != state.access.tenant
+                || event.action_type.as_deref() != Some("a2a.task")
+                || event.action_id.as_deref() != Some(state.task_id_text.as_str())
+            {
+                continue;
+            }
+            let observed = match state
+                .access
+                .runtime
+                .observe_agent_service(observe_governed_stream(&state))
+                .await
+            {
+                Ok(observed) => observed,
+                Err(error) => {
+                    state.done = true;
+                    let frame = agent_stream_error_event(&state.request_id, error.into())?;
+                    return Some((Ok(frame), state));
+                }
+            };
+            let (result, closes_stream) = match &event.event_type {
+                StreamEventType::TaskTransitioned { to, .. } => (
+                    super::a2a::project_v1_status_update(&observed.task, *to, event.timestamp),
+                    to.is_terminal() || (state.close_on_interrupt && to.is_interrupt()),
+                ),
+                StreamEventType::TaskArtifactUpdated {
+                    artifact_id,
+                    last_chunk,
+                    ..
+                } => (
+                    super::a2a::project_v1_artifact_update(
+                        &observed.task,
+                        artifact_id,
+                        *last_chunk,
+                    ),
+                    false,
+                ),
+                _ => (None, false),
+            };
+            let Some(result) = result else {
+                continue;
+            };
+            state.done = closes_stream;
+            let frame = agent_stream_event(&state.request_id, result)?;
+            return Some((Ok(frame), state));
+        }
+    })
+}
+
+async fn prepare_agent_stream(
+    context: &AgentRpcContext<'_>,
+    runtime: &crate::execution_authority::ExecutionAuthorityRuntime,
+    method: &str,
+    params: &Value,
+) -> Result<(Task, Option<ExecutionContextReference>, bool), AgentRpcFailure> {
+    match method {
+        "SendStreamingMessage" => {
+            agent_rpc_return_immediately(params)?;
+            submit_agent_rpc(context, params)
+                .await
+                .map(|(task, source)| (task, source, true))
+        }
+        "SubscribeToTask" => {
+            let id = params
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| AgentRpcFailure::invalid("params.id is required"))?;
+            let task_id =
+                uuid::Uuid::parse_str(id).map_err(|_| AgentRpcFailure::task_not_found(id))?;
+            let source = parse_source_context(context.headers).map_err(AgentRpcFailure::invalid)?;
+            let observed = runtime
+                .observe_agent_service(context.observation(task_id, source.as_ref()))
+                .await?;
+            if observed.task.status.state.is_terminal() {
+                return Err(AgentRpcFailure::unsupported(
+                    "a terminal task cannot be subscribed to",
+                ));
+            }
+            Ok((observed.task, source, false))
+        }
+        _ => unreachable!("only streaming methods enter the streaming handler"),
+    }
+}
+
+async fn handle_agent_streaming_rpc(
+    context: &AgentRpcContext<'_>,
+    request: ParsedAgentRpc,
+) -> Response {
+    if request.is_notification {
+        return invalid_agent_rpc_request(
+            Value::Null,
+            "streaming requests require jsonrpc \"2.0\" and an id",
+        );
+    }
+    if let Err(failure) = validate_agent_rpc_tenant(&request.params, context.tenant) {
+        return agent_rpc_response(agent_rpc_error(request.id, failure), None);
+    }
+    if let Err(failure) = ensure_agent_streaming_supported(context) {
+        return agent_rpc_response(agent_rpc_error(request.id, failure), None);
+    }
+    let Some(registry) = context.state.connection_registry.as_ref() else {
+        return error(StatusCode::SERVICE_UNAVAILABLE, "sse_streaming_not_enabled");
+    };
+    let bucket = format!("{}:{}", context.namespace, context.tenant);
+    let Some(guard) = registry.try_acquire(&bucket).await else {
+        return error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too_many_tenant_sse_connections",
+        );
+    };
+    let rx = {
+        let gateway = context.state.gateway.read().await;
+        gateway.stream_tx().subscribe()
+    };
+    let Some(runtime) = context.state.execution_authority.clone() else {
+        return agent_rpc_response(
+            agent_rpc_error(request.id, AgentRpcFailure::internal()),
+            None,
+        );
+    };
+
+    let returns_source = request.method == "SendStreamingMessage";
+    let outcome =
+        prepare_agent_stream(context, runtime.as_ref(), &request.method, &request.params).await;
+    let (task, source, close_on_interrupt) = match outcome {
+        Ok(outcome) => outcome,
+        Err(failure) => return agent_rpc_response(agent_rpc_error(request.id, failure), None),
+    };
+    let encoded_source = if returns_source {
+        match encode_source_context(source.as_ref()) {
+            Ok(source) => source,
+            Err(failure) => return agent_rpc_response(agent_rpc_error(request.id, failure), None),
+        }
+    } else {
+        None
+    };
+    let event_stream = make_governed_agent_stream(
+        rx,
+        GovernedAgentStreamAccess {
+            runtime,
+            proof: context.proof.clone(),
+            namespace: context.namespace.to_owned(),
+            tenant: context.tenant.to_owned(),
+            agent: context.agent.to_owned(),
+        },
+        GovernedAgentStreamSeed {
+            task,
+            source,
+            request_id: request.id,
+            close_on_interrupt,
+        },
+        guard,
+    );
+    let mut response = Sse::new(event_stream)
+        .keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(15))
+                .text("ping"),
+        )
+        .into_response();
+    response.headers_mut().insert(
+        "a2a-version",
+        HeaderValue::from_static(A2A_PROTOCOL_VERSION),
+    );
+    response
+        .headers_mut()
+        .insert("cache-control", HeaderValue::from_static("no-store"));
+    if let Some(source) = encoded_source
+        && let Ok(value) = HeaderValue::from_str(&source)
+    {
+        response.headers_mut().insert(SOURCE_CONTEXT_HEADER, value);
+    }
+    response
 }
 
 async fn get_agent_rpc(
@@ -433,20 +759,15 @@ async fn get_agent_rpc(
     Ok((project_governed_v1_task(&task)?, None))
 }
 
-async fn extended_agent_card_rpc(
+fn extended_agent_card_rpc(
     context: &AgentRpcContext<'_>,
 ) -> Result<(Value, Option<String>), AgentRpcFailure> {
-    let store = {
-        let gateway = context.state.gateway.read().await;
-        gateway.state_store().clone()
-    };
-    let card =
-        super::a2a_discovery::load_card(&store, context.namespace, context.tenant, context.agent)
-            .await
-            .map_err(|_| AgentRpcFailure::internal())?
-            .ok_or_else(|| {
-                AgentRpcFailure::extended_card_not_configured("the agent card is unavailable")
-            })?;
+    let card = context
+        .runtime()?
+        .agent_service_card(context.namespace, context.tenant, context.agent)
+        .map_err(|_| {
+            AgentRpcFailure::extended_card_not_configured("the agent card is unavailable")
+        })?;
     if !card.capabilities.extended_agent_card {
         return Err(AgentRpcFailure::extended_card_not_configured(
             "the agent does not publish an extended card",
@@ -464,15 +785,13 @@ async fn dispatch_agent_rpc(
     match method {
         "SendMessage" => send_agent_rpc(context, &params).await,
         "GetTask" => get_agent_rpc(context, &params).await,
-        "GetExtendedAgentCard" => extended_agent_card_rpc(context).await,
+        "GetExtendedAgentCard" => extended_agent_card_rpc(context),
         "CancelTask" => Err(AgentRpcFailure::unsupported(
             "A2A cancellation is unavailable until provider abort is reconciled; use the governed stop operation to fence future starts",
         )),
-        "ListTasks" | "SendStreamingMessage" | "SubscribeToTask" => {
-            Err(AgentRpcFailure::unsupported(format!(
-                "{method} is not supported by this governed agent interface",
-            )))
-        }
+        "ListTasks" => Err(AgentRpcFailure::unsupported(format!(
+            "{method} is not supported by this governed agent interface",
+        ))),
         "CreateTaskPushNotificationConfig"
         | "GetTaskPushNotificationConfig"
         | "ListTaskPushNotificationConfigs"
@@ -599,15 +918,17 @@ pub async fn rpc(
     // Observation remains available to the authenticated original source after
     // role offboarding. Every other method must retain current invocation
     // authority; method-level runtime checks remain authoritative as well.
-    if request.method != "GetTask"
+    if !matches!(request.method.as_str(), "GetTask" | "SubscribeToTask")
         && (!identity.role.has_permission(Permission::Dispatch)
             || !identity.is_authorized(&tenant, &namespace, &format!("agent.{agent}"), "invoke"))
     {
         return error(StatusCode::FORBIDDEN, "agent_service_authority_required");
     }
-    if request.method == "SendMessage"
-        && let Err((status, body)) =
-            super::a2a::enforce_agent_routable(&state, &identity, &namespace, &tenant).await
+    if matches!(
+        request.method.as_str(),
+        "SendMessage" | "SendStreamingMessage"
+    ) && let Err((status, body)) =
+        super::a2a::enforce_agent_routable(&state, &identity, &namespace, &tenant).await
     {
         return (status, [("a2a-version", A2A_PROTOCOL_VERSION)], body).into_response();
     }
@@ -619,6 +940,12 @@ pub async fn rpc(
         agent: &agent,
         headers: &headers,
     };
+    if matches!(
+        request.method.as_str(),
+        "SendStreamingMessage" | "SubscribeToTask"
+    ) {
+        return handle_agent_streaming_rpc(&context, request).await;
+    }
     let outcome = dispatch_agent_rpc(&context, &request.method, request.params).await;
     if request.is_notification {
         return StatusCode::NO_CONTENT.into_response();

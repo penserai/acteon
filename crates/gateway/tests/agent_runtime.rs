@@ -1,8 +1,8 @@
 //! Actual governed provider calls behind durable agent-task acceptance.
 use acteon_core::{
     Action, AgentCard, PauseKind, PrincipalIdentity, PrincipalKind, ProviderResponse, ResourceKind,
-    ResourceRef, Skill, TASK_CHALLENGE_ID_METADATA_KEY, TaskMessage, TaskRole, TaskState,
-    bus_agent_card::Interface,
+    ResourceRef, Skill, StreamEventType, TASK_CHALLENGE_ID_METADATA_KEY, TaskMessage, TaskRole,
+    TaskState, bus_agent_card::Interface,
 };
 use acteon_executor::{
     ExecutorConfig, RetryStrategy,
@@ -315,6 +315,7 @@ impl Fixture {
                 coordinator,
                 contexts,
                 clock,
+                stream_tx: None,
             },
             Self::binding(card, bound),
             bound.clone(),
@@ -338,6 +339,31 @@ impl Fixture {
             &self.card,
             &self.bound,
         )
+    }
+    fn runtime_with_stream(
+        &self,
+        stream_tx: tokio::sync::broadcast::Sender<acteon_core::StreamEvent>,
+    ) -> AgentProviderRuntime {
+        AgentProviderRuntime::new_trusted(
+            AgentRuntimeDependencies {
+                state: self.state.clone(),
+                coordinator: self.coordinator.clone(),
+                contexts: self.contexts.clone(),
+                clock: self.clock.clone(),
+                stream_tx: Some(stream_tx),
+            },
+            Self::binding(&self.card, &self.bound),
+            self.bound.clone(),
+            ExecutorConfig {
+                max_retries: 0,
+                max_concurrent: 1,
+                execution_timeout: Duration::from_secs(1),
+                retry_strategy: RetryStrategy::Constant {
+                    delay: Duration::ZERO,
+                },
+            },
+        )
+        .unwrap()
     }
     async fn new(ambiguous: bool) -> Self {
         Self::new_with_state(
@@ -678,6 +704,27 @@ async fn signed_federated_message(
         ))
         .unwrap();
     (signed_invocation, trust, issuance)
+}
+
+#[tokio::test]
+async fn governed_agent_runtime_publishes_task_transitions_to_the_shared_stream() {
+    let fixture = Fixture::new(false).await;
+    let (tx, mut rx) = tokio::sync::broadcast::channel(16);
+    let runtime = fixture.runtime_with_stream(tx);
+    fixture.accept(&runtime).await;
+    let completed = runtime.resume(fixture.child.execution_id()).await.unwrap();
+    assert_eq!(completed.task.status.state, TaskState::Completed);
+
+    let mut states = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        assert_eq!(event.namespace, "city");
+        assert_eq!(event.tenant, "tenant");
+        assert_eq!(event.action_id.as_deref(), Some(completed.task.id.as_str()));
+        if let StreamEventType::TaskTransitioned { to, .. } = event.event_type {
+            states.push(to);
+        }
+    }
+    assert_eq!(states, vec![TaskState::Working, TaskState::Completed]);
 }
 
 #[tokio::test]
