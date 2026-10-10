@@ -4,6 +4,7 @@ mod agent_service_error;
 pub use agent_service_error::AgentServiceError;
 mod agent_services;
 mod federation;
+mod federation_export;
 pub use agent_driver::AgentServiceDriver;
 pub use agent_services::{
     AgentServiceAcceptance, AgentServiceAuthorizationOpen, AgentServiceAuthorizationResolve,
@@ -11,6 +12,7 @@ pub use agent_services::{
     AgentServiceTaskObservation,
 };
 pub use federation::{FederationAgentInvocation, FederationImportAdmission};
+pub use federation_export::{AgentFederationExportRequest, FederationExportRuntimeError};
 mod management;
 pub use management::{ManagementError, TrustedReconciliationInstallation};
 mod peer_transport;
@@ -95,12 +97,19 @@ struct InstalledScope {
         BTreeMap<(String, String), Arc<acteon_gateway::agent_runtime::AgentProviderRuntime>>,
     authorization_verifiers: AuthorizationVerifierMap,
     peer_mesh: InstalledPeerMesh,
+    federation_exports: FederationExportMap,
     reconciliation: Option<acteon_executor::governed::reconciliation::ProviderReconciliationStore>,
 }
 type PeerTransportKey = (String, String, String);
 type AuthorizationVerifierKey = (String, u64);
 type AuthorizationVerifierMap =
     BTreeMap<AuthorizationVerifierKey, Arc<dyn acteon_gateway::TaskAuthorizationVerifier>>;
+type FederationExportKey = (String, String);
+type FederationExportMap = BTreeMap<FederationExportKey, InstalledFederationExport>;
+struct InstalledFederationExport {
+    declaration: crate::config::FederationExportConfig,
+    exporter: Arc<acteon_executor::federation_export::GovernedFederationExporter>,
+}
 struct InstalledPeerMesh {
     registry: Option<Arc<acteon_executor::delegation::ApprovedPeerRegistry>>,
     transports: BTreeMap<PeerTransportKey, Arc<acteon_executor::delegation::DurablePeerTransport>>,
@@ -247,6 +256,8 @@ impl ExecutionAuthorityRuntime {
                 }
             }
             let peer_mesh = Self::install_peer_transports(&prepared, &coordinator, &dependencies)?;
+            let federation_exports =
+                Self::install_federation_exports(&prepared, &coordinator, &dependencies)?;
             let authorization_verifiers =
                 Self::install_authorization_verifiers(&prepared, &dependencies)?;
             let handoffs = dependencies.handoffs(&declaration.namespace, &declaration.tenant)?;
@@ -263,6 +274,7 @@ impl ExecutionAuthorityRuntime {
                     agent_bindings,
                     authorization_verifiers,
                     peer_mesh,
+                    federation_exports,
                     reconciliation: None,
                 },
             );
@@ -428,6 +440,87 @@ impl ExecutionAuthorityRuntime {
             registry: Some(registry),
             transports,
         })
+    }
+
+    fn install_federation_exports(
+        prepared: &PreparedExecutionScope,
+        coordinator: &AuthorityCoordinator,
+        dependencies: &ExecutionRuntimeDependencies,
+    ) -> Result<FederationExportMap, String> {
+        use acteon_executor::{
+            federation_export::{FederationExportDependencies, GovernedFederationExporter},
+            federation_transport::{DurableFederationTransport, FederationTransportDependencies},
+        };
+        let Some(federation) = &prepared.declaration().federation else {
+            return Ok(BTreeMap::new());
+        };
+        let mut installed = BTreeMap::new();
+        for declaration in &federation.exports {
+            let signer_secret = federation_signer_secret(&declaration.signer_key_env)?;
+            let credential = acteon_crypto::SecretString::new(
+                std::env::var(&declaration.credential_env)
+                    .map_err(|_| "federation export credential unavailable")?
+                    .into(),
+            );
+            let binding_digest = federation_export_binding_digest(declaration, dependencies)?;
+            let timeout = std::time::Duration::from_millis(declaration.timeout_ms);
+            let adapter = Arc::new(
+                super::ActeonFederationHttpAdapter::new_trusted_with_builder(
+                    &binding_digest,
+                    "acteon-federation-http-v1",
+                    credential,
+                    peer_http_builder(dependencies)?,
+                    acteon_http::OutboundPolicy {
+                        internal_hosts: declaration.internal_hosts.clone(),
+                    },
+                    timeout,
+                )
+                .map_err(|_| "invalid federation export HTTP adapter")?,
+            );
+            let transport = Arc::new(
+                DurableFederationTransport::new_trusted(
+                    FederationTransportDependencies {
+                        state: dependencies.state.clone(),
+                        clock: dependencies.clock.clone(),
+                        encryptor: dependencies.encryptor.clone(),
+                    },
+                    adapter,
+                    timeout,
+                )
+                .map_err(|_| "invalid durable federation transport")?,
+            );
+            let profile = declaration.qualify(
+                &prepared.declaration().namespace,
+                &prepared.declaration().tenant,
+                &federation.local_audience,
+            )?;
+            let exporter = Arc::new(
+                GovernedFederationExporter::new_trusted(
+                    FederationExportDependencies {
+                        coordinator: coordinator.clone(),
+                        clock: dependencies.clock.clone(),
+                        transport,
+                    },
+                    signer_secret,
+                    profile,
+                )
+                .map_err(|_| "invalid governed federation exporter")?,
+            );
+            let key = (declaration.source_agent_id.clone(), declaration.id.clone());
+            if installed
+                .insert(
+                    key,
+                    InstalledFederationExport {
+                        declaration: declaration.clone(),
+                        exporter,
+                    },
+                )
+                .is_some()
+            {
+                return Err("duplicate installed federation export".into());
+            }
+        }
+        Ok(installed)
     }
 
     fn install_authorization_verifiers(
@@ -765,6 +858,31 @@ fn peer_http_builder(
                 .map_err(|_| "invalid agent peer TLS client".into())
         },
     )
+}
+
+fn federation_signer_secret(env_name: &str) -> Result<[u8; 32], String> {
+    let encoded = zeroize::Zeroizing::new(
+        std::env::var(env_name).map_err(|_| "federation export signer unavailable")?,
+    );
+    let mut secret = [0_u8; 32];
+    hex::decode_to_slice(encoded.as_bytes(), &mut secret)
+        .map_err(|_| "federation export signer must be a 32-byte hex secret")?;
+    Ok(secret)
+}
+
+fn federation_export_binding_digest(
+    declaration: &crate::config::FederationExportConfig,
+    dependencies: &ExecutionRuntimeDependencies,
+) -> Result<String, String> {
+    let tls = match &dependencies.outbound_tls {
+        Some(tls) => tls
+            .qualification_fingerprint(&dependencies.signing_key)
+            .map_err(|_| "invalid federation export TLS qualification")?,
+        None => "system-roots".to_owned(),
+    };
+    let encoded = serde_json::to_vec(&("acteon.federation.http.binding.v1", declaration, tls))
+        .map_err(|_| "invalid federation export binding")?;
+    Ok(format!("{:x}", Sha256::digest(encoded)))
 }
 
 /// Reserve replay ownership only after current permits and durable root admission

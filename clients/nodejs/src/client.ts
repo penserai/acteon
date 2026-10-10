@@ -3,7 +3,7 @@ import { AGENT_EXECUTION_CONTEXT_HEADER, AGENT_SOURCE_CONTEXT_HEADER, agentExecu
 import { parseProviderHistoryReceipt, type ProviderHistoryReceipt, type ProviderReconciliationCorrelation, type ProviderReconciliationRequest } from "./governance.js";
 import { parseProviderExecutionHistory, type ProviderExecutionHistory, type ProviderExecutionHistoryWire } from "./governance.js";
 import type { WorkforceScopeView, WorkforceChangeRequest } from "./workforce.js";
-import type { FederationImportReceipt, GovernanceScopeView, GovernanceChangeReceipt, PublishFederationTrustRequest, PublishGovernancePermitRequest, RevokeFederationTrustRequest, SignedFederationEnvelopeDeclaration, SignedFederationInvocationDeclaration, GovernanceInterventionRequest } from "./governance.js";
+import type { FederationExportReceipt, FederationImportReceipt, GovernanceScopeView, GovernanceChangeReceipt, PublishFederationTrustRequest, PublishGovernancePermitRequest, RevokeFederationTrustRequest, SignedFederationEnvelopeDeclaration, SignedFederationInvocationDeclaration, GovernanceInterventionRequest } from "./governance.js";
 import { platformRequestParts, type PlatformOperation, type PlatformRequestOptions } from "./platform.js";
 /**
  * HTTP client for the Acteon action gateway.
@@ -611,6 +611,27 @@ export class ActeonClient {
       throw new Error("federated task receipt identity mismatch");
     }
     return task;
+  }
+  /** Submit one host-qualified cross-domain export from an accepted agent task. */
+  async exportFederatedMessage(namespace: string, tenant: string, agent: string, taskId: string, profile: string, message: Record<string, unknown>): Promise<FederationExportReceipt> {
+    return await this.federationExportRequest("federation_export_message", namespace, tenant, agent, taskId, profile, message);
+  }
+  /** Observe retained delivery evidence without issuing network traffic. */
+  async observeFederatedExport(namespace: string, tenant: string, agent: string, taskId: string, profile: string, message: Record<string, unknown>): Promise<FederationExportReceipt> {
+    return await this.federationExportRequest("federation_observe_export_message", namespace, tenant, agent, taskId, profile, message);
+  }
+  /** Explicitly replay the exact request through a qualified idempotent destination. */
+  async replayFederatedExport(namespace: string, tenant: string, agent: string, taskId: string, profile: string, message: Record<string, unknown>): Promise<FederationExportReceipt> {
+    return await this.federationExportRequest("federation_replay_export_message", namespace, tenant, agent, taskId, profile, message);
+  }
+  private async federationExportRequest(operation: "federation_export_message" | "federation_observe_export_message" | "federation_replay_export_message", namespace: string, tenant: string, agent: string, taskId: string, profile: string, message: Record<string, unknown>): Promise<FederationExportReceipt> {
+    const receipt = await this.platformRequest(operation, {
+      path: { namespace, tenant, agent, task_id: taskId, profile }, body: { message },
+    }) as FederationExportReceipt;
+    if (!receipt.attempt_id || !receipt.delivery_id || !["in_flight", "settled", "uncertain"].includes(receipt.attempt_status) || !receipt.delivery || typeof receipt.delivery.status !== "string") {
+      throw new Error("federation export receipt identity mismatch");
+    }
+    return receipt;
   }
   async interveneGovernance(request: GovernanceInterventionRequest): Promise<GovernanceChangeReceipt> {
     return await this.platformRequest("governance_intervene", { body: request }) as GovernanceChangeReceipt;

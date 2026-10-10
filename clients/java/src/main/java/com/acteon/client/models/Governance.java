@@ -56,6 +56,11 @@ public final class Governance {
         @JsonProperty("expires_at_ms") long expiresAtMs,
         @JsonProperty("accepted_at_ms") long acceptedAtMs,
         @JsonProperty("execution_started") boolean executionStarted) {}
+    public record FederationExportReceipt(
+        @JsonProperty("attempt_id") String attemptId,
+        @JsonProperty("attempt_status") String attemptStatus,
+        @JsonProperty("delivery_id") String deliveryId,
+        com.fasterxml.jackson.databind.JsonNode delivery) {}
     public record FederationTrustView(FederationTrustDeclaration trust, boolean revoked) {}
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record Intervention(String kind, Resource resource, PrincipalIdentity subject,

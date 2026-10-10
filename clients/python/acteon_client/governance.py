@@ -176,6 +176,38 @@ class FederationImportReceipt:
 
 
 @dataclass
+class FederationExportReceipt:
+    attempt_id: str
+    attempt_status: Literal["in_flight", "settled", "uncertain"]
+    delivery_id: str
+    delivery: dict[str, Any]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "FederationExportReceipt":
+        status = data.get("attempt_status")
+        delivery = data.get("delivery")
+        if (
+            not isinstance(data.get("attempt_id"), str)
+            or not data["attempt_id"]
+            or status not in {"in_flight", "settled", "uncertain"}
+            or not isinstance(data.get("delivery_id"), str)
+            or not data["delivery_id"]
+            or not isinstance(delivery, dict)
+            or delivery.get("status")
+            not in {
+                "registered",
+                "import_uncertain",
+                "imported",
+                "invoke_uncertain",
+                "accepted",
+                "rejected",
+            }
+        ):
+            raise ValueError("invalid federation export receipt")
+        return cls(data["attempt_id"], status, data["delivery_id"], delivery)
+
+
+@dataclass
 class FederationTrustView:
     trust: FederationTrustDeclaration
     revoked: bool
@@ -788,6 +820,87 @@ class _GovernanceMixin:
             raise ValueError("federated task receipt identity mismatch")
         return task
 
+    def export_federated_message(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        task_id: str,
+        profile: str,
+        message: dict[str, Any],
+    ) -> FederationExportReceipt:
+        return self._federation_export_request(
+            PlatformOperation.FEDERATION_EXPORT_MESSAGE,
+            namespace,
+            tenant,
+            agent,
+            task_id,
+            profile,
+            message,
+        )
+
+    def observe_federated_export(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        task_id: str,
+        profile: str,
+        message: dict[str, Any],
+    ) -> FederationExportReceipt:
+        return self._federation_export_request(
+            PlatformOperation.FEDERATION_OBSERVE_EXPORT_MESSAGE,
+            namespace,
+            tenant,
+            agent,
+            task_id,
+            profile,
+            message,
+        )
+
+    def replay_federated_export(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        task_id: str,
+        profile: str,
+        message: dict[str, Any],
+    ) -> FederationExportReceipt:
+        return self._federation_export_request(
+            PlatformOperation.FEDERATION_REPLAY_EXPORT_MESSAGE,
+            namespace,
+            tenant,
+            agent,
+            task_id,
+            profile,
+            message,
+        )
+
+    def _federation_export_request(
+        self,
+        operation: PlatformOperation,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        task_id: str,
+        profile: str,
+        message: dict[str, Any],
+    ) -> FederationExportReceipt:
+        return FederationExportReceipt.from_dict(
+            self.platform_request(
+                operation,
+                path={
+                    "namespace": namespace,
+                    "tenant": tenant,
+                    "agent": agent,
+                    "task_id": task_id,
+                    "profile": profile,
+                },
+                body={"message": message},
+            )
+        )
+
     def intervene_governance(
         self, request: GovernanceInterventionRequest
     ) -> GovernanceChangeReceipt:
@@ -945,6 +1058,87 @@ class _AsyncGovernanceMixin:
         ):
             raise ValueError("federated task receipt identity mismatch")
         return task
+
+    async def export_federated_message(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        task_id: str,
+        profile: str,
+        message: dict[str, Any],
+    ) -> FederationExportReceipt:
+        return await self._federation_export_request(
+            PlatformOperation.FEDERATION_EXPORT_MESSAGE,
+            namespace,
+            tenant,
+            agent,
+            task_id,
+            profile,
+            message,
+        )
+
+    async def observe_federated_export(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        task_id: str,
+        profile: str,
+        message: dict[str, Any],
+    ) -> FederationExportReceipt:
+        return await self._federation_export_request(
+            PlatformOperation.FEDERATION_OBSERVE_EXPORT_MESSAGE,
+            namespace,
+            tenant,
+            agent,
+            task_id,
+            profile,
+            message,
+        )
+
+    async def replay_federated_export(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        task_id: str,
+        profile: str,
+        message: dict[str, Any],
+    ) -> FederationExportReceipt:
+        return await self._federation_export_request(
+            PlatformOperation.FEDERATION_REPLAY_EXPORT_MESSAGE,
+            namespace,
+            tenant,
+            agent,
+            task_id,
+            profile,
+            message,
+        )
+
+    async def _federation_export_request(
+        self,
+        operation: PlatformOperation,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        task_id: str,
+        profile: str,
+        message: dict[str, Any],
+    ) -> FederationExportReceipt:
+        return FederationExportReceipt.from_dict(
+            await self.platform_request(
+                operation,
+                path={
+                    "namespace": namespace,
+                    "tenant": tenant,
+                    "agent": agent,
+                    "task_id": task_id,
+                    "profile": profile,
+                },
+                body={"message": message},
+            )
+        )
 
     async def intervene_governance(
         self, request: GovernanceInterventionRequest

@@ -96,5 +96,16 @@
     "expires_at_ms": 4102444800000,
     "accepted_at_ms": 1791570000000,
     "execution_started": false
+  },
+  "export_message": {
+    "messageId": "export-message-1",
+    "role": "user",
+    "parts": [{ "kind": "text", "text": "Investigate incident 42" }]
+  },
+  "export_receipt": {
+    "attempt_id": "federation-export:4f0ad7d3-3133-4adf-93af-f4f0844fd887",
+    "attempt_status": "in_flight",
+    "delivery_id": "4f0ad7d3-3133-4adf-93af-f4f0844fd887",
+    "delivery": { "status": "registered" }
   }
 }

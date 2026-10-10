@@ -36,7 +36,9 @@ describe("federation management and import", () => {
     vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => {
       requests.push({ url, init });
       const path = new URL(url).pathname;
-      return new Response(JSON.stringify(path.endsWith("message:send")
+      return new Response(JSON.stringify(path.includes("/federation/exports/")
+        ? federation.export_receipt
+        : path.endsWith("message:send")
         ? { id: "federated-task", namespace: "prod", tenant: "acme" }
         : path.includes("/federation/envelopes") ? federation.import_receipt : federation.change_receipt));
     }));
@@ -47,20 +49,33 @@ describe("federation management and import", () => {
     const message = { messageId: "message-1", role: "user", parts: [{ text: "inspect" }] };
     const invocation = { payload: "signed-payload", signature: "a".repeat(128) };
     const task = await client.invokeFederatedAgent("prod", "acme", "maya", invocation, message);
+    const sourceTask = "11111111-1111-4111-8111-111111111111";
+    const exported = await client.exportFederatedMessage("prod", "acme", "maya", sourceTask, "remote-triage", federation.export_message);
+    const observed = await client.observeFederatedExport("prod", "acme", "maya", sourceTask, "remote-triage", federation.export_message);
+    const replayed = await client.replayFederatedExport("prod", "acme", "maya", sourceTask, "remote-triage", federation.export_message);
     expect(receipt).toEqual(federation.import_receipt);
     expect(receipt.execution_started).toBe(false);
     expect(task.id).toBe("federated-task");
+    expect([exported, observed, replayed]).toEqual([
+      federation.export_receipt, federation.export_receipt, federation.export_receipt,
+    ]);
     expect(requests.map(request => new URL(request.url).pathname)).toEqual([
       "/v1/governance/federation/trusts",
       "/v1/governance/federation/trusts/revoke",
       "/a2a/prod/acme/federation/envelopes:import",
       "/a2a/prod/acme/federation/agents/maya/v1/message:send",
+      `/a2a/prod/acme/agents/maya/v1/tasks/${sourceTask}/federation/exports/remote-triage/message:send`,
+      `/a2a/prod/acme/agents/maya/v1/tasks/${sourceTask}/federation/exports/remote-triage/message:observe`,
+      `/a2a/prod/acme/agents/maya/v1/tasks/${sourceTask}/federation/exports/remote-triage/message:replay`,
     ]);
     expect(requests.map(request => JSON.parse(request.init.body as string))).toEqual([
       federation.publication,
       federation.revocation,
       { envelope: federation.envelope },
       { invocation, message },
+      { message: federation.export_message },
+      { message: federation.export_message },
+      { message: federation.export_message },
     ]);
     for (const request of requests) {
       expect(new Headers(request.init.headers).get("Authorization")).toBe("Bearer federation-key");

@@ -4,7 +4,7 @@ Node.js/TypeScript client for the Acteon action gateway.
 
 ## Complete platform API
 
-The generated operation catalog exposes all 220 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, federation admission and dispatch, and stream windows. Use an authenticated client and a configured, existing stage for this example:
+The generated operation catalog exposes all 223 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, federation admission, dispatch, and governed export lifecycle, and stream windows. Use an authenticated client and a configured, existing stage for this example:
 
 ```typescript
 const status = await client.platformRequest("bus_stages_status", {
@@ -27,7 +27,9 @@ requires a configured peer credential, correlates the returned scope, and
 accepts only a receipt with `execution_started === false`. Import retains signed
 authority without dispatching work. Invocation sends the exact signed intent
 and message, validates the returned task scope and ID, and does not retry
-automatically.
+automatically. Accepted source tasks use `exportFederatedMessage`,
+`observeFederatedExport`, and `replayFederatedExport`; the client returns a
+typed durable receipt while deployment configuration supplies all authority.
 
 Calls preserve HTTP refusals and do not retry automatically. Keep `change_id` stable when reconciling a lost response. A receipt records persisted authority; closure affects subsequent starts and does not promise cancellation of work already in flight.
 

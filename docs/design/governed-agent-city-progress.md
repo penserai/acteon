@@ -2034,8 +2034,8 @@ provider call, and an exact completed replay remains observable after trust
 revocation without starting another effect. Rust, Python, TypeScript, Go and
 Java expose the typed operation.
 
-This remains an incomplete federation release. Outbound delivery, credential
-exchange, capability negotiation, remote card and key rotation,
+This remains an incomplete federation release. Outbound production
+qualification, credential exchange, capability negotiation, remote card and key rotation,
 partition/reconciliation operations, operational expiry views and named
 external-implementation conformance remain Phase 5 gates.
 
@@ -2068,10 +2068,9 @@ message substitution, and retained-state tampering. The adapter route contract
 compiles locally; its loopback execution requires a socket-enabled test
 environment.
 
-This is transport infrastructure rather than a public autonomous export path.
-Host configuration, runtime installation, operator reconciliation, capability
-and credential rotation, and two-server production-backend qualification remain
-open.
+This transport is consumed by the governed export runtime described below.
+Operator reconciliation, capability and credential rotation, and two-server
+production-backend qualification remain open.
 
 ### Governed federation export authority (in progress, unpublished)
 
@@ -2100,6 +2099,32 @@ granting new work. Focused contracts prove exact replay spends once, revocation
 blocks both undelivered work and ambiguous replay, and uncertainty retains local
 capacity.
 
-Runtime configuration/installation, private source-task integration, operator
-reconciliation, signer rotation, capability exchange and two-server
-qualification remain required before the public autonomous export path ships.
+### Deployment-managed federation export runtime (in progress, unpublished)
+
+Execution-scope configuration now declares exact outbound profiles and requires
+each profile to name a current source agent service and an independent source
+permit. Preparation adds only the profile's `federation.export` effect to that
+service plan and to the deployment issuance ceiling. Permit publication adds
+only explicitly listed `federation_exports`. Outbound-only domains may omit
+inbound trusts and peer bindings.
+
+Runtime installation resolves the signer and peer credential from environment
+references, proves the signer matches the configured public key, binds the
+complete profile and TLS qualification into the guarded HTTP adapter, and
+builds the exporter over the configured `StateStore`, shared clock and optional
+encryptor. A missing or inconsistent secret prevents startup.
+
+The authenticated source API accepts only an export profile name and message
+under an accepted local agent task. It recovers the source execution context,
+matches current private authentication, verifies the qualified service binding,
+and checks current export authority. A compare-and-swap issuance record retains
+stable export and nonce IDs, issue time, expiry, message digest, profile digest
+and attenuated limits before signed delivery. Retries after restart therefore
+reconstruct the same signed request; changed content or configuration conflicts.
+Separate send, observation and explicit replay routes preserve the transport's
+uncertainty rules. All five SDK catalogs and typed helpers include the three
+operations.
+
+Operator reconciliation and expiry projections, overlap-safe signer and
+credential rotation, capability exchange, and two-server qualification across
+Redis, PostgreSQL and DynamoDB remain required for the federation release gate.

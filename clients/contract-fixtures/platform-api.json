@@ -1263,6 +1263,19 @@
       "response": "json"
     },
     {
+      "name": "federation_export_message",
+      "method": "POST",
+      "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:send",
+      "parameters": [
+        "namespace",
+        "tenant",
+        "agent",
+        "task_id",
+        "profile"
+      ],
+      "response": "json"
+    },
+    {
       "name": "federation_import_envelope",
       "method": "POST",
       "path": "/a2a/{namespace}/{tenant}/federation/envelopes:import",
@@ -1280,6 +1293,32 @@
         "namespace",
         "tenant",
         "agent"
+      ],
+      "response": "json"
+    },
+    {
+      "name": "federation_observe_export_message",
+      "method": "POST",
+      "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:observe",
+      "parameters": [
+        "namespace",
+        "tenant",
+        "agent",
+        "task_id",
+        "profile"
+      ],
+      "response": "json"
+    },
+    {
+      "name": "federation_replay_export_message",
+      "method": "POST",
+      "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:replay",
+      "parameters": [
+        "namespace",
+        "tenant",
+        "agent",
+        "task_id",
+        "profile"
       ],
       "response": "json"
     },

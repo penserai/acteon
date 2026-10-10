@@ -4,7 +4,7 @@ Native Rust HTTP client for the Acteon action gateway.
 
 ## Complete platform API
 
-The generated operation catalog exposes all 220 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, federation admission and dispatch, and stream windows. Use an authenticated client and a configured, existing stage for this example:
+The generated operation catalog exposes all 223 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, federation admission, dispatch, and governed export lifecycle, and stream windows. Use an authenticated client and a configured, existing stage for this example:
 
 ```rust
 let status = client.platform_request(
@@ -24,7 +24,9 @@ Typed federation management uses `publish_federation_trust` and
 requires `execution_started == false`. Import admission retains bounded signed
 authority and does not dispatch local work. Use `invoke_federated_agent` to
 dispatch or replay an exact signed invocation through the authenticated agent
-runtime.
+runtime. An accepted source agent task uses `export_federated_message`,
+`observe_federated_export`, and `replay_federated_export`; endpoint, signer,
+credential, permits, timestamps, and limits remain deployment-owned.
 
 ## Installation
 

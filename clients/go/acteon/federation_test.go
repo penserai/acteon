@@ -44,7 +44,9 @@ func TestFederationManagementAndInertImportWire(t *testing.T) {
 		calls = append(calls, body)
 		paths = append(paths, r.URL.Path)
 		response := wire["change_receipt"]
-		if r.URL.Path == "/a2a/prod/acme/federation/envelopes:import" {
+		if bytes.Contains([]byte(r.URL.Path), []byte("/federation/exports/")) {
+			response = wire["export_receipt"]
+		} else if r.URL.Path == "/a2a/prod/acme/federation/envelopes:import" {
 			response = wire["import_receipt"]
 		} else if r.URL.Path == "/a2a/prod/acme/federation/agents/maya/v1/message:send" {
 			response = json.RawMessage(`{"id":"federated-task","namespace":"prod","tenant":"acme"}`)
@@ -76,10 +78,31 @@ func TestFederationManagementAndInertImportWire(t *testing.T) {
 	if err != nil || task["id"] != "federated-task" {
 		t.Fatalf("unexpected federated task: %v (%v)", task, err)
 	}
-	if len(paths) != 4 || paths[2] != "/a2a/prod/acme/federation/envelopes:import" || paths[3] != "/a2a/prod/acme/federation/agents/maya/v1/message:send" {
+	var exportMessage map[string]any
+	if err = json.Unmarshal(wire["export_message"], &exportMessage); err != nil {
+		t.Fatal(err)
+	}
+	sourceTask := "11111111-1111-4111-8111-111111111111"
+	exported, err := client.ExportFederatedMessage(ctx, "prod", "acme", "maya", sourceTask, "remote-triage", exportMessage)
+	if err != nil || exported.AttemptStatus != "in_flight" {
+		t.Fatalf("unexpected export receipt: %v (%v)", exported, err)
+	}
+	if _, err = client.ObserveFederatedExport(ctx, "prod", "acme", "maya", sourceTask, "remote-triage", exportMessage); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = client.ReplayFederatedExport(ctx, "prod", "acme", "maya", sourceTask, "remote-triage", exportMessage); err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 7 || paths[2] != "/a2a/prod/acme/federation/envelopes:import" || paths[3] != "/a2a/prod/acme/federation/agents/maya/v1/message:send" {
 		t.Fatalf("unexpected paths: %v", paths)
 	}
-	if len(calls) != 4 {
+	for i, action := range []string{"send", "observe", "replay"} {
+		expected := "/a2a/prod/acme/agents/maya/v1/tasks/" + sourceTask + "/federation/exports/remote-triage/message:" + action
+		if paths[i+4] != expected {
+			t.Fatalf("unexpected export path: %s", paths[i+4])
+		}
+	}
+	if len(calls) != 7 {
 		t.Fatalf("got %d calls", len(calls))
 	}
 	if !bytes.Equal(compactJSON(t, calls[0]), compactJSON(t, wire["publication"])) {

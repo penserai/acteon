@@ -649,7 +649,7 @@ for a complete scope declaration, SDK options, replay behavior and current
 execution-path coverage. The sanitized admin configuration exposes only
 `execution_authority_enabled` for this profile.
 
-### Cross-domain import admission
+### Cross-domain federation
 
 An execution scope may install a `federation` block with one exact local
 audience, reviewed trust revisions, and authenticated peer bindings. Each trust
@@ -692,6 +692,56 @@ trust ID, mismatched audience or domain, duplicate peer, cross-scope resource,
 invalid key, excessive validity interval, or manager whose footprint does not
 fit the declaration. See [A2A federation status](../features/a2a.md#federation-status)
 for the management and import APIs.
+
+The same block can install outbound export profiles. Each profile binds one
+declared source agent service to an exact remote origin, audience, trust/key
+revision, public signing key, foreign agent binding, effect ceiling, budget,
+depth and lifetime. The two environment variables resolve the private signing
+key and peer credential only during runtime installation. The signing secret is
+exactly 32 bytes encoded as 64 lowercase or uppercase hexadecimal characters.
+Neither secret appears in retained state or the sanitized configuration.
+
+```toml
+[[execution_authority.scopes.federation.exports]]
+id = "remote-triage"
+source_agent_id = "notifier"
+remote_origin = "https://remote.example"
+remote_audience = "acteon://remote/prod"
+trust_id = "local-prod"
+trust_revision = 1
+key_id = "local-key-v1"
+verifying_key = "<64 hex characters>"
+signer_key_env = "ACTEON_FEDERATION_SIGNER"
+issuer_epoch = 1
+credential_env = "ACTEON_REMOTE_CREDENTIAL"
+max_lifetime_ms = 60000
+timeout_ms = 10000
+internal_hosts = []
+
+[execution_authority.scopes.federation.exports.grant]
+source = { id = "agent/notifier", kind = "agent" }
+target = { id = "agent/remote-triage", kind = "agent" }
+agent_resource = { kind = "agent", namespace = "prod", tenant = "acme", id = "remote-triage" }
+binding_digest = "<64 hex characters>"
+skill = "triage"
+ingress_effect = { operation = "agent.invoke", resources = [
+  { kind = "agent", namespace = "prod", tenant = "acme", id = "remote-triage" },
+  { kind = "endpoint", namespace = "prod", tenant = "acme", id = "remote-triage-api" },
+] }
+effects = [{ operation = "provider.execute", resources = [
+  { kind = "endpoint", namespace = "prod", tenant = "acme", id = "remote-triage-api" },
+] }]
+limits = { max_units = 3, max_concurrent = 1, deadline_ms = 4102444800000 }
+max_depth = 2
+```
+
+The source agent's deployment permit must list
+`federation_exports = ["remote-triage"]`; ordinary routes, chains and local
+agents do not imply this effect. An outbound-only domain may set `trusts = []`
+and `peers = []` while retaining at least one export. Startup rejects an
+unpermitted profile, source/principal mismatch, signer/public-key mismatch,
+unsafe origin, invalid environment reference, or profile outside the scope's
+credential ceiling.
 
 Configured agent-service replacements use `retained_agent_services` inside the
 same scope. Copy the former binding's card, registry revision, principal, skill,

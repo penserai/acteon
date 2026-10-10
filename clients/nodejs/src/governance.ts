@@ -40,6 +40,18 @@ export interface FederationImportReceipt {
   binding_digest: string; skill: string; root_id: string; expires_at_ms: number;
   accepted_at_ms: number; execution_started: false;
 }
+export type FederationExportAttemptStatus = "in_flight" | "settled" | "uncertain";
+export type FederationExportDelivery =
+  | { status: "registered" | "import_uncertain" }
+  | { status: "imported" | "invoke_uncertain"; receipt: FederationImportReceipt }
+  | { status: "accepted"; receipt: FederationImportReceipt; task: Record<string, unknown> }
+  | { status: "rejected"; stage: "import" | "invoke"; code: string };
+export interface FederationExportReceipt {
+  attempt_id: string;
+  attempt_status: FederationExportAttemptStatus;
+  delivery_id: string;
+  delivery: FederationExportDelivery;
+}
 export type GovernanceIntervention =
   | { kind: "close_resource" | "reopen_resource"; resource: GovernanceResource }
   | { kind: "revoke_subject"; subject: PrincipalIdentity }

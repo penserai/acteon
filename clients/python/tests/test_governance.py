@@ -131,7 +131,9 @@ async def test_federation_management_and_inert_import_wire(async_client):
 
     def respond(request):
         seen.append(request)
-        if request.url.path.endswith("message:send"):
+        if "/federation/exports/" in request.url.path:
+            response = FEDERATION["export_receipt"]
+        elif request.url.path.endswith("message:send"):
             response = {"id": "federated-task", "namespace": "prod", "tenant": "acme"}
         elif request.url.path.endswith("envelopes:import"):
             response = FEDERATION["import_receipt"]
@@ -152,6 +154,14 @@ async def test_federation_management_and_inert_import_wire(async_client):
     envelope = SignedFederationEnvelopeDeclaration(**FEDERATION["envelope"])
     invocation = SignedFederationInvocationDeclaration("signed-payload", "a" * 128)
     message = {"messageId": "message-1", "role": "user", "parts": [{"text": "inspect"}]}
+    export_args = (
+        "prod",
+        "acme",
+        "maya",
+        "11111111-1111-4111-8111-111111111111",
+        "remote-triage",
+        FEDERATION["export_message"],
+    )
     transport = httpx.MockTransport(respond)
     cls = AsyncActeonClient if async_client else ActeonClient
     client = cls("https://acteon.example", api_key="federation-key")
@@ -168,6 +178,9 @@ async def test_federation_management_and_inert_import_wire(async_client):
                 await client.revoke_federation_trust(revocation),
                 await client.import_federation_envelope("prod", "acme", envelope),
                 await client.invoke_federated_agent("prod", "acme", "maya", invocation, message),
+                await client.export_federated_message(*export_args),
+                await client.observe_federated_export(*export_args),
+                await client.replay_federated_export(*export_args),
             ]
         else:
             results = [
@@ -175,13 +188,17 @@ async def test_federation_management_and_inert_import_wire(async_client):
                 client.revoke_federation_trust(revocation),
                 client.import_federation_envelope("prod", "acme", envelope),
                 client.invoke_federated_agent("prod", "acme", "maya", invocation, message),
+                client.export_federated_message(*export_args),
+                client.observe_federated_export(*export_args),
+                client.replay_federated_export(*export_args),
             ]
         assert asdict(results[0]) == FEDERATION["change_receipt"]
         assert asdict(results[1]) == FEDERATION["change_receipt"]
         assert asdict(results[2]) == FEDERATION["import_receipt"]
         assert not results[2].execution_started
         assert results[3]["id"] == "federated-task"
-        assert [request.method for request in seen] == ["POST", "POST", "POST", "POST"]
+        assert all(asdict(result) == FEDERATION["export_receipt"] for result in results[4:])
+        assert [request.method for request in seen] == ["POST"] * 7
         assert json.loads(seen[0].content) == FEDERATION["publication"]
         assert json.loads(seen[1].content) == FEDERATION["revocation"]
         assert json.loads(seen[2].content) == {"envelope": FEDERATION["envelope"]}
@@ -191,6 +208,15 @@ async def test_federation_management_and_inert_import_wire(async_client):
             "invocation": {"payload": "signed-payload", "signature": "a" * 128},
             "message": message,
         }
+        assert [request.url.path.rsplit("message:", 1)[-1] for request in seen[4:]] == [
+            "send",
+            "observe",
+            "replay",
+        ]
+        assert all(
+            json.loads(request.content) == {"message": FEDERATION["export_message"]}
+            for request in seen[4:]
+        )
         assert all(request.headers["authorization"] == "Bearer federation-key" for request in seen)
     finally:
         if async_client:

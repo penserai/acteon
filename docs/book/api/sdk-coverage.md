@@ -2,7 +2,7 @@
 
 Use Acteon's SDKs to connect agents, services, and workers to the same execution and governance platform. Start with the typed helpers for dispatch, rules, audit, approvals, and bus operations. Use the complete **platform operation API** for controls that do not yet have a dedicated helper in your language.
 
-The current source tree provides a generated catalog for **220 finite HTTP operations** in Rust, Python, TypeScript, Go, and Java. It includes receipt sessions, managed-stage recovery, workflow and execution controls, inference profiles, stream windows, federation admission and agent dispatch, and operator APIs. Six streaming or polymorphic RPC routes use the existing streaming and A2A clients instead. Server configuration, authorization, and optional build features still determine which operations are available on your deployment.
+The current source tree provides a generated catalog for **223 finite HTTP operations** in Rust, Python, TypeScript, Go, and Java. It includes receipt sessions, managed-stage recovery, workflow and execution controls, inference profiles, stream windows, federation admission and agent dispatch, and operator APIs. Six streaming or polymorphic RPC routes use the existing streaming and A2A clients instead. Server configuration, authorization, and optional build features still determine which operations are available on your deployment.
 
 ## Choose the right interface
 
@@ -142,23 +142,24 @@ send. Python exposes `outcome.pending`, Node `outcome.pending`, Go
 
 All five SDKs expose native typed scope inspection, permit publication, and intervention methods. See [governance management](../features/governance.md) for method names and authority requirements. The shared governance fixture checks request bodies, authentication, typed responses, and HTTP refusal preservation; actual authority enforcement is tested separately against the server and configured state backend.
 
-### Federation trust and import admission
+### Federation trust, admission and governed export
 
 All five SDKs expose typed trust publication, terminal trust revocation and
 signed-envelope import. Imports return `FederationImportReceipt` and require
 `execution_started` to be false. The SDKs also correlate the receipt namespace
-and tenant with the requested path before returning it.
+and tenant with the requested path before returning it. Signed destination
+invocation and the three source export lifecycle operations are also typed.
 
-| SDK | Publish trust | Revoke trust | Import envelope |
+| SDK | Import | Invoke | Export / observe / replay |
 |---|---|---|---|
-| Rust | `publish_federation_trust` | `revoke_federation_trust` | `import_federation_envelope` |
-| Python, sync/async | `publish_federation_trust` | `revoke_federation_trust` | `import_federation_envelope` |
-| TypeScript | `publishFederationTrust` | `revokeFederationTrust` | `importFederationEnvelope` |
-| Go | `PublishFederationTrust` | `RevokeFederationTrust` | `ImportFederationEnvelope` |
-| Java | `publishFederationTrust` | `revokeFederationTrust` | `importFederationEnvelope` |
+| Rust | `import_federation_envelope` | `invoke_federated_agent` | `export_federated_message` / `observe_federated_export` / `replay_federated_export` |
+| Python, sync/async | `import_federation_envelope` | `invoke_federated_agent` | `export_federated_message` / `observe_federated_export` / `replay_federated_export` |
+| TypeScript | `importFederationEnvelope` | `invokeFederatedAgent` | `exportFederatedMessage` / `observeFederatedExport` / `replayFederatedExport` |
+| Go | `ImportFederationEnvelope` | `InvokeFederatedAgent` | `ExportFederatedMessage` / `ObserveFederatedExport` / `ReplayFederatedExport` |
+| Java | `importFederationEnvelope` | `invokeFederatedAgent` | `exportFederatedMessage` / `observeFederatedExport` / `replayFederatedExport` |
 
-The shared federation fixture verifies exact snake-case wire fields and all
-three routes. The public request types describe proposed data; authentication
+The generated catalog verifies the exact methods, paths and parameter names for
+all federation routes. The public request types describe proposed data; authentication
 and deployment-owned ceilings establish authority. Import admission retains a
 bounded signed assertion and does not dispatch local work. See [federation
 status](../features/a2a.md#federation-status).

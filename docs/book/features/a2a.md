@@ -129,7 +129,7 @@ after a source restart returns the durable receipt without appending the answer
 twice. Changed content conflicts, and ambiguous delivery is never retried
 automatically. This two-server contract runs against both Redis and PostgreSQL.
 
-### Cross-domain federation building blocks
+### Governed cross-domain federation
 
 Acteon's federation boundary adds two protected routes for independently
 administered Acteon domains:
@@ -137,6 +137,9 @@ administered Acteon domains:
 ```text
 POST /a2a/{ns}/{tenant}/federation/envelopes:import
 POST /a2a/{ns}/{tenant}/federation/agents/{agent}/v1/message:send
+POST /a2a/{ns}/{tenant}/agents/{source}/v1/tasks/{task}/federation/exports/{profile}/message:send
+POST /a2a/{ns}/{tenant}/agents/{source}/v1/tasks/{task}/federation/exports/{profile}/message:observe
+POST /a2a/{ns}/{tenant}/agents/{source}/v1/tasks/{task}/federation/exports/{profile}/message:replay
 ```
 
 The first route authenticates a configured foreign peer, verifies its
@@ -147,7 +150,7 @@ match the request body, and invokes only the qualified local agent binding under
 the imported ceiling. Concurrent exact replay converges on the retained task;
 changed signed input conflicts.
 
-The matching outbound transport is a host building block. It journals the exact
+The matching outbound transport journals the exact
 signed envelope and invocation in the configured state backend before calling
 either route, checkpoints import separately from invocation, and persists only
 validated receipts and tasks. A missing or malformed response is `uncertain`
@@ -156,7 +159,7 @@ transport binding qualified for exact idempotent replay. Credentials and
 network policy stay in the guarded host adapter and never enter durable delivery
 state.
 
-The source authority building block constructs those signatures from an
+Source authority constructs those signatures from an
 operator-qualified export profile and a matching host key. Before delivery it
 charges the complete delegated remote unit ceiling to a current local
 `federation.export` permit. Revocation before an unused network stage records a
@@ -164,10 +167,18 @@ local rejection without contacting the peer; ambiguous replay also requires
 current source authority. The profile, endpoint, key, credential, permits and
 effect ceiling are host inputs and cannot come from an agent message.
 
-The current public surface is intended for reviewed host integration.
-Deployment-managed installation, source-task integration, operator
-reconciliation, key and credential rotation, and external peer conformance
-remain release gates for turnkey cross-domain federation.
+The three source routes recover the accepted local task and match it to current
+private authentication. The caller supplies only the installed profile name and
+message. Acteon allocates stable IDs, timestamps, expiry and an attenuated
+remote budget in the configured state backend, so a retry or restart rebuilds
+the same signatures. `message:observe` never calls the peer and remains useful
+for accounting after revocation. `message:replay` is explicit, rechecks current
+authority, and works only with the Acteon HTTP binding qualified for exact
+idempotent replay.
+
+Production qualification still requires overlap-safe key and credential
+rotation, operator reconciliation views, capability exchange, and two-server
+failure testing on each supported production state backend.
 
 ### Discovery (unauthenticated)
 

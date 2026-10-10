@@ -112,6 +112,19 @@ type FederationImportReceipt struct {
 	AcceptedAtMs     int64              `json:"accepted_at_ms"`
 	ExecutionStarted bool               `json:"execution_started"`
 }
+type FederationExportDelivery struct {
+	Status  string                   `json:"status"`
+	Receipt *FederationImportReceipt `json:"receipt,omitempty"`
+	Task    map[string]any           `json:"task,omitempty"`
+	Stage   string                   `json:"stage,omitempty"`
+	Code    string                   `json:"code,omitempty"`
+}
+type FederationExportReceipt struct {
+	AttemptID     string                   `json:"attempt_id"`
+	AttemptStatus string                   `json:"attempt_status"`
+	DeliveryID    string                   `json:"delivery_id"`
+	Delivery      FederationExportDelivery `json:"delivery"`
+}
 type FederationTrustView struct {
 	Trust   FederationTrustDeclaration `json:"trust"`
 	Revoked bool                       `json:"revoked"`
@@ -256,6 +269,42 @@ func (c *Client) InvokeFederatedAgent(ctx context.Context, namespace, tenant, ag
 		return nil, fmt.Errorf("federated task receipt identity mismatch")
 	}
 	return task, nil
+}
+
+// ExportFederatedMessage submits one host-qualified export from an accepted local agent task.
+func (c *Client) ExportFederatedMessage(ctx context.Context, namespace, tenant, agent, taskID, profile string, message map[string]any) (*FederationExportReceipt, error) {
+	return c.federationExportRequest(ctx, OpFederationExportMessage, namespace, tenant, agent, taskID, profile, message)
+}
+
+// ObserveFederatedExport reads retained delivery evidence without issuing network traffic.
+func (c *Client) ObserveFederatedExport(ctx context.Context, namespace, tenant, agent, taskID, profile string, message map[string]any) (*FederationExportReceipt, error) {
+	return c.federationExportRequest(ctx, OpFederationObserveExportMessage, namespace, tenant, agent, taskID, profile, message)
+}
+
+// ReplayFederatedExport explicitly replays an exact request through a qualified idempotent peer.
+func (c *Client) ReplayFederatedExport(ctx context.Context, namespace, tenant, agent, taskID, profile string, message map[string]any) (*FederationExportReceipt, error) {
+	return c.federationExportRequest(ctx, OpFederationReplayExportMessage, namespace, tenant, agent, taskID, profile, message)
+}
+
+func (c *Client) federationExportRequest(ctx context.Context, operation PlatformOperation, namespace, tenant, agent, taskID, profile string, message map[string]any) (*FederationExportReceipt, error) {
+	data, err := c.PlatformRequest(ctx, operation,
+		map[string]string{"namespace": namespace, "tenant": tenant, "agent": agent, "task_id": taskID, "profile": profile}, nil,
+		struct {
+			Message map[string]any `json:"message"`
+		}{message})
+	if err != nil {
+		return nil, err
+	}
+	var receipt FederationExportReceipt
+	if err = json.Unmarshal(data, &receipt); err != nil {
+		return nil, err
+	}
+	validAttempt := receipt.AttemptStatus == "in_flight" || receipt.AttemptStatus == "settled" || receipt.AttemptStatus == "uncertain"
+	validDelivery := receipt.Delivery.Status == "registered" || receipt.Delivery.Status == "import_uncertain" || receipt.Delivery.Status == "imported" || receipt.Delivery.Status == "invoke_uncertain" || receipt.Delivery.Status == "accepted" || receipt.Delivery.Status == "rejected"
+	if receipt.AttemptID == "" || receipt.DeliveryID == "" || !validAttempt || !validDelivery {
+		return nil, fmt.Errorf("federation export receipt identity mismatch")
+	}
+	return &receipt, nil
 }
 func (c *Client) InterveneGovernance(ctx context.Context, request GovernanceInterventionRequest) (*GovernanceChangeReceipt, error) {
 	data, err := c.PlatformRequest(ctx, OpGovernanceIntervene, nil, nil, request)

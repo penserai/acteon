@@ -8,16 +8,16 @@ mod runtime;
 pub use federation_http::ActeonFederationHttpAdapter;
 pub use peer_http::ActeonPeerHttpAdapter;
 pub use runtime::{
-    AgentPeerAuthorizationInvocation, AgentPeerAuthorizationRequest, AgentPeerCancelInvocation,
-    AgentPeerCancelRequest, AgentPeerContinuationInvocation, AgentPeerContinuationRequest,
-    AgentPeerDiscoveryInvocation, AgentPeerDiscoveryRequest, AgentPeerInvocation,
-    AgentPeerRefreshInvocation, AgentPeerRefreshRequest, AgentPeerToolRequest,
+    AgentFederationExportRequest, AgentPeerAuthorizationInvocation, AgentPeerAuthorizationRequest,
+    AgentPeerCancelInvocation, AgentPeerCancelRequest, AgentPeerContinuationInvocation,
+    AgentPeerContinuationRequest, AgentPeerDiscoveryInvocation, AgentPeerDiscoveryRequest,
+    AgentPeerInvocation, AgentPeerRefreshInvocation, AgentPeerRefreshRequest, AgentPeerToolRequest,
     AgentPeerTransportError, AgentServiceAcceptance, AgentServiceAuthorizationOpen,
     AgentServiceAuthorizationResolve, AgentServiceContinuation, AgentServiceDriver,
     AgentServiceError, AgentServiceObservation, AgentServiceParent, AgentServiceRequest,
     AgentServiceTaskObservation, ExecutionAuthorityRuntime, ExecutionRuntimeDependencies,
-    FederationAgentInvocation, FederationImportAdmission, ManagementError,
-    TrustedReconciliationInstallation,
+    FederationAgentInvocation, FederationExportRuntimeError, FederationImportAdmission,
+    ManagementError, TrustedReconciliationInstallation,
 };
 use std::{collections::BTreeMap, sync::Arc};
 

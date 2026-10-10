@@ -68,6 +68,7 @@ from .errors import (
 )
 from .governance import (
     FederationGrantCeilingDeclaration,
+    FederationExportReceipt,
     FederationImportReceipt,
     FederationTrustDeclaration,
     FederationTrustView,
@@ -437,6 +438,7 @@ from .platform_catalog import PlatformOperation as PlatformOperation
 
 __all__ += [
     "FederationGrantCeilingDeclaration",
+    "FederationExportReceipt",
     "FederationImportReceipt",
     "FederationTrustDeclaration",
     "FederationTrustView",

@@ -1,6 +1,6 @@
 # Durable outbound federation transport
 
-Status: implemented transport foundation; export authority and runtime installation remain open.
+Status: implemented transport, source authority, runtime installation and authenticated export API; production qualification gates remain open.
 
 ## Problem
 
@@ -121,6 +121,33 @@ also requires current authority; observation and accounting repair do not.
 Public or model-authored requests never supply a credential, endpoint, signer,
 effect ceiling, permit, or authority context.
 
+Deployment configuration binds each export profile to one declared source agent,
+remote origin and audience, trust/key revision, exact foreign service grant,
+credential environment variable, signer environment variable, outbound policy,
+timeout and maximum signed lifetime. The source agent's permit must independently
+list the profile. Preparation adds the profile's `federation.export` effect to
+the agent's qualified service plan and publisher ceiling; permit publication
+adds only the profiles explicitly named by that permit. Outbound-only domains
+may configure exports without installing inbound trusts or peers.
+
+At startup the server resolves secrets, verifies that the private signing key
+matches the configured public key, pins the HTTP adapter and TLS qualification
+into a binding digest, and installs the exporter over the deployment's selected
+`StateStore`, shared clock and optional payload encryptor. Startup fails before
+the listener is exposed if any profile, secret, signer, TLS policy or adapter is
+unavailable.
+
+The authenticated agent API accepts only an installed profile name and A2A
+message under an already accepted local agent task. Acteon recovers the source
+context from that task, matches current private authentication, verifies the
+qualified service binding, and rechecks the current export permit. A durable
+issuance record allocates the export ID, invocation nonce, issue time, expiry
+and attenuated remote budget exactly once using the configured state backend.
+Retries and process restarts therefore reproduce the same signed bytes. The API
+has separate submit, observation and explicit idempotent-replay operations;
+observation performs no network call and remains available for accounting after
+authority changes.
+
 ## Verification
 
 Focused contracts cover separated registration and authorized delivery, exact
@@ -135,17 +162,11 @@ backend.
 
 ## Remaining gates
 
-This foundation intentionally leaves these authority and operational layers
-open:
+The remaining production gates are:
 
-1. deployment installation and signer-key rotation for qualified export
-   profiles;
-2. configuration for remote origin, audience, credential reference,
-   trust/key identifiers, replay capability, and TLS material;
-3. a trusted runtime API that rechecks source authority immediately before the
-   journal and never accepts credentials or signed authority from model output;
-4. observation, expiry, reconciliation, and operator controls for ambiguous
+1. overlap-safe signer, credential and remote key-card rotation;
+2. observation, expiry, reconciliation, and operator controls for ambiguous
    deliveries;
-5. capability/key-card negotiation and credential exchange;
-6. two-server restart and response-loss qualification across Redis,
+3. capability/key-card negotiation and credential exchange;
+4. two-server restart and response-loss qualification across Redis,
    PostgreSQL, and DynamoDB, followed by external implementation conformance.

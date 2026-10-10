@@ -278,6 +278,35 @@ impl FederationExportConfig {
         })
     }
 
+    pub(crate) fn qualify(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        local_audience: &str,
+    ) -> Result<acteon_executor::federation_export::QualifiedFederationExport, String> {
+        acteon_executor::federation_export::QualifiedFederationExport::new_trusted(
+            self.remote_origin.clone(),
+            local_audience.to_owned(),
+            self.remote_audience.clone(),
+            self.trust_id.clone(),
+            self.trust_revision,
+            self.key_id.clone(),
+            self.verifying_key.clone(),
+            self.issuer_epoch,
+            self.grant.target.clone(),
+            self.grant.agent_resource.clone(),
+            self.grant.binding_digest.clone(),
+            self.grant.skill.clone(),
+            self.grant.ingress_effect.clone(),
+            self.grant.effects.clone(),
+            self.grant.limits.clone(),
+            self.grant.max_depth,
+            self.max_lifetime_ms,
+            self.local_effect(namespace, tenant)?,
+        )
+        .map_err(|_| "invalid qualified federation export".into())
+    }
+
     fn validate(&self, scope: &ExecutionScopeConfig, local_audience: &str) -> Result<(), String> {
         let source = scope
             .agent_services
@@ -305,27 +334,7 @@ impl FederationExportConfig {
         }
         .validate_url(&self.remote_origin)
         .map_err(|_| "federation export origin refused by outbound policy")?;
-        acteon_executor::federation_export::QualifiedFederationExport::new_trusted(
-            self.remote_origin.clone(),
-            local_audience.to_owned(),
-            self.remote_audience.clone(),
-            self.trust_id.clone(),
-            self.trust_revision,
-            self.key_id.clone(),
-            self.verifying_key.clone(),
-            self.issuer_epoch,
-            self.grant.target.clone(),
-            self.grant.agent_resource.clone(),
-            self.grant.binding_digest.clone(),
-            self.grant.skill.clone(),
-            self.grant.ingress_effect.clone(),
-            self.grant.effects.clone(),
-            self.grant.limits.clone(),
-            self.grant.max_depth,
-            self.max_lifetime_ms,
-            self.local_effect(&scope.namespace, &scope.tenant)?,
-        )
-        .map_err(|_| "invalid qualified federation export")?;
+        self.qualify(&scope.namespace, &scope.tenant, local_audience)?;
         Ok(())
     }
 }

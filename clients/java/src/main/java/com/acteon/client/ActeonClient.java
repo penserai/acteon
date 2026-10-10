@@ -524,6 +524,43 @@ public class ActeonClient implements AutoCloseable {
         }
         return task;
     }
+    /** Submit one host-qualified export from an accepted local agent task. */
+    public Governance.FederationExportReceipt exportFederatedMessage(String namespace, String tenant,
+        String agent, String taskId, String profile, Map<String, Object> message) throws ActeonException {
+        return federationExportRequest(PlatformOperation.FEDERATION_EXPORT_MESSAGE,
+            namespace, tenant, agent, taskId, profile, message);
+    }
+    /** Observe retained export evidence without issuing network traffic. */
+    public Governance.FederationExportReceipt observeFederatedExport(String namespace, String tenant,
+        String agent, String taskId, String profile, Map<String, Object> message) throws ActeonException {
+        return federationExportRequest(PlatformOperation.FEDERATION_OBSERVE_EXPORT_MESSAGE,
+            namespace, tenant, agent, taskId, profile, message);
+    }
+    /** Explicitly replay the exact request through a qualified idempotent destination. */
+    public Governance.FederationExportReceipt replayFederatedExport(String namespace, String tenant,
+        String agent, String taskId, String profile, Map<String, Object> message) throws ActeonException {
+        return federationExportRequest(PlatformOperation.FEDERATION_REPLAY_EXPORT_MESSAGE,
+            namespace, tenant, agent, taskId, profile, message);
+    }
+    private Governance.FederationExportReceipt federationExportRequest(PlatformOperation operation,
+        String namespace, String tenant, String agent, String taskId, String profile,
+        Map<String, Object> message) throws ActeonException {
+        var node = platformRequest(operation,
+            Map.of("namespace", namespace, "tenant", tenant, "agent", agent,
+                "task_id", taskId, "profile", profile), null, Map.of("message", message));
+        try {
+            var receipt = objectMapper.treeToValue(node, Governance.FederationExportReceipt.class);
+            var attempt = receipt.attemptStatus();
+            var delivery = receipt.delivery();
+            if (receipt.attemptId() == null || receipt.attemptId().isEmpty()
+                || receipt.deliveryId() == null || receipt.deliveryId().isEmpty()
+                || !("in_flight".equals(attempt) || "settled".equals(attempt) || "uncertain".equals(attempt))
+                || delivery == null || delivery.path("status").asText().isEmpty()) {
+                throw new ConnectionException("Federation export receipt identity mismatch", null);
+            }
+            return receipt;
+        } catch (IOException e) { throw new ConnectionException("Malformed federation export response", e); }
+    }
     public Governance.ChangeReceipt interveneGovernance(Governance.InterventionRequest request) throws ActeonException {
         var node = platformRequest(PlatformOperation.GOVERNANCE_INTERVENE, null, null, request);
         try { return objectMapper.treeToValue(node, Governance.ChangeReceipt.class); }

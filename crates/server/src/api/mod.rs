@@ -225,6 +225,21 @@ pub fn router(state: AppState) -> Router {
             "/a2a/{namespace}/{tenant}/federation/agents/{agent}/v1/message:send",
             post(federation::invoke_agent),
         )
+        .route(
+            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:send",
+            post(federation::export_message)
+                .layer(DefaultBodyLimit::max(a2a::A2A_MAX_BODY_BYTES)),
+        )
+        .route(
+            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:observe",
+            post(federation::observe_export_message)
+                .layer(DefaultBodyLimit::max(a2a::A2A_MAX_BODY_BYTES)),
+        )
+        .route(
+            "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:replay",
+            post(federation::replay_export_message)
+                .layer(DefaultBodyLimit::max(a2a::A2A_MAX_BODY_BYTES)),
+        )
         .route("/v1/governance/changes", post(governance::intervene))
         .route("/v1/governance/registry", post(governance::mutate_registry))
         .route(

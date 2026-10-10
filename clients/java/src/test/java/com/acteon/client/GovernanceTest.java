@@ -143,7 +143,9 @@ class GovernanceTest {
             bodies.add(mapper.readTree(exchange.getRequestBody()));
             assertEquals("Bearer federation-key", exchange.getRequestHeaders().getFirst("Authorization"));
             var path = exchange.getRequestURI().getPath();
-            var response = path.endsWith("message:send")
+            var response = path.contains("/federation/exports/")
+                ? fixture.get("export_receipt")
+                : path.endsWith("message:send")
                 ? mapper.readTree("{\"id\":\"federated-task\",\"namespace\":\"prod\",\"tenant\":\"acme\"}")
                 : path.endsWith("envelopes:import") ? fixture.get("import_receipt") : fixture.get("change_receipt");
             byte[] wire = response.toString().getBytes(StandardCharsets.UTF_8);
@@ -164,13 +166,26 @@ class GovernanceTest {
             var message = Map.<String, Object>of("messageId", "message-1", "role", "user",
                 "parts", java.util.List.of(Map.of("text", "inspect")));
             var task = client.invokeFederatedAgent("prod", "acme", "maya", invocation, message);
+            var exportMessage = mapper.convertValue(fixture.get("export_message"),
+                new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+            var sourceTask = "11111111-1111-4111-8111-111111111111";
+            var exported = client.exportFederatedMessage("prod", "acme", "maya", sourceTask,
+                "remote-triage", exportMessage);
+            client.observeFederatedExport("prod", "acme", "maya", sourceTask,
+                "remote-triage", exportMessage);
+            client.replayFederatedExport("prod", "acme", "maya", sourceTask,
+                "remote-triage", exportMessage);
             assertFalse(receipt.executionStarted());
             assertEquals("federated-task", task.get("id").asText());
+            assertEquals("in_flight", exported.attemptStatus());
             assertEquals(java.util.List.of(
                 "/v1/governance/federation/trusts",
                 "/v1/governance/federation/trusts/revoke",
                 "/a2a/prod/acme/federation/envelopes:import",
-                "/a2a/prod/acme/federation/agents/maya/v1/message:send"), paths);
+                "/a2a/prod/acme/federation/agents/maya/v1/message:send",
+                "/a2a/prod/acme/agents/maya/v1/tasks/" + sourceTask + "/federation/exports/remote-triage/message:send",
+                "/a2a/prod/acme/agents/maya/v1/tasks/" + sourceTask + "/federation/exports/remote-triage/message:observe",
+                "/a2a/prod/acme/agents/maya/v1/tasks/" + sourceTask + "/federation/exports/remote-triage/message:replay"), paths);
             assertEquals(fixture.get("publication"), bodies.get(0));
             assertEquals(fixture.get("revocation"), bodies.get(1));
             assertEquals(fixture.get("envelope"), bodies.get(2).get("envelope"));
