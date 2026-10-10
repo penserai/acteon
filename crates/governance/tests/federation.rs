@@ -9,9 +9,11 @@ use acteon_governance::{
     context::AcceptedEffect,
     federation::{
         EvaluatedFederationTrustPublication, FederatedAttempt, FederatedDelegationImport,
+        FederationCapabilityCard, FederationCapabilityRequirement, FederationCapabilitySigner,
         FederationEnvelope, FederationEnvelopeSigner, FederationGrantCeiling,
         FederationImportReference, FederationInvocation, FederationTrust,
         FederationTrustIssuanceCeiling, SignedFederationInvocation,
+        verify_federation_capability_card,
     },
 };
 use acteon_state::{KeyKind, StateKey, StateStore};
@@ -121,6 +123,137 @@ fn invocation(
             480,
         ))
         .unwrap()
+}
+
+fn capability_requirement() -> FederationCapabilityRequirement {
+    FederationCapabilityRequirement {
+        issuer_domain: "acteon.city.example".into(),
+        audience: "partner-a.example".into(),
+        minimum_issuer_epoch: 9,
+        agent_resource: agent(),
+        binding_digest: "a".repeat(64),
+        skill: "diagnose".into(),
+        protocol_revision: "acteon-federation-v1".into(),
+        require_exact_replay: true,
+        require_peer_finality: true,
+        authentication_scheme: "bearer".into(),
+    }
+}
+
+fn capability_card() -> FederationCapabilityCard {
+    let requirement = capability_requirement();
+    FederationCapabilityCard::new(
+        &requirement.issuer_domain,
+        &requirement.audience,
+        "city-capability-key-1",
+        9,
+        100,
+        500,
+        requirement.agent_resource,
+        requirement.binding_digest,
+        vec!["diagnose".into(), "observe".into()],
+        requirement.protocol_revision,
+        true,
+        true,
+        vec!["bearer".into(), "mtls".into()],
+    )
+}
+
+#[test]
+fn signed_capability_card_negotiates_an_exact_peer_contract() {
+    let signer = FederationCapabilitySigner::from_secret([22; 32]);
+    let signed = signer.sign(&capability_card()).unwrap();
+    let verified = verify_federation_capability_card(
+        &signed,
+        "city-capability-key-1",
+        &signer.verifying_key_hex(),
+        200,
+        10,
+        &capability_requirement(),
+    )
+    .unwrap();
+
+    assert_eq!(verified.agent_resource, agent());
+    assert!(verified.exact_replay_idempotent);
+    assert!(verified.peer_finality);
+    assert_eq!(signed, signer.sign(&verified).unwrap());
+    assert_eq!(signed.digest().unwrap().len(), 64);
+}
+
+#[test]
+fn capability_card_rejects_tampering_replay_and_missing_guarantees() {
+    let signer = FederationCapabilitySigner::from_secret([23; 32]);
+    let mut signed = signer.sign(&capability_card()).unwrap();
+    signed.payload.push(' ');
+    assert!(matches!(
+        verify_federation_capability_card(
+            &signed,
+            "city-capability-key-1",
+            &signer.verifying_key_hex(),
+            200,
+            10,
+            &capability_requirement(),
+        ),
+        Err(CoordinationError::Restricted)
+    ));
+
+    let mut card = capability_card();
+    card.audience = "another-source.example".into();
+    let signed = signer.sign(&card).unwrap();
+    assert!(matches!(
+        verify_federation_capability_card(
+            &signed,
+            "city-capability-key-1",
+            &signer.verifying_key_hex(),
+            200,
+            10,
+            &capability_requirement(),
+        ),
+        Err(CoordinationError::Restricted)
+    ));
+
+    let mut card = capability_card();
+    card.peer_finality = false;
+    let signed = signer.sign(&card).unwrap();
+    assert!(matches!(
+        verify_federation_capability_card(
+            &signed,
+            "city-capability-key-1",
+            &signer.verifying_key_hex(),
+            200,
+            10,
+            &capability_requirement(),
+        ),
+        Err(CoordinationError::Restricted)
+    ));
+
+    let mut card = capability_card();
+    card.issuer_epoch = 8;
+    let signed = signer.sign(&card).unwrap();
+    assert!(matches!(
+        verify_federation_capability_card(
+            &signed,
+            "city-capability-key-1",
+            &signer.verifying_key_hex(),
+            200,
+            10,
+            &capability_requirement(),
+        ),
+        Err(CoordinationError::Restricted)
+    ));
+
+    let signed = signer.sign(&capability_card()).unwrap();
+    assert!(matches!(
+        verify_federation_capability_card(
+            &signed,
+            "city-capability-key-1",
+            &signer.verifying_key_hex(),
+            500,
+            10,
+            &capability_requirement(),
+        ),
+        Err(CoordinationError::Restricted)
+    ));
 }
 
 async fn fixture() -> (

@@ -24,9 +24,197 @@ use crate::{
 
 const ENVELOPE_SCHEMA: u32 = 1;
 const INVOCATION_SCHEMA: u32 = 1;
+const CAPABILITY_CARD_SCHEMA: u32 = 1;
 const MAX_APPROVED_SHAPES: usize = 128;
 const MAX_CLOCK_BOUND_MS: i64 = 24 * 60 * 60 * 1000;
 const MAX_INVOCATION_PAYLOAD_BYTES: usize = 65_536;
+const MAX_CAPABILITY_CARD_BYTES: usize = 65_536;
+const MAX_CAPABILITY_ITEMS: usize = 64;
+
+/// A destination's signed, short-lived federation contract. The signature
+/// authenticates what the peer currently offers; a source still pins the
+/// expected signing key and applies an exact local requirement before use.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationCapabilityCard {
+    pub schema_version: u32,
+    pub issuer_domain: String,
+    /// The one source domain allowed to consume this card.
+    pub audience: String,
+    pub key_id: String,
+    pub issuer_epoch: u64,
+    pub issued_at_ms: i64,
+    pub expires_at_ms: i64,
+    pub agent_resource: ResourceRef,
+    pub binding_digest: String,
+    pub skills: Vec<String>,
+    pub protocol_revision: String,
+    pub exact_replay_idempotent: bool,
+    pub peer_finality: bool,
+    pub authentication_schemes: Vec<String>,
+}
+
+impl FederationCapabilityCard {
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub fn new(
+        issuer_domain: impl Into<String>,
+        audience: impl Into<String>,
+        key_id: impl Into<String>,
+        issuer_epoch: u64,
+        issued_at_ms: i64,
+        expires_at_ms: i64,
+        agent_resource: ResourceRef,
+        binding_digest: impl Into<String>,
+        skills: Vec<String>,
+        protocol_revision: impl Into<String>,
+        exact_replay_idempotent: bool,
+        peer_finality: bool,
+        authentication_schemes: Vec<String>,
+    ) -> Self {
+        Self {
+            schema_version: CAPABILITY_CARD_SCHEMA,
+            issuer_domain: issuer_domain.into(),
+            audience: audience.into(),
+            key_id: key_id.into(),
+            issuer_epoch,
+            issued_at_ms,
+            expires_at_ms,
+            agent_resource,
+            binding_digest: binding_digest.into(),
+            skills,
+            protocol_revision: protocol_revision.into(),
+            exact_replay_idempotent,
+            peer_finality,
+            authentication_schemes,
+        }
+    }
+}
+
+/// Exact source-owned minimum for selecting a peer. It is deliberately not a
+/// fallback list: a changed agent binding, protocol, skill or authentication
+/// contract requires renewed operator qualification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FederationCapabilityRequirement {
+    pub issuer_domain: String,
+    pub audience: String,
+    /// Reject cards issued before a reviewed peer revocation/key epoch.
+    pub minimum_issuer_epoch: u64,
+    pub agent_resource: ResourceRef,
+    pub binding_digest: String,
+    pub skill: String,
+    pub protocol_revision: String,
+    pub require_exact_replay: bool,
+    pub require_peer_finality: bool,
+    pub authentication_scheme: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SignedFederationCapabilityCard {
+    /// Exact UTF-8 JSON bytes signed by the destination. Verification checks
+    /// these bytes before parsing and never reserializes attacker input.
+    pub payload: String,
+    pub signature: String,
+}
+
+impl SignedFederationCapabilityCard {
+    pub fn card(&self) -> Result<FederationCapabilityCard, CoordinationError> {
+        serde_json::from_str(&self.payload)
+            .map_err(|_| CoordinationError::Invalid("federation capability card".into()))
+    }
+
+    pub fn digest(&self) -> Result<String, CoordinationError> {
+        signed_digest(self, "federation capability card")
+    }
+}
+
+/// Host-only capability-card signer. The private key cannot be serialized or
+/// supplied through a public request.
+pub struct FederationCapabilitySigner {
+    key: SigningKey,
+}
+
+impl FederationCapabilitySigner {
+    #[must_use]
+    pub fn from_secret(secret: [u8; 32]) -> Self {
+        Self {
+            key: SigningKey::from_bytes(&secret),
+        }
+    }
+
+    #[must_use]
+    pub fn verifying_key_hex(&self) -> String {
+        encode_hex(self.key.verifying_key().as_bytes())
+    }
+
+    pub fn sign(
+        &self,
+        card: &FederationCapabilityCard,
+    ) -> Result<SignedFederationCapabilityCard, CoordinationError> {
+        validate_capability_card_shape(card)?;
+        let payload = serde_json::to_string(card)
+            .map_err(|_| CoordinationError::Invalid("federation capability card".into()))?;
+        if payload.len() > MAX_CAPABILITY_CARD_BYTES {
+            return Err(CoordinationError::Invalid(
+                "federation capability card".into(),
+            ));
+        }
+        Ok(SignedFederationCapabilityCard {
+            signature: encode_hex(&self.key.sign(payload.as_bytes()).to_bytes()),
+            payload,
+        })
+    }
+}
+
+/// Authenticate and negotiate one peer card against a pinned key and exact
+/// local requirement. A valid signature alone never selects a peer.
+pub fn verify_federation_capability_card(
+    signed: &SignedFederationCapabilityCard,
+    expected_key_id: &str,
+    verifying_key: &str,
+    now_ms: i64,
+    max_clock_skew_ms: i64,
+    requirement: &FederationCapabilityRequirement,
+) -> Result<FederationCapabilityCard, CoordinationError> {
+    if signed.payload.len() > MAX_CAPABILITY_CARD_BYTES
+        || !valid_text(expected_key_id)
+        || !digest_valid(verifying_key, 32)
+        || now_ms < 0
+        || !(0..=MAX_CLOCK_BOUND_MS).contains(&max_clock_skew_ms)
+        || !valid_capability_requirement(requirement)
+    {
+        return Err(CoordinationError::Invalid(
+            "federation capability requirement".into(),
+        ));
+    }
+    let key = VerifyingKey::from_bytes(&decode_hex::<32>(verifying_key)?)
+        .map_err(|_| CoordinationError::Invalid("federation capability key".into()))?;
+    let signature = Signature::from_bytes(&decode_hex::<64>(&signed.signature)?);
+    key.verify_strict(signed.payload.as_bytes(), &signature)
+        .map_err(|_| CoordinationError::Restricted)?;
+    let card = signed.card()?;
+    validate_capability_card_shape(&card)?;
+    if card.key_id != expected_key_id
+        || card.issuer_domain != requirement.issuer_domain
+        || card.audience != requirement.audience
+        || card.issuer_epoch < requirement.minimum_issuer_epoch
+        || card.agent_resource != requirement.agent_resource
+        || card.binding_digest != requirement.binding_digest
+        || card.protocol_revision != requirement.protocol_revision
+        || !card.skills.contains(&requirement.skill)
+        || (requirement.require_exact_replay && !card.exact_replay_idempotent)
+        || (requirement.require_peer_finality && !card.peer_finality)
+        || !card
+            .authentication_schemes
+            .contains(&requirement.authentication_scheme)
+        || now_ms.saturating_add(max_clock_skew_ms) < card.issued_at_ms
+        || now_ms >= card.expires_at_ms
+    {
+        return Err(CoordinationError::Restricted);
+    }
+    Ok(card)
+}
 
 /// Exact locally reviewed import shape. Effects may be attenuated, while actor,
 /// recipient, service binding and ingress operation must match exactly.
@@ -469,6 +657,64 @@ pub(crate) fn valid_trust(trust: &FederationTrust) -> bool {
         && !trust.approved.is_empty()
         && trust.approved.len() <= MAX_APPROVED_SHAPES
         && trust.approved.iter().all(valid_ceiling_shape)
+}
+
+fn validate_capability_card_shape(
+    card: &FederationCapabilityCard,
+) -> Result<(), CoordinationError> {
+    if card.schema_version != CAPABILITY_CARD_SCHEMA
+        || ![
+            card.issuer_domain.as_str(),
+            card.audience.as_str(),
+            card.key_id.as_str(),
+            card.binding_digest.as_str(),
+            card.protocol_revision.as_str(),
+        ]
+        .into_iter()
+        .all(valid_text)
+        || card.issuer_domain == card.audience
+        || card.issuer_epoch == 0
+        || card.issued_at_ms < 0
+        || card.expires_at_ms <= card.issued_at_ms
+        || card.expires_at_ms - card.issued_at_ms > MAX_CLOCK_BOUND_MS
+        || card.agent_resource.kind() != ResourceKind::Agent
+        || !digest_valid(&card.binding_digest, 32)
+        || card.skills.is_empty()
+        || card.skills.len() > MAX_CAPABILITY_ITEMS
+        || !ordered_unique_tokens(&card.skills)
+        || card.authentication_schemes.is_empty()
+        || card.authentication_schemes.len() > MAX_CAPABILITY_ITEMS
+        || !ordered_unique_tokens(&card.authentication_schemes)
+    {
+        return Err(CoordinationError::Invalid(
+            "federation capability card".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn valid_capability_requirement(requirement: &FederationCapabilityRequirement) -> bool {
+    requirement.issuer_domain != requirement.audience
+        && requirement.minimum_issuer_epoch > 0
+        && requirement.agent_resource.kind() == ResourceKind::Agent
+        && [
+            requirement.issuer_domain.as_str(),
+            requirement.audience.as_str(),
+            requirement.binding_digest.as_str(),
+            requirement.skill.as_str(),
+            requirement.protocol_revision.as_str(),
+            requirement.authentication_scheme.as_str(),
+        ]
+        .into_iter()
+        .all(valid_text)
+        && digest_valid(&requirement.binding_digest, 32)
+}
+
+fn ordered_unique_tokens(values: &[String]) -> bool {
+    values
+        .iter()
+        .all(|value| valid_text(value) && value.len() <= 120)
+        && values.windows(2).all(|pair| pair[0] < pair[1])
 }
 
 fn validate_envelope_shape(envelope: &FederationEnvelope) -> Result<(), CoordinationError> {

@@ -27,7 +27,10 @@ use crate::federation_finality::{
 };
 
 pub const FEDERATION_DELIVERY_KIND: &str = "federation_outbound_delivery";
-const DELIVERY_SCHEMA: u32 = 1;
+// V2 adds the mandatory local reconciliation-resource footprint. Reading a V1
+// record as if it had an empty footprint would bypass management ceilings, so
+// old records fail closed and require a reviewed migration.
+const DELIVERY_SCHEMA: u32 = 2;
 const MAX_RECORD_BYTES: usize = 2 * 1024 * 1024;
 const MAX_ENDPOINT_BYTES: usize = 2_048;
 const MAX_CODE_BYTES: usize = 1_024;
@@ -553,11 +556,11 @@ impl FederationDeliveryFinalityReconciler {
                 .iter()
                 .find(|entry| entry.proof_digest == proof_digest)
             {
-                let verified = verifier.verify(&existing.correlation, proof)?;
+                let accepted_finality = verifier.verify(&existing.correlation, proof)?;
                 if existing.source_id != verifier.source_id()
                     || existing.qualification_ref != verifier.qualification_ref()
                     || existing.verifier_revision != verifier.revision()
-                    || !same_peer_finality(&existing.finality, &verified)?
+                    || !same_peer_finality(&existing.finality, &accepted_finality)?
                 {
                     return Err(FederationTransportError::Conflict);
                 }

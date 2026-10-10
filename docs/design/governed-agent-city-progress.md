@@ -2173,3 +2173,20 @@ Rust, Python, TypeScript, Go and Java expose the typed operations.
 Production-backend page and peer-finality qualification, capability exchange,
 and two-server qualification across Redis, PostgreSQL and DynamoDB remain
 required for the federation release gate.
+
+### Signed federation capability-card kernel (working tree)
+
+Federation capability negotiation now has a schema-closed governance contract.
+A host-only Ed25519 signer produces a short-lived card for one destination
+domain and one source audience. The card binds its key and revocation epoch,
+the exact agent resource and service digest, ordered skills, protocol revision,
+replay and finality guarantees, and accepted authentication schemes. The source
+verifier authenticates the original bytes with a separately pinned public key,
+then intersects them with an exact local requirement including a minimum peer
+epoch. Wrong audiences, stale epochs, changed bindings, missing skills,
+downgraded guarantees, unsupported authentication, tampering, future cards and
+expired cards fail closed.
+
+This closes the negotiation trust primitive, not the production exchange. The
+destination publication route, adapter-side fetch, durable negotiated-card
+evidence and credential-broker handoff remain the next federation increment.

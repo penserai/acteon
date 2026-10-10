@@ -225,11 +225,37 @@ Exact proof replay reauthorizes the current manager, reverifies the retained
 proof, preserves the original acceptance audit, repairs a lost local settlement
 acknowledgement and never sends to the peer.
 
+## Capability and key-card negotiation kernel
+
+The governance crate now defines the federation capability card used by the
+next transport increment. A destination signs exact JSON bytes containing its
+domain, one source audience, signing-key ID and issuer epoch, validity window,
+agent resource, service binding digest, ordered skills, protocol revision,
+exact-replay and peer-finality guarantees, and ordered authentication schemes.
+The private signer is host-only and has no serialization surface.
+
+Verification authenticates the original bytes with an independently pinned
+Ed25519 key before parsing. It then applies a source-owned requirement for the
+exact domains, minimum issuer epoch, agent resource, binding, skill, protocol
+and authentication scheme, plus required replay/finality guarantees and clock
+bounds. A valid signature therefore cannot redirect an export or silently
+downgrade its recovery contract. Cards are bounded to 64 KiB, 64 skills and 64
+authentication schemes, have at most a 24-hour lifetime, and require canonical
+ordered unique capability lists. This contract is reusable by an HTTP peer, a
+service registry or a credential broker; none of those hosts can turn a card
+into execution authority.
+
+The card is not yet accepted by the outbound adapter. Publishing the protected
+destination endpoint, retaining the negotiated card digest in the delivery
+journal, and obtaining a credential through a separately qualified broker are
+the next wire-level slice.
+
 ## Remaining gates
 
 The remaining production gates are:
 
 1. production-backend page and peer-finality qualification;
-2. capability/key-card negotiation and credential exchange;
+2. capability-card publication, durable transport negotiation and credential
+   exchange on top of the implemented signed-card kernel;
 3. two-server restart and response-loss qualification across Redis,
    PostgreSQL, and DynamoDB, followed by external implementation conformance.
