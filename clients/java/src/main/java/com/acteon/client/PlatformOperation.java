@@ -125,6 +125,7 @@ public enum PlatformOperation {
     EXECUTIONS_SIGNAL_EXECUTION("POST", "/v1/executions/{execution_id}/signal/{signal_name}", false, new String[]{"execution_id", "signal_name"}),
     EXECUTIONS_UPSERT_EXECUTION_ATTRIBUTES("PUT", "/v1/executions/{execution_id}/attributes", false, new String[]{"execution_id"}),
     FEDERATION_IMPORT_ENVELOPE("POST", "/a2a/{namespace}/{tenant}/federation/envelopes:import", false, new String[]{"namespace", "tenant"}),
+    FEDERATION_INVOKE_AGENT("POST", "/a2a/{namespace}/{tenant}/federation/agents/{agent}/v1/message:send", false, new String[]{"namespace", "tenant", "agent"}),
     GOVERNANCE_ACCEPT_RECONCILIATION("POST", "/v1/governance/executions/{execution_id}/attempts/{ordinal}/reconciliation", false, new String[]{"execution_id", "ordinal"}),
     GOVERNANCE_INSPECT("GET", "/v1/governance", false, new String[]{}),
     GOVERNANCE_INTERVENE("POST", "/v1/governance/changes", false, new String[]{}),

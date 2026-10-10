@@ -1,6 +1,6 @@
 use acteon_core::{
     Action, ActionOutcome, ExecutionContextReference, PrincipalIdentity, PrincipalKind,
-    ProviderResponse, ResourceKind, ResourceRef,
+    ProviderResponse, ResourceKind, ResourceRef, TaskMessage, TaskRole,
 };
 use acteon_crypto::{PayloadEncryptor, parse_master_key};
 use acteon_executor::governed::abort::{
@@ -395,9 +395,11 @@ fn foreign_envelope(
 }
 
 async fn federated_invocation(
-    fixture: &Fixture,
+    fixture: &mut Fixture,
     signer: &FederationEnvelopeSigner,
 ) -> (SignedFederationInvocation, FederationTrust) {
+    let message = TaskMessage::text("foreign-message-1", TaskRole::User, "inspect incident");
+    fixture.action.payload = serde_json::json!({"a2a_message":message});
     let effect = bound(Arc::new(Counting::new(Mode::Success)), fixture.known)
         .effect()
         .clone();
@@ -477,7 +479,7 @@ async fn federated_invocation(
                 id: imported.id,
                 envelope_digest: imported.envelope_digest,
             },
-            governed_provider_input_digest(&fixture.action).unwrap(),
+            message,
             100,
             4_900,
         ))
@@ -488,7 +490,7 @@ async fn federated_invocation(
 #[tokio::test]
 async fn signed_federated_input_executes_once_through_the_governed_provider_boundary() {
     let provider = Arc::new(Counting::new(Mode::Success));
-    let f = management_fixture(
+    let mut f = management_fixture(
         Arc::new(MemoryStateStore::new()),
         provider.clone(),
         false,
@@ -496,7 +498,7 @@ async fn signed_federated_input_executes_once_through_the_governed_provider_boun
     )
     .await;
     let signer = FederationEnvelopeSigner::from_secret([9; 32]);
-    let (invocation, trust) = federated_invocation(&f, &signer).await;
+    let (invocation, trust) = federated_invocation(&mut f, &signer).await;
     let driver = f.driver(provider.clone(), None);
 
     let first = driver
@@ -568,7 +570,7 @@ async fn signed_federated_input_executes_once_through_the_governed_provider_boun
 #[tokio::test]
 async fn federated_input_mismatch_and_invalid_signature_never_reach_the_provider() {
     let provider = Arc::new(Counting::new(Mode::Success));
-    let f = management_fixture(
+    let mut f = management_fixture(
         Arc::new(MemoryStateStore::new()),
         provider.clone(),
         false,
@@ -576,7 +578,7 @@ async fn federated_input_mismatch_and_invalid_signature_never_reach_the_provider
     )
     .await;
     let signer = FederationEnvelopeSigner::from_secret([8; 32]);
-    let (invocation, _) = federated_invocation(&f, &signer).await;
+    let (invocation, _) = federated_invocation(&mut f, &signer).await;
     let driver = f.driver(provider.clone(), None);
     let mut changed = f.action.clone();
     changed.payload = serde_json::json!({"value":"unsigned replacement"});
@@ -599,7 +601,7 @@ async fn federated_input_mismatch_and_invalid_signature_never_reach_the_provider
 #[tokio::test]
 async fn federated_known_rejection_retries_with_distinct_budgeted_attempts() {
     let provider = Arc::new(Counting::new(Mode::RejectFirst));
-    let f = management_fixture(
+    let mut f = management_fixture(
         Arc::new(MemoryStateStore::new()),
         provider.clone(),
         true,
@@ -607,7 +609,7 @@ async fn federated_known_rejection_retries_with_distinct_budgeted_attempts() {
     )
     .await;
     let signer = FederationEnvelopeSigner::from_secret([7; 32]);
-    let (invocation, _) = federated_invocation(&f, &signer).await;
+    let (invocation, _) = federated_invocation(&mut f, &signer).await;
     let receipt = f
         .driver(provider.clone(), None)
         .execute_federated(&invocation, &f.action, &actor())

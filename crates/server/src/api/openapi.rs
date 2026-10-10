@@ -118,6 +118,7 @@ use acteon_core::{
         super::governance::revoke_federation_trust,
         super::governance::intervene,
         super::federation::import_envelope,
+        super::federation::invoke_agent,
         super::auth::identity,
         super::health::health,
         super::health::metrics,

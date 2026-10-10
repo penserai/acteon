@@ -3,10 +3,12 @@
 use super::{AppState, governance::GovernanceApiError};
 use crate::{
     auth::projection::AuthenticatedExecutionConfiguration,
-    execution_authority::FederationImportAdmission,
+    execution_authority::{FederationAgentInvocation, FederationImportAdmission},
 };
-use acteon_core::{FederationImportReceipt, ImportFederationEnvelopeRequest};
-use acteon_governance::federation::SignedFederationEnvelope;
+use acteon_core::{
+    FederationImportReceipt, ImportFederationEnvelopeRequest, InvokeFederatedAgentRequest,
+};
+use acteon_governance::federation::{SignedFederationEnvelope, SignedFederationInvocation};
 use axum::{
     Extension, Json,
     extract::{Path, State},
@@ -55,6 +57,58 @@ pub async fn import_envelope(
                 namespace: &namespace,
                 tenant: &tenant,
                 signed: &signed,
+                authentication: &proof,
+            })
+            .await?,
+    ))
+}
+
+#[utoipa::path(
+    post,
+    path = "/a2a/{namespace}/{tenant}/federation/agents/{agent}/v1/message:send",
+    tag = "Governance",
+    params(("namespace" = String, Path), ("tenant" = String, Path), ("agent" = String, Path)),
+    request_body = InvokeFederatedAgentRequest,
+    responses(
+        (status = 200, body = acteon_core::Task, description = "Exact signed message executed or replayed through the governed local agent"),
+        (status = 400, description = "Invalid invocation or message"),
+        (status = 401, description = "Private authentication required"),
+        (status = 403, description = "Peer, trust, target, effect, or input denied"),
+        (status = 404, description = "Imported service binding unavailable"),
+        (status = 409, description = "Invocation, acceptance, or retained evidence conflict"),
+        (status = 503, description = "Federated execution unavailable")
+    )
+)]
+pub async fn invoke_agent(
+    State(state): State<AppState>,
+    proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
+    Path((namespace, tenant, agent)): Path<(String, String, String)>,
+    Json(request): Json<InvokeFederatedAgentRequest>,
+) -> Result<Json<acteon_core::Task>, GovernanceApiError> {
+    let proof = super::governance::authentication(proof)?;
+    if request.invocation.payload.is_empty()
+        || request.invocation.payload.len() > 65_536
+        || request.invocation.signature.len() != 128
+        || !request
+            .invocation
+            .signature
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(crate::execution_authority::ManagementError::Invalid.into());
+    }
+    let signed = SignedFederationInvocation {
+        payload: request.invocation.payload,
+        signature: request.invocation.signature,
+    };
+    Ok(Json(
+        super::governance::runtime(&state)?
+            .invoke_federated_agent(FederationAgentInvocation {
+                namespace: &namespace,
+                tenant: &tenant,
+                agent_id: &agent,
+                signed: &signed,
+                message: &request.message,
                 authentication: &proof,
             })
             .await?,

@@ -126,6 +126,7 @@ class PlatformOperation(StrEnum):
     EXECUTIONS_SIGNAL_EXECUTION = "executions_signal_execution"
     EXECUTIONS_UPSERT_EXECUTION_ATTRIBUTES = "executions_upsert_execution_attributes"
     FEDERATION_IMPORT_ENVELOPE = "federation_import_envelope"
+    FEDERATION_INVOKE_AGENT = "federation_invoke_agent"
     GOVERNANCE_ACCEPT_RECONCILIATION = "governance_accept_reconciliation"
     GOVERNANCE_INSPECT = "governance_inspect"
     GOVERNANCE_INTERVENE = "governance_intervene"
@@ -810,6 +811,12 @@ OPERATIONS = {
         "POST",
         "/a2a/{namespace}/{tenant}/federation/envelopes:import",
         ("namespace", "tenant"),
+        "json",
+    ),
+    PlatformOperation.FEDERATION_INVOKE_AGENT: (
+        "POST",
+        "/a2a/{namespace}/{tenant}/federation/agents/{agent}/v1/message:send",
+        ("namespace", "tenant", "agent"),
         "json",
     ),
     PlatformOperation.GOVERNANCE_ACCEPT_RECONCILIATION: (

@@ -3,7 +3,7 @@ import { AGENT_EXECUTION_CONTEXT_HEADER, AGENT_SOURCE_CONTEXT_HEADER, agentExecu
 import { parseProviderHistoryReceipt, type ProviderHistoryReceipt, type ProviderReconciliationCorrelation, type ProviderReconciliationRequest } from "./governance.js";
 import { parseProviderExecutionHistory, type ProviderExecutionHistory, type ProviderExecutionHistoryWire } from "./governance.js";
 import type { WorkforceScopeView, WorkforceChangeRequest } from "./workforce.js";
-import type { FederationImportReceipt, GovernanceScopeView, GovernanceChangeReceipt, PublishFederationTrustRequest, PublishGovernancePermitRequest, RevokeFederationTrustRequest, SignedFederationEnvelopeDeclaration, GovernanceInterventionRequest } from "./governance.js";
+import type { FederationImportReceipt, GovernanceScopeView, GovernanceChangeReceipt, PublishFederationTrustRequest, PublishGovernancePermitRequest, RevokeFederationTrustRequest, SignedFederationEnvelopeDeclaration, SignedFederationInvocationDeclaration, GovernanceInterventionRequest } from "./governance.js";
 import { platformRequestParts, type PlatformOperation, type PlatformRequestOptions } from "./platform.js";
 /**
  * HTTP client for the Acteon action gateway.
@@ -601,6 +601,16 @@ export class ActeonClient {
       throw new Error("federation import receipt identity or execution state mismatch");
     }
     return receipt;
+  }
+  /** Execute or replay one exact message under signed imported federation authority. */
+  async invokeFederatedAgent(namespace: string, tenant: string, agent: string, invocation: SignedFederationInvocationDeclaration, message: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const task = await this.platformRequest("federation_invoke_agent", {
+      path: { namespace, tenant, agent }, body: { invocation, message },
+    }) as Record<string, unknown>;
+    if (task.namespace !== namespace || task.tenant !== tenant || typeof task.id !== "string" || task.id.length === 0) {
+      throw new Error("federated task receipt identity mismatch");
+    }
+    return task;
   }
   async interveneGovernance(request: GovernanceInterventionRequest): Promise<GovernanceChangeReceipt> {
     return await this.platformRequest("governance_intervene", { body: request }) as GovernanceChangeReceipt;

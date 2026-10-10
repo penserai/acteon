@@ -4,7 +4,7 @@ Go client for the Acteon action gateway.
 
 ## Complete platform API
 
-The generated operation catalog exposes all 219 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, federation admission, and stream windows. Use an authenticated client and a configured, existing stage for this example:
+The generated operation catalog exposes all 220 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, federation admission and dispatch, and stream windows. Use an authenticated client and a configured, existing stage for this example:
 
 ```go
 status, err := client.PlatformRequest(ctx, acteon.OpBusStagesStatus,
@@ -22,11 +22,14 @@ See [SDK coverage and wire contracts](https://penserai.github.io/acteon/api/sdk-
 
 Use `Governance`, `PublishGovernancePermit`, and `InterveneGovernance` to inspect permitted routes, issue bounded permits, and close/reopen resources or revoke permits, subjects, and credentials. Requests and responses have native typed models. These methods require an authenticated operator and an independently configured execution manager for the requested namespace and tenant; an executor credential alone does not grant management authority.
 
-Cross-domain admission uses `PublishFederationTrust`,
-`RevokeFederationTrust`, and `ImportFederationEnvelope`. The import helper
+Cross-domain execution uses `PublishFederationTrust`,
+`RevokeFederationTrust`, `ImportFederationEnvelope`, and
+`InvokeFederatedAgent`. The import helper
 requires a configured peer credential, correlates the returned scope, and
 accepts only a receipt with `ExecutionStarted == false`. Import retains signed
-authority; it does not dispatch local work.
+authority without dispatching work. Invocation sends the exact signed intent
+and message, validates the returned task scope and ID, and does not retry
+automatically.
 
 Calls preserve HTTP refusals and do not retry automatically. Keep `change_id` stable when reconciling a lost response. A receipt records persisted authority; closure affects subsequent starts and does not promise cancellation of work already in flight.
 

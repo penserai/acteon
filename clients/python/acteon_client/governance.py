@@ -1,7 +1,7 @@
 """Typed governance management. Public values never establish caller authority."""
 
 from dataclasses import asdict, dataclass, field
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from .models import ActionOutcome, PrincipalIdentity
 from .platform_catalog import PlatformOperation
@@ -134,6 +134,12 @@ class RevokeFederationTrustRequest:
 
 @dataclass
 class SignedFederationEnvelopeDeclaration:
+    payload: str
+    signature: str
+
+
+@dataclass
+class SignedFederationInvocationDeclaration:
     payload: str
     signature: str
 
@@ -757,6 +763,31 @@ class _GovernanceMixin:
             raise ValueError("federation import receipt identity or execution state mismatch")
         return receipt
 
+    def invoke_federated_agent(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        invocation: SignedFederationInvocationDeclaration,
+        message: dict[str, Any],
+    ) -> dict[str, Any]:
+        task = cast(
+            dict[str, Any],
+            self.platform_request(
+                PlatformOperation.FEDERATION_INVOKE_AGENT,
+                path={"namespace": namespace, "tenant": tenant, "agent": agent},
+                body={"invocation": asdict(invocation), "message": message},
+            ),
+        )
+        if (
+            task.get("namespace") != namespace
+            or task.get("tenant") != tenant
+            or not isinstance(task.get("id"), str)
+            or not task["id"]
+        ):
+            raise ValueError("federated task receipt identity mismatch")
+        return task
+
     def intervene_governance(
         self, request: GovernanceInterventionRequest
     ) -> GovernanceChangeReceipt:
@@ -889,6 +920,31 @@ class _AsyncGovernanceMixin:
         if receipt.namespace != namespace or receipt.tenant != tenant or receipt.execution_started:
             raise ValueError("federation import receipt identity or execution state mismatch")
         return receipt
+
+    async def invoke_federated_agent(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        invocation: SignedFederationInvocationDeclaration,
+        message: dict[str, Any],
+    ) -> dict[str, Any]:
+        task = cast(
+            dict[str, Any],
+            await self.platform_request(
+                PlatformOperation.FEDERATION_INVOKE_AGENT,
+                path={"namespace": namespace, "tenant": tenant, "agent": agent},
+                body={"invocation": asdict(invocation), "message": message},
+            ),
+        )
+        if (
+            task.get("namespace") != namespace
+            or task.get("tenant") != tenant
+            or not isinstance(task.get("id"), str)
+            or not task["id"]
+        ):
+            raise ValueError("federated task receipt identity mismatch")
+        return task
 
     async def intervene_governance(
         self, request: GovernanceInterventionRequest

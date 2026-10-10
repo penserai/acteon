@@ -509,10 +509,9 @@ banner. Engine actions and the `StreamEvent`s they emit line up by id.
 
 ## Federation status
 
-The public A2A service currently provides a governed mesh within one Acteon
-administrative domain. It also exposes a deliberately narrower cross-domain
-**import admission** boundary. A configured peer can submit a signed delegation
-envelope to:
+The public A2A service provides a governed mesh within one Acteon administrative
+domain. Its cross-domain boundary separates authority admission from execution.
+A configured peer first submits a signed delegation envelope to:
 
 ```text
 POST /a2a/{namespace}/{tenant}/federation/envelopes:import
@@ -528,6 +527,30 @@ successful response is a `FederationImportReceipt` with
 bounded local root, but it does not create an A2A task, register an effect or
 call the recipient.
 
+The peer can then submit one exact signed invocation and A2A message to the
+imported agent:
+
+```text
+POST /a2a/{namespace}/{tenant}/federation/agents/{agent}/v1/message:send
+```
+
+The invocation signs the import ID and digest, replay nonce, complete typed A2A
+message, issuance time and expiry. The request carries the same message as its
+ordinary A2A body; Acteon requires semantic equality before accepting the task,
+then independently derives and seals its local provider input. A foreign caller
+does not need Acteon's private provider or action-type names. The route also binds
+the authenticated peer to the import's issuer domain and trust ID, checks the
+agent and current service binding, and reauthenticates immediately before any
+new provider start. Trust, closures, target state, effect attenuation and root
+budget are checked again inside the coordinator transaction that registers the
+effect.
+
+The same signed request is replay safe. Concurrent requests converge on one
+task and one provider delivery. Exact completed results remain observable by
+the configured peer after trust revocation without calling the provider again;
+revocation blocks new work and unfinished delivery. Background recovery skips
+federated acceptances because it has no peer credential.
+
 Trust publication and terminal revocation are separate authenticated governance
 operations:
 
@@ -542,15 +565,13 @@ already present in the deployment-owned ceiling. Request data cannot introduce
 a new key, domain, audience, recipient, effect or limit. Inspection returns only
 the trust records inside that manager's footprint.
 
-The current release stops at authenticated admission. It does not turn an
-import into local execution or provide outbound cross-domain delivery,
-credential exchange, capability negotiation, remote key discovery, or automatic
-partition recovery. The next runtime gate must recheck the peer credential,
-trust, closures, recipient and imported authority at the same state transition
-that starts local work. Until that gate and external conformance tests ship,
-Acteon does not claim complete cross-domain A2A interoperability. A remote card,
-signature or cached envelope never overrides local permits, closures, principal
-revocation or root limits.
+Acteon does not yet provide outbound cross-domain delivery, credential exchange,
+capability negotiation, remote key discovery, or conformance evidence against a
+named external implementation. Peer credential state and effect authority also
+reside in separate state scopes: the route rechecks the peer just before
+dispatch, and the coordinator separately performs the atomic execution check.
+A remote card, signature or cached envelope never overrides local permits,
+closures, principal revocation or root limits.
 
 ## Errors
 

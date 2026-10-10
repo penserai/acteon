@@ -221,6 +221,10 @@ pub fn router(state: AppState) -> Router {
             "/a2a/{namespace}/{tenant}/federation/envelopes:import",
             post(federation::import_envelope),
         )
+        .route(
+            "/a2a/{namespace}/{tenant}/federation/agents/{agent}/v1/message:send",
+            post(federation::invoke_agent),
+        )
         .route("/v1/governance/changes", post(governance::intervene))
         .route("/v1/governance/registry", post(governance::mutate_registry))
         .route(

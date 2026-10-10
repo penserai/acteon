@@ -3,9 +3,12 @@
 
 use super::{ExecutionAuthorityRuntime, ManagementError};
 use crate::auth::projection::AuthenticatedExecutionConfiguration;
-use acteon_core::FederationImportReceipt;
+use acteon_core::{FederationImportReceipt, Task, TaskMessage};
 use acteon_governance::{
-    federation::{FederatedDelegationImport, FederationEnvelope, SignedFederationEnvelope},
+    federation::{
+        FederatedDelegationImport, FederationEnvelope, SignedFederationEnvelope,
+        SignedFederationInvocation,
+    },
     permit::matches_effect,
 };
 
@@ -16,7 +19,109 @@ pub struct FederationImportAdmission<'a> {
     pub authentication: &'a AuthenticatedExecutionConfiguration,
 }
 
+pub struct FederationAgentInvocation<'a> {
+    pub namespace: &'a str,
+    pub tenant: &'a str,
+    pub agent_id: &'a str,
+    pub signed: &'a SignedFederationInvocation,
+    pub message: &'a TaskMessage,
+    pub authentication: &'a AuthenticatedExecutionConfiguration,
+}
+
 impl ExecutionAuthorityRuntime {
+    /// Invoke one exact imported agent message under current private peer
+    /// authentication. Generic recovery never calls this path.
+    pub async fn invoke_federated_agent(
+        &self,
+        request: FederationAgentInvocation<'_>,
+    ) -> Result<Task, ManagementError> {
+        let scope = self
+            .scopes
+            .get(&(request.namespace.into(), request.tenant.into()))
+            .ok_or(ManagementError::NotFound)?;
+        request
+            .authentication
+            .verify_authentication_current()
+            .await
+            .map_err(|_| ManagementError::Forbidden)?;
+        let binding = request
+            .authentication
+            .scope(request.namespace, request.tenant)
+            .map_err(|_| ManagementError::Forbidden)?;
+        let actor = binding.authentication_source().principal();
+        scope
+            .prepared
+            .verify_authenticated_scope_typed(
+                &binding,
+                &scope.coordinator,
+                self.clock.now().timestamp_millis(),
+            )
+            .await
+            .map_err(|_| ManagementError::Forbidden)?;
+        let invocation = request.signed.invocation()?;
+        let snapshot = scope.coordinator.snapshot().await?;
+        let imported = snapshot
+            .federation_imports
+            .get(&invocation.import.id)
+            .filter(|record| record.envelope_digest == invocation.import.envelope_digest)
+            .ok_or(ManagementError::Forbidden)?;
+        let federation = scope
+            .prepared
+            .declaration()
+            .federation
+            .as_ref()
+            .ok_or(ManagementError::Forbidden)?;
+        if !federation.peers.iter().any(|peer| {
+            peer.foreign_domain == imported.issuer_domain
+                && peer.authentication_principal == *actor
+                && peer.trust_ids.contains(&imported.trust_id)
+        }) || imported.agent_resource.id() != request.agent_id
+        {
+            return Err(ManagementError::Forbidden);
+        }
+        let runtime = scope
+            .agent_bindings
+            .get(&(request.agent_id.into(), imported.binding_digest.clone()))
+            .ok_or(ManagementError::NotFound)?;
+        let task_id = runtime
+            .federated_task_id(request.signed, request.message)
+            .map_err(federation_runtime_error)?;
+        let current = scope
+            .prepared
+            .agents
+            .get(request.agent_id)
+            .is_some_and(|agent| agent.binding.digest() == imported.binding_digest);
+        if current {
+            Self::bind_federated_service(scope, &imported.signed_envelope.envelope()?)?;
+            runtime
+                .accept_federated(request.signed, request.message)
+                .await
+                .map_err(federation_runtime_error)?;
+        }
+        // Recheck the peer credential immediately before any path that can
+        // register an unstarted attempt. The coordinator separately rechecks
+        // signed trust and budget in the provider-start CAS.
+        request
+            .authentication
+            .verify_authentication_current()
+            .await
+            .map_err(|_| ManagementError::Forbidden)?;
+        scope
+            .prepared
+            .verify_authenticated_scope_typed(
+                &binding,
+                &scope.coordinator,
+                self.clock.now().timestamp_millis(),
+            )
+            .await
+            .map_err(|_| ManagementError::Forbidden)?;
+        runtime
+            .resume_federated(task_id, request.signed)
+            .await
+            .map(|receipt| receipt.task)
+            .map_err(federation_runtime_error)
+    }
+
     /// Authenticate one configured foreign peer, bind its signed assertion to
     /// the currently installed local service, and retain the resulting import.
     /// The receipt deliberately states that no execution has started.
@@ -124,5 +229,31 @@ impl ExecutionAuthorityRuntime {
             return Err(ManagementError::Forbidden);
         }
         Ok(())
+    }
+}
+
+fn federation_runtime_error(
+    error: acteon_gateway::agent_runtime::AgentRuntimeError,
+) -> ManagementError {
+    use acteon_executor::governed::GovernedProviderError;
+    use acteon_gateway::agent_runtime::AgentRuntimeError;
+    match error {
+        AgentRuntimeError::Invalid => ManagementError::Invalid,
+        AgentRuntimeError::Conflict => ManagementError::Conflict,
+        AgentRuntimeError::Missing => ManagementError::NotFound,
+        AgentRuntimeError::State(_)
+        | AgentRuntimeError::Encoding(_)
+        | AgentRuntimeError::Task(_) => ManagementError::Unavailable,
+        AgentRuntimeError::Context(_) | AgentRuntimeError::Authority(_) => {
+            ManagementError::Forbidden
+        }
+        AgentRuntimeError::Execution(error) => match error {
+            GovernedProviderError::Invalid => ManagementError::Invalid,
+            GovernedProviderError::Ownership | GovernedProviderError::Admission(_) => {
+                ManagementError::Forbidden
+            }
+            GovernedProviderError::Conflict => ManagementError::Conflict,
+            GovernedProviderError::Unavailable => ManagementError::Unavailable,
+        },
     }
 }

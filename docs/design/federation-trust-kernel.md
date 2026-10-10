@@ -1,8 +1,8 @@
 # Federation trust kernel
 
 **Status:** governance substrate, deployment bindings, authenticated trust
-management, inert inbound admission and durable provider execution adapter
-implemented; authenticated server dispatch remains gated.
+management, inert inbound admission, authenticated agent dispatch/replay and
+durable provider execution are implemented.
 
 Acteon's local agent mesh uses server-held authority in one administrative
 domain. Federation cannot extend that design by serializing a local context or
@@ -10,11 +10,10 @@ by trusting a remote agent card. A foreign domain may authenticate an assertion;
 the receiving domain still decides which actor, recipient, service binding,
 effects, limits and delegation depth it will import.
 
-The governance crate establishes that boundary. The server now exposes an
-authenticated inbound admission endpoint and bounded trust-management API. The
-endpoint retains imported authority but deliberately starts no task or effect,
-so this milestone does not claim complete interoperability with another
-implementation.
+The governance crate establishes that boundary. The server exposes bounded
+trust management, inert inbound admission, and a separate authenticated
+dispatch endpoint. Admission retains authority without starting work. Dispatch
+binds one signed invocation to one exact prepared message and local service.
 
 ## Contract
 
@@ -48,9 +47,12 @@ unreadable instead of becoming permission.
 
 Every imported effect uses `register_federated_attempt` with a
 `SignedFederationInvocation`. The foreign signer binds the exact imported
-envelope digest, a replay nonce, the prepared provider-input digest, and a short
-validity interval. The trusted local adapter independently computes that input
-digest; unsigned task content cannot select or alter the invocation. Current
+envelope digest, a replay nonce, the complete typed A2A message, and a short
+validity interval. The request carries the same message separately for ordinary
+A2A handling; Acteon requires semantic equality before persistence. The signed
+peer never has to reproduce receiver-private provider names or action types.
+The trusted local adapter independently prepares that message under the exact
+service binding and seals its provider-input digest into execution evidence. Current
 trust, invocation signature, revocation, target status, expiry, exact effect
 attenuation and root accounting are checked inside the same coordinator CAS
 that registers each local delivery attempt. Therefore:
@@ -87,9 +89,11 @@ current trust or calling the provider again. Prepared work and retries re-enter
 the coordinator, where current trust and budget are checked before delivery.
 
 This adapter receives an already authenticated local target from its host. It
-does not authenticate a network peer. A server route must authenticate the
-configured peer on every dispatch or recovery request before calling it; a
-background worker cannot resume unregistered federated work from stored labels.
+does not authenticate a network peer. The server route authenticates the
+configured peer on every dispatch or recovery request and rechecks that
+credential immediately before a possible start. The coordinator independently
+checks signed trust and budget in its start CAS. A background worker never
+resumes federated work from stored labels.
 
 ## Freshness and partitions
 
@@ -138,23 +142,33 @@ the coordinator. Its typed receipt always reports `execution_started: false`.
 The coordinator may fund the imported root, but the server creates no task,
 accepted execution context, effect attempt or external call.
 
-Rust, Python, TypeScript, Go and Java expose the same typed publish, revoke and
-import operations. A shared fixture pins the wire shape, while the server test
-proves operator credentials cannot impersonate a peer, a configured peer can
-import, import starts no execution, and terminal revocation blocks a later
-envelope.
+`POST /a2a/{namespace}/{tenant}/federation/agents/{agent}/v1/message:send`
+accepts a `SignedFederationInvocation` and its exact A2A message. For new work,
+the peer credential, retained import, agent ID, current service binding, signed
+message equality, trust, closures and budget must all pass before provider delivery.
+The durable acceptance stores the signed invocation, and only the authenticated
+federation resume path can run it. Generic recovery skips these acceptances.
+Concurrent or repeated delivery of the same signed input converges on the same
+task and provider evidence. After revocation, an exact completed replay remains
+observable to the same configured peer without another provider call; new work
+and unfinished sends fail current authority checks.
+
+Rust, Python, TypeScript, Go and Java expose the same typed publish, revoke,
+import and federated-agent invocation operations. Wire tests pin the exact path,
+body and task identity. Runtime tests prove unsigned recovery cannot resume
+federated work, a completed replay does not call the provider again, and
+revocation blocks new execution while preserving exact completed observation.
 
 ## Remaining integration gates
 
-The next slice is an authenticated server dispatch/replay endpoint. It must bind
-the configured peer to the retained import, resolve the prepared local provider
-binding, and pass only the authenticated target, signed invocation and prepared
-`Action` to the executor. Every request that could start an unregistered attempt
-must reauthenticate the peer. Completed observation may survive trust revocation,
-but it must still enforce read ownership at the server boundary.
+Peer authentication and coordinator effect registration live in separate state
+scopes. The route narrows their race by checking the peer immediately before
+dispatch, while the coordinator atomically rechecks signed execution authority
+with effect registration. A future credential projection that shares the
+coordinator transaction could close that last cross-scope interval.
 
-Later federation gates include outbound delivery, credential exchange,
+Further federation gates include outbound delivery, credential exchange,
 capability negotiation, remote card and key rotation, response-loss recovery,
 operator-visible expiry and reconciliation, load/chaos evidence, and conformance
-against named external implementations. Until those pass, the cross-domain
-surface is an admission boundary rather than a complete federated A2A mesh.
+against named external implementations. Until those pass, Acteon does not claim
+complete cross-domain A2A interoperability.

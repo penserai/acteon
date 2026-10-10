@@ -799,7 +799,6 @@ impl AuthorityCoordinator {
                 subject,
                 &resources,
                 reservation.as_ref(),
-                request_digest,
             )?;
             if state.record_count() >= state.limits.max_records - CONTROL_RECORD_RESERVE
                 || state

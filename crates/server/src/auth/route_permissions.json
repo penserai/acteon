@@ -756,6 +756,12 @@
     "permission": "Dispatch"
   },
   {
+    "name": "federation_invoke_agent",
+    "method": "POST",
+    "path": "/a2a/{namespace}/{tenant}/federation/agents/{agent}/v1/message:send",
+    "permission": "Dispatch"
+  },
+  {
     "name": "governance_accept_reconciliation",
     "method": "POST",
     "path": "/v1/governance/executions/{execution_id}/attempts/{ordinal}/reconciliation",

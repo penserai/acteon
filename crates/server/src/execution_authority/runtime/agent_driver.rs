@@ -3,7 +3,9 @@
 use super::ExecutionAuthorityRuntime;
 use crate::config::AgentServiceDriverConfig;
 use acteon_executor::governed::GovernedProviderStatus;
-use acteon_gateway::agent_runtime::{ACCEPTANCE_KIND, AgentProviderRuntime};
+use acteon_gateway::agent_runtime::{
+    ACCEPTANCE_KIND, AgentProviderRuntime, accepted_agent_requires_federation_authentication,
+};
 use acteon_state::KeyKind;
 use futures::FutureExt;
 use std::{
@@ -155,9 +157,7 @@ impl ExecutionAuthorityRuntime {
                 .collect();
             for (key, raw) in entries.into_iter().take(batch) {
                 after.clone_from(&key);
-                // Only route a bounded hint. The fixed runtime checks the complete
-                // acceptance, signature, lineage and original binding again.
-                if raw.len() > 2 * 1024 * 1024 {
+                if !background_resume_candidate(&raw) {
                     continue;
                 }
                 let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
@@ -216,4 +216,11 @@ impl ExecutionAuthorityRuntime {
         }
         Ok(out)
     }
+}
+
+// Only route a bounded hint. The fixed runtime checks the complete acceptance,
+// signature, lineage and original binding again. Federated work requires a peer.
+fn background_resume_candidate(raw: &str) -> bool {
+    raw.len() <= 2 * 1024 * 1024
+        && !accepted_agent_requires_federation_authentication(raw).unwrap_or(true)
 }

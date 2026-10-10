@@ -127,6 +127,7 @@ const (
 	OpExecutionsSignalExecution PlatformOperation = "executions_signal_execution"
 	OpExecutionsUpsertExecutionAttributes PlatformOperation = "executions_upsert_execution_attributes"
 	OpFederationImportEnvelope PlatformOperation = "federation_import_envelope"
+	OpFederationInvokeAgent PlatformOperation = "federation_invoke_agent"
 	OpGovernanceAcceptReconciliation PlatformOperation = "governance_accept_reconciliation"
 	OpGovernanceInspect PlatformOperation = "governance_inspect"
 	OpGovernanceIntervene PlatformOperation = "governance_intervene"
@@ -343,6 +344,7 @@ var platformOperations = map[PlatformOperation]platformDescriptor{
 	OpExecutionsSignalExecution: {"POST", "/v1/executions/{execution_id}/signal/{signal_name}", []string{"execution_id", "signal_name"}, false},
 	OpExecutionsUpsertExecutionAttributes: {"PUT", "/v1/executions/{execution_id}/attributes", []string{"execution_id"}, false},
 	OpFederationImportEnvelope: {"POST", "/a2a/{namespace}/{tenant}/federation/envelopes:import", []string{"namespace", "tenant"}, false},
+	OpFederationInvokeAgent: {"POST", "/a2a/{namespace}/{tenant}/federation/agents/{agent}/v1/message:send", []string{"namespace", "tenant", "agent"}, false},
 	OpGovernanceAcceptReconciliation: {"POST", "/v1/governance/executions/{execution_id}/attempts/{ordinal}/reconciliation", []string{"execution_id", "ordinal"}, false},
 	OpGovernanceInspect: {"GET", "/v1/governance", []string{}, false},
 	OpGovernanceIntervene: {"POST", "/v1/governance/changes", []string{}, false},

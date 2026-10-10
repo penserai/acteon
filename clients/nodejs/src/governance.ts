@@ -32,6 +32,7 @@ export interface RevokeFederationTrustRequest {
   expected_revision: number; reason: string;
 }
 export interface SignedFederationEnvelopeDeclaration { payload: string; signature: string; }
+export interface SignedFederationInvocationDeclaration { payload: string; signature: string; }
 export interface FederationImportReceipt {
   namespace: string; tenant: string; import_id: string; envelope_digest: string;
   trust_id: string; trust_revision: number; issuer_domain: string;

@@ -510,6 +510,20 @@ public class ActeonClient implements AutoCloseable {
             return receipt;
         } catch (IOException e) { throw new ConnectionException("Malformed federation response", e); }
     }
+    /** Execute or replay one exact message under signed imported federation authority. */
+    public com.fasterxml.jackson.databind.JsonNode invokeFederatedAgent(String namespace, String tenant,
+        String agent, Governance.SignedFederationInvocationDeclaration invocation,
+        Map<String, Object> message) throws ActeonException {
+        var task = platformRequest(PlatformOperation.FEDERATION_INVOKE_AGENT,
+            Map.of("namespace", namespace, "tenant", tenant, "agent", agent), null,
+            Map.of("invocation", invocation, "message", message));
+        if (!namespace.equals(task.path("namespace").asText())
+            || !tenant.equals(task.path("tenant").asText())
+            || task.path("id").asText().isEmpty()) {
+            throw new ConnectionException("Federated task receipt identity mismatch", null);
+        }
+        return task;
+    }
     public Governance.ChangeReceipt interveneGovernance(Governance.InterventionRequest request) throws ActeonException {
         var node = platformRequest(PlatformOperation.GOVERNANCE_INTERVENE, null, null, request);
         try { return objectMapper.treeToValue(node, Governance.ChangeReceipt.class); }

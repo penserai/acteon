@@ -12,7 +12,7 @@ use std::{
 
 use acteon_core::{
     Action, ActionError, ActionOutcome, ExecutionContextReference, PrincipalIdentity, ResourceKind,
-    ResourceRef,
+    ResourceRef, TaskMessage,
 };
 use acteon_crypto::PayloadEncryptor;
 use acteon_governance::context::{AcceptedEffect, TrustedContextStore};
@@ -400,6 +400,56 @@ fn federation_context_id(
     ))
 }
 
+/// Deterministic correlation reference for a signed foreign invocation. This
+/// value carries no authority; the coordinator verifies the signature, import
+/// and current restrictions before each provider start.
+pub fn federated_execution_reference(
+    invocation: &SignedFederationInvocation,
+    namespace: &str,
+    tenant: &str,
+    target: PrincipalIdentity,
+    provider_input_digest: &str,
+) -> Result<ExecutionContextReference, GovernedProviderError> {
+    invocation
+        .invocation()
+        .map_err(|_| GovernedProviderError::Invalid)?;
+    ExecutionContextReference::new(
+        federation_context_id(invocation)?,
+        federation_execution_id(invocation)?,
+        namespace.into(),
+        tenant.into(),
+        target,
+        provider_input_digest.into(),
+    )
+    .map_err(|_| GovernedProviderError::Invalid)
+}
+
+fn federated_agent_message(action: &Action) -> Result<TaskMessage, GovernedProviderError> {
+    let payload = action
+        .payload
+        .as_object()
+        .filter(|payload| payload.len() == 1)
+        .and_then(|payload| payload.get("a2a_message"))
+        .ok_or(GovernedProviderError::Ownership)?;
+    let message: TaskMessage =
+        serde_json::from_value(payload.clone()).map_err(|_| GovernedProviderError::Ownership)?;
+    if message.task_id.is_some() || message.validate().is_err() {
+        return Err(GovernedProviderError::Ownership);
+    }
+    Ok(message)
+}
+
+fn invocation_matches_action(
+    invocation: &acteon_governance::federation::FederationInvocation,
+    action: &Action,
+) -> Result<bool, GovernedProviderError> {
+    let message = federated_agent_message(action)?;
+    Ok(
+        serde_json::to_value(&invocation.message).map_err(|_| GovernedProviderError::Invalid)?
+            == serde_json::to_value(message).map_err(|_| GovernedProviderError::Invalid)?,
+    )
+}
+
 fn federation_import<'a>(
     op: &Operation,
     snapshot: &'a CoordinatorSnapshot,
@@ -416,7 +466,8 @@ fn federation_import<'a>(
         .filter(|record| record.envelope_digest == invocation.import.envelope_digest)
         .ok_or(GovernedProviderError::Conflict)?;
     if op.permits.is_empty()
-        && invocation.request_digest == op.context.request_digest()
+        && invocation_matches_action(&invocation, &op.action)?
+        && governed_provider_input_digest(&op.action)? == op.context.request_digest()
         && imported.target == *op.context.principal()
         && imported.authority.incarnation == snapshot.incarnation
         && federation_execution_id(signed)? == op.context.execution_id()
@@ -921,7 +972,7 @@ impl GovernedProviderExecutor {
             .invocation()
             .map_err(|_| GovernedProviderError::Invalid)?;
         let input_digest = governed_provider_input_digest(action)?;
-        if invocation.request_digest != input_digest {
+        if !invocation_matches_action(&invocation, action)? {
             return Err(GovernedProviderError::Ownership);
         }
         let snapshot = self
@@ -955,15 +1006,13 @@ impl GovernedProviderExecutor {
         {
             return Err(GovernedProviderError::Ownership);
         }
-        let reference = ExecutionContextReference::new(
-            federation_context_id(signed)?,
-            federation_execution_id(signed)?,
-            action.namespace.to_string(),
-            action.tenant.to_string(),
+        let reference = federated_execution_reference(
+            signed,
+            action.namespace.as_str(),
+            action.tenant.as_str(),
             target.clone(),
-            input_digest,
-        )
-        .map_err(|_| GovernedProviderError::Invalid)?;
+            &input_digest,
+        )?;
         let proposed = Operation {
             schema: 1,
             context: reference.clone(),
@@ -985,14 +1034,10 @@ impl GovernedProviderExecutor {
                 return Ok(observed);
             }
         }
-        self.runtime
-            .coordinator
-            .check_federation_import(&invocation.import, self.runtime.clock.as_ref())
-            .await
-            .map_err(|error| match error {
-                CoordinationError::State(_) => GovernedProviderError::Unavailable,
-                _ => GovernedProviderError::Admission("FEDERATION_AUTHORITY_DENIED"),
-            })?;
+        let prepared = self.prepare_federated(signed, action, target).await?;
+        if prepared != reference {
+            return Err(GovernedProviderError::Conflict);
+        }
         self.runtime
             .state
             .check_and_set(
@@ -1011,6 +1056,76 @@ impl GovernedProviderExecutor {
             return Err(GovernedProviderError::Conflict);
         }
         self.run(&op).await
+    }
+
+    /// Verify current signed federation authority and the exact provider input
+    /// before a host persists higher-level task admission. No budget is spent
+    /// and no provider is called; execution repeats the check in its start CAS.
+    pub async fn prepare_federated(
+        &self,
+        signed: &SignedFederationInvocation,
+        action: &Action,
+        target: &PrincipalIdentity,
+    ) -> Result<ExecutionContextReference, GovernedProviderError> {
+        let request_digest = governed_provider_input_digest(action)?;
+        let invocation = signed
+            .invocation()
+            .map_err(|_| GovernedProviderError::Invalid)?;
+        if !invocation_matches_action(&invocation, action)?
+            || action.action_type != self.runtime.bound.action_type
+            || action.template.is_some()
+            || !action.attachments.is_empty()
+        {
+            return Err(GovernedProviderError::Ownership);
+        }
+        let expected_authority = self
+            .runtime
+            .coordinator
+            .snapshot()
+            .await
+            .map_err(|_| GovernedProviderError::Unavailable)?
+            .stamp();
+        let imported = self
+            .runtime
+            .coordinator
+            .check_federated_attempt(FederatedAttempt {
+                invocation: signed,
+                effect: &self.runtime.bound.binding.effect,
+                request_digest: &request_digest,
+                ordinal: 0,
+                units: 1,
+                expected_authority: &expected_authority,
+                clock: self.runtime.clock.as_ref(),
+            })
+            .await
+            .map_err(|error| match error {
+                CoordinationError::State(_) => GovernedProviderError::Unavailable,
+                _ => GovernedProviderError::Admission("FEDERATION_AUTHORITY_DENIED"),
+            })?;
+        if imported.target != *target
+            || action.namespace.as_str() != imported.agent_resource.namespace()
+            || action.tenant.as_str() != imported.agent_resource.tenant()
+            || self
+                .runtime
+                .bound
+                .binding
+                .effect
+                .resources
+                .iter()
+                .any(|resource| {
+                    resource.namespace() != action.namespace.as_str()
+                        || resource.tenant() != action.tenant.as_str()
+                })
+        {
+            return Err(GovernedProviderError::Ownership);
+        }
+        federated_execution_reference(
+            signed,
+            action.namespace.as_str(),
+            action.tenant.as_str(),
+            target.clone(),
+            &request_digest,
+        )
     }
 
     async fn run(&self, op: &Operation) -> Result<GovernedProviderReceipt, GovernedProviderError> {

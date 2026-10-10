@@ -87,6 +87,7 @@ from .governance import (
     PublishFederationTrustRequest,
     RevokeFederationTrustRequest,
     SignedFederationEnvelopeDeclaration,
+    SignedFederationInvocationDeclaration,
 )
 from .governance import (
     GovernanceChangeReceipt as GovernanceChangeReceipt,
@@ -442,6 +443,7 @@ __all__ += [
     "PublishFederationTrustRequest",
     "RevokeFederationTrustRequest",
     "SignedFederationEnvelopeDeclaration",
+    "SignedFederationInvocationDeclaration",
     "GovernanceResource",
     "GovernanceLimits",
     "GovernanceRoute",

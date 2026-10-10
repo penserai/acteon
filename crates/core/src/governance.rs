@@ -120,6 +120,24 @@ pub struct ImportFederationEnvelopeRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
+pub struct SignedFederationInvocationDeclaration {
+    pub payload: String,
+    pub signature: String,
+}
+
+/// Exact signed foreign intent plus the same typed message carried inside that
+/// signed payload. The receiver compares them before deriving local provider input.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct InvokeFederatedAgentRequest {
+    pub invocation: SignedFederationInvocationDeclaration,
+    pub message: crate::TaskMessage,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
 pub struct FederationImportReceipt {
     pub namespace: String,
     pub tenant: String,

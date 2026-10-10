@@ -119,6 +119,10 @@ mod tests {
                 Permission::Dispatch,
             ),
             (
+                "/a2a/{namespace}/{tenant}/federation/agents/{agent}/v1/message:send",
+                Permission::Dispatch,
+            ),
+            (
                 "/v1/governance/federation/trusts",
                 Permission::OperationsManage,
             ),

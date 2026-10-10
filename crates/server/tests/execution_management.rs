@@ -345,11 +345,14 @@ fn federation_configuration_is_canonical_and_policy_bound() {
 }
 
 #[tokio::test]
-async fn configured_peer_and_manager_bind_federation_import_without_starting_execution() {
+#[allow(clippy::too_many_lines)]
+async fn configured_peer_and_manager_bind_federation_import_and_signed_dispatch() {
     use acteon_core::{
         FederationTrustDeclaration, PublishFederationTrustRequest, RevokeFederationTrustRequest,
     };
-    use acteon_governance::federation::FederationEnvelope;
+    use acteon_governance::federation::{
+        FederationEnvelope, FederationImportReference, FederationInvocation,
+    };
 
     let state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
     let registry = registry();
@@ -434,13 +437,13 @@ async fn configured_peer_and_manager_bind_federation_import_without_starting_exe
         envelope_limits.clone(),
         shape.max_depth,
     );
-    let signed = signer.sign(&envelope).unwrap();
+    let signed_envelope = signer.sign(&envelope).unwrap();
     assert!(matches!(
         runtime
             .import_federation_envelope(FederationImportAdmission {
                 namespace: "prod",
                 tenant: "acme",
-                signed: &signed,
+                signed: &signed_envelope,
                 authentication: &manager,
             })
             .await,
@@ -450,7 +453,7 @@ async fn configured_peer_and_manager_bind_federation_import_without_starting_exe
         .import_federation_envelope(FederationImportAdmission {
             namespace: "prod",
             tenant: "acme",
-            signed: &signed,
+            signed: &signed_envelope,
             authentication: &peer,
         })
         .await
@@ -537,6 +540,90 @@ async fn configured_peer_and_manager_bind_federation_import_without_starting_exe
         serde_json::from_slice(&accepted_body).unwrap();
     assert_eq!(accepted_receipt.import_id, http_envelope.id);
     assert!(!accepted_receipt.execution_started);
+    let message = json!({
+        "messageId": "remote-message-1",
+        "role": "user",
+        "parts": [{"text": "notify the responder"}]
+    });
+    let typed_message: acteon_core::TaskMessage = serde_json::from_value(message.clone()).unwrap();
+    let mismatched_message = acteon_core::TaskMessage::text(
+        "remote-message-other",
+        acteon_core::TaskRole::User,
+        "different signed request",
+    );
+    let invocation = signer
+        .sign_invocation(&FederationInvocation::new(
+            "remote-invocation-http",
+            FederationImportReference {
+                id: accepted_receipt.import_id.clone(),
+                envelope_digest: accepted_receipt.envelope_digest.clone(),
+            },
+            mismatched_message,
+            now,
+            now + 30_000,
+        ))
+        .unwrap();
+    let invocation_body = serde_json::to_vec(&json!({
+        "invocation": invocation,
+        "message": message,
+    }))
+    .unwrap();
+    let denied_manager_invocation = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/a2a/prod/acme/federation/agents/notifier/v1/message:send")
+                .header("authorization", "Bearer operator-secret")
+                .header("content-type", "application/json")
+                .body(Body::from(invocation_body.clone()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(denied_manager_invocation.status(), 403);
+    let denied_input_mismatch = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/a2a/prod/acme/federation/agents/notifier/v1/message:send")
+                .header("authorization", "Bearer remote-secret")
+                .header("content-type", "application/json")
+                .body(Body::from(invocation_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(denied_input_mismatch.status(), 409);
+    let invalid_signature_body = serde_json::to_vec(&json!({
+        "invocation": {"payload": signer.sign_invocation(&FederationInvocation::new(
+            "remote-invocation-invalid-signature",
+            FederationImportReference {
+                id: accepted_receipt.import_id.clone(),
+                envelope_digest: accepted_receipt.envelope_digest.clone(),
+            },
+            typed_message.clone(),
+            now,
+            now + 30_000,
+        )).unwrap().payload, "signature": "0".repeat(128)},
+        "message": message,
+    }))
+    .unwrap();
+    let denied_signature = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/a2a/prod/acme/federation/agents/notifier/v1/message:send")
+                .header("authorization", "Bearer remote-secret")
+                .header("content-type", "application/json")
+                .body(Body::from(invalid_signature_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(denied_signature.status(), 403);
     let snapshot = AuthorityCoordinator::connect(state.clone(), "prod", "acme")
         .await
         .unwrap()
@@ -551,6 +638,52 @@ async fn configured_peer_and_manager_bind_federation_import_without_starting_exe
             .get(&receipt.root_id)
             .is_some_and(|root| root.accepted_context.is_none())
     );
+    let valid_invocation = signer
+        .sign_invocation(&FederationInvocation::new(
+            "remote-invocation-valid",
+            FederationImportReference {
+                id: accepted_receipt.import_id.clone(),
+                envelope_digest: accepted_receipt.envelope_digest.clone(),
+            },
+            typed_message,
+            now,
+            now + 30_000,
+        ))
+        .unwrap();
+    let dispatched = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/a2a/prod/acme/federation/agents/notifier/v1/message:send")
+                .header("authorization", "Bearer remote-secret")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "invocation": valid_invocation,
+                        "message": message,
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(dispatched.status(), 200);
+    let task: acteon_core::Task = serde_json::from_slice(
+        &axum::body::to_bytes(dispatched.into_body(), 2 * 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_ne!(task.id, "");
+    let after_dispatch = AuthorityCoordinator::connect(state.clone(), "prod", "acme")
+        .await
+        .unwrap()
+        .snapshot()
+        .await
+        .unwrap();
+    assert_eq!(after_dispatch.starts.len(), 1);
     let revocation = RevokeFederationTrustRequest {
         namespace: "prod".into(),
         tenant: "acme".into(),

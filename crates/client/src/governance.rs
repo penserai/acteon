@@ -7,10 +7,10 @@ pub use acteon_core::{
     GovernancePermitDeclaration, GovernancePermitView, GovernanceRegistryMutationReceipt,
     GovernanceRegistryMutationRequest, GovernanceRegistryProjection,
     GovernanceRegistryProjectionView, GovernanceRoute, GovernanceRouteView, GovernanceScopeView,
-    ImportFederationEnvelopeRequest, ProviderExecutionHistory, ProviderHistoryReceipt,
-    ProviderReconciliationCorrelation, ProviderReconciliationRequest,
+    ImportFederationEnvelopeRequest, InvokeFederatedAgentRequest, ProviderExecutionHistory,
+    ProviderHistoryReceipt, ProviderReconciliationCorrelation, ProviderReconciliationRequest,
     PublishFederationTrustRequest, PublishGovernancePermitRequest, RevokeFederationTrustRequest,
-    SignedFederationEnvelopeDeclaration,
+    SignedFederationEnvelopeDeclaration, SignedFederationInvocationDeclaration, Task, TaskMessage,
 };
 
 impl ActeonClient {
@@ -253,6 +253,41 @@ impl ActeonClient {
         }
         Ok(receipt)
     }
+    /// Invoke or replay an exact signed message as a configured federation peer.
+    pub async fn invoke_federated_agent(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        agent: &str,
+        invocation: SignedFederationInvocationDeclaration,
+        message: TaskMessage,
+    ) -> Result<Task, Error> {
+        let body = serde_json::to_value(InvokeFederatedAgentRequest {
+            invocation,
+            message,
+        })
+        .map_err(|e| Error::Configuration(format!("federation request serialization: {e}")))?;
+        let value = self
+            .platform_request(
+                PlatformOperation::FederationInvokeAgent,
+                &[
+                    ("namespace", namespace),
+                    ("tenant", tenant),
+                    ("agent", agent),
+                ],
+                &[],
+                Some(&body),
+            )
+            .await?;
+        let task: Task =
+            serde_json::from_value(value).map_err(|e| Error::Deserialization(e.to_string()))?;
+        if task.namespace != namespace || task.tenant != tenant || task.id.is_empty() {
+            return Err(Error::Deserialization(
+                "federated task receipt identity mismatch".into(),
+            ));
+        }
+        Ok(task)
+    }
     pub async fn intervene_governance(
         &self,
         request: &GovernanceInterventionRequest,
@@ -424,6 +459,31 @@ mod federation_wire_tests {
         assert_eq!(
             PlatformOperation::FederationImportEnvelope.descriptor().1,
             "/a2a/{namespace}/{tenant}/federation/envelopes:import"
+        );
+        let invocation = SignedFederationInvocationDeclaration {
+            payload: "signed-payload".into(),
+            signature: "a".repeat(128),
+        };
+        let message: TaskMessage = serde_json::from_value(serde_json::json!({
+            "messageId": "message-1",
+            "role": "user",
+            "parts": [{"text": "inspect"}]
+        }))
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(InvokeFederatedAgentRequest {
+                invocation,
+                message
+            })
+            .unwrap(),
+            serde_json::json!({
+                "invocation": {"payload": "signed-payload", "signature": "a".repeat(128)},
+                "message": {"messageId": "message-1", "role": "user", "parts": [{"text": "inspect"}]}
+            })
+        );
+        assert_eq!(
+            PlatformOperation::FederationInvokeAgent.descriptor().1,
+            "/a2a/{namespace}/{tenant}/federation/agents/{agent}/v1/message:send"
         );
     }
 }

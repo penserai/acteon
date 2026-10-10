@@ -42,6 +42,7 @@ public final class Governance {
         @JsonProperty("trust_id") String trustId,
         @JsonProperty("expected_revision") long expectedRevision, String reason) {}
     public record SignedFederationEnvelopeDeclaration(String payload, String signature) {}
+    public record SignedFederationInvocationDeclaration(String payload, String signature) {}
     public record FederationImportReceipt(String namespace, String tenant,
         @JsonProperty("import_id") String importId,
         @JsonProperty("envelope_digest") String envelopeDigest,

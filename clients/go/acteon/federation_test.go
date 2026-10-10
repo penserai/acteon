@@ -46,6 +46,8 @@ func TestFederationManagementAndInertImportWire(t *testing.T) {
 		response := wire["change_receipt"]
 		if r.URL.Path == "/a2a/prod/acme/federation/envelopes:import" {
 			response = wire["import_receipt"]
+		} else if r.URL.Path == "/a2a/prod/acme/federation/agents/maya/v1/message:send" {
+			response = json.RawMessage(`{"id":"federated-task","namespace":"prod","tenant":"acme"}`)
 		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
@@ -68,10 +70,16 @@ func TestFederationManagementAndInertImportWire(t *testing.T) {
 	if receipt.ExecutionStarted {
 		t.Fatal("import started execution")
 	}
-	if len(paths) != 3 || paths[2] != "/a2a/prod/acme/federation/envelopes:import" {
+	invocation := SignedFederationInvocationDeclaration{Payload: "signed-payload", Signature: string(bytes.Repeat([]byte("a"), 128))}
+	message := map[string]any{"messageId": "message-1", "role": "user", "parts": []any{map[string]any{"text": "inspect"}}}
+	task, err := client.InvokeFederatedAgent(ctx, "prod", "acme", "maya", invocation, message)
+	if err != nil || task["id"] != "federated-task" {
+		t.Fatalf("unexpected federated task: %v (%v)", task, err)
+	}
+	if len(paths) != 4 || paths[2] != "/a2a/prod/acme/federation/envelopes:import" || paths[3] != "/a2a/prod/acme/federation/agents/maya/v1/message:send" {
 		t.Fatalf("unexpected paths: %v", paths)
 	}
-	if len(calls) != 3 {
+	if len(calls) != 4 {
 		t.Fatalf("got %d calls", len(calls))
 	}
 	if !bytes.Equal(compactJSON(t, calls[0]), compactJSON(t, wire["publication"])) {
@@ -86,6 +94,13 @@ func TestFederationManagementAndInertImportWire(t *testing.T) {
 	}
 	if !bytes.Equal(compactJSON(t, importBody["envelope"]), compactJSON(t, wire["envelope"])) {
 		t.Fatal("envelope wire changed")
+	}
+	var invocationBody map[string]json.RawMessage
+	if err = json.Unmarshal(calls[3], &invocationBody); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(compactJSON(t, invocationBody["invocation"]), compactJSON(t, []byte(`{"payload":"signed-payload","signature":"`+string(bytes.Repeat([]byte("a"), 128))+`"}`))) {
+		t.Fatal("invocation wire changed")
 	}
 }
 

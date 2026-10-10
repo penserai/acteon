@@ -148,15 +148,14 @@ impl GovernedProviderExecutor {
             .snapshot()
             .await
             .map_err(|_| GovernedProviderError::Unavailable)?;
-        let op = self
-            .runtime
-            .load_operation(context, actor)
-            .await?
-            .ok_or(GovernedProviderError::Ownership)?;
-        let root_id = federation_import(&op, &snapshot)?.map_or_else(
-            || context.execution_id().to_string(),
-            |record| record.root_id.clone(),
-        );
+        let op = self.runtime.load_operation(context, actor).await?;
+        let root_id = match op.as_ref() {
+            Some(op) => federation_import(op, &snapshot)?.map_or_else(
+                || context.execution_id().to_string(),
+                |record| record.root_id.clone(),
+            ),
+            None => context.execution_id().to_string(),
+        };
         if !snapshot
             .roots
             .get(&root_id)
@@ -166,6 +165,9 @@ impl GovernedProviderExecutor {
                 "provider abort requires a durable execution restriction",
             ));
         }
+        let Some(op) = op else {
+            return Ok(None);
+        };
         let Some(observed) = self.inspect(context, actor).await? else {
             return Ok(None);
         };

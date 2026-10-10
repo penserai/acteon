@@ -89,6 +89,11 @@ type SignedFederationEnvelopeDeclaration struct {
 	Payload   string `json:"payload"`
 	Signature string `json:"signature"`
 }
+
+type SignedFederationInvocationDeclaration struct {
+	Payload   string `json:"payload"`
+	Signature string `json:"signature"`
+}
 type FederationImportReceipt struct {
 	Namespace        string             `json:"namespace"`
 	Tenant           string             `json:"tenant"`
@@ -229,6 +234,28 @@ func (c *Client) ImportFederationEnvelope(ctx context.Context, namespace, tenant
 		return nil, fmt.Errorf("federation import receipt identity or execution state mismatch")
 	}
 	return &result, nil
+}
+
+// InvokeFederatedAgent executes or replays one exact message under signed imported federation authority.
+func (c *Client) InvokeFederatedAgent(ctx context.Context, namespace, tenant, agent string, invocation SignedFederationInvocationDeclaration, message map[string]any) (map[string]any, error) {
+	data, err := c.PlatformRequest(ctx, OpFederationInvokeAgent,
+		map[string]string{"namespace": namespace, "tenant": tenant, "agent": agent}, nil,
+		struct {
+			Invocation SignedFederationInvocationDeclaration `json:"invocation"`
+			Message    map[string]any                        `json:"message"`
+		}{invocation, message})
+	if err != nil {
+		return nil, err
+	}
+	var task map[string]any
+	if err = json.Unmarshal(data, &task); err != nil {
+		return nil, err
+	}
+	id, ok := task["id"].(string)
+	if task["namespace"] != namespace || task["tenant"] != tenant || !ok || id == "" {
+		return nil, fmt.Errorf("federated task receipt identity mismatch")
+	}
+	return task, nil
 }
 func (c *Client) InterveneGovernance(ctx context.Context, request GovernanceInterventionRequest) (*GovernanceChangeReceipt, error) {
 	data, err := c.PlatformRequest(ctx, OpGovernanceIntervene, nil, nil, request)

@@ -10,7 +10,7 @@ pub use agent_services::{
     AgentServiceContinuation, AgentServiceObservation, AgentServiceParent, AgentServiceRequest,
     AgentServiceTaskObservation,
 };
-pub use federation::FederationImportAdmission;
+pub use federation::{FederationAgentInvocation, FederationImportAdmission};
 mod management;
 pub use management::{ManagementError, TrustedReconciliationInstallation};
 mod peer_transport;

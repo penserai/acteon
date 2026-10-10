@@ -1044,7 +1044,20 @@ characters encoding a 64-byte Ed25519 signature. Success returns a correlated
 `FederationImportReceipt` with
 `execution_started: false`; the endpoint does not create a task or effect. See
 [A2A federation status](../features/a2a.md#federation-status) for trust,
-identity, service-binding, and remaining execution-handoff guarantees.
+identity and service-binding guarantees.
+
+To execute or replay an admitted message, the same configured peer calls:
+
+```text
+POST /a2a/{namespace}/{tenant}/federation/agents/{agent}/v1/message:send
+```
+
+The body is
+`{"invocation":{"payload":"...","signature":"..."},"message":{...}}`.
+The signed payload binds the retained import and exact prepared provider input.
+Success returns the durable A2A `Task`. Repeating the exact request returns that
+task without duplicating a completed provider effect. A different message,
+agent, import, signature or current binding is rejected.
 
 ## Historical provider executions
 

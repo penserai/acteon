@@ -35,24 +35,32 @@ describe("federation management and import", () => {
     const requests: { url: string; init: RequestInit }[] = [];
     vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => {
       requests.push({ url, init });
-      return new Response(JSON.stringify(new URL(url).pathname.includes("/federation/envelopes")
-        ? federation.import_receipt : federation.change_receipt));
+      const path = new URL(url).pathname;
+      return new Response(JSON.stringify(path.endsWith("message:send")
+        ? { id: "federated-task", namespace: "prod", tenant: "acme" }
+        : path.includes("/federation/envelopes") ? federation.import_receipt : federation.change_receipt));
     }));
     const client = new ActeonClient("https://acteon.example", { apiKey: "federation-key" });
     await client.publishFederationTrust(federation.publication);
     await client.revokeFederationTrust(federation.revocation);
     const receipt = await client.importFederationEnvelope("prod", "acme", federation.envelope);
+    const message = { messageId: "message-1", role: "user", parts: [{ text: "inspect" }] };
+    const invocation = { payload: "signed-payload", signature: "a".repeat(128) };
+    const task = await client.invokeFederatedAgent("prod", "acme", "maya", invocation, message);
     expect(receipt).toEqual(federation.import_receipt);
     expect(receipt.execution_started).toBe(false);
+    expect(task.id).toBe("federated-task");
     expect(requests.map(request => new URL(request.url).pathname)).toEqual([
       "/v1/governance/federation/trusts",
       "/v1/governance/federation/trusts/revoke",
       "/a2a/prod/acme/federation/envelopes:import",
+      "/a2a/prod/acme/federation/agents/maya/v1/message:send",
     ]);
     expect(requests.map(request => JSON.parse(request.init.body as string))).toEqual([
       federation.publication,
       federation.revocation,
       { envelope: federation.envelope },
+      { invocation, message },
     ]);
     for (const request of requests) {
       expect(new Headers(request.init.headers).get("Authorization")).toBe("Bearer federation-key");

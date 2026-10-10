@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use acteon_core::{PrincipalIdentity, PrincipalKind, ResourceKind, ResourceRef};
+use acteon_core::{
+    PrincipalIdentity, PrincipalKind, ResourceKind, ResourceRef, TaskMessage, TaskRole,
+};
 use acteon_governance::{
     AttemptRequest, AttemptStatus, AuthorityChange, AuthorityCoordinator, CoordinationError,
     CoordinatorLimits, RootBudgetLimits, RootReservation, ScopePurpose, StartRegistration,
@@ -110,7 +112,11 @@ fn invocation(
         .sign_invocation(&FederationInvocation::new(
             nonce,
             import.clone(),
-            digest_byte.to_string().repeat(64),
+            TaskMessage::text(
+                format!("message-{nonce}"),
+                TaskRole::User,
+                digest_byte.to_string().repeat(64),
+            ),
             100,
             480,
         ))
@@ -189,21 +195,6 @@ async fn assert_invalid_invocations_denied(
     reference: &FederationImportReference,
     clock: &ManualClock,
 ) {
-    let mismatched_input = invocation(signer, reference, "different-input", 'b');
-    assert!(matches!(
-        coordinator
-            .register_federated_attempt(FederatedAttempt {
-                invocation: &mismatched_input,
-                effect: &effect("telemetry.read"),
-                request_digest: &"c".repeat(64),
-                ordinal: 0,
-                units: 1,
-                expected_authority: &coordinator.snapshot().await.unwrap().stamp(),
-                clock,
-            })
-            .await,
-        Err(CoordinationError::Restricted)
-    ));
     let mut tampered = invocation(signer, reference, "tampered", 'b');
     tampered.payload = tampered.payload.replace(&"b".repeat(64), &"c".repeat(64));
     assert!(matches!(
@@ -224,7 +215,7 @@ async fn assert_invalid_invocations_denied(
         .sign_invocation(&FederationInvocation::new(
             "expired",
             reference.clone(),
-            "c".repeat(64),
+            TaskMessage::text("message-expired", TaskRole::User, "expired"),
             90,
             100,
         ))
@@ -243,6 +234,34 @@ async fn assert_invalid_invocations_denied(
             .await,
         Err(CoordinationError::Restricted)
     ));
+}
+
+async fn assert_preflight_does_not_spend(
+    coordinator: &AuthorityCoordinator,
+    invocation: &SignedFederationInvocation,
+    imported: &acteon_governance::federation::FederationImportRecord,
+    clock: &ManualClock,
+) {
+    let before = coordinator.snapshot().await.unwrap();
+    coordinator
+        .check_federated_attempt(FederatedAttempt {
+            invocation,
+            effect: &effect("telemetry.read"),
+            request_digest: &"b".repeat(64),
+            ordinal: 0,
+            units: 1,
+            expected_authority: &before.stamp(),
+            clock,
+        })
+        .await
+        .unwrap();
+    let after = coordinator.snapshot().await.unwrap();
+    assert_eq!(after.generation, before.generation);
+    assert_eq!(after.starts, before.starts);
+    assert_eq!(
+        after.roots[&imported.root_id].spent_units,
+        before.roots[&imported.root_id].spent_units
+    );
 }
 
 #[tokio::test]
@@ -282,6 +301,7 @@ async fn audience_bound_import_is_attenuated_replay_safe_and_generic_path_closed
         .unwrap();
     assert_generic_bypass_closed(&coordinator, &imported).await;
     let signed_invocation = invocation(&signer, &reference, "foreign-effect-1", 'b');
+    assert_preflight_does_not_spend(&coordinator, &signed_invocation, &imported, &clock).await;
     let started = coordinator
         .register_federated_attempt(FederatedAttempt {
             invocation: &signed_invocation,
