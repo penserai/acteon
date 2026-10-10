@@ -210,6 +210,19 @@ impl ExecutionProviderRegistry {
                         resources.extend(operation.effect().resources.iter().cloned());
                         resources.extend(target.ingress_effect(Vec::new())?.resources);
                     }
+                    if let Some(federation) = &declaration.federation {
+                        for export in federation
+                            .exports
+                            .iter()
+                            .filter(|export| export.source_agent_id == *agent_id)
+                        {
+                            resources.extend(
+                                export
+                                    .local_effect(&declaration.namespace, &declaration.tenant)?
+                                    .resources,
+                            );
+                        }
+                    }
                     let (service, _) = &agent_operations[agent_id];
                     ingresses.insert(agent_id.clone(), service.ingress_effect(resources)?);
                 }
@@ -1048,7 +1061,7 @@ impl PreparedExecutionScope {
                                             &self.declaration.namespace,
                                             &self.declaration.tenant,
                                         )?,
-                                        vec![export.grant.source.clone()],
+                                        vec![export.active_epoch()?.grant.source.clone()],
                                     ),
                                 ))
                             })
@@ -1131,15 +1144,18 @@ fn canonicalize_declaration(declaration: &mut ExecutionScopeConfig) {
         federation.exports.sort_by(|a, b| a.id.cmp(&b.id));
         for export in &mut federation.exports {
             export.internal_hosts.sort();
-            export.grant.ingress_effect.resources.sort();
-            for effect in &mut export.grant.effects {
-                effect.resources.sort();
+            export.epochs.sort_by_key(|epoch| epoch.issuer_epoch);
+            for epoch in &mut export.epochs {
+                epoch.grant.ingress_effect.resources.sort();
+                for effect in &mut epoch.grant.effects {
+                    effect.resources.sort();
+                }
+                epoch.grant.effects.sort_by(|left, right| {
+                    left.operation
+                        .cmp(&right.operation)
+                        .then(left.resources.cmp(&right.resources))
+                });
             }
-            export.grant.effects.sort_by(|left, right| {
-                left.operation
-                    .cmp(&right.operation)
-                    .then(left.resources.cmp(&right.resources))
-            });
         }
         for peer in &mut federation.peers {
             peer.trust_ids.sort();

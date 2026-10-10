@@ -108,7 +108,8 @@ type FederationExportKey = (String, String);
 type FederationExportMap = BTreeMap<FederationExportKey, InstalledFederationExport>;
 struct InstalledFederationExport {
     declaration: crate::config::FederationExportConfig,
-    exporter: Arc<acteon_executor::federation_export::GovernedFederationExporter>,
+    profile_digest: String,
+    exporters: BTreeMap<u64, Arc<acteon_executor::federation_export::GovernedFederationExporter>>,
 }
 struct InstalledPeerMesh {
     registry: Option<Arc<acteon_executor::delegation::ApprovedPeerRegistry>>,
@@ -456,63 +457,78 @@ impl ExecutionAuthorityRuntime {
         };
         let mut installed = BTreeMap::new();
         for declaration in &federation.exports {
-            let signer_secret = federation_signer_secret(&declaration.signer_key_env)?;
-            let credential = acteon_crypto::SecretString::new(
-                std::env::var(&declaration.credential_env)
-                    .map_err(|_| "federation export credential unavailable")?
-                    .into(),
-            );
-            let binding_digest = federation_export_binding_digest(declaration, dependencies)?;
+            let profile_digest =
+                federation_export::profile_binding_digest(declaration, &federation.local_audience)
+                    .map_err(|_| "invalid federation export profile binding")?;
             let timeout = std::time::Duration::from_millis(declaration.timeout_ms);
-            let adapter = Arc::new(
-                super::ActeonFederationHttpAdapter::new_trusted_with_builder(
-                    &binding_digest,
-                    "acteon-federation-http-v1",
-                    credential,
-                    peer_http_builder(dependencies)?,
-                    acteon_http::OutboundPolicy {
-                        internal_hosts: declaration.internal_hosts.clone(),
-                    },
-                    timeout,
-                )
-                .map_err(|_| "invalid federation export HTTP adapter")?,
-            );
-            let transport = Arc::new(
-                DurableFederationTransport::new_trusted(
-                    FederationTransportDependencies {
-                        state: dependencies.state.clone(),
-                        clock: dependencies.clock.clone(),
-                        encryptor: dependencies.encryptor.clone(),
-                    },
-                    adapter,
-                    timeout,
-                )
-                .map_err(|_| "invalid durable federation transport")?,
-            );
-            let profile = declaration.qualify(
-                &prepared.declaration().namespace,
-                &prepared.declaration().tenant,
-                &federation.local_audience,
-            )?;
-            let exporter = Arc::new(
-                GovernedFederationExporter::new_trusted(
-                    FederationExportDependencies {
-                        coordinator: coordinator.clone(),
-                        clock: dependencies.clock.clone(),
-                        transport,
-                    },
-                    signer_secret,
-                    profile,
-                )
-                .map_err(|_| "invalid governed federation exporter")?,
-            );
+            let mut exporters = BTreeMap::new();
+            for epoch in &declaration.epochs {
+                let signer_secret = federation_signer_secret(&epoch.signer_key_env)?;
+                let credential = acteon_crypto::SecretString::new(
+                    std::env::var(&epoch.credential_env)
+                        .map_err(|_| "federation export credential unavailable")?
+                        .into(),
+                );
+                let binding_digest =
+                    federation_export_binding_digest(declaration, epoch, dependencies)?;
+                let adapter = Arc::new(
+                    super::ActeonFederationHttpAdapter::new_trusted_with_builder(
+                        &binding_digest,
+                        "acteon-federation-http-v1",
+                        credential,
+                        peer_http_builder(dependencies)?,
+                        acteon_http::OutboundPolicy {
+                            internal_hosts: declaration.internal_hosts.clone(),
+                        },
+                        timeout,
+                    )
+                    .map_err(|_| "invalid federation export HTTP adapter")?,
+                );
+                let transport = Arc::new(
+                    DurableFederationTransport::new_trusted(
+                        FederationTransportDependencies {
+                            state: dependencies.state.clone(),
+                            clock: dependencies.clock.clone(),
+                            encryptor: dependencies.encryptor.clone(),
+                        },
+                        adapter,
+                        timeout,
+                    )
+                    .map_err(|_| "invalid durable federation transport")?,
+                );
+                let profile = declaration.qualify_epoch(
+                    epoch,
+                    &prepared.declaration().namespace,
+                    &prepared.declaration().tenant,
+                    &federation.local_audience,
+                )?;
+                let exporter = Arc::new(
+                    GovernedFederationExporter::new_trusted(
+                        FederationExportDependencies {
+                            coordinator: coordinator.clone(),
+                            clock: dependencies.clock.clone(),
+                            transport,
+                        },
+                        signer_secret,
+                        profile,
+                    )
+                    .map_err(|_| "invalid governed federation exporter")?,
+                );
+                if exporters.insert(epoch.issuer_epoch, exporter).is_some() {
+                    return Err("duplicate installed federation export epoch".into());
+                }
+            }
+            if !exporters.contains_key(&declaration.active_epoch) {
+                return Err("active federation export epoch is not installed".into());
+            }
             let key = (declaration.source_agent_id.clone(), declaration.id.clone());
             if installed
                 .insert(
                     key,
                     InstalledFederationExport {
                         declaration: declaration.clone(),
-                        exporter,
+                        profile_digest,
+                        exporters,
                     },
                 )
                 .is_some()
@@ -629,7 +645,7 @@ impl ExecutionAuthorityRuntime {
                         federation.exports.iter().find(|export| export.id == *id)
                     })
                     .ok_or("permit federation export is not declared")?;
-                if export.grant.source != permit.subject {
+                if export.active_epoch()?.grant.source != permit.subject {
                     return Err("permit federation export source is not declared".into());
                 }
                 effects.push(export.local_effect(&declaration.namespace, &declaration.tenant)?);
@@ -872,6 +888,7 @@ fn federation_signer_secret(env_name: &str) -> Result<[u8; 32], String> {
 
 fn federation_export_binding_digest(
     declaration: &crate::config::FederationExportConfig,
+    epoch: &crate::config::FederationExportEpochConfig,
     dependencies: &ExecutionRuntimeDependencies,
 ) -> Result<String, String> {
     let tls = match &dependencies.outbound_tls {
@@ -880,8 +897,18 @@ fn federation_export_binding_digest(
             .map_err(|_| "invalid federation export TLS qualification")?,
         None => "system-roots".to_owned(),
     };
-    let encoded = serde_json::to_vec(&("acteon.federation.http.binding.v1", declaration, tls))
-        .map_err(|_| "invalid federation export binding")?;
+    let encoded = serde_json::to_vec(&(
+        "acteon.federation.http.binding.v2",
+        &declaration.id,
+        &declaration.source_agent_id,
+        &declaration.remote_origin,
+        &declaration.remote_audience,
+        declaration.timeout_ms,
+        &declaration.internal_hosts,
+        epoch,
+        tls,
+    ))
+    .map_err(|_| "invalid federation export binding")?;
     Ok(format!("{:x}", Sha256::digest(encoded)))
 }
 

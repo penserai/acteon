@@ -365,34 +365,37 @@ fn outbound_federation_profiles_are_source_bound_permitted_and_policy_bound() {
             source_agent_id: "notifier".into(),
             remote_origin: "https://remote.example".into(),
             remote_audience: "remote.example".into(),
-            trust_id: "local-prod".into(),
-            trust_revision: 1,
-            key_id: "local-key-v1".into(),
-            verifying_key: signer.verifying_key_hex(),
-            signer_key_env: "ACTEON_TEST_FEDERATION_SIGNER".into(),
-            issuer_epoch: 1,
-            credential_env: "ACTEON_TEST_FEDERATION_CREDENTIAL".into(),
-            grant: acteon_governance::federation::FederationGrantCeiling {
-                source: source.clone(),
-                target,
-                agent_resource: agent_resource.clone(),
-                binding_digest: "b".repeat(64),
-                skill: "triage".into(),
-                ingress_effect: AcceptedEffect {
-                    operation: "agent.invoke".into(),
-                    resources: vec![agent_resource, endpoint.clone()],
+            active_epoch: 1,
+            epochs: vec![acteon_server::config::FederationExportEpochConfig {
+                trust_id: "local-prod".into(),
+                trust_revision: 1,
+                key_id: "local-key-v1".into(),
+                verifying_key: signer.verifying_key_hex(),
+                signer_key_env: "ACTEON_TEST_FEDERATION_SIGNER".into(),
+                issuer_epoch: 1,
+                credential_env: "ACTEON_TEST_FEDERATION_CREDENTIAL".into(),
+                grant: acteon_governance::federation::FederationGrantCeiling {
+                    source: source.clone(),
+                    target,
+                    agent_resource: agent_resource.clone(),
+                    binding_digest: "b".repeat(64),
+                    skill: "triage".into(),
+                    ingress_effect: AcceptedEffect {
+                        operation: "agent.invoke".into(),
+                        resources: vec![agent_resource, endpoint.clone()],
+                    },
+                    effects: vec![AcceptedEffect {
+                        operation: "provider.execute".into(),
+                        resources: vec![endpoint],
+                    }],
+                    limits: RootBudgetLimits {
+                        max_units: 3,
+                        max_concurrent: 1,
+                        deadline_ms: scope.credential_limits.deadline_ms,
+                    },
+                    max_depth: 2,
                 },
-                effects: vec![AcceptedEffect {
-                    operation: "provider.execute".into(),
-                    resources: vec![endpoint],
-                }],
-                limits: RootBudgetLimits {
-                    max_units: 3,
-                    max_concurrent: 1,
-                    deadline_ms: scope.credential_limits.deadline_ms,
-                },
-                max_depth: 2,
-            },
+            }],
             max_lifetime_ms: 60_000,
             timeout_ms: 2_000,
             internal_hosts: vec![],
@@ -414,6 +417,35 @@ fn outbound_federation_profiles_are_source_bound_permitted_and_policy_bound() {
             .unwrap()
             .iter()
             .any(|effect| effect.operation == "federation.export")
+    );
+
+    let mut rotated = configuration.clone();
+    let rotated_export = &mut rotated.scopes[0].federation.as_mut().unwrap().exports[0];
+    let next_signer =
+        acteon_governance::federation::FederationEnvelopeSigner::from_secret([12; 32]);
+    let mut next_epoch = rotated_export.epochs[0].clone();
+    next_epoch.trust_revision = 2;
+    next_epoch.key_id = "local-key-v2".into();
+    next_epoch.verifying_key = next_signer.verifying_key_hex();
+    next_epoch.signer_key_env = "ACTEON_TEST_FEDERATION_SIGNER_V2".into();
+    next_epoch.issuer_epoch = 2;
+    next_epoch.credential_env = "ACTEON_TEST_FEDERATION_CREDENTIAL_V2".into();
+    next_epoch.grant.binding_digest = "c".repeat(64);
+    rotated_export.epochs.push(next_epoch);
+    rotated_export.active_epoch = 2;
+    let rotated_prepared = registry
+        .prepare(&rotated, ("auth-control", "deployment"), &[8; 32])
+        .unwrap();
+    assert_ne!(
+        rotated_prepared[0].policy_fingerprint(),
+        prepared[0].policy_fingerprint()
+    );
+    let mut rollback = rotated.clone();
+    rollback.scopes[0].federation.as_mut().unwrap().exports[0].active_epoch = 1;
+    assert!(
+        registry
+            .prepare(&rollback, ("auth-control", "deployment"), &[8; 32])
+            .is_err()
     );
 
     let mut unpermitted = configuration.clone();

@@ -141,6 +141,17 @@ into a binding digest, and installs the exporter over the deployment's selected
 the listener is exposed if any profile, secret, signer, TLS policy or adapter is
 unavailable.
 
+Each profile contains a bounded epoch keyring. One highest `active_epoch` is
+used for new issuance; every older declared epoch retains its exact signer,
+transport credential, trust/key revision and reviewed remote agent card. The
+issuance journal stores both a stable common-profile digest and the selected
+epoch digest. Adding and activating a higher epoch therefore leaves old signed
+intent reproducible, while changes to either its routing boundary or retained
+epoch material conflict. Runtime installation builds a separate immutable
+exporter and adapter binding for every epoch and requires all referenced secrets
+to be available. Configuration rejects duplicate epochs and rollback to a lower
+active epoch.
+
 The authenticated agent API accepts only an installed profile name and A2A
 message under an already accepted local agent task. Acteon recovers the source
 context from that task, matches current private authentication, verifies the
@@ -161,7 +172,11 @@ import and invocation response loss, no ordinary resend, explicit qualified
 recovery, expired-claim recovery, signed expiry, terminal observation after
 expiry, message substitution, and retained-state tampering. The concrete HTTP
 adapter has a route and credential contract for the two protected endpoints. A
-later release gate must run the complete source and destination servers through
+rotation contract proves that adding a higher signer, credential and remote key
+card preserves the common issuance binding and the exact old epoch digest while
+selecting distinct material for new work. Configuration tests reject active
+epoch rollback. A later release gate must run the complete source and
+destination servers through
 committed-response loss and source restart on every supported production state
 backend.
 
@@ -169,9 +184,8 @@ backend.
 
 The remaining production gates are:
 
-1. overlap-safe signer, credential and remote key-card rotation;
-2. observation, expiry, reconciliation, and operator controls for ambiguous
+1. observation, expiry, reconciliation, and operator controls for ambiguous
    deliveries;
-3. capability/key-card negotiation and credential exchange;
-4. two-server restart and response-loss qualification across Redis,
+2. capability/key-card negotiation and credential exchange;
+3. two-server restart and response-loss qualification across Redis,
    PostgreSQL, and DynamoDB, followed by external implementation conformance.

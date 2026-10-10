@@ -1,6 +1,6 @@
 //! Deployment declarations for the production execution-authority integration.
 //! These are trusted operator inputs, never an HTTP authorization payload.
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use acteon_core::{PrincipalIdentity, ResourceKind, ResourceRef, TeamRef};
 use acteon_governance::{
@@ -239,6 +239,24 @@ pub struct FederationExportConfig {
     pub source_agent_id: String,
     pub remote_origin: String,
     pub remote_audience: String,
+    /// Highest installed epoch used for newly issued exports. Older epochs
+    /// remain available only to observe or replay their retained intents.
+    pub active_epoch: u64,
+    pub epochs: Vec<FederationExportEpochConfig>,
+    #[serde(default = "default_federation_export_lifetime_ms")]
+    pub max_lifetime_ms: i64,
+    #[serde(default = "default_federation_export_timeout_ms")]
+    pub timeout_ms: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub internal_hosts: Vec<String>,
+}
+
+/// One immutable signer, transport credential and reviewed remote key card.
+/// Retaining the complete epoch keeps already-issued intents reproducible
+/// across overlap windows without allowing new work on a retired epoch.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationExportEpochConfig {
     pub trust_id: String,
     pub trust_revision: u64,
     pub key_id: String,
@@ -247,12 +265,6 @@ pub struct FederationExportConfig {
     pub issuer_epoch: u64,
     pub credential_env: String,
     pub grant: acteon_governance::federation::FederationGrantCeiling,
-    #[serde(default = "default_federation_export_lifetime_ms")]
-    pub max_lifetime_ms: i64,
-    #[serde(default = "default_federation_export_timeout_ms")]
-    pub timeout_ms: u64,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub internal_hosts: Vec<String>,
 }
 
 fn default_federation_export_lifetime_ms() -> i64 {
@@ -264,6 +276,13 @@ fn default_federation_export_timeout_ms() -> u64 {
 }
 
 impl FederationExportConfig {
+    pub(crate) fn active_epoch(&self) -> Result<&FederationExportEpochConfig, String> {
+        self.epochs
+            .iter()
+            .find(|epoch| epoch.issuer_epoch == self.active_epoch)
+            .ok_or_else(|| "active federation export epoch is not installed".into())
+    }
+
     pub(crate) fn local_effect(
         &self,
         namespace: &str,
@@ -278,8 +297,9 @@ impl FederationExportConfig {
         })
     }
 
-    pub(crate) fn qualify(
+    pub(crate) fn qualify_epoch(
         &self,
+        epoch: &FederationExportEpochConfig,
         namespace: &str,
         tenant: &str,
         local_audience: &str,
@@ -288,19 +308,19 @@ impl FederationExportConfig {
             self.remote_origin.clone(),
             local_audience.to_owned(),
             self.remote_audience.clone(),
-            self.trust_id.clone(),
-            self.trust_revision,
-            self.key_id.clone(),
-            self.verifying_key.clone(),
-            self.issuer_epoch,
-            self.grant.target.clone(),
-            self.grant.agent_resource.clone(),
-            self.grant.binding_digest.clone(),
-            self.grant.skill.clone(),
-            self.grant.ingress_effect.clone(),
-            self.grant.effects.clone(),
-            self.grant.limits.clone(),
-            self.grant.max_depth,
+            epoch.trust_id.clone(),
+            epoch.trust_revision,
+            epoch.key_id.clone(),
+            epoch.verifying_key.clone(),
+            epoch.issuer_epoch,
+            epoch.grant.target.clone(),
+            epoch.grant.agent_resource.clone(),
+            epoch.grant.binding_digest.clone(),
+            epoch.grant.skill.clone(),
+            epoch.grant.ingress_effect.clone(),
+            epoch.grant.effects.clone(),
+            epoch.grant.limits.clone(),
+            epoch.grant.max_depth,
             self.max_lifetime_ms,
             self.local_effect(namespace, tenant)?,
         )
@@ -313,15 +333,22 @@ impl FederationExportConfig {
             .iter()
             .find(|agent| agent.card.agent_id == self.source_agent_id)
             .ok_or("federation export source service is not declared")?;
-        if source.principal != self.grant.source
-            || self.id.is_empty()
+        let epochs = self
+            .epochs
+            .iter()
+            .map(|epoch| epoch.issuer_epoch)
+            .collect::<BTreeSet<_>>();
+        if self.id.is_empty()
             || self.id.len() > 120
             || !self
                 .id
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
-            || !valid_env_name(&self.signer_key_env)
-            || !valid_env_name(&self.credential_env)
+            || self.epochs.is_empty()
+            || self.epochs.len() > 8
+            || epochs.len() != self.epochs.len()
+            || self.active_epoch == 0
+            || Some(&self.active_epoch) != epochs.last()
             || !(100..=120_000).contains(&self.timeout_ms)
             || self.internal_hosts.len() > 64
             || self.internal_hosts.iter().collect::<BTreeSet<_>>().len()
@@ -334,7 +361,19 @@ impl FederationExportConfig {
         }
         .validate_url(&self.remote_origin)
         .map_err(|_| "federation export origin refused by outbound policy")?;
-        self.qualify(&scope.namespace, &scope.tenant, local_audience)?;
+        let mut key_material = BTreeMap::new();
+        for epoch in &self.epochs {
+            if source.principal != epoch.grant.source
+                || !valid_env_name(&epoch.signer_key_env)
+                || !valid_env_name(&epoch.credential_env)
+                || key_material
+                    .insert(&epoch.key_id, &epoch.verifying_key)
+                    .is_some_and(|existing| existing != &epoch.verifying_key)
+            {
+                return Err("invalid outbound federation epoch".into());
+            }
+            self.qualify_epoch(epoch, &scope.namespace, &scope.tenant, local_audience)?;
+        }
         Ok(())
     }
 }
@@ -890,10 +929,13 @@ impl ExecutionScopeConfig {
         }
         let mut export_ids = BTreeSet::new();
         for export in &federation.exports {
+            let active = export.active_epoch()?;
             if !export_ids.insert(&export.id)
-                || export.grant.limits.deadline_ms > self.credential_limits.deadline_ms
+                || export.epochs.iter().any(|epoch| {
+                    epoch.grant.limits.deadline_ms > self.credential_limits.deadline_ms
+                })
                 || !self.permits.iter().any(|permit| {
-                    permit.subject == export.grant.source
+                    permit.subject == active.grant.source
                         && permit.federation_exports.contains(&export.id)
                 })
             {
@@ -978,10 +1020,12 @@ impl ExecutionScopeConfig {
                     != permit.federation_exports.len()
                 || permit.federation_exports.iter().any(|id| {
                     self.federation.as_ref().is_none_or(|federation| {
-                        !federation
-                            .exports
-                            .iter()
-                            .any(|export| export.id == *id && export.grant.source == permit.subject)
+                        !federation.exports.iter().any(|export| {
+                            export.id == *id
+                                && export
+                                    .active_epoch()
+                                    .is_ok_and(|epoch| epoch.grant.source == permit.subject)
+                        })
                     })
                 })
                 || permit.routes.iter().any(|r| !self.routes.contains(r))

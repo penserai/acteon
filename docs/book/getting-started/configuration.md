@@ -694,12 +694,13 @@ fit the declaration. See [A2A federation status](../features/a2a.md#federation-s
 for the management and import APIs.
 
 The same block can install outbound export profiles. Each profile binds one
-declared source agent service to an exact remote origin, audience, trust/key
-revision, public signing key, foreign agent binding, effect ceiling, budget,
-depth and lifetime. The two environment variables resolve the private signing
-key and peer credential only during runtime installation. The signing secret is
+declared source agent service to an exact remote origin and audience. Each
+bounded epoch pins its trust/key revision, public signing key, transport
+credential, foreign agent binding, effect ceiling, budget and depth. Epoch
+environment variables resolve the private signing key and peer credential only
+during runtime installation. The signing secret is
 exactly 32 bytes encoded as 64 lowercase or uppercase hexadecimal characters.
-Neither secret appears in retained state or the sanitized configuration.
+No secret appears in retained state or the sanitized configuration.
 
 ```toml
 [[execution_authority.scopes.federation.exports]]
@@ -707,6 +708,12 @@ id = "remote-triage"
 source_agent_id = "notifier"
 remote_origin = "https://remote.example"
 remote_audience = "acteon://remote/prod"
+active_epoch = 1
+max_lifetime_ms = 60000
+timeout_ms = 10000
+internal_hosts = []
+
+[[execution_authority.scopes.federation.exports.epochs]]
 trust_id = "local-prod"
 trust_revision = 1
 key_id = "local-key-v1"
@@ -714,11 +721,8 @@ verifying_key = "<64 hex characters>"
 signer_key_env = "ACTEON_FEDERATION_SIGNER"
 issuer_epoch = 1
 credential_env = "ACTEON_REMOTE_CREDENTIAL"
-max_lifetime_ms = 60000
-timeout_ms = 10000
-internal_hosts = []
 
-[execution_authority.scopes.federation.exports.grant]
+[execution_authority.scopes.federation.exports.epochs.grant]
 source = { id = "agent/notifier", kind = "agent" }
 target = { id = "agent/remote-triage", kind = "agent" }
 agent_resource = { kind = "agent", namespace = "prod", tenant = "acme", id = "remote-triage" }
@@ -734,6 +738,14 @@ effects = [{ operation = "provider.execute", resources = [
 limits = { max_units = 3, max_concurrent = 1, deadline_ms = 4102444800000 }
 max_depth = 2
 ```
+
+For zero-downtime rotation, append a higher epoch with its new signer,
+credential, trust/key revision and complete reviewed remote agent card, then set
+`active_epoch` to that highest `issuer_epoch`. New exports use only the active
+epoch. Acteon retains exporters for older declared epochs so existing delivery
+IDs can be observed or explicitly replayed with their original signed bytes and
+transport credential. Remove an older epoch only after reconciliation shows no
+retained nonterminal delivery depends on it.
 
 The source agent's deployment permit must list
 `federation_exports = ["remote-triage"]`; ordinary routes, chains and local

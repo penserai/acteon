@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 const ISSUANCE_KIND: &str = "federation_export_issuance";
-const ISSUANCE_SCHEMA: u32 = 1;
+const ISSUANCE_SCHEMA: u32 = 2;
 const MAX_ISSUANCE_BYTES: usize = 16 * 1024;
 
 /// Agent-facing export request. Routing, credentials, signing keys, foreign
@@ -61,6 +61,8 @@ struct ExportIssuance {
     source_task_id: uuid::Uuid,
     profile_id: String,
     profile_digest: String,
+    issuer_epoch: u64,
+    epoch_digest: String,
     parent_execution_id: uuid::Uuid,
     message_id: String,
     message_digest: String,
@@ -175,9 +177,14 @@ impl ExecutionAuthorityRuntime {
                 request.message,
                 &parent,
                 &installed.declaration,
+                &installed.profile_digest,
                 matches!(operation, Operation::Submit),
             )
             .await?;
+        let exporter = installed
+            .exporters
+            .get(&issuance.issuer_epoch)
+            .ok_or(FederationExportRuntimeError::Conflict)?;
         let export = FederationExportRequest {
             context: &parent,
             permits: &source.declaration.recipient_permits,
@@ -190,9 +197,9 @@ impl ExecutionAuthorityRuntime {
             max_depth: issuance.max_depth,
         };
         match operation {
-            Operation::Submit => installed.exporter.submit(export).await,
-            Operation::Observe => installed.exporter.observe(export).await,
-            Operation::ReplayIdempotent => installed.exporter.replay_idempotent(export).await,
+            Operation::Submit => exporter.submit(export).await,
+            Operation::Observe => exporter.observe(export).await,
+            Operation::ReplayIdempotent => exporter.replay_idempotent(export).await,
         }
         .map_err(map_export_error)
     }
@@ -207,10 +214,10 @@ impl ExecutionAuthorityRuntime {
         message: &TaskMessage,
         parent: &acteon_governance::context::VerifiedExecutionContext,
         profile: &crate::config::FederationExportConfig,
+        profile_digest: &str,
         create: bool,
     ) -> Result<ExportIssuance, FederationExportRuntimeError> {
         let message_digest = digest_json(message)?;
-        let profile_digest = digest_json(profile)?;
         let key = issuance_key(
             namespace,
             tenant,
@@ -228,13 +235,17 @@ impl ExecutionAuthorityRuntime {
             if !create {
                 return Err(FederationExportRuntimeError::NotFound);
             }
+            let epoch = profile
+                .active_epoch()
+                .map_err(|_| FederationExportRuntimeError::Invalid)?;
+            let epoch_digest = digest_json(epoch)?;
             let now_ms = self.clock.now().timestamp_millis();
             let expires_at_ms = now_ms
                 .checked_add(profile.max_lifetime_ms)
                 .map(|candidate| {
                     candidate
                         .min(parent.deadline_ms())
-                        .min(profile.grant.limits.deadline_ms)
+                        .min(epoch.grant.limits.deadline_ms)
                 })
                 .filter(|deadline| *deadline > now_ms)
                 .ok_or(FederationExportRuntimeError::Forbidden)?;
@@ -243,7 +254,9 @@ impl ExecutionAuthorityRuntime {
                 source_agent_id: source_agent_id.into(),
                 source_task_id,
                 profile_id: profile.id.clone(),
-                profile_digest: profile_digest.clone(),
+                profile_digest: profile_digest.into(),
+                issuer_epoch: epoch.issuer_epoch,
+                epoch_digest,
                 parent_execution_id: parent.execution_id(),
                 message_id: message.message_id.clone(),
                 message_digest: message_digest.clone(),
@@ -252,11 +265,11 @@ impl ExecutionAuthorityRuntime {
                 issued_at_ms: now_ms,
                 expires_at_ms,
                 limits: RootBudgetLimits {
-                    max_units: profile.grant.limits.max_units,
-                    max_concurrent: profile.grant.limits.max_concurrent,
+                    max_units: epoch.grant.limits.max_units,
+                    max_concurrent: epoch.grant.limits.max_concurrent,
                     deadline_ms: expires_at_ms,
                 },
-                max_depth: profile.grant.max_depth,
+                max_depth: epoch.grant.max_depth,
             };
             let encoded = self.encode_export_issuance(&candidate)?;
             self.state
@@ -271,11 +284,19 @@ impl ExecutionAuthorityRuntime {
             .map_err(|_| FederationExportRuntimeError::Unavailable)?
             .ok_or(FederationExportRuntimeError::Unavailable)?;
         let issuance = self.decode_export_issuance(&raw)?;
+        let epoch = profile
+            .epochs
+            .iter()
+            .find(|epoch| epoch.issuer_epoch == issuance.issuer_epoch)
+            .ok_or(FederationExportRuntimeError::Conflict)?;
+        let epoch_digest = digest_json(epoch)?;
         if issuance.schema != ISSUANCE_SCHEMA
             || issuance.source_agent_id != source_agent_id
             || issuance.source_task_id != source_task_id
             || issuance.profile_id != profile.id
             || issuance.profile_digest != profile_digest
+            || issuance.issuer_epoch == 0
+            || issuance.epoch_digest != epoch_digest
             || issuance.parent_execution_id != parent.execution_id()
             || issuance.message_id != message.message_id
             || issuance.message_digest != message_digest
@@ -283,11 +304,11 @@ impl ExecutionAuthorityRuntime {
             || issuance.expires_at_ms <= issuance.issued_at_ms
             || issuance.limits.deadline_ms != issuance.expires_at_ms
             || issuance.limits.max_units == 0
-            || issuance.limits.max_units > profile.grant.limits.max_units
+            || issuance.limits.max_units > epoch.grant.limits.max_units
             || issuance.limits.max_concurrent == 0
-            || issuance.limits.max_concurrent > profile.grant.limits.max_concurrent
+            || issuance.limits.max_concurrent > epoch.grant.limits.max_concurrent
             || issuance.max_depth == 0
-            || issuance.max_depth > profile.grant.max_depth
+            || issuance.max_depth > epoch.grant.max_depth
         {
             return Err(FederationExportRuntimeError::Conflict);
         }
@@ -359,6 +380,23 @@ fn digest_json<T: Serialize>(value: &T) -> Result<String, FederationExportRuntim
         .map_err(|_| FederationExportRuntimeError::Invalid)
 }
 
+pub(super) fn profile_binding_digest(
+    profile: &crate::config::FederationExportConfig,
+    local_audience: &str,
+) -> Result<String, FederationExportRuntimeError> {
+    digest_json(&(
+        "acteon.federation.export.profile.v2",
+        &profile.id,
+        &profile.source_agent_id,
+        &profile.remote_origin,
+        &profile.remote_audience,
+        local_audience,
+        profile.max_lifetime_ms,
+        profile.timeout_ms,
+        &profile.internal_hosts,
+    ))
+}
+
 fn map_source_error(error: AgentPeerTransportError) -> FederationExportRuntimeError {
     match error {
         AgentPeerTransportError::Invalid => FederationExportRuntimeError::Invalid,
@@ -398,5 +436,107 @@ fn map_export_error(error: FederationExportError) -> FederationExportRuntimeErro
             FederationTransportError::Refused => FederationExportRuntimeError::Forbidden,
             FederationTransportError::Unavailable => FederationExportRuntimeError::Unavailable,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use acteon_core::{PrincipalIdentity, PrincipalKind, ResourceKind, ResourceRef};
+    use acteon_governance::{
+        RootBudgetLimits,
+        context::AcceptedEffect,
+        federation::{FederationEnvelopeSigner, FederationGrantCeiling},
+    };
+
+    use super::{digest_json, profile_binding_digest};
+    use crate::config::{FederationExportConfig, FederationExportEpochConfig};
+
+    fn profile() -> FederationExportConfig {
+        let source = PrincipalIdentity::new("agent/notifier", PrincipalKind::Agent).unwrap();
+        let target = PrincipalIdentity::new("agent/remote", PrincipalKind::Agent).unwrap();
+        let agent = ResourceRef::new(ResourceKind::Agent, "prod", "acme", "remote").unwrap();
+        let endpoint =
+            ResourceRef::new(ResourceKind::Endpoint, "prod", "acme", "remote-api").unwrap();
+        let grant = FederationGrantCeiling {
+            source,
+            target,
+            agent_resource: agent.clone(),
+            binding_digest: "b".repeat(64),
+            skill: "triage".into(),
+            ingress_effect: AcceptedEffect {
+                operation: "agent.invoke".into(),
+                resources: vec![agent, endpoint.clone()],
+            },
+            effects: vec![AcceptedEffect {
+                operation: "provider.execute".into(),
+                resources: vec![endpoint],
+            }],
+            limits: RootBudgetLimits {
+                max_units: 3,
+                max_concurrent: 1,
+                deadline_ms: 4_102_444_800_000,
+            },
+            max_depth: 2,
+        };
+        FederationExportConfig {
+            id: "remote-triage".into(),
+            source_agent_id: "notifier".into(),
+            remote_origin: "https://remote.example".into(),
+            remote_audience: "acteon://remote/prod".into(),
+            active_epoch: 1,
+            epochs: vec![FederationExportEpochConfig {
+                trust_id: "local-prod".into(),
+                trust_revision: 1,
+                key_id: "local-key-v1".into(),
+                verifying_key: FederationEnvelopeSigner::from_secret([11; 32]).verifying_key_hex(),
+                signer_key_env: "ACTEON_FEDERATION_SIGNER_V1".into(),
+                issuer_epoch: 1,
+                credential_env: "ACTEON_REMOTE_CREDENTIAL_V1".into(),
+                grant,
+            }],
+            max_lifetime_ms: 60_000,
+            timeout_ms: 10_000,
+            internal_hosts: vec![],
+        }
+    }
+
+    #[test]
+    fn rotation_preserves_common_binding_and_isolates_epoch_material() {
+        let original = profile();
+        let common = profile_binding_digest(&original, "acteon://local/prod").unwrap();
+        let old_epoch = digest_json(&original.epochs[0]).unwrap();
+
+        let mut rotated = original.clone();
+        let mut next = rotated.epochs[0].clone();
+        next.issuer_epoch = 2;
+        next.trust_revision = 2;
+        next.key_id = "local-key-v2".into();
+        next.verifying_key = FederationEnvelopeSigner::from_secret([12; 32]).verifying_key_hex();
+        next.signer_key_env = "ACTEON_FEDERATION_SIGNER_V2".into();
+        next.credential_env = "ACTEON_REMOTE_CREDENTIAL_V2".into();
+        next.grant.binding_digest = "c".repeat(64);
+        rotated.epochs.push(next);
+        rotated.active_epoch = 2;
+
+        assert_eq!(
+            profile_binding_digest(&rotated, "acteon://local/prod").unwrap(),
+            common
+        );
+        assert_eq!(digest_json(&rotated.epochs[0]).unwrap(), old_epoch);
+        assert_ne!(
+            digest_json(&rotated.epochs[1]).unwrap(),
+            old_epoch,
+            "a retained issuance must select exactly one epoch"
+        );
+        rotated.remote_audience = "acteon://other/prod".into();
+        assert_ne!(
+            profile_binding_digest(&rotated, "acteon://local/prod").unwrap(),
+            common
+        );
+        rotated.remote_audience = original.remote_audience;
+        assert_ne!(
+            profile_binding_digest(&rotated, "acteon://other/prod").unwrap(),
+            common
+        );
     }
 }

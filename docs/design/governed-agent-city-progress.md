@@ -2129,6 +2129,12 @@ Separate send, observation and explicit replay routes preserve the transport's
 uncertainty rules. All five SDK catalogs and typed helpers include the three
 operations.
 
-Operator reconciliation and expiry projections, overlap-safe signer and
-credential rotation, capability exchange, and two-server qualification across
-Redis, PostgreSQL and DynamoDB remain required for the federation release gate.
+Outbound profiles now use a bounded rotation keyring. New work selects the
+highest declared active epoch; retained work selects the exact epoch recorded
+at issuance. Each epoch owns its signer, credential, trust/key revision and
+reviewed remote agent card, so overlapping rotations preserve old signed bytes
+and adapter bindings without allowing active-epoch rollback.
+
+Operator reconciliation and expiry projections, capability exchange, and
+two-server qualification across Redis, PostgreSQL and DynamoDB remain required
+for the federation release gate.

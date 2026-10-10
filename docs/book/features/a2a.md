@@ -176,9 +176,9 @@ for accounting after revocation. `message:replay` is explicit, rechecks current
 authority, and works only with the Acteon HTTP binding qualified for exact
 idempotent replay.
 
-Production qualification still requires overlap-safe key and credential
-rotation, operator reconciliation views, capability exchange, and two-server
-failure testing on each supported production state backend.
+Production qualification still requires operator reconciliation views,
+capability exchange, and two-server failure testing on each supported
+production state backend.
 
 ### Discovery (unauthenticated)
 
