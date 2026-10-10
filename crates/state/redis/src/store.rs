@@ -6,7 +6,7 @@ use redis::{AsyncCommands, Script};
 
 use acteon_state::error::StateError;
 use acteon_state::key::{KeyKind, StateKey};
-use acteon_state::store::{CasResult, StateStore};
+use acteon_state::store::{CasResult, StateScanPage, StateStore};
 
 use crate::config::RedisConfig;
 use crate::key_render::render_key;
@@ -59,12 +59,110 @@ impl RedisStateStore {
         render_key(&self.prefix, key)
     }
 
+    fn ordered_index_key(&self, key: &StateKey) -> String {
+        format!(
+            "{}:__state_ordered__:{}:{}:{}",
+            self.prefix, key.namespace, key.tenant, key.kind
+        )
+    }
+
+    fn ordered_index_marker(&self, namespace: &str, tenant: &str, kind: &KeyKind) -> String {
+        format!(
+            "{}:__state_ordered_complete__:{namespace}:{tenant}:{kind}",
+            self.prefix
+        )
+    }
+
+    fn ordered_index_for_scope(&self, namespace: &str, tenant: &str, kind: &KeyKind) -> String {
+        format!(
+            "{}:__state_ordered__:{namespace}:{tenant}:{kind}",
+            self.prefix
+        )
+    }
+
     /// Obtain a connection from the pool.
     async fn conn(&self) -> Result<deadpool_redis::Connection, StateError> {
         self.pool
             .get()
             .await
             .map_err(|e| StateError::Connection(e.to_string()))
+    }
+
+    async fn ensure_ordered_index(
+        &self,
+        conn: &mut deadpool_redis::Connection,
+        namespace: &str,
+        tenant: &str,
+        kind: &KeyKind,
+    ) -> Result<(), StateError> {
+        let marker = self.ordered_index_marker(namespace, tenant, kind);
+        let index = self.ordered_index_for_scope(namespace, tenant, kind);
+        let (complete, index_exists): (bool, bool) = redis::pipe()
+            .exists(&marker)
+            .exists(&index)
+            .query_async(&mut **conn)
+            .await
+            .map_err(|error| StateError::Backend(error.to_string()))?;
+        if complete && index_exists {
+            return Ok(());
+        }
+        let pattern = format!("{}:{namespace}:{tenant}:{kind}:*", self.prefix);
+        let physical_prefix = format!("{}:", self.prefix);
+        let mut cursor = 0_u64;
+        loop {
+            let (next, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+                .arg(cursor)
+                .arg("MATCH")
+                .arg(&pattern)
+                .arg("COUNT")
+                .arg(500)
+                .query_async(&mut **conn)
+                .await
+                .map_err(|error| StateError::Backend(error.to_string()))?;
+            if !keys.is_empty() {
+                let mut pipe = redis::pipe();
+                for key in keys {
+                    let stripped = key.strip_prefix(&physical_prefix).unwrap_or(&key);
+                    let canonical = stripped.strip_suffix(":h").unwrap_or(stripped);
+                    pipe.zadd(&index, canonical, 0).ignore();
+                }
+                pipe.query_async::<()>(&mut **conn)
+                    .await
+                    .map_err(|error| StateError::Backend(error.to_string()))?;
+            }
+            cursor = next;
+            if cursor == 0 {
+                break;
+            }
+        }
+        redis::pipe()
+            .atomic()
+            .zadd(&index, "__acteon_state_index_sentinel__", 0)
+            .ignore()
+            .set(marker, "1")
+            .ignore()
+            .query_async::<()>(&mut **conn)
+            .await
+            .map_err(|error| StateError::Backend(error.to_string()))?;
+        Ok(())
+    }
+
+    async fn indexed_value(
+        &self,
+        conn: &mut deadpool_redis::Connection,
+        canonical: &str,
+    ) -> Result<Option<String>, StateError> {
+        let physical = format!("{}:{canonical}", self.prefix);
+        let hash_value: Option<String> = conn
+            .hget(format!("{physical}:h"), "v")
+            .await
+            .map_err(|error| StateError::Backend(error.to_string()))?;
+        if hash_value.is_some() {
+            return Ok(hash_value);
+        }
+        conn.get(physical)
+            .await
+            .map_err(|error| StateError::Backend(error.to_string()))
     }
 }
 
@@ -85,8 +183,10 @@ impl StateStore for RedisStateStore {
         let result: i64 = script
             .key(&string_key)
             .key(&hash_key)
+            .key(self.ordered_index_key(key))
             .arg(value)
             .arg(ttl_ms)
+            .arg(key.canonical())
             .invoke_async(&mut conn)
             .await
             .map_err(|e| StateError::Backend(e.to_string()))?;
@@ -105,6 +205,8 @@ impl StateStore for RedisStateStore {
         let (value, version): (Option<String>, u64) = Script::new(scripts::GET_VERSIONED)
             .key(self.hash_key(key))
             .key(self.string_key(key))
+            .key(self.ordered_index_key(key))
+            .arg(key.canonical())
             .invoke_async(&mut conn)
             .await
             .map_err(|e| StateError::Backend(e.to_string()))?;
@@ -128,9 +230,12 @@ impl StateStore for RedisStateStore {
         let new_ver = cur_ver.map_or(1, |v| v + 1);
 
         redis::pipe()
+            .atomic()
             .hset(&redis_key, "v", value)
             .ignore()
             .hset(&redis_key, "ver", new_ver)
+            .ignore()
+            .zadd(self.ordered_index_key(key), key.canonical(), 0)
             .ignore()
             .exec_async(&mut conn)
             .await
@@ -169,11 +274,13 @@ impl StateStore for RedisStateStore {
         let mut conn = self.conn().await?;
 
         let deleted: i64 = redis::pipe()
+            .atomic()
             .del(&hash_key)
             .del(&string_key)
+            .zrem(self.ordered_index_key(key), key.canonical())
             .query_async(&mut conn)
             .await
-            .map(|(a, b): (i64, i64)| a + b)
+            .map(|(hash, string, _): (i64, i64, i64)| hash + string)
             .map_err(|e| StateError::Backend(e.to_string()))?;
 
         Ok(deleted > 0)
@@ -188,7 +295,9 @@ impl StateStore for RedisStateStore {
         let deleted: i64 = Script::new(scripts::COMPARE_AND_DELETE)
             .key(self.hash_key(key))
             .key(self.string_key(key))
+            .key(self.ordered_index_key(key))
             .arg(expected_version)
+            .arg(key.canonical())
             .invoke_async(&mut conn)
             .await
             .map_err(|e| StateError::Backend(e.to_string()))?;
@@ -208,8 +317,10 @@ impl StateStore for RedisStateStore {
         let value: String = Script::new(scripts::INCREMENT)
             .key(self.string_key(key))
             .key(self.hash_key(key))
+            .key(self.ordered_index_key(key))
             .arg(delta)
             .arg(ttl_ms)
+            .arg(key.canonical())
             .invoke_async(&mut conn)
             .await
             .map_err(|e| StateError::Backend(e.to_string()))?;
@@ -233,9 +344,11 @@ impl StateStore for RedisStateStore {
         let result: Vec<redis::Value> = script
             .key(&redis_key)
             .key(self.string_key(key))
+            .key(self.ordered_index_key(key))
             .arg(expected_version)
             .arg(new_value)
             .arg(ttl_ms)
+            .arg(key.canonical())
             .invoke_async(&mut conn)
             .await
             .map_err(|e| StateError::Backend(e.to_string()))?;
@@ -320,12 +433,10 @@ impl StateStore for RedisStateStore {
                 };
 
                 // Strip the prefix to return a clean key
-                let clean_key = key
+                let stripped = key
                     .strip_prefix(&format!("{}:", self.prefix))
-                    .unwrap_or(&key)
-                    .strip_suffix(":h")
-                    .unwrap_or(&key)
-                    .to_string();
+                    .unwrap_or(&key);
+                let clean_key = stripped.strip_suffix(":h").unwrap_or(stripped).to_string();
 
                 results.push((clean_key, value));
             }
@@ -337,6 +448,84 @@ impl StateStore for RedisStateStore {
         }
 
         Ok(results)
+    }
+
+    async fn scan_keys_page(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        kind: KeyKind,
+        prefix: Option<&str>,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<StateScanPage, StateError> {
+        if !(1..=1_000).contains(&limit) {
+            return Err(StateError::Backend("invalid state scan page limit".into()));
+        }
+        let canonical_prefix = match prefix {
+            Some(prefix) => format!("{namespace}:{tenant}:{kind}:{prefix}"),
+            None => format!("{namespace}:{tenant}:{kind}:"),
+        };
+        if after.is_some_and(|cursor| !cursor.starts_with(&canonical_prefix)) {
+            return Err(StateError::Backend("invalid state scan page cursor".into()));
+        }
+        let index = self.ordered_index_for_scope(namespace, tenant, &kind);
+        let mut conn = self.conn().await?;
+        self.ensure_ordered_index(&mut conn, namespace, tenant, &kind)
+            .await?;
+
+        let mut entries = Vec::new();
+        let mut cursor = after.map(str::to_owned);
+        while entries.len() <= limit {
+            let minimum = cursor.as_ref().map_or_else(
+                || format!("[{canonical_prefix}"),
+                |value| format!("({value}"),
+            );
+            let batch = (limit + 1 - entries.len()).max(64);
+            let members: Vec<String> = redis::cmd("ZRANGEBYLEX")
+                .arg(&index)
+                .arg(minimum)
+                .arg("+")
+                .arg("LIMIT")
+                .arg(0)
+                .arg(batch)
+                .query_async(&mut conn)
+                .await
+                .map_err(|error| StateError::Backend(error.to_string()))?;
+            if members.is_empty() {
+                break;
+            }
+            let member_count = members.len();
+            let mut left_prefix = false;
+            for member in members {
+                cursor = Some(member.clone());
+                if !member.starts_with(&canonical_prefix) {
+                    left_prefix = true;
+                    break;
+                }
+                if let Some(value) = self.indexed_value(&mut conn, &member).await? {
+                    entries.push((member, value));
+                    if entries.len() > limit {
+                        break;
+                    }
+                } else {
+                    let _: usize = conn
+                        .zrem(&index, &member)
+                        .await
+                        .map_err(|error| StateError::Backend(error.to_string()))?;
+                }
+            }
+            if left_prefix || entries.len() > limit || member_count < batch {
+                break;
+            }
+        }
+        let has_more = entries.len() > limit;
+        entries.truncate(limit);
+        let next_cursor = has_more.then(|| entries[entries.len() - 1].0.clone());
+        Ok(StateScanPage {
+            entries,
+            next_cursor,
+        })
     }
 
     async fn scan_keys_by_kind(&self, kind: KeyKind) -> Result<Vec<(String, String)>, StateError> {
@@ -385,12 +574,10 @@ impl StateStore for RedisStateStore {
                 };
 
                 // Strip the prefix to return a clean key
-                let clean_key = key
+                let stripped = key
                     .strip_prefix(&format!("{}:", self.prefix))
-                    .unwrap_or(&key)
-                    .strip_suffix(":h")
-                    .unwrap_or(&key)
-                    .to_string();
+                    .unwrap_or(&key);
+                let clean_key = stripped.strip_suffix(":h").unwrap_or(stripped).to_string();
 
                 results.push((clean_key, value));
             }
@@ -538,6 +725,86 @@ mod integration_tests {
         acteon_state::testing::run_store_conformance_tests(&store)
             .await
             .expect("conformance tests should pass");
+    }
+
+    #[tokio::test]
+    async fn ordered_pages_backfill_legacy_rows_and_track_mutations() {
+        let store = RedisStateStore::new(&test_config()).unwrap();
+        let keys = ["c", "a", "b"].map(|id| {
+            StateKey::new(
+                "page-ns",
+                "page-tenant",
+                KeyKind::Custom("journal".into()),
+                id,
+            )
+        });
+        let mut conn = store.conn().await.unwrap();
+        for key in &keys {
+            let _: () = conn
+                .set(store.string_key(key), key.id.as_str())
+                .await
+                .unwrap();
+        }
+        let first = store
+            .scan_keys_page(
+                "page-ns",
+                "page-tenant",
+                KeyKind::Custom("journal".into()),
+                None,
+                None,
+                2,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            first
+                .entries
+                .iter()
+                .map(|(_, value)| value.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "b"]
+        );
+        assert!(first.next_cursor.is_some());
+        let second = store
+            .scan_keys_page(
+                "page-ns",
+                "page-tenant",
+                KeyKind::Custom("journal".into()),
+                None,
+                first.next_cursor.as_deref(),
+                2,
+            )
+            .await
+            .unwrap();
+        assert_eq!(second.entries[0].1, "c");
+        assert!(second.next_cursor.is_none());
+
+        let added = StateKey::new(
+            "page-ns",
+            "page-tenant",
+            KeyKind::Custom("journal".into()),
+            "d",
+        );
+        store.set(&added, "d", None).await.unwrap();
+        store.delete(&keys[0]).await.unwrap();
+        let page = store
+            .scan_keys_page(
+                "page-ns",
+                "page-tenant",
+                KeyKind::Custom("journal".into()),
+                None,
+                None,
+                10,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            page.entries
+                .iter()
+                .map(|(_, value)| value.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "b", "d"]
+        );
     }
 
     #[tokio::test]

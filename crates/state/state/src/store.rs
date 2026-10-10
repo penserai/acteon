@@ -122,6 +122,13 @@ pub trait StateStore: Send + Sync {
         if !(1..=1_000).contains(&limit) {
             return Err(StateError::Backend("invalid state scan page limit".into()));
         }
+        let canonical_prefix = match prefix {
+            Some(prefix) => format!("{namespace}:{tenant}:{kind}:{prefix}"),
+            None => format!("{namespace}:{tenant}:{kind}:"),
+        };
+        if after.is_some_and(|cursor| !cursor.starts_with(&canonical_prefix)) {
+            return Err(StateError::Backend("invalid state scan page cursor".into()));
+        }
         let mut entries = self.scan_keys(namespace, tenant, kind, prefix).await?;
         entries.sort_by(|left, right| left.0.cmp(&right.0));
         if let Some(after) = after {

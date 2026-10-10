@@ -184,10 +184,13 @@ Evidence reads now use the generic `StateStore::scan_keys_page` contract. The
 cursor is the last canonical key, results are ordered and bounded, and custom
 stores retain a correct default implementation. PostgreSQL executes an ordered
 range query with `LIMIT`; DynamoDB resumes its partition `Query` from the exact
-sort key and continues across TTL-filtered pages. Memory provides the reference
-contract. Redis still uses the compatibility implementation until its ordered
-scope/kind index and backfill protocol are installed, so Redis journal reads can
-still scan more keys than the returned page.
+sort key and continues across TTL-filtered pages. Redis maintains a sorted
+scope/kind index atomically with writes, repairs the index on reads and conflicts,
+prunes expired members, and performs a one-time lazy backfill for records written
+before the index existed. Memory provides the reference contract.
+The shared state-backend conformance suite now checks ordered page boundaries,
+cursor continuation and prefix isolation, so every production backend must run
+the same contract rather than inheriting correctness from the trait signature.
 
 ## Verification
 
@@ -209,8 +212,7 @@ backend.
 
 The remaining production gates are:
 
-1. qualified peer-finality evidence and Redis ordered-index pagination for
-   large journals;
+1. qualified peer-finality evidence and production-backend page qualification;
 2. capability/key-card negotiation and credential exchange;
 3. two-server restart and response-loss qualification across Redis,
    PostgreSQL, and DynamoDB, followed by external implementation conformance.

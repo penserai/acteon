@@ -2152,9 +2152,13 @@ The state substrate now exposes ordered, cursor-based, bounded scope/kind pages.
 Federation evidence consumes that generic contract. PostgreSQL uses an ordered
 range query and DynamoDB uses its partition/sort-key `Query`; memory establishes
 the reference semantics. Custom stores remain source compatible through the
-correct scan-and-sort default. Redis still needs an ordered scope/kind index and
-backfill before its implementation is backend bounded.
+correct scan-and-sort default. Redis maintains an ordered scope/kind sorted-set
+index on writes, repairs it on reads and CAS conflicts, prunes stale TTL members,
+and lazily backfills records created before the index existed.
+The shared state-store conformance suite covers ordering, continuation and
+prefix isolation; backend integration jobs are responsible for executing it
+against their actual services.
 
-Qualified peer-finality evidence, Redis ordered-index pagination, capability
+Qualified peer-finality evidence, production-backend page qualification, capability
 exchange, and two-server qualification across Redis, PostgreSQL and DynamoDB
 remain required for the federation release gate.
