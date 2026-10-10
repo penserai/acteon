@@ -373,6 +373,10 @@ jobs:
         env:
           ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
         run: cargo test --locked -p acteon-executor --test governed_provider independent_redis_workers_observe_one_provider_attempt -- --ignored
+      - name: Federation delivery finality and paging multi-client Redis contract
+        env:
+          ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
+        run: cargo test --locked -p acteon-executor --test federation_transport redis_backend_restart_and_finality_contract -- --ignored
       - name: Durable individual-agent runtime multi-client Redis contract
         env:
           ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
@@ -407,6 +411,8 @@ jobs:
         run: cargo test --locked -p acteon-executor --test qualified_plans independent_redis_qualified_handoff_contract -- --ignored
       - name: Durable provider multi-client PostgreSQL contract
         run: cargo test --locked -p acteon-executor --test governed_provider independent_postgres_workers_observe_one_provider_attempt -- --ignored
+      - name: Federation delivery finality and paging multi-client PostgreSQL contract
+        run: cargo test --locked -p acteon-executor --test federation_transport postgres_backend_restart_and_finality_contract -- --ignored
       - name: Structured input challenge multi-client PostgreSQL contract
         run: cargo test --locked -p acteon-gateway --test task_input_challenges independent_postgres_clients_pass_the_input_challenge_contract -- --ignored
       - name: Verifier-backed authorization challenge multi-client PostgreSQL contract
@@ -474,6 +480,13 @@ jobs:
           AWS_EC2_METADATA_DISABLED: 'true'
       - name: Durable provider multi-client DynamoDB contract
         run: cargo test --locked -p acteon-executor --features dynamodb --test governed_provider independent_dynamodb_workers_observe_one_provider_attempt -- --ignored
+        env:
+          DYNAMODB_ENDPOINT: http://127.0.0.1:8000
+          AWS_ACCESS_KEY_ID: acteonlocaltest
+          AWS_SECRET_ACCESS_KEY: acteon-local-test
+          AWS_EC2_METADATA_DISABLED: 'true'
+      - name: Federation delivery finality and paging multi-client DynamoDB contract
+        run: cargo test --locked -p acteon-executor --features dynamodb --test federation_transport dynamodb_backend_restart_and_finality_contract -- --ignored
         env:
           DYNAMODB_ENDPOINT: http://127.0.0.1:8000
           AWS_ACCESS_KEY_ID: acteonlocaltest

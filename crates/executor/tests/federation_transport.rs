@@ -227,7 +227,7 @@ impl FederationTransportAdapter for Adapter {
 }
 
 struct Fixture {
-    state: Arc<MemoryStateStore>,
+    state: Arc<dyn StateStore>,
     clock: Arc<ManualClock>,
     adapter: Arc<Adapter>,
     transport: DurableFederationTransport,
@@ -240,12 +240,14 @@ struct Fixture {
 
 impl Fixture {
     fn new(replay_safe: bool) -> Self {
-        let state = Arc::new(MemoryStateStore::new());
-        let state_dyn: Arc<dyn StateStore> = state.clone();
+        Self::new_with_state(Arc::new(MemoryStateStore::new()), replay_safe)
+    }
+
+    fn new_with_state(state: Arc<dyn StateStore>, replay_safe: bool) -> Self {
         let clock = Arc::new(ManualClock::new(
             chrono::DateTime::from_timestamp_millis(100).unwrap(),
         ));
-        let adapter = Arc::new(Adapter::new(state_dyn.clone(), replay_safe));
+        let adapter = Arc::new(Adapter::new(state.clone(), replay_safe));
         let source = PrincipalIdentity::new("source-agent", PrincipalKind::Agent).unwrap();
         let target = PrincipalIdentity::new("remote-agent", PrincipalKind::Agent).unwrap();
         let parent = ExecutionContextReference::new(
@@ -309,7 +311,7 @@ impl Fixture {
             .unwrap();
         let transport = DurableFederationTransport::new_trusted(
             FederationTransportDependencies {
-                state: state_dyn,
+                state: state.clone(),
                 clock: clock.clone(),
                 encryptor: None,
             },
@@ -388,6 +390,14 @@ impl Fixture {
     }
 
     fn finality_reconciler(&self, key: &[u8]) -> FederationDeliveryFinalityReconciler {
+        self.finality_reconciler_on(self.state.clone(), key)
+    }
+
+    fn finality_reconciler_on(
+        &self,
+        state: Arc<dyn StateStore>,
+        key: &[u8],
+    ) -> FederationDeliveryFinalityReconciler {
         let verifier: Arc<dyn FederationFinalityVerifier> = Arc::new(
             HmacFederationFinalityVerifier::new_trusted(
                 "remote-finality-journal",
@@ -397,7 +407,6 @@ impl Fixture {
             )
             .unwrap(),
         );
-        let state: Arc<dyn StateStore> = self.state.clone();
         FederationDeliveryFinalityReconciler::new_trusted(
             state,
             self.clock.clone(),
@@ -1225,4 +1234,185 @@ async fn signed_expiry_blocks_network_but_preserves_terminal_observation() {
     ));
     assert_eq!(accepted.adapter.imports.load(Ordering::SeqCst), 1);
     assert_eq!(accepted.adapter.invokes.load(Ordering::SeqCst), 1);
+}
+
+/// Qualify the federation journal across independent backend clients: one
+/// client loses an invocation response, another accepts peer finality after a
+/// process boundary, and a third transport observes the terminal result
+/// without importing or invoking again. The reader exercises the ordered page
+/// API used by management rather than the adapter-specific scan path.
+async fn production_backend_restart_and_finality_contract(
+    primary: Arc<dyn StateStore>,
+    restarted: Arc<dyn StateStore>,
+) {
+    let fixture = Fixture::new_with_state(primary, true);
+    fixture
+        .adapter
+        .invoke_mode
+        .store(UNCERTAIN, Ordering::SeqCst);
+    let uncertain = fixture.transport.submit(fixture.intent()).await.unwrap();
+    assert!(matches!(
+        uncertain.status,
+        FederationDeliveryStatus::InvokeUncertain { .. }
+    ));
+    assert_eq!(fixture.adapter.imports.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.adapter.invokes.load(Ordering::SeqCst), 1);
+
+    let finality_key = [91_u8; 32];
+    let reconciler = fixture.finality_reconciler_on(restarted.clone(), &finality_key);
+    let correlation = reconciler
+        .correlation(
+            "local",
+            "tenant",
+            uncertain.delivery_id,
+            fixture.parent.principal(),
+        )
+        .await
+        .unwrap();
+    let proof = sign_federation_finality_receipt(
+        correlation,
+        FederationPeerFinality::InvocationAccepted {
+            receipt: Box::new(fixture.remote_receipt()),
+            task: Box::new(fixture.remote_task()),
+        },
+        "remote-finality-v1",
+        "finality-key-1",
+        &finality_key,
+    )
+    .unwrap();
+    reconciler
+        .reconcile(
+            "local",
+            "tenant",
+            uncertain.delivery_id,
+            fixture.parent.principal(),
+            &proof,
+            FederationFinalityAcceptance {
+                operator: PrincipalIdentity::new("backend-qualification", PrincipalKind::Human)
+                    .unwrap(),
+                authority: AuthorityStamp {
+                    incarnation: "backend-qualification-v1".into(),
+                    generation: 1,
+                },
+                accepted_at_ms: fixture.clock.now().timestamp_millis(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let restarted_adapter = Arc::new(Adapter::new(restarted.clone(), true));
+    let restarted_transport = DurableFederationTransport::new_trusted(
+        FederationTransportDependencies {
+            state: restarted.clone(),
+            clock: fixture.clock.clone(),
+            encryptor: None,
+        },
+        restarted_adapter.clone(),
+        Duration::from_secs(1),
+    )
+    .unwrap();
+    let observed = restarted_transport.observe(fixture.intent()).await.unwrap();
+    assert!(matches!(
+        observed.status,
+        FederationDeliveryStatus::Accepted { .. }
+    ));
+    assert_eq!(restarted_adapter.imports.load(Ordering::SeqCst), 0);
+    assert_eq!(restarted_adapter.invokes.load(Ordering::SeqCst), 0);
+
+    let reader = FederationDeliveryEvidenceReader::new(restarted, fixture.clock.clone(), None);
+    let page = reader
+        .list_evidence("local", "tenant", None, 1)
+        .await
+        .unwrap();
+    assert_eq!(page.len(), 1);
+    assert_eq!(page[0].delivery_id, uncertain.delivery_id);
+    assert_eq!(page[0].reconciliations.len(), 1);
+    assert_eq!(
+        page[0].capability.as_ref().unwrap().credential_revision,
+        "test-credential-v1"
+    );
+    assert!(
+        reader
+            .list_evidence("local", "tenant", Some(uncertain.delivery_id), 1)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn memory_backend_restart_and_finality_contract() {
+    let state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    production_backend_restart_and_finality_contract(state.clone(), state).await;
+}
+
+#[tokio::test]
+#[ignore = "requires ACTEON_GOVERNANCE_REDIS_URL; independent Redis clients"]
+async fn redis_backend_restart_and_finality_contract() {
+    use acteon_state_redis::{RedisConfig, RedisStateStore};
+    let config = RedisConfig {
+        url: std::env::var("ACTEON_GOVERNANCE_REDIS_URL").unwrap(),
+        prefix: format!("federation-finality-{}", uuid::Uuid::new_v4()),
+        ..Default::default()
+    };
+    production_backend_restart_and_finality_contract(
+        Arc::new(RedisStateStore::new(&config).unwrap()),
+        Arc::new(RedisStateStore::new(&config).unwrap()),
+    )
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL; independent PostgreSQL clients"]
+async fn postgres_backend_restart_and_finality_contract() {
+    use acteon_state_postgres::{PostgresConfig, PostgresStateStore};
+    let config = PostgresConfig {
+        url: std::env::var("DATABASE_URL").expect("PostgreSQL URL required"),
+        table_prefix: format!("federation_finality_{}_", uuid::Uuid::new_v4().simple()),
+        ..Default::default()
+    };
+    production_backend_restart_and_finality_contract(
+        Arc::new(PostgresStateStore::new(config.clone()).await.unwrap()),
+        Arc::new(PostgresStateStore::new(config.clone()).await.unwrap()),
+    )
+    .await;
+    let pool = sqlx::PgPool::connect(&config.url).await.unwrap();
+    for suffix in ["state", "locks", "timeout_index", "chain_ready_index"] {
+        sqlx::query(&format!(
+            "DROP TABLE public.{}{suffix}",
+            config.table_prefix
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    pool.close().await;
+}
+
+#[cfg(feature = "dynamodb")]
+#[tokio::test]
+#[ignore = "requires DYNAMODB_ENDPOINT; independent DynamoDB Local clients"]
+async fn dynamodb_backend_restart_and_finality_contract() {
+    use acteon_state_dynamodb::{DynamoConfig, DynamoStateStore, build_client, create_table};
+    let config = DynamoConfig {
+        endpoint_url: Some(
+            std::env::var("DYNAMODB_ENDPOINT").expect("DynamoDB Local endpoint required"),
+        ),
+        table_name: format!("federation_finality_{}", uuid::Uuid::new_v4().simple()),
+        key_prefix: format!("federation-finality-{}", uuid::Uuid::new_v4()),
+        ..Default::default()
+    };
+    let client = build_client(&config).await;
+    create_table(&client, &config.table_name).await.unwrap();
+    production_backend_restart_and_finality_contract(
+        Arc::new(DynamoStateStore::new(&config).await.unwrap()),
+        Arc::new(DynamoStateStore::new(&config).await.unwrap()),
+    )
+    .await;
+    client
+        .delete_table()
+        .table_name(&config.table_name)
+        .send()
+        .await
+        .unwrap();
 }

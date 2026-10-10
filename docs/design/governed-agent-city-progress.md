@@ -2170,11 +2170,15 @@ safely resume at invocation; terminal proof replay reverifies the original
 evidence and repairs a lost settlement acknowledgement without peer traffic.
 Rust, Python, TypeScript, Go and Java expose the typed operations.
 
-Production-backend page and peer-finality qualification, credential exchange,
-and two-server qualification across Redis, PostgreSQL and DynamoDB remain
-required for the federation release gate.
+The integration matrix now runs one federation-specific contract through
+independent Redis, PostgreSQL and DynamoDB clients. It persists an invocation
+with a lost response, crosses a simulated process boundary, accepts exact
+qualified peer finality, pages sanitized evidence through the generic state
+API, and proves a restarted transport performs zero additional imports or
+invocations. Two-server HTTP qualification and conformance against a named
+external A2A implementation remain required for the federation release gate.
 
-### Signed federation capability negotiation (working tree)
+### Signed federation capability negotiation
 
 Federation capability negotiation now has a schema-closed governance contract.
 A host-only Ed25519 signer produces a short-lived card for one destination
@@ -2192,6 +2196,14 @@ authentication and signs the current service binding on demand. The outbound
 HTTP adapter fetches and verifies the card before import. A separate read-only
 claim makes discovery outage ordinarily retryable without creating remote
 effect ambiguity, and the delivery journal retains sanitized card digest,
-key/epoch, expiry, protocol and authentication evidence before import. Managers
-see that evidence through every SDK. Credential-broker handoff and rotation
-remain the next federation increment.
+key/epoch, expiry, protocol, authentication scheme and credential-provider
+revision before import. Managers see that sanitized evidence through every SDK.
+
+Outbound profiles may retain a static bearer secret or install a qualified
+OAuth 2 client-credentials exchange. The broker pins its endpoint, client ID,
+audience, canonical scopes, outbound network policy, timeout, refresh skew and
+revision into the immutable export epoch. It validates bounded Bearer tokens,
+coalesces refreshes, holds tokens only in zeroized process memory, and returns a
+proven-not-sent disposition when acquisition fails before an effect request.
+The credential timeout must finish before the durable transport claim timeout,
+so acquisition failure does not manufacture remote-effect ambiguity.
