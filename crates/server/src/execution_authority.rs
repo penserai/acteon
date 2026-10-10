@@ -2,8 +2,10 @@
 //! Preparation is read-only; publication is a later, explicitly ordered stage.
 pub mod agent_services;
 pub mod authorization_http;
+mod federation_http;
 mod peer_http;
 mod runtime;
+pub use federation_http::ActeonFederationHttpAdapter;
 pub use peer_http::ActeonPeerHttpAdapter;
 pub use runtime::{
     AgentPeerAuthorizationInvocation, AgentPeerAuthorizationRequest, AgentPeerCancelInvocation,

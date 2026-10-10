@@ -166,6 +166,13 @@ impl SignedFederationEnvelope {
         serde_json::from_str(&self.payload)
             .map_err(|_| CoordinationError::Invalid("federation payload".into()))
     }
+
+    /// Stable reference digest over the exact signed envelope bytes. This is
+    /// correlation data, not authority; receivers still verify the signature
+    /// and current local trust before importing it.
+    pub fn digest(&self) -> Result<String, CoordinationError> {
+        signed_digest(self, "federation envelope")
+    }
 }
 
 /// One signed foreign request to spend an admitted import on an exact A2A
@@ -512,7 +519,7 @@ fn validate_invocation_shape(invocation: &FederationInvocation) -> Result<(), Co
 }
 
 fn envelope_digest(signed: &SignedFederationEnvelope) -> Result<String, CoordinationError> {
-    signed_digest(signed, "federation envelope")
+    signed.digest()
 }
 
 fn signed_digest<T: Serialize>(signed: &T, label: &str) -> Result<String, CoordinationError> {

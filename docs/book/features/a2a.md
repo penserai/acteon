@@ -129,6 +129,38 @@ after a source restart returns the durable receipt without appending the answer
 twice. Changed content conflicts, and ambiguous delivery is never retried
 automatically. This two-server contract runs against both Redis and PostgreSQL.
 
+### Cross-domain federation building blocks
+
+Acteon's federation boundary adds two protected routes for independently
+administered Acteon domains:
+
+```text
+POST /a2a/{ns}/{tenant}/federation/envelopes:import
+POST /a2a/{ns}/{tenant}/federation/agents/{agent}/v1/message:send
+```
+
+The first route authenticates a configured foreign peer, verifies its
+audience-bound signed envelope against a current local trust revision, and
+creates a bounded local authority root without starting a task or effect. The
+second accepts an exact signed invocation, requires its embedded message to
+match the request body, and invokes only the qualified local agent binding under
+the imported ceiling. Concurrent exact replay converges on the retained task;
+changed signed input conflicts.
+
+The matching outbound transport is a host building block. It journals the exact
+signed envelope and invocation in the configured state backend before calling
+either route, checkpoints import separately from invocation, and persists only
+validated receipts and tasks. A missing or malformed response is `uncertain`
+and a normal repeat does not resend it. Explicit recovery is limited to a
+transport binding qualified for exact idempotent replay. Credentials and
+network policy stay in the guarded host adapter and never enter durable delivery
+state.
+
+The current public surface is intended for reviewed host integration. Automatic
+export signing from live local permits, deployment-managed remote bindings,
+operator reconciliation, key and credential rotation, and external peer
+conformance remain release gates for turnkey cross-domain federation.
+
 ### Discovery (unauthenticated)
 
 ```text

@@ -2038,3 +2038,32 @@ This remains an incomplete federation release. Outbound delivery, credential
 exchange, capability negotiation, remote card and key rotation,
 partition/reconciliation operations, operational expiry views and named
 external-implementation conformance remain Phase 5 gates.
+
+### Durable outbound federation delivery (in progress, unpublished)
+
+The executor now has a backend-neutral outbound federation journal over the
+configured `StateStore`. It persists the exact parent, remote origin, signed
+envelope, signed invocation, and typed message before networking. Import and
+invocation use separate compare-and-swap claims and checkpoints. A lost or
+malformed response stays uncertain, a normal repeat never resends it, and an
+explicit replay can reclaim it only through an adapter qualified for exact
+idempotent replay. Signed validity and claim timeouts use the shared Acteon
+clock; terminal evidence remains observable after expiry.
+
+The first concrete adapter uses the guarded outbound client, one host-owned
+credential, disabled redirects and proxies, bounded response reads, and exact
+Acteon federation routes derived from the signed remote scope. Credentials do
+not enter durable state. Import receipts and returned tasks are correlated to
+the full signed intent before their acceptance is persisted. See
+[Durable outbound federation transport](durable-federation-transport.md).
+
+Focused memory contracts cover concurrent ownership, crash-visible claims,
+import and invocation ambiguity, qualified recovery, expiry, exact replay,
+message substitution, and retained-state tampering. The adapter route contract
+compiles locally; its loopback execution requires a socket-enabled test
+environment.
+
+This is transport infrastructure rather than a public autonomous export path.
+Export policy/signing from current local authority, host configuration, runtime
+installation, operator reconciliation, capability and credential rotation, and
+two-server production-backend qualification remain open.

@@ -1,0 +1,869 @@
+//! Durable outbound delivery for the Acteon federation protocol.
+//!
+//! The journal retains exact signed envelope and invocation bytes before any
+//! network call. Import and invocation have separate checkpoints, so a crash
+//! after a known import can continue without importing again. Ambiguous calls
+//! stay explicit and are replayed only through an adapter that qualifies exact
+//! requests as idempotent.
+
+use std::{sync::Arc, time::Duration};
+
+use acteon_core::{ExecutionContextReference, FederationImportReceipt, Task, TaskMessage};
+use acteon_crypto::PayloadEncryptor;
+use acteon_governance::federation::{SignedFederationEnvelope, SignedFederationInvocation};
+use acteon_state::{CasResult, KeyKind, StateKey, StateStore};
+use acteon_time::Clock;
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+pub const FEDERATION_DELIVERY_KIND: &str = "federation_outbound_delivery";
+const DELIVERY_SCHEMA: u32 = 1;
+const MAX_RECORD_BYTES: usize = 2 * 1024 * 1024;
+const MAX_ENDPOINT_BYTES: usize = 2_048;
+const MAX_CODE_BYTES: usize = 1_024;
+const MAX_SIGNED_PAYLOAD_BYTES: usize = 65_536;
+
+#[derive(Debug, Clone)]
+pub enum FederationImportDisposition {
+    Accepted(Box<FederationImportReceipt>),
+    Rejected { code: String },
+    Uncertain,
+}
+
+#[derive(Debug, Clone)]
+pub enum FederationInvokeDisposition {
+    Accepted(Box<Task>),
+    Rejected { code: String },
+    Uncertain,
+}
+
+pub struct FederationImportRequest<'a> {
+    pub endpoint: &'a str,
+    pub envelope: &'a SignedFederationEnvelope,
+}
+
+pub struct FederationInvokeRequest<'a> {
+    pub endpoint: &'a str,
+    pub namespace: &'a str,
+    pub tenant: &'a str,
+    pub agent_id: &'a str,
+    pub invocation: &'a SignedFederationInvocation,
+    pub message: &'a TaskMessage,
+}
+
+/// Host-installed adapter. Credentials, endpoint policy and protocol
+/// qualification stay inside the adapter and never enter the durable record.
+#[async_trait]
+pub trait FederationTransportAdapter: Send + Sync {
+    fn revision(&self) -> &str;
+    fn binding_digest(&self) -> &str;
+    /// True only when the exact signed import and invocation can be resent and
+    /// the remote implementation returns the original acceptance.
+    fn exact_replay_idempotent(&self) -> bool;
+
+    async fn import(
+        &self,
+        request: FederationImportRequest<'_>,
+    ) -> Result<FederationImportDisposition, FederationTransportError>;
+
+    async fn invoke(
+        &self,
+        request: FederationInvokeRequest<'_>,
+    ) -> Result<FederationInvokeDisposition, FederationTransportError>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FederationDeliveryStage {
+    Import,
+    Invoke,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum FederationDeliveryStatus {
+    Registered,
+    ImportUncertain,
+    Imported {
+        receipt: Box<FederationImportReceipt>,
+    },
+    InvokeUncertain {
+        receipt: Box<FederationImportReceipt>,
+    },
+    Accepted {
+        receipt: Box<FederationImportReceipt>,
+        task: Box<Task>,
+    },
+    Rejected {
+        stage: FederationDeliveryStage,
+        code: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationDeliveryReceipt {
+    pub delivery_id: Uuid,
+    pub status: FederationDeliveryStatus,
+}
+
+/// Exact trusted-host delivery input. The parent is correlation and local
+/// lineage, not a bearer token. Callers must re-establish current source
+/// authority before every `submit` or `replay_idempotent` call.
+#[derive(Clone, Copy)]
+pub struct FederationDeliveryIntent<'a> {
+    pub parent: &'a ExecutionContextReference,
+    pub endpoint: &'a str,
+    pub agent_id: &'a str,
+    pub envelope: &'a SignedFederationEnvelope,
+    pub invocation: &'a SignedFederationInvocation,
+    pub message: &'a TaskMessage,
+}
+
+pub struct FederationTransportDependencies {
+    pub state: Arc<dyn StateStore>,
+    pub clock: Arc<dyn Clock>,
+    pub encryptor: Option<Arc<PayloadEncryptor>>,
+}
+
+pub struct DurableFederationTransport {
+    dependencies: FederationTransportDependencies,
+    adapter: Arc<dyn FederationTransportAdapter>,
+    timeout: Duration,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum FederationTransportError {
+    #[error("invalid outbound federation delivery")]
+    Invalid,
+    #[error("outbound federation delivery conflicts with durable intent")]
+    Conflict,
+    #[error("outbound federation delivery is not authorized for replay")]
+    Refused,
+    #[error("outbound federation delivery storage or adapter unavailable")]
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+enum DeliveryState {
+    Registered,
+    Importing {
+        claim_id: Uuid,
+        claim_expires_at_ms: i64,
+    },
+    ImportUncertain,
+    Imported {
+        receipt: Box<FederationImportReceipt>,
+    },
+    Invoking {
+        receipt: Box<FederationImportReceipt>,
+        claim_id: Uuid,
+        claim_expires_at_ms: i64,
+    },
+    InvokeUncertain {
+        receipt: Box<FederationImportReceipt>,
+    },
+    Accepted {
+        receipt: Box<FederationImportReceipt>,
+        task: Box<Task>,
+    },
+    Rejected {
+        stage: FederationDeliveryStage,
+        code: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeliveryRecord {
+    schema: u32,
+    delivery_id: Uuid,
+    adapter_revision: String,
+    binding_digest: String,
+    exact_replay_idempotent: bool,
+    parent: ExecutionContextReference,
+    endpoint: String,
+    agent_id: String,
+    envelope: SignedFederationEnvelope,
+    invocation: SignedFederationInvocation,
+    message: TaskMessage,
+    created_at_ms: i64,
+    state: DeliveryState,
+}
+
+impl DurableFederationTransport {
+    pub fn new_trusted(
+        dependencies: FederationTransportDependencies,
+        adapter: Arc<dyn FederationTransportAdapter>,
+        timeout: Duration,
+    ) -> Result<Self, FederationTransportError> {
+        if timeout.is_zero()
+            || !valid_text(adapter.revision(), 120)
+            || !valid_digest(adapter.binding_digest())
+        {
+            return Err(FederationTransportError::Invalid);
+        }
+        Ok(Self {
+            dependencies,
+            adapter,
+            timeout,
+        })
+    }
+
+    /// Persist exact signed bytes before importing or invoking. Repeated calls
+    /// never resend an ambiguous stage. A known import may safely advance to
+    /// invocation because the invocation has not yet been delivered.
+    pub async fn submit(
+        &self,
+        intent: FederationDeliveryIntent<'_>,
+    ) -> Result<FederationDeliveryReceipt, FederationTransportError> {
+        let expected = self.prepare(intent)?;
+        let key = Self::key(&expected);
+        self.dependencies
+            .state
+            .check_and_set(&key, &self.encode(&expected)?, None)
+            .await
+            .map_err(|_| FederationTransportError::Unavailable)?;
+        for _ in 0..3 {
+            let receipt = self.advance(&key, &expected, false).await?;
+            if !matches!(receipt.status, FederationDeliveryStatus::Imported { .. }) {
+                return Ok(receipt);
+            }
+        }
+        Err(FederationTransportError::Unavailable)
+    }
+
+    /// Inspect the exact durable intent without issuing network traffic.
+    pub async fn observe(
+        &self,
+        intent: FederationDeliveryIntent<'_>,
+    ) -> Result<FederationDeliveryReceipt, FederationTransportError> {
+        let expected = self.prepare(intent)?;
+        self.observe_record(&Self::key(&expected), &expected).await
+    }
+
+    /// Recover an ambiguous or expired claimed stage only for an adapter whose
+    /// exact protocol binding is qualified as replay-idempotent.
+    pub async fn replay_idempotent(
+        &self,
+        intent: FederationDeliveryIntent<'_>,
+    ) -> Result<FederationDeliveryReceipt, FederationTransportError> {
+        if !self.adapter.exact_replay_idempotent() {
+            return Err(FederationTransportError::Refused);
+        }
+        let expected = self.prepare(intent)?;
+        let key = Self::key(&expected);
+        if self
+            .dependencies
+            .state
+            .get(&key)
+            .await
+            .map_err(|_| FederationTransportError::Unavailable)?
+            .is_none()
+        {
+            return Err(FederationTransportError::Conflict);
+        }
+        for _ in 0..3 {
+            let receipt = self.advance(&key, &expected, true).await?;
+            if !matches!(receipt.status, FederationDeliveryStatus::Imported { .. }) {
+                return Ok(receipt);
+            }
+        }
+        Err(FederationTransportError::Unavailable)
+    }
+
+    async fn advance(
+        &self,
+        key: &StateKey,
+        expected: &DeliveryRecord,
+        replay: bool,
+    ) -> Result<FederationDeliveryReceipt, FederationTransportError> {
+        let (record, version) = self
+            .load_versioned(key)
+            .await?
+            .ok_or(FederationTransportError::Unavailable)?;
+        self.same_intent(&record, expected)?;
+        match &record.state {
+            DeliveryState::Registered => self.claim_import(key, record, version).await,
+            DeliveryState::Imported { .. } => self.claim_invoke(key, record, version).await,
+            DeliveryState::ImportUncertain if replay => {
+                self.claim_import(key, record, version).await
+            }
+            DeliveryState::InvokeUncertain { .. } if replay => {
+                self.claim_invoke(key, record, version).await
+            }
+            DeliveryState::Importing {
+                claim_expires_at_ms,
+                ..
+            } if replay && self.claim_expired(*claim_expires_at_ms) => {
+                self.claim_import(key, record, version).await
+            }
+            DeliveryState::Invoking {
+                claim_expires_at_ms,
+                ..
+            } if replay && self.claim_expired(*claim_expires_at_ms) => {
+                self.claim_invoke(key, record, version).await
+            }
+            _ => Ok(Self::receipt(&record)),
+        }
+    }
+
+    async fn claim_import(
+        &self,
+        key: &StateKey,
+        current: DeliveryRecord,
+        version: u64,
+    ) -> Result<FederationDeliveryReceipt, FederationTransportError> {
+        let now_ms = self.now_ms()?;
+        let envelope = current
+            .envelope
+            .envelope()
+            .map_err(|_| FederationTransportError::Conflict)?;
+        if now_ms < envelope.issued_at_ms {
+            return Err(FederationTransportError::Refused);
+        }
+        if now_ms >= envelope.expires_at_ms {
+            return if matches!(&current.state, DeliveryState::Registered) {
+                self.reject_without_delivery(
+                    key,
+                    current,
+                    version,
+                    FederationDeliveryStage::Import,
+                    "signed_request_expired",
+                )
+                .await
+            } else {
+                Err(FederationTransportError::Refused)
+            };
+        }
+        let mut claimed = current.clone();
+        claimed.state = DeliveryState::Importing {
+            claim_id: Uuid::new_v4(),
+            claim_expires_at_ms: self.claim_deadline(now_ms),
+        };
+        if !matches!(
+            self.dependencies
+                .state
+                .compare_and_swap(key, version, &self.encode(&claimed)?, None)
+                .await
+                .map_err(|_| FederationTransportError::Unavailable)?,
+            CasResult::Ok
+        ) {
+            return self.observe_record(key, &current).await;
+        }
+        let disposition = acteon_time::timeout(
+            self.dependencies.clock.as_ref(),
+            self.timeout,
+            self.adapter.import(FederationImportRequest {
+                endpoint: &claimed.endpoint,
+                envelope: &claimed.envelope,
+            }),
+        )
+        .await;
+        let state = match disposition {
+            Ok(Ok(FederationImportDisposition::Accepted(receipt)))
+                if receipt_matches(&claimed, &receipt) =>
+            {
+                DeliveryState::Imported { receipt }
+            }
+            Ok(Ok(FederationImportDisposition::Rejected { code })) if valid_code(&code) => {
+                DeliveryState::Rejected {
+                    stage: FederationDeliveryStage::Import,
+                    code,
+                }
+            }
+            _ => DeliveryState::ImportUncertain,
+        };
+        self.settle(key, &current, claimed, version + 1, state)
+            .await
+    }
+
+    async fn claim_invoke(
+        &self,
+        key: &StateKey,
+        current: DeliveryRecord,
+        version: u64,
+    ) -> Result<FederationDeliveryReceipt, FederationTransportError> {
+        let receipt = match &current.state {
+            DeliveryState::Imported { receipt }
+            | DeliveryState::InvokeUncertain { receipt }
+            | DeliveryState::Invoking { receipt, .. } => receipt.clone(),
+            _ => return Err(FederationTransportError::Conflict),
+        };
+        let now_ms = self.now_ms()?;
+        let invocation = current
+            .invocation
+            .invocation()
+            .map_err(|_| FederationTransportError::Conflict)?;
+        let envelope = current
+            .envelope
+            .envelope()
+            .map_err(|_| FederationTransportError::Conflict)?;
+        if now_ms < invocation.issued_at_ms {
+            return Err(FederationTransportError::Refused);
+        }
+        if now_ms >= invocation.expires_at_ms {
+            return if matches!(&current.state, DeliveryState::Imported { .. }) {
+                self.reject_without_delivery(
+                    key,
+                    current,
+                    version,
+                    FederationDeliveryStage::Invoke,
+                    "signed_request_expired",
+                )
+                .await
+            } else {
+                Err(FederationTransportError::Refused)
+            };
+        }
+        let mut claimed = current.clone();
+        claimed.state = DeliveryState::Invoking {
+            receipt: receipt.clone(),
+            claim_id: Uuid::new_v4(),
+            claim_expires_at_ms: self.claim_deadline(now_ms),
+        };
+        if !matches!(
+            self.dependencies
+                .state
+                .compare_and_swap(key, version, &self.encode(&claimed)?, None)
+                .await
+                .map_err(|_| FederationTransportError::Unavailable)?,
+            CasResult::Ok
+        ) {
+            return self.observe_record(key, &current).await;
+        }
+        let disposition = acteon_time::timeout(
+            self.dependencies.clock.as_ref(),
+            self.timeout,
+            self.adapter.invoke(FederationInvokeRequest {
+                endpoint: &claimed.endpoint,
+                namespace: envelope.agent_resource.namespace(),
+                tenant: envelope.agent_resource.tenant(),
+                agent_id: &claimed.agent_id,
+                invocation: &claimed.invocation,
+                message: &claimed.message,
+            }),
+        )
+        .await;
+        let state = match disposition {
+            Ok(Ok(FederationInvokeDisposition::Accepted(task)))
+                if task_matches(&claimed, &task) =>
+            {
+                DeliveryState::Accepted { receipt, task }
+            }
+            Ok(Ok(FederationInvokeDisposition::Rejected { code })) if valid_code(&code) => {
+                DeliveryState::Rejected {
+                    stage: FederationDeliveryStage::Invoke,
+                    code,
+                }
+            }
+            _ => DeliveryState::InvokeUncertain { receipt },
+        };
+        self.settle(key, &current, claimed, version + 1, state)
+            .await
+    }
+
+    async fn settle(
+        &self,
+        key: &StateKey,
+        expected: &DeliveryRecord,
+        mut claimed: DeliveryRecord,
+        claimed_version: u64,
+        state: DeliveryState,
+    ) -> Result<FederationDeliveryReceipt, FederationTransportError> {
+        claimed.state = state;
+        match self
+            .dependencies
+            .state
+            .compare_and_swap(key, claimed_version, &self.encode(&claimed)?, None)
+            .await
+            .map_err(|_| FederationTransportError::Unavailable)?
+        {
+            CasResult::Ok => Ok(Self::receipt(&claimed)),
+            CasResult::Conflict { .. } => self.observe_record(key, expected).await,
+        }
+    }
+
+    async fn reject_without_delivery(
+        &self,
+        key: &StateKey,
+        mut current: DeliveryRecord,
+        version: u64,
+        stage: FederationDeliveryStage,
+        code: &str,
+    ) -> Result<FederationDeliveryReceipt, FederationTransportError> {
+        current.state = DeliveryState::Rejected {
+            stage,
+            code: code.into(),
+        };
+        match self
+            .dependencies
+            .state
+            .compare_and_swap(key, version, &self.encode(&current)?, None)
+            .await
+            .map_err(|_| FederationTransportError::Unavailable)?
+        {
+            CasResult::Ok => Ok(Self::receipt(&current)),
+            CasResult::Conflict { .. } => self.observe_record(key, &current).await,
+        }
+    }
+
+    fn prepare(
+        &self,
+        intent: FederationDeliveryIntent<'_>,
+    ) -> Result<DeliveryRecord, FederationTransportError> {
+        if !valid_endpoint(intent.endpoint)
+            || !valid_text(intent.agent_id, 120)
+            || intent.message.task_id.is_some()
+            || intent.message.validate().is_err()
+            || intent.envelope.payload.len() > MAX_SIGNED_PAYLOAD_BYTES
+            || intent.invocation.payload.len() > MAX_SIGNED_PAYLOAD_BYTES
+            || !valid_signature(&intent.envelope.signature)
+            || !valid_signature(&intent.invocation.signature)
+        {
+            return Err(FederationTransportError::Invalid);
+        }
+        let envelope = intent
+            .envelope
+            .envelope()
+            .map_err(|_| FederationTransportError::Invalid)?;
+        let invocation = intent
+            .invocation
+            .invocation()
+            .map_err(|_| FederationTransportError::Invalid)?;
+        let envelope_digest = intent
+            .envelope
+            .digest()
+            .map_err(|_| FederationTransportError::Invalid)?;
+        if invocation.import.id != envelope.id
+            || invocation.import.envelope_digest != envelope_digest
+            || envelope.agent_resource.id() != intent.agent_id
+            || intent.parent.principal() != &envelope.source
+            || !same_message(&invocation.message, intent.message)?
+        {
+            return Err(FederationTransportError::Conflict);
+        }
+        let created_at_ms = self.now_ms()?;
+        let delivery_id = delivery_id(intent.parent, intent.invocation)?;
+        Ok(DeliveryRecord {
+            schema: DELIVERY_SCHEMA,
+            delivery_id,
+            adapter_revision: self.adapter.revision().into(),
+            binding_digest: self.adapter.binding_digest().into(),
+            exact_replay_idempotent: self.adapter.exact_replay_idempotent(),
+            parent: intent.parent.clone(),
+            endpoint: intent.endpoint.into(),
+            agent_id: intent.agent_id.into(),
+            envelope: intent.envelope.clone(),
+            invocation: intent.invocation.clone(),
+            message: intent.message.clone(),
+            created_at_ms,
+            state: DeliveryState::Registered,
+        })
+    }
+
+    async fn observe_record(
+        &self,
+        key: &StateKey,
+        expected: &DeliveryRecord,
+    ) -> Result<FederationDeliveryReceipt, FederationTransportError> {
+        let (record, _) = self
+            .load_versioned(key)
+            .await?
+            .ok_or(FederationTransportError::Conflict)?;
+        self.same_intent(&record, expected)?;
+        Ok(Self::receipt(&record))
+    }
+
+    fn same_intent(
+        &self,
+        actual: &DeliveryRecord,
+        expected: &DeliveryRecord,
+    ) -> Result<(), FederationTransportError> {
+        if !self.valid_record(actual) || !self.valid_record(expected) {
+            return Err(FederationTransportError::Conflict);
+        }
+        if actual.delivery_id != expected.delivery_id
+            || actual.adapter_revision != expected.adapter_revision
+            || actual.binding_digest != expected.binding_digest
+            || actual.exact_replay_idempotent != expected.exact_replay_idempotent
+            || actual.parent != expected.parent
+            || actual.endpoint != expected.endpoint
+            || actual.agent_id != expected.agent_id
+            || actual.envelope != expected.envelope
+            || actual.invocation != expected.invocation
+            || !same_message(&actual.message, &expected.message)?
+        {
+            return Err(FederationTransportError::Conflict);
+        }
+        Ok(())
+    }
+
+    fn valid_record(&self, record: &DeliveryRecord) -> bool {
+        if record.schema != DELIVERY_SCHEMA
+            || record.adapter_revision != self.adapter.revision()
+            || record.binding_digest != self.adapter.binding_digest()
+            || record.exact_replay_idempotent != self.adapter.exact_replay_idempotent()
+            || !valid_text(&record.adapter_revision, 120)
+            || !valid_digest(&record.binding_digest)
+            || !valid_endpoint(&record.endpoint)
+            || !valid_text(&record.agent_id, 120)
+            || record.created_at_ms < 0
+            || record.message.task_id.is_some()
+            || record.message.validate().is_err()
+            || record.envelope.payload.len() > MAX_SIGNED_PAYLOAD_BYTES
+            || record.invocation.payload.len() > MAX_SIGNED_PAYLOAD_BYTES
+            || !valid_signature(&record.envelope.signature)
+            || !valid_signature(&record.invocation.signature)
+            || delivery_id(&record.parent, &record.invocation).ok() != Some(record.delivery_id)
+        {
+            return false;
+        }
+        let Ok(envelope) = record.envelope.envelope() else {
+            return false;
+        };
+        let Ok(invocation) = record.invocation.invocation() else {
+            return false;
+        };
+        if invocation.import.id != envelope.id
+            || record.envelope.digest().ok().as_deref()
+                != Some(invocation.import.envelope_digest.as_str())
+            || envelope.agent_resource.id() != record.agent_id
+            || record.parent.principal() != &envelope.source
+            || same_message(&invocation.message, &record.message).ok() != Some(true)
+        {
+            return false;
+        }
+        match &record.state {
+            DeliveryState::Registered | DeliveryState::ImportUncertain => true,
+            DeliveryState::Importing {
+                claim_expires_at_ms,
+                ..
+            } => *claim_expires_at_ms >= record.created_at_ms,
+            DeliveryState::Imported { receipt } | DeliveryState::InvokeUncertain { receipt } => {
+                receipt_matches(record, receipt)
+            }
+            DeliveryState::Invoking {
+                receipt,
+                claim_expires_at_ms,
+                ..
+            } => receipt_matches(record, receipt) && *claim_expires_at_ms >= record.created_at_ms,
+            DeliveryState::Accepted { receipt, task } => {
+                receipt_matches(record, receipt) && task_matches(record, task)
+            }
+            DeliveryState::Rejected { code, .. } => valid_code(code),
+        }
+    }
+
+    fn receipt(record: &DeliveryRecord) -> FederationDeliveryReceipt {
+        let status = match &record.state {
+            DeliveryState::Registered => FederationDeliveryStatus::Registered,
+            DeliveryState::Importing { .. } | DeliveryState::ImportUncertain => {
+                FederationDeliveryStatus::ImportUncertain
+            }
+            DeliveryState::Imported { receipt } => FederationDeliveryStatus::Imported {
+                receipt: receipt.clone(),
+            },
+            DeliveryState::Invoking { receipt, .. }
+            | DeliveryState::InvokeUncertain { receipt } => {
+                FederationDeliveryStatus::InvokeUncertain {
+                    receipt: receipt.clone(),
+                }
+            }
+            DeliveryState::Accepted { receipt, task } => FederationDeliveryStatus::Accepted {
+                receipt: receipt.clone(),
+                task: task.clone(),
+            },
+            DeliveryState::Rejected { stage, code } => FederationDeliveryStatus::Rejected {
+                stage: *stage,
+                code: code.clone(),
+            },
+        };
+        FederationDeliveryReceipt {
+            delivery_id: record.delivery_id,
+            status,
+        }
+    }
+
+    fn key(record: &DeliveryRecord) -> StateKey {
+        StateKey::new(
+            record.parent.namespace(),
+            record.parent.tenant(),
+            KeyKind::Custom(FEDERATION_DELIVERY_KIND.into()),
+            record.delivery_id.to_string(),
+        )
+    }
+
+    fn now_ms(&self) -> Result<i64, FederationTransportError> {
+        let now_ms = self.dependencies.clock.now().timestamp_millis();
+        if now_ms < 0 {
+            return Err(FederationTransportError::Invalid);
+        }
+        Ok(now_ms)
+    }
+
+    fn claim_deadline(&self, now_ms: i64) -> i64 {
+        i64::try_from(self.timeout.as_millis())
+            .ok()
+            .and_then(|timeout| now_ms.checked_add(timeout))
+            .unwrap_or(i64::MAX)
+    }
+
+    fn claim_expired(&self, deadline_ms: i64) -> bool {
+        self.dependencies.clock.now().timestamp_millis() >= deadline_ms
+    }
+
+    fn encode(&self, record: &DeliveryRecord) -> Result<String, FederationTransportError> {
+        let raw = serde_json::to_string(record).map_err(|_| FederationTransportError::Invalid)?;
+        if raw.len() > MAX_RECORD_BYTES {
+            return Err(FederationTransportError::Invalid);
+        }
+        self.dependencies
+            .encryptor
+            .as_ref()
+            .map_or(Ok(raw.clone()), |encryptor| {
+                encryptor
+                    .encrypt_str(&raw)
+                    .map_err(|_| FederationTransportError::Unavailable)
+            })
+    }
+
+    fn decode(&self, raw: &str) -> Result<DeliveryRecord, FederationTransportError> {
+        if raw.len() > MAX_RECORD_BYTES * 2 {
+            return Err(FederationTransportError::Conflict);
+        }
+        let plain = self.dependencies.encryptor.as_ref().map_or_else(
+            || Ok(raw.to_owned()),
+            |encryptor| {
+                encryptor
+                    .decrypt_str(raw)
+                    .map_err(|_| FederationTransportError::Unavailable)
+            },
+        )?;
+        if plain.len() > MAX_RECORD_BYTES {
+            return Err(FederationTransportError::Conflict);
+        }
+        let record =
+            serde_json::from_str(&plain).map_err(|_| FederationTransportError::Conflict)?;
+        if !self.valid_record(&record) {
+            return Err(FederationTransportError::Conflict);
+        }
+        Ok(record)
+    }
+
+    async fn load_versioned(
+        &self,
+        key: &StateKey,
+    ) -> Result<Option<(DeliveryRecord, u64)>, FederationTransportError> {
+        self.dependencies
+            .state
+            .get_versioned(key)
+            .await
+            .map_err(|_| FederationTransportError::Unavailable)?
+            .map(|(raw, version)| self.decode(&raw).map(|record| (record, version)))
+            .transpose()
+    }
+}
+
+fn delivery_id(
+    parent: &ExecutionContextReference,
+    invocation: &SignedFederationInvocation,
+) -> Result<Uuid, FederationTransportError> {
+    let digest = invocation
+        .digest()
+        .map_err(|_| FederationTransportError::Invalid)?;
+    Ok(Uuid::new_v5(
+        &parent.execution_id(),
+        format!("acteon.federation-delivery.v1\0{digest}").as_bytes(),
+    ))
+}
+
+fn receipt_matches(record: &DeliveryRecord, receipt: &FederationImportReceipt) -> bool {
+    let Ok(envelope) = record.envelope.envelope() else {
+        return false;
+    };
+    receipt.namespace == envelope.agent_resource.namespace()
+        && receipt.tenant == envelope.agent_resource.tenant()
+        && receipt.import_id == envelope.id
+        && record.envelope.digest().ok().as_deref() == Some(receipt.envelope_digest.as_str())
+        && receipt.trust_id == envelope.trust_id
+        && receipt.trust_revision == envelope.trust_revision
+        && receipt.issuer_domain == envelope.issuer_domain
+        && receipt.source == envelope.source
+        && receipt.target == envelope.target
+        && receipt.agent_resource == envelope.agent_resource
+        && receipt.binding_digest == envelope.binding_digest
+        && receipt.skill == envelope.skill
+        && receipt.expires_at_ms == envelope.expires_at_ms
+        && receipt.accepted_at_ms >= 0
+        && receipt.accepted_at_ms < receipt.expires_at_ms
+        && !receipt.root_id.is_empty()
+        && !receipt.execution_started
+}
+
+fn task_matches(record: &DeliveryRecord, task: &Task) -> bool {
+    let Ok(envelope) = record.envelope.envelope() else {
+        return false;
+    };
+    if task.validate().is_err()
+        || task.namespace != envelope.agent_resource.namespace()
+        || task.tenant != envelope.agent_resource.tenant()
+        || task.history.is_empty()
+    {
+        return false;
+    }
+    let mut initial = task.history[0].clone();
+    initial.task_id = None;
+    same_message(&initial, &record.message).ok() == Some(true)
+}
+
+fn same_message(left: &TaskMessage, right: &TaskMessage) -> Result<bool, FederationTransportError> {
+    Ok(
+        serde_json::to_value(left).map_err(|_| FederationTransportError::Invalid)?
+            == serde_json::to_value(right).map_err(|_| FederationTransportError::Invalid)?,
+    )
+}
+
+fn valid_text(value: &str, max: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= max
+        && value.trim() == value
+        && value != "*"
+        && !value.chars().any(char::is_control)
+}
+
+fn valid_code(value: &str) -> bool {
+    valid_text(value, MAX_CODE_BYTES)
+}
+
+fn valid_digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn valid_signature(value: &str) -> bool {
+    value.len() == 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn valid_endpoint(value: &str) -> bool {
+    if value.len() > MAX_ENDPOINT_BYTES || value.trim() != value {
+        return false;
+    }
+    let Ok(url) = url::Url::parse(value) else {
+        return false;
+    };
+    matches!(url.scheme(), "http" | "https")
+        && !url.cannot_be_a_base()
+        && url.host_str().is_some()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
+}
