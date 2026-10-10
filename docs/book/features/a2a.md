@@ -47,6 +47,8 @@ Content-Type: application/json
 | `ListTasks` | List visible Tasks with filters and cursor pagination. |
 | `CancelTask` | Cancel a non-terminal Task. |
 | `GetExtendedAgentCard` | Discovery card variant for authenticated callers. |
+| `SendStreamingMessage` | Start or continue a Task and receive official `StreamResponse` frames over SSE. |
+| `SubscribeToTask` | Receive an initial durable Task snapshot followed by live status and artifact updates. |
 | `CreateTaskPushNotificationConfig` | Register a governed Task webhook. |
 | `GetTaskPushNotificationConfig` | Read one Task webhook configuration. |
 | `ListTaskPushNotificationConfigs` | Page through a Task's webhook configurations. |
@@ -54,7 +56,8 @@ Content-Type: application/json
 
 Push configuration operations require an operator or administrator because
 their responses can contain webhook tokens or authentication credentials. The
-same control applies when `SendMessage` embeds a push configuration.
+same control applies when `SendMessage` or `SendStreamingMessage` embeds a
+push configuration.
 
 The lowercase slash-separated methods remain compatibility aliases for existing
 Acteon clients. New integrations should use the PascalCase v1 methods. A v1
@@ -73,6 +76,37 @@ required `pageSize`, `totalSize`, and `nextPageToken` fields.
 
 Batch arrays and notifications (requests with no `id`) follow the
 JSON-RPC 2.0 spec exactly.
+
+### Official A2A streaming
+
+When a published card enables `capabilities.streaming`, the JSON-RPC endpoint
+supports the v1 `SendStreamingMessage` and `SubscribeToTask` methods. The HTTP
+response is `text/event-stream`; every SSE `data` record is a complete JSON-RPC
+response carrying the original request id and one official `StreamResponse`
+payload:
+
+```text
+data: {"jsonrpc":"2.0","id":41,"result":{"task":{…}}}
+data: {"jsonrpc":"2.0","id":41,"result":{"statusUpdate":{…}}}
+data: {"jsonrpc":"2.0","id":41,"result":{"artifactUpdate":{…}}}
+```
+
+The initial Task snapshot closes the subscribe-before-read race. Ordered
+transition events then use ProtoJSON states. Both operations close at a terminal
+state. `SendStreamingMessage` also closes at an input or authorization pause so
+the caller can satisfy the interrupt; `SubscribeToTask` remains open through an
+interrupt and closes when the Task becomes terminal. Artifact frames carry the
+durable resolved artifact as a replacement (`append=false`), which lets a
+client recover safely even if it fell behind the broadcast buffer. A lagged
+consumer receives a fresh Task snapshot rather than a nonstandard warning
+frame. The stream shares Acteon's tenant connection quota and releases its slot
+on disconnect.
+
+`SubscribeToTask` rejects terminal Tasks with `UnsupportedOperation`; use
+`GetTask` for their final snapshot. A card that does not advertise streaming
+also returns `UnsupportedOperation`. Streaming calls must be single JSON-RPC
+requests with an `id`, because one SSE response cannot multiplex a JSON-RPC
+batch or notification.
 
 ### Acteon task and governed-peer REST routes
 
@@ -485,7 +519,8 @@ must use `Part::url` referencing an external store.
 
 ## SSE event subscription
 
-Subscribe to per-Task lifecycle events:
+Acteon's native event feed remains available for clients that want internal
+event envelopes instead of official A2A `StreamResponse` frames:
 
 ```text
 GET /a2a/{ns}/{tenant}/v1/tasks/{id}/events
@@ -510,6 +545,10 @@ for artifacts). The endpoint reuses the same `ConnectionRegistry` as
 an SSE disconnect, use the task `ETag`/`If-None-Match` contract to recover the
 complete durable snapshot. That cursor validates task state; it does not claim
 to replay every transient SSE envelope.
+
+Official `SubscribeToTask` uses the same live broadcast but always begins with
+the current durable Task snapshot, so reconnecting clients recover state before
+receiving new updates.
 
 ## Push notifications
 
@@ -618,6 +657,7 @@ mTLS publishes the scheme on its per-agent card.
 | Push bearer token | 4 KiB | `MAX_PUSH_TOKEN_BYTES` |
 | In-flight push deliveries | 64 concurrent | `MAX_INFLIGHT_DELIVERIES` |
 | Push config cache TTL | 500 ms | `CONFIG_CACHE_TTL` |
+| SSE connections | Server-configured per tenant | Shared `ConnectionRegistry` |
 
 ## Try it locally
 
@@ -734,7 +774,7 @@ reason and `a2a-protocol.org` domain in their `data` details array.
 - Design doc: `docs/design/a2a-protocol.md`
 - Task engine: `crates/gateway/src/task_engine.rs`
 - Protocol codec (JSON-RPC + REST): `crates/server/src/api/a2a.rs`
-- SSE consumer endpoint: `crates/server/src/api/a2a.rs::a2a_task_events`
+- Official JSON-RPC streaming and native SSE endpoint: `crates/server/src/api/a2a.rs`
 - Discovery: `crates/server/src/api/a2a_discovery.rs`
 - Push config CRUD: `crates/server/src/api/a2a_push.rs`
 - Push delivery worker: `crates/server/src/api/a2a_push_worker.rs`

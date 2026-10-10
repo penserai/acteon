@@ -607,7 +607,7 @@ name = "official-a2a-client"
 authority_id = "credential/official-a2a-client"
 principal = {{id="agent/controller",kind="agent"}}
 key_hash = {:?}
-role = "executor"
+role = "operator"
 [[api_keys.grants]]
 namespaces = ["prod"]
 tenants = ["acme"]
@@ -635,6 +635,7 @@ async fn publish_official_v1_card(redis_url: &str, prefix: &str, server_url: &st
         "1.0.0",
     );
     card.description = Some("A governed A2A task endpoint for conformance".into());
+    card.capabilities.streaming = true;
     card.capabilities.push_notifications = true;
     card.skills.push(Skill::new("inspect-city"));
     card.interfaces.push(AgentCardInterface {

@@ -20,6 +20,7 @@ from a2a.types import (
     Role,
     SendMessageConfiguration,
     SendMessageRequest,
+    SubscribeToTaskRequest,
     TaskPushNotificationConfig,
     TaskState,
 )
@@ -28,10 +29,11 @@ from a2a.types import (
 async def run(base_url: str, token: str) -> None:
     headers = {"Authorization": f"Bearer {token}"}
     async with httpx.AsyncClient(headers=headers, timeout=15.0) as http:
-        # Acteon's generic task endpoint is asynchronous. Polling mode makes
-        # the SDK set SendMessageConfiguration.returnImmediately, matching
-        # the server's durable acceptance response.
-        config = ClientConfig(streaming=False, polling=True, httpx_client=http)
+        # Exercise the official JSON-RPC streaming transport selected from the
+        # discovered Agent Card. The first frame is the durable Task snapshot;
+        # this harness closes after that frame because no worker is attached to
+        # advance the synthetic task autonomously.
+        config = ClientConfig(streaming=True, polling=False, httpx_client=http)
         client = await create_client(base_url, client_config=config)
         try:
             request = SendMessageRequest(
@@ -47,12 +49,20 @@ async def run(base_url: str, token: str) -> None:
                     ),
                 ),
             )
-            responses = [item async for item in client.send_message(request)]
-            assert len(responses) == 1
-            assert responses[0].HasField("task")
-            submitted = responses[0].task
+            response_stream = client.send_message(request)
+            first = await anext(response_stream)
+            await response_stream.aclose()
+            assert first.HasField("task")
+            submitted = first.task
             assert submitted.status.state == TaskState.TASK_STATE_SUBMITTED
             assert submitted.history[0].role == Role.ROLE_USER
+
+            subscription = client.subscribe(SubscribeToTaskRequest(id=submitted.id))
+            subscribed = await anext(subscription)
+            await subscription.aclose()
+            assert subscribed.HasField("task")
+            assert subscribed.task.id == submitted.id
+            assert subscribed.task.status.state == TaskState.TASK_STATE_SUBMITTED
 
             observed = await client.get_task(GetTaskRequest(id=submitted.id))
             assert observed.id == submitted.id
@@ -125,7 +135,8 @@ async def run(base_url: str, token: str) -> None:
             assert replayed.status.state == TaskState.TASK_STATE_CANCELED
             print(
                 "official a2a-sdk conformance: "
-                f"task={submitted.id} send/inline-push/get/list/push-crud/cancel/get passed"
+                f"task={submitted.id} stream/subscribe/inline-push/get/list/"
+                "push-crud/cancel/get passed"
             )
         finally:
             await client.close()

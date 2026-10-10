@@ -2196,14 +2196,12 @@ federation loss/restart proof. `SendMessage` now honors the v1 blocking default
 and returns early only when `configuration.returnImmediately` is true.
 `ListTasks` binds opaque cursors to its filters,
 supports the v1 time, status, context, history and artifact selectors, and keeps
-task ownership fields off the wire. The next known protocol blocker is
-streaming, and a full official TCK run remains a release gate. The four v1
+task ownership fields off the wire. The four v1
 push-notification methods now adapt the protocol's
 single authentication scheme to Acteon's durable push configuration, provide
 filter-safe pagination, bind inline `SendMessage` configurations to the trusted
 resulting task, and are exercised through the official client. The
-public card advertises push only when the durable card enables it and keeps
-streaming false until that adapter passes the external gate.
+public card advertises push only when the durable card enables it.
 Capability-gated calls now return the canonical A2A error codes with typed
 `google.rpc.ErrorInfo` details; undeclared push and extended-card features fail
 closed, and streaming calls return `UnsupportedOperation` while streaming is
@@ -2213,6 +2211,19 @@ Every push configuration operation, including secret-bearing reads and inline
 agent cannot install an exfiltration webhook or recover its credentials.
 HTTP+JSON is deliberately not advertised until its v1 wire adapter passes the
 same external gate.
+
+The official JSON-RPC streaming adapter now implements `SendStreamingMessage`
+and `SubscribeToTask` over SSE. Every frame retains the request ID and contains
+one schema-closed ProtoJSON `StreamResponse`; each stream starts with the
+durable Task snapshot and then maps ordered status and artifact events.
+Broadcast lag produces a fresh Task snapshot. Send streams close on an
+interrupt or terminal state, while subscriptions remain open through an
+interrupt and close at terminal state. Tenant-scoped connection quotas, current
+card capability checks, lifecycle suspension, tenant routing and inline-push
+management apply before streaming. Discovery advertises streaming only for a
+card that enables it. The official Python SDK integration now invokes both
+streaming methods before exercising task and push lifecycle operations. A full
+official TCK run remains the external release gate.
 
 ### Signed federation capability negotiation
 

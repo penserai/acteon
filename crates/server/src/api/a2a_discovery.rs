@@ -437,10 +437,7 @@ pub(crate) fn project_v1_card(card: &AgentCard) -> serde_json::Value {
         "supportedInterfaces": supported_interfaces,
         "version": card.version,
         "capabilities": {
-            // Streaming stays false until the official v1 streaming adapters
-            // pass external conformance. Push CRUD has a v1 adapter and follows
-            // the durable card's capability declaration.
-            "streaming": false,
+            "streaming": card.capabilities.streaming,
             "pushNotifications": card.capabilities.push_notifications,
             "extendedAgentCard": card.capabilities.extended_agent_card,
             "extensions": extensions,
@@ -715,7 +712,7 @@ mod tests {
         );
         assert_eq!(value["supportedInterfaces"][0]["protocolVersion"], "1.0");
         assert_eq!(value["skills"][0]["id"], "plan-route");
-        assert_eq!(value["capabilities"]["streaming"], false);
+        assert_eq!(value["capabilities"]["streaming"], true);
         assert_eq!(value["capabilities"]["pushNotifications"], true);
         assert_eq!(
             value["securitySchemes"]["bearer"]["httpAuthSecurityScheme"]["scheme"],

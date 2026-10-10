@@ -22,10 +22,10 @@
 //! mirroring the bus API. Request bodies are explicitly capped at
 //! [`A2A_MAX_BODY_BYTES`].
 //!
-//! Methods here are the non-streaming core: `message/send`,
-//! `tasks/get`, `tasks/cancel`. Streaming (`message/stream`,
-//! `tasks/resubscribe`) is the Phase 3 SSE bridge; push-notification
-//! config is Phase 4.
+//! The official v1 JSON-RPC surface includes finite task methods,
+//! `SendStreamingMessage`, `SubscribeToTask`, and push-notification
+//! configuration. Streaming responses use SSE while preserving the JSON-RPC
+//! request id in every frame.
 //!
 //! The `A2A-Version` header is negotiated up front — a request that
 //! pins an unsupported version is rejected before any work is done.
@@ -33,21 +33,24 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
-use axum::response::sse::{KeepAlive, Sse};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use chrono::{DateTime, Utc};
+use futures::stream::{self, Stream};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::convert::Infallible;
 use std::time::Duration;
+use tokio::sync::broadcast;
 
-use acteon_core::{Agent, AgentCard, Task, TaskMessage, TaskState};
+use acteon_core::{Agent, AgentCard, StreamEvent, StreamEventType, Task, TaskMessage, TaskState};
 use acteon_gateway::{TaskEngine, TaskEngineError, TaskScope};
 use acteon_state::{KeyKind, StateKey};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 
 use super::AppState;
 use super::schemas::ErrorResponse;
-use super::stream::{StreamQuery, make_event_stream};
+use super::stream::{ConnectionGuard, StreamQuery, make_event_stream};
 use crate::auth::identity::CallerIdentity;
 use crate::auth::role::Permission;
 
@@ -291,6 +294,13 @@ struct TaskIdParams {
 }
 
 #[derive(Debug, Deserialize)]
+struct V1SubscribeParams {
+    #[serde(default)]
+    tenant: Option<String>,
+    id: String,
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ListTasksParams {
     #[serde(default)]
@@ -505,7 +515,12 @@ async fn method_message_send_as(
             .get_task(scope, &task_id)
             .await?
             .ok_or_else(|| A2aError::task_not_found(&task_id))?;
-        if message.context_id != task.context_id {
+        if message.context_id.is_none() {
+            // A2A permits a continuation to carry only taskId. The server
+            // infers the task's context; an explicitly supplied context must
+            // still match exactly.
+            message.context_id.clone_from(&task.context_id);
+        } else if message.context_id != task.context_id {
             return Err(A2aError::invalid_params(
                 "message.contextId must exactly match the existing task",
             ));
@@ -819,6 +834,14 @@ fn validate_v1_tenant(tenant: Option<&str>, scope: &TaskScope) -> Result<(), A2a
     Ok(())
 }
 
+fn validate_v1_params_tenant(params: &Value, scope: &TaskScope) -> Result<(), A2aError> {
+    match params.get("tenant") {
+        None | Some(Value::Null) => Ok(()),
+        Some(Value::String(tenant)) => validate_v1_tenant(Some(tenant), scope),
+        Some(_) => Err(A2aError::invalid_params("tenant must be a string")),
+    }
+}
+
 fn project_v1_push_config(
     config: &acteon_core::TaskPushNotificationConfig,
 ) -> Result<Value, A2aError> {
@@ -910,6 +933,20 @@ async fn ensure_v1_push_supported(state: &AppState, scope: &TaskScope) -> Result
         Ok(_) => Err(A2aError::new(
             PUSH_NOTIFICATION_NOT_SUPPORTED,
             "push notifications are not supported",
+        )),
+        Err(_) => Err(A2aError::internal("internal error")),
+    }
+}
+
+async fn ensure_v1_streaming_supported(
+    state: &AppState,
+    scope: &TaskScope,
+) -> Result<(), A2aError> {
+    match super::a2a_discovery::resolve_tenant_card(state, &scope.namespace, &scope.tenant).await {
+        Ok(Some(card)) if card.capabilities.streaming => Ok(()),
+        Ok(_) => Err(A2aError::new(
+            UNSUPPORTED_OPERATION,
+            "streaming is not supported by this agent",
         )),
         Err(_) => Err(A2aError::internal("internal error")),
     }
@@ -1194,6 +1231,7 @@ fn is_write_method(method: &str) -> bool {
         "message/send"
             | "tasks/cancel"
             | "SendMessage"
+            | "SendStreamingMessage"
             | "CancelTask"
             | "CreateTaskPushNotificationConfig"
             | "DeleteTaskPushNotificationConfig"
@@ -1463,6 +1501,25 @@ async fn method_send_v1(
     actor: &str,
 ) -> Result<Value, A2aError> {
     let return_immediately = v1_return_immediately(&params)?;
+    let mut task = method_send_v1_immediate(state, engine, scope, params, actor).await?;
+    if !return_immediately {
+        task = await_v1_send_completion(engine, scope, task).await?;
+    }
+    Ok(serde_json::json!({"task": project_v1_task(&task)?}))
+}
+
+/// Accept a v1 message and return its durable Task immediately. Streaming
+/// calls use this path because completion is represented by later SSE frames;
+/// the finite `SendMessage` adapter may still wait according to its request
+/// configuration after this common acceptance step.
+async fn method_send_v1_immediate(
+    state: Option<&AppState>,
+    engine: &TaskEngine,
+    scope: &TaskScope,
+    params: Value,
+    actor: &str,
+) -> Result<Task, A2aError> {
+    validate_v1_params_tenant(&params, scope)?;
     let inline_push = v1_inline_push_input(&params, scope)?;
     if let Some(inline_push) = &inline_push {
         ensure_v1_push_supported(require_state(state)?, scope).await?;
@@ -1470,16 +1527,13 @@ async fn method_send_v1(
     }
     let parsed = serde_json::from_value::<MessageSendParams>(normalize_v1_send_params(params))
         .map_err(|e| A2aError::invalid_params(format!("invalid params: {e}")))?;
-    let mut task = method_message_send_as(engine, scope, parsed, actor).await?;
+    let task = method_message_send_as(engine, scope, parsed, actor).await?;
     if let Some(inline_push) = inline_push {
         super::a2a_push::save_config(require_state(state)?, scope, &task.id, inline_push)
             .await
             .map_err(push_err_to_a2a)?;
     }
-    if !return_immediately {
-        task = await_v1_send_completion(engine, scope, task).await?;
-    }
-    Ok(serde_json::json!({"task": project_v1_task(&task)?}))
+    Ok(task)
 }
 
 async fn dispatch_v1_method(
@@ -1490,6 +1544,7 @@ async fn dispatch_v1_method(
     params: Value,
     actor: &str,
 ) -> Result<Value, A2aError> {
+    validate_v1_params_tenant(&params, scope)?;
     match method {
         "SendMessage" => method_send_v1(state, engine, scope, params, actor).await,
         "GetTask" => {
@@ -1752,6 +1807,304 @@ async fn handle_rpc_payload_as(
     }
 }
 
+struct V1TaskStreamState {
+    rx: broadcast::Receiver<StreamEvent>,
+    engine: TaskEngine,
+    scope: TaskScope,
+    task_id: String,
+    request_id: Value,
+    initial: Option<Value>,
+    done: bool,
+    close_on_interrupt: bool,
+    _guard: ConnectionGuard,
+}
+
+struct V1TaskStreamSeed {
+    task_id: String,
+    initial_task: Value,
+    request_id: Value,
+    close_on_interrupt: bool,
+}
+
+fn v1_stream_response_event(id: &Value, result: Value) -> Option<Event> {
+    serde_json::to_string(&success_response(id.clone(), result))
+        .ok()
+        .map(|data| Event::default().data(data))
+}
+
+fn v1_status_update(
+    task: &Task,
+    state: TaskState,
+    timestamp: DateTime<Utc>,
+) -> Result<Value, A2aError> {
+    let mut status = task.status.clone();
+    if status.state != state {
+        // A later transition may already be durable by the time this queued
+        // event is consumed. Preserve the event's ordered state and timestamp;
+        // a message from the later status must never be attached retroactively.
+        status.state = state;
+        status.message = None;
+        status.timestamp = timestamp;
+    }
+    let mut status = to_value(&status)?;
+    project_v1_status(&mut status);
+    let mut update = serde_json::json!({
+        "taskId": task.id,
+        "status": status,
+    });
+    if let Some(context_id) = &task.context_id {
+        update["contextId"] = Value::String(context_id.clone());
+    }
+    Ok(serde_json::json!({"statusUpdate": update}))
+}
+
+fn v1_artifact_update(task: &Task, artifact_id: &str, last_chunk: bool) -> Option<Value> {
+    let artifact = task
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.artifact_id == artifact_id)?;
+    let mut update = serde_json::json!({
+        "taskId": task.id,
+        "artifact": artifact,
+        // The durable Task row contains the resolved artifact. Sending a full
+        // replacement makes recovery after a lag deterministic for clients.
+        "append": false,
+        "lastChunk": last_chunk,
+    });
+    if let Some(context_id) = &task.context_id {
+        update["contextId"] = Value::String(context_id.clone());
+    }
+    Some(serde_json::json!({"artifactUpdate": update}))
+}
+
+fn make_v1_task_stream(
+    rx: broadcast::Receiver<StreamEvent>,
+    engine: TaskEngine,
+    scope: TaskScope,
+    seed: V1TaskStreamSeed,
+    guard: ConnectionGuard,
+) -> impl Stream<Item = Result<Event, Infallible>> {
+    let mut initial = serde_json::Map::new();
+    initial.insert("task".into(), seed.initial_task);
+    let state = V1TaskStreamState {
+        rx,
+        engine,
+        scope,
+        task_id: seed.task_id,
+        request_id: seed.request_id,
+        initial: Some(Value::Object(initial)),
+        done: false,
+        close_on_interrupt: seed.close_on_interrupt,
+        _guard: guard,
+    };
+
+    stream::unfold(state, |mut state| async move {
+        if state.done {
+            return None;
+        }
+        if let Some(initial) = state.initial.take() {
+            let event = v1_stream_response_event(&state.request_id, initial)?;
+            return Some((Ok(event), state));
+        }
+
+        loop {
+            let event = match state.rx.recv().await {
+                Ok(event) => event,
+                Err(broadcast::error::RecvError::Closed) => return None,
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    let task = state
+                        .engine
+                        .get_task(&state.scope, &state.task_id)
+                        .await
+                        .ok()
+                        .flatten()?;
+                    state.done = task.status.state.is_terminal()
+                        || (state.close_on_interrupt && task.status.state.is_interrupt());
+                    let result = serde_json::json!({"task": project_v1_task(&task).ok()?});
+                    let frame = v1_stream_response_event(&state.request_id, result)?;
+                    return Some((Ok(frame), state));
+                }
+            };
+            if event.namespace != state.scope.namespace
+                || event.tenant != state.scope.tenant
+                || event.action_type.as_deref() != Some("a2a.task")
+                || event.action_id.as_deref() != Some(state.task_id.as_str())
+            {
+                continue;
+            }
+
+            let task = state
+                .engine
+                .get_task(&state.scope, &state.task_id)
+                .await
+                .ok()
+                .flatten()?;
+            let (result, closes_stream) = match &event.event_type {
+                StreamEventType::TaskTransitioned { to, .. } => (
+                    v1_status_update(&task, *to, event.timestamp).ok(),
+                    to.is_terminal() || (state.close_on_interrupt && to.is_interrupt()),
+                ),
+                StreamEventType::TaskArtifactUpdated {
+                    artifact_id,
+                    last_chunk,
+                    ..
+                } => (v1_artifact_update(&task, artifact_id, *last_chunk), false),
+                // StreamResponse task lifecycles permit Task first, followed
+                // by status/artifact updates. In particular, a Message is a
+                // standalone response that closes the stream, so history
+                // notifications remain in the durable Task snapshot.
+                _ => (None, false),
+            };
+            let Some(result) = result else {
+                continue;
+            };
+            state.done = closes_stream;
+            let frame = v1_stream_response_event(&state.request_id, result)?;
+            return Some((Ok(frame), state));
+        }
+    })
+}
+
+fn v1_stream_rpc_error(id: Value, error: &A2aError) -> Response {
+    (
+        StatusCode::OK,
+        version_header(),
+        Json(error_response(id, error)),
+    )
+        .into_response()
+}
+
+#[allow(clippy::too_many_lines)]
+async fn handle_v1_streaming_rpc(
+    state: &AppState,
+    engine: &TaskEngine,
+    scope: &TaskScope,
+    parsed: &Value,
+    actor: &str,
+) -> Response {
+    let Some(object) = parsed.as_object() else {
+        return v1_stream_rpc_error(
+            Value::Null,
+            &A2aError::new(INVALID_REQUEST, "streaming requests must be JSON objects"),
+        );
+    };
+    let request_id = object.get("id").cloned().unwrap_or(Value::Null);
+    if object.get("jsonrpc").and_then(Value::as_str) != Some("2.0") || !object.contains_key("id") {
+        return v1_stream_rpc_error(
+            request_id,
+            &A2aError::new(
+                INVALID_REQUEST,
+                "streaming requests require jsonrpc \"2.0\" and an id",
+            ),
+        );
+    }
+    let method = object
+        .get("method")
+        .and_then(Value::as_str)
+        .expect("streaming dispatcher is entered only for a string method");
+    let params = object.get("params").cloned().unwrap_or(Value::Null);
+    if let Err(error) = ensure_v1_streaming_supported(state, scope).await {
+        return v1_stream_rpc_error(request_id, &error);
+    }
+
+    let Some(registry) = state.connection_registry.as_ref() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            version_header(),
+            Json(ErrorResponse {
+                error: "SSE streaming is not enabled".into(),
+            }),
+        )
+            .into_response();
+    };
+    let bucket = format!("{}:{}", scope.namespace, scope.tenant);
+    let Some(guard) = registry.try_acquire(&bucket).await else {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            version_header(),
+            Json(ErrorResponse {
+                error: "too many concurrent SSE connections for this tenant".into(),
+            }),
+        )
+            .into_response();
+    };
+
+    // Register before the send/fetch operation. A transition racing with the
+    // initial snapshot remains buffered in this receiver and cannot be lost.
+    let gateway = state.gateway.read().await;
+    let rx = gateway.stream_tx().subscribe();
+    drop(gateway);
+
+    let (task, close_on_interrupt) = match method {
+        "SendStreamingMessage" => {
+            if let Err(error) = v1_return_immediately(&params) {
+                return v1_stream_rpc_error(request_id, &error);
+            }
+            match method_send_v1_immediate(Some(state), engine, scope, params, actor).await {
+                Ok(task) => (task, true),
+                Err(error) => return v1_stream_rpc_error(request_id, &error),
+            }
+        }
+        "SubscribeToTask" => {
+            let parsed = match serde_json::from_value::<V1SubscribeParams>(params) {
+                Ok(parsed) => parsed,
+                Err(error) => {
+                    return v1_stream_rpc_error(
+                        request_id,
+                        &A2aError::invalid_params(format!("invalid params: {error}")),
+                    );
+                }
+            };
+            if let Err(error) = validate_v1_tenant(parsed.tenant.as_deref(), scope) {
+                return v1_stream_rpc_error(request_id, &error);
+            }
+            match engine.get_task(scope, &parsed.id).await {
+                Ok(Some(task)) if task.status.state.is_terminal() => {
+                    return v1_stream_rpc_error(
+                        request_id,
+                        &A2aError::new(
+                            UNSUPPORTED_OPERATION,
+                            "a terminal task cannot be subscribed to",
+                        ),
+                    );
+                }
+                Ok(Some(task)) => (task, false),
+                Ok(None) => {
+                    return v1_stream_rpc_error(request_id, &A2aError::task_not_found(&parsed.id));
+                }
+                Err(error) => return v1_stream_rpc_error(request_id, &error.into()),
+            }
+        }
+        _ => unreachable!("non-streaming method entered streaming dispatcher"),
+    };
+
+    let initial_task = match project_v1_task(&task) {
+        Ok(task) => task,
+        Err(error) => return v1_stream_rpc_error(request_id, &error),
+    };
+    let event_stream = make_v1_task_stream(
+        rx,
+        engine.clone(),
+        scope.clone(),
+        V1TaskStreamSeed {
+            task_id: task.id,
+            initial_task,
+            request_id,
+            close_on_interrupt,
+        },
+        guard,
+    );
+    (
+        version_header(),
+        Sse::new(event_stream).keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(15))
+                .text("ping"),
+        ),
+    )
+        .into_response()
+}
+
 /// `POST /a2a/{namespace}/{tenant}` — the A2A JSON-RPC 2.0 endpoint.
 ///
 /// The raw body is parsed here rather than via the `Json` extractor so
@@ -1807,6 +2160,13 @@ pub async fn a2a_rpc(
     } else {
         identity.id.as_str()
     };
+    if parsed
+        .get("method")
+        .and_then(Value::as_str)
+        .is_some_and(|method| matches!(method, "SendStreamingMessage" | "SubscribeToTask"))
+    {
+        return handle_v1_streaming_rpc(&state, &engine, &scope, &parsed, actor).await;
+    }
     match handle_rpc_payload_as(Some(&state), &engine, &scope, parsed, actor).await {
         RpcReply::Single(resp) => (StatusCode::OK, version_header(), Json(resp)).into_response(),
         RpcReply::Batch(resps) => (StatusCode::OK, version_header(), Json(resps)).into_response(),
@@ -1822,7 +2182,7 @@ fn payload_requires_management(value: &Value) -> bool {
         // execution permission just because it shares this HTTP endpoint.
         Value::Object(obj) => {
             let method = obj.get("method").and_then(Value::as_str);
-            let inline_push = method == Some("SendMessage")
+            let inline_push = matches!(method, Some("SendMessage" | "SendStreamingMessage"))
                 && obj
                     .get("params")
                     .and_then(|params| params.pointer("/configuration/taskPushNotificationConfig"))
@@ -1833,6 +2193,7 @@ fn payload_requires_management(value: &Value) -> bool {
                         method,
                         "message/send"
                             | "SendMessage"
+                            | "SendStreamingMessage"
                             | "tasks/get"
                             | "GetTask"
                             | "ListTasks"
@@ -1840,6 +2201,7 @@ fn payload_requires_management(value: &Value) -> bool {
                             | "CancelTask"
                             | "agent/getAuthenticatedExtendedCard"
                             | "GetExtendedAgentCard"
+                            | "SubscribeToTask"
                     )
                 })
         }
@@ -2155,6 +2517,114 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn v1_task_stream_emits_official_frames_and_closes_at_terminal_state() {
+        let (tx, _) = broadcast::channel(16);
+        let e = TaskEngine::new(Arc::new(MemoryStateStore::new())).with_stream_tx(tx.clone());
+        let task_id = seed_task(&e).await;
+        let task = e.get_task(&scope(), &task_id).await.unwrap().unwrap();
+        let rx = tx.subscribe();
+        let registry = super::super::stream::ConnectionRegistry::new(1);
+        let guard = registry.try_acquire("agents:demo").await.unwrap();
+        let initial_task = project_v1_task(&task).unwrap();
+        let stream = make_v1_task_stream(
+            rx,
+            e.clone(),
+            scope(),
+            V1TaskStreamSeed {
+                task_id: task.id,
+                initial_task,
+                request_id: json!(41),
+                close_on_interrupt: false,
+            },
+            guard,
+        );
+        let response = Sse::new(stream).into_response();
+        let transition_engine = e.clone();
+        let transition_task_id = task_id.clone();
+        let transitions = tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            transition_engine
+                .transition_task(&scope(), &transition_task_id, TaskState::Working, None)
+                .await
+                .unwrap();
+            transition_engine
+                .transition_task(
+                    &scope(),
+                    &transition_task_id,
+                    TaskState::InputRequired,
+                    None,
+                )
+                .await
+                .unwrap();
+            transition_engine
+                .transition_task(&scope(), &transition_task_id, TaskState::Working, None)
+                .await
+                .unwrap();
+            transition_engine
+                .transition_task(&scope(), &transition_task_id, TaskState::Completed, None)
+                .await
+                .unwrap();
+        });
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        transitions.await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("\"id\":41"));
+        assert!(body.contains("\"task\""));
+        assert!(body.contains("TASK_STATE_SUBMITTED"));
+        assert!(body.contains("\"statusUpdate\""));
+        assert!(body.contains("TASK_STATE_WORKING"));
+        assert!(body.contains("TASK_STATE_INPUT_REQUIRED"));
+        assert!(body.contains("TASK_STATE_COMPLETED"));
+        assert!(!body.contains("\"final\""));
+    }
+
+    #[tokio::test]
+    async fn v1_send_stream_closes_at_an_interrupted_state() {
+        let (tx, _) = broadcast::channel(16);
+        let e = TaskEngine::new(Arc::new(MemoryStateStore::new())).with_stream_tx(tx.clone());
+        let task_id = seed_task(&e).await;
+        let task = e.get_task(&scope(), &task_id).await.unwrap().unwrap();
+        let initial_task = project_v1_task(&task).unwrap();
+        let registry = super::super::stream::ConnectionRegistry::new(1);
+        let guard = registry.try_acquire("agents:demo").await.unwrap();
+        let stream = make_v1_task_stream(
+            tx.subscribe(),
+            e.clone(),
+            scope(),
+            V1TaskStreamSeed {
+                task_id: task.id,
+                initial_task,
+                request_id: json!(42),
+                close_on_interrupt: true,
+            },
+            guard,
+        );
+        let response = Sse::new(stream).into_response();
+        let transition_engine = e.clone();
+        let transitions = tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            transition_engine
+                .transition_task(&scope(), &task_id, TaskState::Working, None)
+                .await
+                .unwrap();
+            transition_engine
+                .transition_task(&scope(), &task_id, TaskState::InputRequired, None)
+                .await
+                .unwrap();
+        });
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        transitions.await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("\"id\":42"));
+        assert!(body.contains("TASK_STATE_INPUT_REQUIRED"));
+        assert!(!body.contains("TASK_STATE_COMPLETED"));
+    }
+
+    #[tokio::test]
     async fn v1_send_message_uses_pascal_method_and_protojson_envelope() {
         let e = engine();
         let result = dispatch_method(
@@ -2378,6 +2848,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn v1_methods_reject_a_tenant_outside_the_selected_interface() {
+        let e = engine();
+        for method in ["SendMessage", "GetTask", "CancelTask"] {
+            let error = dispatch_method(
+                None,
+                &e,
+                &scope(),
+                method,
+                json!({"tenant": "another-tenant"}),
+                "official-client",
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error.code, INVALID_PARAMS);
+            assert!(error.message.contains("tenant"));
+        }
+    }
+
+    #[tokio::test]
     async fn message_send_mints_a_new_task() {
         let e = engine();
         let params = MessageSendParams {
@@ -2394,11 +2883,13 @@ mod tests {
     #[tokio::test]
     async fn message_send_continues_an_existing_task() {
         let e = engine();
+        let mut first_message = user_message("first");
+        first_message.context_id = Some("context-1".into());
         let first = method_message_send(
             &e,
             &scope(),
             MessageSendParams {
-                message: user_message("first"),
+                message: first_message,
             },
         )
         .await
@@ -2410,6 +2901,7 @@ mod tests {
             .unwrap();
         assert_eq!(task.id, first.id);
         assert_eq!(task.history.len(), 2);
+        assert_eq!(task.history[1].context_id.as_deref(), Some("context-1"));
     }
 
     #[tokio::test]
@@ -3096,6 +3588,7 @@ mod tests {
         assert!(is_write_method("message/send"));
         assert!(is_write_method("tasks/cancel"));
         assert!(is_write_method("SendMessage"));
+        assert!(is_write_method("SendStreamingMessage"));
         assert!(is_write_method("CancelTask"));
         assert!(is_write_method("CreateTaskPushNotificationConfig"));
         assert!(is_write_method("DeleteTaskPushNotificationConfig"));
@@ -3123,6 +3616,24 @@ mod tests {
                 }
             }
         })));
+        assert!(!payload_requires_management(&json!({
+            "method": "SendStreamingMessage",
+            "params": {
+                "message": {"messageId": "m2", "role": "ROLE_USER", "parts": [{"text": "x"}]}
+            }
+        })));
+        assert!(payload_requires_management(&json!({
+            "method": "SendStreamingMessage",
+            "params": {
+                "message": {"messageId": "m2", "role": "ROLE_USER", "parts": [{"text": "x"}]},
+                "configuration": {
+                    "taskPushNotificationConfig": {"url": "https://example.com/push"}
+                }
+            }
+        })));
+        assert!(!payload_requires_management(
+            &json!({"method": "SubscribeToTask"})
+        ));
         assert!(payload_requires_management(&json!({
             "method": "CreateTaskPushNotificationConfig",
             "params": {"taskId": "t1", "url": "https://example.com/push"}
