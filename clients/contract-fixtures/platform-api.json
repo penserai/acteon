@@ -1263,6 +1263,17 @@
       "response": "json"
     },
     {
+      "name": "federation_capabilities",
+      "method": "GET",
+      "path": "/a2a/{namespace}/{tenant}/federation/agents/{agent}/capabilities",
+      "parameters": [
+        "namespace",
+        "tenant",
+        "agent"
+      ],
+      "response": "json"
+    },
+    {
       "name": "federation_export_message",
       "method": "POST",
       "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:send",

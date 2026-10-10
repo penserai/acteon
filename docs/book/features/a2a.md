@@ -185,10 +185,13 @@ GET /v1/governance/federation/deliveries?namespace=prod&tenant=acme&limit=50
 
 The cursor is the last returned delivery UUID. Each item identifies the source,
 parent execution, message ID, remote agent, trust/key epoch, timestamps, expiry,
-replay qualification and exact delivery stage. The view excludes the message
+replay qualification, negotiated capability-card digest/key/epoch/protocol/authentication
+scheme and exact delivery stage. The view excludes the message
 body, signed payloads, endpoint, transport credential and signing material. The
 server filters results to the manager's declared source principals and
 revalidates management authority after reading the state backend.
+An active read-only card fetch appears as `capability_negotiating` with its
+claim deadline; no card body or signature is exposed.
 
 An authorized manager can terminally stop local recovery of an ambiguous or
 expired claimed stage:
@@ -211,9 +214,16 @@ know whether the peer performed the effect. This management operation contains
 no endpoint, credential or replay path. Replay still requires the original
 source authority and a transport qualified for exact idempotency.
 
-Production qualification still requires capability exchange, qualified peer
-finality evidence, and two-server failure testing on each supported production
-state backend.
+Before import, the guarded adapter fetches the protected peer capability route,
+verifies the audience-bound Ed25519 card against the profile epoch, and requires
+the exact agent binding, skill, protocol, authentication scheme, replay guarantee
+and optional peer-finality guarantee. The journal commits sanitized negotiation
+evidence before the import call. A card outage is safely retryable because no
+effect endpoint was called; a signed downgrade or mismatch is a terminal local
+import-stage refusal.
+
+Production qualification still requires brokered credential exchange and
+two-server failure testing on each supported production state backend.
 
 ### Discovery (unauthenticated)
 
@@ -651,9 +661,10 @@ already present in the deployment-owned ceiling. Request data cannot introduce
 a new key, domain, audience, recipient, effect or limit. Inspection returns only
 the trust records inside that manager's footprint.
 
-Acteon does not yet provide outbound cross-domain delivery, credential exchange,
-capability negotiation, remote key discovery, or conformance evidence against a
-named external implementation. Peer credential state and effect authority also
+Acteon provides governed outbound delivery with a deployment-owned static peer
+credential and signed capability-card discovery. Brokered credential exchange,
+automatic credential rotation and conformance evidence against a named external
+implementation remain open. Peer credential state and effect authority also
 reside in separate state scopes: the route rechecks the peer just before
 dispatch, and the coordinator separately performs the atomic execution check.
 A remote card, signature or cached envelope never overrides local permits,

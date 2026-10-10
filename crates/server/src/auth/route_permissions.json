@@ -750,6 +750,12 @@
     "permission": "OperationsManage"
   },
   {
+    "name": "federation_capabilities",
+    "method": "GET",
+    "path": "/a2a/{namespace}/{tenant}/federation/agents/{agent}/capabilities",
+    "permission": "Dispatch"
+  },
+  {
     "name": "federation_export_message",
     "method": "POST",
     "path": "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:send",

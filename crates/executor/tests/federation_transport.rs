@@ -16,7 +16,8 @@ use acteon_executor::federation_finality::{
     sign_federation_finality_receipt,
 };
 use acteon_executor::federation_transport::{
-    DurableFederationTransport, FEDERATION_DELIVERY_KIND, FederationDeliveryAbandonment,
+    DurableFederationTransport, FEDERATION_DELIVERY_KIND, FederationCapabilityDisposition,
+    FederationCapabilityEvidence, FederationCapabilityRequest, FederationDeliveryAbandonment,
     FederationDeliveryEvidenceReader, FederationDeliveryEvidenceStatus,
     FederationDeliveryFinalityReconciler, FederationDeliveryIntent, FederationDeliveryReconciler,
     FederationDeliveryStatus, FederationFinalityAcceptance, FederationImportDisposition,
@@ -44,11 +45,16 @@ const REJECT: u8 = 2;
 struct Adapter {
     state: Arc<dyn StateStore>,
     replay_safe: bool,
+    capability_mode: AtomicU8,
     import_mode: AtomicU8,
     invoke_mode: AtomicU8,
     imports: AtomicUsize,
     invokes: AtomicUsize,
+    negotiations: AtomicUsize,
     saw_persisted_intent: AtomicBool,
+    block_capability: AtomicBool,
+    capability_started: Notify,
+    release_capability: Notify,
     block_import: AtomicBool,
     import_started: Notify,
     release_import: Notify,
@@ -59,11 +65,16 @@ impl Adapter {
         Self {
             state,
             replay_safe,
+            capability_mode: AtomicU8::new(ACCEPT),
             import_mode: AtomicU8::new(ACCEPT),
             invoke_mode: AtomicU8::new(ACCEPT),
             imports: AtomicUsize::new(0),
             invokes: AtomicUsize::new(0),
+            negotiations: AtomicUsize::new(0),
             saw_persisted_intent: AtomicBool::new(false),
+            block_capability: AtomicBool::new(false),
+            capability_started: Notify::new(),
+            release_capability: Notify::new(),
             block_import: AtomicBool::new(false),
             import_started: Notify::new(),
             release_import: Notify::new(),
@@ -95,6 +106,33 @@ impl FederationTransportAdapter for Adapter {
 
     fn exact_replay_idempotent(&self) -> bool {
         self.replay_safe
+    }
+
+    async fn negotiate(
+        &self,
+        _request: FederationCapabilityRequest<'_>,
+    ) -> Result<FederationCapabilityDisposition, FederationTransportError> {
+        self.negotiations.fetch_add(1, Ordering::SeqCst);
+        if self.block_capability.load(Ordering::SeqCst) {
+            self.capability_started.notify_one();
+            self.release_capability.notified().await;
+        }
+        match self.capability_mode.load(Ordering::SeqCst) {
+            UNCERTAIN => Ok(FederationCapabilityDisposition::Unavailable),
+            REJECT => Ok(FederationCapabilityDisposition::Rejected {
+                code: "peer_capability_denied".into(),
+            }),
+            _ => Ok(FederationCapabilityDisposition::Accepted(
+                FederationCapabilityEvidence {
+                    card_digest: "c".repeat(64),
+                    key_id: "peer-card-key-1".into(),
+                    issuer_epoch: 1,
+                    expires_at_ms: 10_000,
+                    protocol_revision: "acteon-federation-v1".into(),
+                    authentication_scheme: "bearer".into(),
+                },
+            )),
+        }
     }
 
     async fn import(
@@ -367,6 +405,72 @@ impl Fixture {
         )
         .unwrap()
     }
+}
+
+#[tokio::test]
+async fn capability_negotiation_is_durable_and_unavailability_never_imports() {
+    let fixture = Fixture::new(true);
+    fixture
+        .adapter
+        .capability_mode
+        .store(UNCERTAIN, Ordering::SeqCst);
+
+    let pending = fixture.transport.submit(fixture.intent()).await.unwrap();
+    assert!(matches!(
+        pending.status,
+        FederationDeliveryStatus::Registered
+    ));
+    assert_eq!(fixture.adapter.negotiations.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.adapter.imports.load(Ordering::SeqCst), 0);
+
+    fixture
+        .adapter
+        .capability_mode
+        .store(ACCEPT, Ordering::SeqCst);
+    let accepted = fixture.transport.submit(fixture.intent()).await.unwrap();
+    assert!(matches!(
+        accepted.status,
+        FederationDeliveryStatus::Accepted { .. }
+    ));
+    assert_eq!(fixture.adapter.negotiations.load(Ordering::SeqCst), 2);
+    assert_eq!(fixture.adapter.imports.load(Ordering::SeqCst), 1);
+    let evidence = fixture
+        .transport
+        .list_evidence("local", "tenant", None, 10)
+        .await
+        .unwrap();
+    let capability = evidence[0].capability.as_ref().unwrap();
+    assert_eq!(capability.card_digest, "c".repeat(64));
+    assert_eq!(capability.protocol_revision, "acteon-federation-v1");
+}
+
+#[tokio::test]
+async fn capability_claim_is_visible_without_exposing_the_card() {
+    let fixture = Arc::new(Fixture::new(true));
+    fixture
+        .adapter
+        .block_capability
+        .store(true, Ordering::SeqCst);
+    let delivery = {
+        let fixture = fixture.clone();
+        tokio::spawn(async move { fixture.transport.submit(fixture.intent()).await })
+    };
+    fixture.adapter.capability_started.notified().await;
+    let evidence = fixture
+        .transport
+        .list_evidence("local", "tenant", None, 10)
+        .await
+        .unwrap();
+    assert!(matches!(
+        evidence[0].status,
+        FederationDeliveryEvidenceStatus::CapabilityNegotiating { .. }
+    ));
+    assert!(evidence[0].capability.is_none());
+    fixture.adapter.release_capability.notify_one();
+    assert!(matches!(
+        delivery.await.unwrap().unwrap().status,
+        FederationDeliveryStatus::Accepted { .. }
+    ));
 }
 
 #[tokio::test]

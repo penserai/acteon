@@ -109,6 +109,27 @@ pub struct FederationCapabilityRequirement {
     pub authentication_scheme: String,
 }
 
+impl FederationCapabilityRequirement {
+    pub fn validate(&self) -> Result<(), CoordinationError> {
+        valid_capability_requirement(self)
+            .then_some(())
+            .ok_or_else(|| CoordinationError::Invalid("federation capability requirement".into()))
+    }
+}
+
+pub fn validate_federation_capability_verifying_key(
+    verifying_key: &str,
+) -> Result<(), CoordinationError> {
+    if !digest_valid(verifying_key, 32) {
+        return Err(CoordinationError::Invalid(
+            "federation capability key".into(),
+        ));
+    }
+    VerifyingKey::from_bytes(&decode_hex::<32>(verifying_key)?)
+        .map(|_| ())
+        .map_err(|_| CoordinationError::Invalid("federation capability key".into()))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SignedFederationCapabilityCard {
@@ -188,6 +209,7 @@ pub fn verify_federation_capability_card(
             "federation capability requirement".into(),
         ));
     }
+    validate_federation_capability_verifying_key(verifying_key)?;
     let key = VerifyingKey::from_bytes(&decode_hex::<32>(verifying_key)?)
         .map_err(|_| CoordinationError::Invalid("federation capability key".into()))?;
     let signature = Signature::from_bytes(&decode_hex::<64>(&signed.signature)?);

@@ -201,6 +201,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &config.federation_finality_sources,
         |name| std::env::var(name).ok().map(zeroize::Zeroizing::new),
     )?;
+    acteon_server::config::validate_federation_capability_key_separation(
+        config.execution_authority.as_ref(),
+        &config.reconciliation_sources,
+        &config.federation_finality_sources,
+        |name| std::env::var(name).ok().map(zeroize::Zeroizing::new),
+    )?;
     let reconciliation_installations = acteon_server::config::prepare_reconciliation_sources(
         &config.reconciliation_sources,
         config.execution_authority.as_ref(),

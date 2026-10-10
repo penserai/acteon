@@ -562,6 +562,22 @@ public class ActeonClient implements AutoCloseable {
             throw new ConnectionException("Malformed federation reconciliation evidence", e);
         }
     }
+    /** Fetch the audience-bound signed capability card for one current peer agent. */
+    public Governance.SignedFederationCapabilityCard federationCapabilities(String namespace,
+        String tenant, String agent) throws ActeonException {
+        var node = platformRequest(PlatformOperation.FEDERATION_CAPABILITIES,
+            Map.of("namespace", namespace, "tenant", tenant, "agent", agent), null, null);
+        try {
+            var card = objectMapper.treeToValue(node, Governance.SignedFederationCapabilityCard.class);
+            if (card.payload() == null || card.payload().isEmpty()
+                || card.signature() == null || card.signature().length() != 128) {
+                throw new ConnectionException("Invalid signed federation capability card", null);
+            }
+            return card;
+        } catch (IOException e) {
+            throw new ConnectionException("Malformed federation capability card", e);
+        }
+    }
     /** Authenticate as a configured peer and retain imported authority without executing it. */
     public Governance.FederationImportReceipt importFederationEnvelope(String namespace, String tenant,
         Governance.SignedFederationEnvelopeDeclaration envelope) throws ActeonException {

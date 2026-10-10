@@ -159,7 +159,15 @@
         "status": {
           "status": "import_uncertain"
         },
-        "reconciliations": []
+        "reconciliations": [],
+        "capability": {
+          "card_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "key_id": "remote-capability-v1",
+          "issuer_epoch": 9,
+          "expires_at_ms": 4102444800000,
+          "protocol_revision": "acteon-federation-v1",
+          "authentication_scheme": "bearer"
+        }
       }
     ],
     "next_cursor": null
@@ -202,7 +210,15 @@
         "recorded_at_ms": 1791570010000
       }
     },
-    "reconciliations": []
+    "reconciliations": [],
+    "capability": {
+      "card_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "key_id": "remote-capability-v1",
+      "issuer_epoch": 9,
+      "expires_at_ms": 4102444800000,
+      "protocol_revision": "acteon-federation-v1",
+      "authentication_scheme": "bearer"
+    }
   },
   "finality_correlation": {
     "delivery_id": "4f0ad7d3-3133-4adf-93af-f4f0844fd887",
@@ -264,6 +280,18 @@
         "source_id": "remote-finality-journal",
         "qualification_ref": "contracts/remote-finality-v1"
       }
-    ]
+    ],
+    "capability": {
+      "card_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "key_id": "remote-capability-v1",
+      "issuer_epoch": 9,
+      "expires_at_ms": 4102444800000,
+      "protocol_revision": "acteon-federation-v1",
+      "authentication_scheme": "bearer"
+    }
+  },
+  "signed_capability_card": {
+    "payload": "signed-capability-payload",
+    "signature": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   }
 }

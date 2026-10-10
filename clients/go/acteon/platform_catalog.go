@@ -126,6 +126,7 @@ const (
 	OpExecutionsResetExecution PlatformOperation = "executions_reset_execution"
 	OpExecutionsSignalExecution PlatformOperation = "executions_signal_execution"
 	OpExecutionsUpsertExecutionAttributes PlatformOperation = "executions_upsert_execution_attributes"
+	OpFederationCapabilities PlatformOperation = "federation_capabilities"
 	OpFederationExportMessage PlatformOperation = "federation_export_message"
 	OpFederationImportEnvelope PlatformOperation = "federation_import_envelope"
 	OpFederationInvokeAgent PlatformOperation = "federation_invoke_agent"
@@ -350,6 +351,7 @@ var platformOperations = map[PlatformOperation]platformDescriptor{
 	OpExecutionsResetExecution: {"POST", "/v1/executions/{execution_id}/reset", []string{"execution_id"}, false},
 	OpExecutionsSignalExecution: {"POST", "/v1/executions/{execution_id}/signal/{signal_name}", []string{"execution_id", "signal_name"}, false},
 	OpExecutionsUpsertExecutionAttributes: {"PUT", "/v1/executions/{execution_id}/attributes", []string{"execution_id"}, false},
+	OpFederationCapabilities: {"GET", "/a2a/{namespace}/{tenant}/federation/agents/{agent}/capabilities", []string{"namespace", "tenant", "agent"}, false},
 	OpFederationExportMessage: {"POST", "/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:send", []string{"namespace", "tenant", "agent", "task_id", "profile"}, false},
 	OpFederationImportEnvelope: {"POST", "/a2a/{namespace}/{tenant}/federation/envelopes:import", []string{"namespace", "tenant"}, false},
 	OpFederationInvokeAgent: {"POST", "/a2a/{namespace}/{tenant}/federation/agents/{agent}/v1/message:send", []string{"namespace", "tenant", "agent"}, false},

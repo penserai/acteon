@@ -1035,8 +1035,19 @@ POST /v1/governance/federation/trusts
 POST /v1/governance/federation/trusts/revoke
 ```
 
-A foreign peer authenticated as its configured local principal submits exact
-signed bytes through:
+A foreign peer authenticated as its configured local principal first obtains
+the capability card addressed to its configured foreign domain:
+
+```text
+GET /a2a/{namespace}/{tenant}/federation/agents/{agent}/capabilities
+```
+
+The response contains exact signed `payload` bytes and an Ed25519 `signature`.
+It binds the current agent service digest, skill, protocol revision, replay and
+finality guarantees, authentication schemes, peer audience, key epoch and a
+short validity window. The caller cannot choose the audience.
+
+The peer submits exact signed authority bytes through:
 
 ```text
 POST /a2a/{namespace}/{tenant}/federation/envelopes:import

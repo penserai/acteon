@@ -225,10 +225,9 @@ Exact proof replay reauthorizes the current manager, reverifies the retained
 proof, preserves the original acceptance audit, repairs a lost local settlement
 acknowledgement and never sends to the peer.
 
-## Capability and key-card negotiation kernel
+## Capability and key-card negotiation
 
-The governance crate now defines the federation capability card used by the
-next transport increment. A destination signs exact JSON bytes containing its
+The governance crate defines the federation capability card. A destination signs exact JSON bytes containing its
 domain, one source audience, signing-key ID and issuer epoch, validity window,
 agent resource, service binding digest, ordered skills, protocol revision,
 exact-replay and peer-finality guarantees, and ordered authentication schemes.
@@ -245,17 +244,23 @@ ordered unique capability lists. This contract is reusable by an HTTP peer, a
 service registry or a credential broker; none of those hosts can turn a card
 into execution authority.
 
-The card is not yet accepted by the outbound adapter. Publishing the protected
-destination endpoint, retaining the negotiated card digest in the delivery
-journal, and obtaining a credential through a separately qualified broker are
-the next wire-level slice.
+The authenticated destination route derives the audience from the configured
+peer principal and signs the current service binding at read time. Before any
+import, the guarded adapter fetches and verifies that card. The delivery journal
+uses a separate read-only negotiation claim and commits the card digest, key and
+issuer epoch, expiry, protocol and selected authentication scheme before
+crossing the effect boundary. Discovery unavailability clears its claim and
+leaves the delivery registered for ordinary retry; it is never mislabeled as
+an ambiguous import. Signed mismatches and downgrades become terminal local
+import-stage refusals. An expired retained card is renegotiated before a still
+unused import, while imported or terminal work retains its original evidence.
 
 ## Remaining gates
 
 The remaining production gates are:
 
 1. production-backend page and peer-finality qualification;
-2. capability-card publication, durable transport negotiation and credential
-   exchange on top of the implemented signed-card kernel;
+2. brokered credential exchange and rotation (static host credentials remain
+   supported and isolated from durable state);
 3. two-server restart and response-loss qualification across Redis,
    PostgreSQL, and DynamoDB, followed by external implementation conformance.

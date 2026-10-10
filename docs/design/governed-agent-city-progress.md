@@ -2035,7 +2035,7 @@ revocation without starting another effect. Rust, Python, TypeScript, Go and
 Java expose the typed operation.
 
 This remains an incomplete federation release. Outbound production
-qualification, credential exchange, capability negotiation, remote card and key rotation,
+qualification, brokered credential exchange and rotation,
 partition/reconciliation operations, operational expiry views and named
 external-implementation conformance remain Phase 5 gates.
 
@@ -2170,11 +2170,11 @@ safely resume at invocation; terminal proof replay reverifies the original
 evidence and repairs a lost settlement acknowledgement without peer traffic.
 Rust, Python, TypeScript, Go and Java expose the typed operations.
 
-Production-backend page and peer-finality qualification, capability exchange,
+Production-backend page and peer-finality qualification, credential exchange,
 and two-server qualification across Redis, PostgreSQL and DynamoDB remain
 required for the federation release gate.
 
-### Signed federation capability-card kernel (working tree)
+### Signed federation capability negotiation (working tree)
 
 Federation capability negotiation now has a schema-closed governance contract.
 A host-only Ed25519 signer produces a short-lived card for one destination
@@ -2187,6 +2187,11 @@ epoch. Wrong audiences, stale epochs, changed bindings, missing skills,
 downgraded guarantees, unsupported authentication, tampering, future cards and
 expired cards fail closed.
 
-This closes the negotiation trust primitive, not the production exchange. The
-destination publication route, adapter-side fetch, durable negotiated-card
-evidence and credential-broker handoff remain the next federation increment.
+The protected destination route now derives the card audience from current peer
+authentication and signs the current service binding on demand. The outbound
+HTTP adapter fetches and verifies the card before import. A separate read-only
+claim makes discovery outage ordinarily retryable without creating remote
+effect ambiguity, and the delivery journal retains sanitized card digest,
+key/epoch, expiry, protocol and authentication evidence before import. Managers
+see that evidence through every SDK. Credential-broker handoff and rotation
+remain the next federation increment.

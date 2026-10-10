@@ -27,10 +27,10 @@ use crate::federation_finality::{
 };
 
 pub const FEDERATION_DELIVERY_KIND: &str = "federation_outbound_delivery";
-// V2 adds the mandatory local reconciliation-resource footprint. Reading a V1
-// record as if it had an empty footprint would bypass management ceilings, so
-// old records fail closed and require a reviewed migration.
-const DELIVERY_SCHEMA: u32 = 2;
+// V2 added the mandatory local reconciliation-resource footprint. V3 adds the
+// durable peer-capability negotiation checkpoint. Older records fail closed
+// rather than acquiring weaker implied authority.
+const DELIVERY_SCHEMA: u32 = 3;
 const MAX_RECORD_BYTES: usize = 2 * 1024 * 1024;
 const MAX_ENDPOINT_BYTES: usize = 2_048;
 const MAX_CODE_BYTES: usize = 1_024;
@@ -64,6 +64,37 @@ pub struct FederationInvokeRequest<'a> {
     pub message: &'a TaskMessage,
 }
 
+pub struct FederationCapabilityRequest<'a> {
+    pub endpoint: &'a str,
+    pub namespace: &'a str,
+    pub tenant: &'a str,
+    pub agent_id: &'a str,
+}
+
+/// Sanitized result of a host-qualified peer-card verification. The signed
+/// card remains at the adapter boundary; the journal retains the immutable
+/// facts needed to prove which contract preceded remote effect delivery.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationCapabilityEvidence {
+    pub card_digest: String,
+    pub key_id: String,
+    pub issuer_epoch: u64,
+    pub expires_at_ms: i64,
+    pub protocol_revision: String,
+    pub authentication_scheme: String,
+}
+
+#[derive(Debug, Clone)]
+pub enum FederationCapabilityDisposition {
+    Accepted(FederationCapabilityEvidence),
+    Rejected {
+        code: String,
+    },
+    /// No remote effect was attempted. Negotiation may be retried normally.
+    Unavailable,
+}
+
 /// Host-installed adapter. Credentials, endpoint policy and protocol
 /// qualification stay inside the adapter and never enter the durable record.
 #[async_trait]
@@ -73,6 +104,14 @@ pub trait FederationTransportAdapter: Send + Sync {
     /// True only when the exact signed import and invocation can be resent and
     /// the remote implementation returns the original acceptance.
     fn exact_replay_idempotent(&self) -> bool;
+
+    /// Read and verify the destination's audience-bound capability card before
+    /// any import is sent. Implementations must return `Unavailable` only when
+    /// no remote effect endpoint was invoked.
+    async fn negotiate(
+        &self,
+        request: FederationCapabilityRequest<'_>,
+    ) -> Result<FederationCapabilityDisposition, FederationTransportError>;
 
     async fn import(
         &self,
@@ -145,6 +184,7 @@ pub struct FederationDeliveryEvidence {
     pub expires_at_ms: i64,
     pub expired: bool,
     pub exact_replay_idempotent: bool,
+    pub capability: Option<FederationCapabilityEvidence>,
     pub status: FederationDeliveryEvidenceStatus,
     /// Independently verified stage results, in protocol order. Payloads and
     /// peer task artifacts remain in the encrypted delivery journal.
@@ -188,6 +228,9 @@ pub struct FederationDeliveryFinalityEvidence {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FederationDeliveryEvidenceStatus {
     Registered,
+    CapabilityNegotiating {
+        claim_expires_at_ms: i64,
+    },
     Importing {
         claim_expires_at_ms: i64,
     },
@@ -707,6 +750,19 @@ enum DeliveryState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+enum CapabilityNegotiationState {
+    Pending,
+    Negotiating {
+        claim_id: Uuid,
+        claim_expires_at_ms: i64,
+    },
+    Accepted {
+        evidence: FederationCapabilityEvidence,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DeliveryRecord {
     schema: u32,
@@ -722,6 +778,7 @@ struct DeliveryRecord {
     invocation: SignedFederationInvocation,
     message: TaskMessage,
     created_at_ms: i64,
+    capability: CapabilityNegotiationState,
     state: DeliveryState,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     reconciliations: Vec<FederationDeliveryReconciliation>,
@@ -942,6 +999,27 @@ impl DurableFederationTransport {
             .await?
             .ok_or(FederationTransportError::Unavailable)?;
         self.same_intent(&record, expected)?;
+        match &record.capability {
+            CapabilityNegotiationState::Pending => {
+                return self.claim_capability(key, expected, record, version).await;
+            }
+            CapabilityNegotiationState::Negotiating {
+                claim_expires_at_ms,
+                ..
+            } if self.claim_expired(*claim_expires_at_ms) => {
+                return self.claim_capability(key, expected, record, version).await;
+            }
+            CapabilityNegotiationState::Negotiating { .. } => {
+                return Ok(Self::receipt(&record));
+            }
+            CapabilityNegotiationState::Accepted { evidence }
+                if matches!(&record.state, DeliveryState::Registered)
+                    && self.now_ms()? >= evidence.expires_at_ms =>
+            {
+                return self.claim_capability(key, expected, record, version).await;
+            }
+            CapabilityNegotiationState::Accepted { .. } => {}
+        }
         match &record.state {
             DeliveryState::Registered => self.claim_import(key, record, version).await,
             DeliveryState::Imported { .. } => self.claim_invoke(key, record, version).await,
@@ -964,6 +1042,100 @@ impl DurableFederationTransport {
                 self.claim_invoke(key, record, version).await
             }
             _ => Ok(Self::receipt(&record)),
+        }
+    }
+
+    async fn claim_capability(
+        &self,
+        key: &StateKey,
+        expected: &DeliveryRecord,
+        current: DeliveryRecord,
+        version: u64,
+    ) -> Result<FederationDeliveryReceipt, FederationTransportError> {
+        if !matches!(&current.state, DeliveryState::Registered) {
+            return Err(FederationTransportError::Conflict);
+        }
+        let now_ms = self.now_ms()?;
+        let envelope = current
+            .envelope
+            .envelope()
+            .map_err(|_| FederationTransportError::Conflict)?;
+        let mut claimed = current.clone();
+        claimed.capability = CapabilityNegotiationState::Negotiating {
+            claim_id: Uuid::new_v4(),
+            claim_expires_at_ms: self.claim_deadline(now_ms),
+        };
+        if !matches!(
+            self.dependencies
+                .state
+                .compare_and_swap(key, version, &self.encode(&claimed)?, None)
+                .await
+                .map_err(|_| FederationTransportError::Unavailable)?,
+            CasResult::Ok
+        ) {
+            return self.observe_record(key, expected).await;
+        }
+        let disposition = acteon_time::timeout(
+            self.dependencies.clock.as_ref(),
+            self.timeout,
+            self.adapter.negotiate(FederationCapabilityRequest {
+                endpoint: &claimed.endpoint,
+                namespace: envelope.agent_resource.namespace(),
+                tenant: envelope.agent_resource.tenant(),
+                agent_id: &claimed.agent_id,
+            }),
+        )
+        .await;
+        let mut settled = claimed;
+        match disposition {
+            Ok(Ok(FederationCapabilityDisposition::Accepted(evidence)))
+                if valid_capability_evidence(&evidence)
+                    && evidence.expires_at_ms > self.now_ms()? =>
+            {
+                settled.capability = CapabilityNegotiationState::Accepted { evidence };
+                match self
+                    .dependencies
+                    .state
+                    .compare_and_swap(key, version + 1, &self.encode(&settled)?, None)
+                    .await
+                    .map_err(|_| FederationTransportError::Unavailable)?
+                {
+                    CasResult::Ok => self.claim_import(key, settled, version + 2).await,
+                    CasResult::Conflict { .. } => self.observe_record(key, expected).await,
+                }
+            }
+            Ok(Ok(FederationCapabilityDisposition::Rejected { code })) if valid_code(&code) => {
+                settled.capability = CapabilityNegotiationState::Pending;
+                settled.state = DeliveryState::Rejected {
+                    stage: FederationDeliveryStage::Import,
+                    code,
+                };
+                match self
+                    .dependencies
+                    .state
+                    .compare_and_swap(key, version + 1, &self.encode(&settled)?, None)
+                    .await
+                    .map_err(|_| FederationTransportError::Unavailable)?
+                {
+                    CasResult::Ok => Ok(Self::receipt(&settled)),
+                    CasResult::Conflict { .. } => self.observe_record(key, expected).await,
+                }
+            }
+            _ => {
+                // Discovery is read-only. Clear the claim so an ordinary retry
+                // can recover without invoking the import replay path.
+                settled.capability = CapabilityNegotiationState::Pending;
+                match self
+                    .dependencies
+                    .state
+                    .compare_and_swap(key, version + 1, &self.encode(&settled)?, None)
+                    .await
+                    .map_err(|_| FederationTransportError::Unavailable)?
+                {
+                    CasResult::Ok => Ok(Self::receipt(&settled)),
+                    CasResult::Conflict { .. } => self.observe_record(key, expected).await,
+                }
+            }
         }
     }
 
@@ -1230,6 +1402,7 @@ impl DurableFederationTransport {
             invocation: intent.invocation.clone(),
             message: intent.message.clone(),
             created_at_ms,
+            capability: CapabilityNegotiationState::Pending,
             state: DeliveryState::Registered,
             reconciliations: Vec::new(),
         })
@@ -1585,6 +1758,38 @@ fn valid_finality_acceptance(acceptance: &FederationFinalityAcceptance) -> bool 
         && valid_text(&acceptance.authority.incarnation, 120)
 }
 
+fn valid_capability_evidence(evidence: &FederationCapabilityEvidence) -> bool {
+    valid_digest(&evidence.card_digest)
+        && valid_text(&evidence.key_id, 255)
+        && evidence.issuer_epoch > 0
+        && evidence.expires_at_ms > 0
+        && valid_text(&evidence.protocol_revision, 120)
+        && valid_text(&evidence.authentication_scheme, 120)
+}
+
+fn valid_capability_state(record: &DeliveryRecord) -> bool {
+    match &record.capability {
+        CapabilityNegotiationState::Pending => matches!(
+            &record.state,
+            DeliveryState::Registered
+                | DeliveryState::Rejected {
+                    stage: FederationDeliveryStage::Import,
+                    ..
+                }
+        ),
+        CapabilityNegotiationState::Negotiating {
+            claim_expires_at_ms,
+            ..
+        } => {
+            matches!(&record.state, DeliveryState::Registered)
+                && *claim_expires_at_ms >= record.created_at_ms
+        }
+        CapabilityNegotiationState::Accepted { evidence } => {
+            valid_capability_evidence(evidence) && evidence.expires_at_ms > record.created_at_ms
+        }
+    }
+}
+
 fn valid_reconciliations(record: &DeliveryRecord) -> bool {
     if record.reconciliations.len() > 2 {
         return false;
@@ -1703,6 +1908,7 @@ fn valid_evidence_record(record: &DeliveryRecord) -> bool {
         || !valid_signature(&record.envelope.signature)
         || !valid_signature(&record.invocation.signature)
         || delivery_id(&record.parent, &record.invocation).ok() != Some(record.delivery_id)
+        || !valid_capability_state(record)
         || !valid_reconciliations(record)
     {
         return false;
@@ -1770,34 +1976,46 @@ fn project_evidence(
         .invocation
         .invocation()
         .map_err(|_| FederationTransportError::Conflict)?;
-    let status = match &record.state {
-        DeliveryState::Registered => FederationDeliveryEvidenceStatus::Registered,
-        DeliveryState::Importing {
-            claim_expires_at_ms,
-            ..
-        } => FederationDeliveryEvidenceStatus::Importing {
+    let status = if let CapabilityNegotiationState::Negotiating {
+        claim_expires_at_ms,
+        ..
+    } = &record.capability
+    {
+        FederationDeliveryEvidenceStatus::CapabilityNegotiating {
             claim_expires_at_ms: *claim_expires_at_ms,
-        },
-        DeliveryState::ImportUncertain => FederationDeliveryEvidenceStatus::ImportUncertain,
-        DeliveryState::Imported { .. } => FederationDeliveryEvidenceStatus::Imported,
-        DeliveryState::Invoking {
-            claim_expires_at_ms,
-            ..
-        } => FederationDeliveryEvidenceStatus::Invoking {
-            claim_expires_at_ms: *claim_expires_at_ms,
-        },
-        DeliveryState::InvokeUncertain { .. } => FederationDeliveryEvidenceStatus::InvokeUncertain,
-        DeliveryState::Accepted { .. } => FederationDeliveryEvidenceStatus::Accepted,
-        DeliveryState::Rejected { stage, code } => FederationDeliveryEvidenceStatus::Rejected {
-            stage: *stage,
-            code: code.clone(),
-        },
-        DeliveryState::Abandoned {
-            stage, abandonment, ..
-        } => FederationDeliveryEvidenceStatus::Abandoned {
-            stage: *stage,
-            abandonment: abandonment.clone(),
-        },
+        }
+    } else {
+        match &record.state {
+            DeliveryState::Registered => FederationDeliveryEvidenceStatus::Registered,
+            DeliveryState::Importing {
+                claim_expires_at_ms,
+                ..
+            } => FederationDeliveryEvidenceStatus::Importing {
+                claim_expires_at_ms: *claim_expires_at_ms,
+            },
+            DeliveryState::ImportUncertain => FederationDeliveryEvidenceStatus::ImportUncertain,
+            DeliveryState::Imported { .. } => FederationDeliveryEvidenceStatus::Imported,
+            DeliveryState::Invoking {
+                claim_expires_at_ms,
+                ..
+            } => FederationDeliveryEvidenceStatus::Invoking {
+                claim_expires_at_ms: *claim_expires_at_ms,
+            },
+            DeliveryState::InvokeUncertain { .. } => {
+                FederationDeliveryEvidenceStatus::InvokeUncertain
+            }
+            DeliveryState::Accepted { .. } => FederationDeliveryEvidenceStatus::Accepted,
+            DeliveryState::Rejected { stage, code } => FederationDeliveryEvidenceStatus::Rejected {
+                stage: *stage,
+                code: code.clone(),
+            },
+            DeliveryState::Abandoned {
+                stage, abandonment, ..
+            } => FederationDeliveryEvidenceStatus::Abandoned {
+                stage: *stage,
+                abandonment: abandonment.clone(),
+            },
+        }
     };
     Ok(FederationDeliveryEvidence {
         delivery_id: record.delivery_id,
@@ -1814,6 +2032,11 @@ fn project_evidence(
         expires_at_ms: invocation.expires_at_ms,
         expired: now_ms >= invocation.expires_at_ms,
         exact_replay_idempotent: record.exact_replay_idempotent,
+        capability: match &record.capability {
+            CapabilityNegotiationState::Accepted { evidence } => Some(evidence.clone()),
+            CapabilityNegotiationState::Pending
+            | CapabilityNegotiationState::Negotiating { .. } => None,
+        },
         status,
         reconciliations: record
             .reconciliations

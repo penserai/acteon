@@ -121,6 +121,7 @@ use acteon_core::{
         super::governance::publish_federation_trust,
         super::governance::revoke_federation_trust,
         super::governance::intervene,
+        super::federation::capabilities,
         super::federation::import_envelope,
         super::federation::invoke_agent,
         super::federation::export_message,

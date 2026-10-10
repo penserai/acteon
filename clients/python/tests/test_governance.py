@@ -147,6 +147,8 @@ async def test_federation_management_and_inert_import_wire(async_client):
             response = {"id": "federated-task", "namespace": "prod", "tenant": "acme"}
         elif request.url.path.endswith("envelopes:import"):
             response = FEDERATION["import_receipt"]
+        elif request.url.path.endswith("/capabilities"):
+            response = FEDERATION["signed_capability_card"]
         else:
             response = FEDERATION["change_receipt"]
         return httpx.Response(200, json=response)
@@ -186,6 +188,7 @@ async def test_federation_management_and_inert_import_wire(async_client):
             results = [
                 await client.publish_federation_trust(publication),
                 await client.revoke_federation_trust(revocation),
+                await client.federation_capabilities("prod", "acme", "maya"),
                 await client.import_federation_envelope("prod", "acme", envelope),
                 await client.invoke_federated_agent("prod", "acme", "maya", invocation, message),
                 await client.export_federated_message(*export_args),
@@ -208,6 +211,7 @@ async def test_federation_management_and_inert_import_wire(async_client):
             results = [
                 client.publish_federation_trust(publication),
                 client.revoke_federation_trust(revocation),
+                client.federation_capabilities("prod", "acme", "maya"),
                 client.import_federation_envelope("prod", "acme", envelope),
                 client.invoke_federated_agent("prod", "acme", "maya", invocation, message),
                 client.export_federated_message(*export_args),
@@ -228,45 +232,47 @@ async def test_federation_management_and_inert_import_wire(async_client):
             ]
         assert asdict(results[0]) == FEDERATION["change_receipt"]
         assert asdict(results[1]) == FEDERATION["change_receipt"]
-        assert asdict(results[2]) == FEDERATION["import_receipt"]
-        assert not results[2].execution_started
-        assert results[3]["id"] == "federated-task"
-        assert all(asdict(result) == FEDERATION["export_receipt"] for result in results[4:7])
-        assert asdict(results[7]) == FEDERATION["delivery_evidence_page"]
-        assert asdict(results[8]) == FEDERATION["abandoned_evidence"]
-        assert asdict(results[9]) == FEDERATION["finality_correlation"]
-        assert asdict(results[10]) == FEDERATION["reconciled_evidence"]
-        assert [request.method for request in seen] == ["POST"] * 7 + ["GET", "POST", "GET", "POST"]
+        assert asdict(results[2]) == FEDERATION["signed_capability_card"]
+        assert asdict(results[3]) == FEDERATION["import_receipt"]
+        assert not results[3].execution_started
+        assert results[4]["id"] == "federated-task"
+        assert all(asdict(result) == FEDERATION["export_receipt"] for result in results[5:8])
+        assert asdict(results[8]) == FEDERATION["delivery_evidence_page"]
+        assert asdict(results[9]) == FEDERATION["abandoned_evidence"]
+        assert asdict(results[10]) == FEDERATION["finality_correlation"]
+        assert asdict(results[11]) == FEDERATION["reconciled_evidence"]
+        assert [request.method for request in seen] == ["POST", "POST", "GET"] + ["POST"] * 5 + ["GET", "POST", "GET", "POST"]
         assert json.loads(seen[0].content) == FEDERATION["publication"]
         assert json.loads(seen[1].content) == FEDERATION["revocation"]
-        assert json.loads(seen[2].content) == {"envelope": FEDERATION["envelope"]}
-        assert seen[2].url.path == "/a2a/prod/acme/federation/envelopes:import"
-        assert seen[3].url.path == "/a2a/prod/acme/federation/agents/maya/v1/message:send"
-        assert json.loads(seen[3].content) == {
+        assert seen[2].url.path.endswith("/capabilities")
+        assert json.loads(seen[3].content) == {"envelope": FEDERATION["envelope"]}
+        assert seen[3].url.path == "/a2a/prod/acme/federation/envelopes:import"
+        assert seen[4].url.path == "/a2a/prod/acme/federation/agents/maya/v1/message:send"
+        assert json.loads(seen[4].content) == {
             "invocation": {"payload": "signed-payload", "signature": "a" * 128},
             "message": message,
         }
-        assert [request.url.path.rsplit("message:", 1)[-1] for request in seen[4:7]] == [
+        assert [request.url.path.rsplit("message:", 1)[-1] for request in seen[5:8]] == [
             "send",
             "observe",
             "replay",
         ]
         assert all(
             json.loads(request.content) == {"message": FEDERATION["export_message"]}
-            for request in seen[4:7]
+            for request in seen[5:8]
         )
-        assert dict(seen[7].url.params) == {
+        assert dict(seen[8].url.params) == {
             "namespace": "prod",
             "tenant": "acme",
             "limit": "25",
         }
-        assert seen[8].url.path.endswith(
+        assert seen[9].url.path.endswith(
             f"/{FEDERATION['abandoned_evidence']['delivery_id']}:abandon"
         )
-        assert json.loads(seen[8].content) == FEDERATION["abandon_request"]
-        assert seen[9].url.path.endswith("/correlation")
-        assert dict(seen[9].url.params) == {"namespace": "prod", "tenant": "acme"}
-        assert json.loads(seen[10].content) == FEDERATION["reconcile_request"]
+        assert json.loads(seen[9].content) == FEDERATION["abandon_request"]
+        assert seen[10].url.path.endswith("/correlation")
+        assert dict(seen[10].url.params) == {"namespace": "prod", "tenant": "acme"}
+        assert json.loads(seen[11].content) == FEDERATION["reconcile_request"]
         assert all(request.headers["authorization"] == "Bearer federation-key" for request in seen)
     finally:
         if async_client:

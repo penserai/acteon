@@ -675,6 +675,16 @@ foreign_domain = "remote.example"
 authentication_principal = { id = "agent/remote-peer", kind = "agent" }
 trust_ids = ["remote-prod"]
 
+[execution_authority.scopes.federation.capability_publisher]
+key_id = "local-capability-v1"
+verifying_key = "<64 hex characters>"
+signer_key_env = "ACTEON_FEDERATION_CAPABILITY_SIGNER"
+issuer_epoch = 1
+lifetime_ms = 300000
+protocol_revision = "acteon-federation-v1"
+authentication_schemes = ["bearer", "mtls"]
+peer_finality = true
+
 [[execution_authority.scopes.managers]]
 principal = { id = "operator/federation", kind = "human" }
 subjects = [{ id = "agent/remote-peer", kind = "agent" }]
@@ -722,6 +732,15 @@ signer_key_env = "ACTEON_FEDERATION_SIGNER"
 issuer_epoch = 1
 credential_env = "ACTEON_REMOTE_CREDENTIAL"
 
+[execution_authority.scopes.federation.exports.epochs.peer_capability]
+key_id = "remote-capability-v1"
+verifying_key = "<destination capability-card public key, 64 hex characters>"
+minimum_issuer_epoch = 1
+max_clock_skew_ms = 30000
+protocol_revision = "acteon-federation-v1"
+authentication_scheme = "bearer"
+require_peer_finality = true
+
 [execution_authority.scopes.federation.exports.epochs.grant]
 source = { id = "agent/notifier", kind = "agent" }
 target = { id = "agent/remote-triage", kind = "agent" }
@@ -740,12 +759,23 @@ max_depth = 2
 ```
 
 For zero-downtime rotation, append a higher epoch with its new signer,
-credential, trust/key revision and complete reviewed remote agent card, then set
+credential, trust/key revision, capability-card key/epoch and complete reviewed remote agent card, then set
 `active_epoch` to that highest `issuer_epoch`. New exports use only the active
 epoch. Acteon retains exporters for older declared epochs so existing delivery
 IDs can be observed or explicitly replayed with their original signed bytes and
 transport credential. Remove an older epoch only after reconciliation shows no
 retained nonterminal delivery depends on it.
+
+The destination capability publisher signs a separate short-lived card for the
+authenticated peer that requested it. The caller identity selects the audience;
+there is no audience request parameter. The card exposes the current agent
+binding, skill, protocol, replay/finality guarantees and authentication
+schemes. Its Ed25519 key must use dedicated material and the configured public
+key must match the environment secret at startup. The source fetches
+`GET /a2a/{namespace}/{tenant}/federation/agents/{agent}/capabilities`, verifies
+the exact epoch requirement before import, and journals the card digest and
+negotiated contract. A discovery timeout keeps the export registered and
+retryable without calling the import endpoint.
 
 Install an independently reviewed finality source for any epoch whose peer can
 produce irrevocable import and invocation receipts. Acteon resolves the profile

@@ -32,6 +32,7 @@ export interface RevokeFederationTrustRequest {
   expected_revision: number; reason: string;
 }
 export interface SignedFederationEnvelopeDeclaration { payload: string; signature: string; }
+export interface SignedFederationCapabilityCard { payload: string; signature: string; }
 export interface SignedFederationInvocationDeclaration { payload: string; signature: string; }
 export interface FederationImportReceipt {
   namespace: string; tenant: string; import_id: string; envelope_digest: string;
@@ -55,7 +56,7 @@ export interface FederationExportReceipt {
 }
 export type FederationDeliveryEvidenceStatus =
   | { status: "registered" | "import_uncertain" | "imported" | "invoke_uncertain" | "accepted" }
-  | { status: "importing" | "invoking"; claim_expires_at_ms: number }
+  | { status: "capability_negotiating" | "importing" | "invoking"; claim_expires_at_ms: number }
   | { status: "rejected"; stage: "import" | "invoke"; code: string }
   | { status: "abandoned"; stage: "import" | "invoke"; abandonment: FederationDeliveryAbandonment };
 export interface FederationDeliveryAbandonment {
@@ -80,11 +81,16 @@ export interface FederationFinalityCorrelation {
   envelope_digest: string; invocation_digest: string; import_id: string;
   invocation_nonce: string; agent_id: string; message_id: string;
 }
+export interface FederationCapabilityEvidence {
+  card_digest: string; key_id: string; issuer_epoch: number; expires_at_ms: number;
+  protocol_revision: string; authentication_scheme: string;
+}
 export interface FederationDeliveryEvidence {
   delivery_id: string; parent_execution_id: string; source: PrincipalIdentity;
   agent_id: string; message_id: string; trust_id: string; trust_revision: number;
   key_id: string; issuer_epoch: number; created_at_ms: number; expires_at_ms: number;
   expired: boolean; exact_replay_idempotent: boolean; status: FederationDeliveryEvidenceStatus;
+  capability: FederationCapabilityEvidence | null;
   reconciliations: FederationDeliveryFinalityEvidence[];
 }
 export interface FederationDeliveryEvidencePage {

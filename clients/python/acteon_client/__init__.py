@@ -68,6 +68,7 @@ from .errors import (
 )
 from .governance import (
     AbandonFederationDeliveryRequest,
+    FederationCapabilityEvidence,
     FederationDeliveryEvidence,
     FederationDeliveryEvidencePage,
     FederationDeliveryFinalityEvidence,
@@ -93,6 +94,7 @@ from .governance import (
     ProviderReconciliationRequest,
     PublishFederationTrustRequest,
     RevokeFederationTrustRequest,
+    SignedFederationCapabilityCard,
     SignedFederationEnvelopeDeclaration,
     SignedFederationInvocationDeclaration,
 )
@@ -444,6 +446,7 @@ from .platform_catalog import PlatformOperation as PlatformOperation
 
 __all__ += [
     "AbandonFederationDeliveryRequest",
+    "FederationCapabilityEvidence",
     "FederationDeliveryEvidence",
     "FederationDeliveryEvidencePage",
     "FederationDeliveryFinalityEvidence",
@@ -456,6 +459,7 @@ __all__ += [
     "FederationTrustView",
     "PublishFederationTrustRequest",
     "RevokeFederationTrustRequest",
+    "SignedFederationCapabilityCard",
     "SignedFederationEnvelopeDeclaration",
     "SignedFederationInvocationDeclaration",
     "GovernanceResource",

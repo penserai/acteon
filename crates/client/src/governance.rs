@@ -14,6 +14,12 @@ pub use acteon_core::{
 };
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignedFederationCapabilityCard {
+    pub payload: String,
+    pub signature: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FederationExportAttemptStatus {
@@ -59,6 +65,9 @@ pub struct FederationExportReceipt {
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum FederationDeliveryEvidenceStatus {
     Registered,
+    CapabilityNegotiating {
+        claim_expires_at_ms: i64,
+    },
     Importing {
         claim_expires_at_ms: i64,
     },
@@ -149,8 +158,19 @@ pub struct FederationDeliveryEvidence {
     pub expires_at_ms: i64,
     pub expired: bool,
     pub exact_replay_idempotent: bool,
+    pub capability: Option<FederationCapabilityEvidence>,
     pub status: FederationDeliveryEvidenceStatus,
     pub reconciliations: Vec<FederationDeliveryFinalityEvidence>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FederationCapabilityEvidence {
+    pub card_digest: String,
+    pub key_id: String,
+    pub issuer_epoch: u64,
+    pub expires_at_ms: i64,
+    pub protocol_revision: String,
+    pub authentication_scheme: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -513,6 +533,34 @@ impl ActeonClient {
         }
         Ok(receipt)
     }
+    /// Fetch the signed capability card addressed to the authenticated peer.
+    pub async fn federation_capabilities(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        agent: &str,
+    ) -> Result<SignedFederationCapabilityCard, Error> {
+        let value = self
+            .platform_request(
+                PlatformOperation::FederationCapabilities,
+                &[
+                    ("namespace", namespace),
+                    ("tenant", tenant),
+                    ("agent", agent),
+                ],
+                &[],
+                None,
+            )
+            .await?;
+        let card: SignedFederationCapabilityCard =
+            serde_json::from_value(value).map_err(|e| Error::Deserialization(e.to_string()))?;
+        if card.payload.is_empty() || card.signature.len() != 128 {
+            return Err(Error::Deserialization(
+                "invalid signed federation capability card".into(),
+            ));
+        }
+        Ok(card)
+    }
     /// Invoke or replay an exact signed message as a configured federation peer.
     pub async fn invoke_federated_agent(
         &self,
@@ -789,6 +837,8 @@ mod federation_wire_tests {
             serde_json::from_value(wire["revocation"].clone()).unwrap();
         let envelope: SignedFederationEnvelopeDeclaration =
             serde_json::from_value(wire["envelope"].clone()).unwrap();
+        let capability: SignedFederationCapabilityCard =
+            serde_json::from_value(wire["signed_capability_card"].clone()).unwrap();
         let receipt: FederationImportReceipt =
             serde_json::from_value(wire["import_receipt"].clone()).unwrap();
         assert!(!receipt.execution_started);
@@ -801,6 +851,10 @@ mod federation_wire_tests {
             wire["revocation"]
         );
         assert_eq!(serde_json::to_value(envelope).unwrap(), wire["envelope"]);
+        assert_eq!(
+            serde_json::to_value(capability).unwrap(),
+            wire["signed_capability_card"]
+        );
         assert_eq!(
             serde_json::to_value(receipt).unwrap(),
             wire["import_receipt"]
@@ -816,6 +870,10 @@ mod federation_wire_tests {
                 .descriptor()
                 .0,
             "POST"
+        );
+        assert_eq!(
+            PlatformOperation::FederationCapabilities.descriptor().1,
+            "/a2a/{namespace}/{tenant}/federation/agents/{agent}/capabilities"
         );
         assert_eq!(
             PlatformOperation::FederationImportEnvelope.descriptor().1,

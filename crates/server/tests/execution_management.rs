@@ -293,6 +293,7 @@ fn federation_config(
     let scope = &mut configuration.scopes[0];
     scope.federation = Some(acteon_server::config::ExecutionFederationConfig {
         local_audience: "local.example".into(),
+        capability_publisher: None,
         trusts: vec![trust],
         peers: vec![acteon_server::config::FederationPeerConfig {
             foreign_domain: "remote.example".into(),
@@ -374,6 +375,19 @@ fn outbound_federation_profiles_are_source_bound_permitted_and_policy_bound() {
                 signer_key_env: "ACTEON_TEST_FEDERATION_SIGNER".into(),
                 issuer_epoch: 1,
                 credential_env: "ACTEON_TEST_FEDERATION_CREDENTIAL".into(),
+                peer_capability: acteon_server::config::FederationPeerCapabilityConfig {
+                    key_id: "remote-capability-v1".into(),
+                    verifying_key:
+                        acteon_governance::federation::FederationCapabilitySigner::from_secret(
+                            [24; 32],
+                        )
+                        .verifying_key_hex(),
+                    minimum_issuer_epoch: 1,
+                    max_clock_skew_ms: 30_000,
+                    protocol_revision: "acteon-federation-v1".into(),
+                    authentication_scheme: "bearer".into(),
+                    require_peer_finality: false,
+                },
                 grant: acteon_governance::federation::FederationGrantCeiling {
                     source: source.clone(),
                     target,

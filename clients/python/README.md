@@ -4,7 +4,7 @@ Python client for the Acteon action gateway.
 
 ## Complete platform API
 
-The generated operation catalog exposes all 227 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, federation admission, dispatch, and governed export lifecycle, and stream windows. Use an authenticated client and a configured, existing stage for this example:
+The generated operation catalog exposes all 228 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, federation capability negotiation, admission, dispatch, and governed export lifecycle, and stream windows. Use an authenticated client and a configured, existing stage for this example:
 
 ```python
 from acteon_client import ActeonClient, PlatformOperation
@@ -25,7 +25,7 @@ See [SDK coverage and wire contracts](https://penserai.github.io/acteon/api/sdk-
 Use `governance`, `publish_governance_permit`, and `intervene_governance` (sync and async) to inspect permitted routes, issue bounded permits, and close/reopen resources or revoke permits, subjects, and credentials. Requests and responses have native typed models. These methods require an authenticated operator and an independently configured execution manager for the requested namespace and tenant; an executor credential alone does not grant management authority.
 
 Cross-domain execution uses `publish_federation_trust`,
-`revoke_federation_trust`, `import_federation_envelope`, and
+`revoke_federation_trust`, `federation_capabilities`, `import_federation_envelope`, and
 `invoke_federated_agent` in both clients. The
 import helper requires a configured peer credential, correlates the returned
 scope, and accepts only a receipt with `execution_started == False`. Import

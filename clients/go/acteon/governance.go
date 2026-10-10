@@ -89,6 +89,10 @@ type SignedFederationEnvelopeDeclaration struct {
 	Payload   string `json:"payload"`
 	Signature string `json:"signature"`
 }
+type SignedFederationCapabilityCard struct {
+	Payload   string `json:"payload"`
+	Signature string `json:"signature"`
+}
 
 type SignedFederationInvocationDeclaration struct {
 	Payload   string `json:"payload"`
@@ -192,8 +196,17 @@ type FederationDeliveryEvidence struct {
 	ExpiresAtMs           int64                                `json:"expires_at_ms"`
 	Expired               bool                                 `json:"expired"`
 	ExactReplayIdempotent bool                                 `json:"exact_replay_idempotent"`
+	Capability            *FederationCapabilityEvidence        `json:"capability"`
 	Status                FederationDeliveryEvidenceStatus     `json:"status"`
 	Reconciliations       []FederationDeliveryFinalityEvidence `json:"reconciliations"`
+}
+type FederationCapabilityEvidence struct {
+	CardDigest           string `json:"card_digest"`
+	KeyID                string `json:"key_id"`
+	IssuerEpoch          uint64 `json:"issuer_epoch"`
+	ExpiresAtMs          int64  `json:"expires_at_ms"`
+	ProtocolRevision     string `json:"protocol_revision"`
+	AuthenticationScheme string `json:"authentication_scheme"`
 }
 type FederationDeliveryEvidencePage struct {
 	Deliveries []FederationDeliveryEvidence `json:"deliveries"`
@@ -303,7 +316,25 @@ func (c *Client) RevokeFederationTrust(ctx context.Context, request RevokeFedera
 	return &result, err
 }
 
-// ImportFederationEnvelope authenticates as a configured peer and retains authority without executing it.
+// FederationCapabilities fetches the audience-bound signed card for one current peer agent.
+func (c *Client) FederationCapabilities(ctx context.Context, namespace, tenant, agent string) (*SignedFederationCapabilityCard, error) {
+	value, err := c.PlatformRequest(ctx, OpFederationCapabilities, map[string]string{
+		"namespace": namespace, "tenant": tenant, "agent": agent,
+	}, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	var card SignedFederationCapabilityCard
+	if err := json.Unmarshal(value, &card); err != nil {
+		return nil, err
+	}
+	if card.Payload == "" || len(card.Signature) != 128 {
+		return nil, fmt.Errorf("invalid signed federation capability card")
+	}
+	return &card, nil
+}
+
+// FederationDeliveryEvidence pages sanitized retained outbound delivery records.
 func (c *Client) FederationDeliveryEvidence(ctx context.Context, namespace, tenant string, after *string, limit *int) (*FederationDeliveryEvidencePage, error) {
 	query := url.Values{"namespace": {namespace}, "tenant": {tenant}}
 	if after != nil {

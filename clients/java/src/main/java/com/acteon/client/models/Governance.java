@@ -42,6 +42,7 @@ public final class Governance {
         @JsonProperty("trust_id") String trustId,
         @JsonProperty("expected_revision") long expectedRevision, String reason) {}
     public record SignedFederationEnvelopeDeclaration(String payload, String signature) {}
+    public record SignedFederationCapabilityCard(String payload, String signature) {}
     public record SignedFederationInvocationDeclaration(String payload, String signature) {}
     public record FederationImportReceipt(String namespace, String tenant,
         @JsonProperty("import_id") String importId,
@@ -75,8 +76,16 @@ public final class Governance {
         @JsonProperty("expires_at_ms") long expiresAtMs,
         boolean expired,
         @JsonProperty("exact_replay_idempotent") boolean exactReplayIdempotent,
+        FederationCapabilityEvidence capability,
         com.fasterxml.jackson.databind.JsonNode status,
         List<FederationDeliveryFinalityEvidence> reconciliations) {}
+    public record FederationCapabilityEvidence(
+        @JsonProperty("card_digest") String cardDigest,
+        @JsonProperty("key_id") String keyId,
+        @JsonProperty("issuer_epoch") long issuerEpoch,
+        @JsonProperty("expires_at_ms") long expiresAtMs,
+        @JsonProperty("protocol_revision") String protocolRevision,
+        @JsonProperty("authentication_scheme") String authenticationScheme) {}
     public record FederationDeliveryFinalityEvidence(
         String stage, boolean accepted,
         @JsonProperty("source_id") String sourceId,

@@ -230,6 +230,10 @@ pub fn router(state: AppState) -> Router {
             post(governance::revoke_federation_trust),
         )
         .route(
+            "/a2a/{namespace}/{tenant}/federation/agents/{agent}/capabilities",
+            get(federation::capabilities),
+        )
+        .route(
             "/a2a/{namespace}/{tenant}/federation/envelopes:import",
             post(federation::import_envelope),
         )

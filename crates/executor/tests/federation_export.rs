@@ -14,7 +14,8 @@ use acteon_executor::{
         QualifiedFederationExport,
     },
     federation_transport::{
-        DurableFederationTransport, FederationDeliveryAbandonment, FederationDeliveryReconciler,
+        DurableFederationTransport, FederationCapabilityDisposition, FederationCapabilityEvidence,
+        FederationCapabilityRequest, FederationDeliveryAbandonment, FederationDeliveryReconciler,
         FederationDeliveryStatus, FederationImportDisposition, FederationImportRequest,
         FederationInvokeDisposition, FederationInvokeRequest, FederationTransportAdapter,
         FederationTransportDependencies, FederationTransportError,
@@ -102,6 +103,22 @@ impl FederationTransportAdapter for Adapter {
 
     fn exact_replay_idempotent(&self) -> bool {
         true
+    }
+
+    async fn negotiate(
+        &self,
+        _request: FederationCapabilityRequest<'_>,
+    ) -> Result<FederationCapabilityDisposition, FederationTransportError> {
+        Ok(FederationCapabilityDisposition::Accepted(
+            FederationCapabilityEvidence {
+                card_digest: "c".repeat(64),
+                key_id: "peer-card-key-1".into(),
+                issuer_epoch: 1,
+                expires_at_ms: 10_000,
+                protocol_revision: "acteon-federation-v1".into(),
+                authentication_scheme: "bearer".into(),
+            },
+        ))
     }
 
     async fn import(

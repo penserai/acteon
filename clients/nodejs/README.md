@@ -4,7 +4,7 @@ Node.js/TypeScript client for the Acteon action gateway.
 
 ## Complete platform API
 
-The generated operation catalog exposes all 227 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, federation admission, dispatch, and governed export lifecycle, and stream windows. Use an authenticated client and a configured, existing stage for this example:
+The generated operation catalog exposes all 228 finite HTTP operations, including receipt sessions, managed stages, workflows, execution controls, inference profiles, federation capability negotiation, admission, dispatch, and governed export lifecycle, and stream windows. Use an authenticated client and a configured, existing stage for this example:
 
 ```typescript
 const status = await client.platformRequest("bus_stages_status", {
@@ -21,7 +21,7 @@ See [SDK coverage and wire contracts](https://penserai.github.io/acteon/api/sdk-
 Use `governance`, `publishGovernancePermit`, and `interveneGovernance` to inspect permitted routes, issue bounded permits, and close/reopen resources or revoke permits, subjects, and credentials. Requests and responses have native typed models. These methods require an authenticated operator and an independently configured execution manager for the requested namespace and tenant; an executor credential alone does not grant management authority.
 
 Cross-domain execution uses `publishFederationTrust`,
-`revokeFederationTrust`, `importFederationEnvelope`, and
+`revokeFederationTrust`, `federationCapabilities`, `importFederationEnvelope`, and
 `invokeFederatedAgent`. The import helper
 requires a configured peer credential, correlates the returned scope, and
 accepts only a receipt with `execution_started === false`. Import retains signed

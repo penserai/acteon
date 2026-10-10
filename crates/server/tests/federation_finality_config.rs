@@ -4,7 +4,8 @@
 
 use acteon_server::config::{
     ExecutionAuthorityConfig, FederationFinalitySourceConfig, ReconciliationSourceConfig,
-    prepare_federation_finality_sources, validate_finality_source_key_separation,
+    prepare_federation_finality_sources, validate_federation_capability_key_separation,
+    validate_finality_source_key_separation,
 };
 use serde_json::json;
 use zeroize::Zeroizing;
@@ -28,6 +29,12 @@ fn execution() -> ExecutionAuthorityConfig {
                     "trust_id":"local-prod", "trust_revision":2, "key_id":"local-key-v2",
                     "verifying_key":"a".repeat(64), "signer_key_env":"ACTEON_SIGNER",
                     "issuer_epoch":7, "credential_env":"ACTEON_PEER_CREDENTIAL",
+                    "peer_capability":{
+                        "key_id":"peer-capability-v1", "verifying_key":"b".repeat(64),
+                        "minimum_issuer_epoch":1, "max_clock_skew_ms":30000,
+                        "protocol_revision":"acteon-federation-v1",
+                        "authentication_scheme":"bearer", "require_peer_finality":true
+                    },
                     "grant":{
                         "source":{"id":"agent/maya","kind":"agent"},
                         "target":{"id":"agent/remote","kind":"agent"},
@@ -148,4 +155,43 @@ fn provider_and_federation_finality_keys_cannot_alias() {
         })
         .is_err()
     );
+}
+
+#[test]
+fn capability_publisher_key_cannot_share_other_trust_material() {
+    let mut config = execution();
+    config.scopes[0]
+        .federation
+        .as_mut()
+        .unwrap()
+        .capability_publisher = Some(
+        serde_json::from_value(json!({
+            "key_id":"local-capability-v1", "verifying_key":"c".repeat(64),
+            "signer_key_env":"ACTEON_FEDERATION_CAPABILITY_SIGNER",
+            "issuer_epoch":1, "lifetime_ms":300000,
+            "protocol_revision":"acteon-federation-v1",
+            "authentication_schemes":["bearer"], "peer_finality":true
+        }))
+        .unwrap(),
+    );
+    let read = |shared: bool, name: &str| match name {
+        "ACTEON_FEDERATION_CAPABILITY_SIGNER" => Some(Zeroizing::new(if shared {
+            "ab".repeat(32)
+        } else {
+            "ef".repeat(32)
+        })),
+        "ACTEON_SIGNER" => Some(Zeroizing::new("ab".repeat(32))),
+        "ACTEON_PEER_CREDENTIAL" => Some(Zeroizing::new("peer-token".into())),
+        _ => None,
+    };
+    assert!(
+        validate_federation_capability_key_separation(Some(&config), &[], &[], |name| {
+            read(true, name)
+        })
+        .is_err()
+    );
+    validate_federation_capability_key_separation(Some(&config), &[], &[], |name| {
+        read(false, name)
+    })
+    .unwrap();
 }

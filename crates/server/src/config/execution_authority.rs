@@ -214,6 +214,10 @@ pub struct ExecutionScopeConfig {
 #[serde(deny_unknown_fields)]
 pub struct ExecutionFederationConfig {
     pub local_audience: String,
+    /// Optional destination-side publisher for authenticated, audience-bound
+    /// capability cards. The signing secret is resolved only by the host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability_publisher: Option<FederationCapabilityPublisherConfig>,
     /// Complete exact trust revisions a manager may publish or revoke.
     pub trusts: Vec<FederationTrust>,
     /// Foreign domains mapped to local private-authentication principals.
@@ -222,6 +226,77 @@ pub struct ExecutionFederationConfig {
     /// are referenced by environment name and loaded only by runtime install.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exports: Vec<FederationExportConfig>,
+}
+
+impl ExecutionFederationConfig {
+    fn validate_capability_publisher(&self) -> Result<(), String> {
+        self.capability_publisher
+            .as_ref()
+            .map_or(Ok(()), |publisher| publisher.validate(self))
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationCapabilityPublisherConfig {
+    pub key_id: String,
+    pub verifying_key: String,
+    pub signer_key_env: String,
+    pub issuer_epoch: u64,
+    #[serde(default = "default_federation_capability_lifetime_ms")]
+    pub lifetime_ms: i64,
+    pub protocol_revision: String,
+    pub authentication_schemes: Vec<String>,
+    #[serde(default)]
+    pub peer_finality: bool,
+}
+
+impl FederationCapabilityPublisherConfig {
+    fn validate(&self, federation: &ExecutionFederationConfig) -> Result<(), String> {
+        let authentication = self.authentication_schemes.iter().collect::<BTreeSet<_>>();
+        if federation.peers.is_empty()
+            || self.key_id.is_empty()
+            || self.key_id.len() > 255
+            || self.verifying_key.len() != 64
+            || !self
+                .verifying_key
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            || acteon_governance::federation::validate_federation_capability_verifying_key(
+                &self.verifying_key,
+            )
+            .is_err()
+            || !valid_env_name(&self.signer_key_env)
+            || self.issuer_epoch == 0
+            || !(1..=86_400_000).contains(&self.lifetime_ms)
+            || self.protocol_revision.is_empty()
+            || self.protocol_revision.len() > 120
+            || self.authentication_schemes.is_empty()
+            || self.authentication_schemes.len() > 16
+            || authentication.len() != self.authentication_schemes.len()
+            || self
+                .authentication_schemes
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
+            || self.authentication_schemes.iter().any(|scheme| {
+                scheme.is_empty()
+                    || scheme.len() > 120
+                    || scheme.trim() != scheme
+                    || scheme.chars().any(char::is_control)
+            })
+            || federation
+                .exports
+                .iter()
+                .flat_map(|export| &export.epochs)
+                .any(|epoch| {
+                    self.signer_key_env == epoch.signer_key_env
+                        || self.signer_key_env == epoch.credential_env
+                })
+        {
+            return Err("invalid federation capability publisher".into());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -264,7 +339,24 @@ pub struct FederationExportEpochConfig {
     pub signer_key_env: String,
     pub issuer_epoch: u64,
     pub credential_env: String,
+    /// Independently pinned destination capability-card contract. This key is
+    /// owned by the destination and must not be the source envelope key.
+    pub peer_capability: FederationPeerCapabilityConfig,
     pub grant: acteon_governance::federation::FederationGrantCeiling,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationPeerCapabilityConfig {
+    pub key_id: String,
+    pub verifying_key: String,
+    pub minimum_issuer_epoch: u64,
+    #[serde(default = "default_federation_capability_clock_skew_ms")]
+    pub max_clock_skew_ms: i64,
+    pub protocol_revision: String,
+    pub authentication_scheme: String,
+    #[serde(default)]
+    pub require_peer_finality: bool,
 }
 
 fn default_federation_export_lifetime_ms() -> i64 {
@@ -273,6 +365,14 @@ fn default_federation_export_lifetime_ms() -> i64 {
 
 fn default_federation_export_timeout_ms() -> u64 {
     10_000
+}
+
+fn default_federation_capability_clock_skew_ms() -> i64 {
+    30_000
+}
+
+fn default_federation_capability_lifetime_ms() -> i64 {
+    300_000
 }
 
 impl FederationExportConfig {
@@ -366,6 +466,25 @@ impl FederationExportConfig {
             if source.principal != epoch.grant.source
                 || !valid_env_name(&epoch.signer_key_env)
                 || !valid_env_name(&epoch.credential_env)
+                || epoch.peer_capability.key_id.is_empty()
+                || epoch.peer_capability.key_id.len() > 255
+                || epoch.peer_capability.verifying_key.len() != 64
+                || !epoch
+                    .peer_capability
+                    .verifying_key
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                || acteon_governance::federation::validate_federation_capability_verifying_key(
+                    &epoch.peer_capability.verifying_key,
+                )
+                .is_err()
+                || epoch.peer_capability.verifying_key == epoch.verifying_key
+                || epoch.peer_capability.minimum_issuer_epoch == 0
+                || !(0..=86_400_000).contains(&epoch.peer_capability.max_clock_skew_ms)
+                || epoch.peer_capability.protocol_revision.is_empty()
+                || epoch.peer_capability.protocol_revision.len() > 120
+                || epoch.peer_capability.authentication_scheme.is_empty()
+                || epoch.peer_capability.authentication_scheme.len() > 120
                 || key_material
                     .insert(&epoch.key_id, &epoch.verifying_key)
                     .is_some_and(|existing| existing != &epoch.verifying_key)
@@ -924,6 +1043,7 @@ impl ExecutionScopeConfig {
                 return Err("invalid authenticated federation peer binding".into());
             }
         }
+        federation.validate_capability_publisher()?;
         if federation.exports.len() > 128 {
             return Err("too many outbound federation profiles".into());
         }
@@ -1114,6 +1234,7 @@ mod tests {
         };
         scope.federation = Some(ExecutionFederationConfig {
             local_audience: "local.example".into(),
+            capability_publisher: None,
             trusts: vec![trust],
             peers: vec![FederationPeerConfig {
                 foreign_domain: "remote.example".into(),
@@ -1161,6 +1282,63 @@ mod tests {
             }
             assert!(changed.validate(("auth-control", "deployment")).is_err());
         }
+    }
+
+    #[test]
+    fn federation_capability_publisher_is_bounded_and_key_separated() {
+        let mut config = federation_declaration();
+        let publisher = FederationCapabilityPublisherConfig {
+            key_id: "local-capability-v1".into(),
+            verifying_key: acteon_governance::federation::FederationCapabilitySigner::from_secret(
+                [24; 32],
+            )
+            .verifying_key_hex(),
+            signer_key_env: "ACTEON_FEDERATION_CAPABILITY_SIGNER".into(),
+            issuer_epoch: 3,
+            lifetime_ms: 300_000,
+            protocol_revision: "acteon-federation-v1".into(),
+            authentication_schemes: vec!["bearer".into(), "mtls".into()],
+            peer_finality: true,
+        };
+        config.scopes[0]
+            .federation
+            .as_mut()
+            .unwrap()
+            .capability_publisher = Some(publisher.clone());
+        config.validate(("auth-control", "deployment")).unwrap();
+
+        let mut invalid = config.clone();
+        invalid.scopes[0]
+            .federation
+            .as_mut()
+            .unwrap()
+            .capability_publisher
+            .as_mut()
+            .unwrap()
+            .authentication_schemes = vec!["mtls".into(), "bearer".into()];
+        assert!(invalid.validate(("auth-control", "deployment")).is_err());
+
+        let mut invalid = config;
+        invalid.scopes[0]
+            .federation
+            .as_mut()
+            .unwrap()
+            .capability_publisher
+            .as_mut()
+            .unwrap()
+            .signer_key_env = "ACTEON_FEDERATION_SIGNER".into();
+        invalid.scopes[0].federation.as_mut().unwrap().exports = vec![];
+        // Removing exports removes the alias collision, so make the key itself
+        // invalid to preserve a direct publisher-shape refusal.
+        invalid.scopes[0]
+            .federation
+            .as_mut()
+            .unwrap()
+            .capability_publisher
+            .as_mut()
+            .unwrap()
+            .issuer_epoch = 0;
+        assert!(invalid.validate(("auth-control", "deployment")).is_err());
     }
 
     #[test]

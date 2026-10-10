@@ -52,6 +52,99 @@ pub fn validate_finality_source_key_separation(
     Ok(())
 }
 
+/// Keep capability-card signing independent from execution/auth authority,
+/// outbound envelope signing and credentials, and every finality trust domain.
+pub fn validate_federation_capability_key_separation(
+    execution: Option<&ExecutionAuthorityConfig>,
+    provider_sources: &[ReconciliationSourceConfig],
+    federation_sources: &[FederationFinalitySourceConfig],
+    mut read_secret: impl FnMut(&str) -> Option<Zeroizing<String>>,
+) -> Result<(), String> {
+    let Some(execution) = execution else {
+        return Ok(());
+    };
+    let publishers: Vec<_> = execution
+        .scopes
+        .iter()
+        .filter_map(|scope| scope.federation.as_ref()?.capability_publisher.as_ref())
+        .collect();
+    if publishers.is_empty() {
+        return Ok(());
+    }
+    let publisher_names = publishers
+        .iter()
+        .map(|publisher| publisher.signer_key_env.as_str())
+        .collect::<BTreeSet<_>>();
+    if publisher_names.len() != publishers.len() {
+        return Err("federation capability publishers require distinct key references".into());
+    }
+    let reserved_names = [
+        "ACTEON_EXECUTION_AUTHORITY_KEY",
+        "ACTEON_AUTH_AUTHORITY_KEY",
+        "ACTEON_AUTH_KEY",
+    ]
+    .into_iter()
+    .chain(
+        execution
+            .scopes
+            .iter()
+            .filter_map(|scope| scope.federation.as_ref())
+            .flat_map(|federation| &federation.exports)
+            .flat_map(|export| &export.epochs)
+            .flat_map(|epoch| [epoch.signer_key_env.as_str(), epoch.credential_env.as_str()]),
+    )
+    .chain(
+        provider_sources
+            .iter()
+            .flat_map(|source| &source.keys)
+            .map(|key| key.secret_env.as_str()),
+    )
+    .chain(
+        federation_sources
+            .iter()
+            .flat_map(|source| &source.keys)
+            .map(|key| key.secret_env.as_str()),
+    )
+    .collect::<BTreeSet<_>>();
+    if publisher_names
+        .iter()
+        .any(|name| reserved_names.contains(name))
+    {
+        return Err("federation capability signing requires dedicated key references".into());
+    }
+    let mut reserved_material = Vec::new();
+    for name in reserved_names {
+        if let Some(secret) = read_secret(name) {
+            push_material(&mut reserved_material, secret.as_bytes());
+        }
+    }
+    let mut publisher_material = Vec::new();
+    for publisher in publishers {
+        let encoded = read_secret(&publisher.signer_key_env)
+            .ok_or("federation capability signing key unavailable")?;
+        let decoded = hex::decode(encoded.as_bytes())
+            .map_err(|_| "federation capability signer must be a 32-byte hex secret")?;
+        if decoded.len() != 32 {
+            return Err("federation capability signer must be a 32-byte hex secret".into());
+        }
+        let mut candidates = vec![encoded.as_bytes().to_vec(), decoded];
+        if candidates.iter().any(|candidate| {
+            reserved_material.contains(candidate) || publisher_material.contains(candidate)
+        }) {
+            return Err("federation capability signing requires dedicated key material".into());
+        }
+        publisher_material.append(&mut candidates);
+    }
+    Ok(())
+}
+
+fn push_material(material: &mut Vec<Vec<u8>>, raw: &[u8]) {
+    material.push(raw.to_vec());
+    if let Ok(decoded) = hex::decode(raw) {
+        material.push(decoded);
+    }
+}
+
 /// Resolve every key before state publication. The profile and epoch are
 /// resolved again against the installed runtime binding, so a declaration
 /// cannot redirect a verifier by supplying a digest.

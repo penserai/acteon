@@ -125,6 +125,7 @@ class PlatformOperation(StrEnum):
     EXECUTIONS_RESET_EXECUTION = "executions_reset_execution"
     EXECUTIONS_SIGNAL_EXECUTION = "executions_signal_execution"
     EXECUTIONS_UPSERT_EXECUTION_ATTRIBUTES = "executions_upsert_execution_attributes"
+    FEDERATION_CAPABILITIES = "federation_capabilities"
     FEDERATION_EXPORT_MESSAGE = "federation_export_message"
     FEDERATION_IMPORT_ENVELOPE = "federation_import_envelope"
     FEDERATION_INVOKE_AGENT = "federation_invoke_agent"
@@ -349,6 +350,7 @@ OPERATIONS = {
     PlatformOperation.EXECUTIONS_RESET_EXECUTION: ('POST', '/v1/executions/{execution_id}/reset', ('execution_id',), 'json'),
     PlatformOperation.EXECUTIONS_SIGNAL_EXECUTION: ('POST', '/v1/executions/{execution_id}/signal/{signal_name}', ('execution_id', 'signal_name'), 'json'),
     PlatformOperation.EXECUTIONS_UPSERT_EXECUTION_ATTRIBUTES: ('PUT', '/v1/executions/{execution_id}/attributes', ('execution_id',), 'json'),
+    PlatformOperation.FEDERATION_CAPABILITIES: ('GET', '/a2a/{namespace}/{tenant}/federation/agents/{agent}/capabilities', ('namespace', 'tenant', 'agent'), 'json'),
     PlatformOperation.FEDERATION_EXPORT_MESSAGE: ('POST', '/a2a/{namespace}/{tenant}/agents/{agent}/v1/tasks/{task_id}/federation/exports/{profile}/message:send', ('namespace', 'tenant', 'agent', 'task_id', 'profile'), 'json'),
     PlatformOperation.FEDERATION_IMPORT_ENVELOPE: ('POST', '/a2a/{namespace}/{tenant}/federation/envelopes:import', ('namespace', 'tenant'), 'json'),
     PlatformOperation.FEDERATION_INVOKE_AGENT: ('POST', '/a2a/{namespace}/{tenant}/federation/agents/{agent}/v1/message:send', ('namespace', 'tenant', 'agent'), 'json'),

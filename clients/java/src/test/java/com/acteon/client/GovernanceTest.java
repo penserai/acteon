@@ -152,6 +152,8 @@ class GovernanceTest {
                 ? fixture.get("abandoned_evidence")
                 : path.equals("/v1/governance/federation/deliveries")
                 ? fixture.get("delivery_evidence_page")
+                : path.endsWith("/capabilities")
+                ? fixture.get("signed_capability_card")
                 : path.contains("/federation/exports/")
                 ? fixture.get("export_receipt")
                 : path.endsWith("message:send")
@@ -170,6 +172,7 @@ class GovernanceTest {
             var envelope = mapper.treeToValue(fixture.get("envelope"), Governance.SignedFederationEnvelopeDeclaration.class);
             client.publishFederationTrust(publication);
             client.revokeFederationTrust(revocation);
+            var capability = client.federationCapabilities("prod", "acme", "maya");
             var receipt = client.importFederationEnvelope("prod", "acme", envelope);
             var invocation = new Governance.SignedFederationInvocationDeclaration("signed-payload", "a".repeat(128));
             var message = Map.<String, Object>of("messageId", "message-1", "role", "user",
@@ -196,6 +199,7 @@ class GovernanceTest {
             var reconciled = client.reconcileFederationDelivery(
                 evidence.deliveries().get(0).deliveryId(), reconcileRequest);
             assertFalse(receipt.executionStarted());
+            assertEquals(fixture.get("signed_capability_card").get("payload").asText(), capability.payload());
             assertEquals("federated-task", task.get("id").asText());
             assertEquals("in_flight", exported.attemptStatus());
             assertEquals("export-message-1", evidence.deliveries().get(0).messageId());
@@ -205,6 +209,7 @@ class GovernanceTest {
             assertEquals(java.util.List.of(
                 "/v1/governance/federation/trusts",
                 "/v1/governance/federation/trusts/revoke",
+                "/a2a/prod/acme/federation/agents/maya/capabilities",
                 "/a2a/prod/acme/federation/envelopes:import",
                 "/a2a/prod/acme/federation/agents/maya/v1/message:send",
                 "/a2a/prod/acme/agents/maya/v1/tasks/" + sourceTask + "/federation/exports/remote-triage/message:send",

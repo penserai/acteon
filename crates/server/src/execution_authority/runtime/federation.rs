@@ -6,8 +6,8 @@ use crate::auth::projection::AuthenticatedExecutionConfiguration;
 use acteon_core::{FederationImportReceipt, Task, TaskMessage};
 use acteon_governance::{
     federation::{
-        FederatedDelegationImport, FederationEnvelope, SignedFederationEnvelope,
-        SignedFederationInvocation,
+        FederatedDelegationImport, FederationCapabilityCard, FederationEnvelope,
+        SignedFederationCapabilityCard, SignedFederationEnvelope, SignedFederationInvocation,
     },
     permit::matches_effect,
 };
@@ -28,7 +28,97 @@ pub struct FederationAgentInvocation<'a> {
     pub authentication: &'a AuthenticatedExecutionConfiguration,
 }
 
+pub struct FederationCapabilityAdmission<'a> {
+    pub namespace: &'a str,
+    pub tenant: &'a str,
+    pub agent_id: &'a str,
+    pub authentication: &'a AuthenticatedExecutionConfiguration,
+}
+
 impl ExecutionAuthorityRuntime {
+    /// Publish a short-lived card only to a currently authenticated configured
+    /// peer. The caller identity selects the audience; request data cannot.
+    pub async fn federation_capability_card(
+        &self,
+        request: FederationCapabilityAdmission<'_>,
+    ) -> Result<SignedFederationCapabilityCard, ManagementError> {
+        let scope = self
+            .scopes
+            .get(&(request.namespace.into(), request.tenant.into()))
+            .ok_or(ManagementError::NotFound)?;
+        request
+            .authentication
+            .verify_authentication_current()
+            .await
+            .map_err(|_| ManagementError::Forbidden)?;
+        let binding = request
+            .authentication
+            .scope(request.namespace, request.tenant)
+            .map_err(|_| ManagementError::Forbidden)?;
+        let actor = binding.authentication_source().principal();
+        scope
+            .prepared
+            .verify_authenticated_scope_typed(
+                &binding,
+                &scope.coordinator,
+                self.clock.now().timestamp_millis(),
+            )
+            .await
+            .map_err(|_| ManagementError::Forbidden)?;
+        let federation = scope
+            .prepared
+            .declaration()
+            .federation
+            .as_ref()
+            .ok_or(ManagementError::NotFound)?;
+        let peer = federation
+            .peers
+            .iter()
+            .find(|peer| peer.authentication_principal == *actor)
+            .ok_or(ManagementError::Forbidden)?;
+        let publisher = scope
+            .federation_capability
+            .as_ref()
+            .ok_or(ManagementError::NotFound)?;
+        let agent = scope
+            .prepared
+            .agents
+            .get(request.agent_id)
+            .ok_or(ManagementError::NotFound)?;
+        let now_ms = self.clock.now().timestamp_millis();
+        let expires_at_ms = now_ms
+            .checked_add(publisher.lifetime_ms)
+            .ok_or(ManagementError::Unavailable)?;
+        if now_ms < 0 {
+            return Err(ManagementError::Unavailable);
+        }
+        let agent_resource = acteon_core::ResourceRef::new(
+            acteon_core::ResourceKind::Agent,
+            request.namespace,
+            request.tenant,
+            request.agent_id,
+        )
+        .map_err(|_| ManagementError::Invalid)?;
+        publisher
+            .signer
+            .sign(&FederationCapabilityCard::new(
+                &federation.local_audience,
+                &peer.foreign_domain,
+                &publisher.key_id,
+                publisher.issuer_epoch,
+                now_ms,
+                expires_at_ms,
+                agent_resource,
+                agent.binding.digest(),
+                vec![agent.declaration.skill.clone()],
+                &publisher.protocol_revision,
+                true,
+                publisher.peer_finality,
+                publisher.authentication_schemes.clone(),
+            ))
+            .map_err(ManagementError::from)
+    }
+
     /// Invoke one exact imported agent message under current private peer
     /// authentication. Generic recovery never calls this path.
     pub async fn invoke_federated_agent(

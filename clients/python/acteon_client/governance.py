@@ -139,6 +139,23 @@ class SignedFederationEnvelopeDeclaration:
 
 
 @dataclass
+class SignedFederationCapabilityCard:
+    payload: str
+    signature: str
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SignedFederationCapabilityCard":
+        if (
+            not isinstance(data.get("payload"), str)
+            or not data["payload"]
+            or not isinstance(data.get("signature"), str)
+            or len(data["signature"]) != 128
+        ):
+            raise ValueError("invalid signed federation capability card")
+        return cls(data["payload"], data["signature"])
+
+
+@dataclass
 class SignedFederationInvocationDeclaration:
     payload: str
     signature: str
@@ -209,6 +226,16 @@ class FederationExportReceipt:
 
 
 @dataclass
+class FederationCapabilityEvidence:
+    card_digest: str
+    key_id: str
+    issuer_epoch: int
+    expires_at_ms: int
+    protocol_revision: str
+    authentication_scheme: str
+
+
+@dataclass
 class FederationDeliveryEvidence:
     delivery_id: str
     parent_execution_id: str
@@ -223,6 +250,7 @@ class FederationDeliveryEvidence:
     expires_at_ms: int
     expired: bool
     exact_replay_idempotent: bool
+    capability: FederationCapabilityEvidence | None
     status: dict[str, Any]
     reconciliations: list["FederationDeliveryFinalityEvidence"]
 
@@ -243,6 +271,11 @@ class FederationDeliveryEvidence:
             **{
                 **data,
                 "source": PrincipalIdentity(**data["source"]),
+                "capability": (
+                    FederationCapabilityEvidence(**data["capability"])
+                    if isinstance(data.get("capability"), dict)
+                    else None
+                ),
                 "reconciliations": [
                     FederationDeliveryFinalityEvidence.from_dict(item)
                     for item in reconciliations
@@ -973,6 +1006,16 @@ class _GovernanceMixin:
             raise ValueError("federation import receipt identity or execution state mismatch")
         return receipt
 
+    def federation_capabilities(
+        self, namespace: str, tenant: str, agent: str
+    ) -> SignedFederationCapabilityCard:
+        return SignedFederationCapabilityCard.from_dict(
+            self.platform_request(
+                PlatformOperation.FEDERATION_CAPABILITIES,
+                path={"namespace": namespace, "tenant": tenant, "agent": agent},
+            )
+        )
+
     def invoke_federated_agent(
         self,
         namespace: str,
@@ -1267,6 +1310,16 @@ class _AsyncGovernanceMixin:
         if receipt.namespace != namespace or receipt.tenant != tenant or receipt.execution_started:
             raise ValueError("federation import receipt identity or execution state mismatch")
         return receipt
+
+    async def federation_capabilities(
+        self, namespace: str, tenant: str, agent: str
+    ) -> SignedFederationCapabilityCard:
+        return SignedFederationCapabilityCard.from_dict(
+            await self.platform_request(
+                PlatformOperation.FEDERATION_CAPABILITIES,
+                path={"namespace": namespace, "tenant": tenant, "agent": agent},
+            )
+        )
 
     async def invoke_federated_agent(
         self,

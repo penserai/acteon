@@ -492,6 +492,19 @@ mod tests {
                 signer_key_env: "ACTEON_FEDERATION_SIGNER_V1".into(),
                 issuer_epoch: 1,
                 credential_env: "ACTEON_REMOTE_CREDENTIAL_V1".into(),
+                peer_capability: crate::config::FederationPeerCapabilityConfig {
+                    key_id: "remote-capability-v1".into(),
+                    verifying_key:
+                        acteon_governance::federation::FederationCapabilitySigner::from_secret(
+                            [24; 32],
+                        )
+                        .verifying_key_hex(),
+                    minimum_issuer_epoch: 1,
+                    max_clock_skew_ms: 30_000,
+                    protocol_revision: "acteon-federation-v1".into(),
+                    authentication_scheme: "bearer".into(),
+                    require_peer_finality: false,
+                },
                 grant,
             }],
             max_lifetime_ms: 60_000,

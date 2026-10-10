@@ -44,6 +44,8 @@ describe("federation management and import", () => {
         ? federation.abandoned_evidence
         : path === "/v1/governance/federation/deliveries"
         ? federation.delivery_evidence_page
+        : path.endsWith("/capabilities")
+        ? federation.signed_capability_card
         : path.includes("/federation/exports/")
         ? federation.export_receipt
         : path.endsWith("message:send")
@@ -53,6 +55,7 @@ describe("federation management and import", () => {
     const client = new ActeonClient("https://acteon.example", { apiKey: "federation-key" });
     await client.publishFederationTrust(federation.publication);
     await client.revokeFederationTrust(federation.revocation);
+    const capability = await client.federationCapabilities("prod", "acme", "maya");
     const receipt = await client.importFederationEnvelope("prod", "acme", federation.envelope);
     const message = { messageId: "message-1", role: "user", parts: [{ text: "inspect" }] };
     const invocation = { payload: "signed-payload", signature: "a".repeat(128) };
@@ -71,6 +74,7 @@ describe("federation management and import", () => {
     const reconciled = await client.reconcileFederationDelivery(
       federation.reconciled_evidence.delivery_id, federation.reconcile_request,
     );
+    expect(capability).toEqual(federation.signed_capability_card);
     expect(receipt).toEqual(federation.import_receipt);
     expect(receipt.execution_started).toBe(false);
     expect(task.id).toBe("federated-task");
@@ -84,6 +88,7 @@ describe("federation management and import", () => {
     expect(requests.map(request => new URL(request.url).pathname)).toEqual([
       "/v1/governance/federation/trusts",
       "/v1/governance/federation/trusts/revoke",
+      "/a2a/prod/acme/federation/agents/maya/capabilities",
       "/a2a/prod/acme/federation/envelopes:import",
       "/a2a/prod/acme/federation/agents/maya/v1/message:send",
       `/a2a/prod/acme/agents/maya/v1/tasks/${sourceTask}/federation/exports/remote-triage/message:send`,
@@ -97,6 +102,7 @@ describe("federation management and import", () => {
     expect(requests.map(request => request.init.body ? JSON.parse(request.init.body as string) : undefined)).toEqual([
       federation.publication,
       federation.revocation,
+      undefined,
       { envelope: federation.envelope },
       { invocation, message },
       { message: federation.export_message },
@@ -107,8 +113,8 @@ describe("federation management and import", () => {
       undefined,
       federation.reconcile_request,
     ]);
-    expect(new URL(requests[7]!.url).searchParams.toString()).toBe("namespace=prod&tenant=acme&limit=25");
-    expect(new URL(requests[9]!.url).searchParams.toString()).toBe("namespace=prod&tenant=acme");
+    expect(new URL(requests[8]!.url).searchParams.toString()).toBe("namespace=prod&tenant=acme&limit=25");
+    expect(new URL(requests[10]!.url).searchParams.toString()).toBe("namespace=prod&tenant=acme");
     for (const request of requests) {
       expect(new Headers(request.init.headers).get("Authorization")).toBe("Bearer federation-key");
     }

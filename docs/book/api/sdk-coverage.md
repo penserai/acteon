@@ -2,7 +2,7 @@
 
 Use Acteon's SDKs to connect agents, services, and workers to the same execution and governance platform. Start with the typed helpers for dispatch, rules, audit, approvals, and bus operations. Use the complete **platform operation API** for controls that do not yet have a dedicated helper in your language.
 
-The current source tree provides a generated catalog for **227 finite HTTP operations** in Rust, Python, TypeScript, Go, and Java. It includes receipt sessions, managed-stage recovery, workflow and execution controls, inference profiles, stream windows, federation admission and agent dispatch, and operator APIs. Six streaming or polymorphic RPC routes use the existing streaming and A2A clients instead. Server configuration, authorization, and optional build features still determine which operations are available on your deployment.
+The current source tree provides a generated catalog for **228 finite HTTP operations** in Rust, Python, TypeScript, Go, and Java. It includes receipt sessions, managed-stage recovery, workflow and execution controls, inference profiles, stream windows, federation capability negotiation, admission and agent dispatch, and operator APIs. Six streaming or polymorphic RPC routes use the existing streaming and A2A clients instead. Server configuration, authorization, and optional build features still determine which operations are available on your deployment.
 
 All five SDKs also expose typed federation delivery evidence pages. The helper
 accepts namespace, tenant, optional delivery cursor and page size, and preserves
@@ -157,18 +157,18 @@ All five SDKs expose native typed scope inspection, permit publication, and inte
 ### Federation trust, admission and governed export
 
 All five SDKs expose typed trust publication, terminal trust revocation and
-signed-envelope import. Imports return `FederationImportReceipt` and require
+signed capability-card retrieval and signed-envelope import. Imports return `FederationImportReceipt` and require
 `execution_started` to be false. The SDKs also correlate the receipt namespace
 and tenant with the requested path before returning it. Signed destination
 invocation and the three source export lifecycle operations are also typed.
 
-| SDK | Import | Invoke | Export / observe / replay |
-|---|---|---|---|
-| Rust | `import_federation_envelope` | `invoke_federated_agent` | `export_federated_message` / `observe_federated_export` / `replay_federated_export` |
-| Python, sync/async | `import_federation_envelope` | `invoke_federated_agent` | `export_federated_message` / `observe_federated_export` / `replay_federated_export` |
-| TypeScript | `importFederationEnvelope` | `invokeFederatedAgent` | `exportFederatedMessage` / `observeFederatedExport` / `replayFederatedExport` |
-| Go | `ImportFederationEnvelope` | `InvokeFederatedAgent` | `ExportFederatedMessage` / `ObserveFederatedExport` / `ReplayFederatedExport` |
-| Java | `importFederationEnvelope` | `invokeFederatedAgent` | `exportFederatedMessage` / `observeFederatedExport` / `replayFederatedExport` |
+| SDK | Capability card | Import | Invoke | Export / observe / replay |
+|---|---|---|---|---|
+| Rust | `federation_capabilities` | `import_federation_envelope` | `invoke_federated_agent` | `export_federated_message` / `observe_federated_export` / `replay_federated_export` |
+| Python, sync/async | `federation_capabilities` | `import_federation_envelope` | `invoke_federated_agent` | `export_federated_message` / `observe_federated_export` / `replay_federated_export` |
+| TypeScript | `federationCapabilities` | `importFederationEnvelope` | `invokeFederatedAgent` | `exportFederatedMessage` / `observeFederatedExport` / `replayFederatedExport` |
+| Go | `FederationCapabilities` | `ImportFederationEnvelope` | `InvokeFederatedAgent` | `ExportFederatedMessage` / `ObserveFederatedExport` / `ReplayFederatedExport` |
+| Java | `federationCapabilities` | `importFederationEnvelope` | `invokeFederatedAgent` | `exportFederatedMessage` / `observeFederatedExport` / `replayFederatedExport` |
 
 The generated catalog verifies the exact methods, paths and parameter names for
 all federation routes. The public request types describe proposed data; authentication

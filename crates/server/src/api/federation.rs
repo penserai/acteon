@@ -7,8 +7,8 @@ use crate::{
     auth::projection::AuthenticatedExecutionConfiguration,
     auth::{identity::CallerIdentity, role::Permission},
     execution_authority::{
-        AgentFederationExportRequest, FederationAgentInvocation, FederationExportRuntimeError,
-        FederationImportAdmission,
+        AgentFederationExportRequest, FederationAgentInvocation, FederationCapabilityAdmission,
+        FederationExportRuntimeError, FederationImportAdmission,
     },
 };
 use acteon_core::{
@@ -27,6 +27,45 @@ use serde::{Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 pub struct FederationExportMessage {
     pub message: acteon_core::TaskMessage,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct FederationCapabilityCardResponse {
+    pub payload: String,
+    pub signature: String,
+}
+
+#[utoipa::path(
+    get,
+    path = "/a2a/{namespace}/{tenant}/federation/agents/{agent}/capabilities",
+    tag = "Governance",
+    params(("namespace" = String, Path), ("tenant" = String, Path), ("agent" = String, Path)),
+    responses(
+        (status = 200, body = FederationCapabilityCardResponse, description = "Audience-bound signed peer capability card"),
+        (status = 401, description = "Private authentication required"),
+        (status = 403, description = "Caller is not a configured federation peer"),
+        (status = 404, description = "Capability publisher or current agent is unavailable"),
+        (status = 503, description = "Federation authority unavailable")
+    )
+)]
+pub async fn capabilities(
+    State(state): State<AppState>,
+    proof: Option<Extension<AuthenticatedExecutionConfiguration>>,
+    Path((namespace, tenant, agent)): Path<(String, String, String)>,
+) -> Result<Json<FederationCapabilityCardResponse>, GovernanceApiError> {
+    let proof = super::governance::authentication(proof)?;
+    let signed = super::governance::runtime(&state)?
+        .federation_capability_card(FederationCapabilityAdmission {
+            namespace: &namespace,
+            tenant: &tenant,
+            agent_id: &agent,
+            authentication: &proof,
+        })
+        .await?;
+    Ok(Json(FederationCapabilityCardResponse {
+        payload: signed.payload,
+        signature: signed.signature,
+    }))
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]

@@ -3,7 +3,7 @@ import { AGENT_EXECUTION_CONTEXT_HEADER, AGENT_SOURCE_CONTEXT_HEADER, agentExecu
 import { parseProviderHistoryReceipt, type ProviderHistoryReceipt, type ProviderReconciliationCorrelation, type ProviderReconciliationRequest } from "./governance.js";
 import { parseProviderExecutionHistory, type ProviderExecutionHistory, type ProviderExecutionHistoryWire } from "./governance.js";
 import type { WorkforceScopeView, WorkforceChangeRequest } from "./workforce.js";
-import type { AbandonFederationDeliveryRequest, FederationDeliveryEvidence, FederationDeliveryEvidencePage, FederationExportReceipt, FederationFinalityCorrelation, FederationImportReceipt, GovernanceScopeView, GovernanceChangeReceipt, PublishFederationTrustRequest, PublishGovernancePermitRequest, ReconcileFederationDeliveryRequest, RevokeFederationTrustRequest, SignedFederationEnvelopeDeclaration, SignedFederationInvocationDeclaration, GovernanceInterventionRequest } from "./governance.js";
+import type { AbandonFederationDeliveryRequest, FederationDeliveryEvidence, FederationDeliveryEvidencePage, FederationExportReceipt, FederationFinalityCorrelation, FederationImportReceipt, GovernanceScopeView, GovernanceChangeReceipt, PublishFederationTrustRequest, PublishGovernancePermitRequest, ReconcileFederationDeliveryRequest, RevokeFederationTrustRequest, SignedFederationCapabilityCard, SignedFederationEnvelopeDeclaration, SignedFederationInvocationDeclaration, GovernanceInterventionRequest } from "./governance.js";
 import { platformRequestParts, type PlatformOperation, type PlatformRequestOptions } from "./platform.js";
 /**
  * HTTP client for the Acteon action gateway.
@@ -620,6 +620,17 @@ export class ActeonClient {
       path: { delivery_id: deliveryId }, body: request,
     }) as FederationDeliveryEvidence;
   }
+  /** Authenticate as the configured peer and retain authority without starting execution. */
+  async federationCapabilities(namespace: string, tenant: string, agent: string): Promise<SignedFederationCapabilityCard> {
+    const card = await this.platformRequest("federation_capabilities", {
+      path: { namespace, tenant, agent },
+    }) as SignedFederationCapabilityCard;
+    if (!card.payload || card.signature.length !== 128) {
+      throw new Error("invalid signed federation capability card");
+    }
+    return card;
+  }
+
   /** Authenticate as the configured peer and retain authority without starting execution. */
   async importFederationEnvelope(namespace: string, tenant: string, envelope: SignedFederationEnvelopeDeclaration): Promise<FederationImportReceipt> {
     const receipt = await this.platformRequest("federation_import_envelope", {

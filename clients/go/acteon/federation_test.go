@@ -65,6 +65,8 @@ func TestFederationManagementAndInertImportWire(t *testing.T) {
 			response = wire["delivery_evidence_page"]
 		} else if bytes.Contains([]byte(r.URL.Path), []byte("/federation/exports/")) {
 			response = wire["export_receipt"]
+		} else if strings.HasSuffix(r.URL.Path, "/capabilities") {
+			response = wire["signed_capability_card"]
 		} else if r.URL.Path == "/a2a/prod/acme/federation/envelopes:import" {
 			response = wire["import_receipt"]
 		} else if r.URL.Path == "/a2a/prod/acme/federation/agents/maya/v1/message:send" {
@@ -83,6 +85,10 @@ func TestFederationManagementAndInertImportWire(t *testing.T) {
 	}
 	if _, err = client.RevokeFederationTrust(ctx, revocation); err != nil {
 		t.Fatal(err)
+	}
+	capability, err := client.FederationCapabilities(ctx, "prod", "acme", "maya")
+	if err != nil || capability.Payload == "" {
+		t.Fatalf("unexpected capability card: %v (%v)", capability, err)
 	}
 	receipt, err := client.ImportFederationEnvelope(ctx, "prod", "acme", envelope)
 	if err != nil {
@@ -114,7 +120,7 @@ func TestFederationManagementAndInertImportWire(t *testing.T) {
 	}
 	limit := 25
 	evidence, err := client.FederationDeliveryEvidence(ctx, "prod", "acme", nil, &limit)
-	if err != nil || len(evidence.Deliveries) != 1 || evidence.Deliveries[0].MessageID != "export-message-1" {
+	if err != nil || len(evidence.Deliveries) != 1 || evidence.Deliveries[0].MessageID != "export-message-1" || evidence.Deliveries[0].Capability == nil {
 		t.Fatalf("unexpected delivery evidence: %v (%v)", evidence, err)
 	}
 	abandoned, err := client.AbandonFederationDelivery(ctx, evidence.Deliveries[0].DeliveryID, abandonment)
@@ -129,13 +135,13 @@ func TestFederationManagementAndInertImportWire(t *testing.T) {
 	if err != nil || reconciled.Status.Status != "rejected" || len(reconciled.Reconciliations) != 1 {
 		t.Fatalf("unexpected reconciled evidence: %v (%v)", reconciled, err)
 	}
-	if len(paths) != 11 || paths[2] != "/a2a/prod/acme/federation/envelopes:import" || paths[3] != "/a2a/prod/acme/federation/agents/maya/v1/message:send" || paths[7] != "/v1/governance/federation/deliveries" || paths[8] != "/v1/governance/federation/deliveries/"+evidence.Deliveries[0].DeliveryID+":abandon" || !strings.HasSuffix(paths[9], "/correlation") || !strings.HasSuffix(paths[10], ":reconcile") {
+	if len(paths) != 12 || paths[2] != "/a2a/prod/acme/federation/agents/maya/capabilities" || paths[3] != "/a2a/prod/acme/federation/envelopes:import" || paths[4] != "/a2a/prod/acme/federation/agents/maya/v1/message:send" || paths[8] != "/v1/governance/federation/deliveries" || paths[9] != "/v1/governance/federation/deliveries/"+evidence.Deliveries[0].DeliveryID+":abandon" || !strings.HasSuffix(paths[10], "/correlation") || !strings.HasSuffix(paths[11], ":reconcile") {
 		t.Fatalf("unexpected paths: %v", paths)
 	}
 	for i, action := range []string{"send", "observe", "replay"} {
 		expected := "/a2a/prod/acme/agents/maya/v1/tasks/" + sourceTask + "/federation/exports/remote-triage/message:" + action
-		if paths[i+4] != expected {
-			t.Fatalf("unexpected export path: %s", paths[i+4])
+		if paths[i+5] != expected {
+			t.Fatalf("unexpected export path: %s", paths[i+5])
 		}
 	}
 	if len(calls) != 9 {

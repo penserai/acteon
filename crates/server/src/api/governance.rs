@@ -86,8 +86,19 @@ pub struct FederationDeliveryEvidence {
     pub expires_at_ms: i64,
     pub expired: bool,
     pub exact_replay_idempotent: bool,
+    pub capability: Option<FederationCapabilityEvidence>,
     pub status: FederationDeliveryEvidenceStatus,
     pub reconciliations: Vec<FederationDeliveryFinalityEvidence>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct FederationCapabilityEvidence {
+    pub card_digest: String,
+    pub key_id: String,
+    pub issuer_epoch: u64,
+    pub expires_at_ms: i64,
+    pub protocol_revision: String,
+    pub authentication_scheme: String,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -108,6 +119,9 @@ pub struct FederationDeliveryFinalityEvidence {
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum FederationDeliveryEvidenceStatus {
     Registered,
+    CapabilityNegotiating {
+        claim_expires_at_ms: i64,
+    },
     Importing {
         claim_expires_at_ms: i64,
     },
@@ -147,6 +161,11 @@ impl From<acteon_executor::federation_transport::FederationDeliveryEvidence>
         };
         let status = match evidence.status {
             Status::Registered => FederationDeliveryEvidenceStatus::Registered,
+            Status::CapabilityNegotiating {
+                claim_expires_at_ms,
+            } => FederationDeliveryEvidenceStatus::CapabilityNegotiating {
+                claim_expires_at_ms,
+            },
             Status::Importing {
                 claim_expires_at_ms,
             } => FederationDeliveryEvidenceStatus::Importing {
@@ -201,6 +220,16 @@ impl From<acteon_executor::federation_transport::FederationDeliveryEvidence>
             expires_at_ms: evidence.expires_at_ms,
             expired: evidence.expired,
             exact_replay_idempotent: evidence.exact_replay_idempotent,
+            capability: evidence
+                .capability
+                .map(|capability| FederationCapabilityEvidence {
+                    card_digest: capability.card_digest,
+                    key_id: capability.key_id,
+                    issuer_epoch: capability.issuer_epoch,
+                    expires_at_ms: capability.expires_at_ms,
+                    protocol_revision: capability.protocol_revision,
+                    authentication_scheme: capability.authentication_scheme,
+                }),
             status,
             reconciliations: evidence
                 .reconciliations
