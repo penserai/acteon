@@ -1024,7 +1024,10 @@ fn federation_transport_for_epoch(
             binding_digest,
             "acteon-federation-http-v1",
             super::federation_http::FederationHttpAdapterInstallation {
-                credential,
+                credential: Arc::new(
+                    super::federation_http::StaticFederationCredentialProvider::new(credential)
+                        .map_err(|_| "invalid federation export credential")?,
+                ),
                 capability: federation_http_capability(declaration, epoch, local_audience),
                 clock: dependencies.clock.clone(),
                 policy: acteon_http::OutboundPolicy {

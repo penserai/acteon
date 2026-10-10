@@ -41,6 +41,7 @@ use tokio::sync::Notify;
 const ACCEPT: u8 = 0;
 const UNCERTAIN: u8 = 1;
 const REJECT: u8 = 2;
+const NOT_SENT: u8 = 3;
 
 struct Adapter {
     state: Arc<dyn StateStore>,
@@ -151,6 +152,7 @@ impl FederationTransportAdapter for Adapter {
             REJECT => Ok(FederationImportDisposition::Rejected {
                 code: "remote_trust_denied".into(),
             }),
+            NOT_SENT => Ok(FederationImportDisposition::NotSent),
             _ => {
                 let envelope = request
                     .envelope
@@ -193,6 +195,7 @@ impl FederationTransportAdapter for Adapter {
             REJECT => Ok(FederationInvokeDisposition::Rejected {
                 code: "remote_execution_denied".into(),
             }),
+            NOT_SENT => Ok(FederationInvokeDisposition::NotSent),
             _ => {
                 let invocation = request
                     .invocation
@@ -471,6 +474,64 @@ async fn capability_claim_is_visible_without_exposing_the_card() {
         delivery.await.unwrap().unwrap().status,
         FederationDeliveryStatus::Accepted { .. }
     ));
+}
+
+#[tokio::test]
+async fn proven_not_sent_restores_each_safe_stage_for_ordinary_retry() {
+    let import = Fixture::new(true);
+    import.adapter.import_mode.store(NOT_SENT, Ordering::SeqCst);
+    assert!(matches!(
+        import.transport.submit(import.intent()).await,
+        Err(FederationTransportError::Unavailable)
+    ));
+    assert!(matches!(
+        import
+            .transport
+            .observe(import.intent())
+            .await
+            .unwrap()
+            .status,
+        FederationDeliveryStatus::Registered
+    ));
+    import.adapter.import_mode.store(ACCEPT, Ordering::SeqCst);
+    assert!(matches!(
+        import
+            .transport
+            .submit(import.intent())
+            .await
+            .unwrap()
+            .status,
+        FederationDeliveryStatus::Accepted { .. }
+    ));
+
+    let invoke = Fixture::new(true);
+    invoke.adapter.invoke_mode.store(NOT_SENT, Ordering::SeqCst);
+    assert!(matches!(
+        invoke.transport.submit(invoke.intent()).await,
+        Err(FederationTransportError::Unavailable)
+    ));
+    assert!(matches!(
+        invoke
+            .transport
+            .observe(invoke.intent())
+            .await
+            .unwrap()
+            .status,
+        FederationDeliveryStatus::Imported { .. }
+    ));
+    assert_eq!(invoke.adapter.imports.load(Ordering::SeqCst), 1);
+    invoke.adapter.invoke_mode.store(ACCEPT, Ordering::SeqCst);
+    assert!(matches!(
+        invoke
+            .transport
+            .submit(invoke.intent())
+            .await
+            .unwrap()
+            .status,
+        FederationDeliveryStatus::Accepted { .. }
+    ));
+    assert_eq!(invoke.adapter.imports.load(Ordering::SeqCst), 1);
+    assert_eq!(invoke.adapter.invokes.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]

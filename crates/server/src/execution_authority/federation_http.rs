@@ -28,10 +28,51 @@ const MAX_ERROR_BYTES: usize = 2_048;
 pub struct ActeonFederationHttpAdapter {
     binding_digest: String,
     revision: String,
-    credential: SecretString,
+    credential: Arc<dyn FederationCredentialProvider>,
     capability: FederationHttpCapabilityQualification,
     clock: Arc<dyn Clock>,
     client: GuardedClient,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FederationCredentialError {
+    Refused,
+    Unavailable,
+}
+
+#[async_trait]
+pub trait FederationCredentialProvider: Send + Sync {
+    fn scheme(&self) -> &str;
+    fn revision(&self) -> &str;
+    async fn credential(&self) -> Result<SecretString, FederationCredentialError>;
+}
+
+pub struct StaticFederationCredentialProvider {
+    credential: SecretString,
+}
+
+impl StaticFederationCredentialProvider {
+    pub fn new(credential: SecretString) -> Result<Self, FederationCredentialError> {
+        if credential.expose_secret().is_empty() {
+            return Err(FederationCredentialError::Refused);
+        }
+        Ok(Self { credential })
+    }
+}
+
+#[async_trait]
+impl FederationCredentialProvider for StaticFederationCredentialProvider {
+    fn scheme(&self) -> &'static str {
+        "bearer"
+    }
+
+    fn revision(&self) -> &'static str {
+        "static-bearer-v1"
+    }
+
+    async fn credential(&self) -> Result<SecretString, FederationCredentialError> {
+        Ok(self.credential.clone())
+    }
 }
 
 #[derive(Clone)]
@@ -43,7 +84,7 @@ pub struct FederationHttpCapabilityQualification {
 }
 
 pub struct FederationHttpAdapterInstallation {
-    pub credential: SecretString,
+    pub credential: Arc<dyn FederationCredentialProvider>,
     pub capability: FederationHttpCapabilityQualification,
     pub clock: Arc<dyn Clock>,
     pub policy: OutboundPolicy,
@@ -79,7 +120,8 @@ impl ActeonFederationHttpAdapter {
         } = installation;
         if !valid_digest(binding_digest)
             || !valid_text(revision, 120)
-            || credential.expose_secret().is_empty()
+            || !valid_text(credential.revision(), 120)
+            || credential.scheme() != capability.requirement.authentication_scheme
             || !valid_text(&capability.key_id, 255)
             || validate_federation_capability_verifying_key(&capability.verifying_key).is_err()
             || capability.requirement.validate().is_err()
@@ -136,11 +178,18 @@ impl FederationTransportAdapter for ActeonFederationHttpAdapter {
                 code: "federation_capability_endpoint_refused".into(),
             });
         };
-        let Ok(response) = builder
-            .bearer_auth(self.credential.expose_secret())
-            .send()
-            .await
-        else {
+        let credential = match self.credential.credential().await {
+            Ok(credential) => credential,
+            Err(FederationCredentialError::Refused) => {
+                return Ok(FederationCapabilityDisposition::Rejected {
+                    code: "federation_credential_refused".into(),
+                });
+            }
+            Err(FederationCredentialError::Unavailable) => {
+                return Ok(FederationCapabilityDisposition::Unavailable);
+            }
+        };
+        let Ok(response) = builder.bearer_auth(credential.expose_secret()).send().await else {
             return Ok(FederationCapabilityDisposition::Unavailable);
         };
         let status = response.status();
@@ -215,8 +264,19 @@ impl FederationTransportAdapter for ActeonFederationHttpAdapter {
                 code: "federation_destination_refused".into(),
             });
         };
+        let credential = match self.credential.credential().await {
+            Ok(credential) => credential,
+            Err(FederationCredentialError::Refused) => {
+                return Ok(FederationImportDisposition::Rejected {
+                    code: "federation_credential_refused".into(),
+                });
+            }
+            Err(FederationCredentialError::Unavailable) => {
+                return Ok(FederationImportDisposition::NotSent);
+            }
+        };
         let Ok(response) = builder
-            .bearer_auth(self.credential.expose_secret())
+            .bearer_auth(credential.expose_secret())
             .json(&serde_json::json!({"envelope": request.envelope}))
             .send()
             .await
@@ -274,8 +334,19 @@ impl FederationTransportAdapter for ActeonFederationHttpAdapter {
                 code: "federation_destination_refused".into(),
             });
         };
+        let credential = match self.credential.credential().await {
+            Ok(credential) => credential,
+            Err(FederationCredentialError::Refused) => {
+                return Ok(FederationInvokeDisposition::Rejected {
+                    code: "federation_credential_refused".into(),
+                });
+            }
+            Err(FederationCredentialError::Unavailable) => {
+                return Ok(FederationInvokeDisposition::NotSent);
+            }
+        };
         let Ok(response) = builder
-            .bearer_auth(self.credential.expose_secret())
+            .bearer_auth(credential.expose_secret())
             .json(&serde_json::json!({
                 "invocation": request.invocation,
                 "message": request.message,
@@ -563,7 +634,12 @@ mod tests {
             &"a".repeat(64),
             "acteon-federation-http-v1",
             FederationHttpAdapterInstallation {
-                credential: SecretString::new("federation-secret".into()),
+                credential: Arc::new(
+                    StaticFederationCredentialProvider::new(SecretString::new(
+                        "federation-secret".into(),
+                    ))
+                    .unwrap(),
+                ),
                 capability: FederationHttpCapabilityQualification {
                     key_id: "remote-capability-v1".into(),
                     verifying_key: capability_key,

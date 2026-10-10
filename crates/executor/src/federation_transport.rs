@@ -39,14 +39,22 @@ const MAX_SIGNED_PAYLOAD_BYTES: usize = 65_536;
 #[derive(Debug, Clone)]
 pub enum FederationImportDisposition {
     Accepted(Box<FederationImportReceipt>),
-    Rejected { code: String },
+    Rejected {
+        code: String,
+    },
+    /// The adapter proved that no import request was attempted.
+    NotSent,
     Uncertain,
 }
 
 #[derive(Debug, Clone)]
 pub enum FederationInvokeDisposition {
     Accepted(Box<Task>),
-    Rejected { code: String },
+    Rejected {
+        code: String,
+    },
+    /// The adapter proved that no invocation request was attempted.
+    NotSent,
     Uncertain,
 }
 
@@ -1167,6 +1175,13 @@ impl DurableFederationTransport {
                 Err(FederationTransportError::Refused)
             };
         }
+        let not_sent_state = match &current.state {
+            DeliveryState::Registered => DeliveryState::Registered,
+            DeliveryState::Importing { .. } | DeliveryState::ImportUncertain => {
+                DeliveryState::ImportUncertain
+            }
+            _ => return Err(FederationTransportError::Conflict),
+        };
         let mut claimed = current.clone();
         claimed.state = DeliveryState::Importing {
             claim_id: Uuid::new_v4(),
@@ -1202,6 +1217,11 @@ impl DurableFederationTransport {
                     stage: FederationDeliveryStage::Import,
                     code,
                 }
+            }
+            Ok(Ok(FederationImportDisposition::NotSent)) => {
+                self.settle(key, &current, claimed, version + 1, not_sent_state)
+                    .await?;
+                return Err(FederationTransportError::Unavailable);
             }
             _ => DeliveryState::ImportUncertain,
         };
@@ -1247,6 +1267,17 @@ impl DurableFederationTransport {
                 Err(FederationTransportError::Refused)
             };
         }
+        let not_sent_state = match &current.state {
+            DeliveryState::Imported { .. } => DeliveryState::Imported {
+                receipt: receipt.clone(),
+            },
+            DeliveryState::Invoking { .. } | DeliveryState::InvokeUncertain { .. } => {
+                DeliveryState::InvokeUncertain {
+                    receipt: receipt.clone(),
+                }
+            }
+            _ => return Err(FederationTransportError::Conflict),
+        };
         let mut claimed = current.clone();
         claimed.state = DeliveryState::Invoking {
             receipt: receipt.clone(),
@@ -1287,6 +1318,11 @@ impl DurableFederationTransport {
                     stage: FederationDeliveryStage::Invoke,
                     code,
                 }
+            }
+            Ok(Ok(FederationInvokeDisposition::NotSent)) => {
+                self.settle(key, &current, claimed, version + 1, not_sent_state)
+                    .await?;
+                return Err(FederationTransportError::Unavailable);
             }
             _ => DeliveryState::InvokeUncertain { receipt },
         };
