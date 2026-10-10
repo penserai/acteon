@@ -666,8 +666,13 @@ Acteon provides governed outbound delivery with signed capability-card
 discovery and either a deployment-owned static bearer credential or a qualified
 OAuth 2 client-credentials broker. Brokered access tokens rotate automatically,
 stay only in process memory, and record only the provider revision in durable
-evidence. Conformance evidence against a named external implementation remains
-open. Peer credential state and effect authority also reside in separate state
+evidence. The release suite starts two independent Acteon servers over HTTP,
+negotiates the signed capability card, imports and invokes an agent, discards the
+first invocation response after the destination commits, restarts both servers,
+and explicitly replays the exact request. Redis-backed journals recover the same
+remote task and prove one provider effect. Conformance evidence against a named
+external implementation remains open. Peer credential state and effect authority
+also reside in separate state
 scopes: the route rechecks the peer just before dispatch, and the coordinator
 separately performs the atomic execution check. A remote card, signature,
 access token or cached envelope never overrides local permits, closures,

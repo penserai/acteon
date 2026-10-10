@@ -2175,8 +2175,13 @@ independent Redis, PostgreSQL and DynamoDB clients. It persists an invocation
 with a lost response, crosses a simulated process boundary, accepts exact
 qualified peer finality, pages sanitized evidence through the generic state
 API, and proves a restarted transport performs zero additional imports or
-invocations. Two-server HTTP qualification and conformance against a named
-external A2A implementation remain required for the federation release gate.
+invocations. A separate Redis integration now starts real source and destination
+Acteon server processes over HTTP. It negotiates a signed capability card,
+commits an import and invocation, loses the first invocation response, preserves
+the ambiguity across both process restarts, then uses explicit exact replay to
+recover the original remote task while proving the provider ran once. Conformance
+against a named external A2A implementation remains required for the federation
+release gate.
 
 ### Signed federation capability negotiation
 
