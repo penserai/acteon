@@ -35,6 +35,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::sse::{KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::Duration;
@@ -42,6 +43,7 @@ use std::time::Duration;
 use acteon_core::{Agent, AgentCard, Task, TaskMessage, TaskState};
 use acteon_gateway::{TaskEngine, TaskEngineError, TaskScope};
 use acteon_state::{KeyKind, StateKey};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 
 use super::AppState;
 use super::schemas::ErrorResponse;
@@ -108,9 +110,8 @@ const INTERNAL_ERROR: i64 = -32603;
 // A2A-specific error codes (A2A spec §8).
 const TASK_NOT_FOUND: i64 = -32001;
 const TASK_NOT_CANCELABLE: i64 = -32002;
-// Acteon: `A2A-Version` negotiation failure. JSON-RPC reserves
-// -32000..-32099 for implementation-defined server errors.
-const VERSION_NOT_SUPPORTED: i64 = -32000;
+// A2A 1.0 canonical version-negotiation error.
+const VERSION_NOT_SUPPORTED: i64 = -32009;
 
 // ---------------------------------------------------------------------
 // A2A error model
@@ -267,6 +268,170 @@ struct TaskIdParams {
     id: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ListTasksParams {
+    #[serde(default)]
+    tenant: Option<String>,
+    #[serde(default)]
+    context_id: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    page_size: Option<usize>,
+    #[serde(default)]
+    page_token: Option<String>,
+    #[serde(default)]
+    history_length: Option<usize>,
+    #[serde(default)]
+    status_timestamp_after: Option<DateTime<Utc>>,
+    #[serde(default)]
+    include_artifacts: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct ListTasksCursor {
+    last_id: String,
+    context_id: Option<String>,
+    status: Option<String>,
+    history_length: Option<usize>,
+    status_timestamp_after: Option<DateTime<Utc>>,
+    include_artifacts: bool,
+}
+
+fn parse_v1_task_state(value: &str) -> Result<Option<TaskState>, A2aError> {
+    match value {
+        "TASK_STATE_UNSPECIFIED" => Ok(None),
+        "TASK_STATE_SUBMITTED" => Ok(Some(TaskState::Submitted)),
+        "TASK_STATE_WORKING" => Ok(Some(TaskState::Working)),
+        "TASK_STATE_COMPLETED" => Ok(Some(TaskState::Completed)),
+        "TASK_STATE_FAILED" => Ok(Some(TaskState::Failed)),
+        "TASK_STATE_CANCELED" => Ok(Some(TaskState::Canceled)),
+        "TASK_STATE_INPUT_REQUIRED" => Ok(Some(TaskState::InputRequired)),
+        "TASK_STATE_AUTH_REQUIRED" => Ok(Some(TaskState::AuthRequired)),
+        "TASK_STATE_REJECTED" => Ok(Some(TaskState::Rejected)),
+        _ => Err(A2aError::invalid_params(format!(
+            "unsupported TaskState '{value}'"
+        ))),
+    }
+}
+
+fn decode_list_tasks_cursor(value: &str) -> Result<ListTasksCursor, A2aError> {
+    let bytes = URL_SAFE_NO_PAD
+        .decode(value)
+        .map_err(|_| A2aError::invalid_params("invalid pageToken"))?;
+    serde_json::from_slice(&bytes).map_err(|_| A2aError::invalid_params("invalid pageToken"))
+}
+
+fn encode_list_tasks_cursor(cursor: &ListTasksCursor) -> Result<String, A2aError> {
+    serde_json::to_vec(cursor)
+        .map(|bytes| URL_SAFE_NO_PAD.encode(bytes))
+        .map_err(|_| A2aError::internal("internal error"))
+}
+
+async fn method_list_tasks_v1(
+    engine: &TaskEngine,
+    scope: &TaskScope,
+    params: ListTasksParams,
+) -> Result<Value, A2aError> {
+    let page_size = params.page_size.unwrap_or(50);
+    if !(1..=100).contains(&page_size) {
+        return Err(A2aError::invalid_params(
+            "pageSize must be between 1 and 100",
+        ));
+    }
+    if params
+        .tenant
+        .as_deref()
+        .is_some_and(|tenant| !tenant.is_empty() && tenant != scope.tenant)
+    {
+        return Err(A2aError::invalid_params(
+            "tenant does not match the selected agent interface",
+        ));
+    }
+    let status = params
+        .status
+        .as_deref()
+        .map(parse_v1_task_state)
+        .transpose()?
+        .flatten();
+    let cursor = params
+        .page_token
+        .as_deref()
+        .map(decode_list_tasks_cursor)
+        .transpose()?;
+    if let Some(cursor) = &cursor
+        && (cursor.context_id != params.context_id
+            || cursor.status != params.status
+            || cursor.history_length != params.history_length
+            || cursor.status_timestamp_after != params.status_timestamp_after
+            || cursor.include_artifacts != params.include_artifacts)
+    {
+        return Err(A2aError::invalid_params(
+            "pageToken does not match the current filters",
+        ));
+    }
+
+    let mut tasks = engine.list_tasks(scope).await?;
+    tasks.retain(|task| {
+        params
+            .context_id
+            .as_ref()
+            .is_none_or(|context| task.context_id.as_ref() == Some(context))
+            && status.is_none_or(|expected| task.status.state == expected)
+            && params
+                .status_timestamp_after
+                .is_none_or(|after| task.status.timestamp >= after)
+    });
+    tasks.sort_by(|left, right| left.id.cmp(&right.id));
+    let total_size = tasks.len();
+    if let Some(cursor) = &cursor {
+        tasks.retain(|task| task.id > cursor.last_id);
+    }
+    let has_more = tasks.len() > page_size;
+    tasks.truncate(page_size);
+    if let Some(history_length) = params.history_length {
+        for task in &mut tasks {
+            if task.history.len() > history_length {
+                task.history = task.history.split_off(task.history.len() - history_length);
+            }
+        }
+    }
+    if !params.include_artifacts {
+        for task in &mut tasks {
+            task.artifacts.clear();
+        }
+    }
+    let projected = tasks
+        .iter()
+        .map(project_v1_task)
+        .collect::<Result<Vec<_>, _>>()?;
+    let next_page_token = if has_more {
+        let last_id = tasks
+            .last()
+            .expect("a page with more results contains at least one task")
+            .id
+            .clone();
+        encode_list_tasks_cursor(&ListTasksCursor {
+            last_id,
+            context_id: params.context_id,
+            status: params.status,
+            history_length: params.history_length,
+            status_timestamp_after: params.status_timestamp_after,
+            include_artifacts: params.include_artifacts,
+        })?
+    } else {
+        String::new()
+    };
+    Ok(serde_json::json!({
+        "tasks": projected,
+        "nextPageToken": next_page_token,
+        "pageSize": page_size,
+        "totalSize": total_size,
+    }))
+}
+
 // ---------------------------------------------------------------------
 // Method implementations — transport-agnostic
 // ---------------------------------------------------------------------
@@ -365,6 +530,45 @@ async fn method_message_send_as(
         task.append_history_at(message, now)
             .map_err(|e| A2aError::invalid_params(e.to_string()))?;
         Ok(engine.create_task(task).await?)
+    }
+}
+
+fn v1_return_immediately(params: &Value) -> Result<bool, A2aError> {
+    let Some(configuration) = params.get("configuration") else {
+        return Ok(false);
+    };
+    if configuration.is_null() {
+        return Ok(false);
+    }
+    let Some(configuration) = configuration.as_object() else {
+        return Err(A2aError::invalid_params("configuration must be an object"));
+    };
+    match configuration.get("returnImmediately") {
+        None | Some(Value::Null) => Ok(false),
+        Some(Value::Bool(value)) => Ok(*value),
+        Some(_) => Err(A2aError::invalid_params(
+            "configuration.returnImmediately must be a boolean",
+        )),
+    }
+}
+
+async fn await_v1_send_completion(
+    engine: &TaskEngine,
+    scope: &TaskScope,
+    initial: Task,
+) -> Result<Task, A2aError> {
+    if initial.status.state.is_terminal() || initial.status.state.is_interrupt() {
+        return Ok(initial);
+    }
+    loop {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let task = engine
+            .get_task(scope, &initial.id)
+            .await?
+            .ok_or_else(|| A2aError::task_not_found(&initial.id))?;
+        if task.status.state.is_terminal() || task.status.state.is_interrupt() {
+            return Ok(task);
+        }
     }
 }
 
@@ -649,7 +853,10 @@ fn authorize(
 /// (`tasks/get`, task events) and discovery stay open so a paused agent
 /// can still observe its in-flight work.
 fn is_write_method(method: &str) -> bool {
-    matches!(method, "message/send" | "tasks/cancel")
+    matches!(
+        method,
+        "message/send" | "tasks/cancel" | "SendMessage" | "CancelTask"
+    )
 }
 
 /// Whether a parsed JSON-RPC payload (a single request object or a batch
@@ -798,6 +1005,76 @@ fn error_response(id: Value, err: &A2aError) -> JsonRpcResponse {
     }
 }
 
+/// Convert an internal Task into the schema-closed A2A 1.0 `ProtoJSON` view.
+/// Acteon-only ownership, recovery and execution fields never cross the
+/// protocol boundary.
+fn project_v1_task(task: &Task) -> Result<Value, A2aError> {
+    let mut value = to_value(task)?;
+    let Some(object) = value.as_object_mut() else {
+        return Err(A2aError::internal("internal error"));
+    };
+    for private in [
+        "namespace",
+        "tenant",
+        "createdAt",
+        "updatedAt",
+        "lastProgressAt",
+        "workingTtlMs",
+        "pendingApprovalId",
+        "chainId",
+        "artifactStreams",
+    ] {
+        object.remove(private);
+    }
+    if let Some(status) = object.get_mut("status") {
+        project_v1_status(status);
+    }
+    if let Some(history) = object.get_mut("history").and_then(Value::as_array_mut) {
+        for message in history {
+            project_v1_message(message);
+        }
+    }
+    Ok(value)
+}
+
+fn project_v1_status(status: &mut Value) {
+    let Some(object) = status.as_object_mut() else {
+        return;
+    };
+    if let Some(state) = object.get_mut("state")
+        && let Some(name) = state.as_str()
+    {
+        *state = Value::String(format!("TASK_STATE_{}", name.to_ascii_uppercase()));
+    }
+    if let Some(message) = object.get_mut("message") {
+        project_v1_message(message);
+    }
+}
+
+fn project_v1_message(message: &mut Value) {
+    let Some(object) = message.as_object_mut() else {
+        return;
+    };
+    if let Some(role) = object.get_mut("role")
+        && let Some(name) = role.as_str()
+    {
+        *role = Value::String(format!("ROLE_{}", name.to_ascii_uppercase()));
+    }
+}
+
+fn normalize_v1_send_params(mut params: Value) -> Value {
+    if let Some(role) = params
+        .get_mut("message")
+        .and_then(Value::as_object_mut)
+        .and_then(|message| message.get_mut("role"))
+        && let Some(name) = role.as_str()
+        && let Some(name) = name.strip_prefix("ROLE_")
+    {
+        *role = Value::String(name.to_ascii_lowercase());
+    }
+    params
+}
+
 /// A single JSON-RPC error response (HTTP 200, `id` null) — used for
 /// failures detected before any request object is dispatched: version
 /// mismatch, an unparseable body, an empty batch.
@@ -837,6 +1114,41 @@ async fn dispatch_method(
     actor: &str,
 ) -> Result<Value, A2aError> {
     match method {
+        "SendMessage" => {
+            let return_immediately = v1_return_immediately(&params)?;
+            let p = serde_json::from_value::<MessageSendParams>(normalize_v1_send_params(params))
+                .map_err(|e| A2aError::invalid_params(format!("invalid params: {e}")))?;
+            let mut task = method_message_send_as(engine, scope, p, actor).await?;
+            if !return_immediately {
+                task = await_v1_send_completion(engine, scope, task).await?;
+            }
+            Ok(serde_json::json!({"task": project_v1_task(&task)?}))
+        }
+        "GetTask" => {
+            let p = serde_json::from_value::<TaskQueryParams>(params)
+                .map_err(|e| A2aError::invalid_params(format!("invalid params: {e}")))?;
+            project_v1_task(&method_tasks_get(engine, scope, p).await?)
+        }
+        "ListTasks" => {
+            let p = serde_json::from_value::<ListTasksParams>(params)
+                .map_err(|e| A2aError::invalid_params(format!("invalid params: {e}")))?;
+            method_list_tasks_v1(engine, scope, p).await
+        }
+        "CancelTask" => {
+            let p = serde_json::from_value::<TaskIdParams>(params)
+                .map_err(|e| A2aError::invalid_params(format!("invalid params: {e}")))?;
+            project_v1_task(&method_tasks_cancel(state, engine, scope, p).await?)
+        }
+        "GetExtendedAgentCard" => {
+            let Some(s) = state else {
+                return Err(A2aError::new(
+                    INTERNAL_ERROR,
+                    "extended-card discovery is unavailable in this dispatcher",
+                ));
+            };
+            let card = method_agent_get_authenticated_extended_card(s, scope).await?;
+            Ok(super::a2a_discovery::project_v1_card(&card))
+        }
         "message/send" => {
             let p = serde_json::from_value::<MessageSendParams>(params)
                 .map_err(|e| A2aError::invalid_params(format!("invalid params: {e}")))?;
@@ -1105,9 +1417,14 @@ fn payload_requires_management(value: &Value) -> bool {
                 !matches!(
                     method,
                     "message/send"
+                        | "SendMessage"
                         | "tasks/get"
+                        | "GetTask"
+                        | "ListTasks"
                         | "tasks/cancel"
+                        | "CancelTask"
                         | "agent/getAuthenticatedExtendedCard"
+                        | "GetExtendedAgentCard"
                         | "tasks/pushNotificationConfig/get"
                         | "tasks/pushNotificationConfig/list"
                 )
@@ -1392,7 +1709,7 @@ pub async fn a2a_task_events(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use acteon_core::TaskRole;
+    use acteon_core::{Artifact, TaskPart, TaskRole};
     use acteon_state_memory::MemoryStateStore;
     use serde_json::json;
     use std::sync::Arc;
@@ -1421,6 +1738,229 @@ mod tests {
         .await
         .unwrap()
         .id
+    }
+
+    #[tokio::test]
+    async fn v1_send_message_uses_pascal_method_and_protojson_envelope() {
+        let e = engine();
+        let result = dispatch_method(
+            None,
+            &e,
+            &scope(),
+            "SendMessage",
+            json!({
+                "message": {
+                    "messageId": "official-client-message-1",
+                    "role": "ROLE_USER",
+                    "parts": [{"text": "hello from the official SDK"}]
+                },
+                "configuration": {"returnImmediately": true}
+            }),
+            "official-client",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result["task"]["status"]["state"], "TASK_STATE_SUBMITTED");
+        assert_eq!(result["task"]["history"][0]["role"], "ROLE_USER");
+        assert!(
+            result.get("id").is_none(),
+            "SendMessage must return its oneof wrapper"
+        );
+        for private in [
+            "namespace",
+            "tenant",
+            "createdAt",
+            "updatedAt",
+            "lastProgressAt",
+            "workingTtlMs",
+            "pendingApprovalId",
+            "chainId",
+            "artifactStreams",
+        ] {
+            assert!(
+                result["task"].get(private).is_none(),
+                "leaked internal Task field {private}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn v1_send_message_waits_without_return_immediately() {
+        let e = engine();
+        let task_id = seed_task(&e).await;
+        let transition_engine = e.clone();
+        let transition_id = task_id.clone();
+        let transition = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            transition_engine
+                .transition_task(&scope(), &transition_id, TaskState::Working, None)
+                .await
+                .unwrap();
+            transition_engine
+                .transition_task(&scope(), &transition_id, TaskState::Completed, None)
+                .await
+                .unwrap();
+        });
+
+        let result = dispatch_method(
+            None,
+            &e,
+            &scope(),
+            "SendMessage",
+            json!({
+                "message": {
+                    "messageId": "official-client-message-blocking",
+                    "taskId": task_id,
+                    "role": "ROLE_USER",
+                    "parts": [{"text": "continue and wait"}]
+                }
+            }),
+            "official-client",
+        )
+        .await
+        .unwrap();
+        transition.await.unwrap();
+        assert_eq!(result["task"]["status"]["state"], "TASK_STATE_COMPLETED");
+    }
+
+    #[test]
+    fn v1_send_message_validates_return_immediately() {
+        let error = v1_return_immediately(&json!({
+            "configuration": {"returnImmediately": "yes"}
+        }))
+        .unwrap_err();
+        assert_eq!(error.code, INVALID_PARAMS);
+        assert!(!v1_return_immediately(&json!({})).unwrap());
+        assert!(
+            v1_return_immediately(&json!({
+                "configuration": {"returnImmediately": true}
+            }))
+            .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn v1_list_tasks_paginates_with_filter_bound_tokens() {
+        let e = engine();
+        let first_id = seed_task(&e).await;
+        let second_id = seed_task(&e).await;
+        e.upsert_artifact(
+            &scope(),
+            &first_id,
+            Artifact::new("result", vec![TaskPart::text("governed result")]),
+            false,
+        )
+        .await
+        .unwrap();
+        let mut expected_ids = [first_id, second_id];
+        expected_ids.sort();
+
+        let first_page = dispatch_method(
+            None,
+            &e,
+            &scope(),
+            "ListTasks",
+            json!({"pageSize": 1, "historyLength": 1}),
+            "official-client",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(first_page["pageSize"], 1);
+        assert_eq!(first_page["totalSize"], 2);
+        assert_eq!(first_page["tasks"].as_array().unwrap().len(), 1);
+        assert_eq!(first_page["tasks"][0]["id"], expected_ids[0]);
+        assert_eq!(
+            first_page["tasks"][0]["status"]["state"],
+            "TASK_STATE_SUBMITTED"
+        );
+        assert_eq!(first_page["tasks"][0]["history"][0]["role"], "ROLE_USER");
+        assert!(first_page["tasks"][0].get("namespace").is_none());
+        assert!(first_page["tasks"][0].get("artifacts").is_none());
+        let token = first_page["nextPageToken"].as_str().unwrap();
+        assert!(!token.is_empty());
+
+        let second_page = dispatch_method(
+            None,
+            &e,
+            &scope(),
+            "ListTasks",
+            json!({
+                "pageSize": 1,
+                "pageToken": token,
+                "historyLength": 1,
+            }),
+            "official-client",
+        )
+        .await
+        .unwrap();
+        assert_eq!(second_page["tasks"][0]["id"], expected_ids[1]);
+        assert_eq!(second_page["totalSize"], 2);
+        assert_eq!(second_page["nextPageToken"], "");
+
+        let with_artifacts = dispatch_method(
+            None,
+            &e,
+            &scope(),
+            "ListTasks",
+            json!({"includeArtifacts": true}),
+            "official-client",
+        )
+        .await
+        .unwrap();
+        let task_with_artifact = with_artifacts["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|task| task["id"] == expected_ids[0])
+            .unwrap();
+        assert_eq!(task_with_artifact["artifacts"][0]["artifactId"], "result");
+
+        let mismatch = dispatch_method(
+            None,
+            &e,
+            &scope(),
+            "ListTasks",
+            json!({
+                "pageSize": 1,
+                "pageToken": token,
+                "historyLength": 0,
+            }),
+            "official-client",
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(mismatch.code, INVALID_PARAMS);
+    }
+
+    #[tokio::test]
+    async fn v1_list_tasks_rejects_invalid_page_size_and_state() {
+        let e = engine();
+        for params in [
+            json!({"pageSize": 0}),
+            json!({"pageSize": 101}),
+            json!({"status": "submitted"}),
+            json!({"pageToken": "not-a-cursor"}),
+            json!({"tenant": "another-tenant"}),
+        ] {
+            let error = dispatch_method(None, &e, &scope(), "ListTasks", params, "official-client")
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, INVALID_PARAMS);
+        }
+
+        let unspecified = dispatch_method(
+            None,
+            &e,
+            &scope(),
+            "ListTasks",
+            json!({"status": "TASK_STATE_UNSPECIFIED"}),
+            "official-client",
+        )
+        .await
+        .unwrap();
+        assert_eq!(unspecified["totalSize"], 0);
     }
 
     #[tokio::test]
@@ -2052,7 +2592,10 @@ mod tests {
     fn write_methods_are_gated_reads_are_not() {
         assert!(is_write_method("message/send"));
         assert!(is_write_method("tasks/cancel"));
+        assert!(is_write_method("SendMessage"));
+        assert!(is_write_method("CancelTask"));
         assert!(!is_write_method("tasks/get"));
+        assert!(!is_write_method("GetTask"));
         assert!(!is_write_method("agent/getAuthenticatedExtendedCard"));
         assert!(!is_write_method("unknown"));
     }

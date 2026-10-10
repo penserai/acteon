@@ -33,6 +33,7 @@ use acteon_server::{
     execution_authority::{ExecutionProviderRegistry, PreparedExecutionScope},
     provider_factory::StaticWebhook,
 };
+use acteon_state::{KeyKind, StateKey, StateStore};
 use axum::{Json, Router, routing::post};
 use axum::{
     body::{Body, to_bytes},
@@ -601,10 +602,69 @@ namespaces = ["prod"]
 tenants = ["acme"]
 providers = ["federation.remote-worker"]
 actions = ["export"]
+[[api_keys]]
+name = "official-a2a-client"
+authority_id = "credential/official-a2a-client"
+principal = {{id="agent/controller",kind="agent"}}
+key_hash = {:?}
+role = "executor"
+[[api_keys.grants]]
+namespaces = ["prod"]
+tenants = ["acme"]
+providers = ["a2a"]
+actions = ["rpc"]
 "#,
         acteon_server::auth::api_key::hash_api_key("controller-secret"),
-        acteon_server::auth::api_key::hash_api_key("source-secret")
+        acteon_server::auth::api_key::hash_api_key("source-secret"),
+        acteon_server::auth::api_key::hash_api_key("official-a2a-secret")
     )
+}
+
+async fn publish_official_v1_card(redis_url: &str, prefix: &str, server_url: &str) {
+    let config = acteon_state_redis::RedisConfig {
+        url: redis_url.to_string(),
+        prefix: prefix.to_string(),
+        ..Default::default()
+    };
+    let store = acteon_state_redis::RedisStateStore::new(&config).unwrap();
+    let mut card = AgentCard::new(
+        "official-worker",
+        NAMESPACE,
+        TENANT,
+        "Governed city worker",
+        "1.0.0",
+    );
+    card.description = Some("A governed A2A task endpoint for conformance".into());
+    card.skills.push(Skill::new("inspect-city"));
+    card.interfaces.push(AgentCardInterface {
+        kind: "json-rpc".into(),
+        url: format!("{server_url}/a2a/{NAMESPACE}/{TENANT}"),
+    });
+    let key = StateKey::new(NAMESPACE, TENANT, KeyKind::BusAgentCard, "official-worker");
+    store
+        .set(&key, &serde_json::to_string(&card).unwrap(), None)
+        .await
+        .unwrap();
+}
+
+fn run_official_a2a_client(server_url: &str) {
+    let python = std::env::var("ACTEON_A2A_PYTHON").unwrap_or_else(|_| "python3".into());
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../scripts/a2a_official_client_conformance.py");
+    let output = Command::new(python)
+        .arg(script)
+        .arg("--base-url")
+        .arg(format!("{server_url}/a2a/{NAMESPACE}/{TENANT}"))
+        .arg("--token")
+        .arg("official-a2a-secret")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "official a2a-sdk failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
 }
 
 async fn wait_for_calls(calls: &AtomicUsize, expected: usize) {
@@ -700,6 +760,8 @@ async fn two_acteon_servers_negotiate_export_restart_and_deliver_one_effect() {
         ],
     );
     source.ready(&client).await;
+    publish_official_v1_card(&redis_url, &source_prefix, &source.url).await;
+    run_official_a2a_client(&source.url);
 
     let accepted = client
         .post(format!(

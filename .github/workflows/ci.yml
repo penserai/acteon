@@ -380,7 +380,11 @@ jobs:
       - name: Two-server governed federation export contract
         env:
           ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379
-        run: cargo test --locked -p acteon-server --test federation_two_server two_acteon_servers_negotiate_export_restart_and_deliver_one_effect -- --ignored
+          ACTEON_A2A_PYTHON: /tmp/acteon-a2a-sdk/bin/python
+        run: |
+          python3 -m venv /tmp/acteon-a2a-sdk
+          /tmp/acteon-a2a-sdk/bin/pip install a2a-sdk==1.2.2
+          cargo test --locked -p acteon-server --test federation_two_server two_acteon_servers_negotiate_export_restart_and_deliver_one_effect -- --ignored
       - name: Durable individual-agent runtime multi-client Redis contract
         env:
           ACTEON_GOVERNANCE_REDIS_URL: redis://localhost:6379

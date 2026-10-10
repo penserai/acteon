@@ -758,7 +758,11 @@ Deliver an asynchronous external signal to a waiting execution.
 
 ### `POST /a2a/{namespace}/{tenant}`
 
-A2A JSON-RPC 2.0 endpoint supporting `message/send`, `tasks/get`, `tasks/cancel`, and push notification configuration.
+A2A JSON-RPC 2.0 endpoint supporting the v1 `SendMessage`, `GetTask`,
+`ListTasks`, `CancelTask`, and `GetExtendedAgentCard` methods. `ListTasks`
+provides filter-bound cursor pagination and the context, state, transition-time,
+history, and artifact selectors defined by A2A 1.0. Pre-1.0 slash-separated
+methods remain compatibility aliases.
 
 ### `POST /a2a/{namespace}/{tenant}/v1/message:send`
 
@@ -800,9 +804,17 @@ Retrieve task lifecycle status, output artifacts, and sub-task graphs.
 
 Server-Sent Events (SSE) stream of real-time task lifecycle transitions.
 
+### `GET /a2a/{namespace}/{tenant}/.well-known/agent-card.json`
+
+Public A2A 1.0 ProtoJSON Agent Card discovery endpoint. Only a published
+JSON-RPC interface is advertised until the HTTP+JSON binding has its own v1
+wire adapter and conformance gate. Streaming and push notifications remain
+false in this card until their v1 method adapters pass external conformance.
+
 ### `GET /a2a/{namespace}/{tenant}/.well-known/agent.json`
 
-Public unauthenticated discovery endpoint returning the agent card or tenant-aggregated catalog.
+Compatibility discovery endpoint returning Acteon's stored card or
+tenant-aggregated catalog.
 
 ---
 

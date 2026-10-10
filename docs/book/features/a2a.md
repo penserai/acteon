@@ -1,10 +1,10 @@
 # Agent2Agent (A2A) Protocol
 
-Acteon implements the [A2A Protocol v1.0](https://a2aprotocol.org) — the
-ratified standard for one agent to delegate work to another over a
-durable Task abstraction. Bringing A2A into Acteon means agents you
-own and agents your peers run can interoperate without per-counterparty
-glue.
+Acteon exposes the [A2A Protocol v1.0](https://a2a-protocol.org) JSON-RPC
+binding over its durable Task abstraction. The public card and protocol objects
+use the official ProtoJSON shapes, while Acteon keeps ownership, recovery and
+execution metadata inside the platform. Existing pre-1.0 method names and the
+older stored-card view remain available during migration.
 
 The whole protocol surface (JSON-RPC + REST + SSE) is scoped to one
 namespace and one tenant via the URL prefix `/a2a/{namespace}/{tenant}`,
@@ -18,7 +18,7 @@ through unchanged.
 | You need to interop with non-Acteon agents | You only call Acteon-from-Acteon |
 | The work is a long-running Task with intermediate state | The work is a single fire-and-forget dispatch |
 | External clients should be able to subscribe to progress | Only internal subscribers consume the stream |
-| You want to publish discovery metadata at `.well-known/agent.json` | Discovery is internal-only |
+| You want to publish discovery metadata at `.well-known/agent-card.json` | Discovery is internal-only |
 
 A2A and the rest of the Acteon API coexist on the same server. Both
 share the same auth, the same audit trail, and the same gateway.
@@ -37,26 +37,36 @@ A single endpoint dispatches by method name in the envelope:
 POST /a2a/{namespace}/{tenant}
 Content-Type: application/json
 
-{ "jsonrpc": "2.0", "method": "tasks/get", "params": {…}, "id": 1 }
+{ "jsonrpc": "2.0", "method": "GetTask", "params": {…}, "id": 1 }
 ```
 
 | Method | Purpose |
 |---|---|
-| `message/send` | Start a new Task or continue an existing one. |
-| `tasks/get` | Read a Task by id. |
-| `tasks/cancel` | Cancel a non-terminal Task. |
-| `tasks/pushNotificationConfig/set` | Register a webhook for Task events. |
-| `tasks/pushNotificationConfig/get` | Read one push config. |
-| `tasks/pushNotificationConfig/list` | List push configs for a Task. |
-| `tasks/pushNotificationConfig/delete` | Remove a push config. |
-| `agent/getAuthenticatedExtendedCard` | Discovery card variant for authenticated callers. |
+| `SendMessage` | Start a new Task or continue an existing one. |
+| `GetTask` | Read a Task by id. |
+| `ListTasks` | List visible Tasks with filters and cursor pagination. |
+| `CancelTask` | Cancel a non-terminal Task. |
+| `GetExtendedAgentCard` | Discovery card variant for authenticated callers. |
+
+The lowercase slash-separated methods remain compatibility aliases for existing
+Acteon clients. New integrations should use the PascalCase v1 methods. A v1
+`SendMessage` result contains exactly one of `task` or `message`; roles and task
+states use ProtoJSON names such as `ROLE_USER` and `TASK_STATE_SUBMITTED`.
+By default `SendMessage` waits until the Task is terminal or pauses for input or
+authorization. Set `configuration.returnImmediately` to `true` when the caller
+wants durable asynchronous acceptance and will poll with `GetTask`.
+`ListTasks` supports `contextId`, ProtoJSON `status`, `statusTimestampAfter`,
+`historyLength`, `includeArtifacts`, and page sizes from 1 through 100. Its
+opaque page token is bound to those filters, and every page reports the
+required `pageSize`, `totalSize`, and `nextPageToken` fields.
 
 Batch arrays and notifications (requests with no `id`) follow the
 JSON-RPC 2.0 spec exactly.
 
-### REST binding (A2A spec §11)
+### Acteon task and governed-peer REST routes
 
-Mirrors the JSON-RPC methods on resource-shaped paths:
+These resource-shaped routes support Acteon SDKs and governed peer operations.
+They are not advertised as an A2A 1.0 `HTTP+JSON` interface in the public card:
 
 ```text
 POST   /a2a/{ns}/{tenant}/v1/message:send
@@ -230,17 +240,22 @@ supported production state backend.
 
 ```text
 GET    /a2a/{ns}/{tenant}/.well-known/agent.json
+GET    /a2a/{ns}/{tenant}/.well-known/agent-card.json
 ```
 
-Returns the tenant's `AgentCard` — verbatim if exactly one agent has
-published, aggregated if several have. See [Discovery](#discovery)
-below.
+The `agent-card.json` route returns the schema-closed A2A 1.0 projection used by
+official clients. It requires the published card to name a JSON-RPC interface
+qualified for v1. The older `agent.json` route returns Acteon's stored-card view
+for compatibility. Both aggregate several published cards at tenant scope.
+The v1 card advertises streaming and push notifications only after their v1
+method adapters pass the external conformance gate; Acteon's existing SSE and
+push routes remain available through the native API in the meantime.
 
 ### Version negotiation
 
 Every request and response carries an `A2A-Version` header. A request
 that pins an unsupported version is rejected up front with JSON-RPC
-error `-32000`. The current server speaks `1.0`.
+error `-32009`. The current server speaks `1.0`.
 
 ## Tasks — the core abstraction
 
@@ -692,7 +707,7 @@ codes from spec §8:
 | `-32603` | `INTERNAL_ERROR` | Server-internal failure (CAS exhaustion, state-store error). The message is intentionally opaque (CWE-209). |
 | `-32001` | `TaskNotFound` | The named Task or sub-resource does not exist for this caller. |
 | `-32002` | `TaskNotCancelable` | The Task is in a terminal state and cannot be canceled. |
-| `-32000` | `VersionNotSupported` | The `A2A-Version` header names a version this server does not implement. |
+| `-32009` | `VersionNotSupported` | The `A2A-Version` header names a version this server does not implement. |
 
 REST responses translate these codes to HTTP statuses (`404`, `409`,
 `400`, `500`, etc.) and put the message in the body.

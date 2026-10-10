@@ -2179,9 +2179,28 @@ invocations. A separate Redis integration now starts real source and destination
 Acteon server processes over HTTP. It negotiates a signed capability card,
 commits an import and invocation, loses the first invocation response, preserves
 the ambiguity across both process restarts, then uses explicit exact replay to
-recover the original remote task while proving the provider ran once. Conformance
-against a named external A2A implementation remains required for the federation
-release gate.
+recover the original remote task while proving the provider ran once. Full A2A
+TCK conformance remains required for the federation release gate.
+
+An interoperability audit against the ratified A2A 1.0 specification found that
+the original public surface still used pre-1.0 discovery and JSON-RPC shapes
+despite carrying a `1.0` version header. The server now has a schema-closed
+`agent-card.json` projection, PascalCase `SendMessage`, `GetTask`, `CancelTask`
+and `GetExtendedAgentCard` methods, ProtoJSON roles and task states, the v1
+`SendMessageResponse` oneof wrapper, and the canonical version error code. The
+legacy stored card and slash-separated methods remain compatibility surfaces.
+The Redis integration job installs the independently released official Python
+`a2a-sdk` 1.2.2 and drives send, get, paginated list, cancel and terminal
+observation against a real Acteon process before running the two-server
+federation loss/restart proof. `SendMessage` now honors the v1 blocking default
+and returns early only when `configuration.returnImmediately` is true.
+`ListTasks` binds opaque cursors to its filters,
+supports the v1 time, status, context, history and artifact selectors, and keeps
+task ownership fields off the wire. Full official TCK coverage still requires
+streaming and the remaining v1 push-notification method aliases; the public card
+advertises neither capability until those adapters pass the external gate.
+HTTP+JSON is deliberately not advertised until its v1 wire adapter passes the
+same external gate.
 
 ### Signed federation capability negotiation
 

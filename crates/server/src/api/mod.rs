@@ -189,6 +189,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/a2a/{namespace}/{tenant}/.well-known/agent.json",
             get(a2a_discovery::discover_agent),
+        )
+        .route(
+            "/a2a/{namespace}/{tenant}/.well-known/agent-card.json",
+            get(a2a_discovery::discover_agent_v1),
         );
 
     let protected = Router::new()
