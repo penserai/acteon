@@ -161,13 +161,19 @@ impl ExecutionAuthorityRuntime {
             .credentials
             .get(&binding.credential_reference().id)
             .ok_or(AgentServiceError::Unavailable)?;
-        if !credential
-            .authority
-            .ceiling
-            .effects
-            .iter()
-            .any(|effect| acteon_governance::permit::matches_effect(effect, agent.bound.effect()))
-        {
+        let direct_effects = agent
+            .binding
+            .service_plan()
+            .ok_or(AgentServiceError::Unavailable)?
+            .direct_effects();
+        if direct_effects.iter().any(|required| {
+            !credential
+                .authority
+                .ceiling
+                .effects
+                .iter()
+                .any(|accepted| acteon_governance::permit::matches_effect(accepted, required))
+        }) {
             return Err(AgentServiceError::Unavailable);
         }
         Ok(binding)

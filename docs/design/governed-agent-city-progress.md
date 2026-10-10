@@ -2117,7 +2117,11 @@ encryptor. A missing or inconsistent secret prevents startup.
 The authenticated source API accepts only an export profile name and message
 under an accepted local agent task. It recovers the source execution context,
 matches current private authentication, verifies the qualified service binding,
-and checks current export authority. A compare-and-swap issuance record retains
+and checks the exact `federation.<profile>/export` authentication grant plus
+current export permit authority. Credential projection independently maps that
+grant to the profile's local `federation.export` effect, and deployment preflight
+requires the source credential to cover every direct effect in its immutable
+service plan. A compare-and-swap issuance record retains
 stable export and nonce IDs, issue time, expiry, message digest, profile digest
 and attenuated limits before signed delivery. Retries after restart therefore
 reconstruct the same signed request; changed content or configuration conflicts.

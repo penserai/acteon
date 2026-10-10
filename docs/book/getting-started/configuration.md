@@ -737,11 +737,26 @@ max_depth = 2
 
 The source agent's deployment permit must list
 `federation_exports = ["remote-triage"]`; ordinary routes, chains and local
-agents do not imply this effect. An outbound-only domain may set `trusts = []`
+agents do not imply this effect. The source agent's private credential must
+also carry the exact authentication grant below. This grant projects the local
+`federation.export` effect into that credential; it does not grant any remote
+effect by itself.
+
+```toml
+[[api_keys.grants]]
+namespaces = ["prod"]
+tenants = ["acme"]
+providers = ["federation.remote-triage"]
+actions = ["export"]
+```
+
+An outbound-only domain may set `trusts = []`
 and `peers = []` while retaining at least one export. Startup rejects an
 unpermitted profile, source/principal mismatch, signer/public-key mismatch,
 unsafe origin, invalid environment reference, or profile outside the scope's
-credential ceiling.
+credential ceiling. It also rejects an installed source service when its
+current private credential lacks any direct effect in the approved service
+plan, including this export effect.
 
 Configured agent-service replacements use `retained_agent_services` inside the
 same scope. Copy the former binding's card, registry revision, principal, skill,

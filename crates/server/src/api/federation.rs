@@ -367,7 +367,12 @@ async fn export_operation(
         return export_error(StatusCode::BAD_REQUEST, "unsupported_a2a_version");
     }
     if !identity.role.has_permission(Permission::Dispatch)
-        || !identity.is_authorized(tenant, namespace, &format!("agent.{agent}"), "invoke")
+        || !identity.is_authorized(
+            tenant,
+            namespace,
+            &format!("federation.{profile}"),
+            "export",
+        )
     {
         return export_error(
             StatusCode::FORBIDDEN,

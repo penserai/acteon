@@ -1031,6 +1031,31 @@ impl PreparedExecutionScope {
                         )
                     })
                     .collect(),
+            )?
+            .with_federation_export_admission_bounds(
+                self.declaration
+                    .federation
+                    .as_ref()
+                    .map(|federation| {
+                        federation
+                            .exports
+                            .iter()
+                            .map(|export| {
+                                Ok((
+                                    export.id.clone(),
+                                    (
+                                        export.local_effect(
+                                            &self.declaration.namespace,
+                                            &self.declaration.tenant,
+                                        )?,
+                                        vec![export.grant.source.clone()],
+                                    ),
+                                ))
+                            })
+                            .collect::<Result<_, String>>()
+                    })
+                    .transpose()?
+                    .unwrap_or_default(),
             )
     }
 }

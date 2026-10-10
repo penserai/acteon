@@ -125,10 +125,14 @@ Deployment configuration binds each export profile to one declared source agent,
 remote origin and audience, trust/key revision, exact foreign service grant,
 credential environment variable, signer environment variable, outbound policy,
 timeout and maximum signed lifetime. The source agent's permit must independently
-list the profile. Preparation adds the profile's `federation.export` effect to
-the agent's qualified service plan and publisher ceiling; permit publication
-adds only the profiles explicitly named by that permit. Outbound-only domains
-may configure exports without installing inbound trusts or peers.
+list the profile, and its private credential must independently carry the exact
+`federation.<profile>/export` authentication grant. Credential projection maps
+only that grant to the profile's local `federation.export` effect. Preparation
+adds the effect to the agent's qualified service plan and publisher ceiling;
+permit publication adds only the profiles explicitly named by that permit.
+Deployment preflight rejects a source credential that does not cover every
+direct service-plan effect. Outbound-only domains may configure exports without
+installing inbound trusts or peers.
 
 At startup the server resolves secrets, verifies that the private signing key
 matches the configured public key, pins the HTTP adapter and TLS qualification
@@ -140,7 +144,8 @@ unavailable.
 The authenticated agent API accepts only an installed profile name and A2A
 message under an already accepted local agent task. Acteon recovers the source
 context from that task, matches current private authentication, verifies the
-qualified service binding, and rechecks the current export permit. A durable
+qualified service binding, checks the exact profile export grant, and rechecks
+the current export permit. A durable
 issuance record allocates the export ID, invocation nonce, issue time, expiry
 and attenuated remote budget exactly once using the configured state backend.
 Retries and process restarts therefore reproduce the same signed bytes. The API
