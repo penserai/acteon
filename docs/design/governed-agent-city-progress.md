@@ -2242,8 +2242,15 @@ card. The same endpoint now implements official `SendStreamingMessage` and
 `SubscribeToTask`. It subscribes before admission or observation, shares the
 tenant connection quota, and revalidates current authentication plus original
 source provenance before every emitted update. Recovery snapshots also remove
-the private governed execution binding. Governed list and push remain explicit
-follow-ups and return `UnsupportedOperation` on this interface.
+the private governed execution binding. Exact-agent `ListTasks` now walks the
+configured state backend in bounded pages, verifies the installed agent binding
+and original source for every acceptance, rechecks authentication after the
+scan, and returns exact totals in required last-update-descending order. Its
+opaque cursor binds the caller, optional source receipt and complete filters.
+Agent principals see no task without an exact job receipt, preventing shared
+credentials from enumerating sibling jobs. Human, service and system sources
+can page all of their own Tasks. All five SDKs and the browser expose the same
+schema-validated page. Governed push remains the explicit protocol follow-up.
 
 Exact-agent `CancelTask` now commits the coordinator's execution-subtree fence
 before returning. A task with no registered attempt is projected `Canceled`, as

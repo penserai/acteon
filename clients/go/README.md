@@ -538,6 +538,12 @@ fmt.Println(stopped.FutureStartsBlocked, stopped.ProviderAbort, stopped.Task["st
 officialTask, err := client.AgentServiceCancelTask(ctx, receipt)
 if err != nil { return err }
 fmt.Println(officialTask["metadata"])
+
+page, err := client.AgentServiceListTasks(ctx, "prod", "acme", "notifier",
+    acteon.AgentServiceListOptions{PageSize: 25})
+if err != nil { return err }
+fmt.Println(len(page.Tasks), page.TotalSize, page.NextPageToken)
+// Set Source: receipt for an agent principal or to narrow to this exact job.
 ```
 
 The acknowledgement always confirms a durable restriction on future starts.

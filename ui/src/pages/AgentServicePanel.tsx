@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { sendServiceMessage, observeServiceTask, stopServiceTask, type ServiceProviderAbort, type ServiceReceipt } from '../api/agentServices'
+import { listServiceTasks, sendServiceMessage, observeServiceTask, stopServiceTask, type ListedServiceTask, type ServiceProviderAbort, type ServiceReceipt } from '../api/agentServices'
 import { Button } from '../components/ui/Button'
 import { Input } from '../components/ui/Input'
 import { Badge } from '../components/ui/Badge'
@@ -11,6 +11,9 @@ export function AgentServicePanel({ namespace, tenant, agent }: { namespace: str
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [receipts, setReceipts] = useState<(ServiceReceipt & { futureStartsBlocked?: boolean; cancellationConfirmed?: boolean; providerAbort?: ServiceProviderAbort })[]>([])
+  const [listed, setListed] = useState<readonly ListedServiceTask[]>([])
+  const [listTotal, setListTotal] = useState<number | null>(null)
+  const [nextPageToken, setNextPageToken] = useState('')
   async function send() {
     setBusy(true); setError(''); setAttempted(true)
     try {
@@ -35,10 +38,29 @@ export function AgentServicePanel({ namespace, tenant, agent }: { namespace: str
     } catch (cause) { setError(`Stop acknowledgement for task ${receipt.taskId} unavailable. Retry this task’s stop control. ${(cause as Error).message}`) }
     finally { setBusy(false) }
   }
+  async function loadTasks(next = false) {
+    setBusy(true); setError('')
+    try {
+      const page = await listServiceTasks(namespace, tenant, agent, next ? nextPageToken : '')
+      setListed(current => next ? [...current, ...page.tasks] : page.tasks)
+      setListTotal(page.totalSize); setNextPageToken(page.nextPageToken)
+    } catch (cause) { setError((cause as Error).message) }
+    finally { setBusy(false) }
+  }
   return <section className="space-y-4" aria-label="Governed agent tasks">
     <h2 className="text-lg font-semibold">Governed tasks</h2>
     <p>Send work to this agent’s configured service using your current identity and permits. Accepted tasks may still be waiting to execute.</p>
     <p className="text-sm">Task receipts stay in this view while it is open. Leaving this tab or refreshing the page clears the local view.</p>
+    <div className="flex flex-wrap items-center gap-2">
+      <Button variant="secondary" disabled={busy} onClick={() => void loadTasks(false)}>List my governed tasks</Button>
+      {nextPageToken && <Button variant="secondary" disabled={busy} onClick={() => void loadTasks(true)}>Load more</Button>}
+      {listTotal !== null && <span className="text-sm">Showing {listed.length} of {listTotal}</span>}
+    </div>
+    {listed.length > 0 && <div className="rounded-lg border p-3 space-y-2" aria-label="Visible governed task history">
+      {listed.map(task => <div key={task.id} className="flex flex-wrap items-center justify-between gap-3">
+        <code className="min-w-0 break-all">{task.id}</code><Badge variant={task.status.state === 'TASK_STATE_COMPLETED' ? 'success' : 'neutral'}>{task.status.state}</Badge>
+      </div>)}
+    </div>}
     <Input label="Message" value={text} disabled={busy || attempted} onChange={event => setText(event.target.value)} placeholder="Describe the requested operation" />
     <p className="text-xs font-mono break-all">Request {messageId}</p>
     <div className="flex gap-2">

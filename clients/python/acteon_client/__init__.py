@@ -23,6 +23,8 @@ from .agent_services import (
     AgentServiceProviderAbort,
     AgentServiceReceipt,
     AgentServiceStopReceipt,
+    AgentServiceTaskPage,
+    AgentServiceTaskState,
 )
 from .bus_models import (
     AppendBusConversationMessage,
@@ -545,6 +547,8 @@ __all__ += [
     "AgentServiceProviderAbort",
     "AgentServiceReceipt",
     "AgentServiceStopReceipt",
+    "AgentServiceTaskPage",
+    "AgentServiceTaskState",
 ]
 
 __all__ += [

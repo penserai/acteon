@@ -70,6 +70,28 @@ it("requests official exact-agent cancellation with retained source provenance",
   expect(fetch).toHaveBeenCalledTimes(1);
 });
 
+it("lists exact-agent tasks with a typed filter-bound page", async () => {
+  const source = { namespace: "prod", tenant: "acme", agent: "notifier", taskId: "job-1", sourceContext: fixture.jobs[0].source_context, task: fixture.jobs[0].task };
+  const fetch = vi.fn(async (input: string, init: RequestInit) => {
+    expect(input).toBe("http://acteon/a2a/prod/acme/agents/notifier");
+    expect(init.redirect).toBe("error");
+    expect((init.headers as Record<string, string>)[AGENT_SOURCE_CONTEXT_HEADER]).toBe(source.sourceContext);
+    const body = JSON.parse(init.body as string);
+    expect(body).toEqual({ jsonrpc: "2.0", id: "list:notifier", method: "ListTasks", params: { status: "TASK_STATE_WORKING", pageSize: 1 } });
+    return new Response(JSON.stringify({
+      jsonrpc: "2.0", id: body.id,
+      result: { tasks: [{ id: "job-1", status: { state: "TASK_STATE_WORKING" } }], nextPageToken: "next-1", pageSize: 1, totalSize: 2 },
+    }), { headers: { "a2a-version": "1.0" } });
+  });
+  vi.stubGlobal("fetch", fetch);
+  const page = await new ActeonClient("http://acteon").agentServiceListTasks("prod", "acme", "notifier", {
+    source, status: "TASK_STATE_WORKING", pageSize: 1,
+  });
+  expect(page.tasks[0]?.id).toBe("job-1");
+  expect(page.nextPageToken).toBe("next-1");
+  expect(page.totalSize).toBe(2);
+});
+
 it("carries an opaque governed parent with explicit permits", async () => {
   const fetch = vi.fn(async (_input: string, init: RequestInit) => {
     const headers = init.headers as Record<string, string>;

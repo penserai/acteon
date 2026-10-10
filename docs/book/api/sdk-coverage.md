@@ -248,6 +248,22 @@ All five SDKs expose native finite and streaming helpers:
 | Go | `AgentServiceSendMessage` | `AgentServiceSendStreamingMessage` | `AgentServiceSubscribeTask` | `AgentServiceGetTask` |
 | Java | `agentServiceSendMessage` | `agentServiceSendStreamingMessage` | `agentServiceSubscribeTask` | `agentServiceGetTask` |
 
+They also expose schema-validated official task listing:
+
+| SDK | Exact-agent `ListTasks` helper |
+| --- | --- |
+| Rust | `agent_service_list_tasks(namespace, tenant, agent, options, source)` |
+| Python sync/async | `agent_service_list_tasks(namespace, tenant, agent, ...)` |
+| TypeScript | `agentServiceListTasks(namespace, tenant, agent, options)` |
+| Go | `AgentServiceListTasks(ctx, namespace, tenant, agent, options)` |
+| Java | `agentServiceListTasks(namespace, tenant, agent, options)` |
+
+The typed page requires `tasks`, `nextPageToken`, `pageSize`, and `totalSize`,
+rejects private execution or ownership fields, and preserves protocol Tasks as
+their schema-closed A2A projection. A source receipt narrows the query to its
+job and is required for agent principals. The browser agent panel provides the
+same paginated history view for current human source authority.
+
 The streaming helpers call the official exact-agent JSON-RPC endpoint and yield
 the `result` object from each validated `StreamResponse`. They require protocol
 version 1.0, `text/event-stream`, and the original JSON-RPC request identity on

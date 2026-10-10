@@ -13,6 +13,32 @@ export interface AgentServiceReceipt {
   readonly sourceContext: string;
   readonly task: Record<string, unknown>;
 }
+export type AgentServiceTaskState =
+  | "TASK_STATE_UNSPECIFIED"
+  | "TASK_STATE_SUBMITTED"
+  | "TASK_STATE_WORKING"
+  | "TASK_STATE_COMPLETED"
+  | "TASK_STATE_FAILED"
+  | "TASK_STATE_CANCELED"
+  | "TASK_STATE_INPUT_REQUIRED"
+  | "TASK_STATE_AUTH_REQUIRED"
+  | "TASK_STATE_REJECTED";
+export interface AgentServiceListOptions {
+  readonly source?: AgentServiceReceipt;
+  readonly contextId?: string;
+  readonly status?: AgentServiceTaskState;
+  readonly pageSize?: number;
+  readonly pageToken?: string;
+  readonly historyLength?: number;
+  readonly statusTimestampAfter?: string;
+  readonly includeArtifacts?: boolean;
+}
+export interface AgentServiceTaskPage {
+  readonly tasks: readonly Readonly<Record<string, unknown>>[];
+  readonly nextPageToken: string;
+  readonly pageSize: number;
+  readonly totalSize: number;
+}
 /** One official A2A StreamResponse plus host-owned admission provenance. */
 export interface AgentServiceA2aFrame {
   readonly result: Record<string, unknown>;
@@ -166,6 +192,29 @@ export function agentTask(value: unknown, namespace: string, tenant: string, id?
   const task = value as Record<string, unknown>;
   if (typeof task.id !== "string" || !task.id || task.namespace !== namespace || task.tenant !== tenant || (id !== undefined && task.id !== id)) throw new Error("agent service task identity mismatch");
   return task;
+}
+export function agentServiceTaskPage(value: unknown): AgentServiceTaskPage {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("agent service A2A task page is malformed");
+  const page = value as Record<string, unknown>;
+  if (Object.keys(page).sort().join(",") !== "nextPageToken,pageSize,tasks,totalSize"
+    || !Array.isArray(page.tasks)
+    || typeof page.nextPageToken !== "string" || page.nextPageToken.length > 8192
+    || typeof page.pageSize !== "number" || !Number.isSafeInteger(page.pageSize) || page.pageSize < 1 || page.pageSize > 100
+    || typeof page.totalSize !== "number" || !Number.isSafeInteger(page.totalSize) || page.totalSize < page.tasks.length
+    || page.tasks.length > page.pageSize) throw new Error("agent service A2A task page is malformed");
+  const tasks = page.tasks.map(value => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("agent service A2A task projection is invalid");
+    const task = value as Record<string, unknown>;
+    const state = task.status !== null && typeof task.status === "object" && !Array.isArray(task.status) ? (task.status as Record<string, unknown>).state : undefined;
+    if (typeof task.id !== "string" || task.id.length === 0 || typeof state !== "string" || ![
+      "TASK_STATE_SUBMITTED", "TASK_STATE_WORKING", "TASK_STATE_COMPLETED", "TASK_STATE_FAILED",
+      "TASK_STATE_CANCELED", "TASK_STATE_INPUT_REQUIRED", "TASK_STATE_AUTH_REQUIRED", "TASK_STATE_REJECTED",
+    ].includes(state)
+      || "namespace" in task || "tenant" in task
+      || (task.metadata !== null && typeof task.metadata === "object" && !Array.isArray(task.metadata) && "acteon_governed_execution" in task.metadata)) throw new Error("agent service A2A task projection is invalid");
+    return Object.freeze(task);
+  });
+  return Object.freeze({ tasks: Object.freeze(tasks), nextPageToken: page.nextPageToken, pageSize: page.pageSize, totalSize: page.totalSize });
 }
 export function agentServiceBase(namespace: string, tenant: string, agent: string): string {
   return agentServiceRpcBase(namespace, tenant, agent) + "/v1";

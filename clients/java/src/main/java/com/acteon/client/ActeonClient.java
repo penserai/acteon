@@ -136,6 +136,50 @@ public class ActeonClient implements AutoCloseable {
             return task;
         } catch (IOException e) { throw new ActeonException("invalid agent service A2A response", e); }
     }
+    /** List only Tasks visible to the current source through one exact governed agent. */
+    public AgentServiceTaskPage agentServiceListTasks(
+        String namespace, String tenant, String agent, AgentServiceListOptions options
+    ) throws ActeonException {
+        if (options == null) options = AgentServiceListOptions.defaults();
+        if (options.pageSize() != null && (options.pageSize() < 1 || options.pageSize() > 100))
+            throw new IllegalArgumentException("pageSize must be between 1 and 100");
+        if (options.historyLength() != null && options.historyLength() < 0)
+            throw new IllegalArgumentException("historyLength must be non-negative");
+        if (options.pageToken() != null && options.pageToken().length() > 8192)
+            throw new IllegalArgumentException("pageToken is too large");
+        String source = null;
+        if (options.source() != null) {
+            var receipt = options.source();
+            if (!namespace.equals(receipt.namespace()) || !tenant.equals(receipt.tenant())
+                || !agent.equals(receipt.agent()))
+                throw new IllegalArgumentException("agent service ListTasks receipt does not match the route");
+            source = AgentServiceReceipt.source(receipt.sourceContext());
+        }
+        var params = new HashMap<String, Object>();
+        if (options.contextId() != null) params.put("contextId", options.contextId());
+        if (options.status() != null) params.put("status", options.status().wire());
+        if (options.pageSize() != null) params.put("pageSize", options.pageSize());
+        if (options.pageToken() != null) params.put("pageToken", options.pageToken());
+        if (options.historyLength() != null) params.put("historyLength", options.historyLength());
+        if (options.statusTimestampAfter() != null)
+            params.put("statusTimestampAfter", options.statusTimestampAfter().toString());
+        if (options.includeArtifacts()) params.put("includeArtifacts", true);
+        String requestId = "list:" + agent;
+        var envelope = new HashMap<String, Object>();
+        envelope.put("jsonrpc", "2.0"); envelope.put("id", requestId);
+        envelope.put("method", "ListTasks"); envelope.put("params", params);
+        var response = agentServiceRequest(
+            "POST", AgentServiceReceipt.rpcBase(namespace, tenant, agent), envelope, source, null);
+        try {
+            var rpc = objectMapper.readTree(response.body());
+            if (!"2.0".equals(rpc.path("jsonrpc").asText()) || !requestId.equals(rpc.path("id").asText()))
+                throw new ActeonException("agent service A2A response request identity mismatch");
+            if (rpc.path("error").isObject())
+                throw new ActeonException("A2A error " + rpc.path("error").path("code") + ": " + rpc.path("error").path("message").asText());
+            return AgentServiceTaskPage.parse(rpc.path("result"));
+        } catch (IOException e) { throw new ActeonException("invalid agent service A2A response", e); }
+        catch (IllegalArgumentException e) { throw new ActeonException(e.getMessage(), e); }
+    }
     /** List current source-authorized registry options. Descriptions are untrusted data. */
     public List<AgentPeerSelectionOption> agentServiceDiscoverPeers(AgentServiceReceipt source, String skill) throws ActeonException {
         if (source == null) throw new IllegalArgumentException("agent service source receipt required");

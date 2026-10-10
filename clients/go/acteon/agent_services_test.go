@@ -103,6 +103,37 @@ func TestOfficialAgentServiceCancelPreservesIdentityAndSource(t *testing.T) {
 	}
 }
 
+func TestOfficialAgentServiceListReturnsTypedPage(t *testing.T) {
+	receipt := &AgentServiceReceipt{Namespace: "prod", Tenant: "acme", Agent: "notifier", TaskID: "job-1", SourceContext: "host-only"}
+	transport := agentRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/a2a/prod/acme/agents/notifier" || r.Header.Get(AgentSourceContextHeader) != "host-only" {
+			t.Errorf("unexpected list request: %s %#v", r.URL.Path, r.Header)
+		}
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		params := request["params"].(map[string]any)
+		if request["method"] != "ListTasks" || request["id"] != "list:notifier" || params["status"] != "TASK_STATE_WORKING" || params["pageSize"] != float64(1) {
+			t.Fatalf("unexpected envelope: %#v", request)
+		}
+		headers := make(http.Header)
+		headers.Set(A2AVersionHeader, A2AProtocolVersion)
+		body := `{"jsonrpc":"2.0","id":"list:notifier","result":{"tasks":[{"id":"job-1","status":{"state":"TASK_STATE_WORKING"}}],"nextPageToken":"next-1","pageSize":1,"totalSize":2}}`
+		return &http.Response{StatusCode: http.StatusOK, Header: headers, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+	})
+	client := NewClient("http://acteon", WithHTTPClient(&http.Client{Transport: transport}))
+	page, err := client.AgentServiceListTasks(context.Background(), "prod", "acme", "notifier", AgentServiceListOptions{
+		Source: receipt, Status: "TASK_STATE_WORKING", PageSize: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.TotalSize != 2 || page.NextPageToken != "next-1" || page.Tasks[0]["id"] != "job-1" {
+		t.Fatalf("unexpected page: %#v", page)
+	}
+}
+
 func TestAgentServiceAuthorizationCarriesOnlyOpaqueHandles(t *testing.T) {
 	task := map[string]any{"id": "job-1", "namespace": "prod", "tenant": "acme", "status": map[string]any{"state": "auth_required"}}
 	var calls atomic.Int32

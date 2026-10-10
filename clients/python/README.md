@@ -605,6 +605,12 @@ print(stopped.future_starts_blocked, stopped.cancellation_confirmed,
 
 official_task = client.agent_service_cancel_task(receipt)
 print(official_task["metadata"]["acteonCancellation"]["state"])
+
+page = client.agent_service_list_tasks(
+    "prod", "acme", "notifier", page_size=25
+)
+print(len(page.tasks), page.total_size, page.next_page_token)
+# Agent principals pass source=receipt to retain exact job isolation.
 ```
 
 The acknowledgement always confirms a durable restriction on future starts.

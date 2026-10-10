@@ -1110,6 +1110,169 @@ async fn official_cancel_task_confirms_a_fenced_local_non_start_and_replays_it()
 }
 
 #[tokio::test]
+async fn official_list_tasks_pages_only_governed_tasks_visible_to_the_current_source() {
+    let (url, calls, webhook_task) = webhook().await;
+    let mut server = Server::configured(
+        &url,
+        Some("notifier-secret"),
+        "incident",
+        false,
+        "human",
+        &json!({"backend":"memory"}),
+    );
+    let client = reqwest::Client::new();
+    server.ready(&client).await;
+    let mut accepted_ids = Vec::new();
+    for (rpc_id, message_id) in [("send-list-1", "list-1"), ("send-list-2", "list-2")] {
+        let response = client
+            .post(server.rpc_endpoint())
+            .bearer_auth("alice-secret")
+            .header("a2a-version", "1.0")
+            .json(&json!({
+                "jsonrpc":"2.0", "id":rpc_id, "method":"SendMessage",
+                "params":{
+                    "message":message(message_id)["message"],
+                    "configuration":{"returnImmediately":true}
+                }
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+        let body: Value = response.json().await.unwrap();
+        accepted_ids.push(body["result"]["task"]["id"].as_str().unwrap().to_owned());
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+
+    let first: Value = client
+        .post(server.rpc_endpoint())
+        .bearer_auth("alice-secret")
+        .header("a2a-version", "1.0")
+        .json(&json!({
+            "jsonrpc":"2.0", "id":"list-first", "method":"ListTasks",
+            "params":{"pageSize":1,"historyLength":0,"includeArtifacts":false}
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(first["result"]["totalSize"], 2);
+    assert_eq!(first["result"]["pageSize"], 1);
+    assert_eq!(first["result"]["tasks"].as_array().unwrap().len(), 1);
+    assert!(first["result"]["tasks"][0].get("history").is_none());
+    assert!(first["result"]["tasks"][0].get("artifacts").is_none());
+    assert!(
+        first["result"]["tasks"][0]
+            .pointer("/metadata/acteon_governed_execution")
+            .is_none()
+    );
+    // The second acceptance has the later update time and must sort first.
+    assert_eq!(first["result"]["tasks"][0]["id"], accepted_ids[1]);
+    let token = first["result"]["nextPageToken"].as_str().unwrap();
+    assert!(!token.is_empty());
+
+    let second: Value = client
+        .post(server.rpc_endpoint())
+        .bearer_auth("alice-secret")
+        .header("a2a-version", "1.0")
+        .json(&json!({
+            "jsonrpc":"2.0", "id":"list-second", "method":"ListTasks",
+            "params":{
+                "pageSize":1,"pageToken":token,"historyLength":0,
+                "includeArtifacts":false
+            }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(second["result"]["totalSize"], 2);
+    assert_eq!(second["result"]["tasks"][0]["id"], accepted_ids[0]);
+    assert_eq!(second["result"]["nextPageToken"], "");
+
+    let mismatched: Value = client
+        .post(server.rpc_endpoint())
+        .bearer_auth("alice-secret")
+        .header("a2a-version", "1.0")
+        .json(&json!({
+            "jsonrpc":"2.0", "id":"list-mismatch", "method":"ListTasks",
+            "params":{
+                "pageSize":1,"pageToken":token,"historyLength":1,
+                "includeArtifacts":false
+            }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(mismatched["error"]["code"], -32602);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    webhook_task.abort();
+}
+
+#[tokio::test]
+async fn official_list_tasks_requires_the_exact_job_receipt_for_agent_sources() {
+    let (url, calls, webhook_task) = webhook().await;
+    let mut server = Server::configured(
+        &url,
+        Some("notifier-secret"),
+        "incident",
+        false,
+        "agent",
+        &json!({"backend":"memory"}),
+    );
+    let client = reqwest::Client::new();
+    server.ready(&client).await;
+    let response = client
+        .post(server.rpc_endpoint())
+        .bearer_auth("alice-secret")
+        .header("a2a-version", "1.0")
+        .json(&json!({
+            "jsonrpc":"2.0", "id":"send-agent-list", "method":"SendMessage",
+            "params":{
+                "message":message("agent-list")["message"],
+                "configuration":{"returnImmediately":true}
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    let source = response.headers()["x-acteon-agent-source-context"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let accepted: Value = response.json().await.unwrap();
+    let task_id = accepted["result"]["task"]["id"].as_str().unwrap();
+
+    for (source_header, expected_total) in [(None, 0), (Some(source.as_str()), 1)] {
+        let mut request = client
+            .post(server.rpc_endpoint())
+            .bearer_auth("alice-secret")
+            .header("a2a-version", "1.0")
+            .json(&json!({
+                "jsonrpc":"2.0", "id":"list-agent", "method":"ListTasks",
+                "params":{}
+            }));
+        if let Some(source_header) = source_header {
+            request = request.header("x-acteon-agent-source-context", source_header);
+        }
+        let listed: Value = request.send().await.unwrap().json().await.unwrap();
+        assert_eq!(listed["result"]["totalSize"], expected_total);
+        if expected_total == 1 {
+            assert_eq!(listed["result"]["tasks"][0]["id"], task_id);
+        }
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    webhook_task.abort();
+}
+
+#[tokio::test]
 async fn official_streaming_rpc_enters_the_governed_runtime_and_closes_at_completion() {
     let (url, calls, webhook_task) = webhook().await;
     let mut server = Server::configured(

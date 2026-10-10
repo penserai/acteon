@@ -99,7 +99,7 @@ model-generated message. An Acteon host can attach its privately held
 the call a bounded descendant of existing work; both headers are required as a
 pair and message content cannot manufacture either one.
 
-The governed endpoint implements `SendMessage`, `GetTask`, `CancelTask`,
+The governed endpoint implements `SendMessage`, `GetTask`, `ListTasks`, `CancelTask`,
 `GetExtendedAgentCard`, `SendStreamingMessage`, and `SubscribeToTask`. A new message may set
 `configuration.returnImmediately=true` to receive durable acceptance. A
 continuation must target the same Task and active input challenge. `CancelTask`
@@ -113,8 +113,18 @@ nonterminal Task with cancellation state `requested` and
 provider result remains authoritative. Repeating cancellation of a canceled Task
 is idempotent; other terminal Tasks return `TaskNotCancelable`.
 
-`ListTasks` and push configuration still return `UnsupportedOperation` on this
-interface while their governed implementations are completed. This exact-agent endpoint accepts one
+`ListTasks` enumerates only durable acceptances for the selected agent and the
+current authenticated source. It implements every A2A 1.0 filter, exact
+`totalSize`, last-update-descending cursor pagination, history trimming, and
+artifact selection. Page tokens are bound to the caller, optional source
+receipt, and complete filter set. The runtime reads acceptances through bounded
+pages on the configured state backend and rechecks authentication after the
+scan. Agent principals must send one exact job receipt, so their result contains
+at most that job; this prevents a shared agent credential from enumerating other
+jobs. Human, service, and system principals can list all of their own Tasks for
+the selected agent. Push configuration still returns
+`PushNotificationNotSupported` while its governed delivery contract is completed.
+This exact-agent endpoint accepts one
 JSON-RPC request or notification per HTTP call; it does not accept batch arrays.
 
 Admission returns `X-Acteon-Agent-Source-Context`, an opaque signed receipt.

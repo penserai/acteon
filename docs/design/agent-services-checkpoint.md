@@ -160,9 +160,9 @@ Remaining before release:
   recovery against each supported production backend.
 - Expand focused adversarial and integration tests from admission/isolation to
   full provider execution and peer lifecycle.
-- Complete remote A2A event cursors, input/auth responses and cancellation
-  lifecycle work. Governed snapshot refresh now covers polling and terminal
-  result projection.
+- Complete remote A2A event cursors and input/auth response lifecycle work.
+  Governed snapshot refresh and exact-agent listing now cover polling,
+  filtered pagination, cancellation, and terminal result projection.
 - Extend lifecycle SDK/UI integration as outbound peer contracts are added.
 - Review adversarially, run CI, and verify publication before merging.
 

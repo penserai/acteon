@@ -6,6 +6,7 @@ import json
 import unicodedata
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal, TypeGuard, cast
 from uuid import UUID
 
@@ -18,6 +19,17 @@ from .models import PermitReference
 AGENT_SOURCE_CONTEXT_HEADER = "x-acteon-agent-source-context"
 AGENT_EXECUTION_CONTEXT_HEADER = "x-acteon-execution-context"
 EXECUTION_PERMITS_HEADER = "x-acteon-execution-permits"
+AgentServiceTaskState = Literal[
+    "TASK_STATE_UNSPECIFIED",
+    "TASK_STATE_SUBMITTED",
+    "TASK_STATE_WORKING",
+    "TASK_STATE_COMPLETED",
+    "TASK_STATE_FAILED",
+    "TASK_STATE_CANCELED",
+    "TASK_STATE_INPUT_REQUIRED",
+    "TASK_STATE_AUTH_REQUIRED",
+    "TASK_STATE_REJECTED",
+]
 
 
 def _source(value: str | None) -> str:
@@ -46,6 +58,16 @@ class AgentServiceReceipt:
     task_id: str
     source_context: str = field(repr=False)
     task: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class AgentServiceTaskPage:
+    """Schema-validated official A2A task page for one exact agent."""
+
+    tasks: tuple[dict[str, Any], ...]
+    next_page_token: str
+    page_size: int
+    total_size: int
 
 
 @dataclass(frozen=True)
@@ -571,6 +593,119 @@ def _a2a_result(data: str, request_id: str, source: str | None) -> AgentServiceA
     return AgentServiceA2aFrame(result, source)
 
 
+def _list_params(
+    *,
+    context_id: str | None,
+    status: str | None,
+    page_size: int | None,
+    page_token: str | None,
+    history_length: int | None,
+    status_timestamp_after: datetime | None,
+    include_artifacts: bool,
+) -> dict[str, Any]:
+    states = {
+        "TASK_STATE_UNSPECIFIED",
+        "TASK_STATE_SUBMITTED",
+        "TASK_STATE_WORKING",
+        "TASK_STATE_COMPLETED",
+        "TASK_STATE_FAILED",
+        "TASK_STATE_CANCELED",
+        "TASK_STATE_INPUT_REQUIRED",
+        "TASK_STATE_AUTH_REQUIRED",
+        "TASK_STATE_REJECTED",
+    }
+    if status is not None and status not in states:
+        raise ValueError("invalid A2A task status")
+    if page_size is not None and not 1 <= page_size <= 100:
+        raise ValueError("page_size must be between 1 and 100")
+    if page_token is not None and len(page_token) > 8192:
+        raise ValueError("page_token is too large")
+    if history_length is not None and not 0 <= history_length <= 2_147_483_647:
+        raise ValueError("history_length must fit a signed 32-bit integer")
+    params: dict[str, Any] = {}
+    for key, value in (
+        ("contextId", context_id),
+        ("status", status),
+        ("pageSize", page_size),
+        ("pageToken", page_token),
+        ("historyLength", history_length),
+    ):
+        if value is not None:
+            params[key] = value
+    if status_timestamp_after is not None:
+        params["statusTimestampAfter"] = status_timestamp_after.isoformat().replace(
+            "+00:00", "Z"
+        )
+    if include_artifacts:
+        params["includeArtifacts"] = True
+    return params
+
+
+def _task_page(value: dict[str, Any]) -> AgentServiceTaskPage:
+    if set(value) != {"tasks", "nextPageToken", "pageSize", "totalSize"}:
+        raise ActeonError("agent service A2A task page fields are invalid")
+    tasks = value.get("tasks")
+    token = value.get("nextPageToken")
+    page_size = value.get("pageSize")
+    total_size = value.get("totalSize")
+    if (
+        not isinstance(tasks, list)
+        or not isinstance(token, str)
+        or len(token) > 8192
+        or not isinstance(page_size, int)
+        or isinstance(page_size, bool)
+        or not 1 <= page_size <= 100
+        or not isinstance(total_size, int)
+        or isinstance(total_size, bool)
+        or total_size < len(tasks)
+        or len(tasks) > page_size
+    ):
+        raise ActeonError("agent service A2A task page is malformed")
+    typed: list[dict[str, Any]] = []
+    task_states = {
+        "TASK_STATE_SUBMITTED",
+        "TASK_STATE_WORKING",
+        "TASK_STATE_COMPLETED",
+        "TASK_STATE_FAILED",
+        "TASK_STATE_CANCELED",
+        "TASK_STATE_INPUT_REQUIRED",
+        "TASK_STATE_AUTH_REQUIRED",
+        "TASK_STATE_REJECTED",
+    }
+    for task in tasks:
+        if (
+            not isinstance(task, dict)
+            or not isinstance(task.get("id"), str)
+            or not task["id"]
+            or not isinstance(task.get("status"), dict)
+            or task["status"].get("state") not in task_states
+            or "namespace" in task
+            or "tenant" in task
+            or (
+                isinstance(task.get("metadata"), dict)
+                and "acteon_governed_execution" in task["metadata"]
+            )
+        ):
+            raise ActeonError("agent service A2A task projection is invalid")
+        typed.append(task)
+    return AgentServiceTaskPage(tuple(typed), token, page_size, total_size)
+
+
+def _list_source_headers(
+    namespace: str,
+    tenant: str,
+    agent: str,
+    source: AgentServiceReceipt | None,
+) -> dict[str, str]:
+    headers = dict(_A2A_HEADERS)
+    if source is None:
+        return headers
+    if (source.namespace, source.tenant, source.agent) != (namespace, tenant, agent):
+        raise ValueError("agent service ListTasks receipt does not match the route")
+    headers[AGENT_SOURCE_CONTEXT_HEADER] = _source(source.source_context)
+    return headers
+
+
 def _sse_data(lines: Iterator[str]) -> Iterator[str]:
     data: list[str] = []
     size = 0
@@ -749,6 +884,52 @@ class _AgentServicesMixin:
         if task.get("id") != receipt.task_id or not isinstance(task.get("status"), dict):
             raise ActeonError("agent service A2A cancellation task identity mismatch")
         return task
+
+    def agent_service_list_tasks(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        *,
+        source: AgentServiceReceipt | None = None,
+        context_id: str | None = None,
+        status: AgentServiceTaskState | None = None,
+        page_size: int | None = None,
+        page_token: str | None = None,
+        history_length: int | None = None,
+        status_timestamp_after: datetime | None = None,
+        include_artifacts: bool = False,
+    ) -> AgentServiceTaskPage:
+        """List Tasks visible to the current source through the exact agent."""
+        request_id = f"list:{agent}"
+        params = _list_params(
+            context_id=context_id,
+            status=status,
+            page_size=page_size,
+            page_token=page_token,
+            history_length=history_length,
+            status_timestamp_after=status_timestamp_after,
+            include_artifacts=include_artifacts,
+        )
+        response = self._client.post(
+            f"{self.base_url}{_rpc_base(namespace, tenant, agent)}",
+            json={
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": "ListTasks",
+                "params": params,
+            },
+            headers={
+                **self._headers(),
+                **_list_source_headers(namespace, tenant, agent, source),
+            },
+            follow_redirects=False,
+        )
+        if response.status_code != 200:
+            raise HttpError(response.status_code, response.text)
+        if response.headers.get("a2a-version") != A2A_PROTOCOL_VERSION:
+            raise ActeonError("agent service A2A response version missing or unsupported")
+        return _task_page(_a2a_result(response.text, request_id, None).result)
 
     def agent_service_send_peer(
         self,
@@ -1147,6 +1328,52 @@ class _AsyncAgentServicesMixin:
         if task.get("id") != receipt.task_id or not isinstance(task.get("status"), dict):
             raise ActeonError("agent service A2A cancellation task identity mismatch")
         return task
+
+    async def agent_service_list_tasks(
+        self,
+        namespace: str,
+        tenant: str,
+        agent: str,
+        *,
+        source: AgentServiceReceipt | None = None,
+        context_id: str | None = None,
+        status: AgentServiceTaskState | None = None,
+        page_size: int | None = None,
+        page_token: str | None = None,
+        history_length: int | None = None,
+        status_timestamp_after: datetime | None = None,
+        include_artifacts: bool = False,
+    ) -> AgentServiceTaskPage:
+        """List Tasks visible to the current source through the exact agent."""
+        request_id = f"list:{agent}"
+        params = _list_params(
+            context_id=context_id,
+            status=status,
+            page_size=page_size,
+            page_token=page_token,
+            history_length=history_length,
+            status_timestamp_after=status_timestamp_after,
+            include_artifacts=include_artifacts,
+        )
+        response = await self._client.post(
+            f"{self.base_url}{_rpc_base(namespace, tenant, agent)}",
+            json={
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": "ListTasks",
+                "params": params,
+            },
+            headers={
+                **self._headers(),
+                **_list_source_headers(namespace, tenant, agent, source),
+            },
+            follow_redirects=False,
+        )
+        if response.status_code != 200:
+            raise HttpError(response.status_code, response.text)
+        if response.headers.get("a2a-version") != A2A_PROTOCOL_VERSION:
+            raise ActeonError("agent service A2A response version missing or unsupported")
+        return _task_page(_a2a_result(response.text, request_id, None).result)
 
     async def agent_service_send_peer(
         self,

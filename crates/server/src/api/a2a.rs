@@ -325,6 +325,7 @@ struct ListTasksParams {
 #[serde(rename_all = "camelCase")]
 struct ListTasksCursor {
     last_id: String,
+    last_updated_at: DateTime<Utc>,
     context_id: Option<String>,
     status: Option<String>,
     history_length: Option<usize>,
@@ -362,6 +363,7 @@ fn encode_list_tasks_cursor(cursor: &ListTasksCursor) -> Result<String, A2aError
         .map_err(|_| A2aError::internal("internal error"))
 }
 
+#[allow(clippy::too_many_lines)] // Keep the ratified filter, cursor and projection contract together.
 async fn method_list_tasks_v1(
     engine: &TaskEngine,
     scope: &TaskScope,
@@ -371,6 +373,14 @@ async fn method_list_tasks_v1(
     if !(1..=100).contains(&page_size) {
         return Err(A2aError::invalid_params(
             "pageSize must be between 1 and 100",
+        ));
+    }
+    if params
+        .history_length
+        .is_some_and(|length| length > i32::MAX as usize)
+    {
+        return Err(A2aError::invalid_params(
+            "historyLength exceeds the A2A int32 range",
         ));
     }
     if params
@@ -416,10 +426,18 @@ async fn method_list_tasks_v1(
                 .status_timestamp_after
                 .is_none_or(|after| task.status.timestamp >= after)
     });
-    tasks.sort_by(|left, right| left.id.cmp(&right.id));
+    tasks.sort_by(|left, right| {
+        right
+            .updated_at
+            .cmp(&left.updated_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
     let total_size = tasks.len();
     if let Some(cursor) = &cursor {
-        tasks.retain(|task| task.id > cursor.last_id);
+        tasks.retain(|task| {
+            task.updated_at < cursor.last_updated_at
+                || (task.updated_at == cursor.last_updated_at && task.id > cursor.last_id)
+        });
     }
     let has_more = tasks.len() > page_size;
     tasks.truncate(page_size);
@@ -445,8 +463,13 @@ async fn method_list_tasks_v1(
             .expect("a page with more results contains at least one task")
             .id
             .clone();
+        let last_updated_at = tasks
+            .last()
+            .expect("a page with more results contains at least one task")
+            .updated_at;
         encode_list_tasks_cursor(&ListTasksCursor {
             last_id,
+            last_updated_at,
             context_id: params.context_id,
             status: params.status,
             history_length: params.history_length,
@@ -2753,8 +2776,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let mut expected_ids = [first_id, second_id];
-        expected_ids.sort();
+        let expected_ids = [first_id, second_id];
 
         let first_page = dispatch_method(
             None,

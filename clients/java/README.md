@@ -536,6 +536,11 @@ System.out.println(stopped.task().path("status"));
 
 var officialTask = client.agentServiceCancelTask(receipt);
 System.out.println(officialTask.path("metadata").path("acteonCancellation").path("state"));
+
+var page = client.agentServiceListTasks("prod", "acme", "notifier",
+    new AgentServiceListOptions(null, null, null, 25, null, null, null, false));
+System.out.println(page.tasks().size() + " of " + page.totalSize());
+// Pass receipt as the first option for an agent principal or exact-job query.
 ```
 
 The acknowledgement always confirms a durable restriction on future starts.

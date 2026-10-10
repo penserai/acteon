@@ -2,7 +2,7 @@
 use super::{AppState, a2a::A2A_PROTOCOL_VERSION, schemas::ErrorResponse};
 use crate::execution_authority::{
     AgentServiceAuthorizationOpen, AgentServiceAuthorizationResolve, AgentServiceContinuation,
-    AgentServiceParent,
+    AgentServiceListPosition, AgentServiceListRequest, AgentServiceParent,
 };
 use crate::{
     auth::{
@@ -29,6 +29,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures::stream::{self, Stream};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::{convert::Infallible, sync::Arc, time::Duration};
 use tokio::sync::broadcast;
 
@@ -206,6 +207,103 @@ fn validate_agent_rpc_tenant(params: &Value, tenant: &str) -> Result<(), AgentRp
         ));
     }
     Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct GovernedListTasksParams {
+    #[serde(default)]
+    tenant: Option<String>,
+    #[serde(default)]
+    context_id: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    page_size: Option<usize>,
+    #[serde(default)]
+    page_token: Option<String>,
+    #[serde(default)]
+    history_length: Option<usize>,
+    #[serde(default)]
+    status_timestamp_after: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    include_artifacts: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct GovernedListTasksCursor {
+    schema: u32,
+    updated_at: chrono::DateTime<chrono::Utc>,
+    task_id: String,
+    visibility_binding: String,
+    page_size: usize,
+    context_id: Option<String>,
+    status: Option<String>,
+    history_length: Option<usize>,
+    status_timestamp_after: Option<chrono::DateTime<chrono::Utc>>,
+    include_artifacts: bool,
+}
+
+fn parse_governed_task_state(value: &str) -> Result<Option<TaskState>, AgentRpcFailure> {
+    match value {
+        "TASK_STATE_UNSPECIFIED" => Ok(None),
+        "TASK_STATE_SUBMITTED" => Ok(Some(TaskState::Submitted)),
+        "TASK_STATE_WORKING" => Ok(Some(TaskState::Working)),
+        "TASK_STATE_COMPLETED" => Ok(Some(TaskState::Completed)),
+        "TASK_STATE_FAILED" => Ok(Some(TaskState::Failed)),
+        "TASK_STATE_CANCELED" => Ok(Some(TaskState::Canceled)),
+        "TASK_STATE_INPUT_REQUIRED" => Ok(Some(TaskState::InputRequired)),
+        "TASK_STATE_AUTH_REQUIRED" => Ok(Some(TaskState::AuthRequired)),
+        "TASK_STATE_REJECTED" => Ok(Some(TaskState::Rejected)),
+        _ => Err(AgentRpcFailure::invalid(format!(
+            "unsupported TaskState '{value}'"
+        ))),
+    }
+}
+
+fn decode_governed_list_cursor(value: &str) -> Result<GovernedListTasksCursor, AgentRpcFailure> {
+    if value.len() > 8192 {
+        return Err(AgentRpcFailure::invalid("invalid pageToken"));
+    }
+    let bytes = URL_SAFE_NO_PAD
+        .decode(value)
+        .map_err(|_| AgentRpcFailure::invalid("invalid pageToken"))?;
+    let cursor: GovernedListTasksCursor = serde_json::from_slice(&bytes)
+        .map_err(|_| AgentRpcFailure::invalid("invalid pageToken"))?;
+    if cursor.schema != 1 || uuid::Uuid::parse_str(&cursor.task_id).is_err() {
+        return Err(AgentRpcFailure::invalid("invalid pageToken"));
+    }
+    Ok(cursor)
+}
+
+fn encode_governed_list_cursor(
+    cursor: &GovernedListTasksCursor,
+) -> Result<String, AgentRpcFailure> {
+    serde_json::to_vec(cursor)
+        .map(|bytes| URL_SAFE_NO_PAD.encode(bytes))
+        .map_err(|_| AgentRpcFailure::internal())
+}
+
+fn governed_list_visibility_binding(
+    context: &AgentRpcContext<'_>,
+    source: Option<&ExecutionContextReference>,
+) -> Result<String, AgentRpcFailure> {
+    let scoped = context
+        .proof
+        .scope(context.namespace, context.tenant)
+        .map_err(|_| AgentRpcFailure::from(AgentServiceError::Forbidden))?;
+    let bytes = serde_json::to_vec(&(
+        context.namespace,
+        context.tenant,
+        context.agent,
+        scoped.authentication_source().principal(),
+        scoped.credential_reference(),
+        scoped.authentication_source().auth_method(),
+        source,
+    ))
+    .map_err(|_| AgentRpcFailure::internal())?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
 fn agent_rpc_return_immediately(params: &Value) -> Result<bool, AgentRpcFailure> {
@@ -810,6 +908,134 @@ async fn get_agent_rpc(
     ))
 }
 
+#[allow(clippy::too_many_lines)] // Keep one schema-closed protocol method auditable in one place.
+async fn list_agent_rpc(
+    context: &AgentRpcContext<'_>,
+    params: &Value,
+) -> Result<(Value, Option<String>), AgentRpcFailure> {
+    let params: GovernedListTasksParams = serde_json::from_value(params.clone())
+        .map_err(|error| AgentRpcFailure::invalid(format!("invalid ListTasks params: {error}")))?;
+    if params
+        .tenant
+        .as_deref()
+        .is_some_and(|tenant| !tenant.is_empty() && tenant != context.tenant)
+    {
+        return Err(AgentRpcFailure::invalid(
+            "tenant does not match the selected agent interface",
+        ));
+    }
+    let page_size = params.page_size.unwrap_or(50);
+    if !(1..=100).contains(&page_size) {
+        return Err(AgentRpcFailure::invalid(
+            "pageSize must be between 1 and 100",
+        ));
+    }
+    if params
+        .history_length
+        .is_some_and(|length| length > i32::MAX as usize)
+    {
+        return Err(AgentRpcFailure::invalid(
+            "historyLength exceeds the A2A int32 range",
+        ));
+    }
+    let status = params
+        .status
+        .as_deref()
+        .map(parse_governed_task_state)
+        .transpose()?
+        .flatten();
+    let source = parse_source_context(context.headers).map_err(AgentRpcFailure::invalid)?;
+    let visibility_binding = governed_list_visibility_binding(context, source.as_ref())?;
+    let cursor = params
+        .page_token
+        .as_deref()
+        .map(decode_governed_list_cursor)
+        .transpose()?;
+    if let Some(cursor) = &cursor
+        && (cursor.visibility_binding != visibility_binding
+            || cursor.page_size != page_size
+            || cursor.context_id != params.context_id
+            || cursor.status != params.status
+            || cursor.history_length != params.history_length
+            || cursor.status_timestamp_after != params.status_timestamp_after
+            || cursor.include_artifacts != params.include_artifacts)
+    {
+        return Err(AgentRpcFailure::invalid(
+            "pageToken does not match the current caller or filters",
+        ));
+    }
+    let after = cursor.as_ref().map(|cursor| AgentServiceListPosition {
+        updated_at: cursor.updated_at,
+        task_id: cursor.task_id.clone(),
+    });
+    let page = context
+        .runtime()?
+        .list_agent_services(AgentServiceListRequest {
+            namespace: context.namespace,
+            tenant: context.tenant,
+            agent_id: context.agent,
+            authentication: context.proof,
+            source_context: source.as_ref(),
+            context_id: params.context_id.as_deref(),
+            status,
+            status_timestamp_after: params.status_timestamp_after,
+            after: after.as_ref(),
+            page_size,
+        })
+        .await?;
+    let total_size = i32::try_from(page.total_size).map_err(|_| AgentRpcFailure::internal())?;
+    let next_page_token = if page.has_more {
+        let last = page.tasks.last().ok_or_else(AgentRpcFailure::internal)?;
+        encode_governed_list_cursor(&GovernedListTasksCursor {
+            schema: 1,
+            updated_at: last.task.updated_at,
+            task_id: last.task.id.clone(),
+            visibility_binding,
+            page_size,
+            context_id: params.context_id.clone(),
+            status: params.status.clone(),
+            history_length: params.history_length,
+            status_timestamp_after: params.status_timestamp_after,
+            include_artifacts: params.include_artifacts,
+        })?
+    } else {
+        String::new()
+    };
+    let tasks = page
+        .tasks
+        .into_iter()
+        .map(|mut observed| {
+            if let Some(history_length) = params.history_length
+                && observed.task.history.len() > history_length
+            {
+                observed
+                    .task
+                    .history
+                    .drain(0..observed.task.history.len() - history_length);
+            }
+            if !params.include_artifacts {
+                observed.task.artifacts.clear();
+            }
+            let confirmed = observed.task.status.state == TaskState::Canceled;
+            project_governed_v1_task_with_cancellation(
+                &observed.task,
+                observed.future_starts_blocked,
+                confirmed,
+                None,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((
+        serde_json::json!({
+            "tasks": tasks,
+            "nextPageToken": next_page_token,
+            "pageSize": page_size,
+            "totalSize": total_size,
+        }),
+        None,
+    ))
+}
+
 async fn cancel_agent_rpc(
     context: &AgentRpcContext<'_>,
     params: &Value,
@@ -874,9 +1100,7 @@ async fn dispatch_agent_rpc(
         "GetTask" => get_agent_rpc(context, &params).await,
         "GetExtendedAgentCard" => extended_agent_card_rpc(context),
         "CancelTask" => Box::pin(cancel_agent_rpc(context, &params)).await,
-        "ListTasks" => Err(AgentRpcFailure::unsupported(format!(
-            "{method} is not supported by this governed agent interface",
-        ))),
+        "ListTasks" => Box::pin(list_agent_rpc(context, &params)).await,
         "CreateTaskPushNotificationConfig"
         | "GetTaskPushNotificationConfig"
         | "ListTaskPushNotificationConfigs"
@@ -2407,6 +2631,39 @@ mod rpc_tests {
             encoded.pointer("/error/data/0/reason"),
             Some(&json!("EXTENDED_AGENT_CARD_NOT_CONFIGURED"))
         );
+    }
+
+    #[test]
+    fn governed_list_cursor_is_schema_closed_and_filter_bound() {
+        let cursor = GovernedListTasksCursor {
+            schema: 1,
+            updated_at: "2026-10-10T12:00:00Z".parse().unwrap(),
+            task_id: "11111111-1111-4111-8111-111111111111".into(),
+            visibility_binding: "a".repeat(64),
+            page_size: 25,
+            context_id: Some("incident-42".into()),
+            status: Some("TASK_STATE_WORKING".into()),
+            history_length: Some(2),
+            status_timestamp_after: Some("2026-10-10T11:00:00Z".parse().unwrap()),
+            include_artifacts: true,
+        };
+        let encoded = encode_governed_list_cursor(&cursor).unwrap();
+        assert_eq!(decode_governed_list_cursor(&encoded).unwrap(), cursor);
+        assert!(decode_governed_list_cursor("not-base64!").is_err());
+
+        let invalid = URL_SAFE_NO_PAD.encode(
+            serde_json::to_vec(&json!({
+                "schema":2,
+                "updatedAt":"2026-10-10T12:00:00Z",
+                "taskId":"11111111-1111-4111-8111-111111111111",
+                "visibilityBinding":"binding",
+                "pageSize":25,
+                "contextId":null,"status":null,"historyLength":null,
+                "statusTimestampAfter":null,"includeArtifacts":false
+            }))
+            .unwrap(),
+        );
+        assert!(decode_governed_list_cursor(&invalid).is_err());
     }
 }
 

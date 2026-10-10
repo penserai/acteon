@@ -142,6 +142,67 @@ async def test_official_cancel_task_has_sync_and_async_parity():
         await async_client.close()
 
 
+def _list_response(request: httpx.Request) -> httpx.Response:
+    body = json.loads(request.content)
+    assert request.url.path == "/a2a/prod/acme/agents/notifier"
+    assert body == {
+        "jsonrpc": "2.0",
+        "id": "list:notifier",
+        "method": "ListTasks",
+        "params": {"status": "TASK_STATE_WORKING", "pageSize": 1},
+    }
+    assert request.headers[AGENT_SOURCE_CONTEXT_HEADER] == FIXTURE["jobs"][0]["source_context"]
+    return httpx.Response(
+        200,
+        json={
+            "jsonrpc": "2.0",
+            "id": body["id"],
+            "result": {
+                "tasks": [{"id": "job-1", "status": {"state": "TASK_STATE_WORKING"}}],
+                "nextPageToken": "next-1",
+                "pageSize": 1,
+                "totalSize": 2,
+            },
+        },
+        headers={"a2a-version": "1.0"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_official_list_tasks_has_typed_sync_and_async_parity():
+    job = FIXTURE["jobs"][0]
+    receipt = AgentServiceReceipt(
+        "prod", "acme", "notifier", "job-1", job["source_context"], job["task"]
+    )
+    sync = ActeonClient("http://acteon")
+    sync._client = httpx.Client(transport=httpx.MockTransport(_list_response))
+    async_client = AsyncActeonClient("http://acteon")
+    async_client._client = httpx.AsyncClient(transport=httpx.MockTransport(_list_response))
+    try:
+        page = sync.agent_service_list_tasks(
+            "prod",
+            "acme",
+            "notifier",
+            source=receipt,
+            status="TASK_STATE_WORKING",
+            page_size=1,
+        )
+        async_page = await async_client.agent_service_list_tasks(
+            "prod",
+            "acme",
+            "notifier",
+            source=receipt,
+            status="TASK_STATE_WORKING",
+            page_size=1,
+        )
+        assert page.tasks[0]["id"] == "job-1"
+        assert page.total_size == async_page.total_size == 2
+        assert page.next_page_token == "next-1"
+    finally:
+        sync.close()
+        await async_client.close()
+
+
 def test_parent_context_and_permits_are_request_local():
     calls = []
 

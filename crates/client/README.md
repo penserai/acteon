@@ -276,6 +276,7 @@ Invoke the official exact-agent streaming RPC and retain its admission source
 outside protocol data. Use the retained receipt to subscribe after a restart:
 
 ```rust
+use acteon_client::AgentServiceListOptions;
 use futures_util::StreamExt;
 
 let mut stream = client.agent_service_send_streaming_message(
@@ -288,6 +289,13 @@ while let Some(result) = updates.next().await { println!("{}", result?); }
 
 let canceled = client.agent_service_cancel_task(&receipt).await?;
 println!("{}", canceled["metadata"]["acteonCancellation"]["state"]);
+
+let page = client.agent_service_list_tasks(
+    "prod", "acme", "notifier",
+    &AgentServiceListOptions { page_size: Some(25), ..Default::default() },
+    None, // pass Some(&receipt) to narrow the query to one job
+).await?;
+println!("{} of {}", page.tasks.len(), page.total_size);
 ```
 
 The default client uses a separate no-total-timeout transport for streams. If

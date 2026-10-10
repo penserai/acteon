@@ -1,5 +1,5 @@
 import { parseRegistryProjection, parseRegistryMutationReceipt, type RegistryProjection, type GovernanceRegistryMutationRequest, type GovernanceRegistryProjectionView, type GovernanceRegistryMutationReceipt } from "./governance.js";
-import { AGENT_EXECUTION_CONTEXT_HEADER, AGENT_SOURCE_CONTEXT_HEADER, agentExecutionContext, agentPeerAuthorizationReceipt, agentPeerCancelReceipt, agentPeerContinuationReceipt, agentPeerOptions, agentPeerReceipt, agentProviderAbort, agentSource, agentTask, agentServiceBase, agentServiceRpcBase, assertUnboundPeerResponse, type AgentPeerAuthorizationReceipt, type AgentPeerCancelReceipt, type AgentPeerContinuationReceipt, type AgentPeerSelectionOption, type AgentPeerSendReceipt, type AgentServiceA2aFrame, type AgentServiceReceipt, type AgentServiceStopReceipt } from "./agent_services.js";
+import { AGENT_EXECUTION_CONTEXT_HEADER, AGENT_SOURCE_CONTEXT_HEADER, agentExecutionContext, agentPeerAuthorizationReceipt, agentPeerCancelReceipt, agentPeerContinuationReceipt, agentPeerOptions, agentPeerReceipt, agentProviderAbort, agentSource, agentTask, agentServiceBase, agentServiceRpcBase, agentServiceTaskPage, assertUnboundPeerResponse, type AgentPeerAuthorizationReceipt, type AgentPeerCancelReceipt, type AgentPeerContinuationReceipt, type AgentPeerSelectionOption, type AgentPeerSendReceipt, type AgentServiceA2aFrame, type AgentServiceListOptions, type AgentServiceReceipt, type AgentServiceStopReceipt, type AgentServiceTaskPage } from "./agent_services.js";
 import { parseProviderHistoryReceipt, type ProviderHistoryReceipt, type ProviderReconciliationCorrelation, type ProviderReconciliationRequest } from "./governance.js";
 import { parseProviderExecutionHistory, type ProviderExecutionHistory, type ProviderExecutionHistoryWire } from "./governance.js";
 import type { WorkforceScopeView, WorkforceChangeRequest } from "./workforce.js";
@@ -454,6 +454,39 @@ export class ActeonClient {
     const task = rpc.result as Record<string, unknown>;
     if (task.id !== receipt.taskId || !task.status || typeof task.status !== "object" || Array.isArray(task.status)) throw new Error("agent service A2A cancellation task identity mismatch");
     return task;
+  }
+  /** List only Tasks visible to the current source through one exact governed agent. */
+  async agentServiceListTasks(namespace: string, tenant: string, agent: string, options: AgentServiceListOptions = {}): Promise<AgentServiceTaskPage> {
+    if (options.pageSize !== undefined && (!Number.isSafeInteger(options.pageSize) || options.pageSize < 1 || options.pageSize > 100)) throw new Error("pageSize must be between 1 and 100");
+    if (options.historyLength !== undefined && (!Number.isSafeInteger(options.historyLength) || options.historyLength < 0 || options.historyLength > 2147483647)) throw new Error("historyLength must fit a signed 32-bit integer");
+    if (options.pageToken !== undefined && options.pageToken.length > 8192) throw new Error("pageToken is too large");
+    const source = options.source;
+    if (source !== undefined && (source.namespace !== namespace || source.tenant !== tenant || source.agent !== agent)) throw new Error("agent service ListTasks receipt does not match the route");
+    const params: Record<string, unknown> = {};
+    if (options.contextId !== undefined) params.contextId = options.contextId;
+    if (options.status !== undefined) params.status = options.status;
+    if (options.pageSize !== undefined) params.pageSize = options.pageSize;
+    if (options.pageToken !== undefined) params.pageToken = options.pageToken;
+    if (options.historyLength !== undefined) params.historyLength = options.historyLength;
+    if (options.statusTimestampAfter !== undefined) params.statusTimestampAfter = options.statusTimestampAfter;
+    if (options.includeArtifacts === true) params.includeArtifacts = true;
+    const requestId = `list:${agent}`;
+    const response = await this.request("POST", agentServiceRpcBase(namespace, tenant, agent), {
+      body: { jsonrpc: "2.0", id: requestId, method: "ListTasks", params },
+      extraHeaders: { ...A2A_HEADERS, ...(source ? { [AGENT_SOURCE_CONTEXT_HEADER]: agentSource(source.sourceContext) } : {}) },
+      redirect: "error",
+    });
+    if (!response.ok) throw new HttpError(response.status, await response.text());
+    if (response.headers.get("a2a-version") !== A2A_PROTOCOL_VERSION) throw new Error("agent service A2A response version missing or unsupported");
+    const value = await response.json() as unknown;
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid agent service A2A response");
+    const rpc = value as Record<string, unknown>;
+    if (rpc.jsonrpc !== "2.0" || rpc.id !== requestId) throw new Error("agent service A2A response request identity mismatch");
+    if (rpc.error && typeof rpc.error === "object") {
+      const error = rpc.error as Record<string, unknown>;
+      throw new Error(`A2A error ${String(error.code ?? "A2A")}: ${String(error.message ?? "list failed")}`);
+    }
+    return agentServiceTaskPage(rpc.result);
   }
   /** List current safe registry options. Descriptions are untrusted data. */
   async agentServiceDiscoverPeers(source: AgentServiceReceipt, skill: string): Promise<readonly AgentPeerSelectionOption[]> {

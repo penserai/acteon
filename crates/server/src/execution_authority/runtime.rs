@@ -8,7 +8,8 @@ mod federation_export;
 pub use agent_driver::AgentServiceDriver;
 pub use agent_services::{
     AgentServiceAcceptance, AgentServiceAuthorizationOpen, AgentServiceAuthorizationResolve,
-    AgentServiceContinuation, AgentServiceObservation, AgentServiceParent, AgentServiceRequest,
+    AgentServiceContinuation, AgentServiceListPage, AgentServiceListPosition,
+    AgentServiceListRequest, AgentServiceObservation, AgentServiceParent, AgentServiceRequest,
     AgentServiceTaskObservation,
 };
 pub use federation::{

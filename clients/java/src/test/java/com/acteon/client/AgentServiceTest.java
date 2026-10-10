@@ -82,6 +82,36 @@ class AgentServiceTest {
         } finally { server.stop(0); }
     }
 
+    @Test void officialListTasksReturnsTypedSourceBoundPage() throws Exception {
+        var mapper = JsonMapper.build();
+        var task = mapper.readTree("{\"id\":\"job-1\",\"namespace\":\"prod\",\"tenant\":\"acme\"}");
+        var receipt = new AgentServiceReceipt("prod","acme","notifier","job-1","host-only",task);
+        var failure = new AtomicReference<Throwable>();
+        var server = HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
+        server.createContext("/",exchange -> {
+            try {
+                assertEquals("/a2a/prod/acme/agents/notifier", exchange.getRequestURI().getPath());
+                assertEquals("host-only", exchange.getRequestHeaders().getFirst(AgentServiceReceipt.SOURCE_CONTEXT_HEADER));
+                var request = mapper.readTree(exchange.getRequestBody());
+                assertEquals("ListTasks", request.path("method").asText());
+                assertEquals("list:notifier", request.path("id").asText());
+                assertEquals("TASK_STATE_WORKING", request.path("params").path("status").asText());
+                assertEquals(1, request.path("params").path("pageSize").asInt());
+                exchange.getResponseHeaders().set(A2A.VERSION_HEADER,"1.0");
+                var body = "{\"jsonrpc\":\"2.0\",\"id\":\"list:notifier\",\"result\":{\"tasks\":[{\"id\":\"job-1\",\"status\":{\"state\":\"TASK_STATE_WORKING\"}}],\"nextPageToken\":\"next-1\",\"pageSize\":1,\"totalSize\":2}}".getBytes(StandardCharsets.UTF_8);
+                exchange.sendResponseHeaders(200,body.length); exchange.getResponseBody().write(body); exchange.close();
+            } catch(Throwable error) { failure.set(error); exchange.close(); }
+        }); server.start();
+        try(var client = new ActeonClient("http://127.0.0.1:"+server.getAddress().getPort())) {
+            var options = new AgentServiceListOptions(receipt,null,AgentServiceTaskState.WORKING,1,null,null,null,false);
+            var page = client.agentServiceListTasks("prod","acme","notifier",options);
+            assertEquals("job-1",page.tasks().get(0).path("id").asText());
+            assertEquals("next-1",page.nextPageToken());
+            assertEquals(2,page.totalSize());
+            if(failure.get()!=null) throw new AssertionError(failure.get());
+        } finally { server.stop(0); }
+    }
+
     @Test void peerToolSendsNoAuthorityFieldsAndValidatesReceipt() throws Exception {
         var mapper = JsonMapper.build();
         var task = mapper.readTree("{\"id\":\"job-1\",\"namespace\":\"prod\",\"tenant\":\"acme\"}");

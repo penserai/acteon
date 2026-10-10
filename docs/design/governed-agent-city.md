@@ -90,7 +90,7 @@ The baseline already has substantial reusable infrastructure:
 | Durability | CAS-backed dispatch receipts, worker tasks, recovery, result handoffs, execution history | Persisted authority lineage, intervention reconciliation, delegation receipts |
 | Governance substrate | Bounded CAS coordinator and exact typed resource references; not integrated into effects | Verified authority evaluation, atomic root reservations and common effect checkpoints |
 | Agent registry | Scoped agents, capability filters, heartbeats, administrative suspension/ban, individual cards | Governed candidate discovery and validated destination resolution |
-| A2A | Tenant Task service plus exact-agent governed admission, streaming and truthful cancellation; REST service receipts, peer invocation, federation and discovery | Governed list/push parity on the exact-agent interface and full external conformance |
+| A2A | Tenant Task service plus exact-agent governed admission, listing, streaming and truthful cancellation; REST service receipts, peer invocation, federation and discovery | Governed push parity on the exact-agent interface and full external conformance |
 | Messaging | Agent inbox addressing, bus subscriptions, conversations and receipts | Governed publish/delivery and preserved sender/delegation authority |
 | Clients | Rust, Python, TypeScript, Go, Java clients; generated finite-operation catalog | First-class typed APIs for permits, closures, resources and delegation |
 
@@ -103,8 +103,9 @@ Important implementation details constrain the plan:
   extended-card retrieval, official SSE streaming and protocol cancellation.
   Stream admission and every emitted update preserve authenticated source
   provenance. Cancellation commits the coordinator fence first and distinguishes
-  requested from confirmed finality. Governed list and push remain explicit gaps;
-  the adapter returns `UnsupportedOperation` rather than crossing into the tenant
+  requested from confirmed finality. Exact-agent listing is source-scoped,
+  filter- and identity-bound, and state-backend paginated. Governed push remains
+  an explicit gap; the adapter refuses it rather than crossing into the tenant
   Task engine.
 - Agent callers must retain the opaque source-context receipt returned at admission. This distinguishes separate jobs sharing one principal and credential without exposing authority material to model-controlled payloads.
 - Existing suspension and ban are useful agent-specific controls. They are not generic resource closures with drain, pause and cancellation semantics.

@@ -490,6 +490,12 @@ console.log(stopped.futureStartsBlocked, stopped.cancellationConfirmed,
 
 const officialTask = await client.agentServiceCancelTask(receipt);
 console.log(officialTask.metadata.acteonCancellation.state);
+
+const page = await client.agentServiceListTasks("prod", "acme", "notifier", {
+  pageSize: 25,
+  // source: receipt, // required for agent principals; narrows to this job
+});
+console.log(page.tasks.length, page.totalSize, page.nextPageToken);
 ```
 
 The acknowledgement always confirms a durable restriction on future starts.

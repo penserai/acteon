@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -32,6 +33,26 @@ type AgentServiceReceipt struct {
 	TaskID        string         `json:"task_id"`
 	SourceContext string         `json:"source_context"`
 	Task          map[string]any `json:"task"`
+}
+
+// AgentServiceListOptions are official A2A filters for one exact agent.
+type AgentServiceListOptions struct {
+	Source               *AgentServiceReceipt
+	ContextID            string
+	Status               string
+	PageSize             int
+	PageToken            string
+	HistoryLength        *int
+	StatusTimestampAfter *time.Time
+	IncludeArtifacts     bool
+}
+
+// AgentServiceTaskPage is a schema-validated official A2A ListTasks result.
+type AgentServiceTaskPage struct {
+	Tasks         []map[string]any
+	NextPageToken string
+	PageSize      int
+	TotalSize     int
 }
 
 // AgentServiceA2AFrame is one official StreamResponse. SourceContext is
@@ -373,6 +394,116 @@ func (c *Client) AgentServiceCancelTask(ctx context.Context, receipt *AgentServi
 		return nil, fmt.Errorf("agent service A2A cancellation task identity mismatch")
 	}
 	return task, nil
+}
+
+// AgentServiceListTasks lists only tasks visible to the current authenticated
+// source. Source narrows visibility to one job and is required for agent principals.
+func (c *Client) AgentServiceListTasks(ctx context.Context, namespace, tenant, agent string, options AgentServiceListOptions) (*AgentServiceTaskPage, error) {
+	if options.PageSize < 0 || options.PageSize > 100 {
+		return nil, fmt.Errorf("invalid agent service ListTasks pagination")
+	}
+	if len(options.PageToken) > 8192 || options.HistoryLength != nil && (*options.HistoryLength < 0 || *options.HistoryLength > math.MaxInt32) {
+		return nil, fmt.Errorf("invalid agent service ListTasks pagination")
+	}
+	states := map[string]bool{
+		"": true, "TASK_STATE_UNSPECIFIED": true, "TASK_STATE_SUBMITTED": true,
+		"TASK_STATE_WORKING": true, "TASK_STATE_COMPLETED": true, "TASK_STATE_FAILED": true,
+		"TASK_STATE_CANCELED": true, "TASK_STATE_INPUT_REQUIRED": true,
+		"TASK_STATE_AUTH_REQUIRED": true, "TASK_STATE_REJECTED": true,
+	}
+	if !states[options.Status] {
+		return nil, fmt.Errorf("invalid A2A task status")
+	}
+	path, err := agentServiceRPCBase(namespace, tenant, agent)
+	if err != nil {
+		return nil, err
+	}
+	sourceContext := ""
+	if options.Source != nil {
+		if options.Source.Namespace != namespace || options.Source.Tenant != tenant || options.Source.Agent != agent {
+			return nil, fmt.Errorf("agent service ListTasks receipt does not match the route")
+		}
+		if err := agentSource(options.Source.SourceContext); err != nil {
+			return nil, err
+		}
+		sourceContext = options.Source.SourceContext
+	}
+	params := map[string]any{}
+	if options.ContextID != "" {
+		params["contextId"] = options.ContextID
+	}
+	if options.Status != "" {
+		params["status"] = options.Status
+	}
+	if options.PageSize != 0 {
+		params["pageSize"] = options.PageSize
+	}
+	if options.PageToken != "" {
+		params["pageToken"] = options.PageToken
+	}
+	if options.HistoryLength != nil {
+		params["historyLength"] = *options.HistoryLength
+	}
+	if options.StatusTimestampAfter != nil {
+		params["statusTimestampAfter"] = options.StatusTimestampAfter.UTC().Format(time.RFC3339Nano)
+	}
+	if options.IncludeArtifacts {
+		params["includeArtifacts"] = true
+	}
+	requestID := "list:" + agent
+	rpc, _, err := c.agentServiceRequest(ctx, http.MethodPost, path, map[string]any{
+		"jsonrpc": "2.0", "id": requestID, "method": "ListTasks", "params": params,
+	}, sourceContext, nil)
+	if err != nil {
+		return nil, err
+	}
+	if rpc["jsonrpc"] != "2.0" || rpc["id"] != requestID {
+		return nil, fmt.Errorf("agent service A2A response request identity mismatch")
+	}
+	if failure, ok := rpc["error"].(map[string]any); ok {
+		return nil, fmt.Errorf("A2A error %v: %v", failure["code"], failure["message"])
+	}
+	result, ok := rpc["result"].(map[string]any)
+	if !ok || len(result) != 4 {
+		return nil, fmt.Errorf("agent service A2A task page is malformed")
+	}
+	rawTasks, ok := result["tasks"].([]any)
+	pageSize, pageOK := exactJSONInt(result["pageSize"])
+	totalSize, totalOK := exactJSONInt(result["totalSize"])
+	token, tokenOK := result["nextPageToken"].(string)
+	if !ok || !pageOK || !totalOK || !tokenOK || pageSize < 1 || pageSize > 100 || len(token) > 8192 || len(rawTasks) > pageSize || totalSize < len(rawTasks) {
+		return nil, fmt.Errorf("agent service A2A task page is malformed")
+	}
+	tasks := make([]map[string]any, 0, len(rawTasks))
+	for _, value := range rawTasks {
+		task, ok := value.(map[string]any)
+		id, idOK := task["id"].(string)
+		status, statusOK := task["status"].(map[string]any)
+		state, stateOK := status["state"].(string)
+		validState := map[string]bool{
+			"TASK_STATE_SUBMITTED": true, "TASK_STATE_WORKING": true,
+			"TASK_STATE_COMPLETED": true, "TASK_STATE_FAILED": true,
+			"TASK_STATE_CANCELED": true, "TASK_STATE_INPUT_REQUIRED": true,
+			"TASK_STATE_AUTH_REQUIRED": true, "TASK_STATE_REJECTED": true,
+		}[state]
+		_, hasNamespace := task["namespace"]
+		_, hasTenant := task["tenant"]
+		metadata, _ := task["metadata"].(map[string]any)
+		_, hasPrivate := metadata["acteon_governed_execution"]
+		if !ok || !idOK || id == "" || !statusOK || !stateOK || !validState || hasNamespace || hasTenant || hasPrivate {
+			return nil, fmt.Errorf("agent service A2A task projection is invalid")
+		}
+		tasks = append(tasks, task)
+	}
+	return &AgentServiceTaskPage{Tasks: tasks, NextPageToken: token, PageSize: pageSize, TotalSize: totalSize}, nil
+}
+
+func exactJSONInt(value any) (int, bool) {
+	number, ok := value.(float64)
+	if !ok || number < 0 || number > math.MaxInt32 || math.Trunc(number) != number {
+		return 0, false
+	}
+	return int(number), true
 }
 
 func (c *Client) openAgentServiceA2A(ctx context.Context, path, requestID string, envelope map[string]any, extraHeaders map[string]string, requireSource bool) (<-chan *AgentServiceA2AFrame, error) {

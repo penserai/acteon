@@ -2,6 +2,14 @@
 
 ## Unreleased — rehabilitation
 
+- Add source-scoped exact-agent A2A `ListTasks`. The runtime scans governed
+  acceptances through the configured state backend, verifies exact agent and
+  source ownership per Task, rechecks authentication after the scan, returns
+  required exact totals in last-update-descending cursor order, and preserves
+  per-job isolation for agent principals. Rust, Python, TypeScript, Go, Java,
+  and the browser expose schema-validated pages. Tenant A2A listing now uses the
+  same specification-required ordering.
+
 - Add truthful governed `CancelTask` to exact-agent A2A services. Cancellation
   commits the execution-subtree fence first, projects `Canceled` only for a
   proven local non-start or qualified provider no-effect receipt, and exposes
